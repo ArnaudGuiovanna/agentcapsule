@@ -1,0 +1,80 @@
+{
+  "quint": "0.33.1",
+  "java": "openjdk version \"21.0.13\" 2026-10-20 LTS\nOpenJDK Runtime Environment Temurin-21.0.13+9 (build 21.0.13+9-LTS)\nOpenJDK 64-Bit Server VM Temurin-21.0.13+9 (build 21.0.13+9-LTS, mixed mode, sharing)\n",
+  "commit": "e13b663bb76c90487996d26daf15931d3efc4000",
+  "meminfo": "MemTotal:       16278312 kB\nMemFree:         9049980 kB\nMemAvailable:   11510400 kB\nBuffers:          117692 kB\nCached:          4761584 kB\nSwapCached:            0 kB\nActive:          1958404 kB\nInactive:        4635748 kB\nActive(anon):     969612 kB\nInactive(anon):  3035576 kB\nActive(file):     988792 kB\nInactive(file):  1600172 kB\nUnevictable:           0 kB\nMlocked:               0 kB\nSwapTotal:       4194304 kB\nSwapFree:        4194304 kB\nDirty:              1188 kB\nWriteback:             0 kB\nAnonPages:       1708972 kB\nMapped:           990880 kB\nShmem:           2290448 kB\nKReclaimable:     116912 kB\nSlab:             252032 kB\nSReclaimable:     116912 kB\nSUnreclaim:       135120 kB\nKernelStack:       11832 kB\nPageTables:        31884 kB\nSecPageTables:         0 kB\nNFS_Unstable:          0 kB\nBounce:                0 kB\nWritebackTmp:          0 kB\nCommitLimit:    12333460 kB\nCommitted_AS:   10876212 kB\nVmallocTotal:   34359738367 kB\nVmallocUsed:       41508 kB\nVmallocChunk:          0 kB\nPercpu:             7424 kB\nHardwareCorrupted:     0 kB\nAnonHugePages:         0 kB\nShmemHugePages:        0 kB\nShmemPmdMapped:        0 kB\nFileHugePages:    157696 kB\nFilePmdMapped:         0 kB\nBalloon:               0 kB\nHugePages_Total:       0\nHugePages_Free:        0\nHugePages_Rsvd:        0\nHugePages_Surp:        0\nHugepagesize:       2048 kB\nHugetlb:               0 kB\nDirectMap4k:       68608 kB\nDirectMap2M:    11364352 kB\nDirectMap1G:    14680064 kB\n",
+  "cases": [
+    {
+      "module": "lifecycleNoHostLock",
+      "property": "exclusiveVolume",
+      "steps": 9,
+      "expected": "violation"
+    },
+    {
+      "module": "lifecycleNoHostLock",
+      "property": "noVmAfterDelete",
+      "steps": 9,
+      "expected": "violation"
+    },
+    {
+      "module": "lifecycleNoScan",
+      "property": "admission",
+      "steps": 12,
+      "expected": "violation"
+    },
+    {
+      "module": "messagingNoPostcheck",
+      "property": "searchNoLeak",
+      "steps": 5,
+      "expected": "violation"
+    },
+    {
+      "module": "messagingSendChecksAds",
+      "property": "noRequestToHidden",
+      "steps": 6,
+      "expected": "violation"
+    },
+    {
+      "module": "messagingNoMandateOwner",
+      "property": "mandateOwned",
+      "steps": 4,
+      "expected": "violation"
+    },
+    {
+      "module": "messagingRacyAccept",
+      "property": "terminalStable",
+      "steps": 7,
+      "expected": "violation"
+    },
+    {
+      "module": "deliveryNoFifo",
+      "property": "fifo",
+      "steps": 5,
+      "expected": "violation"
+    },
+    {
+      "module": "deliveryNoDedup",
+      "property": "effectOnce",
+      "steps": 4,
+      "expected": "violation"
+    },
+    {
+      "module": "deliveryNoDeadLetter",
+      "property": "noHeadOfLineBlocking",
+      "steps": 4,
+      "expected": "violation"
+    },
+    {
+      "module": "deliveryNonAtomicIdem",
+      "property": "oneEventPerKey",
+      "steps": 4,
+      "expected": "violation"
+    },
+    {
+      "module": "messagingRacyAccept",
+      "property": "noLiveRequestForDeleted",
+      "steps": 7,
+      "expected": "violation"
+    }
+  ]
+}

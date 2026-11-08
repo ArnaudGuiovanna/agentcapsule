@@ -1,0 +1,71 @@
+{
+  "module": "messagingRacyAccept",
+  "property": "noLiveRequestForDeleted",
+  "steps": 7,
+  "expected": "violation",
+  "started": "2026-11-06T11:17:35.733383+00:00",
+  "command": [
+    "npm",
+    "exec",
+    "--no",
+    "--",
+    "quint",
+    "verify",
+    "sources/messaging.qnt",
+    "--main=messagingRacyAccept",
+    "--max-steps=7",
+    "--verbosity=3",
+    "--out-itf=replayed.itf.json",
+    "--invariant=noLiveRequestForDeleted"
+  ],
+  "source_sha256": {
+    "messaging.qnt": "d7717557e042e4d6e834337abcc8c5286b7e216ccf0c6c93d983a5e3eed4a2bd"
+  },
+  "heap": "4g",
+  "timeout_seconds": 1200,
+  "status": "violation",
+  "returncode": 1,
+  "seconds": 97.963,
+  "passed": true,
+  "trace_steps": 6,
+  "minimal": true,
+  "shorter_check": {
+    "module": "messagingRacyAccept",
+    "property": "noLiveRequestForDeleted",
+    "steps": 5,
+    "expected": "ok",
+    "started": "2026-11-06T11:19:13.706054+00:00",
+    "command": [
+      "npm",
+      "exec",
+      "--no",
+      "--",
+      "quint",
+      "verify",
+      "sources/messaging.qnt",
+      "--main=messagingRacyAccept",
+      "--max-steps=5",
+      "--verbosity=3",
+      "--out-itf=replayed.itf.json",
+      "--invariant=noLiveRequestForDeleted"
+    ],
+    "source_sha256": {
+      "messaging.qnt": "d7717557e042e4d6e834337abcc8c5286b7e216ccf0c6c93d983a5e3eed4a2bd"
+    },
+    "heap": "4g",
+    "timeout_seconds": 1200,
+    "status": "ok",
+    "returncode": 0,
+    "seconds": 62.204,
+    "passed": true,
+    "trace_steps": null,
+    "working_directory": "quint/evidence/2026-11-06/mutants/messagingRacyAccept-noLiveRequestForDeleted-7/shorter",
+    "environment": {
+      "JVM_ARGS": "-Xmx4g"
+    }
+  },
+  "working_directory": "quint/evidence/2026-11-06/mutants/messagingRacyAccept-noLiveRequestForDeleted-7",
+  "environment": {
+    "JVM_ARGS": "-Xmx4g"
+  }
+}

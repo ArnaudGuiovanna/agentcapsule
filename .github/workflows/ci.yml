@@ -1,0 +1,174 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: '1.27.3'
+  GOTOOLCHAIN: local
+  GOENV: 'off'
+  GOWORK: 'off'
+  GOFLAGS: -mod=readonly
+  CGO_ENABLED: '1'
+
+jobs:
+  checks:
+    name: Format, vet, contracts and models
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up pinned Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: false
+          cache-dependency-path: go.sum
+
+      - name: Install native headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends build-essential libcryptsetup-dev
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l cmd internal)"
+          if [ -n "$unformatted" ]; then echo "Run gofmt on:"; echo "$unformatted"; exit 1; fi
+
+      - name: go vet (default, KVM and live-LLM build tags)
+        run: |
+          go vet ./...
+          go vet -tags=kvm_integration,kvm_control_integration,kvm_product_integration ./internal/worker ./internal/runtime
+          go vet -tags=llmlive ./internal/llmgateway ./internal/controlplane
+
+      - name: Runner unit tests
+        run: python3 -m unittest discover -s scripts -p test_check_go.py -v
+
+      - name: Repository hygiene (no personal paths, no committed evidence sources)
+        run: python3 scripts/check-repo-hygiene.py
+
+      - name: Validate the OpenAPI 3.1 contract
+        run: |
+          python3 -m venv "$RUNNER_TEMP/openapi"
+          "$RUNNER_TEMP/openapi/bin/python" -m pip install \
+            --disable-pip-version-check --require-hashes --only-binary=:all: \
+            -r scripts/openapi-requirements.txt
+          "$RUNNER_TEMP/openapi/bin/python" -m openapi_spec_validator --schema 3.1 openapi/openapi.yaml
+
+      - name: Typecheck the Quint models
+        working-directory: spec
+        run: |
+          npm ci --no-audit --no-fund
+          npm run typecheck
+
+  secrets:
+    name: Secret scan (full history)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GITLEAKS_VERSION: '8.21.2'
+    steps:
+      - name: Check out full history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install gitleaks (checksum verified)
+        run: |
+          set -euo pipefail
+          base="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          cd "$RUNNER_TEMP"
+          curl -sSfL -o "$archive" "$base/$archive"
+          curl -sSfL -o checksums.txt "$base/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          grep " ${archive}\$" checksums.txt | sha256sum -c -
+          tar xzf "$archive" gitleaks
+          ./gitleaks version
+
+      - name: Scan every commit
+        run: |
+          "$RUNNER_TEMP/gitleaks" git --config .gitleaks.toml --redact --no-banner \
+            --log-opts="--all" --exit-code 1 .
+
+  go-postgres:
+    name: Go race, PostgreSQL and WAL recovery
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up pinned Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: false
+          cache-dependency-path: go.sum
+
+      - name: Install native and database dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential libcryptsetup-dev postgresql-16 postgresql-client-16
+
+      - name: Real PostgreSQL, Go race and crash recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(go env GOVERSION)" = "go$GO_VERSION"
+          postgres_executable="$(dpkg-query -L postgresql-16 | awk '/\/bin\/postgres$/ {print; exit}')"
+          test -x "$postgres_executable"
+          mkdir -p "$RUNNER_TEMP/ci"
+          {
+            go version
+            python3 --version
+            cc --version
+            dpkg-query -W postgresql-16 postgresql-client-16 libcryptsetup-dev
+            uname -a
+          } > "$RUNNER_TEMP/ci/toolchain.log"
+          python3 scripts/verify-postgres.py \
+            --pg-bin "$(dirname "$postgres_executable")" \
+            --native-tools / \
+            --output "$RUNNER_TEMP/ci/postgres"
+
+      - name: Preserve test reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: go-postgres-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/ci/toolchain.log
+            ${{ runner.temp }}/ci/postgres/summary.json
+            ${{ runner.temp }}/ci/postgres/environment.json
+            ${{ runner.temp }}/ci/postgres/*.jsonl
+            ${{ runner.temp }}/ci/postgres/*.log
+
+      - name: State what this job does not validate
+        if: always()
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          This job runs the Go packages with the race detector against real SQLite and
+          PostgreSQL, including process crashes and PostgreSQL WAL recovery. It does
+          not run KVM, jailed Firecracker VMs, live LLM providers, upstream
+          interoperability or restore on a second host: those campaigns are in
+          scripts/ and must be run on a KVM host (see scripts/README.md).
+          EOF

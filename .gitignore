@@ -1,0 +1,46 @@
+_apalache-out/
+tmp/
+node_modules/
+__pycache__/
+
+# Verification runners write here by default; publish evidence deliberately.
+/_evidence/
+# Local evidence from earlier development; never published.
+/quint/
+
+# Local operator configuration and secrets. Examples and test fixtures remain visible.
+/.env
+/.env.*
+!/.env.example
+!/.env.sample
+!/.env.template
+/config.local.json
+/runtime/worker/config.json
+/runtime/worker/config.local.json
+/secrets/
+/private/
+/runtime/private/
+/*.pem
+/*.key
+
+# Local databases, runtime state and generated guest/build artifacts.
+/data/
+/run/
+/runtime/data/
+/runtime/run/
+/build/
+/dist/
+/bin/
+/*.db
+/*.db-*
+/*.sqlite
+/*.sqlite-*
+/*.sqlite3
+/*.sqlite3-*
+/*.raw
+/*.img
+/*.ext4
+/*.qcow2
+/*.cpio
+/*.cpio.gz
+/vmlinux*

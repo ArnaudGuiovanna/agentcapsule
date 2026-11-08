@@ -1,0 +1,12 @@
+{
+  "name": "agentcapsule-spec",
+  "private": true,
+  "scripts": {
+    "typecheck": "for f in *.qnt; do quint typecheck \"$f\" || exit 1; done"
+  },
+  "devDependencies": {
+    "@informalsystems/quint": "0.33.1"
+  },
+  "description": "Quint models of the Agent Capsule delivery, messaging, lifecycle and recovery protocols",
+  "license": "MIT"
+}

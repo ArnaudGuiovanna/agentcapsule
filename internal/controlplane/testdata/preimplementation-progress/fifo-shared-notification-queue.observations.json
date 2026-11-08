@@ -1,0 +1,616 @@
+{
+  "format": "agentcapsule.conformance-observations.v1",
+  "topic": "progress",
+  "go_replay_status": "prepared_not_executed",
+  "identities": "Model integers bind to fixture UUIDs; event identities bind to request/kind. Lease counters bind to actual opaque lease tokens.",
+  "runtime_scope": "Physical observations require a runtime adapter; SQL observations alone do not establish them.",
+  "states": [
+    {
+      "index": 0,
+      "action": null,
+      "observations": {
+        "requests": [
+          {
+            "slot": 0,
+            "stage": "Vacant",
+            "result": "NoResult",
+            "durable_inbox": false,
+            "notification": "Uncreated",
+            "attempts": 0,
+            "fenced_stores": [],
+            "effect_committed": false
+          },
+          {
+            "slot": 1,
+            "stage": "Vacant",
+            "result": "NoResult",
+            "durable_inbox": false,
+            "notification": "Uncreated",
+            "attempts": 0,
+            "fenced_stores": [],
+            "effect_committed": false
+          },
+          {
+            "slot": 2,
+            "stage": "Vacant",
+            "result": "NoResult",
+            "durable_inbox": false,
+            "notification": "Uncreated",
+            "attempts": 0,
+            "fenced_stores": [],
+            "effect_committed": false
+          }
+        ],
+        "queues": {
+          "admission": [],
+          "execution": [],
+          "notification": []
+        },
+        "capacity": {
+          "running": [],
+          "available_stores": [
+            0,
+            1
+          ],
+          "worker_up": true,
+          "authority_up": true
+        },
+        "deletion": {
+          "pending": false,
+          "complete": false
+        },
+        "watched": {
+          "accepted": false,
+          "observed": false
+        }
+      }
+    },
+    {
+      "index": 1,
+      "action": {
+        "name": "arrive",
+        "args": [
+          2,
+          true
+        ]
+      },
+      "observations": {
+        "requests": [
+          {
+            "slot": 0,
+            "stage": "Vacant",
+            "result": "NoResult",
+            "durable_inbox": false,
+            "notification": "Uncreated",
+            "attempts": 0,
+            "fenced_stores": [],
+            "effect_committed": false
+          },
+          {
+            "slot": 1,
+            "stage": "Vacant",
+            "result": "NoResult",
+            "durable_inbox": false,
+            "notification": "Uncreated",
+            "attempts": 0,
+            "fenced_stores": [],
+            "effect_committed": false
+          },
+          {
+            "slot": 2,
+            "stage": "Accepted",
+            "result": "NoResult",
+            "durable_inbox": false,
+            "notification": "Uncreated",
+            "attempts": 0,
+            "fenced_stores": [],
+            "effect_committed": false
+          }
+        ],
+        "queues": {
+          "admission": [
+            2
+          ],
+          "execution": [],
+          "notification": []
+        },
+        "capacity": {
+          "running": [],
+          "available_stores": [
+            0,
+            1
+          ],
+          "worker_up": true,
+          "authority_up": true
+        },
+        "deletion": {
+          "pending": false,
+          "complete": false
+        },
+        "watched": {
+          "accepted": false,
+          "observed": false
+        }
+      }
+    },
+    {
+      "index": 2,
+      "action": {
+        "name": "admit",
+        "args": [
+          2
+        ]
+      },
+      "observations": {
+        "requests": [
+          {
+            "slot": 0,
+            "stage": "Vacant",
+            "result": "NoResult",
+            "durable_inbox": false,
+            "notification": "Uncreated",
+            "attempts": 0,
+            "fenced_stores": [],
+            "effect_committed": false
+          },
+          {
+            "slot": 1,
+            "stage": "Vacant",
+            "result": "NoResult",
+            "durable_inbox": false,
+            "notification": "Uncreated",
+            "attempts": 0,
+            "fenced_stores": [],
+            "effect_committed": false
+          },
+          {
+            "slot": 2,
+            "stage": "Executing",
+            "result": "NoResult",
+            "durable_inbox": false,
+            "notification": "Uncreated",
+            "attempts": 0,
+            "fenced_stores": [],
+            "effect_committed": false
+          }
+        ],
+        "queues": {
+          "admission": [],
+          "execution": [
+            2
+          ],
+          "notification": []
+        },
+        "capacity": {
+          "running": [
+            2
+          ],
+          "available_stores": [
+            0,
+            1
+          ],
+          "worker_up": true,
+          "authority_up": true
+        },
+        "deletion": {
+          "pending": false,
+          "complete": false
+        },
+        "watched": {
+          "accepted": false,
+          "observed": false
+        }
+      }
+    },
+    {
+      "index": 3,
+      "action": {
+        "name": "complete",
+        "args": [
+          2
+        ]
+      },
+      "observations": {
+        "requests": [
+          {
+            "slot": 0,
+            "stage": "Vacant",
+            "result": "NoResult",
+            "durable_inbox": false,
+            "notification": "Uncreated",
+            "attempts": 0,
+            "fenced_stores": [],
+            "effect_committed": false
+          },
+          {
+            "slot": 1,
+            "stage": "Vacant",
+            "result": "NoResult",
+            "durable_inbox": false,
+            "notification": "Uncreated",
+            "attempts": 0,
+            "fenced_stores": [],
+            "effect_committed": false
+          },
+          {
+            "slot": 2,
+            "stage": "Terminal",
+            "result": "Success",
+            "durable_inbox": true,
+            "notification": "Pending",
+            "attempts": 0,
+            "fenced_stores": [],
+            "effect_committed": true
+          }
+        ],
+        "queues": {
+          "admission": [],
+          "execution": [],
+          "notification": [
+            2
+          ]
+        },
+        "capacity": {
+          "running": [],
+          "available_stores": [
+            0,
+            1
+          ],
+          "worker_up": true,
+          "authority_up": true
+        },
+        "deletion": {
+          "pending": false,
+          "complete": false
+        },
+        "watched": {
+          "accepted": false,
+          "observed": false
+        }
+      }
+    },
+    {
+      "index": 4,
+      "action": {
+        "name": "arrive",
+        "args": [
+          1,
+          true
+        ]
+      },
+      "observations": {
+        "requests": [
+          {
+            "slot": 0,
+            "stage": "Vacant",
+            "result": "NoResult",
+            "durable_inbox": false,
+            "notification": "Uncreated",
+            "attempts": 0,
+            "fenced_stores": [],
+            "effect_committed": false
+          },
+          {
+            "slot": 1,
+            "stage": "Accepted",
+            "result": "NoResult",
+            "durable_inbox": false,
+            "notification": "Uncreated",
+            "attempts": 0,
+            "fenced_stores": [],
+            "effect_committed": false
+          },
+          {
+            "slot": 2,
+            "stage": "Terminal",
+            "result": "Success",
+            "durable_inbox": true,
+            "notification": "Pending",
+            "attempts": 0,
+            "fenced_stores": [],
+            "effect_committed": true
+          }
+        ],
+        "queues": {
+          "admission": [
+            1
+          ],
+          "execution": [],
+          "notification": [
+            2
+          ]
+        },
+        "capacity": {
+          "running": [],
+          "available_stores": [
+            0,
+            1
+          ],
+          "worker_up": true,
+          "authority_up": true
+        },
+        "deletion": {
+          "pending": false,
+          "complete": false
+        },
+        "watched": {
+          "accepted": false,
+          "observed": false
+        }
+      }
+    },
+    {
+      "index": 5,
+      "action": {
+        "name": "admit",
+        "args": [
+          1
+        ]
+      },
+      "observations": {
+        "requests": [
+          {
+            "slot": 0,
+            "stage": "Vacant",
+            "result": "NoResult",
+            "durable_inbox": false,
+            "notification": "Uncreated",
+            "attempts": 0,
+            "fenced_stores": [],
+            "effect_committed": false
+          },
+          {
+            "slot": 1,
+            "stage": "Executing",
+            "result": "NoResult",
+            "durable_inbox": false,
+            "notification": "Uncreated",
+            "attempts": 0,
+            "fenced_stores": [],
+            "effect_committed": false
+          },
+          {
+            "slot": 2,
+            "stage": "Terminal",
+            "result": "Success",
+            "durable_inbox": true,
+            "notification": "Pending",
+            "attempts": 0,
+            "fenced_stores": [],
+            "effect_committed": true
+          }
+        ],
+        "queues": {
+          "admission": [],
+          "execution": [
+            1
+          ],
+          "notification": [
+            2
+          ]
+        },
+        "capacity": {
+          "running": [
+            1
+          ],
+          "available_stores": [
+            0,
+            1
+          ],
+          "worker_up": true,
+          "authority_up": true
+        },
+        "deletion": {
+          "pending": false,
+          "complete": false
+        },
+        "watched": {
+          "accepted": false,
+          "observed": false
+        }
+      }
+    },
+    {
+      "index": 6,
+      "action": {
+        "name": "complete",
+        "args": [
+          1
+        ]
+      },
+      "observations": {
+        "requests": [
+          {
+            "slot": 0,
+            "stage": "Vacant",
+            "result": "NoResult",
+            "durable_inbox": false,
+            "notification": "Uncreated",
+            "attempts": 0,
+            "fenced_stores": [],
+            "effect_committed": false
+          },
+          {
+            "slot": 1,
+            "stage": "Terminal",
+            "result": "Success",
+            "durable_inbox": true,
+            "notification": "Pending",
+            "attempts": 0,
+            "fenced_stores": [],
+            "effect_committed": true
+          },
+          {
+            "slot": 2,
+            "stage": "Terminal",
+            "result": "Success",
+            "durable_inbox": true,
+            "notification": "Pending",
+            "attempts": 0,
+            "fenced_stores": [],
+            "effect_committed": true
+          }
+        ],
+        "queues": {
+          "admission": [],
+          "execution": [],
+          "notification": [
+            2,
+            1
+          ]
+        },
+        "capacity": {
+          "running": [],
+          "available_stores": [
+            0,
+            1
+          ],
+          "worker_up": true,
+          "authority_up": true
+        },
+        "deletion": {
+          "pending": false,
+          "complete": false
+        },
+        "watched": {
+          "accepted": false,
+          "observed": false
+        }
+      }
+    },
+    {
+      "index": 7,
+      "action": {
+        "name": "notify",
+        "args": [
+          2,
+          true
+        ]
+      },
+      "observations": {
+        "requests": [
+          {
+            "slot": 0,
+            "stage": "Vacant",
+            "result": "NoResult",
+            "durable_inbox": false,
+            "notification": "Uncreated",
+            "attempts": 0,
+            "fenced_stores": [],
+            "effect_committed": false
+          },
+          {
+            "slot": 1,
+            "stage": "Terminal",
+            "result": "Success",
+            "durable_inbox": true,
+            "notification": "Pending",
+            "attempts": 0,
+            "fenced_stores": [],
+            "effect_committed": true
+          },
+          {
+            "slot": 2,
+            "stage": "Terminal",
+            "result": "Success",
+            "durable_inbox": true,
+            "notification": "Acked",
+            "attempts": 1,
+            "fenced_stores": [],
+            "effect_committed": true
+          }
+        ],
+        "queues": {
+          "admission": [],
+          "execution": [],
+          "notification": [
+            1
+          ]
+        },
+        "capacity": {
+          "running": [],
+          "available_stores": [
+            0,
+            1
+          ],
+          "worker_up": true,
+          "authority_up": true
+        },
+        "deletion": {
+          "pending": false,
+          "complete": false
+        },
+        "watched": {
+          "accepted": false,
+          "observed": false
+        }
+      }
+    },
+    {
+      "index": 8,
+      "action": {
+        "name": "notify",
+        "args": [
+          1,
+          true
+        ]
+      },
+      "observations": {
+        "requests": [
+          {
+            "slot": 0,
+            "stage": "Vacant",
+            "result": "NoResult",
+            "durable_inbox": false,
+            "notification": "Uncreated",
+            "attempts": 0,
+            "fenced_stores": [],
+            "effect_committed": false
+          },
+          {
+            "slot": 1,
+            "stage": "Terminal",
+            "result": "Success",
+            "durable_inbox": true,
+            "notification": "Acked",
+            "attempts": 1,
+            "fenced_stores": [],
+            "effect_committed": true
+          },
+          {
+            "slot": 2,
+            "stage": "Terminal",
+            "result": "Success",
+            "durable_inbox": true,
+            "notification": "Acked",
+            "attempts": 1,
+            "fenced_stores": [],
+            "effect_committed": true
+          }
+        ],
+        "queues": {
+          "admission": [],
+          "execution": [],
+          "notification": []
+        },
+        "capacity": {
+          "running": [],
+          "available_stores": [
+            0,
+            1
+          ],
+          "worker_up": true,
+          "authority_up": true
+        },
+        "deletion": {
+          "pending": false,
+          "complete": false
+        },
+        "watched": {
+          "accepted": false,
+          "observed": false
+        }
+      }
+    }
+  ]
+}

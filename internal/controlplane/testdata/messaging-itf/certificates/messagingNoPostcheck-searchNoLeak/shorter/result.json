@@ -1,0 +1,35 @@
+{
+  "module": "messagingNoPostcheck",
+  "property": "searchNoLeak",
+  "steps": 3,
+  "expected": "ok",
+  "started": "2026-11-06T11:09:13.216554+00:00",
+  "command": [
+    "npm",
+    "exec",
+    "--no",
+    "--",
+    "quint",
+    "verify",
+    "sources/messaging.qnt",
+    "--main=messagingNoPostcheck",
+    "--max-steps=3",
+    "--verbosity=3",
+    "--out-itf=replayed.itf.json",
+    "--invariant=searchNoLeak"
+  ],
+  "source_sha256": {
+    "messaging.qnt": "d7717557e042e4d6e834337abcc8c5286b7e216ccf0c6c93d983a5e3eed4a2bd"
+  },
+  "heap": "4g",
+  "timeout_seconds": 1200,
+  "status": "ok",
+  "returncode": 0,
+  "seconds": 34.975,
+  "passed": true,
+  "trace_steps": null,
+  "working_directory": "quint/evidence/2026-11-06/mutants/messagingNoPostcheck-searchNoLeak-5/shorter",
+  "environment": {
+    "JVM_ARGS": "-Xmx4g"
+  }
+}

@@ -1,0 +1,469 @@
+{
+  "source_sha256": "598aa585083513b21fb4a64b271b26eb13d5d37f493be17412a40ecbba75b1db",
+  "scope": "Three deterministic shared-state protocol schedules, not exhaustive Go refinement. SQL platform admission and commit are separated by a real held transaction. SQL placement/caller generation, request/mailbox/lease/authorization, local committed effects/inbox/fences and deletion ACKs are compared. Physical host and TLS contracts are outside this adapter.",
+  "cases": [
+    {
+      "name": "reply-committed-ack-lost-delete",
+      "trace": "reply-committed-ack-lost-delete.itf.json",
+      "actions": [
+        {
+          "name": "cacheCaller",
+          "args": [
+            "a"
+          ]
+        },
+        {
+          "name": "admitSubmit",
+          "args": [
+            "a"
+          ]
+        },
+        {
+          "name": "submit",
+          "args": [
+            "a"
+          ]
+        },
+        {
+          "name": "claim",
+          "args": [
+            "w1",
+            0
+          ]
+        },
+        {
+          "name": "authorize",
+          "args": [
+            "w1"
+          ]
+        },
+        {
+          "name": "beginEffect",
+          "args": [
+            "w1"
+          ]
+        },
+        {
+          "name": "commitEffect",
+          "args": [
+            "w1"
+          ]
+        },
+        {
+          "name": "acknowledge",
+          "args": [
+            "w1"
+          ]
+        },
+        {
+          "name": "cacheCaller",
+          "args": [
+            "b"
+          ]
+        },
+        {
+          "name": "admitReply",
+          "args": []
+        },
+        {
+          "name": "reply",
+          "args": []
+        },
+        {
+          "name": "claim",
+          "args": [
+            "w1",
+            1
+          ]
+        },
+        {
+          "name": "authorize",
+          "args": [
+            "w1"
+          ]
+        },
+        {
+          "name": "beginEffect",
+          "args": [
+            "w1"
+          ]
+        },
+        {
+          "name": "commitEffect",
+          "args": [
+            "w1"
+          ]
+        },
+        {
+          "name": "loseRPC",
+          "args": [
+            "w1"
+          ]
+        },
+        {
+          "name": "requestDelete",
+          "args": []
+        },
+        {
+          "name": "fenceStore",
+          "args": [
+            "a",
+            "agent/b"
+          ]
+        },
+        {
+          "name": "recordFence",
+          "args": [
+            "a",
+            "agent/b"
+          ]
+        },
+        {
+          "name": "fenceStore",
+          "args": [
+            "b",
+            "agent/b"
+          ]
+        },
+        {
+          "name": "recordFence",
+          "args": [
+            "b",
+            "agent/b"
+          ]
+        },
+        {
+          "name": "fenceStore",
+          "args": [
+            "c",
+            "agent/b"
+          ]
+        },
+        {
+          "name": "recordFence",
+          "args": [
+            "c",
+            "agent/b"
+          ]
+        },
+        {
+          "name": "commitDelete",
+          "args": []
+        },
+        {
+          "name": "claim",
+          "args": [
+            "w1",
+            2
+          ]
+        },
+        {
+          "name": "authorize",
+          "args": [
+            "w1"
+          ]
+        },
+        {
+          "name": "beginEffect",
+          "args": [
+            "w1"
+          ]
+        },
+        {
+          "name": "commitEffect",
+          "args": [
+            "w1"
+          ]
+        },
+        {
+          "name": "acknowledge",
+          "args": [
+            "w1"
+          ]
+        }
+      ],
+      "driver": "reply-committed-ack-lost-delete.qnt",
+      "sha256": "3e3fa54a0fdabc813ce20f3ae482025d9c7710e29bf7091b6b9ea71586f1c0a2",
+      "driver_sha256": "75f5824c0d9c9b9e278bf86acdd7b2b1779229930b5b25b938e74ac52e587579",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "internal/controlplane/testdata/protocol-itf/reply-committed-ack-lost-delete.qnt",
+        "--main=protocolTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=safety",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=29",
+        "--out-itf=internal/controlplane/testdata/protocol-itf/reply-committed-ack-lost-delete.itf.json",
+        "--verbosity=1"
+      ]
+    },
+    {
+      "name": "transaction-crosses-quiescing",
+      "trace": "transaction-crosses-quiescing.itf.json",
+      "actions": [
+        {
+          "name": "cacheCaller",
+          "args": [
+            "a"
+          ]
+        },
+        {
+          "name": "admitSubmit",
+          "args": [
+            "a"
+          ]
+        },
+        {
+          "name": "submit",
+          "args": [
+            "a"
+          ]
+        },
+        {
+          "name": "claim",
+          "args": [
+            "w1",
+            0
+          ]
+        },
+        {
+          "name": "authorize",
+          "args": [
+            "w1"
+          ]
+        },
+        {
+          "name": "beginEffect",
+          "args": [
+            "w1"
+          ]
+        },
+        {
+          "name": "requestDelete",
+          "args": []
+        },
+        {
+          "name": "commitEffect",
+          "args": [
+            "w1"
+          ]
+        },
+        {
+          "name": "loseRPC",
+          "args": [
+            "w1"
+          ]
+        },
+        {
+          "name": "fenceStore",
+          "args": [
+            "a",
+            "agent/b"
+          ]
+        },
+        {
+          "name": "recordFence",
+          "args": [
+            "a",
+            "agent/b"
+          ]
+        },
+        {
+          "name": "fenceStore",
+          "args": [
+            "b",
+            "agent/b"
+          ]
+        },
+        {
+          "name": "recordFence",
+          "args": [
+            "b",
+            "agent/b"
+          ]
+        },
+        {
+          "name": "fenceStore",
+          "args": [
+            "c",
+            "agent/b"
+          ]
+        },
+        {
+          "name": "recordFence",
+          "args": [
+            "c",
+            "agent/b"
+          ]
+        },
+        {
+          "name": "commitDelete",
+          "args": []
+        },
+        {
+          "name": "claim",
+          "args": [
+            "w1",
+            2
+          ]
+        },
+        {
+          "name": "authorize",
+          "args": [
+            "w1"
+          ]
+        },
+        {
+          "name": "beginEffect",
+          "args": [
+            "w1"
+          ]
+        },
+        {
+          "name": "commitEffect",
+          "args": [
+            "w1"
+          ]
+        },
+        {
+          "name": "acknowledge",
+          "args": [
+            "w1"
+          ]
+        }
+      ],
+      "driver": "transaction-crosses-quiescing.qnt",
+      "sha256": "bd112d13e1e9c6821af11f95e4443085f6ea5ad342b9b1f24a5e758652f6ad87",
+      "driver_sha256": "b9be5b7002e5d82db368f06b446d57650ab2f6f66a53c318b07df7683899a3a6",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "internal/controlplane/testdata/protocol-itf/transaction-crosses-quiescing.qnt",
+        "--main=protocolTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=safety",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=21",
+        "--out-itf=internal/controlplane/testdata/protocol-itf/transaction-crosses-quiescing.itf.json",
+        "--verbosity=1"
+      ]
+    },
+    {
+      "name": "expired-lease-retry",
+      "trace": "expired-lease-retry.itf.json",
+      "actions": [
+        {
+          "name": "cacheCaller",
+          "args": [
+            "a"
+          ]
+        },
+        {
+          "name": "admitSubmit",
+          "args": [
+            "a"
+          ]
+        },
+        {
+          "name": "submit",
+          "args": [
+            "a"
+          ]
+        },
+        {
+          "name": "claim",
+          "args": [
+            "w1",
+            0
+          ]
+        },
+        {
+          "name": "authorize",
+          "args": [
+            "w1"
+          ]
+        },
+        {
+          "name": "beginEffect",
+          "args": [
+            "w1"
+          ]
+        },
+        {
+          "name": "commitEffect",
+          "args": [
+            "w1"
+          ]
+        },
+        {
+          "name": "expireLease",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "loseRPC",
+          "args": [
+            "w1"
+          ]
+        },
+        {
+          "name": "claim",
+          "args": [
+            "w1",
+            0
+          ]
+        },
+        {
+          "name": "authorize",
+          "args": [
+            "w1"
+          ]
+        },
+        {
+          "name": "beginEffect",
+          "args": [
+            "w1"
+          ]
+        },
+        {
+          "name": "commitEffect",
+          "args": [
+            "w1"
+          ]
+        },
+        {
+          "name": "acknowledge",
+          "args": [
+            "w1"
+          ]
+        }
+      ],
+      "driver": "expired-lease-retry.qnt",
+      "sha256": "917eb6c5cd9e833c812b194a00d0db1f246f6c6e2a7ed26130f815c5ef383742",
+      "driver_sha256": "bdb2ee2bf050284734130f2531e2cba7706b42c1130f19ac72580b3337f0df6a",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "internal/controlplane/testdata/protocol-itf/expired-lease-retry.qnt",
+        "--main=protocolTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=safety",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=14",
+        "--out-itf=internal/controlplane/testdata/protocol-itf/expired-lease-retry.itf.json",
+        "--verbosity=1"
+      ]
+    }
+  ]
+}

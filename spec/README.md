@@ -1,0 +1,55 @@
+# Formal models
+
+These [Quint](https://github.com/informalsystems/quint) models specify the
+protocols whose failures would be hardest to see in tests: event delivery and
+idempotency, inter-agent messaging, VM lifecycle and fencing, revocation across
+stores, restore authority, and deferred invocation results. Each model states
+its invariants explicitly and most include "broken" instances that disable one
+mechanism and must produce a counterexample.
+
+The models are design documentation, not a proof of the Go code. The link to
+the code is made by conformance tests: traces generated from some models are
+replayed against the real implementation and PostgreSQL in
+`internal/controlplane/*_itf_test.go`, with the traces checked in under
+`internal/controlplane/testdata/`. Section numbers (`§6.3`, …) in model headers
+refer to the original design specification, which is not published.
+
+## Running
+
+Quint 0.33.1 is pinned in `package.json`:
+
+```bash
+cd spec
+npm ci
+npx quint typecheck delivery.qnt
+npx quint run --main=invocationCompletion --init=init --step=step \
+  --invariant=safety --max-steps=12 --max-samples=20000 invocation_completion.qnt
+# Bounded model checking needs a Java runtime for Apalache:
+npx quint verify --main=invocationCompletion --init=init --step=step \
+  --invariant=safety --max-steps=10 invocation_completion.qnt
+```
+
+`npm run typecheck` checks every model; CI runs it on each change.
+
+## Models
+
+| Model | What it covers |
+|---|---|
+| `delivery.qnt` | Per-agent event queue: at-least-once delivery, FIFO, dead letters, API idempotency keys |
+| `leased_delivery.qnt` | Delivery with expiring leases, delayed RPCs from two workers, retirement fences |
+| `outbox.qnt` | Request + outbox + idempotent response written in one PostgreSQL transaction |
+| `durability.qnt` | Local transactional effects: commit, flush, ACK and recovery |
+| `fencing.qnt` | One harness database serializing local effects and revocation |
+| `messaging.qnt` | Inter-agent requests: consent, mandates, single final state, directory visibility |
+| `lifecycle.qnt` | VM lifecycle on the worker: exclusive lease, generations, crash, reconciliation, admission |
+| `fair_admission.qnt` | Fairness of the host admission queue |
+| `barrier_capacity.qnt` | Store barriers competing for VM capacity |
+| `composition.qnt`, `protocol_composition.qnt` | Deletion, requests and delivery composed over shared state |
+| `concurrent_protocol.qnt` (+ `_bounded`, `_focused`, `_loaded`, `_witness`, `_test`) | Concurrent SQL coordination with delayed RPCs; bounded and witness variants for TLC |
+| `revocation.qnt` (+ `_test`) | Deletion barrier for one subject across several stores |
+| `store_seal.qnt`, `store_enrollment.qnt` | Permanent store seal; restoration blocking new work before retiring a store |
+| `restore_authority.qnt` (+ `_test`, `_witness`) | External restore authority and outcome records |
+| `credential_renewal.qnt` | Credential replacement of a live boot |
+| `service_progress.qnt` (+ `_controls`, `_test`) | Progress of observation and notification slots |
+| `invocation_completion.qnt` | Deferred results: an agent acknowledges "working" and posts one outcome; expiry, cancellation and deletion race to exactly one outcome |
+| `bounded.qnt`, `induction.qnt`, `protocol_induction.qnt`, `liveness.qnt` | Depth-bounded wrappers, inductive invariants and temporal checks over the original relations |

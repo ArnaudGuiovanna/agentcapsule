@@ -1,0 +1,100 @@
+//go:build linux
+
+package runtime
+
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"syscall"
+)
+
+type VMResources struct {
+	VCPUs     int `json:"vcpus"`
+	MemoryMiB int `json:"memory_mib"`
+	VolumeMiB int `json:"volume_mib"`
+}
+
+func (r VMResources) valid() bool {
+	return r.VCPUs >= 1 && r.VCPUs <= 8 && r.MemoryMiB >= 128 && r.MemoryMiB <= 8192 && r.VolumeMiB >= 64 && r.VolumeMiB <= 32768
+}
+func (a *HostAgent) resources() VMResources {
+	if a.Resources == (VMResources{}) {
+		return VMResources{VCPUs: 1, MemoryMiB: 256}
+	}
+	return a.Resources
+}
+
+type ProvisionedAgent struct {
+	ID, Volume    string
+	Device, Inode uint64
+	Resources     VMResources
+}
+
+// RegisterProvisioned binds an already published encrypted container. Retrying
+// accepts only the exact original inode, size and immutable resources. UIDs of
+// retired/sealed agents remain reserved. The operator must dedicate the entire
+// UID range to this runtime root; it is never supplied by an API caller.
+func (h *FirecrackerHost) RegisterProvisioned(ctx context.Context, in ProvisionedAgent, firstUID, lastUID uint32) error {
+	if in.ID == "" || in.Inode == 0 || !in.Resources.valid() || firstUID < 10000 || lastUID < firstUID || lastUID == ^uint32(0) || lastUID-firstUID > 1<<20 {
+		return errors.New("invalid provisioning registration")
+	}
+	return h.locked(ctx, func(r *hostRegistry) error {
+		path, err := filepath.Abs(in.Volume)
+		if err != nil {
+			return err
+		}
+		real, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return err
+		}
+		if real != path || filepath.Dir(path) != filepath.Join(h.root, "volumes") {
+			return errors.New("volume outside managed directory")
+		}
+		f, err := os.OpenFile(path, os.O_RDWR|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		st, err := f.Stat()
+		if err != nil {
+			return err
+		}
+		s := st.Sys().(*syscall.Stat_t)
+		if !st.Mode().IsRegular() || st.Mode().Perm() != 0600 || st.Size() != int64(in.Resources.VolumeMiB)<<20 || s.Ino != in.Inode || uint64(s.Dev) != in.Device {
+			return errors.New("provisioned volume binding changed")
+		}
+		if a := r.Agents[in.ID]; a != nil {
+			if a.Fenced || a.SealID != "" {
+				return ErrHostFenced
+			}
+			if a.Volume != path || a.Device != in.Device || a.Inode != in.Inode || a.Resources != in.Resources || a.UID < firstUID || a.UID > lastUID || s.Uid != a.UID || s.Gid != a.UID {
+				return errors.New("provisioned registration is immutable")
+			}
+			return nil
+		}
+		used := map[uint32]bool{}
+		for _, a := range r.Agents {
+			if a.Device == in.Device && a.Inode == in.Inode {
+				return errors.New("volume inode already assigned")
+			}
+			used[a.UID] = true
+		}
+		uid := firstUID
+		for used[uid] && uid < lastUID {
+			uid++
+		}
+		if used[uid] {
+			return errors.New("dedicated UID range exhausted")
+		}
+		if err = f.Chown(int(uid), int(uid)); err != nil {
+			return err
+		}
+		if err = f.Sync(); err != nil {
+			return err
+		}
+		r.Agents[in.ID] = &HostAgent{ID: in.ID, UID: uid, Volume: path, Device: in.Device, Inode: in.Inode, Resources: in.Resources}
+		return h.save(r)
+	})
+}

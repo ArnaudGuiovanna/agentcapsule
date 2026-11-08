@@ -1,0 +1,6 @@
+# Installed migration checksums must be identical in Linux and Windows clones.
+internal/controlplane/schema.sql text eol=lf
+internal/controlplane/migrations/*.sql text eol=lf
+
+# Published evidence is byte-addressed by its manifests; never normalize it.
+quint/evidence/** -text

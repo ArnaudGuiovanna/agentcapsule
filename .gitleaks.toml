@@ -1,0 +1,7 @@
+# Secret scanning configuration (https://github.com/gitleaks/gitleaks).
+# The default ruleset applies. Fake credentials in tests are allowed line by line
+# with a `gitleaks:allow` comment, never by excluding whole directories.
+title = "Agent Capsule"
+
+[extend]
+useDefault = true

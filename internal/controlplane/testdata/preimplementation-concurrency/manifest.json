@@ -1,0 +1,3656 @@
+{
+  "format": "agentcapsule.preimplementation.itf.v1",
+  "status": "passed",
+  "scope": "Directed schedules; every state checked against model safety. Not exhaustive checking or Go replay.",
+  "go_replay_status": "prepared_not_executed",
+  "model_sha256": "08124510dc3d7576a87d9184fb021092f2f4be6037ed2be7839b04269d95bf9b",
+  "cases": [
+    {
+      "name": "delete-shared-recipient-four-requests",
+      "manual": false,
+      "actions": [
+        {
+          "name": "receive",
+          "args": [
+            0,
+            0,
+            {
+              "variant": "SubmitCall"
+            },
+            0
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "commitCall",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "receive",
+          "args": [
+            0,
+            1,
+            {
+              "variant": "SubmitCall"
+            },
+            2
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "commitCall",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "receive",
+          "args": [
+            0,
+            2,
+            {
+              "variant": "SubmitCall"
+            },
+            2
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "commitCall",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "receive",
+          "args": [
+            0,
+            3,
+            {
+              "variant": "SubmitCall"
+            },
+            0
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "commitCall",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "claim",
+          "args": [
+            0,
+            {
+              "tuple": [
+                0,
+                0
+              ]
+            }
+          ]
+        },
+        {
+          "name": "authorize",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "beginEffect",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "claim",
+          "args": [
+            1,
+            {
+              "tuple": [
+                2,
+                0
+              ]
+            }
+          ]
+        },
+        {
+          "name": "authorize",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "beginEffect",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "requestDelete",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "commitEffect",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "acknowledge",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "commitEffect",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "acknowledge",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "fenceStore",
+          "args": [
+            0,
+            {
+              "variant": "AgentSubject",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "name": "recordFence",
+          "args": [
+            0,
+            {
+              "variant": "AgentSubject",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "name": "fenceStore",
+          "args": [
+            1,
+            {
+              "variant": "AgentSubject",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "name": "recordFence",
+          "args": [
+            1,
+            {
+              "variant": "AgentSubject",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "name": "fenceStore",
+          "args": [
+            2,
+            {
+              "variant": "AgentSubject",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "name": "recordFence",
+          "args": [
+            2,
+            {
+              "variant": "AgentSubject",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "name": "commitDelete",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "claim",
+          "args": [
+            0,
+            {
+              "tuple": [
+                0,
+                2
+              ]
+            }
+          ]
+        },
+        {
+          "name": "authorize",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "beginEffect",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "commitEffect",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "acknowledge",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "receive",
+          "args": [
+            0,
+            2,
+            {
+              "variant": "ReplyCall"
+            },
+            0
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "commitCall",
+          "args": [
+            0
+          ]
+        }
+      ],
+      "target": "s.requests.get(0).phase == Canceled and s.requests.get(1).phase == Canceled and s.requests.get(2).phase == Replied and s.requests.get(3).phase == Delivering and s.requests.get(0).notified",
+      "contracts": [
+        "T02",
+        "T03",
+        "T06",
+        "T07",
+        "T09",
+        "T10",
+        "T11"
+      ],
+      "trace": "delete-shared-recipient-four-requests.itf.json",
+      "trace_sha256": "e9f43c9d4a5776b3524e50de0e139547bb41725d575bb95733db06d9b6c10a54",
+      "driver": "delete-shared-recipient-four-requests.qnt",
+      "driver_sha256": "cc985745ddfaf00c365513e0aab270930ce282e1bded269ef368f39937e1fc8b",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "quint/evidence/2026-11-06/preimplementation-concurrency-traces/delete-shared-recipient-four-requests.qnt",
+        "--main=preparedTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=checked",
+        "--witnesses=reached",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=38",
+        "--out-itf=quint/evidence/2026-11-06/preimplementation-concurrency-traces/delete-shared-recipient-four-requests.itf.json",
+        "--verbosity=1"
+      ],
+      "rejection_command": null,
+      "observations": "delete-shared-recipient-four-requests.observations.json",
+      "observations_sha256": "d7276c44c94c3e88f0325d2644b93040ca163120d84961b9f7803e20a110c767",
+      "states": 39,
+      "covered": [
+        "acknowledge",
+        "admit",
+        "authorize",
+        "beginEffect",
+        "claim",
+        "commitCall",
+        "commitDelete",
+        "commitEffect",
+        "fenceStore",
+        "receive",
+        "recordFence",
+        "requestDelete"
+      ]
+    },
+    {
+      "name": "expiration-preserves-neighbor-request",
+      "manual": false,
+      "actions": [
+        {
+          "name": "receive",
+          "args": [
+            0,
+            0,
+            {
+              "variant": "SubmitCall"
+            },
+            0
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "commitCall",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "receive",
+          "args": [
+            0,
+            1,
+            {
+              "variant": "SubmitCall"
+            },
+            2
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "commitCall",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "closeRequest",
+          "args": [
+            0,
+            {
+              "variant": "ExpireRequest"
+            }
+          ]
+        },
+        {
+          "name": "fenceStore",
+          "args": [
+            0,
+            {
+              "variant": "RequestSubject",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "name": "recordFence",
+          "args": [
+            0,
+            {
+              "variant": "RequestSubject",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "name": "fenceStore",
+          "args": [
+            1,
+            {
+              "variant": "RequestSubject",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "name": "recordFence",
+          "args": [
+            1,
+            {
+              "variant": "RequestSubject",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "name": "fenceStore",
+          "args": [
+            2,
+            {
+              "variant": "RequestSubject",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "name": "recordFence",
+          "args": [
+            2,
+            {
+              "variant": "RequestSubject",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "name": "commitClose",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "claim",
+          "args": [
+            0,
+            {
+              "tuple": [
+                1,
+                0
+              ]
+            }
+          ]
+        },
+        {
+          "name": "authorize",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "beginEffect",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "commitEffect",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "acknowledge",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "claim",
+          "args": [
+            0,
+            {
+              "tuple": [
+                0,
+                2
+              ]
+            }
+          ]
+        },
+        {
+          "name": "authorize",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "beginEffect",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "commitEffect",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "acknowledge",
+          "args": [
+            0
+          ]
+        }
+      ],
+      "target": "s.requests.get(0).phase == Expired and s.requests.get(1).phase == Processing and s.requests.get(0).notified",
+      "contracts": [
+        "T09",
+        "T10",
+        "T11"
+      ],
+      "trace": "expiration-preserves-neighbor-request.itf.json",
+      "trace_sha256": "55b940481bb9f295e52899eecc535e60b568bde675c537d3ad73e4c0b91b0987",
+      "driver": "expiration-preserves-neighbor-request.qnt",
+      "driver_sha256": "5352847f097b2f1e4503aaba1f760c886f385d1a3f312329d47301f4670a4e04",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "quint/evidence/2026-11-06/preimplementation-concurrency-traces/expiration-preserves-neighbor-request.qnt",
+        "--main=preparedTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=checked",
+        "--witnesses=reached",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=24",
+        "--out-itf=quint/evidence/2026-11-06/preimplementation-concurrency-traces/expiration-preserves-neighbor-request.itf.json",
+        "--verbosity=1"
+      ],
+      "rejection_command": null,
+      "observations": "expiration-preserves-neighbor-request.observations.json",
+      "observations_sha256": "cb46c803afaad1b3cf59515600d5519221e40408be0d2d14d28ac25da63da5b7",
+      "states": 25,
+      "covered": [
+        "acknowledge",
+        "admit",
+        "authorize",
+        "beginEffect",
+        "claim",
+        "closeRequest",
+        "commitCall",
+        "commitClose",
+        "commitEffect",
+        "fenceStore",
+        "receive",
+        "recordFence"
+      ]
+    },
+    {
+      "name": "shared-mandate-two-admissions",
+      "manual": false,
+      "actions": [
+        {
+          "name": "receive",
+          "args": [
+            0,
+            0,
+            {
+              "variant": "SubmitCall"
+            },
+            0
+          ]
+        },
+        {
+          "name": "receive",
+          "args": [
+            1,
+            3,
+            {
+              "variant": "SubmitCall"
+            },
+            0
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "commitCall",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "commitCall",
+          "args": [
+            1
+          ]
+        }
+      ],
+      "target": "s.mandates.get(0).remaining == 0 and s.requests.get(0).accepted and s.requests.get(3).accepted",
+      "contracts": [
+        "T01",
+        "T02",
+        "T03"
+      ],
+      "trace": "shared-mandate-two-admissions.itf.json",
+      "trace_sha256": "3c08af4cad2e2369633798507b9e49403cba6642ee4cf6dbf83cf0047b00ba14",
+      "driver": "shared-mandate-two-admissions.qnt",
+      "driver_sha256": "1b395de55d6cf4821ba1a61ddaf258503e48e5f292d784abd3fa55abd0471640",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "quint/evidence/2026-11-06/preimplementation-concurrency-traces/shared-mandate-two-admissions.qnt",
+        "--main=preparedTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=checked",
+        "--witnesses=reached",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=6",
+        "--out-itf=quint/evidence/2026-11-06/preimplementation-concurrency-traces/shared-mandate-two-admissions.itf.json",
+        "--verbosity=1"
+      ],
+      "rejection_command": null,
+      "observations": "shared-mandate-two-admissions.observations.json",
+      "observations_sha256": "ef65b0a466f69b2058a682c13aa4cc7b2104924f3438b1debfd80e7ad3470811",
+      "states": 7,
+      "covered": [
+        "admit",
+        "commitCall",
+        "receive"
+      ]
+    },
+    {
+      "name": "mandate-expires-before-commit",
+      "manual": false,
+      "actions": [
+        {
+          "name": "receive",
+          "args": [
+            0,
+            0,
+            {
+              "variant": "SubmitCall"
+            },
+            0
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "expireMandate",
+          "args": [
+            0
+          ]
+        }
+      ],
+      "target": "s.requests.get(0).phase == AbsentRequest and s.mandates.get(0).remaining == 2 and not(s.mandates.get(0).valid)",
+      "refused_actions": [
+        {
+          "action": {
+            "name": "commitCall",
+            "args": [
+              0
+            ]
+          },
+          "go_outcome": "ErrMandate; transaction rolled back"
+        }
+      ],
+      "contracts": [
+        "T02",
+        "T03"
+      ],
+      "trace": "mandate-expires-before-commit.itf.json",
+      "trace_sha256": "04e28c5e3070fd438bb3e8aaf3bf8718f31c3a29b873f07e5a52a66291bc63dc",
+      "driver": "mandate-expires-before-commit.qnt",
+      "driver_sha256": "db4d75eee982f8ad68315699fbfb01cca67e9d64ee8140594ffba3d25ff9408f",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "quint/evidence/2026-11-06/preimplementation-concurrency-traces/mandate-expires-before-commit.qnt",
+        "--main=preparedTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=checked",
+        "--witnesses=reached",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=3",
+        "--out-itf=quint/evidence/2026-11-06/preimplementation-concurrency-traces/mandate-expires-before-commit.itf.json",
+        "--verbosity=1"
+      ],
+      "rejection_command": [
+        "node_modules/.bin/quint",
+        "test",
+        "quint/evidence/2026-11-06/preimplementation-concurrency-traces/mandate-expires-before-commit.qnt",
+        "--main=preparedTrace",
+        "--backend=rust",
+        "--max-samples=1",
+        "--seed=0x2a",
+        "--verbosity=1"
+      ],
+      "observations": "mandate-expires-before-commit.observations.json",
+      "observations_sha256": "011591d7e6d329a881f0633b357ed7feaf50c556e116247ec7e187a3a4733c9a",
+      "states": 4,
+      "covered": [
+        "admit",
+        "expireMandate",
+        "receive"
+      ]
+    },
+    {
+      "name": "aborted-admission-releases-locks",
+      "manual": false,
+      "actions": [
+        {
+          "name": "receive",
+          "args": [
+            0,
+            0,
+            {
+              "variant": "SubmitCall"
+            },
+            0
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "abortCall",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "requestDelete",
+          "args": [
+            0
+          ]
+        }
+      ],
+      "target": "s.requests.get(0).phase == AbsentRequest and s.agents.get(0).phase == Quiescing",
+      "contracts": [
+        "T02",
+        "T09"
+      ],
+      "trace": "aborted-admission-releases-locks.itf.json",
+      "trace_sha256": "2e985c63825f364cec369177dfd825bc5b223e26efedb38c9b3d346ae1a0ff32",
+      "driver": "aborted-admission-releases-locks.qnt",
+      "driver_sha256": "877e600811ef2a160399313e25b28bfe0f5a8d42fe9518a0ba970c008ed0b817",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "quint/evidence/2026-11-06/preimplementation-concurrency-traces/aborted-admission-releases-locks.qnt",
+        "--main=preparedTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=checked",
+        "--witnesses=reached",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=4",
+        "--out-itf=quint/evidence/2026-11-06/preimplementation-concurrency-traces/aborted-admission-releases-locks.itf.json",
+        "--verbosity=1"
+      ],
+      "rejection_command": null,
+      "observations": "aborted-admission-releases-locks.observations.json",
+      "observations_sha256": "f2e8559f71df8cce21e3604ded0761bd4d56d9909bdcefa1342e13f42087c395",
+      "states": 5,
+      "covered": [
+        "abortCall",
+        "admit",
+        "receive",
+        "requestDelete"
+      ]
+    },
+    {
+      "name": "shared-agents-block-second-admission",
+      "manual": false,
+      "actions": [
+        {
+          "name": "receive",
+          "args": [
+            0,
+            0,
+            {
+              "variant": "SubmitCall"
+            },
+            0
+          ]
+        },
+        {
+          "name": "receive",
+          "args": [
+            1,
+            3,
+            {
+              "variant": "SubmitCall"
+            },
+            0
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            0
+          ]
+        }
+      ],
+      "target": "s.calls.get(0).phase == AdmittedCall and s.calls.get(1).phase == ReceivedCall",
+      "refused_actions": [
+        {
+          "action": {
+            "name": "admit",
+            "args": [
+              1
+            ]
+          },
+          "go_outcome": "waits on held SQL locks; no business mutation before release"
+        }
+      ],
+      "contracts": [
+        "T02",
+        "T03"
+      ],
+      "trace": "shared-agents-block-second-admission.itf.json",
+      "trace_sha256": "02b06caffd2f23b234c1b191ff833029d5edf112389fd7b99235bfa46fad06cd",
+      "driver": "shared-agents-block-second-admission.qnt",
+      "driver_sha256": "ed2938c1a7bbc58931d334502c66174912b947d2dbfa8e0bb2276c4e2671d8ad",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "quint/evidence/2026-11-06/preimplementation-concurrency-traces/shared-agents-block-second-admission.qnt",
+        "--main=preparedTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=checked",
+        "--witnesses=reached",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=3",
+        "--out-itf=quint/evidence/2026-11-06/preimplementation-concurrency-traces/shared-agents-block-second-admission.itf.json",
+        "--verbosity=1"
+      ],
+      "rejection_command": [
+        "node_modules/.bin/quint",
+        "test",
+        "quint/evidence/2026-11-06/preimplementation-concurrency-traces/shared-agents-block-second-admission.qnt",
+        "--main=preparedTrace",
+        "--backend=rust",
+        "--max-samples=1",
+        "--seed=0x2a",
+        "--verbosity=1"
+      ],
+      "observations": "shared-agents-block-second-admission.observations.json",
+      "observations_sha256": "0fd86c244c6054ada5cf7be4ebd914da45512c7888d6253efc940d4cf87948be",
+      "states": 4,
+      "covered": [
+        "admit",
+        "receive"
+      ]
+    },
+    {
+      "name": "fifo-uses-commit-order",
+      "manual": false,
+      "actions": [
+        {
+          "name": "receive",
+          "args": [
+            0,
+            1,
+            {
+              "variant": "SubmitCall"
+            },
+            2
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "commitCall",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "receive",
+          "args": [
+            0,
+            0,
+            {
+              "variant": "SubmitCall"
+            },
+            0
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "commitCall",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "claim",
+          "args": [
+            0,
+            {
+              "tuple": [
+                1,
+                0
+              ]
+            }
+          ]
+        },
+        {
+          "name": "authorize",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "beginEffect",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "commitEffect",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "acknowledge",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "claim",
+          "args": [
+            0,
+            {
+              "tuple": [
+                0,
+                0
+              ]
+            }
+          ]
+        },
+        {
+          "name": "authorize",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "beginEffect",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "commitEffect",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "acknowledge",
+          "args": [
+            0
+          ]
+        }
+      ],
+      "target": "s.effects.get((0,0)) == 1 and s.effects.get((1,0)) == 1",
+      "contracts": [
+        "T03",
+        "T04",
+        "T08"
+      ],
+      "trace": "fifo-uses-commit-order.itf.json",
+      "trace_sha256": "47c27211bfe60dde255df26e171777ef73e49a857b4186853182b31476f9b82d",
+      "driver": "fifo-uses-commit-order.qnt",
+      "driver_sha256": "522a3efd33bc95515d0b23d648da0d287f47f74b0323ba2505a66ee49cb37972",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "quint/evidence/2026-11-06/preimplementation-concurrency-traces/fifo-uses-commit-order.qnt",
+        "--main=preparedTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=checked",
+        "--witnesses=reached",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=16",
+        "--out-itf=quint/evidence/2026-11-06/preimplementation-concurrency-traces/fifo-uses-commit-order.itf.json",
+        "--verbosity=1"
+      ],
+      "rejection_command": null,
+      "observations": "fifo-uses-commit-order.observations.json",
+      "observations_sha256": "d4228d65889a70f3c81b1e34a86d44d89e2ad99ba86937e73c3481f93fd98f3e",
+      "states": 17,
+      "covered": [
+        "acknowledge",
+        "admit",
+        "authorize",
+        "beginEffect",
+        "claim",
+        "commitCall",
+        "commitEffect",
+        "receive"
+      ]
+    },
+    {
+      "name": "lost-ack-competing-lease",
+      "manual": false,
+      "actions": [
+        {
+          "name": "receive",
+          "args": [
+            0,
+            0,
+            {
+              "variant": "SubmitCall"
+            },
+            0
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "commitCall",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "claim",
+          "args": [
+            0,
+            {
+              "tuple": [
+                0,
+                0
+              ]
+            }
+          ]
+        },
+        {
+          "name": "authorize",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "beginEffect",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "commitEffect",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "expireLease",
+          "args": [
+            {
+              "tuple": [
+                0,
+                0
+              ]
+            }
+          ]
+        },
+        {
+          "name": "claim",
+          "args": [
+            1,
+            {
+              "tuple": [
+                0,
+                0
+              ]
+            }
+          ]
+        },
+        {
+          "name": "authorize",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "beginEffect",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "commitEffect",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "acknowledge",
+          "args": [
+            1
+          ]
+        }
+      ],
+      "target": "s.effects.get((0,0)) == 1 and s.rpc.get(0).phase == AckRPC and s.requests.get(0).phase == Processing",
+      "contracts": [
+        "T04",
+        "T05",
+        "T07",
+        "T08"
+      ],
+      "trace": "lost-ack-competing-lease.itf.json",
+      "trace_sha256": "cff743b78f7a543586a537ab9d5bc54fe357f2c21c036ee9a2fd3bc39cc8c75b",
+      "driver": "lost-ack-competing-lease.qnt",
+      "driver_sha256": "508ac53a77e114c1583b8313415c91c6cfac86dbdb4af126a61d158b62b42e3b",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "quint/evidence/2026-11-06/preimplementation-concurrency-traces/lost-ack-competing-lease.qnt",
+        "--main=preparedTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=checked",
+        "--witnesses=reached",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=13",
+        "--out-itf=quint/evidence/2026-11-06/preimplementation-concurrency-traces/lost-ack-competing-lease.itf.json",
+        "--verbosity=1"
+      ],
+      "rejection_command": null,
+      "observations": "lost-ack-competing-lease.observations.json",
+      "observations_sha256": "1ab49aca14f1fe93bb17ab9dadf33e84675900dce478ea0c8c4d699b3e1df870",
+      "states": 14,
+      "covered": [
+        "acknowledge",
+        "admit",
+        "authorize",
+        "beginEffect",
+        "claim",
+        "commitCall",
+        "commitEffect",
+        "expireLease",
+        "receive"
+      ]
+    },
+    {
+      "name": "dedup-survives-generation-change",
+      "manual": false,
+      "actions": [
+        {
+          "name": "receive",
+          "args": [
+            0,
+            0,
+            {
+              "variant": "SubmitCall"
+            },
+            0
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "commitCall",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "claim",
+          "args": [
+            0,
+            {
+              "tuple": [
+                0,
+                0
+              ]
+            }
+          ]
+        },
+        {
+          "name": "authorize",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "beginEffect",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "commitEffect",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "loseRPC",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "stopVM",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "retireBoot",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "observeStopped",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "bootVM",
+          "args": [
+            1,
+            false
+          ]
+        },
+        {
+          "name": "launchBoot",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "confirmBoot",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "publishBoot",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "expireLease",
+          "args": [
+            {
+              "tuple": [
+                0,
+                0
+              ]
+            }
+          ]
+        },
+        {
+          "name": "claim",
+          "args": [
+            1,
+            {
+              "tuple": [
+                0,
+                0
+              ]
+            }
+          ]
+        },
+        {
+          "name": "authorize",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "beginEffect",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "commitEffect",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "acknowledge",
+          "args": [
+            1
+          ]
+        }
+      ],
+      "target": "s.effects.get((0,0)) == 1 and s.agents.get(1).generation == 2",
+      "contracts": [
+        "T07",
+        "T13",
+        "T14"
+      ],
+      "trace": "dedup-survives-generation-change.itf.json",
+      "trace_sha256": "02933ef9acecad2b973175595746d9686972581dc219cb7e6efbccc5cda0dd2c",
+      "driver": "dedup-survives-generation-change.qnt",
+      "driver_sha256": "2efe89e93293843a182653c3571d0dae9bd78779daefa763ac094e9c2e156679",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "quint/evidence/2026-11-06/preimplementation-concurrency-traces/dedup-survives-generation-change.qnt",
+        "--main=preparedTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=checked",
+        "--witnesses=reached",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=21",
+        "--out-itf=quint/evidence/2026-11-06/preimplementation-concurrency-traces/dedup-survives-generation-change.itf.json",
+        "--verbosity=1"
+      ],
+      "rejection_command": null,
+      "observations": "dedup-survives-generation-change.observations.json",
+      "observations_sha256": "7de7089a31c9c8e21b5d6d761eb205e94d02d86ff446d997a8a4802007e7ec4d",
+      "states": 22,
+      "covered": [
+        "acknowledge",
+        "admit",
+        "authorize",
+        "beginEffect",
+        "bootVM",
+        "claim",
+        "commitCall",
+        "commitEffect",
+        "confirmBoot",
+        "expireLease",
+        "launchBoot",
+        "loseRPC",
+        "observeStopped",
+        "publishBoot",
+        "receive",
+        "retireBoot",
+        "stopVM"
+      ]
+    },
+    {
+      "name": "old-channel-after-replacement",
+      "manual": false,
+      "actions": [
+        {
+          "name": "receive",
+          "args": [
+            0,
+            0,
+            {
+              "variant": "SubmitCall"
+            },
+            0
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "commitCall",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "claim",
+          "args": [
+            0,
+            {
+              "tuple": [
+                0,
+                0
+              ]
+            }
+          ]
+        },
+        {
+          "name": "authorize",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "stopVM",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "retireBoot",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "observeStopped",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "bootVM",
+          "args": [
+            1,
+            false
+          ]
+        },
+        {
+          "name": "launchBoot",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "confirmBoot",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "publishBoot",
+          "args": [
+            1
+          ]
+        }
+      ],
+      "target": "s.rpc.get(0).generation == 1 and s.agents.get(1).generation == 2",
+      "refused_actions": [
+        {
+          "action": {
+            "name": "beginEffect",
+            "args": [
+              0
+            ]
+          },
+          "go_outcome": "old authenticated channel rejected; no effect"
+        }
+      ],
+      "contracts": [
+        "T05",
+        "T06",
+        "T13",
+        "T14"
+      ],
+      "trace": "old-channel-after-replacement.itf.json",
+      "trace_sha256": "153ec9acc04a97b4fefbc8145a3d1ae79ff8ceee2c044ee380c25688dccf9423",
+      "driver": "old-channel-after-replacement.qnt",
+      "driver_sha256": "342676fe9d162e069d0c07316f28c1a2fb82816117aafd1c056cc3ef3aff2106",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "quint/evidence/2026-11-06/preimplementation-concurrency-traces/old-channel-after-replacement.qnt",
+        "--main=preparedTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=checked",
+        "--witnesses=reached",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=12",
+        "--out-itf=quint/evidence/2026-11-06/preimplementation-concurrency-traces/old-channel-after-replacement.itf.json",
+        "--verbosity=1"
+      ],
+      "rejection_command": [
+        "node_modules/.bin/quint",
+        "test",
+        "quint/evidence/2026-11-06/preimplementation-concurrency-traces/old-channel-after-replacement.qnt",
+        "--main=preparedTrace",
+        "--backend=rust",
+        "--max-samples=1",
+        "--seed=0x2a",
+        "--verbosity=1"
+      ],
+      "observations": "old-channel-after-replacement.observations.json",
+      "observations_sha256": "b639034775ca2c36b1bc63eb8e783813fd7e4e3913eb33fbce204f320595105f",
+      "states": 13,
+      "covered": [
+        "admit",
+        "authorize",
+        "bootVM",
+        "claim",
+        "commitCall",
+        "confirmBoot",
+        "launchBoot",
+        "observeStopped",
+        "publishBoot",
+        "receive",
+        "retireBoot",
+        "stopVM"
+      ]
+    },
+    {
+      "name": "old-caller-after-replacement",
+      "manual": false,
+      "actions": [
+        {
+          "name": "receive",
+          "args": [
+            0,
+            0,
+            {
+              "variant": "SubmitCall"
+            },
+            0
+          ]
+        },
+        {
+          "name": "stopVM",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "retireBoot",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "observeStopped",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "bootVM",
+          "args": [
+            0,
+            false
+          ]
+        },
+        {
+          "name": "launchBoot",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "confirmBoot",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "publishBoot",
+          "args": [
+            0
+          ]
+        }
+      ],
+      "target": "s.calls.get(0).generation == 1 and s.agents.get(0).generation == 2",
+      "refused_actions": [
+        {
+          "action": {
+            "name": "admit",
+            "args": [
+              0
+            ]
+          },
+          "go_outcome": "ErrPlacement; no business mutation"
+        }
+      ],
+      "contracts": [
+        "T01",
+        "T02",
+        "T13",
+        "T14"
+      ],
+      "trace": "old-caller-after-replacement.itf.json",
+      "trace_sha256": "2c59db46e98917c53d474547d55a61eddbc2127080994710eb79dcf454642444",
+      "driver": "old-caller-after-replacement.qnt",
+      "driver_sha256": "c66b0202e5db87cb9510961570f862423164dd3edee71c9f04075a67ba203ec4",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "quint/evidence/2026-11-06/preimplementation-concurrency-traces/old-caller-after-replacement.qnt",
+        "--main=preparedTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=checked",
+        "--witnesses=reached",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=8",
+        "--out-itf=quint/evidence/2026-11-06/preimplementation-concurrency-traces/old-caller-after-replacement.itf.json",
+        "--verbosity=1"
+      ],
+      "rejection_command": [
+        "node_modules/.bin/quint",
+        "test",
+        "quint/evidence/2026-11-06/preimplementation-concurrency-traces/old-caller-after-replacement.qnt",
+        "--main=preparedTrace",
+        "--backend=rust",
+        "--max-samples=1",
+        "--seed=0x2a",
+        "--verbosity=1"
+      ],
+      "observations": "old-caller-after-replacement.observations.json",
+      "observations_sha256": "f01568ffad7ec22984c30eed57f7b9dd6b817159b6c521db585d32a0978b5212",
+      "states": 9,
+      "covered": [
+        "bootVM",
+        "confirmBoot",
+        "launchBoot",
+        "observeStopped",
+        "publishBoot",
+        "receive",
+        "retireBoot",
+        "stopVM"
+      ]
+    },
+    {
+      "name": "sql-commit-after-physical-death",
+      "manual": false,
+      "actions": [
+        {
+          "name": "receive",
+          "args": [
+            0,
+            0,
+            {
+              "variant": "SubmitCall"
+            },
+            0
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "stopVM",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "retireBoot",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "commitCall",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "observeStopped",
+          "args": [
+            0
+          ]
+        }
+      ],
+      "target": "s.requests.get(0).phase == Delivering and s.agents.get(0).placement == Stopped",
+      "contracts": [
+        "T01",
+        "T02",
+        "T03",
+        "T13"
+      ],
+      "trace": "sql-commit-after-physical-death.itf.json",
+      "trace_sha256": "9e2831678c566b68c78a50f94a551bca7d8032e1026fcf4923257cf7d30719e3",
+      "driver": "sql-commit-after-physical-death.qnt",
+      "driver_sha256": "d2779e348a19fbdac53b19cb7a1ea832aaab5232150f7821e915f79b6e0dc969",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "quint/evidence/2026-11-06/preimplementation-concurrency-traces/sql-commit-after-physical-death.qnt",
+        "--main=preparedTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=checked",
+        "--witnesses=reached",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=6",
+        "--out-itf=quint/evidence/2026-11-06/preimplementation-concurrency-traces/sql-commit-after-physical-death.itf.json",
+        "--verbosity=1"
+      ],
+      "rejection_command": null,
+      "observations": "sql-commit-after-physical-death.observations.json",
+      "observations_sha256": "fdf6fc09b5e4f3722b9d8c22c6ed44fe6469986af88e771b5af5372ee6ac79cb",
+      "states": 7,
+      "covered": [
+        "admit",
+        "commitCall",
+        "observeStopped",
+        "receive",
+        "retireBoot",
+        "stopVM"
+      ]
+    },
+    {
+      "name": "writer-crash-then-restricted-fencing",
+      "manual": false,
+      "actions": [
+        {
+          "name": "receive",
+          "args": [
+            0,
+            0,
+            {
+              "variant": "SubmitCall"
+            },
+            0
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "commitCall",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "claim",
+          "args": [
+            0,
+            {
+              "tuple": [
+                0,
+                0
+              ]
+            }
+          ]
+        },
+        {
+          "name": "authorize",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "beginEffect",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "requestDelete",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "stopVM",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "retireBoot",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "observeStopped",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "bootVM",
+          "args": [
+            1,
+            true
+          ]
+        },
+        {
+          "name": "launchBoot",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "confirmBoot",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "publishBoot",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "fenceStore",
+          "args": [
+            0,
+            {
+              "variant": "AgentSubject",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "name": "recordFence",
+          "args": [
+            0,
+            {
+              "variant": "AgentSubject",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "name": "fenceStore",
+          "args": [
+            1,
+            {
+              "variant": "AgentSubject",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "name": "recordFence",
+          "args": [
+            1,
+            {
+              "variant": "AgentSubject",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "name": "fenceStore",
+          "args": [
+            2,
+            {
+              "variant": "AgentSubject",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "name": "recordFence",
+          "args": [
+            2,
+            {
+              "variant": "AgentSubject",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "name": "commitDelete",
+          "args": [
+            1
+          ]
+        }
+      ],
+      "target": "s.requests.get(0).phase == Canceled and s.effects.get((0,0)) == 0 and s.agents.get(1).fenceOnly",
+      "contracts": [
+        "T06",
+        "T09",
+        "T10",
+        "T13",
+        "T14"
+      ],
+      "trace": "writer-crash-then-restricted-fencing.itf.json",
+      "trace_sha256": "c6437a04b0a5647ea265429087f9cbb12ccea28ba35f4061e90a8cd1f8abb10f",
+      "driver": "writer-crash-then-restricted-fencing.qnt",
+      "driver_sha256": "050e53f98b3336f45c867c9459ec1e44180bfbac8c8a605a00a67248b89fdc5a",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "quint/evidence/2026-11-06/preimplementation-concurrency-traces/writer-crash-then-restricted-fencing.qnt",
+        "--main=preparedTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=checked",
+        "--witnesses=reached",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=21",
+        "--out-itf=quint/evidence/2026-11-06/preimplementation-concurrency-traces/writer-crash-then-restricted-fencing.itf.json",
+        "--verbosity=1"
+      ],
+      "rejection_command": null,
+      "observations": "writer-crash-then-restricted-fencing.observations.json",
+      "observations_sha256": "bbb7cbf9e72fcbdbef13f321dd0126994b183a92b4c47afc0b0dfbe002ca8b65",
+      "states": 22,
+      "covered": [
+        "admit",
+        "authorize",
+        "beginEffect",
+        "bootVM",
+        "claim",
+        "commitCall",
+        "commitDelete",
+        "confirmBoot",
+        "fenceStore",
+        "launchBoot",
+        "observeStopped",
+        "publishBoot",
+        "receive",
+        "recordFence",
+        "requestDelete",
+        "retireBoot",
+        "stopVM"
+      ]
+    },
+    {
+      "name": "writer-blocks-revocation",
+      "manual": false,
+      "actions": [
+        {
+          "name": "receive",
+          "args": [
+            0,
+            0,
+            {
+              "variant": "SubmitCall"
+            },
+            0
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "commitCall",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "claim",
+          "args": [
+            0,
+            {
+              "tuple": [
+                0,
+                0
+              ]
+            }
+          ]
+        },
+        {
+          "name": "authorize",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "beginEffect",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "requestDelete",
+          "args": [
+            1
+          ]
+        }
+      ],
+      "target": "busy(s,1) and s.agents.get(1).phase == Quiescing",
+      "refused_actions": [
+        {
+          "action": {
+            "name": "fenceStore",
+            "args": [
+              1,
+              {
+                "variant": "AgentSubject",
+                "value": 1
+              }
+            ]
+          },
+          "go_outcome": "waits on SQLite writer; no fence ACK before effect commit or abort"
+        }
+      ],
+      "contracts": [
+        "T06",
+        "T07",
+        "T10"
+      ],
+      "trace": "writer-blocks-revocation.itf.json",
+      "trace_sha256": "ef47ca31fab2c7752062b778ca05973e9d5f7626ba1b1e9c6c7b7268ecab740d",
+      "driver": "writer-blocks-revocation.qnt",
+      "driver_sha256": "04b91c78a3fce93aa44919258d71d1916745a41f9dfd2fc2c9590d47f1b850dc",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "quint/evidence/2026-11-06/preimplementation-concurrency-traces/writer-blocks-revocation.qnt",
+        "--main=preparedTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=checked",
+        "--witnesses=reached",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=7",
+        "--out-itf=quint/evidence/2026-11-06/preimplementation-concurrency-traces/writer-blocks-revocation.itf.json",
+        "--verbosity=1"
+      ],
+      "rejection_command": [
+        "node_modules/.bin/quint",
+        "test",
+        "quint/evidence/2026-11-06/preimplementation-concurrency-traces/writer-blocks-revocation.qnt",
+        "--main=preparedTrace",
+        "--backend=rust",
+        "--max-samples=1",
+        "--seed=0x2a",
+        "--verbosity=1"
+      ],
+      "observations": "writer-blocks-revocation.observations.json",
+      "observations_sha256": "2e0f31cfce2342afd83bfc0ab8836535d9813736521f3a0316221eca25c9d0e3",
+      "states": 8,
+      "covered": [
+        "admit",
+        "authorize",
+        "beginEffect",
+        "claim",
+        "commitCall",
+        "receive",
+        "requestDelete"
+      ]
+    },
+    {
+      "name": "revoked-reply-gets-fresh-status",
+      "manual": false,
+      "actions": [
+        {
+          "name": "receive",
+          "args": [
+            0,
+            0,
+            {
+              "variant": "SubmitCall"
+            },
+            0
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "commitCall",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "claim",
+          "args": [
+            0,
+            {
+              "tuple": [
+                0,
+                0
+              ]
+            }
+          ]
+        },
+        {
+          "name": "authorize",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "beginEffect",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "commitEffect",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "acknowledge",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "receive",
+          "args": [
+            0,
+            0,
+            {
+              "variant": "ReplyCall"
+            },
+            0
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "commitCall",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "claim",
+          "args": [
+            0,
+            {
+              "tuple": [
+                0,
+                1
+              ]
+            }
+          ]
+        },
+        {
+          "name": "authorize",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "beginEffect",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "commitEffect",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "loseRPC",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "requestDelete",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "fenceStore",
+          "args": [
+            0,
+            {
+              "variant": "AgentSubject",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "name": "recordFence",
+          "args": [
+            0,
+            {
+              "variant": "AgentSubject",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "name": "fenceStore",
+          "args": [
+            1,
+            {
+              "variant": "AgentSubject",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "name": "recordFence",
+          "args": [
+            1,
+            {
+              "variant": "AgentSubject",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "name": "fenceStore",
+          "args": [
+            2,
+            {
+              "variant": "AgentSubject",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "name": "recordFence",
+          "args": [
+            2,
+            {
+              "variant": "AgentSubject",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "name": "commitDelete",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "claim",
+          "args": [
+            0,
+            {
+              "tuple": [
+                0,
+                2
+              ]
+            }
+          ]
+        },
+        {
+          "name": "authorize",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "beginEffect",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "commitEffect",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "acknowledge",
+          "args": [
+            0
+          ]
+        }
+      ],
+      "target": "s.requests.get(0).phase == Replied and s.requests.get(0).notified and s.effects.get((0,1)) == 1 and s.effects.get((0,2)) == 1",
+      "contracts": [
+        "T07",
+        "T08",
+        "T09",
+        "T10",
+        "T11"
+      ],
+      "trace": "revoked-reply-gets-fresh-status.itf.json",
+      "trace_sha256": "c40e7ef46d0721a779ebd1d01f6d5023acfbf7fc62bc3c1a0b4eab4a8e2afbf5",
+      "driver": "revoked-reply-gets-fresh-status.qnt",
+      "driver_sha256": "daa3b5ab20070ccef1a1ed757bd6b1a1d0624b93086f764a4171b27e5a955578",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "quint/evidence/2026-11-06/preimplementation-concurrency-traces/revoked-reply-gets-fresh-status.qnt",
+        "--main=preparedTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=checked",
+        "--witnesses=reached",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=29",
+        "--out-itf=quint/evidence/2026-11-06/preimplementation-concurrency-traces/revoked-reply-gets-fresh-status.itf.json",
+        "--verbosity=1"
+      ],
+      "rejection_command": null,
+      "observations": "revoked-reply-gets-fresh-status.observations.json",
+      "observations_sha256": "7854a9c7e8f3148b3de1c95ac5ce1ef6c7b43b3b8c736dfdd55492b3603d9a41",
+      "states": 30,
+      "covered": [
+        "acknowledge",
+        "admit",
+        "authorize",
+        "beginEffect",
+        "claim",
+        "commitCall",
+        "commitDelete",
+        "commitEffect",
+        "fenceStore",
+        "loseRPC",
+        "receive",
+        "recordFence",
+        "requestDelete"
+      ]
+    },
+    {
+      "name": "notification-exhaustion-is-not-reception",
+      "manual": false,
+      "actions": [
+        {
+          "name": "receive",
+          "args": [
+            0,
+            0,
+            {
+              "variant": "SubmitCall"
+            },
+            0
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "commitCall",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "closeRequest",
+          "args": [
+            0,
+            {
+              "variant": "FailRequest"
+            }
+          ]
+        },
+        {
+          "name": "fenceStore",
+          "args": [
+            0,
+            {
+              "variant": "RequestSubject",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "name": "recordFence",
+          "args": [
+            0,
+            {
+              "variant": "RequestSubject",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "name": "fenceStore",
+          "args": [
+            1,
+            {
+              "variant": "RequestSubject",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "name": "recordFence",
+          "args": [
+            1,
+            {
+              "variant": "RequestSubject",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "name": "fenceStore",
+          "args": [
+            2,
+            {
+              "variant": "RequestSubject",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "name": "recordFence",
+          "args": [
+            2,
+            {
+              "variant": "RequestSubject",
+              "value": 0
+            }
+          ]
+        },
+        {
+          "name": "commitClose",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "claim",
+          "args": [
+            0,
+            {
+              "tuple": [
+                0,
+                2
+              ]
+            }
+          ]
+        },
+        {
+          "name": "authorize",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "loseRPC",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "expireLease",
+          "args": [
+            {
+              "tuple": [
+                0,
+                2
+              ]
+            }
+          ]
+        },
+        {
+          "name": "claim",
+          "args": [
+            0,
+            {
+              "tuple": [
+                0,
+                2
+              ]
+            }
+          ]
+        },
+        {
+          "name": "authorize",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "loseRPC",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "expireLease",
+          "args": [
+            {
+              "tuple": [
+                0,
+                2
+              ]
+            }
+          ]
+        },
+        {
+          "name": "beginRetire",
+          "args": [
+            {
+              "tuple": [
+                0,
+                2
+              ]
+            }
+          ]
+        },
+        {
+          "name": "fenceStore",
+          "args": [
+            0,
+            {
+              "variant": "EventSubject",
+              "value": {
+                "tuple": [
+                  0,
+                  2
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "recordFence",
+          "args": [
+            0,
+            {
+              "variant": "EventSubject",
+              "value": {
+                "tuple": [
+                  0,
+                  2
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "retire",
+          "args": [
+            {
+              "tuple": [
+                0,
+                2
+              ]
+            }
+          ]
+        }
+      ],
+      "target": "s.events.get((0,2)).phase == DeadEvent and not(s.requests.get(0).notified)",
+      "contracts": [
+        "T12",
+        "T17"
+      ],
+      "trace": "notification-exhaustion-is-not-reception.itf.json",
+      "trace_sha256": "94d527885fa3f49c5b21163f7060e6f65cba7df67f66ed671c25b3b32ff578d1",
+      "driver": "notification-exhaustion-is-not-reception.qnt",
+      "driver_sha256": "f7839949bd4080a0be79a02428fdd3d0c0ddad139bfc8df79035df580ab4e4d1",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "quint/evidence/2026-11-06/preimplementation-concurrency-traces/notification-exhaustion-is-not-reception.qnt",
+        "--main=preparedTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=checked",
+        "--witnesses=reached",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=23",
+        "--out-itf=quint/evidence/2026-11-06/preimplementation-concurrency-traces/notification-exhaustion-is-not-reception.itf.json",
+        "--verbosity=1"
+      ],
+      "rejection_command": null,
+      "observations": "notification-exhaustion-is-not-reception.observations.json",
+      "observations_sha256": "a780181fed7b92794c19e5b5840beca21036f4338f00c1da934ca7ef3eb717ae",
+      "states": 24,
+      "covered": [
+        "admit",
+        "authorize",
+        "beginRetire",
+        "claim",
+        "closeRequest",
+        "commitCall",
+        "commitClose",
+        "expireLease",
+        "fenceStore",
+        "loseRPC",
+        "receive",
+        "recordFence",
+        "retire"
+      ]
+    },
+    {
+      "name": "sealed-store-satisfies-future-barrier",
+      "manual": false,
+      "actions": [
+        {
+          "name": "requestDelete",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "fenceStore",
+          "args": [
+            0,
+            {
+              "variant": "AgentSubject",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "name": "recordFence",
+          "args": [
+            0,
+            {
+              "variant": "AgentSubject",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "name": "fenceStore",
+          "args": [
+            1,
+            {
+              "variant": "AgentSubject",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "name": "recordFence",
+          "args": [
+            1,
+            {
+              "variant": "AgentSubject",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "name": "fenceStore",
+          "args": [
+            2,
+            {
+              "variant": "AgentSubject",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "name": "recordFence",
+          "args": [
+            2,
+            {
+              "variant": "AgentSubject",
+              "value": 1
+            }
+          ]
+        },
+        {
+          "name": "commitDelete",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "stopVM",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "retireBoot",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "observeStopped",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "sealStore",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "receive",
+          "args": [
+            0,
+            2,
+            {
+              "variant": "SubmitCall"
+            },
+            2
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "commitCall",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "closeRequest",
+          "args": [
+            2,
+            {
+              "variant": "CancelRequest"
+            }
+          ]
+        },
+        {
+          "name": "fenceStore",
+          "args": [
+            0,
+            {
+              "variant": "RequestSubject",
+              "value": 2
+            }
+          ]
+        },
+        {
+          "name": "recordFence",
+          "args": [
+            0,
+            {
+              "variant": "RequestSubject",
+              "value": 2
+            }
+          ]
+        },
+        {
+          "name": "fenceStore",
+          "args": [
+            1,
+            {
+              "variant": "RequestSubject",
+              "value": 2
+            }
+          ]
+        },
+        {
+          "name": "recordFence",
+          "args": [
+            1,
+            {
+              "variant": "RequestSubject",
+              "value": 2
+            }
+          ]
+        },
+        {
+          "name": "fenceStore",
+          "args": [
+            2,
+            {
+              "variant": "RequestSubject",
+              "value": 2
+            }
+          ]
+        },
+        {
+          "name": "recordFence",
+          "args": [
+            2,
+            {
+              "variant": "RequestSubject",
+              "value": 2
+            }
+          ]
+        },
+        {
+          "name": "commitClose",
+          "args": [
+            2
+          ]
+        }
+      ],
+      "target": "s.agents.get(1).sealed and s.requests.get(2).phase == Canceled",
+      "contracts": [
+        "T09",
+        "T10",
+        "T11",
+        "T13"
+      ],
+      "trace": "sealed-store-satisfies-future-barrier.itf.json",
+      "trace_sha256": "16e0211840199c45efb24c73bb60198b92daa4ce3341a4f9d004a982fd09dbc0",
+      "driver": "sealed-store-satisfies-future-barrier.qnt",
+      "driver_sha256": "f9fb1da065b137e5ae6cd9299173296348bfe5ea2e42eabeeb3c696f1420c0ad",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "quint/evidence/2026-11-06/preimplementation-concurrency-traces/sealed-store-satisfies-future-barrier.qnt",
+        "--main=preparedTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=checked",
+        "--witnesses=reached",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=23",
+        "--out-itf=quint/evidence/2026-11-06/preimplementation-concurrency-traces/sealed-store-satisfies-future-barrier.itf.json",
+        "--verbosity=1"
+      ],
+      "rejection_command": null,
+      "observations": "sealed-store-satisfies-future-barrier.observations.json",
+      "observations_sha256": "df5a3303ba7f93a263c97d114d81f0e4c8f0066b28a51a2909732607b03217a0",
+      "states": 24,
+      "covered": [
+        "admit",
+        "closeRequest",
+        "commitCall",
+        "commitClose",
+        "commitDelete",
+        "fenceStore",
+        "observeStopped",
+        "receive",
+        "recordFence",
+        "requestDelete",
+        "retireBoot",
+        "sealStore",
+        "stopVM"
+      ]
+    },
+    {
+      "name": "worker-crash-before-business-commit",
+      "manual": false,
+      "actions": [
+        {
+          "name": "receive",
+          "args": [
+            0,
+            0,
+            {
+              "variant": "SubmitCall"
+            },
+            0
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "crashWorker",
+          "args": []
+        },
+        {
+          "name": "recoverWorker",
+          "args": []
+        },
+        {
+          "name": "receive",
+          "args": [
+            0,
+            0,
+            {
+              "variant": "SubmitCall"
+            },
+            0
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "commitCall",
+          "args": [
+            0
+          ]
+        }
+      ],
+      "target": "s.requests.get(0).accepted and s.mandates.get(0).remaining == 1",
+      "contracts": [
+        "T02",
+        "T03"
+      ],
+      "trace": "worker-crash-before-business-commit.itf.json",
+      "trace_sha256": "d58bc9ba99b3ac16bdea51e3a0c3006b9f5fe6799f4d0f0ec39a925c5eeb04a4",
+      "driver": "worker-crash-before-business-commit.qnt",
+      "driver_sha256": "85cccbe391821275398a3fdc1f85b761c44e1c4b01cf51e1b75184ec5f6930c1",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "quint/evidence/2026-11-06/preimplementation-concurrency-traces/worker-crash-before-business-commit.qnt",
+        "--main=preparedTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=checked",
+        "--witnesses=reached",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=7",
+        "--out-itf=quint/evidence/2026-11-06/preimplementation-concurrency-traces/worker-crash-before-business-commit.itf.json",
+        "--verbosity=1"
+      ],
+      "rejection_command": null,
+      "observations": "worker-crash-before-business-commit.observations.json",
+      "observations_sha256": "b478c726ab2ffb4e939392f6c4fcf23329cfaba2c26a13e3615b7620343e519b",
+      "states": 8,
+      "covered": [
+        "admit",
+        "commitCall",
+        "crashWorker",
+        "receive",
+        "recoverWorker"
+      ]
+    },
+    {
+      "name": "confirmed-unpublished-boot-cleanup",
+      "manual": false,
+      "actions": [
+        {
+          "name": "stopVM",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "retireBoot",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "observeStopped",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "bootVM",
+          "args": [
+            0,
+            false
+          ]
+        },
+        {
+          "name": "launchBoot",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "confirmBoot",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "crashWorker",
+          "args": []
+        },
+        {
+          "name": "recoverWorker",
+          "args": []
+        },
+        {
+          "name": "retireBoot",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "observeStopped",
+          "args": [
+            0
+          ]
+        }
+      ],
+      "target": "s.agents.get(0).placement == Stopped and not(s.agents.get(0).alive)",
+      "contracts": [
+        "T13",
+        "T14"
+      ],
+      "trace": "confirmed-unpublished-boot-cleanup.itf.json",
+      "trace_sha256": "ba2e0cb8ea9544ce832d6667ae4a4f3dce16ce12f4079f11e923d010e8e1a189",
+      "driver": "confirmed-unpublished-boot-cleanup.qnt",
+      "driver_sha256": "2e8cdb35822e3b5a05d868a40b44070c202e0e7d09757c23d5fce4e1cbf3bda0",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "quint/evidence/2026-11-06/preimplementation-concurrency-traces/confirmed-unpublished-boot-cleanup.qnt",
+        "--main=preparedTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=checked",
+        "--witnesses=reached",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=10",
+        "--out-itf=quint/evidence/2026-11-06/preimplementation-concurrency-traces/confirmed-unpublished-boot-cleanup.itf.json",
+        "--verbosity=1"
+      ],
+      "rejection_command": null,
+      "observations": "confirmed-unpublished-boot-cleanup.observations.json",
+      "observations_sha256": "6ac54af4c7fce39e5c683d8973d65a87791c9a08661b07d8cdb518938aa878fc",
+      "states": 11,
+      "covered": [
+        "bootVM",
+        "confirmBoot",
+        "crashWorker",
+        "launchBoot",
+        "observeStopped",
+        "recoverWorker",
+        "retireBoot",
+        "stopVM"
+      ]
+    },
+    {
+      "name": "expired-start-lease-cleanup",
+      "manual": false,
+      "actions": [
+        {
+          "name": "stopVM",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "retireBoot",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "observeStopped",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "bootVM",
+          "args": [
+            0,
+            false
+          ]
+        },
+        {
+          "name": "launchBoot",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "expireBootLease",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "abandonBoot",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "retireBoot",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "observeStopped",
+          "args": [
+            0
+          ]
+        }
+      ],
+      "target": "s.agents.get(0).placement == Stopped and not(s.agents.get(0).alive)",
+      "contracts": [
+        "T13",
+        "T14"
+      ],
+      "trace": "expired-start-lease-cleanup.itf.json",
+      "trace_sha256": "1f447219d188bbfea931444577ecd0ecc14a4488416e3addeba641fc8e1541e6",
+      "driver": "expired-start-lease-cleanup.qnt",
+      "driver_sha256": "cf8352b2a7ea0e8cf6f37ac4ae5b41aaefb5d91d6223fe9a7c78671a13b71bfa",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "quint/evidence/2026-11-06/preimplementation-concurrency-traces/expired-start-lease-cleanup.qnt",
+        "--main=preparedTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=checked",
+        "--witnesses=reached",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=9",
+        "--out-itf=quint/evidence/2026-11-06/preimplementation-concurrency-traces/expired-start-lease-cleanup.itf.json",
+        "--verbosity=1"
+      ],
+      "rejection_command": null,
+      "observations": "expired-start-lease-cleanup.observations.json",
+      "observations_sha256": "63e3478cf65a1d352c27326737df264360bbdf0118e01faf638ee2729088a6db",
+      "states": 10,
+      "covered": [
+        "abandonBoot",
+        "bootVM",
+        "expireBootLease",
+        "launchBoot",
+        "observeStopped",
+        "retireBoot",
+        "stopVM"
+      ]
+    },
+    {
+      "name": "publication-after-stop-intent",
+      "manual": false,
+      "actions": [
+        {
+          "name": "stopVM",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "retireBoot",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "observeStopped",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "bootVM",
+          "args": [
+            0,
+            false
+          ]
+        },
+        {
+          "name": "launchBoot",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "confirmBoot",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "beginStop",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "publishBoot",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "receive",
+          "args": [
+            0,
+            0,
+            {
+              "variant": "SubmitCall"
+            },
+            0
+          ]
+        }
+      ],
+      "target": "s.agents.get(0).alive and s.agents.get(0).placement == Stopping and not(currentCaller(s,s.calls.get(0)))",
+      "contracts": [
+        "T01",
+        "T13",
+        "T14"
+      ],
+      "trace": "publication-after-stop-intent.itf.json",
+      "trace_sha256": "afb4df3516ff3db6e4ca34b9799b4a6ffdcaec48f51edb2b0408f8a55826fd02",
+      "driver": "publication-after-stop-intent.qnt",
+      "driver_sha256": "a5e0e8c5209dbf3e593c171b1b1e3de991df810b8848767ea93a74d564599f51",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "quint/evidence/2026-11-06/preimplementation-concurrency-traces/publication-after-stop-intent.qnt",
+        "--main=preparedTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=checked",
+        "--witnesses=reached",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=9",
+        "--out-itf=quint/evidence/2026-11-06/preimplementation-concurrency-traces/publication-after-stop-intent.itf.json",
+        "--verbosity=1"
+      ],
+      "rejection_command": null,
+      "observations": "publication-after-stop-intent.observations.json",
+      "observations_sha256": "fd7855f9afa88d2e441fcb888b4159c7ffb038a2697eba3afafa74896af1145e",
+      "states": 10,
+      "covered": [
+        "beginStop",
+        "bootVM",
+        "confirmBoot",
+        "launchBoot",
+        "observeStopped",
+        "publishBoot",
+        "receive",
+        "retireBoot",
+        "stopVM"
+      ]
+    },
+    {
+      "name": "manual-consent",
+      "manual": true,
+      "actions": [
+        {
+          "name": "receive",
+          "args": [
+            0,
+            0,
+            {
+              "variant": "SubmitCall"
+            },
+            0
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "commitCall",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "receive",
+          "args": [
+            0,
+            0,
+            {
+              "variant": "AcceptCall"
+            },
+            1
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "commitCall",
+          "args": [
+            0
+          ]
+        }
+      ],
+      "target": "s.requests.get(0).phase == Delivering",
+      "contracts": [
+        "T02",
+        "T03"
+      ],
+      "trace": "manual-consent.itf.json",
+      "trace_sha256": "3b481f2956e07948cc8c9854927d84cb0f51f0fe71f1e10621d04f450a8f4adc",
+      "driver": "manual-consent.qnt",
+      "driver_sha256": "7f9d11e7df7f8426216ecf8f7ad7bbe2d4d26b035b07195e6c76f2bb7ddc3e93",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "quint/evidence/2026-11-06/preimplementation-concurrency-traces/manual-consent.qnt",
+        "--main=preparedTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=checked",
+        "--witnesses=reached",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=6",
+        "--out-itf=quint/evidence/2026-11-06/preimplementation-concurrency-traces/manual-consent.itf.json",
+        "--verbosity=1"
+      ],
+      "rejection_command": null,
+      "observations": "manual-consent.observations.json",
+      "observations_sha256": "5100efffa85fd5a819908f5616bc222aef4c3641270b19523406fb8b5782416c",
+      "states": 7,
+      "covered": [
+        "admit",
+        "commitCall",
+        "receive"
+      ]
+    },
+    {
+      "name": "manual-consent-while-vm-sleeps",
+      "manual": true,
+      "actions": [
+        {
+          "name": "receive",
+          "args": [
+            0,
+            0,
+            {
+              "variant": "SubmitCall"
+            },
+            0
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "commitCall",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "stopVM",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "retireBoot",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "observeStopped",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "receive",
+          "args": [
+            0,
+            0,
+            {
+              "variant": "AcceptCall"
+            },
+            1
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "commitCall",
+          "args": [
+            0
+          ]
+        }
+      ],
+      "target": "s.requests.get(0).phase == Delivering and not(s.agents.get(1).alive)",
+      "contracts": [
+        "T02",
+        "T03",
+        "T13"
+      ],
+      "trace": "manual-consent-while-vm-sleeps.itf.json",
+      "trace_sha256": "4bd792bd5a611b911990213d2223208a205e82dc651322b42a07ff02a6494006",
+      "driver": "manual-consent-while-vm-sleeps.qnt",
+      "driver_sha256": "7b3f8776e4c801d2798aacd1e9489317809184ec34acb7c634757c5fe0f38ee3",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "quint/evidence/2026-11-06/preimplementation-concurrency-traces/manual-consent-while-vm-sleeps.qnt",
+        "--main=preparedTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=checked",
+        "--witnesses=reached",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=9",
+        "--out-itf=quint/evidence/2026-11-06/preimplementation-concurrency-traces/manual-consent-while-vm-sleeps.itf.json",
+        "--verbosity=1"
+      ],
+      "rejection_command": null,
+      "observations": "manual-consent-while-vm-sleeps.observations.json",
+      "observations_sha256": "613491bf0abdca36111afacb04cd4e302708afc5319f8a725091763ba8436769",
+      "states": 10,
+      "covered": [
+        "admit",
+        "commitCall",
+        "observeStopped",
+        "receive",
+        "retireBoot",
+        "stopVM"
+      ]
+    },
+    {
+      "name": "manual-decline",
+      "manual": true,
+      "actions": [
+        {
+          "name": "receive",
+          "args": [
+            0,
+            0,
+            {
+              "variant": "SubmitCall"
+            },
+            0
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "commitCall",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "receive",
+          "args": [
+            0,
+            0,
+            {
+              "variant": "DeclineCall"
+            },
+            1
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "commitCall",
+          "args": [
+            0
+          ]
+        }
+      ],
+      "target": "s.requests.get(0).phase == Declined and s.events.get((0,2)).phase == PendingEvent",
+      "contracts": [
+        "T02",
+        "T03",
+        "T11"
+      ],
+      "trace": "manual-decline.itf.json",
+      "trace_sha256": "b59456f17aa9ec8e9d30159d2b519f28a1cd6f8e13642052342a416bac3d7f55",
+      "driver": "manual-decline.qnt",
+      "driver_sha256": "a05c953701f9d82c5508722e4f0b0d97f08b86d9f975e737d6e981c48e11dcbc",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "quint/evidence/2026-11-06/preimplementation-concurrency-traces/manual-decline.qnt",
+        "--main=preparedTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=checked",
+        "--witnesses=reached",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=6",
+        "--out-itf=quint/evidence/2026-11-06/preimplementation-concurrency-traces/manual-decline.itf.json",
+        "--verbosity=1"
+      ],
+      "rejection_command": null,
+      "observations": "manual-decline.observations.json",
+      "observations_sha256": "0991dc3ee60a4f45201d26b48cf6e174962790eb3f5ac102f725dc39887993d2",
+      "states": 7,
+      "covered": [
+        "admit",
+        "commitCall",
+        "receive"
+      ]
+    }
+  ],
+  "covered_actions": [
+    "abandonBoot",
+    "abortCall",
+    "acknowledge",
+    "admit",
+    "authorize",
+    "beginEffect",
+    "beginRetire",
+    "beginStop",
+    "bootVM",
+    "claim",
+    "closeRequest",
+    "commitCall",
+    "commitClose",
+    "commitDelete",
+    "commitEffect",
+    "confirmBoot",
+    "crashWorker",
+    "expireBootLease",
+    "expireLease",
+    "expireMandate",
+    "fenceStore",
+    "launchBoot",
+    "loseRPC",
+    "observeStopped",
+    "publishBoot",
+    "receive",
+    "recordFence",
+    "recoverWorker",
+    "requestDelete",
+    "retire",
+    "retireBoot",
+    "sealStore",
+    "stopVM"
+  ]
+}

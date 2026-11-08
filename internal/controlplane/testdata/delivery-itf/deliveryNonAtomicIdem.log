@@ -1,0 +1,2 @@
+[violation] Found an issue (67ms at 15 traces/second).
+error: Invariant violated

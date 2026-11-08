@@ -1,0 +1,820 @@
+{
+  "source_sha256": "268d0c641eb17d605b75546b182659255f1047e8f5aaab5dec9a889cbe797625",
+  "scope": "Original messaging actions at API action boundaries; deterministic conforming schedules and unchanged minimal Apalache counterexamples.",
+  "cases": [
+    {
+      "name": "manual-completed",
+      "module": "messagingOk",
+      "negative": false,
+      "trace": "manual-completed.itf.json",
+      "actions": [
+        {
+          "name": "setVisibility",
+          "u": "marc",
+          "b": true
+        },
+        {
+          "name": "instruct",
+          "u": "arnaud"
+        },
+        {
+          "name": "submit",
+          "u": "arnaud",
+          "r": "marc",
+          "m": 0
+        },
+        {
+          "name": "setVisibility",
+          "u": "marc",
+          "b": false
+        },
+        {
+          "name": "accept",
+          "id": 0
+        },
+        {
+          "name": "deliver",
+          "id": 0
+        },
+        {
+          "name": "reply",
+          "id": 0
+        },
+        {
+          "name": "notifySender",
+          "id": 0
+        },
+        {
+          "name": "expireMandate",
+          "m": 0
+        }
+      ],
+      "sha256": "cf9574fdbb1b23e3dab55e59958402e0e30de0d6bf9b72b5e844974b3c1bb2e6",
+      "driver": "manual-completed.qnt",
+      "driver_sha256": "829cbfb2f990bbced66832be2825f054f34f6c8957fb16251ffab8d57f295007",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "internal/controlplane/testdata/messaging-itf/manual-completed.qnt",
+        "--main=messagingTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=safety",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=9",
+        "--out-itf=internal/controlplane/testdata/messaging-itf/manual-completed.itf.json",
+        "--verbosity=1"
+      ]
+    },
+    {
+      "name": "owner-declined",
+      "module": "messagingOk",
+      "negative": false,
+      "trace": "owner-declined.itf.json",
+      "actions": [
+        {
+          "name": "setVisibility",
+          "u": "marc",
+          "b": true
+        },
+        {
+          "name": "instruct",
+          "u": "arnaud"
+        },
+        {
+          "name": "submit",
+          "u": "arnaud",
+          "r": "marc",
+          "m": 0
+        },
+        {
+          "name": "decline",
+          "id": 0
+        },
+        {
+          "name": "notifySender",
+          "id": 0
+        }
+      ],
+      "sha256": "0aac8cc51a91b758275d999be72d4ae738a4d7d067edc61068f5f13181afc6cd",
+      "driver": "owner-declined.qnt",
+      "driver_sha256": "0cc9d1642fd088f01bb9327cf7578639eaa857eb23facfa9def9aa8530639686",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "internal/controlplane/testdata/messaging-itf/owner-declined.qnt",
+        "--main=messagingTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=safety",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=5",
+        "--out-itf=internal/controlplane/testdata/messaging-itf/owner-declined.itf.json",
+        "--verbosity=1"
+      ]
+    },
+    {
+      "name": "auto-declined",
+      "module": "messagingOk",
+      "negative": false,
+      "trace": "auto-declined.itf.json",
+      "actions": [
+        {
+          "name": "setVisibility",
+          "u": "marc",
+          "b": true
+        },
+        {
+          "name": "setMode",
+          "u": "marc",
+          "mode": "Auto"
+        },
+        {
+          "name": "instruct",
+          "u": "arnaud"
+        },
+        {
+          "name": "submit",
+          "u": "arnaud",
+          "r": "marc",
+          "m": 0
+        },
+        {
+          "name": "deliver",
+          "id": 0
+        },
+        {
+          "name": "autoDecline",
+          "id": 0
+        },
+        {
+          "name": "notifySender",
+          "id": 0
+        }
+      ],
+      "sha256": "45124c9a72f6f4c6cc93bbd742dab65ab1f70502469966a8f068189ba8eb26f3",
+      "driver": "auto-declined.qnt",
+      "driver_sha256": "60e89468432a607f8cb8f7dc500bf2eab7dfa630046b349d9a3e89ec3d629716",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "internal/controlplane/testdata/messaging-itf/auto-declined.qnt",
+        "--main=messagingTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=safety",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=7",
+        "--out-itf=internal/controlplane/testdata/messaging-itf/auto-declined.itf.json",
+        "--verbosity=1"
+      ]
+    },
+    {
+      "name": "processing-expired",
+      "module": "messagingOk",
+      "negative": false,
+      "trace": "processing-expired.itf.json",
+      "actions": [
+        {
+          "name": "setVisibility",
+          "u": "marc",
+          "b": true
+        },
+        {
+          "name": "setMode",
+          "u": "marc",
+          "mode": "Auto"
+        },
+        {
+          "name": "instruct",
+          "u": "arnaud"
+        },
+        {
+          "name": "submit",
+          "u": "arnaud",
+          "r": "marc",
+          "m": 0
+        },
+        {
+          "name": "deliver",
+          "id": 0
+        },
+        {
+          "name": "expire",
+          "id": 0
+        },
+        {
+          "name": "notifySender",
+          "id": 0
+        }
+      ],
+      "sha256": "230594968fe5015b270d484feed6675e8fc479afd246e5dc73f7a24c63a56d4a",
+      "driver": "processing-expired.qnt",
+      "driver_sha256": "fb86e9486db5583b409f41920819b8d6269ff58e50d1d5edbecb4bc651fed97b",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "internal/controlplane/testdata/messaging-itf/processing-expired.qnt",
+        "--main=messagingTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=safety",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=7",
+        "--out-itf=internal/controlplane/testdata/messaging-itf/processing-expired.itf.json",
+        "--verbosity=1"
+      ]
+    },
+    {
+      "name": "pending-expired",
+      "module": "messagingOk",
+      "negative": false,
+      "trace": "pending-expired.itf.json",
+      "actions": [
+        {
+          "name": "setVisibility",
+          "u": "marc",
+          "b": true
+        },
+        {
+          "name": "instruct",
+          "u": "arnaud"
+        },
+        {
+          "name": "submit",
+          "u": "arnaud",
+          "r": "marc",
+          "m": 0
+        },
+        {
+          "name": "expire",
+          "id": 0
+        },
+        {
+          "name": "notifySender",
+          "id": 0
+        }
+      ],
+      "sha256": "e0169e69ae4ebbd487a93373bce1c5e0fcd74a5c28da45d8d1630cc618fb3afd",
+      "driver": "pending-expired.qnt",
+      "driver_sha256": "062b1ecd89176e027f6a1208fae72ab5c573a88f7873b42740fed494d34c5128",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "internal/controlplane/testdata/messaging-itf/pending-expired.qnt",
+        "--main=messagingTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=safety",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=5",
+        "--out-itf=internal/controlplane/testdata/messaging-itf/pending-expired.itf.json",
+        "--verbosity=1"
+      ]
+    },
+    {
+      "name": "pending-canceled",
+      "module": "messagingOk",
+      "negative": false,
+      "trace": "pending-canceled.itf.json",
+      "actions": [
+        {
+          "name": "setVisibility",
+          "u": "marc",
+          "b": true
+        },
+        {
+          "name": "instruct",
+          "u": "arnaud"
+        },
+        {
+          "name": "submit",
+          "u": "arnaud",
+          "r": "marc",
+          "m": 0
+        },
+        {
+          "name": "cancel",
+          "id": 0
+        },
+        {
+          "name": "notifySender",
+          "id": 0
+        }
+      ],
+      "sha256": "c39de20e4c959fd2f21f2cf46a413c507832914857fc9218c91247adedf32a9e",
+      "driver": "pending-canceled.qnt",
+      "driver_sha256": "380d0b567f2fb2cec266de14383083dac07ddb5cd432e46296aa2fd16b239ce9",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "internal/controlplane/testdata/messaging-itf/pending-canceled.qnt",
+        "--main=messagingTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=safety",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=5",
+        "--out-itf=internal/controlplane/testdata/messaging-itf/pending-canceled.itf.json",
+        "--verbosity=1"
+      ]
+    },
+    {
+      "name": "delivery-failed",
+      "module": "messagingOk",
+      "negative": false,
+      "trace": "delivery-failed.itf.json",
+      "actions": [
+        {
+          "name": "setVisibility",
+          "u": "marc",
+          "b": true
+        },
+        {
+          "name": "setMode",
+          "u": "marc",
+          "mode": "Auto"
+        },
+        {
+          "name": "instruct",
+          "u": "arnaud"
+        },
+        {
+          "name": "submit",
+          "u": "arnaud",
+          "r": "marc",
+          "m": 0
+        },
+        {
+          "name": "deliverFail",
+          "id": 0
+        },
+        {
+          "name": "notifySender",
+          "id": 0
+        }
+      ],
+      "sha256": "fea6887bc1fff7a637322c69a3ec95034e779f823da7e444b8076967a1a049ad",
+      "driver": "delivery-failed.qnt",
+      "driver_sha256": "80e84e940f04720bff51167fb96e7b8057b7f78cf828bc36e41afd21f8818c39",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "internal/controlplane/testdata/messaging-itf/delivery-failed.qnt",
+        "--main=messagingTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=safety",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=6",
+        "--out-itf=internal/controlplane/testdata/messaging-itf/delivery-failed.itf.json",
+        "--verbosity=1"
+      ]
+    },
+    {
+      "name": "deleted-in-flight",
+      "module": "messagingOk",
+      "negative": false,
+      "trace": "deleted-in-flight.itf.json",
+      "actions": [
+        {
+          "name": "setVisibility",
+          "u": "marc",
+          "b": true
+        },
+        {
+          "name": "setMode",
+          "u": "marc",
+          "mode": "Auto"
+        },
+        {
+          "name": "instruct",
+          "u": "arnaud"
+        },
+        {
+          "name": "submit",
+          "u": "arnaud",
+          "r": "marc",
+          "m": 0
+        },
+        {
+          "name": "deleteUser",
+          "u": "marc"
+        },
+        {
+          "name": "notifySender",
+          "id": 0
+        }
+      ],
+      "sha256": "96289441b3d2b030f5b3ca44f65c82b85935646a744af9d7315ea48cf4e6b2b2",
+      "driver": "deleted-in-flight.qnt",
+      "driver_sha256": "8450899e7370a3b8056adad245f375598db29de45a6fb6a0adcf5476685e8597",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "internal/controlplane/testdata/messaging-itf/deleted-in-flight.qnt",
+        "--main=messagingTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=safety",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=6",
+        "--out-itf=internal/controlplane/testdata/messaging-itf/deleted-in-flight.itf.json",
+        "--verbosity=1"
+      ]
+    },
+    {
+      "name": "reply-author-deleted",
+      "module": "messagingOk",
+      "negative": false,
+      "trace": "reply-author-deleted.itf.json",
+      "actions": [
+        {
+          "name": "setVisibility",
+          "u": "marc",
+          "b": true
+        },
+        {
+          "name": "setMode",
+          "u": "marc",
+          "mode": "Auto"
+        },
+        {
+          "name": "instruct",
+          "u": "arnaud"
+        },
+        {
+          "name": "submit",
+          "u": "arnaud",
+          "r": "marc",
+          "m": 0
+        },
+        {
+          "name": "deliver",
+          "id": 0
+        },
+        {
+          "name": "reply",
+          "id": 0
+        },
+        {
+          "name": "deleteUser",
+          "u": "marc"
+        },
+        {
+          "name": "notifySender",
+          "id": 0
+        }
+      ],
+      "sha256": "fc41e967870d52e9be8a60ff2ff44f6843aefe1c82ea2807aa9c169df83bde3e",
+      "driver": "reply-author-deleted.qnt",
+      "driver_sha256": "9c2c3cf016a19ca41e11842d6dcf3af28172c7b6fe077a63e928f050f653994f",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "internal/controlplane/testdata/messaging-itf/reply-author-deleted.qnt",
+        "--main=messagingTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=safety",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=8",
+        "--out-itf=internal/controlplane/testdata/messaging-itf/reply-author-deleted.itf.json",
+        "--verbosity=1"
+      ]
+    },
+    {
+      "name": "stale-directory",
+      "module": "messagingOk",
+      "negative": false,
+      "trace": "stale-directory.itf.json",
+      "actions": [
+        {
+          "name": "setVisibility",
+          "u": "marc",
+          "b": true
+        },
+        {
+          "name": "syncAds",
+          "u": "marc"
+        },
+        {
+          "name": "search",
+          "u": "arnaud"
+        },
+        {
+          "name": "setVisibility",
+          "u": "marc",
+          "b": false
+        },
+        {
+          "name": "search",
+          "u": "arnaud"
+        },
+        {
+          "name": "deleteUser",
+          "u": "marc"
+        },
+        {
+          "name": "syncAds",
+          "u": "marc"
+        }
+      ],
+      "sha256": "107f5f880522fc8d43b4099017d98a1da8146ef6df51dfcfaea08ca0d4fc39dc",
+      "driver": "stale-directory.qnt",
+      "driver_sha256": "2142d0f58835426663c449782911cd3493e19df2e7aeeea61ba281238d1ed579",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "internal/controlplane/testdata/messaging-itf/stale-directory.qnt",
+        "--main=messagingTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=safety",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=7",
+        "--out-itf=internal/controlplane/testdata/messaging-itf/stale-directory.itf.json",
+        "--verbosity=1"
+      ]
+    },
+    {
+      "name": "three-actors",
+      "module": "messagingOk",
+      "negative": false,
+      "trace": "three-actors.itf.json",
+      "actions": [
+        {
+          "name": "setVisibility",
+          "u": "marc",
+          "b": true
+        },
+        {
+          "name": "setVisibility",
+          "u": "zoe",
+          "b": true
+        },
+        {
+          "name": "instruct",
+          "u": "arnaud"
+        },
+        {
+          "name": "submit",
+          "u": "arnaud",
+          "r": "marc",
+          "m": 0
+        },
+        {
+          "name": "submit",
+          "u": "arnaud",
+          "r": "zoe",
+          "m": 0
+        },
+        {
+          "name": "instruct",
+          "u": "marc"
+        },
+        {
+          "name": "submit",
+          "u": "marc",
+          "r": "zoe",
+          "m": 1
+        },
+        {
+          "name": "accept",
+          "id": 0
+        },
+        {
+          "name": "deliver",
+          "id": 0
+        },
+        {
+          "name": "reply",
+          "id": 0
+        },
+        {
+          "name": "notifySender",
+          "id": 0
+        },
+        {
+          "name": "accept",
+          "id": 1
+        },
+        {
+          "name": "deliver",
+          "id": 1
+        },
+        {
+          "name": "reply",
+          "id": 1
+        },
+        {
+          "name": "notifySender",
+          "id": 1
+        },
+        {
+          "name": "accept",
+          "id": 2
+        },
+        {
+          "name": "deliver",
+          "id": 2
+        },
+        {
+          "name": "reply",
+          "id": 2
+        },
+        {
+          "name": "notifySender",
+          "id": 2
+        }
+      ],
+      "sha256": "cab2f19c25f944c3d30cbdeba9aea4ac5b8239521b26db6b30c12d3054dc00df",
+      "driver": "three-actors.qnt",
+      "driver_sha256": "bb4e82edb336a3773b6c58acd9b1151cff3cb998086f68d6c37d1033f990b8f7",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "internal/controlplane/testdata/messaging-itf/three-actors.qnt",
+        "--main=messagingTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=safety",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=19",
+        "--out-itf=internal/controlplane/testdata/messaging-itf/three-actors.itf.json",
+        "--verbosity=1"
+      ]
+    },
+    {
+      "name": "messagingNoPostcheck-searchNoLeak",
+      "module": "messagingNoPostcheck",
+      "negative": true,
+      "trace": "certificates/messagingNoPostcheck-searchNoLeak/trace.itf.json",
+      "actions": [
+        {
+          "name": "setVisibility",
+          "u": "marc",
+          "b": true
+        },
+        {
+          "name": "syncAds",
+          "u": "marc"
+        },
+        {
+          "name": "setVisibility",
+          "u": "marc",
+          "b": false
+        },
+        {
+          "name": "search",
+          "u": "zoe"
+        }
+      ],
+      "sha256": "6eea3b9c4fded55b17ce8b39aab7d0009799fffd1800f2cbdeb4eb152e317d86",
+      "certificate": "certificates/messagingNoPostcheck-searchNoLeak/result.json"
+    },
+    {
+      "name": "messagingSendChecksAds-noRequestToHidden",
+      "module": "messagingSendChecksAds",
+      "negative": true,
+      "trace": "certificates/messagingSendChecksAds-noRequestToHidden/trace.itf.json",
+      "actions": [
+        {
+          "name": "setVisibility",
+          "u": "marc",
+          "b": true
+        },
+        {
+          "name": "instruct",
+          "u": "zoe"
+        },
+        {
+          "name": "syncAds",
+          "u": "marc"
+        },
+        {
+          "name": "deleteUser",
+          "u": "marc"
+        },
+        {
+          "name": "submit",
+          "u": "zoe",
+          "r": "marc",
+          "m": 0
+        }
+      ],
+      "sha256": "06aaa6245366bf0d6a246b48cfddfd967d3bfac4ef1908ea058de03f9c3d0b6d",
+      "certificate": "certificates/messagingSendChecksAds-noRequestToHidden/result.json"
+    },
+    {
+      "name": "messagingNoMandateOwner-mandateOwned",
+      "module": "messagingNoMandateOwner",
+      "negative": true,
+      "trace": "certificates/messagingNoMandateOwner-mandateOwned/trace.itf.json",
+      "actions": [
+        {
+          "name": "instruct",
+          "u": "marc"
+        },
+        {
+          "name": "setVisibility",
+          "u": "zoe",
+          "b": true
+        },
+        {
+          "name": "submit",
+          "u": "arnaud",
+          "r": "zoe",
+          "m": 0
+        }
+      ],
+      "sha256": "cf3f6026f237a4df8ef7a9b88d1ddab57d414378750a1c7de671f8134ec8cd51",
+      "certificate": "certificates/messagingNoMandateOwner-mandateOwned/result.json"
+    },
+    {
+      "name": "messagingRacyAccept-terminalStable",
+      "module": "messagingRacyAccept",
+      "negative": true,
+      "trace": "certificates/messagingRacyAccept-terminalStable/trace.itf.json",
+      "actions": [
+        {
+          "name": "instruct",
+          "u": "zoe"
+        },
+        {
+          "name": "setVisibility",
+          "u": "marc",
+          "b": true
+        },
+        {
+          "name": "submit",
+          "u": "zoe",
+          "r": "marc",
+          "m": 0
+        },
+        {
+          "name": "acceptRead",
+          "id": 0
+        },
+        {
+          "name": "deleteUser",
+          "u": "marc"
+        },
+        {
+          "name": "acceptWrite",
+          "id": 0
+        }
+      ],
+      "sha256": "d0c61a65837362d2b12d0c203247994683101c1d4080062b423b6073418b3916",
+      "certificate": "certificates/messagingRacyAccept-terminalStable/result.json"
+    },
+    {
+      "name": "messagingRacyAccept-noLiveRequestForDeleted",
+      "module": "messagingRacyAccept",
+      "negative": true,
+      "trace": "certificates/messagingRacyAccept-noLiveRequestForDeleted/trace.itf.json",
+      "actions": [
+        {
+          "name": "setVisibility",
+          "u": "arnaud",
+          "b": true
+        },
+        {
+          "name": "instruct",
+          "u": "marc"
+        },
+        {
+          "name": "submit",
+          "u": "marc",
+          "r": "arnaud",
+          "m": 0
+        },
+        {
+          "name": "acceptRead",
+          "id": 0
+        },
+        {
+          "name": "deleteUser",
+          "u": "arnaud"
+        },
+        {
+          "name": "acceptWrite",
+          "id": 0
+        }
+      ],
+      "sha256": "3d79fcdb5b8164e41830ed2a27604e886ab493ff28b8df71e5e0378a334f37ff",
+      "certificate": "certificates/messagingRacyAccept-noLiveRequestForDeleted/result.json"
+    }
+  ]
+}

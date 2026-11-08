@@ -1,0 +1,468 @@
+{
+  "format": "agentcapsule.conformance-observations.v1",
+  "topic": "progress",
+  "go_replay_status": "prepared_not_executed",
+  "identities": "Model integers bind to fixture UUIDs; event identities bind to request/kind. Lease counters bind to actual opaque lease tokens.",
+  "runtime_scope": "Physical observations require a runtime adapter; SQL observations alone do not establish them.",
+  "states": [
+    {
+      "index": 0,
+      "action": null,
+      "observations": {
+        "requests": [
+          {
+            "slot": 0,
+            "stage": "Vacant",
+            "result": "NoResult",
+            "durable_inbox": false,
+            "notification": "Uncreated",
+            "attempts": 0,
+            "fenced_stores": [],
+            "effect_committed": false
+          },
+          {
+            "slot": 1,
+            "stage": "Vacant",
+            "result": "NoResult",
+            "durable_inbox": false,
+            "notification": "Uncreated",
+            "attempts": 0,
+            "fenced_stores": [],
+            "effect_committed": false
+          },
+          {
+            "slot": 2,
+            "stage": "Vacant",
+            "result": "NoResult",
+            "durable_inbox": false,
+            "notification": "Uncreated",
+            "attempts": 0,
+            "fenced_stores": [],
+            "effect_committed": false
+          }
+        ],
+        "queues": {
+          "admission": [],
+          "execution": [],
+          "notification": []
+        },
+        "capacity": {
+          "running": [],
+          "available_stores": [
+            0,
+            1
+          ],
+          "worker_up": true,
+          "authority_up": true
+        },
+        "deletion": {
+          "pending": false,
+          "complete": false
+        },
+        "watched": {
+          "accepted": false,
+          "observed": false
+        }
+      }
+    },
+    {
+      "index": 1,
+      "action": {
+        "name": "arrive",
+        "args": [
+          0,
+          true
+        ]
+      },
+      "observations": {
+        "requests": [
+          {
+            "slot": 0,
+            "stage": "Accepted",
+            "result": "NoResult",
+            "durable_inbox": false,
+            "notification": "Uncreated",
+            "attempts": 0,
+            "fenced_stores": [],
+            "effect_committed": false
+          },
+          {
+            "slot": 1,
+            "stage": "Vacant",
+            "result": "NoResult",
+            "durable_inbox": false,
+            "notification": "Uncreated",
+            "attempts": 0,
+            "fenced_stores": [],
+            "effect_committed": false
+          },
+          {
+            "slot": 2,
+            "stage": "Vacant",
+            "result": "NoResult",
+            "durable_inbox": false,
+            "notification": "Uncreated",
+            "attempts": 0,
+            "fenced_stores": [],
+            "effect_committed": false
+          }
+        ],
+        "queues": {
+          "admission": [
+            0
+          ],
+          "execution": [],
+          "notification": []
+        },
+        "capacity": {
+          "running": [],
+          "available_stores": [
+            0,
+            1
+          ],
+          "worker_up": true,
+          "authority_up": true
+        },
+        "deletion": {
+          "pending": false,
+          "complete": false
+        },
+        "watched": {
+          "accepted": true,
+          "observed": false
+        }
+      }
+    },
+    {
+      "index": 2,
+      "action": {
+        "name": "crashWorker",
+        "args": []
+      },
+      "observations": {
+        "requests": [
+          {
+            "slot": 0,
+            "stage": "Accepted",
+            "result": "NoResult",
+            "durable_inbox": false,
+            "notification": "Uncreated",
+            "attempts": 0,
+            "fenced_stores": [],
+            "effect_committed": false
+          },
+          {
+            "slot": 1,
+            "stage": "Vacant",
+            "result": "NoResult",
+            "durable_inbox": false,
+            "notification": "Uncreated",
+            "attempts": 0,
+            "fenced_stores": [],
+            "effect_committed": false
+          },
+          {
+            "slot": 2,
+            "stage": "Vacant",
+            "result": "NoResult",
+            "durable_inbox": false,
+            "notification": "Uncreated",
+            "attempts": 0,
+            "fenced_stores": [],
+            "effect_committed": false
+          }
+        ],
+        "queues": {
+          "admission": [
+            0
+          ],
+          "execution": [],
+          "notification": []
+        },
+        "capacity": {
+          "running": [],
+          "available_stores": [
+            0,
+            1
+          ],
+          "worker_up": false,
+          "authority_up": true
+        },
+        "deletion": {
+          "pending": false,
+          "complete": false
+        },
+        "watched": {
+          "accepted": true,
+          "observed": false
+        }
+      }
+    },
+    {
+      "index": 3,
+      "action": {
+        "name": "stabilize",
+        "args": []
+      },
+      "observations": {
+        "requests": [
+          {
+            "slot": 0,
+            "stage": "Accepted",
+            "result": "NoResult",
+            "durable_inbox": false,
+            "notification": "Uncreated",
+            "attempts": 0,
+            "fenced_stores": [],
+            "effect_committed": false
+          },
+          {
+            "slot": 1,
+            "stage": "Vacant",
+            "result": "NoResult",
+            "durable_inbox": false,
+            "notification": "Uncreated",
+            "attempts": 0,
+            "fenced_stores": [],
+            "effect_committed": false
+          },
+          {
+            "slot": 2,
+            "stage": "Vacant",
+            "result": "NoResult",
+            "durable_inbox": false,
+            "notification": "Uncreated",
+            "attempts": 0,
+            "fenced_stores": [],
+            "effect_committed": false
+          }
+        ],
+        "queues": {
+          "admission": [
+            0
+          ],
+          "execution": [],
+          "notification": []
+        },
+        "capacity": {
+          "running": [],
+          "available_stores": [
+            0,
+            1
+          ],
+          "worker_up": false,
+          "authority_up": true
+        },
+        "deletion": {
+          "pending": false,
+          "complete": false
+        },
+        "watched": {
+          "accepted": true,
+          "observed": false
+        }
+      }
+    },
+    {
+      "index": 4,
+      "action": {
+        "name": "recoverWorker",
+        "args": []
+      },
+      "observations": {
+        "requests": [
+          {
+            "slot": 0,
+            "stage": "Accepted",
+            "result": "NoResult",
+            "durable_inbox": false,
+            "notification": "Uncreated",
+            "attempts": 0,
+            "fenced_stores": [],
+            "effect_committed": false
+          },
+          {
+            "slot": 1,
+            "stage": "Vacant",
+            "result": "NoResult",
+            "durable_inbox": false,
+            "notification": "Uncreated",
+            "attempts": 0,
+            "fenced_stores": [],
+            "effect_committed": false
+          },
+          {
+            "slot": 2,
+            "stage": "Vacant",
+            "result": "NoResult",
+            "durable_inbox": false,
+            "notification": "Uncreated",
+            "attempts": 0,
+            "fenced_stores": [],
+            "effect_committed": false
+          }
+        ],
+        "queues": {
+          "admission": [
+            0
+          ],
+          "execution": [],
+          "notification": []
+        },
+        "capacity": {
+          "running": [],
+          "available_stores": [
+            0,
+            1
+          ],
+          "worker_up": true,
+          "authority_up": true
+        },
+        "deletion": {
+          "pending": false,
+          "complete": false
+        },
+        "watched": {
+          "accepted": true,
+          "observed": false
+        }
+      }
+    },
+    {
+      "index": 5,
+      "action": {
+        "name": "admit",
+        "args": [
+          0
+        ]
+      },
+      "observations": {
+        "requests": [
+          {
+            "slot": 0,
+            "stage": "Executing",
+            "result": "NoResult",
+            "durable_inbox": false,
+            "notification": "Uncreated",
+            "attempts": 0,
+            "fenced_stores": [],
+            "effect_committed": false
+          },
+          {
+            "slot": 1,
+            "stage": "Vacant",
+            "result": "NoResult",
+            "durable_inbox": false,
+            "notification": "Uncreated",
+            "attempts": 0,
+            "fenced_stores": [],
+            "effect_committed": false
+          },
+          {
+            "slot": 2,
+            "stage": "Vacant",
+            "result": "NoResult",
+            "durable_inbox": false,
+            "notification": "Uncreated",
+            "attempts": 0,
+            "fenced_stores": [],
+            "effect_committed": false
+          }
+        ],
+        "queues": {
+          "admission": [],
+          "execution": [
+            0
+          ],
+          "notification": []
+        },
+        "capacity": {
+          "running": [
+            0
+          ],
+          "available_stores": [
+            0,
+            1
+          ],
+          "worker_up": true,
+          "authority_up": true
+        },
+        "deletion": {
+          "pending": false,
+          "complete": false
+        },
+        "watched": {
+          "accepted": true,
+          "observed": false
+        }
+      }
+    },
+    {
+      "index": 6,
+      "action": {
+        "name": "complete",
+        "args": [
+          0
+        ]
+      },
+      "observations": {
+        "requests": [
+          {
+            "slot": 0,
+            "stage": "Terminal",
+            "result": "Success",
+            "durable_inbox": true,
+            "notification": "Pending",
+            "attempts": 0,
+            "fenced_stores": [],
+            "effect_committed": true
+          },
+          {
+            "slot": 1,
+            "stage": "Vacant",
+            "result": "NoResult",
+            "durable_inbox": false,
+            "notification": "Uncreated",
+            "attempts": 0,
+            "fenced_stores": [],
+            "effect_committed": false
+          },
+          {
+            "slot": 2,
+            "stage": "Vacant",
+            "result": "NoResult",
+            "durable_inbox": false,
+            "notification": "Uncreated",
+            "attempts": 0,
+            "fenced_stores": [],
+            "effect_committed": false
+          }
+        ],
+        "queues": {
+          "admission": [],
+          "execution": [],
+          "notification": [
+            0
+          ]
+        },
+        "capacity": {
+          "running": [],
+          "available_stores": [
+            0,
+            1
+          ],
+          "worker_up": true,
+          "authority_up": true
+        },
+        "deletion": {
+          "pending": false,
+          "complete": false
+        },
+        "watched": {
+          "accepted": true,
+          "observed": false
+        }
+      }
+    }
+  ]
+}

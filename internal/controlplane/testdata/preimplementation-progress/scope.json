@@ -1,0 +1,55 @@
+{
+  "format": "agentcapsule.p3-projection-scope.v1",
+  "model": "serviceProgressOk",
+  "manifest_sha256": "dcc99c0810e31f721895b44f7202749ec7e15865dcf8857bddee52afafa9fb84",
+  "binding": {
+    "stores": {
+      "0": "a",
+      "1": "b"
+    },
+    "request_0": "a -> b; terminal notice returns to a",
+    "request_1_and_2": "b -> a; terminal notices share b FIFO",
+    "capacity": "excluded; local callback execution is not physical VMM occupancy",
+    "initial_environment": "Two seeded agents/mandates/current SQL placements; real accounts/tokens and encrypted Transit. Private-schema attempt_limit default is 2.",
+    "time": "Model deadlines and lease expiration age the corresponding SQL timestamps; production guards and commits still execute.",
+    "complete": "Real local SQLite writer commits, production request ACK then authenticated VM-bound encrypted reply transaction.",
+    "observe": "Authenticated production owner Request lookup returns terminal state and, for success, decrypted private result. Observation flag records a successful read, not a new persisted Go state.",
+    "recycle": "Only model-slot binding is released. Old request UUIDs, results, notification reception and SQLite effects must remain; next arrival allocates a fresh UUID.",
+    "notification_failure": "Actual TCP ECONNREFUSED after SQL dispatch authorization; lease expiry permits retry. Final retirement uses production event fence and rejects delayed copies.",
+    "store_availability": "Stop/drain real local mTLS server and close SQLite; actual Health/Fence failures mark it unavailable. Recovery reopens the same current SQLite file with authenticated local transport. This is not rollback restore or a VMM reboot.",
+    "authority_availability": "The production owner lookup has its own real PostgreSQL pool through a loopback proxy. Closing listener and active connections causes actual lookup failure; reopening the endpoint restores lookup of the same encrypted outcome. This is read-path SQL authority availability, not D5 independent key-root recovery.",
+    "worker_availability": "A dedicated Go subprocess executes DiscoverWork, ClaimWork, ClaimDelivery, AuthorizeDispatch, encrypted resolution, delivery ACK/CompleteWork and private reply transactions. SIGKILL is observed after request acceptance/discovery; a fresh process consumes the retained ticket. mTLS/SQLite callback driving remains in the parent. This is not the full Firecracker worker service."
+  },
+  "compared": [
+    "request stage/result projected from SQL",
+    "durable terminal inbox availability",
+    "incoming SQLite effect count",
+    "terminal notification state/attempts/outbox",
+    "actual notification local effect and sender_notified",
+    "SQL closure receipts and corresponding durable SQLite fences",
+    "SQL admission/execution queue projection",
+    "shared-destination terminal FIFO via production HeadDelivery",
+    "owner observation and retained historical identities/effects",
+    "Actual local store Health availability",
+    "Actual owner-lookup PostgreSQL connection availability and failed production reads",
+    "Owned SQL worker SIGKILL/Wait, replacement PID, live ping and durable queued work",
+    "Refused terminal commit without all fences; refused fence on disconnected store; refused owner lookup while disconnected"
+  ],
+  "not_established": [
+    "global admission ordering or scheduler fairness",
+    "physical capacity, lifecycle and VMM isolation",
+    "selective deletion mapping (request peers differ from abstract job destinations)",
+    "a refinement proof or unbounded temporal liveness of Go",
+    "D5 independent key/history authority, restoration of an old backup, full Firecracker worker recovery"
+  ],
+  "remaining_case_requirements": {
+    "retiring-notice-waits-for-capacity": "Physical/shared admission maintenance-capacity adapter",
+    "retiring-notice-reserves-capacity": "Physical/shared admission maintenance-capacity adapter",
+    "delete-running-agent-preserves-other-work": "Explicit binding for affected participant sets and physical cancellation; simple reciprocal two-agent binding is insufficient",
+    "barrier-reserves-capacity": "Production maintenance admission/capacity adapter",
+    "fence-waits-for-current-execution": "Production admission/capacity adapter with competing request",
+    "cannot-recycle-with-outstanding-notice": "Production identity retention/cleanup contract; do not invent an application recycle method",
+    "fifo-admission-cannot-overtake": "Global runtime/work admission correspondence, not per-agent mailbox FIFO alone",
+    "deleted-destination-rejects-new-work": "Deletion/retirement binding with real refusal"
+  }
+}

@@ -1,0 +1,1873 @@
+{
+  "format": "agentcapsule.preimplementation.itf.v1",
+  "status": "passed",
+  "topic": "progress",
+  "scope": "Directed schedules; every state checked against model safety. Not exhaustive checking or Go replay.",
+  "go_replay_status": "prepared_not_executed",
+  "model_sha256": "190818bf2f9d701f760b783fb5b950b789273a18be08d30a0f78da68f44ab6a7",
+  "excluded_actions": {
+    "attempt": "Dispatch wrapper choosing notify(success=true/false); both concrete outcomes witnessed."
+  },
+  "cases": [
+    {
+      "name": "retiring-notice-waits-for-capacity",
+      "actions": [
+        {
+          "name": "arrive",
+          "args": [
+            0,
+            true
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "complete",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "arrive",
+          "args": [
+            1,
+            true
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "notify",
+          "args": [
+            0,
+            false
+          ]
+        },
+        {
+          "name": "notify",
+          "args": [
+            0,
+            false
+          ]
+        }
+      ],
+      "target": "s.jobs.get(0).delivery == RetiringDead and s.running == Set(1)",
+      "refused_actions": [
+        {
+          "action": {
+            "name": "retireNotification",
+            "args": [
+              0
+            ]
+          },
+          "go_outcome": "event fence waits for occupied VM slot"
+        }
+      ],
+      "contracts": [
+        "T10",
+        "T12"
+      ],
+      "trace": "retiring-notice-waits-for-capacity.itf.json",
+      "trace_sha256": "afb99208e82eefa7db212036e72e1462e7f70cd54e8b778b6c05e5f453fef835",
+      "driver": "retiring-notice-waits-for-capacity.qnt",
+      "driver_sha256": "e40e3fbfba79695b57c6c66b127f1ae2ffaf4e1d9539713df12c8b961efbc6d3",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "quint/evidence/2026-11-07/preimplementation-progress-final-traces/retiring-notice-waits-for-capacity.qnt",
+        "--main=preparedTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=checked",
+        "--witnesses=reached",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=7",
+        "--out-itf=quint/evidence/2026-11-07/preimplementation-progress-final-traces/retiring-notice-waits-for-capacity.itf.json",
+        "--verbosity=1"
+      ],
+      "rejection_command": [
+        "node_modules/.bin/quint",
+        "test",
+        "quint/evidence/2026-11-07/preimplementation-progress-final-traces/retiring-notice-waits-for-capacity.qnt",
+        "--main=preparedTrace",
+        "--backend=rust",
+        "--max-samples=1",
+        "--seed=0x2a",
+        "--verbosity=1"
+      ],
+      "observations": "retiring-notice-waits-for-capacity.observations.json",
+      "observations_sha256": "13a9286fbce243c115b0166d91aa431d136eb860af8758e644c65b3eb02fba56",
+      "states": 8,
+      "covered": [
+        "admit",
+        "arrive",
+        "complete",
+        "notify"
+      ]
+    },
+    {
+      "name": "retiring-notice-reserves-capacity",
+      "actions": [
+        {
+          "name": "arrive",
+          "args": [
+            0,
+            true
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "complete",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "notify",
+          "args": [
+            0,
+            false
+          ]
+        },
+        {
+          "name": "notify",
+          "args": [
+            0,
+            false
+          ]
+        },
+        {
+          "name": "arrive",
+          "args": [
+            1,
+            true
+          ]
+        }
+      ],
+      "target": "s.jobs.get(0).delivery == RetiringDead and s.running == Set()",
+      "refused_actions": [
+        {
+          "action": {
+            "name": "admit",
+            "args": [
+              1
+            ]
+          },
+          "go_outcome": "event retirement reserves maintenance capacity"
+        }
+      ],
+      "contracts": [
+        "T10",
+        "T12"
+      ],
+      "trace": "retiring-notice-reserves-capacity.itf.json",
+      "trace_sha256": "5a68e35a6b9fb50506f2f3d71070b788980979f32a19c8e095b69effdd5dc65e",
+      "driver": "retiring-notice-reserves-capacity.qnt",
+      "driver_sha256": "21f73e872917a33dc1ddd5c7a64a183742e4e0c6e255df516d60b88d4a338b84",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "quint/evidence/2026-11-07/preimplementation-progress-final-traces/retiring-notice-reserves-capacity.qnt",
+        "--main=preparedTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=checked",
+        "--witnesses=reached",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=6",
+        "--out-itf=quint/evidence/2026-11-07/preimplementation-progress-final-traces/retiring-notice-reserves-capacity.itf.json",
+        "--verbosity=1"
+      ],
+      "rejection_command": [
+        "node_modules/.bin/quint",
+        "test",
+        "quint/evidence/2026-11-07/preimplementation-progress-final-traces/retiring-notice-reserves-capacity.qnt",
+        "--main=preparedTrace",
+        "--backend=rust",
+        "--max-samples=1",
+        "--seed=0x2a",
+        "--verbosity=1"
+      ],
+      "observations": "retiring-notice-reserves-capacity.observations.json",
+      "observations_sha256": "e77cc1d1bbae0265c52d8c4c303947060d628fb20e6b58a531a5fc38be2ff9a1",
+      "states": 7,
+      "covered": [
+        "admit",
+        "arrive",
+        "complete",
+        "notify"
+      ]
+    },
+    {
+      "name": "successful-request-observed-and-notified",
+      "actions": [
+        {
+          "name": "arrive",
+          "args": [
+            0,
+            true
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "complete",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "observe",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "notify",
+          "args": [
+            0,
+            true
+          ]
+        }
+      ],
+      "target": "s.taggedObserved and s.jobs.get(0).delivery == Acked",
+      "contracts": [
+        "T03",
+        "T07",
+        "T08",
+        "T17"
+      ],
+      "trace": "successful-request-observed-and-notified.itf.json",
+      "trace_sha256": "0e7116cac176c3298386012b7f2fdfe227817fe2287d114e88b745dfc8e5a4ca",
+      "driver": "successful-request-observed-and-notified.qnt",
+      "driver_sha256": "04733f79309836d6b3631b0f494f9cfcf6e5b6aaebfecc14a2dfd9c24a113ad6",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "quint/evidence/2026-11-07/preimplementation-progress-final-traces/successful-request-observed-and-notified.qnt",
+        "--main=preparedTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=checked",
+        "--witnesses=reached",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=5",
+        "--out-itf=quint/evidence/2026-11-07/preimplementation-progress-final-traces/successful-request-observed-and-notified.itf.json",
+        "--verbosity=1"
+      ],
+      "rejection_command": null,
+      "observations": "successful-request-observed-and-notified.observations.json",
+      "observations_sha256": "710d2e62edb7fc97f8f1e69334200ff58c94eb0a1a723eb11ab98034cde95425",
+      "states": 6,
+      "covered": [
+        "admit",
+        "arrive",
+        "complete",
+        "notify",
+        "observe"
+      ]
+    },
+    {
+      "name": "hung-handler-terminated-by-deadline",
+      "actions": [
+        {
+          "name": "arrive",
+          "args": [
+            0,
+            false
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "deadline",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "releaseExecution",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "fence",
+          "args": [
+            0,
+            0
+          ]
+        },
+        {
+          "name": "fence",
+          "args": [
+            0,
+            1
+          ]
+        },
+        {
+          "name": "commitClose",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "notify",
+          "args": [
+            0,
+            true
+          ]
+        },
+        {
+          "name": "observe",
+          "args": [
+            0
+          ]
+        }
+      ],
+      "target": "s.taggedObserved and s.jobs.get(0).result == Aborted",
+      "contracts": [
+        "T09",
+        "T10",
+        "T11",
+        "T13",
+        "T17"
+      ],
+      "trace": "hung-handler-terminated-by-deadline.itf.json",
+      "trace_sha256": "172e7fac6bb9bd5368003f044296bfb3c97dc108b588bf2b9a7dd576120653ef",
+      "driver": "hung-handler-terminated-by-deadline.qnt",
+      "driver_sha256": "aed7029c3036ccb08878eaa260555917fc99e444e50b29acb522bab791ed79db",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "quint/evidence/2026-11-07/preimplementation-progress-final-traces/hung-handler-terminated-by-deadline.qnt",
+        "--main=preparedTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=checked",
+        "--witnesses=reached",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=9",
+        "--out-itf=quint/evidence/2026-11-07/preimplementation-progress-final-traces/hung-handler-terminated-by-deadline.itf.json",
+        "--verbosity=1"
+      ],
+      "rejection_command": null,
+      "observations": "hung-handler-terminated-by-deadline.observations.json",
+      "observations_sha256": "90a19a50a6c8ebb6898553f89bbed77f1ee870cbfc16454e9b4ade1833cf451b",
+      "states": 10,
+      "covered": [
+        "admit",
+        "arrive",
+        "commitClose",
+        "deadline",
+        "fence",
+        "notify",
+        "observe",
+        "releaseExecution"
+      ]
+    },
+    {
+      "name": "queued-request-deadline",
+      "actions": [
+        {
+          "name": "arrive",
+          "args": [
+            0,
+            false
+          ]
+        },
+        {
+          "name": "deadline",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "fence",
+          "args": [
+            0,
+            0
+          ]
+        },
+        {
+          "name": "fence",
+          "args": [
+            0,
+            1
+          ]
+        },
+        {
+          "name": "commitClose",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "observe",
+          "args": [
+            0
+          ]
+        }
+      ],
+      "target": "s.jobs.get(0).stage == Observable and s.jobs.get(0).delivery == Pending",
+      "contracts": [
+        "T09",
+        "T10",
+        "T11",
+        "T17"
+      ],
+      "trace": "queued-request-deadline.itf.json",
+      "trace_sha256": "c7ce8f7376bfd1ca939f215097c0cbb1f34d98f2b693ba1b1dc3e3691f673303",
+      "driver": "queued-request-deadline.qnt",
+      "driver_sha256": "1d3a8008d6580fb6b39576b17ed4e93bda574b3eccb25768aeed5a2474f2e3ae",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "quint/evidence/2026-11-07/preimplementation-progress-final-traces/queued-request-deadline.qnt",
+        "--main=preparedTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=checked",
+        "--witnesses=reached",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=6",
+        "--out-itf=quint/evidence/2026-11-07/preimplementation-progress-final-traces/queued-request-deadline.itf.json",
+        "--verbosity=1"
+      ],
+      "rejection_command": null,
+      "observations": "queued-request-deadline.observations.json",
+      "observations_sha256": "1285d253f040ff8f4a71f9605a4daeec64317c4b343aeec7964c2aa6553009b8",
+      "states": 7,
+      "covered": [
+        "arrive",
+        "commitClose",
+        "deadline",
+        "fence",
+        "observe"
+      ]
+    },
+    {
+      "name": "terminal-notification-failure-keeps-inbox",
+      "actions": [
+        {
+          "name": "arrive",
+          "args": [
+            0,
+            true
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "complete",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "notify",
+          "args": [
+            0,
+            false
+          ]
+        },
+        {
+          "name": "notify",
+          "args": [
+            0,
+            false
+          ]
+        },
+        {
+          "name": "retireNotification",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "observe",
+          "args": [
+            0
+          ]
+        }
+      ],
+      "target": "s.jobs.get(0).delivery == Dead and s.jobs.get(0).inbox and s.taggedObserved",
+      "contracts": [
+        "T12",
+        "T17"
+      ],
+      "trace": "terminal-notification-failure-keeps-inbox.itf.json",
+      "trace_sha256": "717c40a098eb30f600eb1cc5732ba5aa577ecb9cdeb20c436d2a6c7b206b7fca",
+      "driver": "terminal-notification-failure-keeps-inbox.qnt",
+      "driver_sha256": "3d23dc7becbf1482ace1c8741dadb52bc3551b878028e49beb5698d9b3bcb57a",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "quint/evidence/2026-11-07/preimplementation-progress-final-traces/terminal-notification-failure-keeps-inbox.qnt",
+        "--main=preparedTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=checked",
+        "--witnesses=reached",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=7",
+        "--out-itf=quint/evidence/2026-11-07/preimplementation-progress-final-traces/terminal-notification-failure-keeps-inbox.itf.json",
+        "--verbosity=1"
+      ],
+      "rejection_command": null,
+      "observations": "terminal-notification-failure-keeps-inbox.observations.json",
+      "observations_sha256": "b147a19154266a3f63c42d4876cceb88d7b33d146b6d926b16fc1b4e8da4940d",
+      "states": 8,
+      "covered": [
+        "admit",
+        "arrive",
+        "complete",
+        "notify",
+        "observe",
+        "retireNotification"
+      ]
+    },
+    {
+      "name": "notification-retry-success",
+      "actions": [
+        {
+          "name": "arrive",
+          "args": [
+            0,
+            true
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "complete",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "notify",
+          "args": [
+            0,
+            false
+          ]
+        },
+        {
+          "name": "notify",
+          "args": [
+            0,
+            true
+          ]
+        }
+      ],
+      "target": "s.jobs.get(0).delivery == Acked and s.jobs.get(0).attempts == 2",
+      "contracts": [
+        "T04",
+        "T08",
+        "T17"
+      ],
+      "trace": "notification-retry-success.itf.json",
+      "trace_sha256": "02ea7375e8d5f1765814e39458e40f6aafa62d6be3269a05d77b540164070044",
+      "driver": "notification-retry-success.qnt",
+      "driver_sha256": "07239280a968064883cce873a332e4217f04addd60e110610383fe07e24ddcda",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "quint/evidence/2026-11-07/preimplementation-progress-final-traces/notification-retry-success.qnt",
+        "--main=preparedTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=checked",
+        "--witnesses=reached",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=5",
+        "--out-itf=quint/evidence/2026-11-07/preimplementation-progress-final-traces/notification-retry-success.itf.json",
+        "--verbosity=1"
+      ],
+      "rejection_command": null,
+      "observations": "notification-retry-success.observations.json",
+      "observations_sha256": "d33d26af2e51ae119a9600d9ca35d5b3913f4daf31838431aef35d63ad2e5e8f",
+      "states": 6,
+      "covered": [
+        "admit",
+        "arrive",
+        "complete",
+        "notify"
+      ]
+    },
+    {
+      "name": "delete-running-agent-preserves-other-work",
+      "actions": [
+        {
+          "name": "arrive",
+          "args": [
+            0,
+            false
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "arrive",
+          "args": [
+            1,
+            true
+          ]
+        },
+        {
+          "name": "requestDelete",
+          "args": []
+        },
+        {
+          "name": "closeDeleted",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "releaseExecution",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "fence",
+          "args": [
+            0,
+            0
+          ]
+        },
+        {
+          "name": "fence",
+          "args": [
+            0,
+            1
+          ]
+        },
+        {
+          "name": "commitClose",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "finishDelete",
+          "args": []
+        },
+        {
+          "name": "cancelNotification",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "retireNotification",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "observe",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "complete",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "notify",
+          "args": [
+            1,
+            true
+          ]
+        }
+      ],
+      "target": "s.deleted and s.taggedObserved and s.jobs.get(0).delivery == Cancelled and s.jobs.get(1).delivery == Acked",
+      "contracts": [
+        "T09",
+        "T10",
+        "T11",
+        "T13",
+        "T17"
+      ],
+      "trace": "delete-running-agent-preserves-other-work.itf.json",
+      "trace_sha256": "c3f3c71d90f1ffa8bac7e97a20e3a5c1cba04aac3fdf5d45709532a2b3d2edb7",
+      "driver": "delete-running-agent-preserves-other-work.qnt",
+      "driver_sha256": "4eb3a7abec99f4cadbaddc063c784ab0ec7e5f18466aa26bc503a221e3dba14b",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "quint/evidence/2026-11-07/preimplementation-progress-final-traces/delete-running-agent-preserves-other-work.qnt",
+        "--main=preparedTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=checked",
+        "--witnesses=reached",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=16",
+        "--out-itf=quint/evidence/2026-11-07/preimplementation-progress-final-traces/delete-running-agent-preserves-other-work.itf.json",
+        "--verbosity=1"
+      ],
+      "rejection_command": null,
+      "observations": "delete-running-agent-preserves-other-work.observations.json",
+      "observations_sha256": "459c7fe072b60d2d34a17f66ca093dc0e0e559f57aa844f4e0b83c1d9c21a4e9",
+      "states": 17,
+      "covered": [
+        "admit",
+        "arrive",
+        "cancelNotification",
+        "closeDeleted",
+        "commitClose",
+        "complete",
+        "fence",
+        "finishDelete",
+        "notify",
+        "observe",
+        "releaseExecution",
+        "requestDelete",
+        "retireNotification"
+      ]
+    },
+    {
+      "name": "barrier-reserves-capacity",
+      "actions": [
+        {
+          "name": "arrive",
+          "args": [
+            1,
+            true
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "arrive",
+          "args": [
+            0,
+            false
+          ]
+        },
+        {
+          "name": "deadline",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "arrive",
+          "args": [
+            2,
+            true
+          ]
+        },
+        {
+          "name": "complete",
+          "args": [
+            1
+          ]
+        }
+      ],
+      "target": "s.running == Set() and barriersPending",
+      "refused_actions": [
+        {
+          "action": {
+            "name": "admit",
+            "args": [
+              2
+            ]
+          },
+          "go_outcome": "queued barrier reserves VM capacity before another callback"
+        }
+      ],
+      "contracts": [
+        "T10",
+        "T14"
+      ],
+      "trace": "barrier-reserves-capacity.itf.json",
+      "trace_sha256": "de9e84023d212800b0becf6550a6f200ce228d812cd85ee05b1980f09dbfa9ae",
+      "driver": "barrier-reserves-capacity.qnt",
+      "driver_sha256": "0facef9133564e94c6d7f4f39979f730db8c103c698a81acee1625694c3a85fb",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "quint/evidence/2026-11-07/preimplementation-progress-final-traces/barrier-reserves-capacity.qnt",
+        "--main=preparedTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=checked",
+        "--witnesses=reached",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=6",
+        "--out-itf=quint/evidence/2026-11-07/preimplementation-progress-final-traces/barrier-reserves-capacity.itf.json",
+        "--verbosity=1"
+      ],
+      "rejection_command": [
+        "node_modules/.bin/quint",
+        "test",
+        "quint/evidence/2026-11-07/preimplementation-progress-final-traces/barrier-reserves-capacity.qnt",
+        "--main=preparedTrace",
+        "--backend=rust",
+        "--max-samples=1",
+        "--seed=0x2a",
+        "--verbosity=1"
+      ],
+      "observations": "barrier-reserves-capacity.observations.json",
+      "observations_sha256": "d42aa252b2decf00c955160b0b9b768b64997e76b64aedf2c6fd942417d2fd32",
+      "states": 7,
+      "covered": [
+        "admit",
+        "arrive",
+        "complete",
+        "deadline"
+      ]
+    },
+    {
+      "name": "fence-waits-for-current-execution",
+      "actions": [
+        {
+          "name": "arrive",
+          "args": [
+            1,
+            true
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "arrive",
+          "args": [
+            0,
+            false
+          ]
+        },
+        {
+          "name": "deadline",
+          "args": [
+            0
+          ]
+        }
+      ],
+      "target": "s.running == Set(1)",
+      "refused_actions": [
+        {
+          "action": {
+            "name": "fence",
+            "args": [
+              0,
+              0
+            ]
+          },
+          "go_outcome": "wait for current execution to finish or be neutralized"
+        }
+      ],
+      "contracts": [
+        "T10",
+        "T13"
+      ],
+      "trace": "fence-waits-for-current-execution.itf.json",
+      "trace_sha256": "fa00e164b4a007fd1333f18f9ad25d70dcec1314a09e1be24e1648a02d0a1198",
+      "driver": "fence-waits-for-current-execution.qnt",
+      "driver_sha256": "3d0fe86816e94b22af810b470afe9236c2d018dacc86363c7d38103532cd423f",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "quint/evidence/2026-11-07/preimplementation-progress-final-traces/fence-waits-for-current-execution.qnt",
+        "--main=preparedTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=checked",
+        "--witnesses=reached",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=4",
+        "--out-itf=quint/evidence/2026-11-07/preimplementation-progress-final-traces/fence-waits-for-current-execution.itf.json",
+        "--verbosity=1"
+      ],
+      "rejection_command": [
+        "node_modules/.bin/quint",
+        "test",
+        "quint/evidence/2026-11-07/preimplementation-progress-final-traces/fence-waits-for-current-execution.qnt",
+        "--main=preparedTrace",
+        "--backend=rust",
+        "--max-samples=1",
+        "--seed=0x2a",
+        "--verbosity=1"
+      ],
+      "observations": "fence-waits-for-current-execution.observations.json",
+      "observations_sha256": "307786dfcb9507ea6e54d5a5f4cd368d79aa1109711942627fcb03f59c64a054",
+      "states": 5,
+      "covered": [
+        "admit",
+        "arrive",
+        "deadline"
+      ]
+    },
+    {
+      "name": "restore-recovery-before-closing",
+      "actions": [
+        {
+          "name": "arrive",
+          "args": [
+            0,
+            false
+          ]
+        },
+        {
+          "name": "deadline",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "loseStore",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "fence",
+          "args": [
+            0,
+            1
+          ]
+        },
+        {
+          "name": "stabilize",
+          "args": []
+        },
+        {
+          "name": "recoverStore",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "fence",
+          "args": [
+            0,
+            0
+          ]
+        },
+        {
+          "name": "commitClose",
+          "args": [
+            0
+          ]
+        }
+      ],
+      "target": "s.jobs.get(0).inbox and s.stable",
+      "contracts": [
+        "T10",
+        "T11",
+        "T15"
+      ],
+      "trace": "restore-recovery-before-closing.itf.json",
+      "trace_sha256": "072f2de302633576bd20a5decbfa94d423007a7deccf6ac4b139fa6fed57f5db",
+      "driver": "restore-recovery-before-closing.qnt",
+      "driver_sha256": "3bb2728f14d2fbe3b4d4ead2bb455c0b612ab7aa7b45bb1ab567005774fb9928",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "quint/evidence/2026-11-07/preimplementation-progress-final-traces/restore-recovery-before-closing.qnt",
+        "--main=preparedTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=checked",
+        "--witnesses=reached",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=8",
+        "--out-itf=quint/evidence/2026-11-07/preimplementation-progress-final-traces/restore-recovery-before-closing.itf.json",
+        "--verbosity=1"
+      ],
+      "rejection_command": null,
+      "observations": "restore-recovery-before-closing.observations.json",
+      "observations_sha256": "332ce540609702de164995be89c6ae2f6e834a867438685bd6ce653afd6a2eed",
+      "states": 9,
+      "covered": [
+        "arrive",
+        "commitClose",
+        "deadline",
+        "fence",
+        "loseStore",
+        "recoverStore",
+        "stabilize"
+      ]
+    },
+    {
+      "name": "unavailable-store-is-not-a-fence",
+      "actions": [
+        {
+          "name": "arrive",
+          "args": [
+            0,
+            false
+          ]
+        },
+        {
+          "name": "deadline",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "loseStore",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "fence",
+          "args": [
+            0,
+            1
+          ]
+        }
+      ],
+      "target": "s.jobs.get(0).barriers == Set(1)",
+      "refused_actions": [
+        {
+          "action": {
+            "name": "commitClose",
+            "args": [
+              0
+            ]
+          },
+          "go_outcome": "missing store barrier prevents terminal commit"
+        },
+        {
+          "action": {
+            "name": "fence",
+            "args": [
+              0,
+              0
+            ]
+          },
+          "go_outcome": "recovery required; unavailable store cannot ACK"
+        }
+      ],
+      "contracts": [
+        "T10",
+        "T11",
+        "T15"
+      ],
+      "trace": "unavailable-store-is-not-a-fence.itf.json",
+      "trace_sha256": "f829ecedbbaeec7f8ced85a0822cde94fa5f435800848ecf7759d4c3ae60be4f",
+      "driver": "unavailable-store-is-not-a-fence.qnt",
+      "driver_sha256": "21daf304e0505bb3938677c8ecc22718682ce6400dcf90e5fd81b430e3925cd8",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "quint/evidence/2026-11-07/preimplementation-progress-final-traces/unavailable-store-is-not-a-fence.qnt",
+        "--main=preparedTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=checked",
+        "--witnesses=reached",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=4",
+        "--out-itf=quint/evidence/2026-11-07/preimplementation-progress-final-traces/unavailable-store-is-not-a-fence.itf.json",
+        "--verbosity=1"
+      ],
+      "rejection_command": [
+        "node_modules/.bin/quint",
+        "test",
+        "quint/evidence/2026-11-07/preimplementation-progress-final-traces/unavailable-store-is-not-a-fence.qnt",
+        "--main=preparedTrace",
+        "--backend=rust",
+        "--max-samples=1",
+        "--seed=0x2a",
+        "--verbosity=1"
+      ],
+      "observations": "unavailable-store-is-not-a-fence.observations.json",
+      "observations_sha256": "4b993d747eaa9af1ba44929f28b409d48e30ee6a7ecd21d20a082645123a36be",
+      "states": 5,
+      "covered": [
+        "arrive",
+        "deadline",
+        "fence",
+        "loseStore"
+      ]
+    },
+    {
+      "name": "worker-crash-recovery",
+      "actions": [
+        {
+          "name": "arrive",
+          "args": [
+            0,
+            true
+          ]
+        },
+        {
+          "name": "crashWorker",
+          "args": []
+        },
+        {
+          "name": "stabilize",
+          "args": []
+        },
+        {
+          "name": "recoverWorker",
+          "args": []
+        },
+        {
+          "name": "admit",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "complete",
+          "args": [
+            0
+          ]
+        }
+      ],
+      "target": "s.jobs.get(0).inbox and s.workerUp",
+      "contracts": [
+        "T03",
+        "T07",
+        "T17"
+      ],
+      "trace": "worker-crash-recovery.itf.json",
+      "trace_sha256": "43e6a36f79e42ad49ff1426613f8de9a9c448cdc20b2a571f30aed7e1dfd06b3",
+      "driver": "worker-crash-recovery.qnt",
+      "driver_sha256": "c68e00653fb07dcc9d057a05e743b0ffdd82f33b895cc99472814c03e462f522",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "quint/evidence/2026-11-07/preimplementation-progress-final-traces/worker-crash-recovery.qnt",
+        "--main=preparedTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=checked",
+        "--witnesses=reached",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=6",
+        "--out-itf=quint/evidence/2026-11-07/preimplementation-progress-final-traces/worker-crash-recovery.itf.json",
+        "--verbosity=1"
+      ],
+      "rejection_command": null,
+      "observations": "worker-crash-recovery.observations.json",
+      "observations_sha256": "de69612f07006bfa505eb5f08dbe26d1db0ab52184d1118a7f6f977735058231",
+      "states": 7,
+      "covered": [
+        "admit",
+        "arrive",
+        "complete",
+        "crashWorker",
+        "recoverWorker",
+        "stabilize"
+      ]
+    },
+    {
+      "name": "authority-recovery-enables-observation",
+      "actions": [
+        {
+          "name": "arrive",
+          "args": [
+            0,
+            true
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "complete",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "loseAuthority",
+          "args": []
+        },
+        {
+          "name": "stabilize",
+          "args": []
+        },
+        {
+          "name": "recoverAuthority",
+          "args": []
+        },
+        {
+          "name": "observe",
+          "args": [
+            0
+          ]
+        }
+      ],
+      "target": "s.taggedObserved and s.authorityUp",
+      "contracts": [
+        "T15",
+        "T17"
+      ],
+      "trace": "authority-recovery-enables-observation.itf.json",
+      "trace_sha256": "e0475e03b4a850a7857d7e1df84b77eadf050bba7f0984eadc6407de840d7df6",
+      "driver": "authority-recovery-enables-observation.qnt",
+      "driver_sha256": "8fb5bddd0ce6b615b42b4c24c121479c8d3af9ef76b82b5607bad779b02011ad",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "quint/evidence/2026-11-07/preimplementation-progress-final-traces/authority-recovery-enables-observation.qnt",
+        "--main=preparedTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=checked",
+        "--witnesses=reached",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=7",
+        "--out-itf=quint/evidence/2026-11-07/preimplementation-progress-final-traces/authority-recovery-enables-observation.itf.json",
+        "--verbosity=1"
+      ],
+      "rejection_command": null,
+      "observations": "authority-recovery-enables-observation.observations.json",
+      "observations_sha256": "6995e57b2423241c87312b6d0ce9123e374d36b47e43641288f593fe7e561845",
+      "states": 8,
+      "covered": [
+        "admit",
+        "arrive",
+        "complete",
+        "loseAuthority",
+        "observe",
+        "recoverAuthority",
+        "stabilize"
+      ]
+    },
+    {
+      "name": "observe-requires-current-authority",
+      "actions": [
+        {
+          "name": "arrive",
+          "args": [
+            0,
+            true
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "complete",
+          "args": [
+            0
+          ]
+        },
+        {
+          "name": "loseAuthority",
+          "args": []
+        }
+      ],
+      "target": "s.jobs.get(0).inbox and not(s.authorityUp)",
+      "refused_actions": [
+        {
+          "action": {
+            "name": "observe",
+            "args": [
+              0
+            ]
+          },
+          "go_outcome": "durable result remains but lookup waits for authority availability"
+        }
+      ],
+      "contracts": [
+        "T17"
+      ],
+      "trace": "observe-requires-current-authority.itf.json",
+      "trace_sha256": "42e4894403db9dabbbcb83e93059fc81b8a363a376191f6462fb2587de910b15",
+      "driver": "observe-requires-current-authority.qnt",
+      "driver_sha256": "72d6b9a991b9272a165fa3446be8e5a535e402e9773c1b4a7fa63e414f907949",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "quint/evidence/2026-11-07/preimplementation-progress-final-traces/observe-requires-current-authority.qnt",
+        "--main=preparedTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=checked",
+        "--witnesses=reached",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=4",
+        "--out-itf=quint/evidence/2026-11-07/preimplementation-progress-final-traces/observe-requires-current-authority.itf.json",
+        "--verbosity=1"
+      ],
+      "rejection_command": [
+        "node_modules/.bin/quint",
+        "test",
+        "quint/evidence/2026-11-07/preimplementation-progress-final-traces/observe-requires-current-authority.qnt",
+        "--main=preparedTrace",
+        "--backend=rust",
+        "--max-samples=1",
+        "--seed=0x2a",
+        "--verbosity=1"
+      ],
+      "observations": "observe-requires-current-authority.observations.json",
+      "observations_sha256": "a18d3ffdef6c681176db26bed3d14df7a8bc4c444ac49375f8220247a64d40ed",
+      "states": 5,
+      "covered": [
+        "admit",
+        "arrive",
+        "complete",
+        "loseAuthority"
+      ]
+    },
+    {
+      "name": "fifo-shared-notification-queue",
+      "actions": [
+        {
+          "name": "arrive",
+          "args": [
+            2,
+            true
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            2
+          ]
+        },
+        {
+          "name": "complete",
+          "args": [
+            2
+          ]
+        },
+        {
+          "name": "arrive",
+          "args": [
+            1,
+            true
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "complete",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "notify",
+          "args": [
+            2,
+            true
+          ]
+        },
+        {
+          "name": "notify",
+          "args": [
+            1,
+            true
+          ]
+        }
+      ],
+      "target": "s.notificationQueue == List() and s.jobs.get(1).delivery == Acked and s.jobs.get(2).delivery == Acked",
+      "contracts": [
+        "T04",
+        "T08"
+      ],
+      "trace": "fifo-shared-notification-queue.itf.json",
+      "trace_sha256": "bf992aa10024eca2607b7a3338869950c4752b41e69f0ee30883ae99a77c176c",
+      "driver": "fifo-shared-notification-queue.qnt",
+      "driver_sha256": "ddadf1e1a588cfc06d797ed09e4fe660d5b74586ae2336c0d2fedd6fca8c013b",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "quint/evidence/2026-11-07/preimplementation-progress-final-traces/fifo-shared-notification-queue.qnt",
+        "--main=preparedTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=checked",
+        "--witnesses=reached",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=8",
+        "--out-itf=quint/evidence/2026-11-07/preimplementation-progress-final-traces/fifo-shared-notification-queue.itf.json",
+        "--verbosity=1"
+      ],
+      "rejection_command": null,
+      "observations": "fifo-shared-notification-queue.observations.json",
+      "observations_sha256": "d469667fe3e4bdd678a32216e2ee9e0c44c8857517c7266b5469b65883c41df2",
+      "states": 9,
+      "covered": [
+        "admit",
+        "arrive",
+        "complete",
+        "notify"
+      ]
+    },
+    {
+      "name": "cannot-recycle-with-outstanding-notice",
+      "actions": [
+        {
+          "name": "arrive",
+          "args": [
+            1,
+            true
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "complete",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "observe",
+          "args": [
+            1
+          ]
+        }
+      ],
+      "target": "s.jobs.get(1).stage == Observable and s.jobs.get(1).delivery == Pending",
+      "refused_actions": [
+        {
+          "action": {
+            "name": "recycle",
+            "args": [
+              1
+            ]
+          },
+          "go_outcome": "old event reference still pending; retain original request identity"
+        }
+      ],
+      "contracts": [
+        "T12",
+        "T17"
+      ],
+      "trace": "cannot-recycle-with-outstanding-notice.itf.json",
+      "trace_sha256": "ec8db5325333f03320245acd28445e12f743a95042fd66ac5f5ceedfa2f00bd8",
+      "driver": "cannot-recycle-with-outstanding-notice.qnt",
+      "driver_sha256": "b77ef6bd1f21976d58d162fdfd863cf5c1ea1a7d8ecdbaffc32e9e1dd2436bda",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "quint/evidence/2026-11-07/preimplementation-progress-final-traces/cannot-recycle-with-outstanding-notice.qnt",
+        "--main=preparedTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=checked",
+        "--witnesses=reached",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=4",
+        "--out-itf=quint/evidence/2026-11-07/preimplementation-progress-final-traces/cannot-recycle-with-outstanding-notice.itf.json",
+        "--verbosity=1"
+      ],
+      "rejection_command": [
+        "node_modules/.bin/quint",
+        "test",
+        "quint/evidence/2026-11-07/preimplementation-progress-final-traces/cannot-recycle-with-outstanding-notice.qnt",
+        "--main=preparedTrace",
+        "--backend=rust",
+        "--max-samples=1",
+        "--seed=0x2a",
+        "--verbosity=1"
+      ],
+      "observations": "cannot-recycle-with-outstanding-notice.observations.json",
+      "observations_sha256": "cd41c45442f00ac5f62f952b5dde7702c022beb327a3e93d93aa689e6a68f6f6",
+      "states": 5,
+      "covered": [
+        "admit",
+        "arrive",
+        "complete",
+        "observe"
+      ]
+    },
+    {
+      "name": "two-repeatable-arrivals",
+      "actions": [
+        {
+          "name": "stabilize",
+          "args": []
+        },
+        {
+          "name": "arrive",
+          "args": [
+            1,
+            true
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "complete",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "notify",
+          "args": [
+            1,
+            true
+          ]
+        },
+        {
+          "name": "observe",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "recycle",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "arrive",
+          "args": [
+            1,
+            true
+          ]
+        },
+        {
+          "name": "admit",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "complete",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "notify",
+          "args": [
+            1,
+            true
+          ]
+        },
+        {
+          "name": "observe",
+          "args": [
+            1
+          ]
+        },
+        {
+          "name": "recycle",
+          "args": [
+            1
+          ]
+        }
+      ],
+      "target": "s == { ...initialState, stable: true }",
+      "contracts": [
+        "T03",
+        "T07",
+        "T08",
+        "T17"
+      ],
+      "trace": "two-repeatable-arrivals.itf.json",
+      "trace_sha256": "83af0069372551d829e7c9ef7d7f51f1c1feac1bd96609ec5ed9819f141f3566",
+      "driver": "two-repeatable-arrivals.qnt",
+      "driver_sha256": "6169e74ed24ab3466537a530e00e7f5ad7e585ce369105eef3bf4a28be47f63f",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "quint/evidence/2026-11-07/preimplementation-progress-final-traces/two-repeatable-arrivals.qnt",
+        "--main=preparedTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=checked",
+        "--witnesses=reached",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=13",
+        "--out-itf=quint/evidence/2026-11-07/preimplementation-progress-final-traces/two-repeatable-arrivals.itf.json",
+        "--verbosity=1"
+      ],
+      "rejection_command": null,
+      "observations": "two-repeatable-arrivals.observations.json",
+      "observations_sha256": "19d36685f1e42153c6ecff06c50a5ccffdd5fa5ebb86ac3340b830158d172326",
+      "states": 14,
+      "covered": [
+        "admit",
+        "arrive",
+        "complete",
+        "notify",
+        "observe",
+        "recycle",
+        "stabilize"
+      ]
+    },
+    {
+      "name": "fifo-admission-cannot-overtake",
+      "actions": [
+        {
+          "name": "arrive",
+          "args": [
+            1,
+            true
+          ]
+        },
+        {
+          "name": "arrive",
+          "args": [
+            0,
+            true
+          ]
+        },
+        {
+          "name": "arrive",
+          "args": [
+            2,
+            true
+          ]
+        }
+      ],
+      "target": "s.admissionQueue == List(1,0,2)",
+      "refused_actions": [
+        {
+          "action": {
+            "name": "admit",
+            "args": [
+              0
+            ]
+          },
+          "go_outcome": "prior accepted request retains admission order"
+        }
+      ],
+      "contracts": [
+        "T02"
+      ],
+      "trace": "fifo-admission-cannot-overtake.itf.json",
+      "trace_sha256": "a875c77e3a8b5e2551f7afe12c7fe18cf285b35ed71848556ea0092b7d18c3f2",
+      "driver": "fifo-admission-cannot-overtake.qnt",
+      "driver_sha256": "e8e8fde07dfda7a35e2c6a3936d86f34797a8cee43d384c78819f94a083f847d",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "quint/evidence/2026-11-07/preimplementation-progress-final-traces/fifo-admission-cannot-overtake.qnt",
+        "--main=preparedTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=checked",
+        "--witnesses=reached",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=3",
+        "--out-itf=quint/evidence/2026-11-07/preimplementation-progress-final-traces/fifo-admission-cannot-overtake.itf.json",
+        "--verbosity=1"
+      ],
+      "rejection_command": [
+        "node_modules/.bin/quint",
+        "test",
+        "quint/evidence/2026-11-07/preimplementation-progress-final-traces/fifo-admission-cannot-overtake.qnt",
+        "--main=preparedTrace",
+        "--backend=rust",
+        "--max-samples=1",
+        "--seed=0x2a",
+        "--verbosity=1"
+      ],
+      "observations": "fifo-admission-cannot-overtake.observations.json",
+      "observations_sha256": "c0bda59dd6f50b94d41cbc2ea2ed35d9dff9469a898ab2dec157bd3e793c6afc",
+      "states": 4,
+      "covered": [
+        "arrive"
+      ]
+    },
+    {
+      "name": "deleted-destination-rejects-new-work",
+      "actions": [
+        {
+          "name": "requestDelete",
+          "args": []
+        },
+        {
+          "name": "finishDelete",
+          "args": []
+        }
+      ],
+      "target": "s.deleted",
+      "refused_actions": [
+        {
+          "action": {
+            "name": "arrive",
+            "args": [
+              0,
+              true
+            ]
+          },
+          "go_outcome": "agent deleted; no new acceptance"
+        }
+      ],
+      "contracts": [
+        "T03",
+        "T09",
+        "T11"
+      ],
+      "trace": "deleted-destination-rejects-new-work.itf.json",
+      "trace_sha256": "672fa9f75a6edad1d796c6ded83d050866f7616b85d193506738eee892f59172",
+      "driver": "deleted-destination-rejects-new-work.qnt",
+      "driver_sha256": "4e965027a1fb01e0907fbbc00d0276345f66795e753012c0db54537257774b46",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "quint/evidence/2026-11-07/preimplementation-progress-final-traces/deleted-destination-rejects-new-work.qnt",
+        "--main=preparedTrace",
+        "--init=traceInit",
+        "--step=traceStep",
+        "--invariant=checked",
+        "--witnesses=reached",
+        "--backend=rust",
+        "--seed=0x2a",
+        "--max-samples=1",
+        "--max-steps=2",
+        "--out-itf=quint/evidence/2026-11-07/preimplementation-progress-final-traces/deleted-destination-rejects-new-work.itf.json",
+        "--verbosity=1"
+      ],
+      "rejection_command": [
+        "node_modules/.bin/quint",
+        "test",
+        "quint/evidence/2026-11-07/preimplementation-progress-final-traces/deleted-destination-rejects-new-work.qnt",
+        "--main=preparedTrace",
+        "--backend=rust",
+        "--max-samples=1",
+        "--seed=0x2a",
+        "--verbosity=1"
+      ],
+      "observations": "deleted-destination-rejects-new-work.observations.json",
+      "observations_sha256": "7611c53489b50f23ec790d71ee8fb3edc27f1c19a0b98762c0a80cf5806f0439",
+      "states": 3,
+      "covered": [
+        "finishDelete",
+        "requestDelete"
+      ]
+    }
+  ],
+  "covered_actions": [
+    "admit",
+    "arrive",
+    "cancelNotification",
+    "closeDeleted",
+    "commitClose",
+    "complete",
+    "crashWorker",
+    "deadline",
+    "fence",
+    "finishDelete",
+    "loseAuthority",
+    "loseStore",
+    "notify",
+    "observe",
+    "recoverAuthority",
+    "recoverStore",
+    "recoverWorker",
+    "recycle",
+    "releaseExecution",
+    "requestDelete",
+    "retireNotification",
+    "stabilize"
+  ]
+}

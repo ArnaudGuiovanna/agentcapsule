@@ -1,0 +1,22 @@
+{
+  "version": "6.1.188",
+  "source_url": "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.1.188.tar.xz",
+  "source_sha256": "ed4d0acb1307c235230c89efc094e210e6290593f94a7e617f28b1001101a33a",
+  "checksum_source": "https://cdn.kernel.org/pub/linux/kernel/v6.x/sha256sums.asc",
+  "base_config": "microvm-linux-6.1.config",
+  "base_config_sha256": "4b573433ff9fbad2d0c944937404f357be6b3f64b1ed0aee7c8c4f2d979e2423",
+  "required_builtins": [
+    "MD",
+    "BLK_DEV_DM",
+    "DM_CRYPT",
+    "CRYPTO_AES",
+    "CRYPTO_XTS",
+    "CRYPTO_SHA256",
+    "EXT4_FS",
+    "DEVTMPFS",
+    "VIRTIO_BLK",
+    "VIRTIO_VSOCKETS"
+  ],
+  "localversion": "-agentcapsule1",
+  "scope": "Reference guest kernel matching the existing 6.1.188 laboratory baseline, with device-mapper/dm-crypt built in. Boot/storage behavior must be tested separately; this build is not a production security-maintenance assessment."
+}

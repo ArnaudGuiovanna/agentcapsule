@@ -1,0 +1,94 @@
+--- a/src/vmm/src/devices/virtio/block/virtio/device.rs
++++ b/src/vmm/src/devices/virtio/block/virtio/device.rs
+@@ -68,11 +68,22 @@
+ impl DiskProperties {
+     // Helper function that opens the file with the proper access permissions
+     fn open_file(disk_image_path: &str, is_disk_read_only: bool) -> Result<File, VirtioBlockError> {
+-        OpenOptions::new()
++        let file = OpenOptions::new()
+             .read(true)
+             .write(!is_disk_read_only)
+             .open(PathBuf::from(&disk_image_path))
+-            .map_err(|x| VirtioBlockError::BackingFile(x, disk_image_path.to_string()))
++            .map_err(|x| VirtioBlockError::BackingFile(x, disk_image_path.to_string()))?;
++        // The VMM owns this descriptor for the entire backing-file lifetime.
++        // Worker/jailer crashes must not release the writable-volume lock.
++        // Read-only images may be shared, but may not overlap a writer.
++        let operation = if is_disk_read_only { libc::LOCK_SH } else { libc::LOCK_EX };
++        // SAFETY: the live File owns a valid fd; flock does not take pointers.
++        if unsafe { libc::flock(file.as_raw_fd(), operation | libc::LOCK_NB) } != 0 {
++            return Err(VirtioBlockError::BackingFile(
++                std::io::Error::last_os_error(), disk_image_path.to_string(),
++            ));
++        }
++        Ok(file)
+     }
+ 
+     // Helper function that gets the size of the file
+@@ -972,6 +983,28 @@
+     }
+ 
+     #[test]
++    fn test_disk_backing_file_lock() {
++        let f = TempFile::new().unwrap();
++        let path = f.as_path().to_str().unwrap();
++        let reader1 = DiskProperties::open_file(path, true).unwrap();
++        let reader2 = DiskProperties::open_file(path, true).unwrap();
++        assert!(DiskProperties::open_file(path, false).is_err());
++        drop(reader1);
++        drop(reader2);
++        let writer = DiskProperties::open_file(path, false).unwrap();
++        assert!(DiskProperties::open_file(path, false).is_err());
++        assert!(DiskProperties::open_file(path, true).is_err());
++        // Renaming or using another hard link does not evade the inode lock.
++        let alias = path.to_owned() + ".alias";
++        std::fs::hard_link(path, &alias).unwrap();
++        assert!(DiskProperties::open_file(&alias, false).is_err());
++        drop(writer);
++        let next_generation = DiskProperties::open_file(&alias, false).unwrap();
++        drop(next_generation);
++        std::fs::remove_file(alias).unwrap();
++    }
++
++    #[test]
+     fn test_disk_backing_file_helper() {
+         let num_sectors = 2;
+         let f = TempFile::new().unwrap();
+--- a/resources/seccomp/x86_64-unknown-linux-musl.json
++++ b/resources/seccomp/x86_64-unknown-linux-musl.json
+@@ -3,6 +3,16 @@
+         "default_action": "trap",
+         "filter_action": "allow",
+         "filter": [
++            {
++                "syscall": "flock",
++                "comment": "Nonblocking shared lock for read-only backing images",
++                "args": [{"index": 1, "type": "dword", "op": "eq", "val": 5}]
++            },
++            {
++                "syscall": "flock",
++                "comment": "Nonblocking exclusive lock for writable backing images",
++                "args": [{"index": 1, "type": "dword", "op": "eq", "val": 6}]
++            },
+             {
+                 "syscall": "stat",
+                 "comment": "Used when creating snapshots in vmm:persist::snapshot_memory_to_file through std::fs::File::metadata"
+--- a/resources/seccomp/aarch64-unknown-linux-musl.json
++++ b/resources/seccomp/aarch64-unknown-linux-musl.json
+@@ -3,6 +3,16 @@
+         "default_action": "trap",
+         "filter_action": "allow",
+         "filter": [
++            {
++                "syscall": "flock",
++                "comment": "Nonblocking shared lock for read-only backing images",
++                "args": [{"index": 1, "type": "dword", "op": "eq", "val": 5}]
++            },
++            {
++                "syscall": "flock",
++                "comment": "Nonblocking exclusive lock for writable backing images",
++                "args": [{"index": 1, "type": "dword", "op": "eq", "val": 6}]
++            },
+             {
+                 "syscall": "newfstatat",
+                 "comment": "Used when creating snapshots in vmm:persist::snapshot_memory_to_file through std::fs::File::metadata"

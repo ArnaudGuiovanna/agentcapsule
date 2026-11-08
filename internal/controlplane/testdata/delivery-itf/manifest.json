@@ -1,0 +1,280 @@
+{
+  "source_sha256": "147fdf7a88a6436f7f58a5381f622816e3b590f76c190896d3cbb11c1c48cf09",
+  "quint": "0.33.1",
+  "scope": "delivery model action boundaries; projection after every action, not a full refinement proof",
+  "positive_coverage": {
+    "init": 8,
+    "apiNewAtomic": 16,
+    "apiReplay": 114,
+    "deliver": 30,
+    "outcome/LostAck": 12,
+    "outcome/Ok": 6,
+    "outcome/Fail": 12
+  },
+  "cases": [
+    {
+      "name": "positive-1",
+      "module": "deliveryOk",
+      "invariant": "safety",
+      "negative": false,
+      "trace": "positive-1.itf.json",
+      "sha256": "a2135c2d60a3259826e1b9aa78fe735184492a0c15a216d7400fff9f3de71c41",
+      "seed": "0x1",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "internal/controlplane/testdata/delivery-itf/delivery.qnt",
+        "--main=deliveryOk",
+        "--invariant=safety",
+        "--mbt",
+        "--seed=0x1",
+        "--max-samples=1",
+        "--max-steps=20",
+        "--out-itf=internal/controlplane/testdata/delivery-itf/positive-1.itf.json",
+        "--verbosity=1"
+      ]
+    },
+    {
+      "name": "positive-2",
+      "module": "deliveryOk",
+      "invariant": "safety",
+      "negative": false,
+      "trace": "positive-2.itf.json",
+      "sha256": "da8f1bf65e9dc89cedddda71d802dd4658692961d592c34b78cc8f2d2d71ebcc",
+      "seed": "0x2",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "internal/controlplane/testdata/delivery-itf/delivery.qnt",
+        "--main=deliveryOk",
+        "--invariant=safety",
+        "--mbt",
+        "--seed=0x2",
+        "--max-samples=1",
+        "--max-steps=20",
+        "--out-itf=internal/controlplane/testdata/delivery-itf/positive-2.itf.json",
+        "--verbosity=1"
+      ]
+    },
+    {
+      "name": "positive-3",
+      "module": "deliveryOk",
+      "invariant": "safety",
+      "negative": false,
+      "trace": "positive-3.itf.json",
+      "sha256": "6852cb62202f9fcbf6627a77177169360431a4aff61231d78021ecf6aa911734",
+      "seed": "0x3",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "internal/controlplane/testdata/delivery-itf/delivery.qnt",
+        "--main=deliveryOk",
+        "--invariant=safety",
+        "--mbt",
+        "--seed=0x3",
+        "--max-samples=1",
+        "--max-steps=20",
+        "--out-itf=internal/controlplane/testdata/delivery-itf/positive-3.itf.json",
+        "--verbosity=1"
+      ]
+    },
+    {
+      "name": "positive-4",
+      "module": "deliveryOk",
+      "invariant": "safety",
+      "negative": false,
+      "trace": "positive-4.itf.json",
+      "sha256": "d75a4f5e381526007fcb22d556cf4cc9eb639131e40c5e5e54fdccd5a91a982e",
+      "seed": "0x4",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "internal/controlplane/testdata/delivery-itf/delivery.qnt",
+        "--main=deliveryOk",
+        "--invariant=safety",
+        "--mbt",
+        "--seed=0x4",
+        "--max-samples=1",
+        "--max-steps=20",
+        "--out-itf=internal/controlplane/testdata/delivery-itf/positive-4.itf.json",
+        "--verbosity=1"
+      ]
+    },
+    {
+      "name": "positive-5",
+      "module": "deliveryOk",
+      "invariant": "safety",
+      "negative": false,
+      "trace": "positive-5.itf.json",
+      "sha256": "c42c97300d255615b34451113e74068ad0831679d4fc34685fb0fab87cb089d3",
+      "seed": "0x5",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "internal/controlplane/testdata/delivery-itf/delivery.qnt",
+        "--main=deliveryOk",
+        "--invariant=safety",
+        "--mbt",
+        "--seed=0x5",
+        "--max-samples=1",
+        "--max-steps=20",
+        "--out-itf=internal/controlplane/testdata/delivery-itf/positive-5.itf.json",
+        "--verbosity=1"
+      ]
+    },
+    {
+      "name": "positive-6",
+      "module": "deliveryOk",
+      "invariant": "safety",
+      "negative": false,
+      "trace": "positive-6.itf.json",
+      "sha256": "066e1bbcd43702227c5660d0ddb97455e635c8fdd517afdd723992c881fde21c",
+      "seed": "0x6",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "internal/controlplane/testdata/delivery-itf/delivery.qnt",
+        "--main=deliveryOk",
+        "--invariant=safety",
+        "--mbt",
+        "--seed=0x6",
+        "--max-samples=1",
+        "--max-steps=20",
+        "--out-itf=internal/controlplane/testdata/delivery-itf/positive-6.itf.json",
+        "--verbosity=1"
+      ]
+    },
+    {
+      "name": "positive-7",
+      "module": "deliveryOk",
+      "invariant": "safety",
+      "negative": false,
+      "trace": "positive-7.itf.json",
+      "sha256": "76ab6d8e26274b5a8a51279b39d0eb3c8da86310f834e50d04f2489492d3b64d",
+      "seed": "0x7",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "internal/controlplane/testdata/delivery-itf/delivery.qnt",
+        "--main=deliveryOk",
+        "--invariant=safety",
+        "--mbt",
+        "--seed=0x7",
+        "--max-samples=1",
+        "--max-steps=20",
+        "--out-itf=internal/controlplane/testdata/delivery-itf/positive-7.itf.json",
+        "--verbosity=1"
+      ]
+    },
+    {
+      "name": "positive-8",
+      "module": "deliveryOk",
+      "invariant": "safety",
+      "negative": false,
+      "trace": "positive-8.itf.json",
+      "sha256": "f45e6e7883b68bff423e0749b7c37464dec74b8d7a7256e46ee7d5561c60d65b",
+      "seed": "0x8",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "internal/controlplane/testdata/delivery-itf/delivery.qnt",
+        "--main=deliveryOk",
+        "--invariant=safety",
+        "--mbt",
+        "--seed=0x8",
+        "--max-samples=1",
+        "--max-steps=20",
+        "--out-itf=internal/controlplane/testdata/delivery-itf/positive-8.itf.json",
+        "--verbosity=1"
+      ]
+    },
+    {
+      "name": "deliveryNoFifo",
+      "module": "deliveryNoFifo",
+      "invariant": "fifo",
+      "negative": true,
+      "trace": "deliveryNoFifo.itf.json",
+      "sha256": "32b740bd8024bc1864aa98be678b98112b3fca669847433f0ce98dd3d177c831",
+      "seed": "0x2a",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "internal/controlplane/testdata/delivery-itf/delivery.qnt",
+        "--main=deliveryNoFifo",
+        "--invariant=fifo",
+        "--mbt",
+        "--seed=0x2a",
+        "--max-samples=3000",
+        "--max-steps=20",
+        "--out-itf=internal/controlplane/testdata/delivery-itf/deliveryNoFifo.itf.json",
+        "--verbosity=1"
+      ]
+    },
+    {
+      "name": "deliveryNoDedup",
+      "module": "deliveryNoDedup",
+      "invariant": "effectOnce",
+      "negative": true,
+      "trace": "deliveryNoDedup.itf.json",
+      "sha256": "ff1dd391495b18b85016b2cff6b33dd406eac5b7d207a92a84bb5b2dc38b38a1",
+      "seed": "0x2a",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "internal/controlplane/testdata/delivery-itf/delivery.qnt",
+        "--main=deliveryNoDedup",
+        "--invariant=effectOnce",
+        "--mbt",
+        "--seed=0x2a",
+        "--max-samples=3000",
+        "--max-steps=20",
+        "--out-itf=internal/controlplane/testdata/delivery-itf/deliveryNoDedup.itf.json",
+        "--verbosity=1"
+      ]
+    },
+    {
+      "name": "deliveryNoDeadLetter",
+      "module": "deliveryNoDeadLetter",
+      "invariant": "noHeadOfLineBlocking",
+      "negative": true,
+      "trace": "deliveryNoDeadLetter.itf.json",
+      "sha256": "e63376b79adeae477a45d290d4eb98b8ef8469b1f1cdbd203b37cd873745b919",
+      "seed": "0x2a",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "internal/controlplane/testdata/delivery-itf/delivery.qnt",
+        "--main=deliveryNoDeadLetter",
+        "--invariant=noHeadOfLineBlocking",
+        "--mbt",
+        "--seed=0x2a",
+        "--max-samples=3000",
+        "--max-steps=20",
+        "--out-itf=internal/controlplane/testdata/delivery-itf/deliveryNoDeadLetter.itf.json",
+        "--verbosity=1"
+      ]
+    },
+    {
+      "name": "deliveryNonAtomicIdem",
+      "module": "deliveryNonAtomicIdem",
+      "invariant": "oneEventPerKey",
+      "negative": true,
+      "trace": "deliveryNonAtomicIdem.itf.json",
+      "sha256": "557fd22b2608335f1713ed225c51b48e33f738a4f5e3cf9cc9dbf77052396546",
+      "seed": "0x2a",
+      "command": [
+        "node_modules/.bin/quint",
+        "run",
+        "internal/controlplane/testdata/delivery-itf/delivery.qnt",
+        "--main=deliveryNonAtomicIdem",
+        "--invariant=oneEventPerKey",
+        "--mbt",
+        "--seed=0x2a",
+        "--max-samples=3000",
+        "--max-steps=20",
+        "--out-itf=internal/controlplane/testdata/delivery-itf/deliveryNonAtomicIdem.itf.json",
+        "--verbosity=1"
+      ]
+    }
+  ]
+}

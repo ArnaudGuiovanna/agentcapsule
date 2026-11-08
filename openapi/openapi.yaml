@@ -1,0 +1,2053 @@
+openapi: 3.1.0
+info:
+  title: Agent Capsule API — organizations, accounts, agents and private exchanges
+  version: 0.8.0
+  description: >-
+    Platform administration of organizations, identity, members and teams
+    through signed delegation, plus the legacy accounts and agents API. The
+    platform, tenant and legacy domains are separate: a credential gains no
+    right in another domain. Legacy agents are not yet migrated to
+    organizations. Validation of the two-tenant product journey is still to be
+    done.
+servers:
+  - url: https://api.example.invalid
+security:
+  - bearer: []
+paths:
+  /v1/health/live:
+    get:
+      security: []
+      responses:
+        '200': {description: "Process available"}
+  /v1/health/ready:
+    get:
+      security: []
+      description: Internal endpoint. Checks the database and the expected schema.
+      responses:
+        '200': {description: "Database and schema available"}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/organizations:
+    get:
+      operationId: listOrganizations
+      summary: List organizations as the platform operator
+      description: Platform credential with scope platform:admin. No agent content.
+      security: [{platformBearer: []}]
+      parameters:
+        - {name: after, in: query, schema: {type: string, maxLength: 100}, description: "Last opaque identifier received."}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 100}}
+      responses:
+        '200':
+          description: Page sorted by identifier, with active and disabled organizations
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/Organization'}}
+        default: {$ref: '#/components/responses/Problem'}
+    post:
+      operationId: createOrganization
+      summary: Create an organization and register its first owner
+      description: >-
+        Platform credential with scope platform:admin. Atomically records the
+        organization, initial principal, org_owner membership, audit entry and
+        encrypted receipt. The initial_owner identity is recorded but not
+        authenticated, and no token is issued. A replay rechecks the current
+        authorization.
+      security: [{platformBearer: []}]
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateOrganization'}
+            example:
+              name: Engineering
+              initial_owner:
+                issuer: https://identity.example
+                subject: opaque-subject
+                display_name: Initial Owner
+      responses:
+        '201':
+          description: Organization created, or initial receipt replayed
+          headers:
+            Idempotency-Replayed: {schema: {type: boolean}, description: "Present and true on replay"}
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - {$ref: '#/components/schemas/Organization'}
+                  - type: object
+                    required: [owner_principal_id]
+                    properties:
+                      owner_principal_id: {type: string}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/organizations/current:
+    get:
+      operationId: getCurrentOrganization
+      summary: Read your own authenticated member context
+      description: >-
+        Signed delegation with scope org:read, a trust configuration installed
+        independently by the operator, and an already registered identity. All
+        active roles can read their own context. Organization, principal,
+        membership, trust, token dates and revocation are rechecked in the
+        transaction. Roles declared in the JWT grant no right. The tenant
+        comes from authentication, never from a request parameter.
+      security: [{delegatedBearer: []}]
+      responses:
+        '200':
+          description: Metadata of the current tenant and principal, without private content
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [organization, principal_id, display_name, role]
+                properties:
+                  organization: {$ref: '#/components/schemas/Organization'}
+                  principal_id: {type: string}
+                  display_name: {type: string}
+                  role: {$ref: '#/components/schemas/OrganizationRole'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/organizations/{id}:
+    get:
+      operationId: getOrganization
+      summary: Read an organization as the platform operator
+      description: Platform credential with scope platform:admin. The organization may be disabled.
+      security: [{platformBearer: []}]
+      parameters: [{$ref: '#/components/parameters/ResourceID'}]
+      responses:
+        '200':
+          description: Organization metadata
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Organization'}
+        '404': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/organizations/{id}/disable:
+    post:
+      operationId: disableOrganization
+      summary: Disable an organization
+      description: >-
+        Platform credential with scope platform:admin. Keeps the members,
+        invalidates future tenant access and increments policy_version exactly
+        once. A new key on an already disabled organization produces an audit
+        entry with changed=false. Replaying the same key creates no additional
+        audit entry. Legacy agents, which still have no tenant, are neither
+        stopped nor deleted.
+      security: [{platformBearer: []}]
+      parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody: {$ref: '#/components/requestBodies/EmptyCommand'}
+      responses:
+        '200':
+          description: Organization disabled, or initial receipt replayed
+          headers:
+            Idempotency-Replayed: {schema: {type: boolean}, description: "Present and true on replay"}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Organization'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/members:
+    get:
+      operationId: listMembers
+      summary: List the members of your organization
+      description: >-
+        Signed delegation with member:read and current role org_owner,
+        org_admin or auditor. Metadata only, for active and revoked members.
+        The tenant comes from the authenticated identity. No parameter can
+        select it.
+      security: [{delegatedBearer: []}]
+      parameters:
+        - {name: after, in: query, schema: {type: string, maxLength: 100}, description: "Last opaque principal_id received."}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 100}}
+      responses:
+        '200':
+          description: Page sorted by principal_id
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/Member'}}
+        default: {$ref: '#/components/responses/Problem'}
+    post:
+      operationId: createMember
+      summary: Register a human member in your organization
+      description: >-
+        Requires member:manage and a current role allowed to grant the
+        requested role. An org_admin cannot create an org_owner or an
+        org_admin. Registers an issuer/subject identity. This operation does
+        not authenticate it, install any trust or issue any token. An already
+        registered identity is rejected unless it is an exact replay,
+        including if it is revoked. Mutation, audit entry and encrypted
+        receipt are atomic. The receipt namespace includes tenant, principal,
+        operation type and key. Current rights are rechecked before any
+        replay.
+      security: [{delegatedBearer: []}]
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateMember'}
+      responses:
+        '201':
+          description: Member registered, or initial receipt replayed
+          headers:
+            Idempotency-Replayed: {schema: {type: boolean}, description: "Present and true on replay"}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Member'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/members/{id}/role:
+    post:
+      operationId: changeMemberRole
+      summary: Change the role of an active member
+      description: >-
+        Requires member:manage and a current authorization on both the target
+        and the new role. An org_admin cannot modify an owner or an
+        administrator, nor grant these roles. The last active org_owner
+        membership is protected, including against two concurrent changes.
+        Changing a role grants no implicit right on conversations or results.
+      security: [{delegatedBearer: []}]
+      parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [role]
+              properties:
+                role: {$ref: '#/components/schemas/OrganizationRole'}
+      responses:
+        '200':
+          description: Role changed, or initial receipt replayed after rights are rechecked
+          headers:
+            Idempotency-Replayed: {schema: {type: boolean}, description: "Present and true on replay"}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Member'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/members/{id}/revoke:
+    post:
+      operationId: revokeMember
+      summary: Revoke a member and their team memberships
+      description: >-
+        Requires member:manage and a current authorization on the target. The
+        last active owner is protected. After commit, the member's new calls
+        are rejected. The mutation waits for transactions that were already
+        authorized. The identity and history are kept. No agent or admitted
+        work is deleted by this operation. No reactivation is exposed.
+      security: [{delegatedBearer: []}]
+      parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody: {$ref: '#/components/requestBodies/EmptyCommand'}
+      responses:
+        '200':
+          description: Member revoked, or initial receipt replayed after rights are rechecked
+          headers:
+            Idempotency-Replayed: {schema: {type: boolean}, description: "Present and true on replay"}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Member'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/audit:
+    get:
+      operationId: listAudit
+      summary: Read the audit trail of your organization
+      description: >-
+        Requires audit:read and current role org_owner, org_admin or auditor.
+        Tenant events only (members, teams, agents, assignments, service
+        accounts, organization), in stable order, with an opaque cursor.
+        Metadata only: actor, action, target and reference. Never a token,
+        secret, prompt or content.
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters:
+        - {name: after, in: query, schema: {type: string, maxLength: 200}, description: "`next` cursor of the previous page."}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 100}}
+      responses:
+        '200':
+          description: Page of events
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/AuditEvent'}}
+                  next: {type: string, description: "Present only if more events may follow."}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/llm/providers:
+    get:
+      operationId: listLlmProviders
+      summary: List the LLM providers of your organization
+      description: Requires provider:manage and current role org_owner or org_admin. The credential is never returned.
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters:
+        - {name: after, in: query, schema: {type: string, maxLength: 100}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 100}}
+      responses:
+        '200':
+          description: Page sorted by identifier
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/LlmProvider'}}
+        default: {$ref: '#/components/responses/Problem'}
+    post:
+      operationId: createLlmProvider
+      summary: Declare an LLM provider
+      description: >-
+        Requires provider:manage and current role org_owner or org_admin. The
+        credential is encrypted at rest, bound to the organization and the
+        provider, and is never returned, neither in a response, nor in the
+        audit trail, nor in a VM. The URL must be https, or http to localhost
+        only.
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, kind, base_url, secret]
+              properties:
+                name: {type: string, minLength: 1, maxLength: 100}
+                kind: {type: string, enum: [openai_compatible, anthropic]}
+                base_url: {type: string, maxLength: 300}
+                secret: {type: string, minLength: 8, maxLength: 4096, writeOnly: true}
+      responses:
+        '201': {$ref: '#/components/responses/LlmProviderReceipt'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/llm/providers/{id}/rotate:
+    post:
+      operationId: rotateLlmProviderSecret
+      summary: Replace a provider's credential
+      description: Takes effect on the next call, without rebuilding any VM. A disabled provider returns 409.
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [secret]
+              properties:
+                secret: {type: string, minLength: 8, maxLength: 4096, writeOnly: true}
+      responses:
+        '200': {$ref: '#/components/responses/LlmProviderReceipt'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/llm/providers/{id}/disable:
+    post:
+      operationId: disableLlmProvider
+      summary: Disable a provider
+      description: Erases the encrypted credential and disables its aliases, permanently. Idempotent.
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody: {$ref: '#/components/requestBodies/EmptyCommand'}
+      responses:
+        '200': {$ref: '#/components/responses/LlmProviderReceipt'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/llm/aliases:
+    get:
+      operationId: listLlmAliases
+      summary: List model aliases (model policy)
+      description: An agent can only reach a model named by an active alias.
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters:
+        - {name: after, in: query, schema: {type: string, maxLength: 100}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 100}}
+      responses:
+        '200':
+          description: Page sorted by alias
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/LlmAlias'}}
+        default: {$ref: '#/components/responses/Problem'}
+    post:
+      operationId: createLlmAlias
+      summary: Create a model alias
+      description: Alias unique per organization. The provider must be active.
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [alias, provider_id, upstream_model]
+              properties:
+                alias: {type: string, minLength: 1, maxLength: 100}
+                provider_id: {type: string, minLength: 1, maxLength: 100}
+                upstream_model: {type: string, minLength: 1, maxLength: 200}
+                input_micro_per_mtok: {type: integer, minimum: 0, description: Estimated price per million input tokens}
+                output_micro_per_mtok: {type: integer, minimum: 0, description: Estimated price per million output tokens}
+      responses:
+        '201': {$ref: '#/components/responses/LlmAliasReceipt'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/llm/aliases/{alias}/disable:
+    post:
+      operationId: disableLlmAlias
+      summary: Disable an alias
+      description: Takes effect on the next resolution. Idempotent.
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters:
+        - {name: alias, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 100}}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody: {$ref: '#/components/requestBodies/EmptyCommand'}
+      responses:
+        '200': {$ref: '#/components/responses/LlmAliasReceipt'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/llm/budgets:
+    get:
+      operationId: listLlmBudgets
+      summary: List LLM budgets
+      description: Requires quota:manage and current role org_owner or org_admin.
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters:
+        - {name: after, in: query, schema: {type: string, maxLength: 100}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 100}}
+      responses:
+        '200':
+          description: Page sorted by identifier
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/LlmBudget'}}
+        default: {$ref: '#/components/responses/Problem'}
+    post:
+      operationId: createLlmBudget
+      summary: Create a token budget
+      description: >-
+        Requires quota:manage and current role org_owner or org_admin. A
+        budget covers the organization, an agent, an alias, or an agent and an
+        alias, over the UTC day or month. In hard mode, a call that does not
+        fit is rejected before any provider call. In soft mode it goes through
+        with a warning. Only one active budget per scope and period (409
+        otherwise).
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [period, limit_tokens, mode]
+              properties:
+                agent_id: {type: string, maxLength: 100}
+                alias: {type: string, maxLength: 100}
+                period: {type: string, enum: [day, month]}
+                limit_tokens: {type: integer, minimum: 1}
+                mode: {type: string, enum: [hard, soft]}
+      responses:
+        '201': {$ref: '#/components/responses/LlmBudgetReceipt'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/llm/budgets/{id}/disable:
+    post:
+      operationId: disableLlmBudget
+      summary: Disable a budget
+      description: The limit stops applying from the next reservation. Idempotent.
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody: {$ref: '#/components/requestBodies/EmptyCommand'}
+      responses:
+        '200': {$ref: '#/components/responses/LlmBudgetReceipt'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/llm/usage:
+    get:
+      operationId: getLlmUsage
+      summary: LLM usage for the current period
+      description: >-
+        Requires usage:read and role org_owner, org_admin or auditor. Settled
+        tokens (reported by the provider) are kept separate from pending
+        tokens and from tokens whose outcome is unknown after a timeout, which
+        count against budgets. Cost is an estimate based on the alias prices,
+        never an invoice.
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters:
+        - {name: period, in: query, schema: {type: string, enum: [day, month], default: day}}
+      responses:
+        '200':
+          description: Aggregates per agent and alias
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/LlmUsage'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/service-accounts:
+    get:
+      operationId: listServiceAccounts
+      summary: List the service accounts of your organization
+      description: Requires identity:manage, a human credential and current role org_owner or org_admin. No secret.
+      security: [{delegatedBearer: []}]
+      parameters:
+        - {name: after, in: query, schema: {type: string, maxLength: 100}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 100}}
+      responses:
+        '200':
+          description: Page sorted by identifier
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/ServiceAccount'}}
+        default: {$ref: '#/components/responses/Problem'}
+    post:
+      operationId: createServiceAccount
+      summary: Create a service account
+      description: >-
+        Requires identity:manage, a human credential and current role
+        org_owner or org_admin. The account role can never be org_owner. An
+        org_admin cannot create or manage an org_admin account. A service
+        account never issues or manages credentials, including its own. The
+        account is kept when a human leaves the organization. Mutation, audit
+        entry and receipt are atomic.
+      security: [{delegatedBearer: []}]
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, role]
+              properties:
+                name: {type: string, minLength: 1, maxLength: 100}
+                role: {type: string, enum: [org_admin, agent_operator, agent_user, auditor]}
+      responses:
+        '201': {$ref: '#/components/responses/ServiceAccountReceipt'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/service-accounts/{id}/disable:
+    post:
+      operationId: disableServiceAccount
+      summary: Disable a service account
+      description: Also revokes all its tokens. Idempotent. The agents it created stay with the organization.
+      security: [{delegatedBearer: []}]
+      parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody: {$ref: '#/components/requestBodies/EmptyCommand'}
+      responses:
+        '200': {$ref: '#/components/responses/ServiceAccountReceipt'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/service-accounts/{id}/tokens:
+    get:
+      operationId: listServiceTokens
+      summary: List the tokens of a service account
+      description: Metadata only. The secret is never returned after issuance.
+      security: [{delegatedBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/ResourceID'}
+        - {name: after, in: query, schema: {type: string, maxLength: 100}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 100}}
+      responses:
+        '200':
+          description: Page sorted by identifier
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/ServiceToken'}}
+        default: {$ref: '#/components/responses/Problem'}
+    post:
+      operationId: issueServiceToken
+      summary: Issue a token for a service account
+      description: >-
+        The acps_ secret appears only in this response and in its encrypted
+        24-hour receipt. Only its SHA-256 hash is stored. Scopes come from a
+        closed registry (never identity:manage, platform:admin or a wildcard)
+        and must be included in those of the issuing human credential. Expiry
+        is explicit, at most 365 days. The token is revoked if its issuer
+        leaves the organization or loses the right to manage this account.
+        Effective rights remain bounded by the account role.
+      security: [{delegatedBearer: []}]
+      parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [scopes, expires_at]
+              properties:
+                scopes: {type: array, minItems: 1, maxItems: 32, uniqueItems: true, items: {type: string}}
+                expires_at: {type: string, format: date-time}
+      responses:
+        '201':
+          description: Token created. The secret is never returned again
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/IssuedServiceToken'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/service-accounts/{id}/tokens/{token_id}/revoke:
+    post:
+      operationId: revokeServiceToken
+      summary: Revoke a service account token
+      description: Takes effect on the next request. Idempotent.
+      security: [{delegatedBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/ResourceID'}
+        - {name: token_id, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 100}}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody: {$ref: '#/components/requestBodies/EmptyCommand'}
+      responses:
+        '200':
+          description: Token revoked, or initial response replayed
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ServiceToken'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/teams:
+    get:
+      operationId: listTeams
+      summary: List the teams of your organization
+      description: >-
+        Requires team:read and current role org_owner, org_admin or auditor.
+        Lists active and disabled teams. No access to content.
+      security: [{delegatedBearer: []}]
+      parameters:
+        - {name: after, in: query, schema: {type: string, maxLength: 100}, description: "Last team identifier received, excluded from the next page."}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 100}}
+      responses:
+        '200':
+          description: Page sorted by identifier
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/Team'}}
+        default: {$ref: '#/components/responses/Problem'}
+    post:
+      operationId: createTeam
+      summary: Create a team in your organization
+      description: >-
+        Requires team:manage and current role org_owner or org_admin. The
+        tenant comes from authentication. Names are not unique. Mutation,
+        audit entry and receipt are atomic. Authorization is rechecked before
+        any replay. After the 24-hour receipt expires, a create call can
+        produce a new team with the same name. No role or agent right is
+        granted.
+      security: [{delegatedBearer: []}]
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name]
+              properties:
+                name: {type: string, minLength: 1, maxLength: 100, description: "Non-blank name without control characters."}
+      responses:
+        '201': {$ref: '#/components/responses/TeamReceipt'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/teams/{id}:
+    get:
+      operationId: getTeam
+      summary: Read a team of your organization
+      description: Requires team:read and current role org_owner, org_admin or auditor. Disabled teams remain readable.
+      security: [{delegatedBearer: []}]
+      parameters: [{$ref: '#/components/parameters/ResourceID'}]
+      responses:
+        '200':
+          description: Team metadata
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Team'}
+        '404': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/teams/{id}/disable:
+    post:
+      operationId: disableTeam
+      summary: Disable a team and revoke all its memberships
+      description: >-
+        Requires team:manage and role org_owner or org_admin. Revoking the
+        memberships and disabling the team are atomic. No reactivation is
+        exposed. Replaying an old create call does not reactivate the team.
+        Organization roles, agents and admitted work are kept.
+      security: [{delegatedBearer: []}]
+      parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody: {$ref: '#/components/requestBodies/EmptyCommand'}
+      responses:
+        '200': {$ref: '#/components/responses/TeamReceipt'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/teams/{id}/members:
+    get:
+      operationId: listTeamMembers
+      summary: List team memberships
+      description: >-
+        Requires team:read and role org_owner, org_admin or auditor. Active
+        and revoked relations, without issuer, subject, organization role or
+        private content.
+      security: [{delegatedBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/ResourceID'}
+        - {name: after, in: query, schema: {type: string, maxLength: 100}, description: "Last principal_id received, excluded from the next page."}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 100}}
+      responses:
+        '200':
+          description: Page sorted by principal_id
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/TeamMembership'}}
+        default: {$ref: '#/components/responses/Problem'}
+    post:
+      operationId: addTeamMember
+      summary: Add an active human member to an active team
+      description: >-
+        Requires team:manage and role org_owner or org_admin. An admin can
+        manage the team membership of an owner or admin without changing their
+        organization role. An already revoked relation requires a new explicit
+        add with a new key. Replaying the old add returns its historical
+        response without changing the relation. A team or member that has
+        become inactive forbids even this replay.
+      security: [{delegatedBearer: []}]
+      parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [principal_id]
+              properties:
+                principal_id: {type: string, minLength: 1, maxLength: 100}
+      responses:
+        '201': {$ref: '#/components/responses/TeamMembershipReceipt'}
+        '200': {$ref: '#/components/responses/TeamMembershipReceipt'}
+        '409': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/teams/{id}/members/{principal_id}/revoke:
+    post:
+      operationId: revokeTeamMember
+      summary: Revoke a team membership
+      description: >-
+        Requires team:manage and role org_owner or org_admin. Keeps the
+        historical relation. A member already revoked from the organization
+        can be removed. An already revoked relation results in a no-op.
+      security: [{delegatedBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/ResourceID'}
+        - {name: principal_id, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 100}}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody: {$ref: '#/components/requestBodies/EmptyCommand'}
+      responses:
+        '200': {$ref: '#/components/responses/TeamMembershipReceipt'}
+        '404': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/users:
+    get:
+      description: Service token with user:manage. Account metadata only.
+      parameters:
+        - {name: after, in: query, schema: {type: string, maxLength: 100}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 100}}
+      responses:
+        '200':
+          description: Page of accounts, sorted by identifier
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/User'}}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+    post:
+      description: Service token with user:manage. Atomic creation of the account and its receipt.
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [display_name]
+              properties:
+                display_name: {type: string, minLength: 1, maxLength: 100}
+      responses:
+        '201':
+          description: Account created, or initial response replayed
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/User'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/users/{id}/tokens:
+    post:
+      description: Service token with user:manage. The issued token represents only its user.
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expires_at]
+              properties:
+                expires_at: {type: string, format: date-time, description: 'Future expiry, at most 365 days.'}
+      responses:
+        '201':
+          description: Personal token. Private response, not cacheable
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, token, expires_at]
+                properties:
+                  id: {type: string}
+                  token: {type: string}
+                  expires_at: {type: string, format: date-time}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/me:
+    get:
+      description: Personal token only. A service token has no owner profile.
+      responses:
+        '200':
+          description: Current profile
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - {$ref: '#/components/schemas/User'}
+                  - type: object
+                    properties:
+                      agent_id: {type: string}
+        '401': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+  /v1/agents:
+    get:
+      description: >-
+        Legacy domain (acp_ token): the owner sees their agent. An authorized
+        service sees only the technical metadata of legacy agents. Tenant
+        domain (delegated JWT, scope agent:read): a role org_owner, org_admin,
+        agent_operator or auditor sees the metadata of all agents of its
+        organization. Any other member sees only the agents on which they have
+        an active assignment, direct or through a team. An agent of another
+        tenant, or one that is not assigned, is absent, never denied. No
+        content.
+      security: [{bearer: []}, {delegatedBearer: []}, {serviceBearer: []}]
+      parameters:
+        - {name: after, in: query, schema: {type: string, maxLength: 100}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 100}}
+      responses:
+        '200':
+          description: Page sorted by identifier
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      oneOf: [{$ref: '#/components/schemas/Agent'}, {$ref: '#/components/schemas/TenantAgent'}]
+        default: {$ref: '#/components/responses/Problem'}
+    post:
+      description: >-
+        Reserves an agent and its provisioning. No host path, UID or secret is
+        accepted. Tenant domain (delegated JWT): requires agent:create and
+        current role org_owner, org_admin or agent_operator. `owner_user_id`
+        must be absent. The agent belongs to the authenticated organization,
+        and a tenant can have several agents. Provisioning of the tenant agent
+        reuses the existing worker.
+      security: [{bearer: []}, {delegatedBearer: []}, {serviceBearer: []}]
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, harness, resources]
+              properties:
+                owner_user_id: {type: string, description: 'Required for a service. An owner can only designate themselves.'}
+                name: {type: string, minLength: 1, maxLength: 100}
+                harness:
+                  type: object
+                  additionalProperties: false
+                  required: [name, version]
+                  properties:
+                    name: {type: string, minLength: 1, maxLength: 100}
+                    version: {type: string, minLength: 1, maxLength: 100}
+                resources: {$ref: '#/components/schemas/Resources'}
+                auto_start: {type: boolean, default: false}
+      responses:
+        '202': {$ref: '#/components/responses/AcceptedOperation'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/agents/{id}:
+    get:
+      description: >-
+        Tenant domain: same visibility rule as the list. An agent the caller
+        has no right on returns 404, identical to a nonexistent agent.
+      security: [{bearer: []}, {delegatedBearer: []}, {serviceBearer: []}]
+      parameters: [{$ref: '#/components/parameters/ResourceID'}]
+      responses:
+        '200':
+          description: Technical state. No private memory
+          content:
+            application/json:
+              schema:
+                oneOf: [{$ref: '#/components/schemas/Agent'}, {$ref: '#/components/schemas/TenantAgent'}]
+        default: {$ref: '#/components/responses/Problem'}
+    delete:
+      security: [{bearer: []}, {delegatedBearer: []}, {serviceBearer: []}]
+      description: >-
+        Owner or administrative service. Tenant domain: requires agent:delete
+        and current role org_owner or org_admin. Records a durable deletion
+        and blocks new admissions. Requests with distinct keys share the same
+        operation. The agent must already have been activated. PROVISIONING
+        remains unsupported. The PENDING receipt stays identical on replay.
+        Check the operation for its progress. The worker finishes after the
+        fences, removal from execution, key revocation and removal of the
+        local volume file. External copies and backups are not covered by this
+        receipt.
+      parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {type: object, additionalProperties: false}
+      responses:
+        '202': {$ref: '#/components/responses/AcceptedOperation'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/agents/{id}/assignments:
+    get:
+      operationId: listAgentAssignments
+      summary: List the assignments of an agent
+      description: >-
+        Requires agent:assign and current role org_owner or org_admin. Lists
+        active and revoked assignments. No content or external identity.
+      security: [{delegatedBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/ResourceID'}
+        - {name: after, in: query, schema: {type: string, maxLength: 100}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 100}}
+      responses:
+        '200':
+          description: Page sorted by identifier
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/AgentAssignment'}}
+        default: {$ref: '#/components/responses/Problem'}
+    post:
+      operationId: createAgentAssignment
+      summary: Assign an agent to a member or a team
+      description: >-
+        Requires agent:assign and current role org_owner or org_admin. Specify
+        either `principal_id` (active member) or `team_id` (active team),
+        never both. One active assignment per target and per agent. A
+        duplicate returns 409. The permissions are read_metadata, invoke and
+        read_content. They are independent: no administrative role grants
+        them. An assignment gives no access to the historical results of
+        another member. Mutation, audit entry and receipt are atomic.
+      security: [{delegatedBearer: []}]
+      parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateAssignmentInput'}
+      responses:
+        '201': {$ref: '#/components/responses/AssignmentReceipt'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/agents/{id}/assignments/{assignment_id}/revoke:
+    post:
+      operationId: revokeAgentAssignment
+      summary: Revoke an assignment
+      description: >-
+        Requires agent:assign and current role org_owner or org_admin.
+        Idempotent: revoking an already revoked assignment returns 200 without
+        a new audit entry. No agent is deleted.
+      security: [{delegatedBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/ResourceID'}
+        - {name: assignment_id, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 100}}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: {type: object, additionalProperties: false}
+      responses:
+        '200': {$ref: '#/components/responses/AssignmentReceipt'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/agents/{id}/assignments/{assignment_id}/replace:
+    post:
+      operationId: replaceAgentAssignment
+      summary: Replace the permissions of an assignment
+      description: >-
+        Requires agent:assign and current role org_owner or org_admin. Revokes
+        the active assignment and creates its replacement for the same target
+        in a single transaction, with no moment without rights and no double
+        set of rights. An already revoked assignment returns 409. The audit
+        trail records the revocation, then the creation.
+      security: [{delegatedBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/ResourceID'}
+        - {name: assignment_id, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 100}}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [permissions]
+              properties:
+                permissions:
+                  type: array
+                  minItems: 1
+                  maxItems: 3
+                  uniqueItems: true
+                  items: {type: string, enum: [read_metadata, invoke, read_content]}
+      responses:
+        '201': {$ref: '#/components/responses/AssignmentReceipt'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/agents/{id}/wake:
+    post:
+      description: >-
+        Durable command executed in the order of this agent's wake/sleep
+        commands. Success follows the host publishing the boot. Tenant domain
+        (delegated JWT): requires agent:operate and current role org_owner,
+        org_admin or agent_operator. An agent that is not yet active returns
+        503.
+      security: [{bearer: []}, {delegatedBearer: []}, {serviceBearer: []}]
+      parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody: {$ref: '#/components/requestBodies/EmptyCommand'}
+      responses:
+        '202': {$ref: '#/components/responses/AcceptedOperation'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/agents/{id}/sleep:
+    post:
+      description: >-
+        Durable command, volume kept. Success waits for the physical removal.
+        A forced stop is reported by unclean_stop. Tenant domain: same rights
+        as wake.
+      security: [{bearer: []}, {delegatedBearer: []}, {serviceBearer: []}]
+      parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody: {$ref: '#/components/requestBodies/EmptyCommand'}
+      responses:
+        '202': {$ref: '#/components/responses/AcceptedOperation'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/operations/{id}:
+    get:
+      description: >-
+        Technical status visible to the owner or to an authorized service. A
+        foreign resource returns 404. Tenant domain (agent:read): visible to
+        the requester of the operation or to a role that can read agent
+        metadata.
+      security: [{bearer: []}, {delegatedBearer: []}, {serviceBearer: []}]
+      parameters: [{$ref: '#/components/parameters/ResourceID'}]
+      responses:
+        '200':
+          description: Current status, distinct from the command's initial receipt
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Operation'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/agents/{id}/messages:
+    post:
+      description: >-
+        Legacy domain: owner only. Tenant domain (delegated JWT or acps_
+        token): requires agent:invoke and an active assignment with the
+        `invoke` permission, direct or through a team. No administrative role
+        can invoke. An agent the caller cannot see returns 404. A visible
+        agent without the invoke right returns 403. The right is read in the
+        admission transaction, before any replay: a revoked member or
+        assignment is rejected even with a key already used. Persists the
+        encrypted content, the operation, the FIFO event and the HTTP receipt
+        in one commit. The content is bound to the requesting principal. This
+        endpoint grants no mandate.
+      security: [{bearer: []}, {delegatedBearer: []}, {serviceBearer: []}]
+      parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/OwnerInstruction'}
+      responses:
+        '202': {$ref: '#/components/responses/AcceptedOperation'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/agents/{id}/invocations:
+    post:
+      description: >-
+        Tenant domain only. Creates an invocation: same admission as
+        `/messages` (agent:invoke and `invoke` assignment, no administrative
+        role), but the response is a trackable `Invocation` resource.
+        Idempotency is a separate operation from `/messages`: the same key
+        never replays the other endpoint's response. 202 means "durably
+        accepted", never "processed".
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/InvocationInput'}
+      responses:
+        '202':
+          description: Invocation accepted, or initial response replayed
+          headers:
+            Idempotency-Replayed: {schema: {type: boolean}}
+            Retry-After: {schema: {type: integer}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Invocation'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}  # agent_unavailable; attachment_unavailable: file unknown, expired, already used or owned by someone else. Nothing is accepted
+        '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}  # queue_full: nothing was accepted; Retry-After; a replay of an accepted request is never rejected
+        default: {$ref: '#/components/responses/Problem'}
+    get:
+      description: >-
+        Metadata of an agent's invocations, most recent first (agent:read).
+        The requester sees only their own. A role that can read agent metadata
+        sees all invocations and the requester. Never the instruction or the
+        result.
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/ResourceID'}
+        - {name: after, in: query, schema: {type: string, maxLength: 100}, description: "Last invocation identifier received."}
+        - {name: state, in: query, schema: {type: string, enum: [scheduled, accepted, working, completed, failed, expired, canceled]}, description: "State filter. `failed` and `expired` are disjoint and make up the dead letters."}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 100}}
+      responses:
+        '200':
+          description: Page of invocations
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/Invocation'}}
+        '404': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/queue:
+    get:
+      description: >-
+        Limits and depth of the organization's instruction queues (usage:read,
+        administrative role allowed to read usage). Counters only, never
+        content.
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      responses:
+        '200':
+          description: Queue status
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/QueueStatus'}
+        '403': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/queue/limits:
+    post:
+      description: >-
+        Replaces the depth limits (quota:manage, role allowed to manage
+        quotas). Lowering a limit abandons no work that was already accepted.
+        It only rejects new admissions until the queue drains. Order within an
+        agent remains FIFO. There is no priority, as the verified delivery
+        model has none.
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/QueueLimits'}
+      responses:
+        '200':
+          description: Limits saved, or initial response replayed
+          headers:
+            Idempotency-Replayed: {schema: {type: boolean}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/QueueLimits'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/invocations/{id}:
+    get:
+      description: >-
+        State of an invocation (agent:read): for the requester, or for a role
+        that can read agent metadata. Any other case returns 404. No content.
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters: [{$ref: '#/components/parameters/ResourceID'}]
+      responses:
+        '200':
+          description: Invocation
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Invocation'}
+        '404': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/invocations/{id}/cancel:
+    post:
+      description: >-
+        Cancels a scheduled invocation that has not been released yet, or a
+        "working" invocation whose agent has not yet posted its result
+        (agent:invoke). Reserved to the requester who still holds the `invoke`
+        permission. An administrator or another member gets 404. An invocation
+        that is queued or being delivered is never interrupted from here: 409.
+        The result the agent posts afterwards is rejected. Idempotent.
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      responses:
+        '200':
+          description: Invocation canceled, or initial response replayed
+          headers:
+            Idempotency-Replayed: {schema: {type: boolean}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Invocation'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/agents/{id}/idle-policy:
+    post:
+      description: >-
+        Enables (60 to 604800 s) or disables (0) idle shutdown of an agent.
+        Same right as sleep (agent:operate). The scheduler only requests an
+        ordinary sleep, with quiescence acknowledged by the guest. It never
+        stops an agent that has work: a pending delivery, an open lifecycle
+        command, an unclosed exchange, a model call in progress, or a
+        scheduled instruction due before the end of the window. The principal
+        who sets the policy is accountable for the sleeps it causes (audited).
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [idle_timeout_seconds]
+              properties:
+                idle_timeout_seconds: {type: integer, minimum: 0, maximum: 604800, description: "0 disables. Otherwise at least 60."}
+      responses:
+        '200':
+          description: Policy saved, or initial response replayed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  agent_id: {type: string}
+                  idle_timeout_seconds: {type: integer}
+        '400': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/agents/{id}/attachments:
+    post:
+      description: >-
+        Uploads a file for an agent, before invoking it (agent:invoke and
+        `invoke` assignment, as for an invocation). The raw body is the file,
+        8 MiB at most. It is encrypted in 256 KiB segments before reaching
+        PostgreSQL and is never returned by the API. The file stays `pending`
+        until `ttl_seconds` (3600 by default, from 60 to 86400). It can be
+        used once, only by its sender, for this agent only. It counts toward
+        the organization's storage quota (`max_attachment_bytes`).
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/ResourceID'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+        - {name: X-Attachment-Name, in: header, required: true, schema: {type: string, minLength: 1, maxLength: 600}, description: "File name in percent-encoded UTF-8. Must not contain `/`, `\\` or control characters, and must not be `.` or `..`. At most 200 bytes once decoded."}
+        - {name: X-Content-SHA256, in: header, required: false, schema: {type: string, pattern: '^[0-9a-f]{64}$'}, description: "Expected digest. A received file that differs is rejected (400) and not stored."}
+        - {name: ttl_seconds, in: query, required: false, schema: {type: integer, minimum: 60, maximum: 86400}}
+      requestBody:
+        required: true
+        description: "Lowercase media type `type/subtype`. Its parameters (charset, etc.) are not kept."
+        content:
+          application/octet-stream:
+            schema: {type: string, format: binary, minLength: 1, maxLength: 8388608}
+          '*/*':
+            schema: {type: string, format: binary}
+      responses:
+        '201':
+          description: File stored, or initial response replayed (same key, same content)
+          headers:
+            Idempotency-Replayed: {schema: {type: boolean}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Attachment'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '413': {$ref: '#/components/responses/Problem'}  # attachment_too_large
+        '415': {$ref: '#/components/responses/Problem'}  # media_type_required
+        '422': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}  # attachment_quota_exceeded: nothing was stored
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/attachments/{id}:
+    get:
+      description: >-
+        Metadata of a file (agent:read): for its sender, or for a role that
+        can read agent metadata. Any other case returns 404. Never the
+        content.
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters: [{$ref: '#/components/parameters/ResourceID'}]
+      responses:
+        '200':
+          description: File
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Attachment'}
+        '404': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
+    delete:
+      description: >-
+        Deletes a file that is still `pending` (agent:invoke), by its sender
+        only. Its bytes are erased in the same transaction and the metadata
+        remains as a tombstone (`purged`). A file already attached to an
+        invocation returns 409. Idempotent.
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      responses:
+        '200':
+          description: File deleted, or initial response replayed
+          headers:
+            Idempotency-Replayed: {schema: {type: boolean}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Attachment'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/invocations/{id}/result:
+    get:
+      description: >-
+        Same rule as `/v1/operations/{id}/result`: original requester AND
+        current `read_content` (agent:content:read). Neither an administrator
+        nor another member.
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters: [{$ref: '#/components/parameters/ResourceID'}]
+      responses:
+        '200':
+          description: JSON result from the harness
+          content:
+            application/json:
+              schema: {}
+        '404': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/operations/{id}/result:
+    get:
+      description: >-
+        Private result of a completed instruction. Legacy domain: owner only.
+        A service token returns 403. Tenant domain: reserved to the principal
+        who made the request, as long as they still hold `read_content` on the
+        agent (agent:content:read). Neither an administrator, nor another
+        member, nor a new assignee can open it, and a revoked assignment
+        closes it again. An operation with no available result, a foreign one,
+        an expired one or a deleted one returns 404.
+      security: [{bearer: []}, {delegatedBearer: []}, {serviceBearer: []}]
+      parameters: [{$ref: '#/components/parameters/ResourceID'}]
+      responses:
+        '200':
+          description: JSON result from the harness. It is not part of the technical status visible to an administrator.
+          content:
+            application/json:
+              schema: {}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/me/messaging-settings:
+    get:
+      description: Companion settings of the authenticated owner (agent:own).
+      responses:
+        '200':
+          description: Current settings
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MessagingSettings'}
+        default: {$ref: '#/components/responses/Problem'}
+    put:
+      description: Replaces both settings, owner only. An agent that is not discoverable cannot receive a new request. Publication in ADS remains to be wired up.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MessagingSettings'}
+      responses:
+        '200':
+          description: Settings saved
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MessagingSettings'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/me/inbox:
+    get:
+      description: Metadata of the owner's private requests and messages (inbox:own), by descending date and identifier. No private content in this list.
+      parameters:
+        - {name: after, in: query, schema: {type: string, maxLength: 100}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 100}}
+        - {name: state, in: query, schema: {$ref: '#/components/schemas/RequestState'}}
+      responses:
+        '200':
+          description: Page of notifications
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/InboxItem'}}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/me/inbox/messages/{id}:
+    get:
+      description: Private message from the companion, for the owner only (inbox:own). The owner of the peer in the original request gets 404. An administrative service gets 403. The first read starts retention. Later reads do not extend it. After purge or deletion of a related party, 404.
+      parameters: [{$ref: '#/components/parameters/ResourceID'}]
+      responses:
+        '200':
+          description: Private message
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OwnerMessageView'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/me/inbox/requests/{id}/accept:
+    post:
+      description: Accepts a pending request, recipient owner only (inbox:own). The initial receipt is kept for the same Idempotency-Key.
+      parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody: {$ref: '#/components/requestBodies/EmptyCommand'}
+      responses:
+        '200': {$ref: '#/components/responses/RequestDecision'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/me/inbox/requests/{id}/decline:
+    post:
+      description: Declines a pending request, recipient owner only (inbox:own). No business wake-up of the recipient.
+      parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody: {$ref: '#/components/requestBodies/EmptyCommand'}
+      responses:
+        '200': {$ref: '#/components/responses/RequestDecision'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/agent-requests/{id}:
+    get:
+      description: State and private contents, for the owner of either party only (inbox:own). A third party gets 404, an administrative token 403. After purge, metadata remains available and contents are omitted. Reading does not extend retention.
+      parameters: [{$ref: '#/components/parameters/ResourceID'}]
+      responses:
+        '200':
+          description: Request and reply available
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RequestView'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/agent-requests/{id}/cancel:
+    post:
+      description: Sending owner only (inbox:own). Records the intent to cancel. CANCELED is published only after the fences. A request that already finished, or an incompatible closure, returns 409. The PENDING receipt stays identical on replay. GET on the request exposes closure_state.
+      parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody: {$ref: '#/components/requestBodies/EmptyCommand'}
+      responses:
+        '202':
+          description: Intent recorded, or initial receipt replayed
+          headers:
+            Retry-After: {schema: {type: integer, const: 1}}
+            Idempotency-Replayed: {schema: {type: boolean}}
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [request_id, status]
+                properties:
+                  request_id: {type: string}
+                  status: {type: string, const: PENDING}
+        default: {$ref: '#/components/responses/Problem'}
+components:
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer
+      description: Opaque legacy token acp_. No authority on organization routes.
+    platformBearer:
+      type: http
+      scheme: bearer
+      description: Opaque platform token acpp_. Scope platform:admin, with no access to legacy accounts or agents.
+    serviceBearer:
+      type: http
+      scheme: bearer
+      description: >-
+        Opaque acps_ token of a tenant service account. Same authority as a
+        delegated credential on tenant routes, bounded by the account role and
+        the token scopes. Never on identity routes.
+    delegatedBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >-
+        EdDSA/Ed25519 JWT verified against a local trust installed in the
+        database. Issuer, single audience, subject, jti, trust_generation, iat
+        and exp are required. The current generation is checked in the
+        database, and the scope must match exactly. The issuer cannot freely
+        choose a tenant or a role.
+  parameters:
+    ResourceID:
+      name: id
+      in: path
+      required: true
+      schema: {type: string, minLength: 1, maxLength: 100}
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: {type: string, minLength: 1, maxLength: 200, pattern: '^[!-~]+$'}
+  responses:
+    LlmProviderReceipt:
+      description: Provider created/updated, or initial response replayed. Never a credential
+      headers:
+        Idempotency-Replayed: {schema: {type: boolean}}
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/LlmProvider'}
+    LlmAliasReceipt:
+      description: Alias created/disabled, or initial response replayed
+      headers:
+        Idempotency-Replayed: {schema: {type: boolean}}
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/LlmAlias'}
+    LlmBudgetReceipt:
+      description: Budget created/disabled, or initial response replayed
+      headers:
+        Idempotency-Replayed: {schema: {type: boolean}}
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/LlmBudget'}
+    ServiceAccountReceipt:
+      description: Service account created/disabled, or initial response replayed
+      headers:
+        Idempotency-Replayed: {schema: {type: boolean}}
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ServiceAccount'}
+    AssignmentReceipt:
+      description: Assignment created/revoked, or initial response replayed, after current rights are checked
+      headers:
+        Idempotency-Replayed: {schema: {type: boolean}, description: "Present and true on replay"}
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/AgentAssignment'}
+    TeamReceipt:
+      description: Team created/disabled, or initial response replayed, after current rights are checked
+      headers:
+        Idempotency-Replayed: {schema: {type: boolean}, description: "Present and true on replay"}
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Team'}
+    TeamMembershipReceipt:
+      description: Membership recorded/revoked, or initial response replayed. 201 only on the first add or its replay
+      headers:
+        Idempotency-Replayed: {schema: {type: boolean}, description: "Present and true on replay"}
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/TeamMembership'}
+    RequestDecision:
+      description: Decision recorded, or initial receipt replayed
+      headers:
+        Idempotency-Replayed: {schema: {type: boolean}, description: "Present and true on replay"}
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [request_id, state]
+            properties:
+              request_id: {type: string}
+              state: {$ref: '#/components/schemas/RequestState'}
+    AcceptedOperation:
+      description: Command persisted. The initial response stays identical on replay
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [agent_id, operation_id, status]
+            properties:
+              agent_id: {type: string}
+              operation_id: {type: string}
+              status: {type: string, const: PENDING}
+    Problem:
+      description: Error with a stable code. No SQL error or private data in the body.
+      headers:
+        X-Request-ID: {schema: {type: string}}
+      content:
+        application/problem+json:
+          schema:
+            type: object
+            required: [type, title, status, code]
+            properties:
+              type: {type: string, const: 'about:blank'}
+              title: {type: string}
+              status: {type: integer}
+              code: {type: string}
+  requestBodies:
+    EmptyCommand:
+      required: true
+      content:
+        application/json:
+          schema: {type: object, additionalProperties: false}
+  schemas:
+    Team:
+      type: object
+      required: [id, name, status, created_at]
+      properties:
+        id: {type: string}
+        name: {type: string, minLength: 1, maxLength: 100}
+        status: {type: string, enum: [active, disabled]}
+        created_at: {type: string, format: date-time}
+    TeamMembership:
+      type: object
+      required: [team_id, principal_id, status, created_at]
+      properties:
+        team_id: {type: string}
+        principal_id: {type: string}
+        status: {type: string, enum: [active, revoked]}
+        created_at: {type: string, format: date-time}
+    OrganizationRole:
+      type: string
+      enum: [org_owner, org_admin, agent_operator, agent_user, auditor]
+    Organization:
+      type: object
+      required: [id, name, status, policy_version, created_at]
+      properties:
+        id: {type: string}
+        name: {type: string, minLength: 1, maxLength: 100}
+        status: {type: string, enum: [active, disabled]}
+        policy_version: {type: integer, minimum: 1}
+        created_at: {type: string, format: date-time}
+    RegisteredIdentity:
+      type: string
+      minLength: 1
+      maxLength: 1024
+      description: At most 1024 UTF-8 bytes. No control characters and no leading or trailing whitespace. The server enforces the byte limit.
+    CreateOrganization:
+      type: object
+      additionalProperties: false
+      required: [name, initial_owner]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 100, description: "Non-blank name without control characters."}
+        initial_owner:
+          type: object
+          additionalProperties: false
+          required: [issuer, subject, display_name]
+          properties:
+            issuer: {$ref: '#/components/schemas/RegisteredIdentity'}
+            subject: {$ref: '#/components/schemas/RegisteredIdentity'}
+            display_name: {type: string, minLength: 1, maxLength: 100, description: "Non-blank name without control characters."}
+    Member:
+      type: object
+      required: [principal_id, issuer, subject, display_name, role, status, created_at]
+      properties:
+        principal_id: {type: string}
+        issuer: {$ref: '#/components/schemas/RegisteredIdentity'}
+        subject: {$ref: '#/components/schemas/RegisteredIdentity'}
+        display_name: {type: string, minLength: 1, maxLength: 100}
+        role: {$ref: '#/components/schemas/OrganizationRole'}
+        status: {type: string, enum: [active, revoked], description: "State of the membership in the organization."}
+        created_at: {type: string, format: date-time}
+    CreateMember:
+      type: object
+      additionalProperties: false
+      required: [issuer, subject, display_name, role]
+      properties:
+        issuer: {$ref: '#/components/schemas/RegisteredIdentity'}
+        subject: {$ref: '#/components/schemas/RegisteredIdentity'}
+        display_name: {type: string, minLength: 1, maxLength: 100, description: "At most 100 Unicode characters. Non-blank name without control characters."}
+        role: {$ref: '#/components/schemas/OrganizationRole'}
+    OwnerInstruction:
+      type: object
+      additionalProperties: false
+      required: [content]
+      properties:
+        content:
+          type: array
+          minItems: 1
+          maxItems: 32
+          description: Non-empty UTF-8 text, without NUL. Total text limited to 32768 bytes. HTTP envelope limited to 64 KiB.
+          items:
+            type: object
+            additionalProperties: false
+            required: [type, text]
+            properties:
+              type: {type: string, const: text}
+              text: {type: string, minLength: 1}
+    Resources:
+      type: object
+      additionalProperties: false
+      required: [vcpus, memory_mib, data_volume_mib]
+      properties:
+        vcpus: {type: integer, minimum: 1, maximum: 8}
+        memory_mib: {type: integer, minimum: 128, maximum: 8192}
+        data_volume_mib: {type: integer, minimum: 64, maximum: 32768}
+    Agent:
+      type: object
+      required: [id, owner_user_id, name, state, harness_digest, resources, created_at]
+      properties:
+        id: {type: string}
+        owner_user_id: {type: string}
+        name: {type: string}
+        state: {type: string}
+        harness_digest: {type: string}
+        resources: {$ref: '#/components/schemas/Resources'}
+        created_at: {type: string, format: date-time}
+    AuditEvent:
+      type: object
+      required: [id, created_at, action, actor, target]
+      properties:
+        id: {type: string}
+        created_at: {type: string, format: date-time}
+        action: {type: string, examples: ["agent.created", "assignment.revoked", "token.issued"]}
+        actor: {type: string, description: "Principal identifier, `platform:<account>` or `operator`."}
+        target: {type: string}
+        reference: {type: string}
+    LlmProvider:
+      type: object
+      required: [id, name, kind, base_url, status, secret_generation, created_at]
+      properties:
+        id: {type: string}
+        name: {type: string}
+        kind: {type: string, enum: [openai_compatible, anthropic]}
+        base_url: {type: string}
+        status: {type: string, enum: [active, disabled]}
+        secret_generation: {type: integer, minimum: 1}
+        created_at: {type: string, format: date-time}
+        rotated_at: {type: string, format: date-time}
+    LlmBudget:
+      type: object
+      required: [id, period, limit_tokens, mode, status, created_at]
+      properties:
+        id: {type: string}
+        agent_id: {type: string}
+        alias: {type: string}
+        period: {type: string, enum: [day, month]}
+        limit_tokens: {type: integer}
+        mode: {type: string, enum: [hard, soft]}
+        status: {type: string, enum: [active, disabled]}
+        created_at: {type: string, format: date-time}
+    InvocationInput:
+      allOf:
+        - {$ref: '#/components/schemas/OwnerInstruction'}
+        - type: object
+          properties:
+            ttl_seconds: {type: integer, minimum: 1, maximum: 86400, description: "Time to wait before delivery (3600 by default), counted from the due time if `run_at` is given. A different TTL with the same key is a different request (422)."}
+            run_at: {type: string, format: date-time, description: "Earliest delivery time (at least 1 s in the future, at most 30 days; otherwise 400). The invocation immediately has its identity and its encrypted content, but enters the delivery queue only at the due time."}
+            attachments:
+              type: array
+              maxItems: 8
+              uniqueItems: true
+              items: {type: string, pattern: '^att_[0-9a-f]{32}$'}
+              description: "Files uploaded beforehand by the same principal for this agent, in the desired order. All or nothing: a single unusable file rejects the invocation (409 attachment_unavailable)."
+            work_timeout_seconds: {type: integer, minimum: 60, maximum: 86400, description: "If the agent acknowledges with 'working', time allowed (3600 by default) to post its result. Beyond that, the invocation fails with `work_timeout`. Does not bound delivery."}
+    QueueLimits:
+      type: object
+      required: [max_pending_per_agent, max_pending_tenant]
+      properties:
+        max_pending_per_agent: {type: integer, minimum: 1, maximum: 100000}
+        max_pending_tenant: {type: integer, minimum: 1, maximum: 1000000, description: "At least equal to the per-agent limit."}
+        max_attachment_bytes: {type: integer, minimum: 0, maximum: 68719476736, description: "Bytes of unpurged files the organization may hold (1 MiB to 64 GiB; 0 or absent = 512 MiB)."}
+        default: {type: boolean, description: "True while the organization has configured nothing (100 per agent, 1000 in total)."}
+    QueueStatus:
+      type: object
+      required: [limits, pending_tenant, agents]
+      properties:
+        limits: {$ref: '#/components/schemas/QueueLimits'}
+        pending_tenant: {type: integer}
+        agents:
+          type: array
+          items:
+            type: object
+            required: [agent_id, pending]
+            properties:
+              agent_id: {type: string}
+              pending: {type: integer}
+    Invocation:
+      type: object
+      required: [id, agent_id, state, result_available]
+      properties:
+        id: {type: string, description: "Identifier of the underlying operation, accepted by /v1/operations/{id}."}
+        agent_id: {type: string}
+        state:
+          type: string
+          enum: [scheduled, accepted, working, completed, failed, expired, canceled, unknown]
+          description: >-
+            accepted = persisted, not yet processed; working = being
+            delivered, or delivered and acknowledged as "working" by the
+            agent, which will post its result later; completed = the agent
+            replied. A delivery acknowledgment is never a business success.
+            `error_code` `work_timeout`: the agent did not post its result in
+            time; `agent_failed`: it declared the failure.
+        error_code: {type: string}
+        requested_by: {type: string, description: "Visible only to administrative reader roles."}
+        created_at: {type: string, format: date-time}
+        completed_at: {type: string, format: date-time}
+        result_available: {type: boolean, description: "A result exists. Reading it depends on read_content."}
+        run_at: {type: string, format: date-time, description: "Due time of a scheduled invocation."}
+        expires_at: {type: string, format: date-time, description: "Delivery deadline of a pending instruction. Does not bound execution."}
+        close_reason:
+          type: string
+          enum: [expired, attempts_exhausted, closed]
+          description: "Why an instruction was closed without running. `expired` wins if the deadline has also passed."
+        attachments:
+          type: array
+          items: {type: string}
+          description: "Attached files, in the given order. The agent reads them after acknowledging 'working', as long as the invocation is not finished. Their bytes are purged as soon as it is."
+        result_due_at: {type: string, format: date-time, description: "Present once the agent is 'working'. Deadline for its result."}
+    Attachment:
+      type: object
+      required: [id, agent_id, name, media_type, size, sha256, state, created_at, expires_at]
+      properties:
+        id: {type: string, pattern: '^att_[0-9a-f]{32}$'}
+        agent_id: {type: string}
+        name: {type: string}
+        media_type: {type: string}
+        size: {type: integer, minimum: 1, maximum: 8388608}
+        sha256: {type: string, pattern: '^[0-9a-f]{64}$'}
+        state: {type: string, enum: [pending, attached, purged], description: "`purged`: bytes erased (expiry, deletion, end of the invocation's retention, or agent deletion)."}
+        created_at: {type: string, format: date-time}
+        expires_at: {type: string, format: date-time, description: "End of validity of a file not yet attached."}
+    LlmUsage:
+      type: object
+      required: [period, since, lines, cost_is_estimate]
+      properties:
+        period: {type: string, enum: [day, month]}
+        since: {type: string, format: date-time}
+        cost_is_estimate: {type: boolean}
+        lines:
+          type: array
+          items:
+            type: object
+            required: [agent_id, alias, calls, settled_input_tokens, settled_output_tokens, pending_tokens, unknown_outcome_tokens, estimated_cost_micro]
+            properties:
+              agent_id: {type: string}
+              alias: {type: string}
+              calls: {type: integer}
+              settled_input_tokens: {type: integer}
+              settled_output_tokens: {type: integer}
+              pending_tokens: {type: integer}
+              unknown_outcome_tokens: {type: integer}
+              estimated_cost_micro: {type: integer}
+    LlmAlias:
+      type: object
+      required: [alias, provider_id, upstream_model, status, created_at, input_micro_per_mtok, output_micro_per_mtok]
+      properties:
+        input_micro_per_mtok: {type: integer}
+        output_micro_per_mtok: {type: integer}
+        alias: {type: string}
+        provider_id: {type: string}
+        upstream_model: {type: string}
+        status: {type: string, enum: [active, disabled]}
+        created_at: {type: string, format: date-time}
+    ServiceAccount:
+      type: object
+      required: [id, name, role, status, created_at]
+      properties:
+        id: {type: string}
+        name: {type: string}
+        role: {type: string, enum: [org_admin, agent_operator, agent_user, auditor]}
+        status: {type: string, enum: [active, disabled]}
+        created_at: {type: string, format: date-time}
+    ServiceToken:
+      type: object
+      required: [id, service_account_id, scopes, expires_at, status, created_at]
+      properties:
+        id: {type: string}
+        service_account_id: {type: string}
+        scopes: {type: array, items: {type: string}}
+        expires_at: {type: string, format: date-time}
+        status: {type: string, enum: [active, revoked, expired]}
+        created_at: {type: string, format: date-time}
+        revoked_at: {type: string, format: date-time}
+    IssuedServiceToken:
+      allOf:
+        - $ref: '#/components/schemas/ServiceToken'
+        - type: object
+          required: [token]
+          properties:
+            token: {type: string, description: "acps_ secret, shown only once."}
+    TenantAgent:
+      type: object
+      required: [id, name, state, harness_digest, resources, created_at, desired_state, converged]
+      properties:
+        id: {type: string}
+        name: {type: string}
+        state: {type: string, description: "Observed state (STOPPED, STARTING, READY, ...)."}
+        harness_digest: {type: string}
+        resources: {$ref: '#/components/schemas/Resources'}
+        created_at: {type: string, format: date-time}
+        desired_state:
+          type: string
+          enum: [running, stopped, deleted]
+          description: >-
+            Desired state based on the lifecycle operations journal (last
+            accepted wake or sleep, not failed or canceled; otherwise
+            `auto_start`). It reports an intent: it does not restart a stopped
+            agent by itself.
+        converged: {type: boolean, description: "True when the observed state matches the desired state (running↔READY, stopped↔STOPPED)."}
+        idle_timeout_seconds: {type: integer, minimum: 60, maximum: 604800, description: "Idle shutdown policy. Absent if disabled."}
+    CreateAssignmentInput:
+      type: object
+      additionalProperties: false
+      required: [permissions]
+      properties:
+        principal_id: {type: string, minLength: 1, maxLength: 100}
+        team_id: {type: string, minLength: 1, maxLength: 100}
+        permissions:
+          type: array
+          minItems: 1
+          maxItems: 3
+          uniqueItems: true
+          items: {type: string, enum: [read_metadata, invoke, read_content]}
+    AgentAssignment:
+      type: object
+      required: [id, agent_id, permissions, status, created_at]
+      properties:
+        id: {type: string}
+        agent_id: {type: string}
+        principal_id: {type: string}
+        team_id: {type: string}
+        permissions:
+          type: array
+          items: {type: string, enum: [read_metadata, invoke, read_content]}
+        status: {type: string, enum: [active, revoked]}
+        created_at: {type: string, format: date-time}
+        revoked_at: {type: string, format: date-time}
+    Operation:
+      type: object
+      required: [id, agent_id, kind, status, created_at]
+      properties:
+        id: {type: string}
+        agent_id: {type: string}
+        kind: {type: string}
+        status: {type: string, enum: [PENDING, RUNNING, SUCCEEDED, FAILED, CANCELED]}
+        error_code: {type: string}
+        created_at: {type: string, format: date-time}
+        completed_at: {type: string, format: date-time}
+        unclean_stop: {type: boolean, description: "Present for a completed sleep. true indicates a forced stop."}
+        deletion_phase:
+          type: string
+          enum: [FENCING, RETIRING, CLEANUP_PENDING, COMPLETE]
+          description: Present for a deletion. CLEANUP_PENDING stays RUNNING until the durable receipt of key revocation and local volume removal. COMPLETE accompanies SUCCEEDED and the DELETED state.
+    User:
+      type: object
+      required: [id, display_name, role, status, created_at]
+      properties:
+        id: {type: string}
+        display_name: {type: string}
+        role: {type: string, enum: [member, admin]}
+        status: {type: string, enum: [active, disabled]}
+        created_at: {type: string, format: date-time}
+    MessagingSettings:
+      type: object
+      additionalProperties: false
+      required: [discoverable, inbound_mode]
+      properties:
+        discoverable: {type: boolean}
+        inbound_mode: {type: string, enum: [manual, auto]}
+    RequestState:
+      type: string
+      enum: [PENDING_APPROVAL, DELIVERING, PROCESSING, REPLIED, DECLINED, EXPIRED, CANCELED, FAILED]
+    InboxItem:
+      type: object
+      required: [id, kind, created_at]
+      properties:
+        id: {type: string}
+        kind: {type: string, enum: [request_pending, request_update, agent_message]}
+        request_id: {type: string}
+        message_id: {type: string, description: "Present for agent_message, to be read via /v1/me/inbox/messages/{id}."}
+        state: {$ref: '#/components/schemas/RequestState'}
+        created_at: {type: string, format: date-time}
+    PeerPayload:
+      type: object
+      additionalProperties: false
+      required: [content]
+      description: Encoded JSON limited to 64 KiB. Non-empty UTF-8 text, without NUL.
+      properties:
+        content:
+          type: array
+          minItems: 1
+          maxItems: 32
+          items:
+            type: object
+            additionalProperties: false
+            required: [type, text]
+            properties:
+              type: {type: string, const: text}
+              text: {type: string, minLength: 1}
+    RequestView:
+      type: object
+      required: [id, sender_agent_id, recipient_agent_id, state, expires_at]
+      properties:
+        id: {type: string}
+        sender_agent_id: {type: string}
+        recipient_agent_id: {type: string}
+        state: {$ref: '#/components/schemas/RequestState'}
+        closure_state: {type: string, enum: [FENCING, COMMITTED], description: "Present after a closure intent. FENCING does not yet mean CANCELED."}
+        expires_at: {type: string, format: date-time}
+        subject: {type: string}
+        correlation_id: {type: string}
+        payload: {$ref: '#/components/schemas/PeerPayload'}
+        reply: {$ref: '#/components/schemas/PeerPayload'}
+    OwnerMessageView:
+      type: object
+      required: [id, agent_id, content, created_at]
+      properties:
+        id: {type: string}
+        agent_id: {type: string}
+        request_id: {type: string}
+        content: {$ref: '#/components/schemas/OwnerInstruction/properties/content'}
+        created_at: {type: string, format: date-time}
