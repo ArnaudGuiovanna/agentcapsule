@@ -14,8 +14,14 @@ import (
 
 var ErrPrivateFile = errors.New("configuration requires a private regular file owned by this user or root")
 
-func ReadPrivate(path string, size int) ([]byte, error) {
-	if size < 1 || size > 65536 {
+// ReadPrivate reads a private file of exactly size bytes.
+func ReadPrivate(path string, size int) ([]byte, error) { return readPrivate(path, size, size) }
+
+// ReadPrivateUpTo reads a private file of 1 to max bytes.
+func ReadPrivateUpTo(path string, max int) ([]byte, error) { return readPrivate(path, 1, max) }
+
+func readPrivate(path string, min, max int) ([]byte, error) {
+	if min < 1 || max < min || max > 65536 {
 		return nil, ErrPrivateFile
 	}
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
@@ -28,14 +34,16 @@ func ReadPrivate(path string, size int) ([]byte, error) {
 		return nil, err
 	}
 	uid := st.Sys().(*syscall.Stat_t).Uid
-	if !st.Mode().IsRegular() || st.Mode().Perm()&0077 != 0 || (uid != 0 && uid != uint32(os.Geteuid())) || st.Size() != int64(size) {
+	if !st.Mode().IsRegular() || st.Mode().Perm()&0077 != 0 || (uid != 0 && uid != uint32(os.Geteuid())) ||
+		st.Size() < int64(min) || st.Size() > int64(max) {
 		return nil, ErrPrivateFile
 	}
-	data, err := io.ReadAll(io.LimitReader(f, int64(size)+1))
+	data, err := io.ReadAll(io.LimitReader(f, int64(max)+1))
 	if err != nil {
 		return nil, err
 	}
-	if len(data) != size {
+	if len(data) < min || len(data) > max {
+		clear(data)
 		return nil, ErrPrivateFile
 	}
 	return data, nil

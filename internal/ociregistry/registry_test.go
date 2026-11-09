@@ -142,7 +142,7 @@ func TestRedirectsAndTokensOnlyToApprovedHosts(t *testing.T) {
 		t.Fatal("blob redirect to an unapproved host followed", cdn, err)
 	}
 	// A token realm on another host is refused as well.
-	if err = newClient(rule, 0).fetchToken(t.Context(), "acme/echo", "s", `Bearer realm="http://attacker.example/token"`); !errors.Is(err, ErrPolicy) {
+	if _, err = newClient(rule, 0).fetchToken(t.Context(), "s", `realm="http://attacker.example/token"`); !errors.Is(err, ErrPolicy) {
 		t.Fatal("token realm on an unapproved host", err)
 	}
 }

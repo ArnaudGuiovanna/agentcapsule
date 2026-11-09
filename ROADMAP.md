@@ -76,7 +76,7 @@ a production host yet.
 | ID | Item | Status | Remaining |
 |---|---|---|---|
 | REG-01 | `harness.yaml` manifest, compatibility checks, read-only harness artifact, release states; agents boot from an imported release (validated on KVM) | Done | — |
-| REG-02 | Asynchronous OCI import (GHCR, standard registries), allowlists, signatures | Partial | Registry credentials, live GHCR test, signature/attestation policy (REG-009) |
+| REG-02 | Asynchronous OCI import (GHCR, standard registries), allowlists, private-registry credentials, signatures | Partial | Live GHCR test, signature/attestation policy (REG-009), short-lived cloud registry credentials |
 | REG-03 | Shared read-only cache by digest, pinned agents, documented manual updates | Partial | Eviction, documented manual upgrade and rollback |
 | REG-04 | Reference Dagger module; harnesses in Go and in Python or TypeScript | Not started | All (the `agentcapsule-harness pack/push` tool exists) |
 

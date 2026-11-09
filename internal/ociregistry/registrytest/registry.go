@@ -1,6 +1,7 @@
 // Package registrytest is an in-memory OCI distribution registry for tests:
-// pull and monolithic push, optional bearer-token authentication, optional
-// blob redirection to a second host, and hooks to serve tampered content.
+// pull and monolithic push, optional bearer-token or Basic authentication,
+// optional blob redirection to a second host, hooks to serve tampered content,
+// and counters that reveal credentials sent where they should not go.
 package registrytest
 
 import (
@@ -20,6 +21,17 @@ type Registry struct {
 	BlobServer *httptest.Server
 	// Token, when non-empty, is required as a bearer token, issued by /token.
 	Token string
+	// Username and Password, when set with Token, make the registry private:
+	// /token issues Token only for these Basic credentials, refuses wrong
+	// ones (401) and gives anonymous callers a token the registry rejects.
+	// With Basic, the registry itself requires them (no token service).
+	Username, Password string
+	Basic              bool
+	// BasicSeen counts registry API requests carrying Basic credentials while
+	// a token service is in use; BlobAuth counts blob-host requests carrying
+	// any Authorization header. Both must stay zero. Challenges counts 401
+	// challenges the registry API answered.
+	BasicSeen, BlobAuth, Challenges atomic.Int64
 	// Tamper may rewrite a blob before it is served (by digest).
 	Tamper func(digest string, b []byte) []byte
 
@@ -43,6 +55,9 @@ func (r *Registry) Host() string { return strings.TrimPrefix(r.Server.URL, "http
 // RedirectBlobs makes blob GETs answer 307 to a second server, like a CDN.
 func (r *Registry) RedirectBlobs() string {
 	r.BlobServer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Header.Get("Authorization") != "" {
+			r.BlobAuth.Add(1)
+		}
 		r.sendBlob(w, strings.TrimPrefix(req.URL.Path, "/blob/"), req.Method == http.MethodHead)
 	}))
 	return strings.TrimPrefix(r.BlobServer.URL, "http://")
@@ -78,14 +93,39 @@ func digest(b []byte) string {
 }
 
 func (r *Registry) serve(w http.ResponseWriter, req *http.Request) {
+	user, password, hasBasic := req.BasicAuth()
+	matches := hasBasic && user == r.Username && password == r.Password
 	if req.URL.Path == "/token" {
-		_, _ = io.WriteString(w, `{"token":"`+r.Token+`"}`)
+		token := r.Token
+		switch {
+		case r.Username == "":
+		case !hasBasic:
+			token = "anonymous"
+		case !matches:
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		_, _ = io.WriteString(w, `{"token":"`+token+`"}`)
 		return
 	}
-	if r.Token != "" && req.Header.Get("Authorization") != "Bearer "+r.Token {
-		w.Header().Set("WWW-Authenticate", `Bearer realm="`+r.Server.URL+`/token",service="registrytest",scope="x"`)
-		w.WriteHeader(http.StatusUnauthorized)
-		return
+	switch {
+	case r.Basic:
+		if !matches {
+			r.Challenges.Add(1)
+			w.Header().Set("WWW-Authenticate", `Basic realm="registrytest"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+	case r.Token != "":
+		if hasBasic {
+			r.BasicSeen.Add(1)
+		}
+		if req.Header.Get("Authorization") != "Bearer "+r.Token {
+			r.Challenges.Add(1)
+			w.Header().Set("WWW-Authenticate", `Bearer realm="`+r.Server.URL+`/token",service="registrytest",scope="x"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
 	}
 	p := strings.TrimPrefix(req.URL.Path, "/v2/")
 	switch {

@@ -1751,10 +1751,13 @@ components:
         state: {type: string, enum: [IMPORTING, READY, REJECTED]}
         error_code:
           type: string
-          enum: [policy, not_found, integrity, version_conflict, unavailable]
+          enum: [policy, not_found, access_denied, integrity, version_conflict, unavailable]
           description: >-
             policy = registry or repository not approved, or a redirect/token host not
-            approved; not_found = the registry does not have it; integrity = digest, size,
+            approved; not_found = the registry does not have it; access_denied = the
+            registry refused access (private repository without valid credentials on the
+            worker, or a repository that does not exist; registries often do not say
+            which); integrity = digest, size,
             media type, harness.yaml or ext4 check failed; version_conflict = name:version
             already belongs to another package; unavailable = still failing after the
             last retry.

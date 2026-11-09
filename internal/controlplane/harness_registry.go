@@ -301,7 +301,7 @@ func (s *Store) CompleteHarnessImport(ctx context.Context, job ImportJob, r Impo
 // import; a transient one schedules a retry, and the last attempt rejects it.
 func (s *Store) FailHarnessImport(ctx context.Context, job ImportJob, code string, transient bool, retryAfter time.Duration) (HarnessImport, error) {
 	switch code {
-	case "policy", "not_found", "integrity", "unavailable":
+	case "policy", "not_found", "access_denied", "integrity", "unavailable":
 	default:
 		return HarnessImport{}, ErrInput
 	}

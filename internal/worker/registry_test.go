@@ -228,3 +228,36 @@ func TestWorkerImportsVerifiedPackagesIntoTheCache(t *testing.T) {
 		t.Fatal("transient failure", v)
 	}
 }
+
+func TestPrivateRegistryImportsNeedCredentials(t *testing.T) {
+	l := newImportLab(t)
+	ref := l.publish(t, "private", "1.0.0")
+	// The registry turns private: tokens only for these credentials.
+	l.reg.Token, l.reg.Username, l.reg.Password = "pull-token", "ci-bot", "test-password-not-a-secret" // gitleaks:allow
+
+	denied := l.request(t, "anonymous", ref.String())
+	l.importOne(t)
+	if v := l.state(t, denied.ID); v.State != "REJECTED" || v.ErrorCode != "access_denied" || v.Attempts != 1 {
+		t.Fatal("anonymous import of a private package", v)
+	}
+
+	path := filepath.Join(t.TempDir(), "registry.json")
+	if err := os.WriteFile(path, []byte(`{"username":"ci-bot","password":"test-password-not-a-secret"}`), 0o600); err != nil { // gitleaks:allow
+		t.Fatal(err)
+	}
+	c := ServiceConfig{Root: t.TempDir(), Registry: &ServiceRegistry{Cache: l.cache, MaxHarnessMiB: 64,
+		Rules: []RegistryRule{{Rule: l.rule, CredentialsFile: path}}}}
+	importer, err := c.OpenRegistry(l.store, "importer-credentials")
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.importer = importer
+	again := l.request(t, "with-credentials", ref.String())
+	l.importOne(t)
+	if v := l.state(t, again.ID); v.State != "READY" || v.ReleaseID == "" {
+		t.Fatal("import with credentials", v)
+	}
+	if l.reg.BasicSeen.Load() != 0 {
+		t.Fatal("credentials sent to the registry API instead of the token service")
+	}
+}

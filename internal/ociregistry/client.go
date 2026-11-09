@@ -27,10 +27,10 @@ const (
 // address policy of that rule applies to every connection, including blob
 // redirects and token requests. Environment proxies are ignored.
 type client struct {
-	rule  Rule
-	http  *http.Client
-	mu    sync.Mutex
-	token map[string]string // repository -> bearer token
+	rule Rule
+	http *http.Client
+	mu   sync.Mutex
+	auth map[string]string // repository -> Authorization header won from a challenge
 }
 
 func newClient(rule Rule, timeout time.Duration) *client {
@@ -54,13 +54,19 @@ func newClient(rule Rule, timeout time.Duration) *client {
 		IdleConnTimeout:       30 * time.Second,
 		ForceAttemptHTTP2:     true,
 	}
-	c := &client{rule: rule, token: map[string]string{}}
+	c := &client{rule: rule, auth: map[string]string{}}
 	c.http = &http.Client{Transport: transport, Timeout: timeout, CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 3 {
 			return fmt.Errorf("%w: too many redirects", ErrPolicy)
 		}
 		if !c.allowedURL(req.URL, c.rule.BlobHosts) {
 			return fmt.Errorf("%w: redirect to an unapproved host", ErrPolicy)
+		}
+		// Registry credentials and tokens stay with the registry. Go keeps the
+		// header for a same-name host on another port or a subdomain; a CDN
+		// authenticates the redirect URL itself.
+		if !strings.EqualFold(req.URL.Host, c.rule.Host) {
+			req.Header.Del("Authorization")
 		}
 		return nil
 	}}
@@ -92,7 +98,10 @@ func (c *client) base() string {
 	return "https://" + c.rule.Host
 }
 
-// do sends a registry request, answering one bearer or basic challenge.
+// do sends a registry request, anonymously at first. A 401 challenge is
+// answered once: Bearer by fetching a token from the approved realm (with the
+// rule's credentials, if any), Basic by sending the credentials to the
+// registry itself. The winning header is reused for the repository.
 func (c *client) do(ctx context.Context, repo, scope string, build func() (*http.Request, error)) (*http.Response, error) {
 	for attempt := 0; attempt < 2; attempt++ {
 		req, err := build()
@@ -101,12 +110,10 @@ func (c *client) do(ctx context.Context, repo, scope string, build func() (*http
 		}
 		req = req.WithContext(ctx)
 		c.mu.Lock()
-		token := c.token[repo]
+		auth := c.auth[repo]
 		c.mu.Unlock()
-		if token != "" {
-			req.Header.Set("Authorization", "Bearer "+token)
-		} else if c.rule.Username != "" {
-			req.SetBasicAuth(c.rule.Username, c.rule.Password)
+		if auth != "" {
+			req.Header.Set("Authorization", auth)
 		}
 		resp, err := c.http.Do(req)
 		if err != nil {
@@ -120,21 +127,42 @@ func (c *client) do(ctx context.Context, repo, scope string, build func() (*http
 		}
 		challenge := resp.Header.Get("WWW-Authenticate")
 		drain(resp)
-		if !strings.HasPrefix(strings.ToLower(challenge), "bearer ") {
-			return nil, fmt.Errorf("%w: registry requires authentication", ErrUnavailable)
+		scheme, params, _ := strings.Cut(strings.TrimSpace(challenge), " ")
+		switch strings.ToLower(scheme) {
+		case "bearer":
+			token, err := c.fetchToken(ctx, scope, params)
+			if err != nil {
+				return nil, err
+			}
+			auth = "Bearer " + token
+		case "basic":
+			if c.rule.Username == "" {
+				return nil, fmt.Errorf("%w: the registry requires credentials", ErrDenied)
+			}
+			auth = basicAuth(c.rule.Username, c.rule.Password)
+		default:
+			return nil, fmt.Errorf("%w: unsupported authentication challenge", ErrDenied)
 		}
-		if err = c.fetchToken(ctx, repo, scope, challenge); err != nil {
-			return nil, err
-		}
+		c.mu.Lock()
+		c.auth[repo] = auth
+		c.mu.Unlock()
 	}
 	return nil, fmt.Errorf("%w: authentication loop", ErrUnavailable)
 }
 
-func (c *client) fetchToken(ctx context.Context, repo, scope, challenge string) error {
-	params := parseChallenge(challenge[len("bearer "):])
+func basicAuth(user, password string) string {
+	r := http.Request{Header: http.Header{}}
+	r.SetBasicAuth(user, password)
+	return r.Header.Get("Authorization")
+}
+
+// fetchToken asks the challenge's realm, which must be the registry or one of
+// its approved token hosts, for a token covering scope.
+func (c *client) fetchToken(ctx context.Context, scope, challenge string) (string, error) {
+	params := parseChallenge(challenge)
 	realm, err := url.Parse(params["realm"])
 	if err != nil || !c.allowedURL(realm, c.rule.TokenHosts) {
-		return fmt.Errorf("%w: token realm not approved", ErrPolicy)
+		return "", fmt.Errorf("%w: token realm not approved", ErrPolicy)
 	}
 	q := realm.Query()
 	if s := params["service"]; s != "" {
@@ -144,7 +172,7 @@ func (c *client) fetchToken(ctx context.Context, repo, scope, challenge string) 
 	realm.RawQuery = q.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, realm.String(), nil)
 	if err != nil {
-		return ErrPolicy
+		return "", ErrPolicy
 	}
 	if c.rule.Username != "" {
 		req.SetBasicAuth(c.rule.Username, c.rule.Password)
@@ -152,32 +180,32 @@ func (c *client) fetchToken(ctx context.Context, repo, scope, challenge string) 
 	resp, err := c.http.Do(req)
 	if err != nil {
 		if errors.Is(err, ErrPolicy) {
-			return err
+			return "", err
 		}
-		return fmt.Errorf("%w: token request failed", ErrUnavailable)
+		return "", fmt.Errorf("%w: token request failed", ErrUnavailable)
 	}
 	defer drain(resp)
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("%w: token request answered %d", ErrUnavailable, resp.StatusCode)
+	switch {
+	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
+		return "", fmt.Errorf("%w: the token service refused the credentials", ErrDenied)
+	case resp.StatusCode != http.StatusOK:
+		return "", fmt.Errorf("%w: token request answered %d", ErrUnavailable, resp.StatusCode)
 	}
 	var body struct {
 		Token       string `json:"token"`
 		AccessToken string `json:"access_token"`
 	}
 	if err = json.NewDecoder(io.LimitReader(resp.Body, maxToken)).Decode(&body); err != nil {
-		return fmt.Errorf("%w: token response", ErrUnavailable)
+		return "", fmt.Errorf("%w: token response", ErrUnavailable)
 	}
 	token := body.Token
 	if token == "" {
 		token = body.AccessToken
 	}
-	if token == "" || strings.ContainsAny(token, "\r\n ") {
-		return fmt.Errorf("%w: empty token", ErrUnavailable)
+	if token == "" || !validCredential(token, maxToken) {
+		return "", fmt.Errorf("%w: unusable token", ErrUnavailable)
 	}
-	c.mu.Lock()
-	c.token[repo] = token
-	c.mu.Unlock()
-	return nil
+	return token, nil
 }
 
 // parseChallenge reads key="value" pairs of a WWW-Authenticate header.
@@ -231,7 +259,7 @@ func statusError(resp *http.Response, what string) error {
 	case resp.StatusCode == http.StatusNotFound:
 		return fmt.Errorf("%w: %s", ErrNotFound, what)
 	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
-		return fmt.Errorf("%w: access to %s denied", ErrUnavailable, what)
+		return fmt.Errorf("%w: access to %s refused", ErrDenied, what)
 	default:
 		return fmt.Errorf("%w: %s answered %d", ErrUnavailable, what, resp.StatusCode)
 	}

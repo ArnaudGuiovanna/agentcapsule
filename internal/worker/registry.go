@@ -13,14 +13,21 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/ociregistry"
 )
 
-// ServiceRegistry enables harness imports on this host. Only anonymous pulls
-// are configured here; registries needing credentials come later.
+// ServiceRegistry enables harness imports on this host.
 type ServiceRegistry struct {
 	// Cache is an absolute directory for verified packages; default <root>/releases.
 	Cache string `json:"cache,omitempty"`
 	// MaxHarnessMiB bounds one harness.ext4 (default 1024).
-	MaxHarnessMiB int                `json:"max_harness_mib,omitempty"`
-	Rules         []ociregistry.Rule `json:"rules"`
+	MaxHarnessMiB int            `json:"max_harness_mib,omitempty"`
+	Rules         []RegistryRule `json:"rules"`
+}
+
+// RegistryRule is one approved registry. CredentialsFile, for a private
+// registry, names a private file (see readRegistryCredentials) read once at
+// startup; the configuration itself never holds the secret.
+type RegistryRule struct {
+	ociregistry.Rule
+	CredentialsFile string `json:"credentials_file,omitempty"`
 }
 
 // HarnessImporter downloads requested packages, verifies them and publishes
@@ -51,7 +58,19 @@ func (c ServiceConfig) OpenRegistry(s *controlplane.Store, workerID string) (*Ha
 	if !filepath.IsAbs(cache) || maxMiB < 1 || maxMiB > 64<<10 {
 		return nil, errors.New("invalid registry configuration")
 	}
-	f, err := ociregistry.NewFetcher(ociregistry.Policy{Rules: c.Registry.Rules}, int64(maxMiB)<<20)
+	var policy ociregistry.Policy
+	for _, r := range c.Registry.Rules {
+		rule := r.Rule
+		if r.CredentialsFile != "" {
+			user, password, err := readRegistryCredentials(r.CredentialsFile)
+			if err != nil {
+				return nil, err
+			}
+			rule.Username, rule.Password = user, password
+		}
+		policy.Rules = append(policy.Rules, rule)
+	}
+	f, err := ociregistry.NewFetcher(policy, int64(maxMiB)<<20)
 	if err != nil {
 		return nil, err
 	}
@@ -152,6 +171,8 @@ func classifyImport(err error) (string, bool) {
 		return "policy", false
 	case errors.Is(err, ociregistry.ErrNotFound):
 		return "not_found", false
+	case errors.Is(err, ociregistry.ErrDenied):
+		return "access_denied", false
 	case errors.Is(err, ociregistry.ErrIntegrity), errors.Is(err, harnesspkg.ErrInvalid):
 		return "integrity", false
 	default:

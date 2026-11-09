@@ -19,6 +19,11 @@ var (
 	// ErrUnavailable: the registry could not be reached or answered an error;
 	// retrying later may succeed.
 	ErrUnavailable = errors.New("registry unavailable")
+	// ErrDenied: the registry or its token service refused access. The
+	// repository is private and the credentials are missing or wrong, or it does
+	// not exist: registries often do not say which. Retrying will not help until
+	// the operator changes the credentials or the reference.
+	ErrDenied = errors.New("registry access denied")
 	// ErrNotFound: the registry answered that the manifest or a blob does not exist.
 	ErrNotFound = errors.New("registry content not found")
 	// ErrIntegrity: the registry served content that does not match its digest,
@@ -41,8 +46,11 @@ type Rule struct {
 	// Local allows plain HTTP and private or loopback addresses. Only for a
 	// registry on the operator's own network; never for a public one.
 	Local bool `json:"local,omitempty"`
-	// Username and Password authenticate pulls from a private registry. They
-	// come from operator configuration and are never logged or returned.
+	// Username and Password authenticate to a private registry. They come
+	// from operator configuration, are never logged or returned, and are sent
+	// only in answer to a challenge: as Basic credentials to the registry
+	// itself, or to an approved token service in exchange for a bearer token.
+	// They never follow a redirect to another host (a blob CDN).
 	Username string `json:"-"`
 	Password string `json:"-"`
 }
@@ -93,11 +101,26 @@ func (p Policy) Validate() error {
 				return fmt.Errorf("%w: host %q", ErrPolicy, h)
 			}
 		}
-		if (r.Username == "") != (r.Password == "") {
-			return fmt.Errorf("%w: incomplete credentials for %q", ErrPolicy, r.Host)
+		if (r.Username == "") != (r.Password == "") || !validCredential(r.Username, 256) || !validCredential(r.Password, 4096) ||
+			strings.Contains(r.Username, ":") {
+			return fmt.Errorf("%w: invalid credentials for %q", ErrPolicy, r.Host)
 		}
 	}
 	return nil
+}
+
+// validCredential: printable ASCII without spaces, so it cannot split or
+// inject a header. Empty means none.
+func validCredential(v string, max int) bool {
+	if len(v) > max {
+		return false
+	}
+	for i := 0; i < len(v); i++ {
+		if v[i] <= ' ' || v[i] > '~' {
+			return false
+		}
+	}
+	return true
 }
 
 func isIPLiteral(hostport string) bool {

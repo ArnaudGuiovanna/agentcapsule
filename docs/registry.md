@@ -4,11 +4,11 @@ Harnesses are built off-host, published to an OCI registry and imported by the
 platform **by digest**. The host never builds tenant code: it pulls, verifies and
 caches packages, and boots them.
 
-> **Status.** Import, verification, caching, release states, deprecation and booting
-> agents from imported releases work; booting is validated on real KVM (two tenant
-> agents on one imported release share the cached image and answer invocations). Signature policy, registry credentials, cache
-> eviction and the reference Dagger module come next. See [ROADMAP.md](../ROADMAP.md)
-> (REG-01 to REG-04).
+> **Status.** Import from public and private registries, verification, caching,
+> release states, deprecation and booting agents from imported releases work; booting
+> is validated on real KVM (two tenant agents on one imported release share the cached
+> image and answer invocations). Signature policy, cache eviction and the reference
+> Dagger module come next. See [ROADMAP.md](../ROADMAP.md) (REG-01 to REG-04).
 
 ## Package format
 
@@ -87,8 +87,11 @@ The import is `IMPORTING` until a worker processes it:
    published.
 
 Outcomes: `READY` with a release, or `REJECTED` with `policy`, `not_found`,
-`integrity`, `version_conflict` or `unavailable`. Network failures are retried with
-backoff up to 5 attempts. A rejected package can be requested again.
+`access_denied`, `integrity`, `version_conflict` or `unavailable`. `access_denied`
+means the registry refused access: the repository is private and the worker has no
+valid credentials for it, or it does not exist (registries often do not say which).
+Network failures are retried with backoff up to 5 attempts. A rejected package can be
+requested again, for example after fixing the credentials.
 
 Releases are immutable: `name:version` maps to one package digest forever; another
 package claiming it is rejected (`version_conflict`). Requesting a package that is
@@ -144,16 +147,43 @@ In the worker configuration ([example](../runtime/worker/config.example.json)):
   public registry.
 - Environment proxy settings are ignored.
 
+### Private registries
+
+A rule may name a credentials file; the configuration never holds the secret itself:
+
+```json
+{"host": "ghcr.io", "repositories": ["acme/"],
+ "blob_hosts": ["pkg-containers.githubusercontent.com"],
+ "credentials_file": "/etc/agentcapsule/registry-ghcr.json"}
+```
+
+```json
+{"username": "acme-bot", "password": "<token>"}
+```
+
+- The file must be a regular file (not a symlink) owned by root or the worker's user,
+  with no group or other access (`chmod 600`), at most 4 KiB, with exactly these two
+  fields. The worker reads it once at startup: restart the worker after rotating it
+  (running agents are not affected).
+- For GHCR, use a token with only the `read:packages` scope. Docker Hub uses an access
+  token, and its token service must be approved: `"token_hosts": ["auth.docker.io"]`.
+- Every request goes out anonymously first. The credentials are sent only in answer to
+  a challenge: to the approved token service in exchange for a short-lived token (the
+  usual case), or to the registry itself if it asks for Basic authentication. They are
+  removed from any redirect to another host, such as a blob CDN.
+- Only static credentials are supported. Registries that need a cloud SDK to mint
+  short-lived passwords (Amazon ECR, Google Artifact Registry with workload identity)
+  are not supported yet.
+
 Imports run in their own loop beside maintenance, so a large download never delays
 deliveries or VM lifecycle work.
 
 ## Limits
 
-- Only anonymous pulls are configured today (public packages, e.g. public GHCR
-  packages). Credentials for private registries are next.
 - No signature or attestation policy yet (REG-009): trust rests on the approved
   registry/repository and the pinned digest.
 - The cache is per host and is not evicted yet (REG-03); a multi-host installation must
   import on every host that will run the release.
-- Import has been tested against an in-process OCI registry (token flow, CDN
-  redirect, tampering); a live GHCR import has not been run yet.
+- Import has been tested against an in-process OCI registry (token flow, private
+  access with Basic and token credentials, CDN redirect, tampering); a live GHCR import
+  has not been run yet.
