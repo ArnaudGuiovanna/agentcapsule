@@ -55,7 +55,9 @@ or an interpreter and its libraries).
 A harness can be written in any language whose runtime fits in the image: Go (see
 `cmd/capsule-echo`) or Python with the [Python SDK](../sdk/python/README.md), whose
 example `examples/python-echo` is built by `scripts/build-python-harness.py` from an
-official Python image pinned by digest.
+official Python image pinned by digest. Both run in the product KVM campaign: the
+Python harness answers from its encrypted SQLite state across sleep and wake, and
+posts a deferred model answer over the platform channel.
 
 ```bash
 go build ./cmd/agentcapsule-harness
