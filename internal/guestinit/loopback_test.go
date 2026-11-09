@@ -1,5 +1,9 @@
-//go:build linux
+//go:build linux && guest_netns
 
+// Needs unprivileged user and network namespaces (unshare -rn), which CI
+// runners usually forbid: go test -tags guest_netns ./internal/guestinit. The
+// product KVM campaign covers the real path (an adapted agent reaching its
+// model endpoint on the guest loopback).
 package guestinit
 
 import (
@@ -47,10 +51,10 @@ func TestBringLoopbackUpInAFreshNetworkNamespace(t *testing.T) {
 	}
 	unshare, err := exec.LookPath("unshare")
 	if err != nil {
-		t.Skip("unshare is not installed")
+		t.Fatal("unshare is required", err)
 	}
-	if exec.Command(unshare, "-rn", "true").Run() != nil {
-		t.Skip("unprivileged user and network namespaces are not available")
+	if err = exec.Command(unshare, "-rn", "true").Run(); err != nil {
+		t.Fatal("unprivileged user and network namespaces are required", err)
 	}
 	cmd := exec.Command(unshare, "-rn", os.Args[0], "-test.run=^TestBringLoopbackUpInAFreshNetworkNamespace$", "-test.v")
 	cmd.Env = append(os.Environ(), "AGENTCAPSULE_LOOPBACK_CHILD=1")
