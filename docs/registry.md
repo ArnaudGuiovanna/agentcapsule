@@ -6,9 +6,10 @@ caches packages, and boots them.
 
 > **Status.** Import from public and private registries, verification, caching,
 > release states, deprecation, booting agents from imported releases, manual upgrade and
-> rollback, and cache eviction work; booting is validated on real KVM (two tenant agents
-> on one imported release share the cached image and answer invocations). Signature
-> policy and the reference Dagger module come next. See [ROADMAP.md](../ROADMAP.md)
+> rollback, and cache eviction work and are validated on real KVM (two tenant agents on
+> one imported release share the cached image; an agent is upgraded, rolled back across
+> sleep/wake and still answers after the unused package is evicted). Signature policy
+> and the reference Dagger module come next. See [ROADMAP.md](../ROADMAP.md)
 > (REG-01 to REG-04).
 
 ## Package format
