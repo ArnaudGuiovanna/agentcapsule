@@ -73,6 +73,9 @@ var attachmentsSQL string
 //go:embed migrations/0018_async_completion.sql
 var asyncCompletionSQL string
 
+//go:embed migrations/0019_harness_registry.sql
+var harnessRegistrySQL string
+
 // Append migrations; never edit an installed migration. The original schema
 // also upgrades pre-ledger installations, preserving its historical backfills.
 // Later calls validate its checksum without replaying DDL or those backfills.
@@ -95,6 +98,7 @@ var controlPlaneMigrations = []schemaMigration{
 	{version: 16, name: "scheduling", sql: schedulingSQL},
 	{version: 17, name: "attachments", sql: attachmentsSQL},
 	{version: 18, name: "async-completion", sql: asyncCompletionSQL},
+	{version: 19, name: "harness-registry", sql: harnessRegistrySQL},
 }
 
 func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error {

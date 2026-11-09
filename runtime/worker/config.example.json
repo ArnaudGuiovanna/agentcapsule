@@ -2,10 +2,22 @@
   "version": 1,
   "host_id": "host-stable-id",
   "root": "/var/lib/agentcapsule/host",
-  "firecracker": { "path": "/opt/agentcapsule/firecracker", "sha256": "<VERIFIED_VOLUME_LOCK_BUILD_SHA256>" },
-  "jailer": { "path": "/opt/agentcapsule/jailer", "sha256": "<VERIFIED_JAILER_SHA256>" },
-  "kernel": { "path": "/opt/agentcapsule/vmlinux", "sha256": "<VERIFIED_KERNEL_SHA256>" },
-  "initrd": { "path": "/opt/agentcapsule/initrd", "sha256": "<VERIFIED_TRUSTED_HARNESS_INITRD_SHA256>" },
+  "firecracker": {
+    "path": "/opt/agentcapsule/firecracker",
+    "sha256": "<VERIFIED_VOLUME_LOCK_BUILD_SHA256>"
+  },
+  "jailer": {
+    "path": "/opt/agentcapsule/jailer",
+    "sha256": "<VERIFIED_JAILER_SHA256>"
+  },
+  "kernel": {
+    "path": "/opt/agentcapsule/vmlinux",
+    "sha256": "<VERIFIED_KERNEL_SHA256>"
+  },
+  "initrd": {
+    "path": "/opt/agentcapsule/initrd",
+    "sha256": "<VERIFIED_TRUSTED_HARNESS_INITRD_SHA256>"
+  },
   "max_active": 2,
   "boot_timeout": "30s",
   "boot_lease": "2m",
@@ -15,5 +27,19 @@
   "work_lease": "2m",
   "delivery_lease": "30s",
   "retry_base": "1s",
-  "retry_max": "30s"
+  "retry_max": "30s",
+  "registry": {
+    "max_harness_mib": 1024,
+    "rules": [
+      {
+        "host": "ghcr.io",
+        "repositories": [
+          "your-org/"
+        ],
+        "blob_hosts": [
+          "pkg-containers.githubusercontent.com"
+        ]
+      }
+    ]
+  }
 }

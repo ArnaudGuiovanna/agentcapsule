@@ -113,6 +113,10 @@ func New(store *controlplane.Store, accounts *controlplane.Accounts) (*Server, e
 	s.mux.HandleFunc("/v1/organizations/current", s.currentOrganization)
 	s.mux.HandleFunc("/v1/organizations/{id}", s.organization)
 	s.mux.HandleFunc("/v1/organizations/{id}/disable", s.disableOrganization)
+	s.mux.HandleFunc("/v1/harness-imports", s.harnessImports)
+	s.mux.HandleFunc("/v1/harness-imports/{id}", s.harnessImport)
+	s.mux.HandleFunc("/v1/harness-releases", s.harnessReleases)
+	s.mux.HandleFunc("/v1/harness-releases/{id}/deprecate", s.deprecateHarnessRelease)
 	s.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { problem(w, 404, "not_found") })
 	return s, nil
 }

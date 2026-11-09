@@ -231,7 +231,9 @@ func (c *AgentCatalog) Reserve(ctx context.Context, p Principal, key string, in 
 			return 0, nil, ErrAgentExists
 		}
 		var release string
-		err := tx.QueryRow(ctx, "SELECT id FROM harness_releases WHERE name=$1 AND version=$2 AND enabled FOR SHARE", in.Harness.Name, in.Harness.Version).Scan(&release)
+		// Imported (OCI) releases are not bootable until the worker runs harness
+		// artifacts; until then only operator-approved local images are offered.
+		err := tx.QueryRow(ctx, "SELECT id FROM harness_releases WHERE name=$1 AND version=$2 AND enabled AND source='local-approved' FOR SHARE", in.Harness.Name, in.Harness.Version).Scan(&release)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return 0, nil, ErrRelease
 		}

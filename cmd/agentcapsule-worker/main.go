@@ -125,6 +125,20 @@ func run() int {
 			return fail("llm_unavailable")
 		}
 	}
+	importer, err := c.OpenRegistry(s, workerID)
+	if err != nil {
+		return fail("registry_configuration_invalid")
+	}
+	if importer != nil && !archiveRequested {
+		// Imports run beside maintenance: a large download never delays delivery.
+		go func() {
+			_ = importer.Run(ctx, maintenance.Interval, func(error) {
+				if ctx.Err() == nil {
+					fmt.Fprintln(os.Stderr, "harness_import_retry")
+				}
+			})
+		}()
+	}
 	if archiveRequested {
 		archives, err := volumearchive.New(*archiveRoot)
 		if err != nil {

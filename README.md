@@ -11,8 +11,8 @@ through a gateway that keeps provider credentials outside the VM and enforces
 budgets.
 
 > **Status: pre-MVP, not for production.** The core path is implemented and tested
-> on real KVM, but several MVP areas (harness registry, A2A/SLIM/Directory
-> interoperability, observability, restore) are missing. See [ROADMAP.md](ROADMAP.md).
+> on real KVM, but several MVP areas (booting harnesses from the registry,
+> A2A/SLIM/Directory interoperability, observability, restore) are missing. See [ROADMAP.md](ROADMAP.md).
 
 ## What works today
 
@@ -31,6 +31,9 @@ budgets.
 - **LLM gateway**: OpenAI-compatible and Anthropic providers, model aliases,
   encrypted provider credentials, hard/soft token budgets, usage reports.
 - **Inter-agent requests** with recipient consent and bounded mandates.
+- **Harness registry (import)**: harness packages are imported from approved OCI
+  registries by digest, verified, cached read-only and published as immutable releases.
+  Booting agents from imported releases is the next step.
 
 ## Architecture
 
@@ -61,6 +64,7 @@ budgets.
 - `capsule-init`: PID 1 in the guest; holds boot credentials and volume secrets away
   from the harness and relays its platform calls.
 - `capsule-echo`: the reference harness used by tests.
+- `agentcapsule-harness`: builds and publishes harness packages (developer/CI tool).
 
 The delivery, messaging, lifecycle, revocation and deferred-result protocols are
 specified as [Quint models](spec/), and traces from those models are replayed
@@ -116,6 +120,7 @@ Installation is not packaged yet. The building blocks are documented:
 | HTTP API | [openapi/openapi.yaml](openapi/openapi.yaml), [docs/api/](docs/api/) |
 | Agents, assignments, invocations, attachments, deferred results | [docs/api/agents-assignments.md](docs/api/agents-assignments.md) |
 | LLM gateway | [docs/api/llm.md](docs/api/llm.md) |
+| Harness packages, publishing and imports | [docs/registry.md](docs/registry.md) |
 | Guest runtime and the `capsule.v1` contract | [docs/guest/](docs/guest/) |
 | Interoperability qualification (A2A, SLIM, Directory) | [docs/interop.md](docs/interop.md) |
 | Architecture decisions | [docs/adr/](docs/adr/) |
@@ -125,7 +130,7 @@ Installation is not packaged yet. The building blocks are documented:
 ## Repository layout
 
 ```
-cmd/          binaries (api, worker, admin, capsule-init, capsule-echo)
+cmd/          binaries (api, worker, admin, harness tool, capsule-init, capsule-echo)
 internal/     Go packages: controlplane, api, worker, runtime, capsuleprotocol, ...
 openapi/      canonical OpenAPI 3.1 contract
 spec/         Quint protocol models
