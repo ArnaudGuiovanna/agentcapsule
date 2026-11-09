@@ -93,3 +93,36 @@ func TestDirectoryPostcheckAndPreferenceOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// Agents only reach agents of their own domain: their organization, or the
+// historical domain for an historical agent. Another domain's agent does not
+// exist for them, even when it is discoverable, for requests and searches.
+func TestPeerRequestsAndSearchStayInsideOneDomain(t *testing.T) {
+	s, _ := freshStore(t, "manual", 3)
+	if _, err := s.pool.Exec(t.Context(), `INSERT INTO organizations(id,name) VALUES ('org-a','A'),('org-b','B');
+        INSERT INTO agents(id,tenant_id,phase,discoverable) VALUES
+          ('ta1','org-a','LIVE',true),('ta2','org-a','LIVE',true),('tb1','org-b','LIVE',true)`); err != nil {
+		t.Fatal(err)
+	}
+	// Historical agent a: the historical b is reachable, organization agents are not.
+	results, err := s.SearchDirectory(t.Context(), "a", []string{"b", "ta1", "tb1"})
+	if err != nil || fmt.Sprint(results) != "[b]" {
+		t.Fatalf("an historical agent found organization agents: %v %v", results, err)
+	}
+	toTenant := submission()
+	toTenant.RecipientAgentID = "ta1"
+	if _, err = s.Submit(t.Context(), "a", "to-tenant", toTenant); !errors.Is(err, ErrNotFound) {
+		t.Fatal("an historical agent reached an organization agent", err)
+	}
+	// Organization agent ta1: its own organization only.
+	if results, err = s.SearchDirectory(t.Context(), "ta1", []string{"ta2", "tb1", "b"}); err != nil || fmt.Sprint(results) != "[ta2]" {
+		t.Fatalf("an organization agent found agents outside its organization: %v %v", results, err)
+	}
+	for _, recipient := range []string{"tb1", "b"} {
+		in := submission()
+		in.RecipientAgentID = recipient
+		if _, err = s.Submit(t.Context(), "ta1", "to-"+recipient, in); !errors.Is(err, ErrNotFound) {
+			t.Fatal("an organization agent reached an agent outside its organization", recipient, err)
+		}
+	}
+}

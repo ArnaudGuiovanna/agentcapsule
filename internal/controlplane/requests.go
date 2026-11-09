@@ -69,8 +69,11 @@ func (s *Store) submitPayload(ctx context.Context, callerAgentID, key string, in
 	if sender.Phase != "LIVE" {
 		return Receipt{}, ErrUnavailable
 	}
-	// Hidden and missing recipients intentionally have the same error.
-	if recipient.Phase != "LIVE" || !recipient.Visible {
+	// Hidden and missing recipients intentionally have the same error. Agents
+	// only reach agents of their own domain: the same organization, or, for an
+	// historical agent, other historical agents. Another organization's agent
+	// does not exist for this sender.
+	if recipient.Phase != "LIVE" || !recipient.Visible || recipient.Tenant != sender.Tenant {
 		return Receipt{}, ErrNotFound
 	}
 	var future bool

@@ -25,7 +25,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-const tenantKVMScopes = "org:read member:read member:manage agent:read agent:create agent:assign agent:operate agent:manage agent:delete agent:invoke agent:content:read provider:manage quota:manage usage:read"
+const tenantKVMScopes = "org:read audit:read member:read member:manage agent:read agent:create agent:assign agent:operate agent:manage agent:delete agent:invoke agent:content:read provider:manage quota:manage usage:read"
 
 // tenantIdentity signs delegated tokens for one organization, as a customer's
 // identity provider would. Tokens are short-lived, so each call signs afresh.
@@ -53,39 +53,57 @@ func (i *tenantIdentity) token(t *testing.T, subject string) string {
 // its identity provider, exactly as an operator would.
 func (l *productPeerLab) installTenant(t *testing.T) (*tenantIdentity, controlplane.CreateOrganizationResponse, string) {
 	t.Helper()
+	ids, orgs, platform := l.installOrganizations(t, 1)
+	return ids[0], orgs[0], platform
+}
+
+// installOrganizations creates n organizations, each owned by "alice" of its
+// own identity provider (issuer https://idp-<i>.example, its own signing key),
+// and makes the API trust all of them.
+func (l *productPeerLab) installOrganizations(t *testing.T, n int) ([]*tenantIdentity, []controlplane.CreateOrganizationResponse, string) {
+	t.Helper()
 	secret := make([]byte, 32)
 	_, _ = rand.Read(secret)
 	platform := "acpp_" + base64.RawURLEncoding.EncodeToString(secret)
 	if err := l.store.BootstrapPlatformToken(t.Context(), "kvm-platform", platform, time.Hour); err != nil {
 		t.Fatal(err)
 	}
-	var org controlplane.CreateOrganizationResponse
-	l.request(platform, "POST", "/v1/organizations", "org", controlplane.CreateOrganizationInput{Name: "KVM Tenant",
-		InitialOwner: controlplane.InitialOrganizationOwner{Issuer: "https://idp.example", Subject: "alice", DisplayName: "Alice"}}, 201, &org)
-	pub, key, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
+	var ids []*tenantIdentity
+	var orgs []controlplane.CreateOrganizationResponse
+	var trusts []delegatedidentity.Trust
+	for i := range n {
+		issuer := fmt.Sprintf("https://idp-%d.example", i)
+		var org controlplane.CreateOrganizationResponse
+		l.request(platform, "POST", "/v1/organizations", fmt.Sprintf("org-%d", i), controlplane.CreateOrganizationInput{Name: fmt.Sprintf("KVM Tenant %d", i),
+			InitialOwner: controlplane.InitialOrganizationOwner{Issuer: issuer, Subject: "alice", DisplayName: "Alice"}}, 201, &org)
+		pub, key, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		id := &tenantIdentity{key: key, trust: delegatedidentity.Trust{TenantID: org.ID, Issuer: issuer, Audience: "capsule",
+			Keys: map[string]ed25519.PublicKey{"primary": pub}, AllowedScopes: strings.Fields(tenantKVMScopes), MaxTTL: 5 * time.Minute}}
+		ids, orgs, trusts = append(ids, id), append(orgs, org), append(trusts, id.trust)
 	}
-	id := &tenantIdentity{key: key, trust: delegatedidentity.Trust{TenantID: org.ID, Issuer: "https://idp.example", Audience: "capsule",
-		Keys: map[string]ed25519.PublicKey{"primary": pub}, AllowedScopes: strings.Fields(tenantKVMScopes), MaxTTL: 5 * time.Minute}}
-	verifier, err := delegatedidentity.NewVerifier(delegatedidentity.Config{Trusts: []delegatedidentity.Trust{id.trust}})
+	verifier, err := delegatedidentity.NewVerifier(delegatedidentity.Config{Trusts: trusts})
 	if err != nil {
 		t.Fatal(err)
 	}
 	l.handler.SetDelegatedIdentityVerifier(verifier)
-	r, err := l.store.ChangeDelegationAuthority(t.Context(), controlplane.DelegationChange{OperationID: "kvm-install", Actor: "kvm-operator",
-		Action: "install", TenantID: org.ID, Issuer: id.trust.Issuer, Audience: id.trust.Audience, Trust: &id.trust})
-	if err != nil {
-		t.Fatal(err)
-	}
-	l.await("tenant clock", false, func() bool {
-		var ok bool
-		if err := l.db.QueryRow(t.Context(), "SELECT clock_timestamp()>$1::timestamptz+interval '1 second'", r.MinimumIAT).Scan(&ok); err != nil {
+	for i, id := range ids {
+		r, err := l.store.ChangeDelegationAuthority(t.Context(), controlplane.DelegationChange{OperationID: fmt.Sprintf("kvm-install-%d", i), Actor: "kvm-operator",
+			Action: "install", TenantID: orgs[i].ID, Issuer: id.trust.Issuer, Audience: id.trust.Audience, Trust: &id.trust})
+		if err != nil {
 			t.Fatal(err)
 		}
-		return ok && time.Now().After(r.MinimumIAT.Add(time.Second))
-	})
-	return id, org, platform
+		l.await("tenant clock", false, func() bool {
+			var ok bool
+			if err := l.db.QueryRow(t.Context(), "SELECT clock_timestamp()>$1::timestamptz+interval '1 second'", r.MinimumIAT).Scan(&ok); err != nil {
+				t.Fatal(err)
+			}
+			return ok && time.Now().After(r.MinimumIAT.Add(time.Second))
+		})
+	}
+	return ids, orgs, platform
 }
 
 // raw sends a non-JSON body (an attachment upload).

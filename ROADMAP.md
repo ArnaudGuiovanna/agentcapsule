@@ -42,7 +42,7 @@ a production host yet.
 | TEN-02 | Delegated identity (JWT from the customer's IdP) bound to the database authority | In progress | Operator tooling for trust rotation |
 | TEN-03 | RBAC for five roles; administration separate from invoke/read-content rights | Partial | Remaining routes and result/inbox filters |
 | TEN-04 | Members, teams, assignments, revocation, organization disable | In progress | Reassignment to another target; admission/reassignment races |
-| TEN-05 | Tenant agents and the per-organization data model | In progress | Two isolated organizations demonstrated on KVM |
+| TEN-05 | Tenant agents and the per-organization data model; peer requests and agent search confined to one organization | In progress | KVM run of the two-organization scenario |
 | TEN-06 | Service accounts and audit | Partial | Audit export and retention |
 | TEN-07 | Quotas and reservations (agents, VMs, CPU/RAM, disk, queues, LLM, storage) | Partial | Physical limits (CAP-03) and load behavior (OPS-03) |
 

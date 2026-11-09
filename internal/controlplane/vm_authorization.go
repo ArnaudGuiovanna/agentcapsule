@@ -75,8 +75,10 @@ func (s *Store) SearchDirectoryFromVM(ctx context.Context, caller VMCaller, cand
 	if err = authorizeVM(ctx, tx, &caller, agents); err != nil {
 		return nil, err
 	}
+	// Only the caller's own domain: its organization, or the historical domain.
 	rows, err := tx.Query(ctx, `SELECT id FROM agents WHERE id=ANY($1) AND id<>$2
-        AND discoverable AND phase='LIVE' ORDER BY id`, candidates, caller.AgentID)
+        AND discoverable AND phase='LIVE' AND tenant_id IS NOT DISTINCT FROM (SELECT tenant_id FROM agents WHERE id=$2)
+        ORDER BY id`, candidates, caller.AgentID)
 	if err != nil {
 		return nil, err
 	}

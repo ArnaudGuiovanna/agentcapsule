@@ -52,7 +52,8 @@ func (s *Store) DirectoryVisibility(ctx context.Context, agentID string) (bool, 
 
 // SearchDirectory rechecks untrusted/stale directory candidates in one PostgreSQL
 // snapshot, excludes the authenticated caller, and returns only currently visible
-// agents. The actual ADS client and authorization transport are separate adapters.
+// agents of the caller's own domain (organization, or the historical domain).
+// The actual ADS client and authorization transport are separate adapters.
 func (s *Store) SearchDirectory(ctx context.Context, callerAgentID string, candidates []string) ([]string, error) {
 	if callerAgentID == "" {
 		return nil, ErrNotFound
@@ -60,6 +61,7 @@ func (s *Store) SearchDirectory(ctx context.Context, callerAgentID string, candi
 	rows, err := s.pool.Query(ctx, `SELECT caller.phase, candidate.id
         FROM agents caller LEFT JOIN agents candidate ON candidate.id=ANY($2)
           AND candidate.id<>caller.id AND candidate.discoverable AND candidate.phase='LIVE'
+          AND candidate.tenant_id IS NOT DISTINCT FROM caller.tenant_id
         WHERE caller.id=$1 ORDER BY candidate.id`, callerAgentID, candidates)
 	if err != nil {
 		return nil, err
