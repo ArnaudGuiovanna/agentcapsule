@@ -35,7 +35,8 @@ budgets.
   (public or private) by digest, checked against trusted publisher signatures (cosign
   format), cached read-only and published as immutable releases; agents on a release
   share its image, attached read-only and run chrooted in the guest. Agents can be
-  upgraded and rolled back, and unused packages leave the cache.
+  upgraded and rolled back, and unused packages leave the cache. Harnesses can be
+  written in Go or in Python ([Python SDK](sdk/python/README.md)).
 
 ## Architecture
 
@@ -139,6 +140,8 @@ spec/         Quint protocol models
 docs/         product, API, guest, worker and interop documentation, ADRs
 runtime/      Firecracker patch, guest kernel config, example configs, interop probe
 scripts/      builds, CI checks and KVM/PostgreSQL verification campaigns
+sdk/python/   Python harness SDK (capsule.v1, standard library only)
+examples/     example harnesses (python-echo)
 ```
 
 ## Contributing

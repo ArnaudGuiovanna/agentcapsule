@@ -1,0 +1,8 @@
+schema: agentcapsule.harness/v1
+name: python-echo
+version: 1.0.0
+protocol: capsule.v1
+architecture: x86_64
+base: agentcapsule-guest/1
+entrypoint: [/usr/local/bin/python3, -I, /opt/harness/harness.py]
+description: Reference Python harness (echo, durable counter, deferred model answers)

@@ -4,14 +4,19 @@ package worker
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/harnesspkg"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmgateway"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/ociregistry"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/ociregistry/registrytest"
 )
@@ -73,12 +78,19 @@ func (l *registryLab) publish(version, dir string) ociregistry.Reference {
 	if err := harnesspkg.WritePackage(pkg, m); err != nil {
 		t.Fatal(err)
 	}
-	ref, err := ociregistry.Push(t.Context(), l.rule, "acme/echo", version, pkg)
+	return l.importPackage(pkg, "acme/echo", version)
+}
+
+// importPackage pushes a package directory to the lab registry and imports it.
+func (l *registryLab) importPackage(pkg, repository, version string) ociregistry.Reference {
+	t := l.t
+	t.Helper()
+	ref, err := ociregistry.Push(t.Context(), l.rule, repository, version, pkg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var imp controlplane.HarnessImport
-	l.request(l.platform, "POST", "/v1/harness-imports", "echo-oci-"+version, controlplane.HarnessImportInput{Reference: ref.String()}, 202, &imp)
+	l.request(l.platform, "POST", "/v1/harness-imports", "import-"+repository+"-"+version, controlplane.HarnessImportInput{Reference: ref.String()}, 202, &imp)
 	if worked, err := l.importer.ImportOne(t.Context()); err != nil || !worked {
 		t.Fatal("import", worked, err)
 	}
@@ -92,8 +104,13 @@ func (l *registryLab) publish(version, dir string) ociregistry.Reference {
 // create makes a tenant agent on echo-oci:version, assigns it to bob and wakes it.
 func (l *registryLab) create(name, version string) controlplane.AgentCreation {
 	l.t.Helper()
+	return l.createOn(name, "echo-oci", version)
+}
+
+func (l *registryLab) createOn(name, harness, version string) controlplane.AgentCreation {
+	l.t.Helper()
 	var created controlplane.AgentCreation
-	in := controlplane.CreateAgentInput{Name: name, Harness: controlplane.HarnessReference{Name: "echo-oci", Version: version},
+	in := controlplane.CreateAgentInput{Name: name, Harness: controlplane.HarnessReference{Name: harness, Version: version},
 		Resources: controlplane.AgentResources{VCPUs: 1, MemoryMiB: 256, DataVolumeMiB: 128}}
 	l.request(l.owner(), "POST", "/v1/agents", "agent-"+name, in, 202, &created)
 	l.peers = append(l.peers, &productPeer{agent: created})
@@ -139,6 +156,14 @@ func (l *registryLab) bootsFrom(agentID string, ref ociregistry.Reference, vms i
 
 // answers sends bob's text to the agent and checks the harness echoes it.
 func (l *registryLab) answers(agentID, key, text string) {
+	l.t.Helper()
+	if result := l.ask(agentID, key, text); !strings.Contains(result, text) {
+		l.t.Fatal("unexpected answer from the imported harness")
+	}
+}
+
+// ask sends bob's text to the agent and returns the result once completed.
+func (l *registryLab) ask(agentID, key, text string) string {
 	t := l.t
 	t.Helper()
 	var inv controlplane.Invocation
@@ -152,10 +177,7 @@ func (l *registryLab) answers(agentID, key, text string) {
 		}
 		return v.State == "completed"
 	})
-	result := string(l.request(l.user(), "GET", "/v1/invocations/"+inv.ID+"/result", "", nil, 200, nil))
-	if !strings.Contains(result, text) {
-		t.Fatal("unexpected answer from the imported harness")
-	}
+	return string(l.request(l.user(), "GET", "/v1/invocations/"+inv.ID+"/result", "", nil, 200, nil))
 }
 
 // Two tenant agents run a harness imported from an OCI registry: the package
@@ -230,6 +252,57 @@ func TestProductWorkerTenantUpgradesAndRollsBackAnImportedHarness(t *testing.T) 
 		t.Fatal("the running release was evicted", err)
 	}
 	l.answers(agent, "after-eviction", "after the eviction")
+}
+
+// A harness written in Python, built off-host by scripts/build-python-harness.py
+// (pinned base image, exported filesystem, pack) and imported like any package,
+// runs in the guest: it answers at once from its own SQLite database, keeps that
+// state in the encrypted volume across sleep and wake, and answers "working"
+// to a model request, then posts the model's answer over the platform channel.
+func TestProductWorkerTenantRunsAPythonHarness(t *testing.T) {
+	pkg := os.Getenv("AGENTCAPSULE_KVM_PYTHON_HARNESS")
+	if pkg == "" {
+		t.Fatal("AGENTCAPSULE_KVM_PYTHON_HARNESS must name the python-echo package (verify-product-guest.py --python-harness)")
+	}
+	l := newRegistryLab(t)
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Messages []struct{ Content string } `json:"messages"`
+		}
+		if json.NewDecoder(r.Body).Decode(&req) != nil || len(req.Messages) != 1 || r.Header.Get("Authorization") != "Bearer kvm-model-secret" {
+			http.Error(w, "bad request", 400)
+			return
+		}
+		answer, _ := json.Marshal("model answer to: " + req.Messages[0].Content)
+		_, _ = fmt.Fprintf(w, `{"choices":[{"message":{"content":%s},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":4}}`, answer)
+	}))
+	t.Cleanup(provider.Close)
+	svc, err := controlplane.NewLLMService(l.accounts, llmgateway.New(llmgateway.Config{Timeout: 10 * time.Second, MaxAttempts: 1}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = l.worker.EnableLLM(svc); err != nil {
+		t.Fatal(err)
+	}
+	var p controlplane.LLMProvider
+	l.request(l.owner(), "POST", "/v1/llm/providers", "provider", controlplane.CreateLLMProviderInput{Name: "host-model", Kind: "openai_compatible",
+		BaseURL: provider.URL, Secret: "kvm-model-secret"}, 201, &p)
+	l.request(l.owner(), "POST", "/v1/llm/aliases", "alias", controlplane.CreateLLMAliasInput{Alias: "fast", ProviderID: p.ID, UpstreamModel: "host"}, 201, nil)
+
+	ref := l.importPackage(pkg, "acme/python-echo", "1.0.0")
+	agent := l.createOn("python", "python-echo", "1.0.0").AgentID
+	l.bootsFrom(agent, ref, 1)
+	if got := l.ask(agent, "py-1", "hello"); !strings.Contains(got, "python echo #1: hello") {
+		t.Fatal("unexpected first answer from the Python harness", got)
+	}
+	if got := l.ask(agent, "py-llm", "/llm fast what runs here"); !strings.Contains(got, "model answer to: what runs here") {
+		t.Fatal("the Python harness did not post the model's answer", got)
+	}
+	l.lifecycle(agent, "sleep", "py-sleep")
+	l.lifecycle(agent, "wake", "py-wake")
+	if got := l.ask(agent, "py-2", "again"); !strings.Contains(got, "python echo #2: again") {
+		t.Fatal("the Python harness lost its state across sleep and wake", got)
+	}
 }
 
 func copyExecutable(t *testing.T, src, dst string) {

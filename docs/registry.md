@@ -52,6 +52,11 @@ or an interpreter and its libraries).
 
 ## Building and publishing
 
+A harness can be written in any language whose runtime fits in the image: Go (see
+`cmd/capsule-echo`) or Python with the [Python SDK](../sdk/python/README.md), whose
+example `examples/python-echo` is built by `scripts/build-python-harness.py` from an
+official Python image pinned by digest.
+
 ```bash
 go build ./cmd/agentcapsule-harness
 agentcapsule-harness pack --manifest harness.yaml --rootfs ./rootfs --size-mib 64 --out ./package

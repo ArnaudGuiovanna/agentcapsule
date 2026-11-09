@@ -50,7 +50,7 @@ a production host yet.
 
 | ID | Item | Status | Remaining |
 |---|---|---|---|
-| CAP-01 | Private `capsule.v1` contract, typed envelope, platform channel (peers, LLM, attachments, deferred results) | Partial | Capability negotiation against tenant policy; events; second harness language (REG-04) |
+| CAP-01 | Private `capsule.v1` contract, typed envelope, platform channel (peers, LLM, attachments, deferred results); Go and Python harnesses | Partial | Capability negotiation against tenant policy; events |
 | CAP-02 | Cold create, desired/observed state, wake/sleep/delete, reconciliation, single RW generation | Partial | Automatic restart policy for agents that should be running |
 | CAP-03 | Jailer/cgroups hardening, egress control, CPU/RAM/IO/pid/time limits, bounded restarts | Partial | Egress profiles, IO limits, restart budgets |
 
@@ -78,7 +78,7 @@ a production host yet.
 | REG-01 | `harness.yaml` manifest, compatibility checks, read-only harness artifact, release states; agents boot from an imported release (validated on KVM) | Done | — |
 | REG-02 | Asynchronous OCI import (GHCR, standard registries), allowlists, private-registry credentials, publisher signatures with strict mode (REG-009, cosign format) | Partial | Live GHCR test, keyless signatures (Fulcio/Rekor identities) and provenance attestations, short-lived cloud registry credentials |
 | REG-03 | Shared read-only cache by digest, pinned agents, manual upgrade and rollback, safe eviction (validated on KVM) | Done | — |
-| REG-04 | Reference Dagger module; harnesses in Go and in Python or TypeScript | Not started | All (the `agentcapsule-harness pack/push` tool exists) |
+| REG-04 | Reference Dagger module; harnesses in Go and in Python or TypeScript | Partial | Reference Dagger module (a Python SDK, the python-echo harness and its Docker-based build exist; KVM validation of the Python harness pending) |
 
 ## Interoperability
 

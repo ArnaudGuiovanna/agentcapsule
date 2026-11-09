@@ -50,6 +50,9 @@ def main():
         shutil.copy2(ROOT / name, sources / name)
     shutil.copytree(ROOT / "internal", sources / "internal")
     shutil.copytree(ROOT / "cmd", sources / "cmd")
+    # The Python harness SDK and example, run by the Go conformance tests.
+    for name in ("sdk", "examples"):
+        shutil.copytree(ROOT / name, sources / name, ignore=shutil.ignore_patterns("__pycache__"))
     (sources / "scripts").mkdir()
     for script in (ROOT / "scripts").glob("*.py"):
         shutil.copy2(script, sources / "scripts" / script.name)

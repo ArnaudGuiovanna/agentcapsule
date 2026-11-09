@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Check the current Go packages without PostgreSQL or KVM.
 
-Only cmd/, internal/, go.mod and go.sum are copied into a fresh source snapshot.
+Only cmd/, internal/, sdk/, examples/, go.mod and go.sum are copied into a fresh
+source snapshot.
 Expected PostgreSQL skips are reported as required work, never as validation.
 Use verify-postgres.py and the KVM runners for the integration gates.
 """
@@ -30,8 +31,12 @@ PG_PACKAGES = ("internal/api", "internal/controlplane", "internal/worker")
 
 def source_files(root):
     files = [root / "go.mod", root / "go.sum"]
-    for name in ("cmd", "internal"):
+    # sdk/ and examples/ hold the Python harness SDK and its example, which the
+    # Go conformance tests run; they hold no Go package.
+    for name in ("cmd", "internal", "sdk", "examples"):
         directory = root / name
+        if name in ("sdk", "examples") and not directory.exists() and not directory.is_symlink():
+            continue
         if not directory.is_dir() or directory.is_symlink():
             raise ValueError(f"missing or linked source directory: {name}")
         for path in sorted(directory.rglob("*")):

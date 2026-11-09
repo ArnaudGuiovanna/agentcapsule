@@ -36,6 +36,8 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     for name in ["go", "firecracker-build", "upstream-firecracker", "kernel", "guest-build", "native-headers", "output"]:
         p.add_argument("--" + name, type=Path, required=True)
+    p.add_argument("--python-harness", type=Path, required=True,
+                   help="python-echo package directory written by scripts/build-python-harness.py (<output>/package)")
     p.add_argument("--pg-bin", type=Path)
     p.add_argument("--pg-library-path", type=Path)
     p.add_argument("--pg-user", help="Non-root owner of the temporary PostgreSQL cluster")
@@ -59,13 +61,14 @@ def main():
         assert sha(a.guest_build / name) == expected, name
     for name, expected in guest["source_sha256"].items():
         assert sha(ROOT / name) == expected, "rebuild guest after source changes: " + name
+    python_package = {name: sha(a.python_harness / name) for name in ["harness.yaml", "checksums.json", "harness.ext4"]}
     out = a.output
     out.mkdir(parents=True, exist_ok=False, mode=0o700)
     src = out / "sources"
     src.mkdir()
     for name in ["go.mod", "go.sum"]:
         shutil.copy2(ROOT / name, src / name)
-    for name in ["internal", "cmd", "scripts", "runtime"]:
+    for name in ["internal", "cmd", "scripts", "runtime", "sdk", "examples"]:
         shutil.copytree(ROOT / name, src / name, ignore=shutil.ignore_patterns("__pycache__"))
     native = out / "native"
     native.mkdir()
@@ -78,12 +81,13 @@ def main():
     environment = {"source_sha256": {str(f.relative_to(src)): sha(f) for f in src.rglob("*") if f.is_file()},
                    "firecracker_build": fc, "guest_build": guest, "kernel_sha256": sha(a.kernel),
                    "upstream_sha256": sha(a.upstream_firecracker), "native_header_sha256": sha(native / "libcryptsetup.h"),
+                   "python_harness_sha256": python_package,
                    "scope": __doc__}
     library = Path("/usr/lib/x86_64-linux-gnu/libcryptsetup.so.12")
     environment["libcryptsetup_sha256"] = sha(library)
     (out / "environment.json").write_text(json.dumps(environment, indent=2) + "\n")
     env = {k: v for k, v in os.environ.items() if not k.startswith(("AGENTCAPSULE_", "AC_RUNTIME_CHILD_", "CAPSULE_CRASH_"))}
-    env.update(AGENTCAPSULE_KVM_CONFIG=str(out / "config.json"), CPATH=str(native), CGO_ENABLED="1",
+    env.update(AGENTCAPSULE_KVM_CONFIG=str(out / "config.json"), AGENTCAPSULE_KVM_PYTHON_HARNESS=str(a.python_harness), CPATH=str(native), CGO_ENABLED="1",
                GOPATH=str(out / "go-path"), GOCACHE=str(out / "go-cache"), TMPDIR=str(out / "tmp"))
     (out / "tmp").mkdir()
     records = []
@@ -151,7 +155,8 @@ def main():
             worker_passed = {e["Test"] for e in events if e["Action"] == "pass" and "Test" in e}
             required_worker = {"TestProductWorkerProvisioningAndEncryptedWake", "TestProductWorkerTwoOwnersPrivateExchange",
                 "TestProductWorkerContractOutagePreservesCensusAndMaintenance", "TestProductWorkerTenantAsyncInvocationWithFileAndModel",
-                "TestProductWorkerTenantRunsAnImportedHarness", "TestProductWorkerTenantUpgradesAndRollsBackAnImportedHarness"}
+                "TestProductWorkerTenantRunsAnImportedHarness", "TestProductWorkerTenantUpgradesAndRollsBackAnImportedHarness",
+                "TestProductWorkerTenantRunsAPythonHarness"}
             assert required_worker <= worker_passed, "missing required product worker scenario"
             run("conformance-compile", [a.go, "test", "-c", "-buildvcs=false", "-race", "-tags=kvm_integration,kvm_product_integration",
                 "-o", out / "product-conformance.test", "./internal/controlplane"], 300)
@@ -172,7 +177,8 @@ def main():
             "tenant_async_file_and_model": "passed" if "TestProductWorkerTenantAsyncInvocationWithFileAndModel" in worker_passed else "not_run",
             "imported_harness": "passed" if "TestProductWorkerTenantRunsAnImportedHarness" in worker_passed else "not_run",
             "harness_upgrade_rollback": "passed" if "TestProductWorkerTenantUpgradesAndRollsBackAnImportedHarness" in worker_passed else "not_run",
-            "scope": "Real jailed encrypted guests and separate unprivileged harness processes. When worker_tests is nonempty, all mandatory worker scenarios passed: contract outage/recovery while preserving the physical census, credential replacement and forced retirement after a blocked quiesce; provisioning and encrypted wake; two owners/agents created via HTTP, manual consent while recipient sleeps, private reply and owner inbox, distinct persistent guest stores across clean sleep/wake, stale control rejection, queued-request cancellation and physical deletion; a tenant agent (delegated identity) acknowledging an invocation as working, then reading its encrypted attachment and calling its model over the platform channel and posting the answer; two tenant agents running a harness imported from an OCI registry, sharing one read-only cached image attached as a second drive and run chrooted by capsule-init; a tenant agent upgraded to another imported release and rolled back across sleep/wake with its encrypted volume, each change applied at the next boot, then the unused deprecated package evicted from the cache while the running release stays. Direct setup covers installation only. Nonempty conformance_tests separately establish the P1 permanent-seal projection on local mTLS/SQLite, PostgreSQL and a real host registry: same inode, future seal revalidation, missing-file/busy-lock/restart refusals. Its initial placements and VMM retirement are fixtures, not a physical replay of the trace. No concurrent in-flight writer crash, restore protocol or complete MVP validation is claimed."}, indent=2) + "\n")
+            "python_harness": "passed" if "TestProductWorkerTenantRunsAPythonHarness" in worker_passed else "not_run",
+            "scope": "Real jailed encrypted guests and separate unprivileged harness processes. When worker_tests is nonempty, all mandatory worker scenarios passed: contract outage/recovery while preserving the physical census, credential replacement and forced retirement after a blocked quiesce; provisioning and encrypted wake; two owners/agents created via HTTP, manual consent while recipient sleeps, private reply and owner inbox, distinct persistent guest stores across clean sleep/wake, stale control rejection, queued-request cancellation and physical deletion; a tenant agent (delegated identity) acknowledging an invocation as working, then reading its encrypted attachment and calling its model over the platform channel and posting the answer; two tenant agents running a harness imported from an OCI registry, sharing one read-only cached image attached as a second drive and run chrooted by capsule-init; a tenant agent upgraded to another imported release and rolled back across sleep/wake with its encrypted volume, each change applied at the next boot, then the unused deprecated package evicted from the cache while the running release stays; a harness written in Python (built off-host from a pinned base image) imported and run in the guest, answering from its own SQLite state kept across sleep/wake and posting a deferred model answer over the platform channel. Direct setup covers installation only. Nonempty conformance_tests separately establish the P1 permanent-seal projection on local mTLS/SQLite, PostgreSQL and a real host registry: same inode, future seal revalidation, missing-file/busy-lock/restart refusals. Its initial placements and VMM retirement are fixtures, not a physical replay of the trace. No concurrent in-flight writer crash, restore protocol or complete MVP validation is claimed."}, indent=2) + "\n")
     finally:
         cleanup_errors = []
         if pgroot is not None:
