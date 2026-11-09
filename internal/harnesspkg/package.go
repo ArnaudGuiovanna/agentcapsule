@@ -49,6 +49,11 @@ const (
 	MinRootfsBytes    = 64 << 10
 )
 
+// MountPoints must be directories in every harness filesystem of base
+// agentcapsule-guest/1: the guest mounts devices, /proc, /run, /tmp and the
+// agent's data directory there. pack creates them when missing.
+var MountPoints = []string{"/dev", "/proc", "/run", "/tmp", "/var/lib/agent"}
+
 // ErrInvalid: the package is malformed, tampered with or incompatible. The
 // message names the failed check, never file contents.
 var ErrInvalid = errors.New("invalid harness package")

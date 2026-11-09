@@ -2,11 +2,15 @@ package harnesspkg
 
 import (
 	"encoding/binary"
+	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
 )
 
 const goodManifest = `schema: agentcapsule.harness/v1
@@ -136,5 +140,49 @@ func TestBuildRootfsIsReproducibleAcrossTime(t *testing.T) {
 	}
 	if again := build(); again != first {
 		t.Fatal("the same inputs built another image", first, again)
+	}
+}
+
+func TestPackedImagesHaveTheGuestMountPointsAndAnExecutableEntrypoint(t *testing.T) {
+	if !slices.Equal(MountPoints, capsuleprotocol.HarnessMountPoints) {
+		t.Fatal("the package and the guest disagree on mount points")
+	}
+	m, err := ParseManifest([]byte(goodManifest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	build := func(prepare func(src string)) string {
+		t.Helper()
+		src := t.TempDir()
+		prepare(src)
+		out := filepath.Join(t.TempDir(), RootfsFile)
+		if err := BuildRootfs(t.Context(), m, src, out, 2); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	good := build(func(src string) {
+		_ = os.MkdirAll(filepath.Join(src, "bin"), 0o755)
+		_ = os.WriteFile(filepath.Join(src, "bin/harness"), []byte("x"), 0o755)
+	})
+	if err = InspectRootfs(t.Context(), good, m); err != nil {
+		t.Fatal("a packed image failed inspection", err)
+	}
+	notExec := build(func(src string) {
+		_ = os.MkdirAll(filepath.Join(src, "bin"), 0o755)
+		_ = os.WriteFile(filepath.Join(src, "bin/harness"), []byte("x"), 0o644)
+	})
+	if err = InspectRootfs(t.Context(), notExec, m); !errors.Is(err, ErrInvalid) {
+		t.Fatal("a non-executable entrypoint passed", err)
+	}
+	missing := build(func(string) {})
+	if err = InspectRootfs(t.Context(), missing, m); !errors.Is(err, ErrInvalid) {
+		t.Fatal("a missing entrypoint passed", err)
+	}
+	// A file where the guest mounts its runtime cannot be packed.
+	src := t.TempDir()
+	_ = os.WriteFile(filepath.Join(src, "tmp"), []byte("x"), 0o644)
+	if err = BuildRootfs(t.Context(), m, src, filepath.Join(t.TempDir(), RootfsFile), 2); !errors.Is(err, ErrInvalid) {
+		t.Fatal("a file over a mount point was packed", err)
 	}
 }

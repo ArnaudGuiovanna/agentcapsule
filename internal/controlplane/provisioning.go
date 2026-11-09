@@ -17,9 +17,12 @@ var ErrStoreEnrollment = errors.New("store enrollment is not ready or no longer 
 type Enrollment struct {
 	Incarnation                                                  uint64
 	AgentID, OperationID, VolumeID, HostID, Stage, HarnessDigest string
-	Resources                                                    AgentResources
-	AutoStart                                                    bool
-	Initialized                                                  bool
+	// HarnessSource is "local-approved" (the host's built-in image) or "oci"
+	// (a registry package, whose harness.ext4 has RootfsDigest).
+	HarnessSource, RootfsDigest string
+	Resources                   AgentResources
+	AutoStart                   bool
+	Initialized                 bool
 }
 
 // ProvisionedVolume is the trusted worker's observation after actual encrypted
@@ -137,13 +140,13 @@ func (s *Store) RevocationSubjects(ctx context.Context) ([]string, error) {
 	return subjects, rows.Err()
 }
 
-const enrollmentColumns = `e.agent_id,e.operation_id,e.volume_id,x.host_id,e.stage,r.artifact_digest,e.incarnation,
+const enrollmentColumns = `e.agent_id,e.operation_id,e.volume_id,x.host_id,e.stage,r.artifact_digest,r.source,coalesce(r.rootfs_digest,''),e.incarnation,
     x.vcpus,x.memory_mib,x.volume_mib,x.auto_start,
     EXISTS(SELECT 1 FROM store_initializations i WHERE i.agent_id=e.agent_id AND i.volume_id=e.volume_id AND i.incarnation=e.incarnation)`
 
 func scanEnrollment(row pgx.Row) (Enrollment, error) {
 	var e Enrollment
-	err := row.Scan(&e.AgentID, &e.OperationID, &e.VolumeID, &e.HostID, &e.Stage, &e.HarnessDigest, &e.Incarnation,
+	err := row.Scan(&e.AgentID, &e.OperationID, &e.VolumeID, &e.HostID, &e.Stage, &e.HarnessDigest, &e.HarnessSource, &e.RootfsDigest, &e.Incarnation,
 		&e.Resources.VCPUs, &e.Resources.MemoryMiB, &e.Resources.DataVolumeMiB, &e.AutoStart, &e.Initialized)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = ErrStoreEnrollment

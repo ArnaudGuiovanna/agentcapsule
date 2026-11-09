@@ -187,11 +187,16 @@ func TestReleasesAreListedToMembersAndDeprecatedByThePlatform(t *testing.T) {
 	if err != nil || !slicesContainRelease(items, done.ReleaseID) {
 		t.Fatal("a member cannot see the releases", err)
 	}
-	// Until the worker boots harness artifacts, an imported release cannot back an agent.
+	// An imported release backs agents like a local one; the worker boots its image.
 	in := tenantAgentInput("on-oci")
 	in.Harness = HarnessReference{Name: "imported", Version: "1.0.0"}
-	if _, err = c.Reserve(t.Context(), owner, "oci", in); !errors.Is(err, ErrRelease) {
-		t.Fatal("an agent was created on a release that cannot boot yet", err)
+	if _, err = c.Reserve(t.Context(), owner, "oci", in); err != nil {
+		t.Fatal("an agent could not use an imported release", err)
+	}
+	var source, rootfs string
+	if err = l.s.pool.QueryRow(t.Context(), `SELECT r.source,r.rootfs_digest FROM agent_specs x JOIN harness_releases r ON r.id=x.release_id
+        WHERE x.name='on-oci'`).Scan(&source, &rootfs); err != nil || source != "oci" || rootfs != "sha256:"+strings.Repeat("9", 64) {
+		t.Fatal("agent not pinned to the imported release", source, rootfs, err)
 	}
 	if _, err = l.a.DeprecateHarnessRelease(t.Context(), owner, done.ReleaseID, "x"); !errors.Is(err, ErrForbidden) {
 		t.Fatal("a member deprecated a release", err)

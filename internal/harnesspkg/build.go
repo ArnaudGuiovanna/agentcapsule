@@ -46,6 +46,9 @@ func BuildRootfs(ctx context.Context, m HarnessManifest, srcDir, out string, siz
 	if err != nil {
 		return err
 	}
+	if paths, err = addMountPoints(stage, paths); err != nil {
+		return err
+	}
 	seed := sha256.Sum256([]byte(m.Name + "\x00" + m.Version))
 	uuid := fmt.Sprintf("%x-%x-%x-%x-%x", seed[0:4], seed[4:6], seed[6:8], seed[8:10], seed[10:16])
 	env := append(os.Environ(), "E2FSPROGS_FAKE_TIME=1", "LC_ALL=C")
@@ -130,6 +133,36 @@ func stageTree(src, dst string) ([]string, error) {
 			if err = os.Chtimes(t, fixed, fixed); err != nil {
 				return nil, err
 			}
+		}
+	}
+	return paths, nil
+}
+
+// addMountPoints creates the empty directories the guest base mounts its
+// runtime on, unless the harness already provides them as directories.
+func addMountPoints(stage string, paths []string) ([]string, error) {
+	fixed := time.Unix(1, 0)
+	for _, mp := range MountPoints {
+		parts := strings.Split(strings.TrimPrefix(mp, "/"), "/")
+		for i := range parts {
+			p := "/" + strings.Join(parts[:i+1], "/")
+			target := filepath.Join(stage, filepath.FromSlash(p))
+			st, err := os.Lstat(target)
+			switch {
+			case err == nil && st.IsDir():
+				continue
+			case err == nil:
+				return nil, invalid("%s must be a directory: the guest mounts its runtime there", p)
+			case !os.IsNotExist(err):
+				return nil, err
+			}
+			if err = os.Mkdir(target, 0o755); err != nil {
+				return nil, err
+			}
+			if err = os.Chtimes(target, fixed, fixed); err != nil {
+				return nil, err
+			}
+			paths = append(paths, p)
 		}
 	}
 	return paths, nil

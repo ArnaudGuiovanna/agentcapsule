@@ -80,7 +80,7 @@ func TestPackageRoundTripThroughARegistryWithTokenAndCDN(t *testing.T) {
 	}
 	for _, name := range []string{harnesspkg.ManifestFile, harnesspkg.ChecksumsFile, harnesspkg.RootfsFile} {
 		st, err := os.Stat(filepath.Join(out, name))
-		if err != nil || st.Mode().Perm() != 0o400 {
+		if err != nil || st.Mode().Perm() != 0o444 {
 			t.Fatal("cached file not read-only", name, err)
 		}
 	}

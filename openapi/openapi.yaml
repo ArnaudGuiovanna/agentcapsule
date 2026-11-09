@@ -212,8 +212,8 @@ paths:
       description: >-
         Platform credential, or an organization member with agent:read. Releases carry
         no tenant data. Deprecated releases are listed only with include_deprecated=true.
-        Imported (OCI) releases cannot back a new agent until the worker boots harness
-        artifacts; agent creation currently accepts operator-approved local releases only.
+        An agent created on an imported (oci) release boots its harness from the package
+        cached on the host; provisioning fails if the host does not hold it.
       security: [{platformBearer: []}, {delegatedBearer: []}, {serviceBearer: []}]
       parameters:
         - {name: include_deprecated, in: query, required: false, schema: {type: boolean}}

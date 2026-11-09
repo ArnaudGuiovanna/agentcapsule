@@ -96,6 +96,17 @@ message the companion drops in its owner's inbox. An additional test links the
 API, PostgreSQL, mTLS and this real process, with loss of the first result and
 then a replay. This does not by itself validate execution in an encrypted VM.
 
+**Harness from the registry.** When the host attaches a harness drive (an agent
+pinned to an imported release, see [../registry.md](../registry.md)), the boot
+archive carries `/etc/capsule/harness.json` with the entrypoint. `capsule-init`
+then mounts `/dev/vdb` read-only (`nosuid`, `nodev`) on `/harness`, checks the
+base mount points, binds `/dev`, `/run` and `/tmp`, mounts `/proc`, and starts
+the entrypoint chrooted in `/harness` with the same user, cgroup, descriptors and
+paths as the built-in harness. The decrypted data directory is bound at
+`/harness/var/lib/agent` only while the harness process lives, so the encrypted
+volume can still be closed during quiesce. Without that file, the harness built
+into the platform image runs as before.
+
 ## Image and KVM run
 
 ```sh

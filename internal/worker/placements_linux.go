@@ -25,8 +25,11 @@ type Placements struct {
 	hostID, workerID string
 	lease            time.Duration
 	provisioning     *provisioner
-	transit          atomic.Pointer[controlplane.Transit]
-	llm              atomic.Pointer[controlplane.LLMService]
+	// registry locates verified harness packages for agents pinned to an
+	// imported release; nil when this host does not import harnesses.
+	registry atomic.Pointer[HarnessImporter]
+	transit  atomic.Pointer[controlplane.Transit]
+	llm      atomic.Pointer[controlplane.LLMService]
 	// Tests inject cancellation/crashes at the durable claim boundary.
 	afterClaim          func()
 	afterConfirm        func(runtime.VMRun)

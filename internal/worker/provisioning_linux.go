@@ -66,7 +66,12 @@ func (w *Placements) provision(ctx context.Context, job controlplane.WorkerJob) 
 	if e.Stage == "READY" {
 		return nil
 	}
-	if e.HarnessDigest != p.digest {
+	var harness *runtime.HarnessImage
+	if e.HarnessSource == "oci" {
+		if harness, err = w.harnessImage(ctx, e); err != nil {
+			return err
+		}
+	} else if e.HarnessDigest != p.digest {
 		return controlplane.ErrRelease
 	}
 	if e.Stage == "INSTALLING" {
@@ -91,7 +96,8 @@ func (w *Placements) provision(ctx context.Context, job controlplane.WorkerJob) 
 		if err != nil {
 			return err
 		}
-		registration := runtime.ProvisionedAgent{ID: e.AgentID, Volume: volume.Path, Device: volume.Device, Inode: volume.Inode, Resources: runtime.VMResources{VCPUs: e.Resources.VCPUs, MemoryMiB: e.Resources.MemoryMiB, VolumeMiB: e.Resources.DataVolumeMiB}}
+		registration := runtime.ProvisionedAgent{ID: e.AgentID, Volume: volume.Path, Device: volume.Device, Inode: volume.Inode, Resources: runtime.VMResources{VCPUs: e.Resources.VCPUs, MemoryMiB: e.Resources.MemoryMiB, VolumeMiB: e.Resources.DataVolumeMiB},
+			Harness: harness}
 		if err = w.host.RegisterProvisioned(ctx, registration, p.config.FirstUID, p.config.LastUID); err != nil {
 			return err
 		}

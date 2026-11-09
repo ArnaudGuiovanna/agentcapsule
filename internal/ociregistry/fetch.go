@@ -109,7 +109,7 @@ func (f *Fetcher) Fetch(ctx context.Context, ref Reference, dir string) (Package
 			return Package{}, err
 		}
 	}
-	return verifyFiles(ref, dir, layers, f.maxRootfs)
+	return verifyFiles(ctx, ref, dir, layers, f.maxRootfs)
 }
 
 // checkManifest accepts exactly the package layout: OCI image manifest, the
@@ -180,11 +180,13 @@ func (f *Fetcher) blob(ctx context.Context, c *client, repo, scope string, l des
 	if err = out.Sync(); err != nil {
 		return err
 	}
-	return os.Chmod(path, 0o400)
+	// World-readable, never writable: each agent's VMM, running as its own
+	// unprivileged user, reads the shared harness image.
+	return os.Chmod(path, 0o444)
 }
 
 // verifyFiles checks the package content after every blob matched its digest.
-func verifyFiles(ref Reference, dir string, layers []descriptor, maxRootfs int64) (Package, error) {
+func verifyFiles(ctx context.Context, ref Reference, dir string, layers []descriptor, maxRootfs int64) (Package, error) {
 	manifestBytes, err := os.ReadFile(filepath.Join(dir, harnesspkg.ManifestFile))
 	if err != nil {
 		return Package{}, err
@@ -211,6 +213,12 @@ func verifyFiles(ref Reference, dir string, layers []descriptor, maxRootfs int64
 	defer rootfs.Close()
 	if err = harnesspkg.CheckRootfs(rootfs, layers[2].Size, maxRootfs); err != nil {
 		return Package{}, fmt.Errorf("%w: %v", ErrIntegrity, err)
+	}
+	if err = harnesspkg.InspectRootfs(ctx, filepath.Join(dir, harnesspkg.RootfsFile), m); err != nil {
+		if errors.Is(err, harnesspkg.ErrInvalid) {
+			return Package{}, fmt.Errorf("%w: %v", ErrIntegrity, err)
+		}
+		return Package{}, err
 	}
 	return Package{Reference: ref, ManifestDigest: ref.Digest, Manifest: m, RootfsDigest: layers[2].Digest, RootfsSize: layers[2].Size, Dir: dir}, nil
 }

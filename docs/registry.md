@@ -4,11 +4,10 @@ Harnesses are built off-host, published to an OCI registry and imported by the
 platform **by digest**. The host never builds tenant code: it pulls, verifies and
 caches packages, and boots them.
 
-> **Status.** Import, verification, caching, release states and deprecation work.
-> Booting an agent from an imported release (attaching `harness.ext4` read-only to
-> the VM) is the next step; until then, agent creation accepts only
-> operator-approved local releases. Signature policy and the reference Dagger module
-> come after. See [ROADMAP.md](../ROADMAP.md) (REG-01 to REG-04).
+> **Status.** Import, verification, caching, release states, deprecation and booting
+> agents from imported releases work. Signature policy, registry credentials, cache
+> eviction and the reference Dagger module come next. See [ROADMAP.md](../ROADMAP.md)
+> (REG-01 to REG-04).
 
 ## Package format
 
@@ -38,8 +37,14 @@ description: Reference echo harness   # optional
 
 `checksums.json` lists the sha256 of `harness.yaml` and `harness.ext4`, so a package
 copied out of a registry can still be checked. `harness.ext4` is the read-only root
-filesystem of the harness; the platform only reads its superblock on the host and
-never mounts it there.
+filesystem of the harness; the platform never mounts it on the host.
+
+The base `agentcapsule-guest/1` requires these directories in `harness.ext4`, where the
+guest mounts its runtime: `/dev`, `/proc`, `/run`, `/tmp` and `/var/lib/agent` (the
+agent's private data). `pack` creates them when they are missing. The entrypoint must be
+an executable file (or a symlink) inside the image. The harness runs chrooted in its
+image, as an unprivileged user, so it must carry everything it needs (a static binary,
+or an interpreter and its libraries).
 
 ## Building and publishing
 
@@ -74,7 +79,9 @@ The import is `IMPORTING` until a worker processes it:
    the format above exactly.
 3. Each blob is streamed to a private staging directory with a size limit and checked
    against its digest.
-4. `harness.yaml`, `checksums.json` and the ext4 superblock are validated.
+4. `harness.yaml`, `checksums.json` and the ext4 superblock are validated, and the
+   image is inspected read-only with `debugfs`: the mount points must be directories
+   and the entrypoint an executable file.
 5. The package moves to `<cache>/sha256/<digest>/`, read-only, and the release is
    published.
 
@@ -88,6 +95,28 @@ already released answers with that release and downloads nothing.
 `POST /v1/harness-releases/{id}/deprecate` stops new agents from using a release;
 agents already pinned to it keep running. Organization members with `agent:read` can
 list releases (`GET /v1/harness-releases`).
+
+## Running an imported release
+
+An agent created on an imported release (`"harness": {"name": ..., "version": ...}`)
+boots from the package cached on its host:
+
+1. At provisioning, the worker finds the package by its digest in the cache, hashes
+   `harness.ext4` again and refuses it if it no longer matches the release, then
+   records the image with the agent on the host.
+2. At each boot, the image is hard-linked into the VM's jail (one inode shared by every
+   agent of the release; copied only if the cache is on another filesystem) and
+   attached as a second, read-only drive. A boot-specific file tells `capsule-init` the
+   entrypoint.
+3. In the guest, `capsule-init` mounts the drive read-only (`nosuid`, `nodev`) on
+   `/harness`, binds `/dev`, `/run` and `/tmp`, mounts `/proc`, binds the decrypted data
+   directory at `/var/lib/agent` for the life of the harness process, and runs the
+   entrypoint chrooted in `/harness` as the unprivileged harness user. The platform
+   socket and data paths are the same as for the built-in harness.
+
+An agent stays pinned to its release; deprecating the release does not stop it.
+Without a configured registry, or if the host does not hold the package, provisioning
+fails and the agent is not created.
 
 ## Worker trust policy
 
@@ -123,6 +152,7 @@ deliveries or VM lifecycle work.
   packages). Credentials for private registries are next.
 - No signature or attestation policy yet (REG-009): trust rests on the approved
   registry/repository and the pinned digest.
-- The cache is per host and is not evicted yet (REG-03).
+- The cache is per host and is not evicted yet (REG-03); a multi-host installation must
+  import on every host that will run the release.
 - Import has been tested against an in-process OCI registry (token flow, CDN
   redirect, tampering); a live GHCR import has not been run yet.

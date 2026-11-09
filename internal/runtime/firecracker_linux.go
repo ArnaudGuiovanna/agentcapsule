@@ -82,6 +82,18 @@ type HostAgent struct {
 	VolumeRemoved bool        `json:"volume_removed,omitempty"`
 	Run           *VMRun      `json:"run,omitempty"`
 	Resources     VMResources `json:"resources,omitempty"`
+	// Harness, when set, is a read-only harness filesystem from the registry
+	// cache, attached as the second drive; otherwise the platform image's
+	// built-in harness runs.
+	Harness *HarnessImage `json:"harness,omitempty"`
+}
+
+// HarnessImage is a verified harness.ext4 shared read-only by every agent
+// pinned to its release.
+type HarnessImage struct {
+	Path       string   `json:"path"`
+	Digest     string   `json:"digest"`
+	Entrypoint []string `json:"entrypoint"`
 }
 
 type VMRun struct {
@@ -862,7 +874,7 @@ func (h *FirecrackerHost) prepare(a *HostAgent) error {
 		_, err = io.Copy(f, source)
 		source.Close()
 		if err == nil && name == "initrd" && h.opts.AuthenticatedControl {
-			err = appendControlConfig(f, guest)
+			err = appendControlConfig(f, guest, a.Harness)
 		}
 		if err == nil {
 			err = f.Sync()
@@ -875,8 +887,19 @@ func (h *FirecrackerHost) prepare(a *HostAgent) error {
 	if err := os.Link(a.Volume, filepath.Join(root, "data.ext4")); err != nil {
 		return err
 	}
+	drives := []any{map[string]any{"drive_id": "data", "path_on_host": "/data.ext4", "is_root_device": false, "is_read_only": false, "cache_type": "Writeback", "io_engine": "Sync"}}
+	if a.Harness != nil {
+		if !h.opts.AuthenticatedControl {
+			return errors.New("a registry harness needs the authenticated guest contract")
+		}
+		// One inode shared by every agent of the release; the VMM only reads it.
+		if err := linkOrCopy(a.Harness.Path, filepath.Join(root, "harness.ext4")); err != nil {
+			return err
+		}
+		drives = append(drives, map[string]any{"drive_id": "harness", "path_on_host": "/harness.ext4", "is_root_device": false, "is_read_only": true, "cache_type": "Unsafe", "io_engine": "Sync"})
+	}
 	resources := a.resources()
-	config := map[string]any{"boot-source": map[string]any{"kernel_image_path": "/kernel", "initrd_path": "/initrd", "boot_args": "console=ttyS0 reboot=k panic=1 pci=off"}, "machine-config": map[string]any{"vcpu_count": resources.VCPUs, "mem_size_mib": resources.MemoryMiB}, "drives": []any{map[string]any{"drive_id": "data", "path_on_host": "/data.ext4", "is_root_device": false, "is_read_only": false, "cache_type": "Writeback", "io_engine": "Sync"}}, "vsock": map[string]any{"guest_cid": 3, "uds_path": "/vsock"}}
+	config := map[string]any{"boot-source": map[string]any{"kernel_image_path": "/kernel", "initrd_path": "/initrd", "boot_args": "console=ttyS0 reboot=k panic=1 pci=off"}, "machine-config": map[string]any{"vcpu_count": resources.VCPUs, "mem_size_mib": resources.MemoryMiB}, "drives": drives, "vsock": map[string]any{"guest_cid": 3, "uds_path": "/vsock"}}
 	b, err := json.Marshal(config)
 	if err != nil {
 		return err

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -53,5 +54,78 @@ func TestProvisionedResourcesReachVMConfiguration(t *testing.T) {
 		if err != nil || string(b) != want {
 			t.Fatal(file, string(b), err)
 		}
+	}
+}
+
+func TestHarnessImagesAreSharedReadOnlyFiles(t *testing.T) {
+	dir := t.TempDir()
+	img := filepath.Join(dir, "harness.ext4")
+	if err := os.WriteFile(img, make([]byte, 128<<10), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	good := &HarnessImage{Path: img, Digest: "sha256:" + strings.Repeat("a", 64), Entrypoint: []string{"/bin/harness"}}
+	if err := validHarness(good); err != nil {
+		t.Fatal(err)
+	}
+	if err := validHarness(nil); err != nil {
+		t.Fatal("the built-in harness needs no image", err)
+	}
+	writable := filepath.Join(dir, "writable.ext4")
+	if err := os.WriteFile(writable, make([]byte, 128<<10), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(writable, 0o666); err != nil { // past the umask
+		t.Fatal(err)
+	}
+	private := filepath.Join(dir, "private.ext4")
+	if err := os.WriteFile(private, make([]byte, 128<<10), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	for name, bad := range map[string]HarnessImage{
+		"relative":      {Path: "harness.ext4", Digest: good.Digest, Entrypoint: good.Entrypoint},
+		"writable":      {Path: writable, Digest: good.Digest, Entrypoint: good.Entrypoint},
+		"unreadable":    {Path: private, Digest: good.Digest, Entrypoint: good.Entrypoint},
+		"digest":        {Path: img, Digest: "md5:x", Entrypoint: good.Entrypoint},
+		"entrypoint":    {Path: img, Digest: good.Digest, Entrypoint: []string{"bin/harness"}},
+		"no entrypoint": {Path: img, Digest: good.Digest},
+		"missing":       {Path: filepath.Join(dir, "none"), Digest: good.Digest, Entrypoint: good.Entrypoint},
+	} {
+		if validHarness(&bad) == nil {
+			t.Fatal("accepted:", name)
+		}
+	}
+	if !sameHarness(good, &HarnessImage{Path: img, Digest: good.Digest, Entrypoint: []string{"/bin/harness"}}) || sameHarness(good, nil) {
+		t.Fatal("harness identity comparison")
+	}
+	// Sharing is by hard link: one inode for every agent of the release.
+	linked := filepath.Join(dir, "jail.ext4")
+	if err := linkOrCopy(img, linked); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := os.Stat(img)
+	b, _ := os.Stat(linked)
+	if !os.SameFile(a, b) {
+		t.Fatal("the jail got a copy instead of the shared image")
+	}
+	// A registry harness needs the authenticated guest contract.
+	root := t.TempDir()
+	for _, d := range []string{"bin", "volumes", "groups"} {
+		if err := os.Mkdir(filepath.Join(root, d), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"kernel", "initrd"} {
+		if err := os.WriteFile(filepath.Join(root, "bin", name), []byte("fixture"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	volume := filepath.Join(root, "volumes", "data")
+	if err := os.WriteFile(volume, []byte("fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := &FirecrackerHost{root: root, cgroup: filepath.Join(root, "groups")}
+	agent := &HostAgent{ID: "a", UID: 60000, Volume: volume, Harness: good, Run: &VMRun{ID: "0123456789abcdef", Generation: 1, Phase: "STARTING"}}
+	if err := h.prepare(agent); err == nil {
+		t.Fatal("a registry harness was prepared without the authenticated contract")
 	}
 }

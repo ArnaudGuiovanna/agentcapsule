@@ -129,6 +129,11 @@ func run() int {
 	if err != nil {
 		return fail("registry_configuration_invalid")
 	}
+	if importer != nil {
+		if err = w.EnableRegistry(importer); err != nil {
+			return fail("registry_unavailable")
+		}
+	}
 	if importer != nil && !archiveRequested {
 		// Imports run beside maintenance: a large download never delays delivery.
 		go func() {

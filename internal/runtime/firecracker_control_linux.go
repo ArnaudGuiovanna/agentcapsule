@@ -58,8 +58,11 @@ func (h *FirecrackerHost) prepareControl(a *HostAgent) (capsuleprotocol.Credenti
 	return guest, syncDir(filepath.Dir(h.credentialPath(a.Run)))
 }
 
-func appendControlConfig(f *os.File, guest capsuleprotocol.Credentials) error {
-	return capsuleprotocol.AppendBootConfig(f, guest)
+func appendControlConfig(f *os.File, guest capsuleprotocol.Credentials, harness *HarnessImage) error {
+	if harness == nil {
+		return capsuleprotocol.AppendBootConfig(f, guest, nil)
+	}
+	return capsuleprotocol.AppendBootConfig(f, guest, &capsuleprotocol.HarnessLaunch{Entrypoint: harness.Entrypoint})
 }
 
 func (h *FirecrackerHost) controlCredentials(a *HostAgent) (capsuleprotocol.Credentials, error) {

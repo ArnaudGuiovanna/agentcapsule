@@ -32,6 +32,9 @@ type ProcessOptions struct {
 	// Set by capsule-init to its dedicated cgroup-v2 directory. Unit tests can
 	// run one nonforking child without a cgroup; product startup always supplies it.
 	Cgroup string
+	// Root, when set (HarnessRoot), is the harness's own filesystem: the data
+	// directory is bound into it and the process runs chrooted there.
+	Root string
 }
 
 type Process struct {
@@ -181,6 +184,22 @@ func StartHarness(lifetime, readiness context.Context, opts ProcessOptions) (*Pr
 	if err = w.Close(); err != nil {
 		return nil, err
 	}
+	dataBind := ""
+	if opts.Root != "" {
+		dataBind = filepath.Join(opts.Root, opts.Boot.DataDirectory)
+		if err = syscall.Mount(opts.Boot.DataDirectory, dataBind, "", syscall.MS_BIND, ""); err != nil {
+			return nil, ErrGuest
+		}
+		if err = syscall.Mount("", dataBind, "", syscall.MS_BIND|syscall.MS_REMOUNT|syscall.MS_NOSUID|syscall.MS_NODEV|syscall.MS_NOEXEC, ""); err != nil {
+			return nil, errors.Join(ErrGuest, unbind(dataBind))
+		}
+	}
+	keepBind := false
+	defer func() {
+		if dataBind != "" && !keepBind {
+			_ = unbind(dataBind)
+		}
+	}()
 	cmd := exec.Command(opts.Entrypoint[0], opts.Entrypoint[1:]...)
 	cmd.ExtraFiles = []*os.File{r, listenFD}
 	cmd.Dir = opts.Boot.DataDirectory
@@ -188,7 +207,7 @@ func StartHarness(lifetime, readiness context.Context, opts ProcessOptions) (*Pr
 	cmd.Stdin = nil
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Credential: &syscall.Credential{Uid: opts.UID, Gid: opts.GID, NoSetGroups: os.Geteuid() != 0}}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Chroot: opts.Root, Credential: &syscall.Credential{Uid: opts.UID, Gid: opts.GID, NoSetGroups: os.Geteuid() != 0}}
 	if opts.Cgroup != "" {
 		group, err := os.Open(opts.Cgroup)
 		if err != nil {
@@ -204,6 +223,7 @@ func StartHarness(lifetime, readiness context.Context, opts ProcessOptions) (*Pr
 	p := &Process{cmd: cmd, done: make(chan struct{}), opts: opts}
 	keepSocket = true
 	keepBridge = true
+	keepBind = true
 	go func() {
 		err := cmd.Wait()
 		err = errors.Join(err, bridge.close())
@@ -220,6 +240,10 @@ func StartHarness(lifetime, readiness context.Context, opts ProcessOptions) (*Pr
 			cancel()
 		}
 		_ = os.Remove(opts.SocketPath)
+		if dataBind != "" {
+			// The encrypted volume can only close once this bind is gone.
+			err = errors.Join(err, unbind(dataBind))
+		}
 		p.mu.Lock()
 		p.err = err
 		p.mu.Unlock()

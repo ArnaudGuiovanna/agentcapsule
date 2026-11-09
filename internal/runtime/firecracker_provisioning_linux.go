@@ -5,10 +5,37 @@ package runtime
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"syscall"
+
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
 )
+
+// linkOrCopy shares a read-only file with a jail by hard link, or copies it
+// when the registry cache lives on another filesystem.
+func linkOrCopy(src, dst string) error {
+	err := os.Link(src, dst)
+	if !errors.Is(err, syscall.EXDEV) {
+		return err
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o444)
+	if err != nil {
+		return err
+	}
+	if _, err = io.Copy(out, in); err == nil {
+		err = out.Sync()
+	}
+	return errors.Join(err, out.Close())
+}
 
 type VMResources struct {
 	VCPUs     int `json:"vcpus"`
@@ -30,6 +57,34 @@ type ProvisionedAgent struct {
 	ID, Volume    string
 	Device, Inode uint64
 	Resources     VMResources
+	Harness       *HarnessImage
+}
+
+// validHarness: an absolute regular file the VMM can read, a digest and an
+// entrypoint the guest accepts. Its content was verified when imported.
+func validHarness(img *HarnessImage) error {
+	if img == nil {
+		return nil
+	}
+	if !filepath.IsAbs(img.Path) || filepath.Clean(img.Path) != img.Path || !strings.HasPrefix(img.Digest, "sha256:") || len(img.Digest) != 71 ||
+		(capsuleprotocol.HarnessLaunch{Entrypoint: img.Entrypoint}).Validate() != nil {
+		return errors.New("invalid harness image")
+	}
+	st, err := os.Lstat(img.Path)
+	if err != nil {
+		return err
+	}
+	if !st.Mode().IsRegular() || st.Mode().Perm()&0o004 == 0 || st.Mode().Perm()&0o022 != 0 || st.Size() < 64<<10 {
+		return errors.New("harness image must be a world-readable, write-protected regular file")
+	}
+	return nil
+}
+
+func sameHarness(a, b *HarnessImage) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Path == b.Path && a.Digest == b.Digest && slices.Equal(a.Entrypoint, b.Entrypoint)
 }
 
 // RegisterProvisioned binds an already published encrypted container. Retrying
@@ -39,6 +94,9 @@ type ProvisionedAgent struct {
 func (h *FirecrackerHost) RegisterProvisioned(ctx context.Context, in ProvisionedAgent, firstUID, lastUID uint32) error {
 	if in.ID == "" || in.Inode == 0 || !in.Resources.valid() || firstUID < 10000 || lastUID < firstUID || lastUID == ^uint32(0) || lastUID-firstUID > 1<<20 {
 		return errors.New("invalid provisioning registration")
+	}
+	if err := validHarness(in.Harness); err != nil {
+		return err
 	}
 	return h.locked(ctx, func(r *hostRegistry) error {
 		path, err := filepath.Abs(in.Volume)
@@ -69,7 +127,7 @@ func (h *FirecrackerHost) RegisterProvisioned(ctx context.Context, in Provisione
 			if a.Fenced || a.SealID != "" {
 				return ErrHostFenced
 			}
-			if a.Volume != path || a.Device != in.Device || a.Inode != in.Inode || a.Resources != in.Resources || a.UID < firstUID || a.UID > lastUID || s.Uid != a.UID || s.Gid != a.UID {
+			if a.Volume != path || a.Device != in.Device || a.Inode != in.Inode || a.Resources != in.Resources || !sameHarness(a.Harness, in.Harness) || a.UID < firstUID || a.UID > lastUID || s.Uid != a.UID || s.Gid != a.UID {
 				return errors.New("provisioned registration is immutable")
 			}
 			return nil
@@ -94,7 +152,7 @@ func (h *FirecrackerHost) RegisterProvisioned(ctx context.Context, in Provisione
 		if err = f.Sync(); err != nil {
 			return err
 		}
-		r.Agents[in.ID] = &HostAgent{ID: in.ID, UID: uid, Volume: path, Device: in.Device, Inode: in.Inode, Resources: in.Resources}
+		r.Agents[in.ID] = &HostAgent{ID: in.ID, UID: uid, Volume: path, Device: in.Device, Inode: in.Inode, Resources: in.Resources, Harness: in.Harness}
 		return h.save(r)
 	})
 }

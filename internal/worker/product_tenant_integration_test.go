@@ -51,7 +51,7 @@ func (i *tenantIdentity) token(t *testing.T, subject string) string {
 
 // installTenant creates an organization through the platform API and trusts
 // its identity provider, exactly as an operator would.
-func (l *productPeerLab) installTenant(t *testing.T) (*tenantIdentity, controlplane.CreateOrganizationResponse) {
+func (l *productPeerLab) installTenant(t *testing.T) (*tenantIdentity, controlplane.CreateOrganizationResponse, string) {
 	t.Helper()
 	secret := make([]byte, 32)
 	_, _ = rand.Read(secret)
@@ -85,7 +85,7 @@ func (l *productPeerLab) installTenant(t *testing.T) (*tenantIdentity, controlpl
 		}
 		return ok && time.Now().After(r.MinimumIAT.Add(time.Second))
 	})
-	return id, org
+	return id, org, platform
 }
 
 // raw sends a non-JSON body (an attachment upload).
@@ -142,7 +142,7 @@ func TestProductWorkerTenantAsyncInvocationWithFileAndModel(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	id, _ := lab.installTenant(t)
+	id, _, _ := lab.installTenant(t)
 	owner := func() string { return id.token(t, "alice") }
 	var created controlplane.AgentCreation
 	input := controlplane.CreateAgentInput{Name: "tenant-reader", Harness: controlplane.HarnessReference{Name: "reference", Version: "1.0.0"},

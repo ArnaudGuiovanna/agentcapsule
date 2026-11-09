@@ -99,6 +99,21 @@ func run() error {
 	if len(config.Entrypoint) == 0 || !filepath.IsAbs(config.Entrypoint[0]) {
 		return guestinit.ErrGuest
 	}
+	// A harness from the registry arrives on its own read-only drive, with its
+	// entrypoint in a boot-specific file; otherwise the built-in harness runs.
+	harnessRoot := ""
+	if _, err := os.Lstat(capsuleprotocol.HarnessConfigPath); err == nil {
+		var launch capsuleprotocol.HarnessLaunch
+		if err = readPrivateJSON(capsuleprotocol.HarnessConfigPath, &launch); err != nil || launch.Validate() != nil {
+			return guestinit.ErrGuest
+		}
+		if err = guestinit.MountHarnessRoot(); err != nil {
+			return err
+		}
+		config.Entrypoint, harnessRoot = launch.Entrypoint, guestinit.HarnessRoot
+	} else if !os.IsNotExist(err) {
+		return err
+	}
 	var platform *capsuleprotocol.PlatformClient
 	platformPath := ""
 	if !credentials.Identity.FenceOnly && credentials.Platform != nil {
@@ -149,7 +164,7 @@ func run() error {
 		p, err := guestinit.StartHarness(ctx, ready, guestinit.ProcessOptions{
 			Boot:       guestinit.HarnessBoot{Protocol: capsuleprotocol.Version, Identity: credentials.Identity, DataDirectory: guestinit.DataDirectory, SupervisorUID: 0, PlatformSocket: platformPath, PreviousShutdown: v.PreviousShutdown},
 			Entrypoint: config.Entrypoint, SocketPath: "/run/capsule/harness.sock", UID: 1000, GID: 1000, Cgroup: group,
-			Platform: platform,
+			Platform: platform, Root: harnessRoot,
 		})
 		if err != nil {
 			cleanup, stop := context.WithTimeout(context.Background(), 10*time.Second)
