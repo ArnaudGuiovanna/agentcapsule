@@ -5,11 +5,13 @@
 //	agentcapsule-harness push --dir ./package --registry ghcr.io --repository org/echo --tag 1.0.0
 //	agentcapsule-harness keygen --out ./publisher
 //	agentcapsule-harness sign --key ./publisher.key --ref ghcr.io/org/echo@sha256:...
+//	agentcapsule-harness verify --ref ghcr.io/org/echo@sha256:... --key ./publisher.pub
 //
 // push prints the reference pinned by digest, which the platform operator
 // imports with POST /v1/harness-imports. sign attaches a signature in the
 // cosign v3 format ("cosign sign --key" works as well); the operator trusts the
-// matching public key. The registry password, if any, is read from
+// matching public key. verify downloads a package and checks it as the
+// platform's importer would. The registry password, if any, is read from
 // AGENTCAPSULE_REGISTRY_PASSWORD, never from the command line.
 package main
 
@@ -20,6 +22,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"flag"
@@ -27,6 +30,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/harnesspkg"
@@ -42,7 +46,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: agentcapsule-harness pack|push|keygen|sign [flags]")
+		return errors.New("usage: agentcapsule-harness pack|push|keygen|sign|verify [flags]")
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -55,6 +59,8 @@ func run(args []string) error {
 		return keygen(args[1:])
 	case "sign":
 		return signPackage(ctx, args[1:])
+	case "verify":
+		return verifyPackage(ctx, args[1:])
 	}
 	return fmt.Errorf("unknown command %q", args[0])
 }
@@ -220,4 +226,65 @@ func parsePrivateKey(raw []byte) (crypto.Signer, error) {
 		return x509.ParseECPrivateKey(block.Bytes)
 	}
 	return nil, errors.New("unsupported private key (encrypted cosign keys: use cosign sign --key)")
+}
+
+type keyFiles []string
+
+func (k *keyFiles) String() string     { return strings.Join(*k, ",") }
+func (k *keyFiles) Set(v string) error { *k = append(*k, v); return nil }
+
+// verifyPackage downloads a package pinned by digest and runs the importer's
+// checks: manifest digest and layout, blob digests, harness.yaml, ext4 image
+// inspection, and, when keys are given, a signature by one of them.
+func verifyPackage(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("verify", flag.ContinueOnError)
+	refText := fs.String("ref", "", "package reference pinned by digest")
+	var keys keyFiles
+	fs.Var(&keys, "key", "trusted publisher public key (PEM); repeatable; requires a signature by one of them")
+	username := fs.String("username", "", "registry user; password from AGENTCAPSULE_REGISTRY_PASSWORD")
+	local := fs.Bool("local", false, "plain HTTP registry on a private network (development only)")
+	maxMiB := fs.Int("max-mib", 1024, "largest harness.ext4 accepted")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *refText == "" {
+		return errors.New("--ref is required")
+	}
+	ref, err := ociregistry.ParseReference(*refText)
+	if err != nil {
+		return err
+	}
+	rule := ociregistry.Rule{Host: ref.Registry, Repositories: []string{ref.Repository}, Local: *local,
+		Username: *username, Password: os.Getenv("AGENTCAPSULE_REGISTRY_PASSWORD")}
+	for _, path := range keys {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		key, err := ociregistry.ParsePublisherKey(raw)
+		if err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+		rule.Keys = append(rule.Keys, key)
+	}
+	f, err := ociregistry.NewFetcher(ociregistry.Policy{Rules: []ociregistry.Rule{rule}, RequireSignatures: len(keys) > 0}, int64(*maxMiB)<<20)
+	if err != nil {
+		return err
+	}
+	dir, err := os.MkdirTemp("", "agentcapsule-verify-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir)
+	pkg, err := f.Fetch(ctx, ref, dir)
+	if err != nil {
+		return err
+	}
+	out, err := json.MarshalIndent(map[string]any{"reference": ref.String(), "name": pkg.Manifest.Name, "version": pkg.Manifest.Version,
+		"entrypoint": pkg.Manifest.Entrypoint, "rootfs_digest": pkg.RootfsDigest, "rootfs_bytes": pkg.RootfsSize, "signer": pkg.Signer}, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(out))
+	return nil
 }

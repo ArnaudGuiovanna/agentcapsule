@@ -9,8 +9,9 @@ caches packages, and boots them.
 > rollback, and cache eviction work and are validated on real KVM (two tenant agents on
 > one imported release share the cached image; an agent is upgraded, rolled back across
 > sleep/wake and still answers after the unused package is evicted). Publisher
-> signatures (cosign format, trusted keys, strict mode) are verified at import. Keyless
-> signatures and the reference Dagger module come next. See [ROADMAP.md](../ROADMAP.md)
+> signatures (cosign format, trusted keys, strict mode) are verified at import. The
+> reference Dagger module builds, publishes, signs and verifies packages in CI. Keyless
+> signatures come next. See [ROADMAP.md](../ROADMAP.md)
 > (REG-01 to REG-04).
 
 ## Package format
@@ -53,11 +54,38 @@ or an interpreter and its libraries).
 ## Building and publishing
 
 A harness can be written in any language whose runtime fits in the image: Go (see
-`cmd/capsule-echo`) or Python with the [Python SDK](../sdk/python/README.md), whose
-example `examples/python-echo` is built by `scripts/build-python-harness.py` from an
-official Python image pinned by digest. Both run in the product KVM campaign: the
-Python harness answers from its encrypted SQLite state across sleep and wake, and
-posts a deferred model answer over the platform channel.
+`cmd/capsule-echo`) or Python with the [Python SDK](../sdk/python/README.md). Both
+run in the product KVM campaign: the Python harness answers from its encrypted
+SQLite state across sleep and wake, and posts a deferred model answer over the
+platform channel.
+
+### Reference build (Dagger)
+
+The [Dagger](https://dagger.io) module at the repository root (`dagger.json`,
+`.dagger/main.go`) is the reference build. Every image it uses is pinned by digest,
+and it runs the same way on a laptop and in CI (Docker and the `dagger` CLI are the
+only requirements):
+
+```bash
+dagger call python-echo export --path=./build/python-echo   # Python SDK + examples/python-echo
+dagger call go-echo export --path=./build/go-echo           # capsule-echo, one static binary
+dagger call pack --rootfs=./my-rootfs --manifest=./harness.yaml export --path=./build/mine
+dagger call publish --pkg=./build/python-echo --registry=ghcr.io --repository=acme/python-echo \
+  --tag=1.0.0 --username=acme-bot --password=env:GHCR_TOKEN
+dagger call sign --ref=ghcr.io/acme/python-echo:1.0.0@sha256:... --key=file:./acme-release.key \
+  --username=acme-bot --password=env:GHCR_TOKEN
+dagger call verify --ref=ghcr.io/acme/python-echo:1.0.0@sha256:... --key=./acme-release.pub
+dagger call check   # the whole chain against a throwaway registry (run by CI)
+```
+
+`check` builds both reference harnesses, pushes them to a `registry:2` service (a
+registry without the referrers API, like GHCR), checks that an unsigned package is
+refused when a signature is required, then signs both and verifies them as the
+platform importer would. Set `DO_NOT_TRACK=1` to disable Dagger's anonymous telemetry.
+
+Without Dagger, `scripts/build-python-harness.py` builds the same harness with plain
+Docker. Each path is reproducible on its own; their digests differ because they pack
+with different e2fsprogs versions.
 
 ```bash
 go build ./cmd/agentcapsule-harness
@@ -67,8 +95,8 @@ AGENTCAPSULE_REGISTRY_PASSWORD=<token> agentcapsule-harness push --dir ./package
 # prints: ghcr.io/acme/echo:1.0.0@sha256:...
 ```
 
-`pack` uses `mkfs.ext4 -d` and `debugfs` (e2fsprogs) without root and without
-mounting. Timestamps, UUID and ownership are fixed, so the same inputs give the same
+With the tool alone (`go build ./cmd/agentcapsule-harness`), `pack` uses
+`mkfs.ext4 -d` and `debugfs` (e2fsprogs) without root and without mounting. Timestamps, UUID and ownership are fixed, so the same inputs give the same
 digest. `push` prints the reference pinned by digest; the tag is informational.
 
 ### Signing
@@ -81,7 +109,12 @@ agentcapsule-harness keygen --out ./acme-release      # acme-release.key (privat
 AGENTCAPSULE_REGISTRY_PASSWORD=<token> agentcapsule-harness sign \
   --key ./acme-release.key --ref ghcr.io/acme/echo:1.0.0@sha256:... --username <user>
 # or: cosign sign --key cosign.key ghcr.io/acme/echo@sha256:...
+agentcapsule-harness verify --ref ghcr.io/acme/echo:1.0.0@sha256:... --key ./acme-release.pub
 ```
+
+`verify` downloads the package and runs the importer's checks (digests, layout,
+`harness.yaml`, image inspection, and the signature when keys are given), so a
+publisher or an operator can check a package before it is imported.
 
 The signature is an in-toto statement naming the package manifest digest, in a DSSE
 envelope signed with the key (ECDSA P-256/P-384/P-521, Ed25519 or RSA of at least

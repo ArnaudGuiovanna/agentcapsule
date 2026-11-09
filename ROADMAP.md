@@ -78,7 +78,7 @@ a production host yet.
 | REG-01 | `harness.yaml` manifest, compatibility checks, read-only harness artifact, release states; agents boot from an imported release (validated on KVM) | Done | — |
 | REG-02 | Asynchronous OCI import (GHCR, standard registries), allowlists, private-registry credentials, publisher signatures with strict mode (REG-009, cosign format) | Partial | Live GHCR test, keyless signatures (Fulcio/Rekor identities) and provenance attestations, short-lived cloud registry credentials |
 | REG-03 | Shared read-only cache by digest, pinned agents, manual upgrade and rollback, safe eviction (validated on KVM) | Done | — |
-| REG-04 | Reference Dagger module; harnesses in Go and in Python or TypeScript | Partial | Reference Dagger module (the Python SDK, the python-echo harness and its Docker-based build exist and are validated on KVM) |
+| REG-04 | Reference Dagger module (build, publish, sign, verify; run by CI); harnesses in Go and in Python (SDK, validated on KVM) | Done | — |
 
 ## Interoperability
 

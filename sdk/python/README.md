@@ -63,15 +63,19 @@ harness.run()
 
 A harness image must contain the interpreter and everything it imports, plus the
 directories `/dev`, `/proc`, `/run`, `/tmp` and `/var/lib/agent`. The reference
-build ([scripts/build-python-harness.py](../../scripts/build-python-harness.py))
-starts from an official Python image pinned by digest, adds the SDK and the
-harness, exports the container filesystem and packs it:
+build is the repository's Dagger module: it starts from an official Python image
+pinned by digest, adds the SDK and the harness, and packs the container's
+filesystem:
 
 ```bash
-python3 scripts/build-python-harness.py --output ./build/python-echo
-agentcapsule-harness push --dir ./build/python-echo/package \
-  --registry ghcr.io --repository acme/python-echo --tag 1.0.0 --username <user>
+dagger call python-echo export --path=./build/python-echo
+dagger call publish --pkg=./build/python-echo --registry=ghcr.io --repository=acme/python-echo \
+  --tag=1.0.0 --username=<user> --password=env:GHCR_TOKEN
 ```
+
+Without Dagger, [scripts/build-python-harness.py](../../scripts/build-python-harness.py)
+does the same with plain Docker (`--output ./build/python-echo`, then
+`agentcapsule-harness push --dir ./build/python-echo/package ...`).
 
 The entrypoint in `harness.yaml` runs the interpreter in isolated mode
 (`/usr/local/bin/python3 -I /opt/harness/harness.py`). See

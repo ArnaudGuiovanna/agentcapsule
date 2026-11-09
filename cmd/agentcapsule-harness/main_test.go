@@ -60,6 +60,15 @@ func TestPublisherSignsWhatThePlatformImports(t *testing.T) {
 	}
 	capture(t, "sign", "--key", filepath.Join(dir, "publisher.key"), "--ref", ref, "--local")
 
+	// The publisher checks what the platform will see before handing it over.
+	report := capture(t, "verify", "--ref", ref, "--key", filepath.Join(dir, "publisher.pub"), "--local")
+	if !strings.Contains(report, `"signer": "sha256:`) || !strings.Contains(report, `"name": "echo"`) {
+		t.Fatal("verify did not report the signed package", report)
+	}
+	if err := run([]string{"verify", "--ref", ref, "--key", filepath.Join(dir, "other.pub"), "--local"}); err == nil {
+		t.Fatal("verify accepted a missing key file")
+	}
+
 	pub, err := os.ReadFile(filepath.Join(dir, "publisher.pub"))
 	if err != nil {
 		t.Fatal(err)

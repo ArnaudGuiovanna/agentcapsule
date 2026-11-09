@@ -43,7 +43,7 @@ Do not run `go test ./...` at the repository root with sources outside
 | `build-guest-kernel.py` | Builds the pinned guest kernel with device-mapper/dm-crypt, without root |
 | `build-product-guest.py` | Builds capsule-init and the echo harness into a pinned initramfs |
 | `build-control-guest.py` | Builds the disposable authenticated SQL harness fixture |
-| `build-python-harness.py` | Builds the python-echo harness package (Docker, pinned base image, then `pack`); its `package/` directory is required by `verify-product-guest.py --python-harness` |
+| `build-python-harness.py` | Builds the python-echo harness package with plain Docker (pinned base image, then `pack`); the reference build is the Dagger module (`dagger call python-echo`). Its `package/` directory is required by `verify-product-guest.py --python-harness` |
 | `openapi-requirements.txt` | Python requirements for validating the OpenAPI specification |
 
 ## Local Go check (no PostgreSQL)

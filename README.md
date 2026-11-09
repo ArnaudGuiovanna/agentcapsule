@@ -141,7 +141,8 @@ docs/         product, API, guest, worker and interop documentation, ADRs
 runtime/      Firecracker patch, guest kernel config, example configs, interop probe
 scripts/      builds, CI checks and KVM/PostgreSQL verification campaigns
 sdk/python/   Python harness SDK (capsule.v1, standard library only)
-examples/     example harnesses (python-echo)
+examples/     example harnesses (python-echo, go-echo)
+.dagger/      reference Dagger module: builds, publishes, signs and verifies harnesses
 ```
 
 ## Contributing

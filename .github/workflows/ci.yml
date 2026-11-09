@@ -105,6 +105,38 @@ jobs:
           "$RUNNER_TEMP/gitleaks" git --config .gitleaks.toml --redact --no-banner \
             --log-opts="--all" --exit-code 1 .
 
+  harness-supply-chain:
+    name: Harness packages (Dagger), signing and verification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      DAGGER_VERSION: '0.21.11'
+      DAGGER_SHA256: a2d3ef96e7305abc18663a3606d9c1c592278ba3c8f48e01d6be14eef72276ef
+      DO_NOT_TRACK: '1'
+      DAGGER_NO_NAG: '1'
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Dagger (checksum verified)
+        run: |
+          set -euo pipefail
+          archive="dagger_v${DAGGER_VERSION}_linux_amd64.tar.gz"
+          cd "$RUNNER_TEMP"
+          curl -sSfL -o "$archive" "https://github.com/dagger/dagger/releases/download/v${DAGGER_VERSION}/${archive}"
+          echo "${DAGGER_SHA256}  ${archive}" | sha256sum -c -
+          tar xzf "$archive" dagger
+          ./dagger version
+
+      - name: Build, publish, sign and verify the reference harnesses
+        run: |
+          # Builds python-echo and go-echo from pinned images, pushes them to a
+          # throwaway registry, checks that an unsigned package is refused,
+          # signs both and verifies them as the platform importer would.
+          "$RUNNER_TEMP/dagger" call check
+
   go-postgres:
     name: Go race, PostgreSQL and WAL recovery
     runs-on: ubuntu-24.04
