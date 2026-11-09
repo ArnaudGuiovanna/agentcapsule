@@ -1,0 +1,10 @@
+#!/bin/sh
+# Starts Pi unchanged. Pi writes to its configuration directory (locks, state),
+# and the image is read-only, so that directory lives in the agent's encrypted
+# home, with the image's models.json copied in at each start.
+set -eu
+dir="$HOME/.pi-agent"
+mkdir -p "$dir"
+cp /opt/pi/models.json "$dir/models.json"
+export PI_CODING_AGENT_DIR="$dir"
+exec /usr/local/bin/node /opt/pi/release/node_modules/.bin/pi "$@"

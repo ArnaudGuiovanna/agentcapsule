@@ -5,8 +5,8 @@ organization creates an agent, a member sends it an invocation with an encrypted
 attachment, the agent runs in its own Firecracker microVM, reads the file and calls
 its model through the platform channel, and posts a result only that member can
 read. Two organizations run side by side on one host without seeing each other's
-agents, files, models or audit trail. An existing agent, written against the
-official OpenAI SDK, runs unchanged through `capsule-adapter`. Large parts of the MVP described in [docs/product.md](docs/product.md) are
+agents, files, models or audit trail. Existing agents run unchanged through
+`capsule-adapter`: an OpenAI SDK agent, and Pi, the coding agent, on a real model. Large parts of the MVP described in [docs/product.md](docs/product.md) are
 still missing, notably standard interoperability (A2A, SLIM, Directory),
 observability and a restore procedure.
 

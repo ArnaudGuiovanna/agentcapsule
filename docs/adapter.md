@@ -124,8 +124,16 @@ both APIs:
 - Pi reads an attached file with its own `read` tool;
 - the next invocation answers from Pi's session alone.
 
-Pi itself (Node.js and its package) still has to be packed into an image; that
-image has not run in a microVM yet.
+[examples/pi-agent](../examples/pi-agent) packs Pi this way. Pi's configuration
+directory must be writable, and the image is read-only. Its `start` script
+therefore keeps that directory in the encrypted home, copies the image's
+`models.json` into it, and runs Pi unchanged. `scripts/build-pi-harness.py`
+builds the image from an installed Pi release and the Node.js it runs on, on a
+Debian base, as a test build tied to the local installation. The product KVM
+campaign (`verify-product-guest.py --pi-harness`) ran it in a jailed microVM on
+a real model, Ollama with `gemma4:cloud`. Pi read an attached file with its own
+`read` tool, then answered from its session alone, in the next invocation and
+again after sleep and wake. Its model calls were metered for the agent.
 
 ## Configuration (`adapter.json`)
 
@@ -247,7 +255,7 @@ and model it chooses.
 | `go test ./internal/agentadapter` | The protocol side: acknowledgment, order, replay, files, revocation, the real command runner. The endpoint side: forwarding, alias mapping, stream replay, the error shapes of both APIs. |
 | `scripts/verify-adapter.py` | The official OpenAI and Anthropic Python SDKs (pinned in `scripts/adapter-sdk-requirements.txt`), with and without streaming, with tools, through the endpoint and the platform's gateway code to a real provider (a local Ollama serves both APIs). Then an unmodified agent answers an invocation from an attached file. With `--pi`, Pi does the same through both APIs and keeps its session across invocations. |
 | `scripts/verify-postgres.py` | The platform side of `/v1/llm/forward`: placement, reservation, settlement, budget refusal, API mismatch. |
-| `scripts/verify-product-guest.py --adapted-harness` | The example image, adapted, imported and run in a jailed microVM: its SDK reaches a host model through the loopback endpoint, reads an attached file with a tool call, answers again after sleep and wake, and every call is metered. |
+| `scripts/verify-product-guest.py --adapted-harness` | The example image, adapted, imported and run in a jailed microVM: its SDK reaches a host model through the loopback endpoint, reads an attached file with a tool call, answers again after sleep and wake, and every call is metered. With `--pi-harness`, Pi does the same on a real model and keeps its session across sleep and wake. |
 
 ```bash
 python -m venv /tmp/sdk && /tmp/sdk/bin/pip install --require-hashes --only-binary=:all: -r scripts/adapter-sdk-requirements.txt

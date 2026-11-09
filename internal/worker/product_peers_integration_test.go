@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime/pprof"
 	"strings"
 	"testing"
 	"time"
@@ -226,7 +227,13 @@ func (l *productPeerLab) createPeer(name string) *productPeer {
 
 func (l *productPeerLab) await(stage string, dispatch bool, check func() bool) {
 	l.t.Helper()
-	ctx, cancel := context.WithTimeout(l.t.Context(), 2*time.Minute)
+	l.awaitFor(stage, dispatch, 2*time.Minute, check)
+}
+
+// awaitFor is await with its own bound, for stages that wait on a real model.
+func (l *productPeerLab) awaitFor(stage string, dispatch bool, bound time.Duration, check func() bool) {
+	l.t.Helper()
+	ctx, cancel := context.WithTimeout(l.t.Context(), bound)
 	defer cancel()
 	ticker := time.NewTicker(25 * time.Millisecond)
 	defer ticker.Stop()
@@ -236,7 +243,12 @@ func (l *productPeerLab) await(stage string, dispatch bool, check func() bool) {
 		}
 		if dispatch {
 			opts := DispatchOptions{Batch: 4, WorkLease: 3 * time.Minute, DeliveryLease: 30 * time.Second, RetryBase: time.Second, RetryMax: 10 * time.Second}
-			if err := l.worker.DispatchPass(ctx, opts, 90*time.Second); err != nil {
+			// A pass is short; if one is not, record where every goroutine
+			// waits, so that a slow step can be named afterwards.
+			watch := time.AfterFunc(45*time.Second, func() { l.dumpStacks(stage) })
+			err := l.worker.DispatchPass(ctx, opts, 90*time.Second)
+			watch.Stop()
+			if err != nil {
 				l.t.Fatal(stage, "worker dispatch", err)
 			}
 		}
@@ -246,6 +258,28 @@ func (l *productPeerLab) await(stage string, dispatch bool, check func() bool) {
 		case <-ticker.C:
 		}
 	}
+}
+
+// dumpStacks writes every goroutine's stack to the campaign's observations. It
+// runs on a timer goroutine, so it never fails the test itself.
+func (l *productPeerLab) dumpStacks(stage string) {
+	var c labConfig
+	dir := os.TempDir()
+	if b, err := os.ReadFile(os.Getenv("AGENTCAPSULE_KVM_CONFIG")); err == nil && json.Unmarshal(b, &c) == nil && c.Output != "" {
+		dir = c.Output
+	}
+	name := strings.NewReplacer("/", "_", " ", "_").Replace(l.t.Name() + "-" + stage)
+	path := filepath.Join(dir, fmt.Sprintf("stacks-%s-%d.txt", name, time.Now().Unix()))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_ = pprof.Lookup("goroutine").WriteTo(f, 2)
+	l.t.Log("a dispatch pass exceeded 45 s; goroutine stacks in", path)
 }
 
 func (l *productPeerLab) operation(p *productPeer, id, kind string) controlplane.PlatformOperation {

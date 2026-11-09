@@ -1,0 +1,16 @@
+{
+  "providers": {
+    "capsule-openai": {
+      "baseUrl": "http://127.0.0.1:8411/v1",
+      "api": "openai-completions",
+      "apiKey": "agentcapsule",
+      "models": [{"id": "pi-model", "contextWindow": 32000, "maxTokens": 1024}]
+    },
+    "capsule-anthropic": {
+      "baseUrl": "http://127.0.0.1:8411",
+      "api": "anthropic-messages",
+      "apiKey": "agentcapsule",
+      "models": [{"id": "pi-model", "contextWindow": 32000, "maxTokens": 1024}]
+    }
+  }
+}

@@ -38,7 +38,8 @@ func newRegistryLab(t *testing.T) *registryLab {
 	reg := registrytest.New()
 	t.Cleanup(reg.Close)
 	rule := ociregistry.Rule{Host: reg.Host(), Repositories: []string{"acme/"}, Local: true}
-	fetcher, err := ociregistry.NewFetcher(ociregistry.Policy{Rules: []ociregistry.Rule{rule}}, 256<<20)
+	// Room for an adapted Node.js agent (Pi): its image is about 640 MiB.
+	fetcher, err := ociregistry.NewFetcher(ociregistry.Policy{Rules: []ociregistry.Rule{rule}}, 1<<30)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,9 +110,15 @@ func (l *registryLab) create(name, version string) controlplane.AgentCreation {
 
 func (l *registryLab) createOn(name, harness, version string) controlplane.AgentCreation {
 	l.t.Helper()
+	return l.createWith(name, harness, version, 256)
+}
+
+// createWith is createOn with the VM's memory, for agents that need more.
+func (l *registryLab) createWith(name, harness, version string, memoryMiB int) controlplane.AgentCreation {
+	l.t.Helper()
 	var created controlplane.AgentCreation
 	in := controlplane.CreateAgentInput{Name: name, Harness: controlplane.HarnessReference{Name: harness, Version: version},
-		Resources: controlplane.AgentResources{VCPUs: 1, MemoryMiB: 256, DataVolumeMiB: 128}}
+		Resources: controlplane.AgentResources{VCPUs: 1, MemoryMiB: memoryMiB, DataVolumeMiB: 128}}
 	l.request(l.owner(), "POST", "/v1/agents", "agent-"+name, in, 202, &created)
 	l.peers = append(l.peers, &productPeer{agent: created})
 	l.awaitOperation(l.owner, created.OperationID)
