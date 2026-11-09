@@ -56,10 +56,11 @@ or an interpreter and its libraries).
 A harness can be written in any language whose runtime fits in the image: Go (see
 `cmd/capsule-echo`) or Python with the [Python SDK](../sdk/python/README.md). An
 existing agent can also run unchanged, packed with
-[capsule-adapter](adapter.md) (`dagger call adapt`). Both
-run in the product KVM campaign: the Python harness answers from its encrypted
-SQLite state across sleep and wake, and posts a deferred model answer over the
-platform channel.
+[capsule-adapter](adapter.md) (`dagger call adapt`). All three run in the product
+KVM campaign. The Python harness answers from its encrypted SQLite state across
+sleep and wake, and posts a deferred model answer over the platform channel. The
+adapted example reads an attached file with its own tool call, through its
+model, and answers again after sleep and wake.
 
 ### Reference build (Dagger)
 

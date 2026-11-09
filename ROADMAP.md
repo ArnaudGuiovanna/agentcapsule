@@ -5,7 +5,8 @@ organization creates an agent, a member sends it an invocation with an encrypted
 attachment, the agent runs in its own Firecracker microVM, reads the file and calls
 its model through the platform channel, and posts a result only that member can
 read. Two organizations run side by side on one host without seeing each other's
-agents, files, models or audit trail. Large parts of the MVP described in [docs/product.md](docs/product.md) are
+agents, files, models or audit trail. An existing agent, written against the
+official OpenAI SDK, runs unchanged through `capsule-adapter`. Large parts of the MVP described in [docs/product.md](docs/product.md) are
 still missing, notably standard interoperability (A2A, SLIM, Directory),
 observability and a restore procedure.
 
@@ -54,7 +55,7 @@ a production host yet.
 | CAP-01 | Private `capsule.v1` contract, typed envelope, platform channel (peers, LLM, attachments, deferred results); Go and Python harnesses | Partial | Capability negotiation against tenant policy; events |
 | CAP-02 | Cold create, desired/observed state, wake/sleep/delete, reconciliation, single RW generation | Partial | Automatic restart policy for agents that should be running |
 | CAP-03 | Jailer/cgroups hardening, egress control, CPU/RAM/IO/pid/time limits, bounded restarts | Partial | Egress profiles, IO limits, restart budgets |
-| CAP-04 | Unmodified agents ([docs/adapter.md](docs/adapter.md)): `capsule-adapter` runs the agent's command for each invocation and serves the OpenAI and Anthropic APIs on the guest loopback, forwarded as written (tools included) through the metered platform channel; `dagger call adapt` packs an existing image; official SDKs qualified against a real model | In progress | KVM campaign with the adapted example (guest image rebuild); agents that expose a server, such as A2A (INT-03) |
+| CAP-04 | Unmodified agents ([docs/adapter.md](docs/adapter.md)): `capsule-adapter` runs the agent's command for each invocation and serves the OpenAI and Anthropic APIs on the guest loopback, forwarded as written (tools included) through the metered platform channel; `dagger call adapt` packs an existing image; official SDKs qualified against a real model (validated on KVM) | Done | — (agents that expose a server, such as A2A, come with INT-03) |
 
 ## Invocations and events
 
