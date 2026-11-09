@@ -4,11 +4,19 @@ package worker
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/ociregistry"
 )
 
 func writeCredentials(t *testing.T, content string, mode os.FileMode) string {
@@ -70,5 +78,41 @@ func TestRegistryRulesDecodeWithACredentialsFile(t *testing.T) {
 		if err := d.Decode(&r); err == nil {
 			t.Fatal("inline credential field accepted", inline)
 		}
+	}
+}
+
+func TestPublisherKeysComeFromProtectedFiles(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, _ := x509.MarshalPKIXPublicKey(key.Public())
+	pub := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
+	good := writeCredentials(t, pub, 0o644) // public: readable by all, writable by its owner only
+	k, err := readPublisherKey(good)
+	if err != nil || !strings.HasPrefix(k.ID, "sha256:") {
+		t.Fatal("a protected public key was refused", err)
+	}
+	link := filepath.Join(t.TempDir(), "link.pub")
+	if err = os.Symlink(good, link); err != nil {
+		t.Fatal(err)
+	}
+	priv, _ := x509.MarshalPKCS8PrivateKey(key)
+	for name, path := range map[string]string{
+		"group writable": writeCredentials(t, pub, 0o664),
+		"symlink":        link,
+		"relative":       "key.pub",
+		"private key":    writeCredentials(t, string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: priv})), 0o600),
+		"not a key":      writeCredentials(t, "ssh-ed25519 AAAA", 0o644),
+	} {
+		if _, err := readPublisherKey(path); !errors.Is(err, ErrPublisherKey) {
+			t.Fatal("publisher key accepted:", name, err)
+		}
+	}
+	// Strict mode: a rule that trusts no key makes the configuration invalid.
+	c := ServiceConfig{Root: t.TempDir(), Registry: &ServiceRegistry{RequireSignatures: true,
+		Rules: []RegistryRule{{Rule: ociregistry.Rule{Host: "ghcr.io", Repositories: []string{"acme/"}}}}}}
+	if _, err = c.OpenRegistry(nil, "w"); err == nil {
+		t.Fatal("strict mode accepted a rule without publisher keys")
 	}
 }

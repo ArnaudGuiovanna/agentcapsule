@@ -11,8 +11,8 @@ through a gateway that keeps provider credentials outside the VM and enforces
 budgets.
 
 > **Status: pre-MVP, not for production.** The core path is implemented and tested
-> on real KVM, but several MVP areas (signed harness releases, A2A/SLIM/Directory
-> interoperability, observability, restore) are missing. See [ROADMAP.md](ROADMAP.md).
+> on real KVM, but several MVP areas (A2A/SLIM/Directory interoperability,
+> observability, restore) are missing. See [ROADMAP.md](ROADMAP.md).
 
 ## What works today
 
@@ -31,9 +31,11 @@ budgets.
 - **LLM gateway**: OpenAI-compatible and Anthropic providers, model aliases,
   encrypted provider credentials, hard/soft token budgets, usage reports.
 - **Inter-agent requests** with recipient consent and bounded mandates.
-- **Harness registry**: harness packages are imported from approved OCI registries by
-  digest, verified, cached read-only and published as immutable releases; agents on a
-  release share its image, attached read-only and run chrooted in the guest.
+- **Harness registry**: harness packages are imported from approved OCI registries
+  (public or private) by digest, checked against trusted publisher signatures (cosign
+  format), cached read-only and published as immutable releases; agents on a release
+  share its image, attached read-only and run chrooted in the guest. Agents can be
+  upgraded and rolled back, and unused packages leave the cache.
 
 ## Architecture
 

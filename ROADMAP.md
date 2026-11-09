@@ -5,8 +5,8 @@ organization creates an agent, a member sends it an invocation with an encrypted
 attachment, the agent runs in its own Firecracker microVM, reads the file and calls
 its model through the platform channel, and posts a result only that member can
 read. Large parts of the MVP described in [docs/product.md](docs/product.md) are
-still missing, notably signed harness releases, standard interoperability (A2A,
-SLIM, Directory), observability and a restore procedure.
+still missing, notably standard interoperability (A2A, SLIM, Directory),
+observability and a restore procedure.
 
 Status words used below:
 
@@ -76,7 +76,7 @@ a production host yet.
 | ID | Item | Status | Remaining |
 |---|---|---|---|
 | REG-01 | `harness.yaml` manifest, compatibility checks, read-only harness artifact, release states; agents boot from an imported release (validated on KVM) | Done | — |
-| REG-02 | Asynchronous OCI import (GHCR, standard registries), allowlists, private-registry credentials, signatures | Partial | Live GHCR test, signature/attestation policy (REG-009), short-lived cloud registry credentials |
+| REG-02 | Asynchronous OCI import (GHCR, standard registries), allowlists, private-registry credentials, publisher signatures with strict mode (REG-009, cosign format) | Partial | Live GHCR test, keyless signatures (Fulcio/Rekor identities) and provenance attestations, short-lived cloud registry credentials |
 | REG-03 | Shared read-only cache by digest, pinned agents, manual upgrade and rollback, safe eviction (validated on KVM) | Done | — |
 | REG-04 | Reference Dagger module; harnesses in Go and in Python or TypeScript | Not started | All (the `agentcapsule-harness pack/push` tool exists) |
 

@@ -22,10 +22,11 @@ const (
 )
 
 type descriptor struct {
-	MediaType   string            `json:"mediaType"`
-	Digest      string            `json:"digest"`
-	Size        int64             `json:"size"`
-	Annotations map[string]string `json:"annotations,omitempty"`
+	MediaType    string            `json:"mediaType"`
+	ArtifactType string            `json:"artifactType,omitempty"`
+	Digest       string            `json:"digest"`
+	Size         int64             `json:"size"`
+	Annotations  map[string]string `json:"annotations,omitempty"`
 }
 
 type imageManifest struct {
@@ -34,6 +35,7 @@ type imageManifest struct {
 	ArtifactType  string            `json:"artifactType"`
 	Config        descriptor        `json:"config"`
 	Layers        []descriptor      `json:"layers"`
+	Subject       *descriptor       `json:"subject,omitempty"`
 	Annotations   map[string]string `json:"annotations,omitempty"`
 }
 
@@ -46,6 +48,9 @@ type Package struct {
 	RootfsSize     int64
 	// Dir holds harness.yaml, checksums.json and harness.ext4, each verified.
 	Dir string
+	// Signer is the ID of the publisher key whose signature was verified, or
+	// empty when the rule trusts no key.
+	Signer string
 }
 
 // Fetcher imports packages under a policy.
@@ -103,13 +108,23 @@ func (f *Fetcher) Fetch(ctx context.Context, ref Reference, dir string) (Package
 	if err != nil {
 		return Package{}, err
 	}
+	// A rule that trusts publisher keys requires a signature from one of them,
+	// checked before any large download.
+	signer := ""
+	if len(rule.Keys) > 0 {
+		if signer, err = c.trustedSigner(ctx, ref, scope, rule.Keys); err != nil {
+			return Package{}, err
+		}
+	}
 	files := []string{harnesspkg.ManifestFile, harnesspkg.ChecksumsFile, harnesspkg.RootfsFile}
 	for i, l := range layers {
 		if err = f.blob(ctx, c, ref.Repository, scope, l, filepath.Join(dir, files[i])); err != nil {
 			return Package{}, err
 		}
 	}
-	return verifyFiles(ctx, ref, dir, layers, f.maxRootfs)
+	pkg, err := verifyFiles(ctx, ref, dir, layers, f.maxRootfs)
+	pkg.Signer = signer
+	return pkg, err
 }
 
 // checkManifest accepts exactly the package layout: OCI image manifest, the

@@ -5,8 +5,12 @@ package worker
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -355,5 +359,56 @@ func TestEvictionKeepsEveryPackageAnAgentMayBoot(t *testing.T) {
 	}
 	if _, err = os.Stat(l.importer.PackageDir(digests["approved"])); err != nil {
 		t.Fatal("an approved release was evicted", err)
+	}
+}
+
+func TestSignedImportsRecordTheirPublisher(t *testing.T) {
+	l := newImportLab(t)
+	signed := l.publish(t, "signed", "1.0.0")
+	unsigned := l.publish(t, "unsigned", "1.0.0")
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ociregistry.Sign(t.Context(), l.rule, signed, key); err != nil {
+		t.Fatal(err)
+	}
+	der, _ := x509.MarshalPKIXPublicKey(key.Public())
+	path := filepath.Join(t.TempDir(), "publisher.pub")
+	if err = os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c := ServiceConfig{Root: t.TempDir(), Registry: &ServiceRegistry{Cache: l.cache, MaxHarnessMiB: 64, RequireSignatures: true,
+		Rules: []RegistryRule{{Rule: l.rule, PublisherKeys: []string{path}}}}}
+	importer, err := c.OpenRegistry(l.store, "importer-signatures")
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.importer = importer
+
+	ok := l.request(t, "signed", signed.String())
+	l.importOne(t)
+	done := l.state(t, ok.ID)
+	if done.State != "READY" {
+		t.Fatal("signed import", done)
+	}
+	releases, err := l.accounts.ListHarnessReleases(t.Context(), l.platform, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publisher, _ := ociregistry.ParsePublisherKey(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
+	found := false
+	for _, r := range releases {
+		if r.ID == done.ReleaseID {
+			found = r.Signer == publisher.ID
+		}
+	}
+	if !found {
+		t.Fatal("the release does not name its publisher key")
+	}
+	refused := l.request(t, "unsigned", unsigned.String())
+	l.importOne(t)
+	if v := l.state(t, refused.ID); v.State != "REJECTED" || v.ErrorCode != "signature" || v.Attempts != 1 {
+		t.Fatal("unsigned import under strict mode", v)
 	}
 }

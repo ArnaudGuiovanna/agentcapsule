@@ -24,6 +24,9 @@ var (
 	// not exist: registries often do not say which. Retrying will not help until
 	// the operator changes the credentials or the reference.
 	ErrDenied = errors.New("registry access denied")
+	// ErrSignature: the rule requires a signature by a trusted publisher key
+	// and none of the signatures attached to the package qualifies.
+	ErrSignature = errors.New("no trusted signature")
 	// ErrNotFound: the registry answered that the manifest or a blob does not exist.
 	ErrNotFound = errors.New("registry content not found")
 	// ErrIntegrity: the registry served content that does not match its digest,
@@ -53,11 +56,17 @@ type Rule struct {
 	// They never follow a redirect to another host (a blob CDN).
 	Username string `json:"-"`
 	Password string `json:"-"`
+	// Keys, when set, are the publishers trusted for this registry: every
+	// package imported through the rule must carry a signature by one of them.
+	Keys []PublisherKey `json:"-"`
 }
 
 // Policy is the installation's registry trust policy.
 type Policy struct {
 	Rules []Rule
+	// RequireSignatures is strict mode: every rule must trust publisher keys,
+	// so no unsigned package can be imported.
+	RequireSignatures bool
 }
 
 var (
@@ -100,6 +109,9 @@ func (p Policy) Validate() error {
 			if !validHost(h) || (!r.Local && isIPLiteral(h)) {
 				return fmt.Errorf("%w: host %q", ErrPolicy, h)
 			}
+		}
+		if p.RequireSignatures && len(r.Keys) == 0 {
+			return fmt.Errorf("%w: signatures are required but %q trusts no publisher key", ErrPolicy, r.Host)
 		}
 		if (r.Username == "") != (r.Password == "") || !validCredential(r.Username, 256) || !validCredential(r.Password, 4096) ||
 			strings.Contains(r.Username, ":") {

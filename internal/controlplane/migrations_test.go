@@ -322,7 +322,8 @@ func revertTenantAgents(t *testing.T, s *Store) {
         DROP TABLE IF EXISTS harness_audit, harness_imports;
         DROP INDEX IF EXISTS harness_releases_package;
         ALTER TABLE harness_releases DROP CONSTRAINT IF EXISTS harness_releases_oci, DROP CONSTRAINT IF EXISTS harness_releases_deprecation,
-          DROP COLUMN IF EXISTS reference, DROP COLUMN IF EXISTS rootfs_digest, DROP COLUMN IF EXISTS rootfs_bytes, DROP COLUMN IF EXISTS deprecated_at;
+          DROP COLUMN IF EXISTS reference, DROP COLUMN IF EXISTS rootfs_digest, DROP COLUMN IF EXISTS rootfs_bytes, DROP COLUMN IF EXISTS deprecated_at,
+          DROP COLUMN IF EXISTS signer;
         ALTER TABLE owner_instructions DROP CONSTRAINT IF EXISTS owner_instructions_working,
           DROP COLUMN IF EXISTS work_timeout_seconds, DROP COLUMN IF EXISTS working_since, DROP COLUMN IF EXISTS result_due_at,
           DROP COLUMN IF EXISTS completion_key, DROP COLUMN IF EXISTS completion_hash;

@@ -1,0 +1,17 @@
+{
+  "mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json",
+  "verificationMaterial": {
+    "publicKey": {
+      "hint": "ZQkq2uIQ1lMMYL9caHnn0x2c6N5t0NaWTNXWNxrlYeo="
+    }
+  },
+  "dsseEnvelope": {
+    "payload": "eyJfdHlwZSI6Imh0dHBzOi8vaW4tdG90by5pby9TdGF0ZW1lbnQvdjEiLCJzdWJqZWN0IjpbeyJkaWdlc3QiOnsic2hhMjU2IjoiN2FmZTkxNGU3ZGM1ODQ2ODhlZWRjN2JhZThkY2Y5NzE1MmU4NmQ4YmVjNzA5NzFiY2JiMDQ0MWEzMGFiNDU5NyJ9fV0sInByZWRpY2F0ZVR5cGUiOiJodHRwczovL3NpZ3N0b3JlLmRldi9jb3NpZ24vc2lnbi92MSIsInByZWRpY2F0ZSI6e319",
+    "payloadType": "application/vnd.in-toto+json",
+    "signatures": [
+      {
+        "sig": "MEQCICGhjLmTWhxWshgiw80HTSGdoS07uZYtRKFex22fQKRZAiA/PKLyn6FRIANTBALME5fwUBjqYf22EzYj47gpTFAtgg=="
+      }
+    ]
+  }
+}

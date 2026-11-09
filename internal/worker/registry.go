@@ -21,6 +21,9 @@ type ServiceRegistry struct {
 	// MaxHarnessMiB bounds one harness.ext4 (default 1024).
 	MaxHarnessMiB int            `json:"max_harness_mib,omitempty"`
 	Rules         []RegistryRule `json:"rules"`
+	// RequireSignatures is strict mode: every rule must list publisher keys,
+	// so no unsigned package can be imported.
+	RequireSignatures bool `json:"require_signatures,omitempty"`
 }
 
 // RegistryRule is one approved registry. CredentialsFile, for a private
@@ -29,6 +32,9 @@ type ServiceRegistry struct {
 type RegistryRule struct {
 	ociregistry.Rule
 	CredentialsFile string `json:"credentials_file,omitempty"`
+	// PublisherKeys are absolute paths to PEM public keys (cosign.pub). When
+	// set, every package from this rule must be signed by one of them.
+	PublisherKeys []string `json:"publisher_keys,omitempty"`
 }
 
 // HarnessImporter downloads requested packages, verifies them and publishes
@@ -65,7 +71,7 @@ func (c ServiceConfig) OpenRegistry(s *controlplane.Store, workerID string) (*Ha
 	if !filepath.IsAbs(cache) || maxMiB < 1 || maxMiB > 64<<10 {
 		return nil, errors.New("invalid registry configuration")
 	}
-	var policy ociregistry.Policy
+	policy := ociregistry.Policy{RequireSignatures: c.Registry.RequireSignatures}
 	for _, r := range c.Registry.Rules {
 		rule := r.Rule
 		if r.CredentialsFile != "" {
@@ -74,6 +80,16 @@ func (c ServiceConfig) OpenRegistry(s *controlplane.Store, workerID string) (*Ha
 				return nil, err
 			}
 			rule.Username, rule.Password = user, password
+		}
+		if len(r.PublisherKeys) > 16 {
+			return nil, errors.New("too many publisher keys")
+		}
+		for _, path := range r.PublisherKeys {
+			key, err := readPublisherKey(path)
+			if err != nil {
+				return nil, err
+			}
+			rule.Keys = append(rule.Keys, key)
 		}
 		policy.Rules = append(policy.Rules, rule)
 	}
@@ -145,7 +161,7 @@ func (h *HarnessImporter) ImportOne(ctx context.Context) (bool, error) {
 		return true, ferr
 	}
 	_, err = h.store.CompleteHarnessImport(ctx, job, controlplane.ImportedRelease{Name: pkg.Manifest.Name, Version: pkg.Manifest.Version,
-		RootfsDigest: pkg.RootfsDigest, RootfsBytes: pkg.RootfsSize})
+		RootfsDigest: pkg.RootfsDigest, RootfsBytes: pkg.RootfsSize, Signer: pkg.Signer})
 	return true, err
 }
 
@@ -261,6 +277,8 @@ func classifyImport(err error) (string, bool) {
 		return "not_found", false
 	case errors.Is(err, ociregistry.ErrDenied):
 		return "access_denied", false
+	case errors.Is(err, ociregistry.ErrSignature):
+		return "signature", false
 	case errors.Is(err, ociregistry.ErrIntegrity), errors.Is(err, harnesspkg.ErrInvalid):
 		return "integrity", false
 	default:

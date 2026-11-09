@@ -1793,13 +1793,14 @@ components:
         state: {type: string, enum: [IMPORTING, READY, REJECTED]}
         error_code:
           type: string
-          enum: [policy, not_found, access_denied, integrity, version_conflict, unavailable]
+          enum: [policy, not_found, access_denied, signature, integrity, version_conflict, unavailable]
           description: >-
             policy = registry or repository not approved, or a redirect/token host not
             approved; not_found = the registry does not have it; access_denied = the
             registry refused access (private repository without valid credentials on the
             worker, or a repository that does not exist; registries often do not say
-            which); integrity = digest, size,
+            which); signature = the rule trusts publisher keys and no signature by one of
+            them covers this package; integrity = digest, size,
             media type, harness.yaml or ext4 check failed; version_conflict = name:version
             already belongs to another package; unavailable = still failing after the
             last retry.
@@ -1819,6 +1820,7 @@ components:
         reference: {type: string}
         rootfs_digest: {type: string}
         rootfs_bytes: {type: integer}
+        signer: {type: string, pattern: '^sha256:[0-9a-f]{64}$', description: "ID (SHA-256 of the DER public key) of the publisher key whose signature was verified at import. Absent when the registry rule trusted no publisher key."}
         state: {type: string, enum: [READY, DEPRECATED]}
         created_at: {type: string, format: date-time}
         deprecated_at: {type: string, format: date-time}

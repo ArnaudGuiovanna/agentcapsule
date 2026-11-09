@@ -7,6 +7,7 @@ package registrytest
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -27,24 +28,30 @@ type Registry struct {
 	// With Basic, the registry itself requires them (no token service).
 	Username, Password string
 	Basic              bool
+	// NoReferrers makes the registry lack the OCI referrers API, like GHCR:
+	// clients must use the referrers tag schema instead.
+	NoReferrers bool
 	// BasicSeen counts registry API requests carrying Basic credentials while
 	// a token service is in use; BlobAuth counts blob-host requests carrying
 	// any Authorization header. Both must stay zero. Challenges counts 401
 	// challenges the registry API answered.
 	BasicSeen, BlobAuth, Challenges atomic.Int64
+	// BlobPulls counts blob GETs served (by the registry or its blob host).
+	BlobPulls atomic.Int64
 	// Tamper may rewrite a blob before it is served (by digest).
 	Tamper func(digest string, b []byte) []byte
 
 	mu        sync.Mutex
 	blobs     map[string][]byte
 	manifests map[string][]byte // repo + "@" + reference
+	types     map[string]string // repo + "@" + reference -> media type
 	uploads   map[string]string // upload id -> repo
 	next      atomic.Int64
 	Pulls     atomic.Int64 // manifest GETs served
 }
 
 func New() *Registry {
-	r := &Registry{blobs: map[string][]byte{}, manifests: map[string][]byte{}, uploads: map[string]string{}}
+	r := &Registry{blobs: map[string][]byte{}, manifests: map[string][]byte{}, types: map[string]string{}, uploads: map[string]string{}}
 	r.Server = httptest.NewServer(http.HandlerFunc(r.serve))
 	return r
 }
@@ -77,6 +84,15 @@ func (r *Registry) PutManifest(repo string, raw []byte) string {
 	r.manifests[repo+"@"+d] = raw
 	r.mu.Unlock()
 	return d
+}
+
+// PutManifestAs stores raw bytes under a tag with a media type (to serve
+// crafted indexes).
+func (r *Registry) PutManifestAs(repo, tag string, raw []byte, mediaType string) {
+	r.mu.Lock()
+	r.manifests[repo+"@"+tag] = raw
+	r.types[repo+"@"+tag] = mediaType
+	r.mu.Unlock()
 }
 
 func (r *Registry) PutBlob(b []byte) string {
@@ -129,6 +145,9 @@ func (r *Registry) serve(w http.ResponseWriter, req *http.Request) {
 	}
 	p := strings.TrimPrefix(req.URL.Path, "/v2/")
 	switch {
+	case strings.Contains(p, "/referrers/") && req.Method == http.MethodGet:
+		i := strings.LastIndex(p, "/referrers/")
+		r.referrers(w, p[:i], p[i+len("/referrers/"):])
 	case strings.HasPrefix(p, "uploads/"):
 		r.finishUpload(w, req, strings.TrimPrefix(p, "uploads/"))
 	case strings.Contains(p, "/manifests/"):
@@ -154,6 +173,9 @@ func (r *Registry) serve(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Registry) sendBlob(w http.ResponseWriter, d string, head bool) {
+	if !head {
+		r.BlobPulls.Add(1)
+	}
 	r.mu.Lock()
 	b, ok := r.blobs[d]
 	r.mu.Unlock()
@@ -174,24 +196,86 @@ func (r *Registry) manifest(w http.ResponseWriter, req *http.Request, repo, ref 
 	if req.Method == http.MethodPut {
 		raw, _ := io.ReadAll(req.Body)
 		d := digest(raw)
+		mt := req.Header.Get("Content-Type")
 		r.mu.Lock()
 		r.manifests[repo+"@"+d] = raw
 		r.manifests[repo+"@"+ref] = raw
+		r.types[repo+"@"+d], r.types[repo+"@"+ref] = mt, mt
 		r.mu.Unlock()
+		var m struct {
+			Subject *struct {
+				Digest string `json:"digest"`
+			} `json:"subject"`
+		}
+		if !r.NoReferrers && json.Unmarshal(raw, &m) == nil && m.Subject != nil {
+			w.Header().Set("OCI-Subject", m.Subject.Digest)
+		}
 		w.Header().Set("Docker-Content-Digest", d)
 		w.WriteHeader(http.StatusCreated)
 		return
 	}
 	r.mu.Lock()
 	raw, ok := r.manifests[repo+"@"+ref]
+	mt := r.types[repo+"@"+ref]
 	r.mu.Unlock()
 	if !ok {
 		http.NotFound(w, req)
 		return
 	}
+	if mt == "" {
+		mt = "application/vnd.oci.image.manifest.v1+json"
+	}
 	r.Pulls.Add(1)
-	w.Header().Set("Content-Type", "application/vnd.oci.image.manifest.v1+json")
+	w.Header().Set("Content-Type", mt)
 	_, _ = w.Write(raw)
+}
+
+// referrers answers the OCI referrers API from the stored manifests whose
+// subject is subject, unless NoReferrers.
+func (r *Registry) referrers(w http.ResponseWriter, repo, subject string) {
+	if r.NoReferrers {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	type desc struct {
+		MediaType    string            `json:"mediaType"`
+		ArtifactType string            `json:"artifactType,omitempty"`
+		Digest       string            `json:"digest"`
+		Size         int               `json:"size"`
+		Annotations  map[string]string `json:"annotations,omitempty"`
+	}
+	index := struct {
+		SchemaVersion int    `json:"schemaVersion"`
+		MediaType     string `json:"mediaType"`
+		Manifests     []desc `json:"manifests"`
+	}{2, "application/vnd.oci.image.index.v1+json", []desc{}}
+	r.mu.Lock()
+	for key, raw := range r.manifests {
+		if !strings.HasPrefix(key, repo+"@sha256:") || strings.TrimPrefix(key, repo+"@") != digest(raw) {
+			continue
+		}
+		var m struct {
+			ArtifactType string `json:"artifactType"`
+			Config       struct {
+				MediaType string `json:"mediaType"`
+			} `json:"config"`
+			Subject *struct {
+				Digest string `json:"digest"`
+			} `json:"subject"`
+			Annotations map[string]string `json:"annotations"`
+		}
+		if json.Unmarshal(raw, &m) != nil || m.Subject == nil || m.Subject.Digest != subject {
+			continue
+		}
+		artifact := m.ArtifactType
+		if artifact == "" {
+			artifact = m.Config.MediaType
+		}
+		index.Manifests = append(index.Manifests, desc{MediaType: r.types[key], ArtifactType: artifact, Digest: digest(raw), Size: len(raw), Annotations: m.Annotations})
+	}
+	r.mu.Unlock()
+	w.Header().Set("Content-Type", "application/vnd.oci.image.index.v1+json")
+	_ = json.NewEncoder(w).Encode(index)
 }
 
 func (r *Registry) finishUpload(w http.ResponseWriter, req *http.Request, id string) {

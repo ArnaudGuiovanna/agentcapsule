@@ -163,7 +163,10 @@ def main():
                 extra_env={"AGENTCAPSULE_PG_RECOVERY": "prepare"}, timeout=120, go_json=True)
             run("database-crash", [pg_bin / "pg_ctl", "-D", data, "-m", "immediate", "-w", "stop"])
             started = False
-            run("restart", [pg_bin / "pg_ctl", "-D", data, "-l", out / "server.log", "-o", options, "-w", "start"])
+            # Crash recovery first syncs the data directory, then replays WAL; on a
+            # slow or busy disk this alone can exceed a minute. Correctness, not
+            # speed, is what this phase checks.
+            run("restart", [pg_bin / "pg_ctl", "-D", data, "-l", out / "server.log", "-o", options, "-t", "300", "-w", "start"], timeout=330)
             started = True
             run("recovery-verify", [*command, "./internal/controlplane", "-run=^Test(DurableDatabaseRestart|StoreSealDatabaseRecovery|RenewalDatabaseRecovery|WorkDatabaseRecovery)$"],
                 extra_env={"AGENTCAPSULE_PG_RECOVERY": "verify"}, timeout=120, go_json=True)

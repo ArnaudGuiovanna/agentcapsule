@@ -29,14 +29,17 @@ type HarnessImport struct {
 
 // HarnessRelease is an immutable, runnable harness version.
 type HarnessRelease struct {
-	ID           string     `json:"id"`
-	Name         string     `json:"name"`
-	Version      string     `json:"version"`
-	Digest       string     `json:"digest"`
-	Source       string     `json:"source"`
-	Reference    string     `json:"reference,omitempty"`
-	RootfsDigest string     `json:"rootfs_digest,omitempty"`
-	RootfsBytes  int64      `json:"rootfs_bytes,omitempty"`
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	Version      string `json:"version"`
+	Digest       string `json:"digest"`
+	Source       string `json:"source"`
+	Reference    string `json:"reference,omitempty"`
+	RootfsDigest string `json:"rootfs_digest,omitempty"`
+	RootfsBytes  int64  `json:"rootfs_bytes,omitempty"`
+	// Signer is the ID of the publisher key whose signature was verified at
+	// import, absent for a release imported without signature policy.
+	Signer       string     `json:"signer,omitempty"`
 	State        string     `json:"state"`
 	CreatedAt    time.Time  `json:"created_at"`
 	DeprecatedAt *time.Time `json:"deprecated_at,omitempty"`
@@ -57,12 +60,12 @@ func scanImport(row pgx.Row) (HarnessImport, error) {
 	return v, err
 }
 
-const releaseColumns = `id,name,version,artifact_digest,source,coalesce(reference,''),coalesce(rootfs_digest,''),coalesce(rootfs_bytes,0),
+const releaseColumns = `id,name,version,artifact_digest,source,coalesce(reference,''),coalesce(rootfs_digest,''),coalesce(rootfs_bytes,0),coalesce(signer,''),
     CASE WHEN enabled THEN 'READY' ELSE 'DEPRECATED' END,created_at,deprecated_at`
 
 func scanRelease(row pgx.Row) (HarnessRelease, error) {
 	var v HarnessRelease
-	err := row.Scan(&v.ID, &v.Name, &v.Version, &v.Digest, &v.Source, &v.Reference, &v.RootfsDigest, &v.RootfsBytes, &v.State, &v.CreatedAt, &v.DeprecatedAt)
+	err := row.Scan(&v.ID, &v.Name, &v.Version, &v.Digest, &v.Source, &v.Reference, &v.RootfsDigest, &v.RootfsBytes, &v.Signer, &v.State, &v.CreatedAt, &v.DeprecatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = ErrNotFound
 	}
@@ -259,12 +262,15 @@ func (s *Store) ClaimHarnessImport(ctx context.Context, worker string, lease tim
 type ImportedRelease struct {
 	Name, Version, RootfsDigest string
 	RootfsBytes                 int64
+	// Signer is the verified publisher key ID, or empty.
+	Signer string
 }
 
 // CompleteHarnessImport publishes the release. name:version is immutable: if
 // it already belongs to another digest, the import is rejected instead.
 func (s *Store) CompleteHarnessImport(ctx context.Context, job ImportJob, r ImportedRelease) (HarnessImport, error) {
-	if !catalogName(r.Name) || !catalogName(r.Version) || r.RootfsBytes < 1 || len(r.RootfsDigest) != 71 {
+	if !catalogName(r.Name) || !catalogName(r.Version) || r.RootfsBytes < 1 || len(r.RootfsDigest) != 71 ||
+		(r.Signer != "" && len(r.Signer) != 71) {
 		return HarnessImport{}, ErrInput
 	}
 	tx, err := s.begin(ctx)
@@ -285,8 +291,8 @@ func (s *Store) CompleteHarnessImport(ctx context.Context, job ImportJob, r Impo
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		releaseID = newID("rel")
-		if _, err = tx.Exec(ctx, `INSERT INTO harness_releases(id,name,version,artifact_digest,source,reference,rootfs_digest,rootfs_bytes)
-            VALUES($1,$2,$3,$4,'oci',$5,$6,$7)`, releaseID, r.Name, r.Version, job.Digest, job.Reference, r.RootfsDigest, r.RootfsBytes); err != nil {
+		if _, err = tx.Exec(ctx, `INSERT INTO harness_releases(id,name,version,artifact_digest,source,reference,rootfs_digest,rootfs_bytes,signer)
+            VALUES($1,$2,$3,$4,'oci',$5,$6,$7,nullif($8,''))`, releaseID, r.Name, r.Version, job.Digest, job.Reference, r.RootfsDigest, r.RootfsBytes, r.Signer); err != nil {
 			return HarnessImport{}, err
 		}
 	case err != nil:
@@ -301,7 +307,7 @@ func (s *Store) CompleteHarnessImport(ctx context.Context, job ImportJob, r Impo
 // import; a transient one schedules a retry, and the last attempt rejects it.
 func (s *Store) FailHarnessImport(ctx context.Context, job ImportJob, code string, transient bool, retryAfter time.Duration) (HarnessImport, error) {
 	switch code {
-	case "policy", "not_found", "access_denied", "integrity", "unavailable":
+	case "policy", "not_found", "access_denied", "signature", "integrity", "unavailable":
 	default:
 		return HarnessImport{}, ErrInput
 	}

@@ -8,8 +8,9 @@ caches packages, and boots them.
 > release states, deprecation, booting agents from imported releases, manual upgrade and
 > rollback, and cache eviction work and are validated on real KVM (two tenant agents on
 > one imported release share the cached image; an agent is upgraded, rolled back across
-> sleep/wake and still answers after the unused package is evicted). Signature policy
-> and the reference Dagger module come next. See [ROADMAP.md](../ROADMAP.md)
+> sleep/wake and still answers after the unused package is evicted). Publisher
+> signatures (cosign format, trusted keys, strict mode) are verified at import. Keyless
+> signatures and the reference Dagger module come next. See [ROADMAP.md](../ROADMAP.md)
 > (REG-01 to REG-04).
 
 ## Package format
@@ -63,6 +64,26 @@ AGENTCAPSULE_REGISTRY_PASSWORD=<token> agentcapsule-harness push --dir ./package
 mounting. Timestamps, UUID and ownership are fixed, so the same inputs give the same
 digest. `push` prints the reference pinned by digest; the tag is informational.
 
+### Signing
+
+A publisher signs each package it pushes; the platform can then refuse anything its
+trusted publishers did not sign. The format is cosign v3's, so either tool works:
+
+```bash
+agentcapsule-harness keygen --out ./acme-release      # acme-release.key (private), acme-release.pub
+AGENTCAPSULE_REGISTRY_PASSWORD=<token> agentcapsule-harness sign \
+  --key ./acme-release.key --ref ghcr.io/acme/echo:1.0.0@sha256:... --username <user>
+# or: cosign sign --key cosign.key ghcr.io/acme/echo@sha256:...
+```
+
+The signature is an in-toto statement naming the package manifest digest, in a DSSE
+envelope signed with the key (ECDSA P-256/P-384/P-521, Ed25519 or RSA of at least
+2048 bits), packaged as a Sigstore bundle (v0.3). It is attached to the package as an
+OCI referrer, or through the referrers tag (`sha256-<hex>`) on registries without the
+referrers API, such as GHCR. `agentcapsule-harness sign` reads an unencrypted PKCS#8
+or EC key; use cosign for cosign's encrypted key files. Give the operator the `.pub`
+file.
+
 ## Importing
 
 The platform operator requests an import with the `platform:admin` credential:
@@ -80,16 +101,19 @@ The import is `IMPORTING` until a worker processes it:
    connection**: approved registry, approved repository prefix.
 2. The manifest is fetched and must hash to the pinned digest; its layout must match
    the format above exactly.
-3. Each blob is streamed to a private staging directory with a size limit and checked
+3. If the rule trusts publisher keys, a signature by one of them must cover that
+   digest (see [Publisher signatures](#publisher-signatures)), before anything large is
+   downloaded.
+4. Each blob is streamed to a private staging directory with a size limit and checked
    against its digest.
-4. `harness.yaml`, `checksums.json` and the ext4 superblock are validated, and the
+5. `harness.yaml`, `checksums.json` and the ext4 superblock are validated, and the
    image is inspected read-only with `debugfs`: the mount points must be directories
    and the entrypoint an executable file.
-5. The package moves to `<cache>/sha256/<digest>/`, read-only, and the release is
-   published.
+6. The package moves to `<cache>/sha256/<digest>/`, read-only, and the release is
+   published, with the ID of the key that signed it (`signer`) if any.
 
 Outcomes: `READY` with a release, or `REJECTED` with `policy`, `not_found`,
-`access_denied`, `integrity`, `version_conflict` or `unavailable`. `access_denied`
+`access_denied`, `signature`, `integrity`, `version_conflict` or `unavailable`. `access_denied`
 means the registry refused access: the repository is private and the worker has no
 valid credentials for it, or it does not exist (registries often do not say which).
 Network failures are retried with backoff up to 5 attempts. A rejected package can be
@@ -208,6 +232,36 @@ In the worker configuration ([example](../runtime/worker/config.example.json)):
   public registry.
 - Environment proxy settings are ignored.
 
+### Publisher signatures
+
+A rule may list the publisher keys it trusts (PEM public keys, such as `cosign.pub`).
+Every package imported through that rule must then carry a signature by one of them;
+otherwise the import is rejected as `signature`.
+
+```json
+"registry": {
+  "require_signatures": true,
+  "rules": [
+    {"host": "ghcr.io", "repositories": ["acme/"],
+     "blob_hosts": ["pkg-containers.githubusercontent.com"],
+     "publisher_keys": ["/etc/agentcapsule/publishers/acme-release.pub"]}
+  ]
+}
+```
+
+- `require_signatures` is strict mode: the worker refuses to start if a rule lists no
+  publisher key, so no unsigned package can be imported. Recommended in production.
+- Key files must be regular files (not symlinks) owned by root or the worker's user and
+  writable only by their owner. The worker reads them at startup.
+- The release records the key that signed it: `signer` is `sha256:` and the SHA-256 of
+  the DER public key (`openssl pkey -pubin -in key.pub -outform DER | sha256sum`).
+- Only the configured keys are trusted. Certificates and transparency-log entries that
+  a bundle may carry (cosign keyless signing with Fulcio and Rekor) are not checked:
+  keyless identities are not supported yet.
+- Enabling signatures does not revoke releases imported before; deprecate those you no
+  longer trust. A release is immutable: re-signing a package does not change its
+  `signer`.
+
 ### Private registries
 
 A rule may name a credentials file; the configuration never holds the secret itself:
@@ -241,8 +295,9 @@ deliveries or VM lifecycle work.
 
 ## Limits
 
-- No signature or attestation policy yet (REG-009): trust rests on the approved
-  registry/repository and the pinned digest.
+- Signatures are verified against configured publisher keys only; keyless signatures
+  (CI identities through Fulcio and Rekor) and other attestations (SLSA provenance) are
+  not supported yet.
 - The cache is per host; a multi-host installation must import on every host that will
   run the release.
 - Import has been tested against an in-process OCI registry (token flow, private

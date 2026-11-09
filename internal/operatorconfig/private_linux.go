@@ -85,3 +85,36 @@ func EnsurePrivate(path string, size int, generate func() []byte) ([]byte, error
 	}
 	return data, nil
 }
+
+// ErrProtectedFile: a trust anchor (such as a publisher public key) must be a
+// regular file, not a symlink, owned by root or this user and not writable by
+// group or others, so nobody else can swap the key the platform trusts.
+var ErrProtectedFile = errors.New("configuration requires a regular file owned by this user or root and writable only by its owner")
+
+// ReadProtectedUpTo reads a public but integrity-sensitive file of 1 to max bytes.
+func ReadProtectedUpTo(path string, max int) ([]byte, error) {
+	if max < 1 || max > 65536 || !filepath.IsAbs(path) {
+		return nil, ErrProtectedFile
+	}
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	uid := st.Sys().(*syscall.Stat_t).Uid
+	if !st.Mode().IsRegular() || st.Mode().Perm()&0o022 != 0 || (uid != 0 && uid != uint32(os.Geteuid())) || st.Size() < 1 || st.Size() > int64(max) {
+		return nil, ErrProtectedFile
+	}
+	data, err := io.ReadAll(io.LimitReader(f, int64(max)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) < 1 || len(data) > max {
+		return nil, ErrProtectedFile
+	}
+	return data, nil
+}

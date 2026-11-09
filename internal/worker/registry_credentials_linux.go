@@ -9,6 +9,7 @@ import (
 	"io"
 	"path/filepath"
 
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/ociregistry"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/operatorconfig"
 )
 
@@ -43,4 +44,26 @@ func readRegistryCredentials(path string) (string, string, error) {
 		return "", "", ErrRegistryCredentials
 	}
 	return v.Username, v.Password, nil
+}
+
+// ErrPublisherKey: a publisher key file is missing, writable by others, or not
+// one supported PEM public key.
+var ErrPublisherKey = errors.New("publisher key must be a protected PEM public key file")
+
+// readPublisherKey reads a trusted publisher public key from an absolute path
+// to a regular file (no symlink) owned by root or this user and writable only
+// by its owner, so the key the host trusts cannot be swapped.
+func readPublisherKey(path string) (ociregistry.PublisherKey, error) {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return ociregistry.PublisherKey{}, ErrPublisherKey
+	}
+	raw, err := operatorconfig.ReadProtectedUpTo(path, 16<<10)
+	if err != nil {
+		return ociregistry.PublisherKey{}, ErrPublisherKey
+	}
+	key, err := ociregistry.ParsePublisherKey(raw)
+	if err != nil {
+		return ociregistry.PublisherKey{}, ErrPublisherKey
+	}
+	return key, nil
 }
