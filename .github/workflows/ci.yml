@@ -137,6 +137,43 @@ jobs:
           # signs both and verifies them as the platform importer would.
           "$RUNNER_TEMP/dagger" call check
 
+  interop:
+    name: Interoperability services (OASF, Directory, SLIM, A2A)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up pinned Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: false
+          cache-dependency-path: |
+            runtime/interop/probe/go.sum
+            runtime/interop/a2aslim/go.sum
+
+      - name: Qualify the pinned profile against its private services
+        run: |
+          # Starts deploy/interop from pinned images with lab certificates, then
+          # publishes, searches and validates OASF records in Directory, checks
+          # refused identities, exchanges messages through the SLIM node and
+          # runs A2A over SLIM. Removes the services afterwards.
+          python3 scripts/verify-interop.py --go "$(command -v go)" --services \
+            --output "$RUNNER_TEMP/ci/interop"
+
+      - name: Preserve qualification reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: interop-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 7
+          if-no-files-found: warn
+          path: ${{ runner.temp }}/ci/interop/
+
   go-postgres:
     name: Go race, PostgreSQL and WAL recovery
     runs-on: ubuntu-24.04
@@ -200,7 +237,7 @@ jobs:
           cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
           This job runs the Go packages with the race detector against real SQLite and
           PostgreSQL, including process crashes and PostgreSQL WAL recovery. It does
-          not run KVM, jailed Firecracker VMs, live LLM providers, upstream
-          interoperability or restore on a second host: those campaigns are in
+          not run KVM, jailed Firecracker VMs, live LLM providers or restore on a
+          second host: those campaigns are in
           scripts/ and must be run on a KVM host (see scripts/README.md).
           EOF

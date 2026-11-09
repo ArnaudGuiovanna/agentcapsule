@@ -125,7 +125,7 @@ Installation is not packaged yet. The building blocks are documented:
 | LLM gateway | [docs/api/llm.md](docs/api/llm.md) |
 | Harness packages, publishing and imports | [docs/registry.md](docs/registry.md) |
 | Guest runtime and the `capsule.v1` contract | [docs/guest/](docs/guest/) |
-| Interoperability qualification (A2A, SLIM, Directory) | [docs/interop.md](docs/interop.md) |
+| Interoperability profile (A2A, OASF, Directory, SLIM) | [docs/interop.md](docs/interop.md) |
 | Architecture decisions | [docs/adr/](docs/adr/) |
 | Formal models | [spec/](spec/) |
 | Build, test and verification scripts | [scripts/README.md](scripts/README.md) |
@@ -138,7 +138,8 @@ internal/     Go packages: controlplane, api, worker, runtime, capsuleprotocol, 
 openapi/      canonical OpenAPI 3.1 contract
 spec/         Quint protocol models
 docs/         product, API, guest, worker and interop documentation, ADRs
-runtime/      Firecracker patch, guest kernel config, example configs, interop probe
+runtime/      Firecracker patch, guest kernel config, example configs, interop qualification
+deploy/       private interoperability services for one host (Directory, OASF, SLIM)
 scripts/      builds, CI checks and KVM/PostgreSQL verification campaigns
 sdk/python/   Python harness SDK (capsule.v1, standard library only)
 examples/     example harnesses (python-echo, go-echo)

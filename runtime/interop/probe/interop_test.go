@@ -160,7 +160,7 @@ func TestOASFVersionedDecoding(t *testing.T) {
 	if _, err := decoder.DecodeRecord(bad); err == nil {
 		t.Fatal("unsupported major version accepted")
 	}
-	t.Log("OASF 1.1.0 SDK decoding verified; schema validation requires OASF server and was not executed")
+	t.Log("OASF 1.1.0 SDK decoding verified (schema validation: services_test.go)")
 }
 
 func TestDirectoryClientBuildAndConfiguration(t *testing.T) {
@@ -175,7 +175,7 @@ func TestDirectoryClientBuildAndConfiguration(t *testing.T) {
 	if _, err := directory.New(t.Context(), directory.WithConfig(&directory.Config{ServerAddress: "127.0.0.1:1", AuthMode: "invalid-probe-mode"})); err == nil {
 		t.Fatal("invalid auth mode accepted")
 	}
-	t.Log("Directory SDK build and configuration checked; no Directory server/RPC executed")
+	t.Log("Directory SDK build and configuration checked (server calls: services_test.go)")
 }
 
 func TestSLIMNativeABI(t *testing.T) {
@@ -200,5 +200,5 @@ func TestSLIMNativeABI(t *testing.T) {
 	if _, err := slim.NewConfigFromJson(`not-json`); err == nil {
 		t.Fatal("native parser accepted invalid input")
 	}
-	t.Logf("SLIM native ABI version=%s git=%s profile=%s; no node or message exchange executed", info.Version, info.GitSha, info.Profile)
+	t.Logf("SLIM native ABI version=%s git=%s profile=%s (node exchanges: services_test.go)", info.Version, info.GitSha, info.Profile)
 }

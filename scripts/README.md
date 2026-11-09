@@ -38,7 +38,7 @@ Do not run `go test ./...` at the repository root with sources outside
 | `verify-product-guest.py` | Reusable encrypted guest under jailed Firecracker (root, KVM) |
 | `verify-vm-isolation.py` | Disposable jailer isolation tests (root) |
 | `verify-vm-storage.py` | Disposable Firecracker/KVM storage lab |
-| `verify-interop.py` | Partial A2A/OASF/Directory/SLIM qualification probe; see [docs/interop.md](../docs/interop.md) |
+| `verify-interop.py` | Qualifies the pinned A2A/OASF/Directory/SLIM profile: the libraries, and with `--services` the private services of `deploy/interop` (Docker Compose); see [docs/interop.md](../docs/interop.md) |
 | `build-firecracker.py` | Builds the pinned Firecracker variant with VMM-owned file locks |
 | `build-guest-kernel.py` | Builds the pinned guest kernel with device-mapper/dm-crypt, without root |
 | `build-product-guest.py` | Builds capsule-init and the echo harness into a pinned initramfs |
@@ -184,7 +184,9 @@ persisted by checkout. No deployment, LLM provider or KVM secret is needed. The
 workflow does not use `pull_request_target` and deploys nothing.
 
 CI does **not** validate Firecracker/jailer on the target host, physical
-storage cuts, complete product isolation, AGNTCY interoperability or an
-external restore. The KVM/production campaigns of the [roadmap](../ROADMAP.md)
+storage cuts, complete product isolation, the platform's use of the AGNTCY
+services (INT-02 to INT-05) or an external restore. It does qualify the pinned
+interoperability profile against its private services (`verify-interop.py
+--services`). The KVM/production campaigns of the [roadmap](../ROADMAP.md)
 remain mandatory for the relevant work packages. The workflow configuration
 alone is not proof of a green run on GitHub.

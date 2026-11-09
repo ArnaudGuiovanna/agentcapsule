@@ -85,7 +85,7 @@ a production host yet.
 
 | ID | Item | Status | Remaining |
 |---|---|---|---|
-| INT-01 | Qualify OASF, Directory, A2A, SLIM releases; pin a compatibility matrix | Partial | Supported profile decision |
+| INT-01 | Qualify OASF, Directory, A2A, SLIM releases; pin a compatibility matrix; private single-host services ([deploy/interop](deploy/interop)) tested in CI | Done | — |
 | INT-02 | OASF records, private Directory sync, filtered Agent Cards | Not started | All |
 | INT-03 | Real A2A adapter: tasks, statuses, artifacts, result return | Not started | All |
 | INT-04 | Host SLIM gateway, authenticated endpoints, vsock bridge, delegation limits | Not started | All |

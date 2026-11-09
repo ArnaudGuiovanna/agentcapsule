@@ -1,0 +1,9 @@
+# Mounted at /etc/agntcy/dir/server.config.yml. Records are validated against
+# the private OASF server only; without an operation here, pushes would not be
+# validated at all.
+policy:
+  operations:
+    - provider: oasf
+      op: ["push", "autosync", "index"]
+      name: schema
+      schema_url: "http://oasf:8080"

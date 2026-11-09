@@ -1,8 +1,7 @@
 {
-  "profile": "agentcapsule-int01-probe-1",
-  "researched_at": "2026-11-07",
-  "base_commit": "5185f558e2b1d3c97e948f0df5f3776576591d25",
-  "status": "candidate_partial_qualification",
+  "profile": "agentcapsule-int-1",
+  "researched_at": "2026-11-09",
+  "status": "qualified_single_host",
   "go": "go1.27.3",
   "target": "linux/amd64/gnu",
   "a2a": {
@@ -13,8 +12,16 @@
     "go_version": "v2.8.0",
     "go_commit": "ea739de3859f0574175bc9876eda39b7120da8e3",
     "source": "https://github.com/a2aproject/a2a-go/releases/tag/v2.8.0",
-    "probe_operations": ["AgentCard resolution", "JSON-RPC SendMessage", "JSON-RPC GetTask"],
-    "not_qualified": ["REST", "gRPC", "streaming", "push notifications", "cancellation", "authentication", "durable task store"]
+    "supported": ["Agent Card", "JSON-RPC binding", "SendMessage", "GetTask", "text parts and artifacts"],
+    "not_supported": ["REST", "gRPC", "streaming", "push notifications", "resubscription", "signed Agent Cards"]
+  },
+  "a2a_over_slim": {
+    "go_module": "github.com/agntcy/slim-a2a-go",
+    "go_version": "v0.5.2",
+    "go_commit": "7744bf6f2c78f00f7c87e96894346b0762adeb4f",
+    "binding": "a2aslimrpc/v1 (transport \"slimrpc\")",
+    "a2a_go_version": "v2.2.0",
+    "constraint": "compiles with a2a-go v2.1.0 to v2.2.0 only; kept in its own module (runtime/interop/a2aslim) and later in the SLIM bridge process"
   },
   "oasf": {
     "schema_version": "1.1.0",
@@ -26,21 +33,24 @@
     "go_module": "github.com/agntcy/oasf-sdk/pkg",
     "go_version": "v1.1.0",
     "go_commit": "e0c46da35f6133c500dbba658c005f2a5c523846",
-    "schema_validation": "not_run_requires_oasf_server"
+    "agent_skills": [
+      {"id": 10301, "name": "language_processing/language_generation/text_completion"},
+      {"id": 10302, "name": "language_processing/language_generation/summarization"}
+    ],
+    "agent_domain": {"id": 111, "name": "technology/artificial_intelligence"}
   },
   "directory": {
     "release": "v1.8.0",
     "source": "https://github.com/agntcy/dir/releases/tag/v1.8.0",
-    "go_module": "github.com/agntcy/dir/client",
+    "go_module": "github.com/agntcy/dir/api",
     "go_version": "v1.8.0",
-    "go_commit": "438cfed5ccd53d153fdaef692cb3b4309f8d7c2a",
-    "declared_minimum_go": "1.27.2",
-    "service": "not_run"
+    "client_choice": "generated gRPC stubs of dir/api over mutual TLS; the dir/client module (Cosign, Kubernetes, OIDC) is not used",
+    "storage": "embedded SQLite and local OCI layout; an index the platform can rebuild",
+    "declared_minimum_go": "1.27.2"
   },
   "slim": {
     "node_release": "slim-v3.4.6",
     "node_source": "https://github.com/agntcy/slim/releases/tag/slim-v3.4.6",
-    "node_service": "not_run",
     "go_module": "github.com/agntcy/slim-bindings-go/v3",
     "go_version": "v3.3.9",
     "go_commit": "b0bd7e38a2e8e4b7c5d3c197d29b1e7f65c38352",
@@ -55,9 +65,16 @@
     "native_library_sha256": "1d1a1cd85dd4910f38e9e5ad49bf2ae5934d2d5e2f10c0e3af9292688418d3c8",
     "native_build_git_sha": "empty_in_published_artifact",
     "native_archive_bytes": 89958447,
-    "node_binding_wire_compatibility": "not_verified"
+    "minimum_glibc": "2.39",
+    "client_authentication": "mutual TLS enforced by the node (SLIM CA)"
   },
-  "required_services_not_executed": ["OASF schema server", "Directory private server", "SLIM private node"],
-  "gate_g2_complete": false,
-  "int01_complete": false
+  "services": {
+    "init": "ghcr.io/agntcy/oasf-schema:1.1.0@sha256:01df69976950fc321ebab2b6af069466f9524d88cfa9d5d16edac5bfc43f6294",
+    "oasf": "ghcr.io/agntcy/oasf-server:v2.0.0@sha256:4ef8f82f1c2a5b9dc703e208ef8764a558ec0301f7459a7073d2d8758d3d5f9f",
+    "directory": "ghcr.io/agntcy/dir-apiserver:v1.8.0@sha256:6b49d53c22e049b16d25d588b1f022c92cf573872f19ae55636d52252eb5522e",
+    "directory-edge": "docker.io/library/haproxy:3.2-alpine@sha256:96ec3c75a9264ba94e733eeacb44051ed6e7b79bb77a73c2c36f236b6423f1f0",
+    "slim": "ghcr.io/agntcy/slim:3.4.6@sha256:54fde7ce0ef8efa6a61fee47996e941e87acb4e62284e5d9c00eb761295619b7"
+  },
+  "int01_complete": true,
+  "gate_g2_complete": false
 }

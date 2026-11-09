@@ -1,0 +1,104 @@
+# Private interoperability services for one Agent Capsule host (profile
+# agentcapsule-int-1, see docs/interop.md): an OASF schema server, an AGNTCY
+# Directory API server behind a mutual-TLS edge, and a SLIM node.
+#
+#   INTEROP_CERTS=/etc/agentcapsule/interop docker compose -f compose.yml up -d --wait
+#
+# INTEROP_CERTS holds directory-edge/{edge.pem,ca.pem} and slim/{server.pem,
+# server.key,ca.pem} (make-certs.sh writes this layout). Only the control plane
+# talks to Directory and only the platform's SLIM bridge talks to the node; both
+# ports are published on loopback only. Never run these containers with host
+# networking: Directory v1.8.0 always starts a libp2p host, which advertises
+# itself over mDNS and asks the router for a UPnP port mapping.
+name: agentcapsule-interop
+
+x-hardening: &hardening
+  read_only: true
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: ["ALL"]
+  restart: unless-stopped
+
+networks:
+  # No route out: the schema server and Directory never reach the internet.
+  directory:
+    internal: true
+  # Docker publishes no port from an internal network: the edge alone joins this
+  # one to expose the Directory API on loopback.
+  directory-edge: {}
+  slim: {}
+
+volumes:
+  oasf-schema: {}
+  directory-data: {}
+
+services:
+  # One-shot: copy the pinned schema into a volume and give the Directory data
+  # volume to the API server's user (65532). The server images have no shell.
+  init:
+    image: ghcr.io/agntcy/oasf-schema:1.1.0@sha256:01df69976950fc321ebab2b6af069466f9524d88cfa9d5d16edac5bfc43f6294
+    user: "0:0"
+    network_mode: none
+    entrypoint: ["sh", "-c", "cp -R /schema/. /oasf-schema/ && chown 65532:65532 /directory-data"]
+    volumes:
+      - oasf-schema:/oasf-schema
+      - directory-data:/directory-data
+
+  oasf:
+    image: ghcr.io/agntcy/oasf-server:v2.0.0@sha256:4ef8f82f1c2a5b9dc703e208ef8764a558ec0301f7459a7073d2d8758d3d5f9f
+    <<: *hardening
+    environment:
+      SCHEMA_EXTENSION: ""
+      LOG_LEVEL: warning
+    volumes:
+      - oasf-schema:/app/schema:ro
+    tmpfs: ["/tmp"]
+    networks: [directory]
+    depends_on:
+      init: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 60s
+      start_period: 120s
+      start_interval: 2s
+
+  directory:
+    image: ghcr.io/agntcy/dir-apiserver:v1.8.0@sha256:6b49d53c22e049b16d25d588b1f022c92cf573872f19ae55636d52252eb5522e
+    <<: *hardening
+    env_file: [./directory.env]
+    volumes:
+      - ./directory.yaml:/etc/agntcy/dir/server.config.yml:ro
+      - directory-data:/data
+    tmpfs:
+      - /tmp:uid=65532,gid=65532
+      - /home/nonroot:uid=65532,gid=65532
+    networks: [directory]
+    depends_on:
+      oasf: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "grpc-health-probe", "-addr=127.0.0.1:8888"]
+      interval: 60s
+      start_period: 120s
+      start_interval: 2s
+
+  directory-edge:
+    image: docker.io/library/haproxy:3.2-alpine@sha256:96ec3c75a9264ba94e733eeacb44051ed6e7b79bb77a73c2c36f236b6423f1f0
+    <<: *hardening
+    volumes:
+      - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - ${INTEROP_CERTS:?set INTEROP_CERTS}/directory-edge:/certs:ro
+    ports:
+      - "127.0.0.1:${INTEROP_DIRECTORY_PORT:-8443}:8443"
+    networks: [directory, directory-edge]
+    depends_on:
+      directory: {condition: service_healthy}
+
+  slim:
+    image: ghcr.io/agntcy/slim:3.4.6@sha256:54fde7ce0ef8efa6a61fee47996e941e87acb4e62284e5d9c00eb761295619b7
+    <<: *hardening
+    command: ["/slim", "--config", "/etc/slim/config.yaml"]
+    volumes:
+      - ./slim.yaml:/etc/slim/config.yaml:ro
+      - ${INTEROP_CERTS:?set INTEROP_CERTS}/slim:/etc/slim/tls:ro
+    ports:
+      - "127.0.0.1:${INTEROP_SLIM_PORT:-46357}:46357"
+    networks: [slim]

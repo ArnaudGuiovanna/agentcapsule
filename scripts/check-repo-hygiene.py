@@ -21,7 +21,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 BASELINE = ROOT / "scripts" / "hygiene-baseline.json"
-HOME = re.compile(rb"/home/[A-Za-z0-9_.-]+")
+# /home/nonroot is the fixed home of distroless container images, not a person.
+HOME = re.compile(rb"/home/(?!nonroot(?![A-Za-z0-9_.-]))[A-Za-z0-9_.-]+")
 
 
 def tracked():
