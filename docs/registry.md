@@ -5,7 +5,8 @@ platform **by digest**. The host never builds tenant code: it pulls, verifies an
 caches packages, and boots them.
 
 > **Status.** Import, verification, caching, release states, deprecation and booting
-> agents from imported releases work. Signature policy, registry credentials, cache
+> agents from imported releases work; booting is validated on real KVM (two tenant
+> agents on one imported release share the cached image and answer invocations). Signature policy, registry credentials, cache
 > eviction and the reference Dagger module come next. See [ROADMAP.md](../ROADMAP.md)
 > (REG-01 to REG-04).
 
