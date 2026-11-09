@@ -79,6 +79,9 @@ var harnessRegistrySQL string
 //go:embed migrations/0020_registry_access_denied.sql
 var registryAccessDeniedSQL string
 
+//go:embed migrations/0021_agent_release_change.sql
+var agentReleaseChangeSQL string
+
 // Append migrations; never edit an installed migration. The original schema
 // also upgrades pre-ledger installations, preserving its historical backfills.
 // Later calls validate its checksum without replaying DDL or those backfills.
@@ -103,6 +106,7 @@ var controlPlaneMigrations = []schemaMigration{
 	{version: 18, name: "async-completion", sql: asyncCompletionSQL},
 	{version: 19, name: "harness-registry", sql: harnessRegistrySQL},
 	{version: 20, name: "registry-access-denied", sql: registryAccessDeniedSQL},
+	{version: 21, name: "agent-release-change", sql: agentReleaseChangeSQL},
 }
 
 func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error {

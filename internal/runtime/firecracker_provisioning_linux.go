@@ -156,3 +156,65 @@ func (h *FirecrackerHost) RegisterProvisioned(ctx context.Context, in Provisione
 		return h.save(r)
 	})
 }
+
+// ErrHarnessInUse: the agent has a VM run; its harness changes only once that
+// VM has stopped, at a later boot.
+var ErrHarnessInUse = errors.New("harness in use by a running VM")
+
+// HarnessOf returns the harness image recorded for an agent (nil: the
+// platform image's built-in harness).
+func (h *FirecrackerHost) HarnessOf(ctx context.Context, id string) (*HarnessImage, error) {
+	var img *HarnessImage
+	err := h.locked(ctx, func(r *hostRegistry) error {
+		a := r.Agents[id]
+		if a == nil {
+			return errors.New("agent not registered on this host")
+		}
+		if a.Harness != nil {
+			c := *a.Harness
+			c.Entrypoint = slices.Clone(a.Harness.Entrypoint)
+			img = &c
+		}
+		return nil
+	})
+	return img, err
+}
+
+// ReplaceHarness records another verified harness image (nil: built-in) for a
+// provisioned agent, used from its next boot. Refused while a VM run exists,
+// and for a fenced, sealed or removed agent.
+func (h *FirecrackerHost) ReplaceHarness(ctx context.Context, id string, img *HarnessImage) error {
+	if err := validHarness(img); err != nil {
+		return err
+	}
+	return h.locked(ctx, func(r *hostRegistry) error {
+		a := r.Agents[id]
+		switch {
+		case a == nil:
+			return errors.New("agent not registered on this host")
+		case sameHarness(a.Harness, img):
+			return nil
+		case a.Fenced || a.SealID != "" || a.VolumeRemoved:
+			return ErrHostFenced
+		case a.Run != nil:
+			return ErrHarnessInUse
+		}
+		a.Harness = img
+		return h.save(r)
+	})
+}
+
+// HarnessImagesInUse lists the image paths that registered agents may still
+// boot from. A cached package whose image is listed must be kept.
+func (h *FirecrackerHost) HarnessImagesInUse(ctx context.Context) (map[string]bool, error) {
+	paths := map[string]bool{}
+	err := h.locked(ctx, func(r *hostRegistry) error {
+		for _, a := range r.Agents {
+			if a.Harness != nil && !a.VolumeRemoved {
+				paths[a.Harness.Path] = true
+			}
+		}
+		return nil
+	})
+	return paths, err
+}

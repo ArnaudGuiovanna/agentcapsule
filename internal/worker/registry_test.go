@@ -261,3 +261,99 @@ func TestPrivateRegistryImportsNeedCredentials(t *testing.T) {
 		t.Fatal("credentials sent to the registry API instead of the token service")
 	}
 }
+
+func TestEvictionKeepsEveryPackageAnAgentMayBoot(t *testing.T) {
+	l := newImportLab(t)
+	ctx := t.Context()
+	released := map[string]controlplane.HarnessImport{}
+	digests := map[string]string{}
+	for _, name := range []string{"approved", "pinned", "unused", "booting"} {
+		ref := l.publish(t, name, "1.0.0")
+		imp := l.request(t, "import-"+name, ref.String())
+		l.importOne(t)
+		released[name] = l.state(t, imp.ID)
+		digests[name] = ref.Digest
+	}
+	// A legacy agent of this host is pinned to "pinned".
+	secret, err := l.store.BootstrapService(ctx, "evict-admin", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := l.store.Authenticate(ctx, secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := l.accounts.CreateUser(ctx, service, "owner", controlplane.CreateUserInput{DisplayName: "Owner"})
+	var owner controlplane.User
+	if err != nil || json.Unmarshal(r.Body, &owner) != nil {
+		t.Fatal(err)
+	}
+	catalog, err := controlplane.NewAgentCatalog(l.accounts, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = l.store.ConfigureHostStorage(ctx, "local", 1024); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = catalog.Reserve(ctx, service, "agent", controlplane.CreateAgentInput{OwnerUserID: owner.ID, Name: "Pinned",
+		Harness:   controlplane.HarnessReference{Name: "pinned", Version: "1.0.0"},
+		Resources: controlplane.AgentResources{VCPUs: 1, MemoryMiB: 256, DataVolumeMiB: 128}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"pinned", "unused", "booting"} {
+		if _, err = l.accounts.DeprecateHarnessRelease(ctx, l.platform, released[name].ReleaseID, "deprecate-"+name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// An import in flight: its package reaches the cache before its release.
+	inFlight := "sha256:" + strings.Repeat("e", 64)
+	l.request(t, "in-flight", l.reg.Host()+"/acme/later@"+inFlight)
+	if err = os.Mkdir(l.importer.PackageDir(inFlight), 0o555); err != nil {
+		t.Fatal(err)
+	}
+	// A download interrupted by a crash, with a sealed subdirectory.
+	leftover := filepath.Join(l.cache, ".staging", "crashed", "pkg")
+	if err = os.MkdirAll(leftover, 0o755); err != nil || os.Chmod(leftover, 0o555) != nil {
+		t.Fatal(err)
+	}
+
+	// Without the runtime's view of the images in use, nothing is evicted.
+	if evicted, err := l.importer.Evict(ctx); err != nil || len(evicted) != 0 {
+		t.Fatal("evicted without knowing which images may boot", evicted, err)
+	}
+	booting := filepath.Join(l.importer.PackageDir(digests["booting"]), harnesspkg.RootfsFile)
+	inUse := func(context.Context) (map[string]bool, error) { return map[string]bool{booting: true}, nil }
+	l.importer.host = "local"
+	l.importer.inUse.Store(&inUse)
+	evicted, err := l.importer.Evict(ctx)
+	if err != nil || len(evicted) != 1 || evicted[0] != digests["unused"] {
+		t.Fatal("eviction", evicted, err)
+	}
+	for _, name := range []string{"approved", "pinned", "booting"} {
+		if _, err = os.Stat(filepath.Join(l.importer.PackageDir(digests[name]), harnesspkg.RootfsFile)); err != nil {
+			t.Fatal("a package an agent may boot was evicted", name, err)
+		}
+	}
+	if _, err = os.Stat(l.importer.PackageDir(inFlight)); err != nil {
+		t.Fatal("an import in flight lost its package", err)
+	}
+	if _, err = os.Stat(l.importer.PackageDir(digests["unused"])); !os.IsNotExist(err) {
+		t.Fatal("the unused package is still cached", err)
+	}
+	if entries, err := os.ReadDir(filepath.Join(l.cache, ".staging")); err != nil || len(entries) != 0 {
+		t.Fatal("staging leftovers kept", len(entries), err)
+	}
+	// Once its agent is gone from the host's records and the database, a
+	// deprecated package goes too; an approved one never does.
+	if _, err = l.db.Exec(ctx, "UPDATE agents SET phase='DELETED' WHERE id=(SELECT agent_id FROM agent_specs WHERE name='Pinned')"); err != nil {
+		t.Fatal(err)
+	}
+	none := func(context.Context) (map[string]bool, error) { return map[string]bool{}, nil }
+	l.importer.inUse.Store(&none)
+	if evicted, err = l.importer.Evict(ctx); err != nil || len(evicted) != 2 {
+		t.Fatal("second eviction", evicted, err)
+	}
+	if _, err = os.Stat(l.importer.PackageDir(digests["approved"])); err != nil {
+		t.Fatal("an approved release was evicted", err)
+	}
+}

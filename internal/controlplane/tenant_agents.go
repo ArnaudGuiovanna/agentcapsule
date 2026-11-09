@@ -16,12 +16,14 @@ import (
 // TenantAgent is the redacted metadata of an agent owned by a tenant. It never
 // carries conversation content, and administrative roles do not unlock content.
 type TenantAgent struct {
-	ID            string         `json:"id"`
-	Name          string         `json:"name"`
-	State         string         `json:"state"`
-	HarnessDigest string         `json:"harness_digest"`
-	Resources     AgentResources `json:"resources"`
-	CreatedAt     time.Time      `json:"created_at"`
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	State         string `json:"state"`
+	HarnessDigest string `json:"harness_digest"`
+	// Harness is the release the agent is pinned to; it boots at the next start.
+	Harness   HarnessReference `json:"harness"`
+	Resources AgentResources   `json:"resources"`
+	CreatedAt time.Time        `json:"created_at"`
 	// DesiredState is what the lifecycle ledger asks for: running, stopped or
 	// deleted. State is what the platform observes. Converged says they agree. It
 	// reports; it does not restart a stopped agent by itself.
@@ -54,7 +56,7 @@ const tenantAgentColumns = `a.id,x.name,
         CASE WHEN a.phase<>'LIVE' THEN a.phase
           WHEN p.state='RUNNING' AND NOT p.fence_only AND pc.agent_id IS NOT NULL THEN 'READY'
           WHEN p.state='RUNNING' THEN 'STARTING' ELSE coalesce(p.state,'STOPPED') END,
-        r.artifact_digest,x.vcpus,x.memory_mib,x.volume_mib,x.created_at,
+        r.artifact_digest,r.name,r.version,x.vcpus,x.memory_mib,x.volume_mib,x.created_at,
         CASE WHEN a.phase IN ('QUIESCING','DELETING','DELETED') THEN 'deleted' ELSE coalesce((SELECT CASE o.kind WHEN 'wake' THEN 'running' ELSE 'stopped' END
           FROM platform_operations o WHERE o.agent_id=a.id AND o.kind IN ('wake','sleep') AND o.status IN ('PENDING','RUNNING','SUCCEEDED')
           ORDER BY o.seq DESC LIMIT 1), CASE WHEN x.auto_start THEN 'running' ELSE 'stopped' END) END,x.idle_timeout_seconds`
@@ -72,7 +74,7 @@ func scanTenantAgent(row pgx.Row, perms *[]string) (TenantAgent, error) {
 	if perms == nil {
 		perms = &sink
 	}
-	err := row.Scan(&v.ID, &v.Name, &v.State, &v.HarnessDigest, &v.Resources.VCPUs, &v.Resources.MemoryMiB, &v.Resources.DataVolumeMiB, &v.CreatedAt, &v.DesiredState, &v.IdleTimeoutSeconds, perms)
+	err := row.Scan(&v.ID, &v.Name, &v.State, &v.HarnessDigest, &v.Harness.Name, &v.Harness.Version, &v.Resources.VCPUs, &v.Resources.MemoryMiB, &v.Resources.DataVolumeMiB, &v.CreatedAt, &v.DesiredState, &v.IdleTimeoutSeconds, perms)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = ErrNotFound
 	}

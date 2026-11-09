@@ -348,3 +348,29 @@ func finishImport(ctx context.Context, tx pgx.Tx, id, status, code string, relea
 	}
 	return v, commit(ctx, tx)
 }
+
+// RetainedHarnessDigests lists the package (manifest) digests a host must keep
+// in its cache: every approved, non-deprecated release; deprecated releases
+// still pinned by an agent of this host that is not deleted; and packages being
+// imported, which reach the cache just before their release is published.
+func (s *Store) RetainedHarnessDigests(ctx context.Context, host string) (map[string]bool, error) {
+	if !catalogName(host) {
+		return nil, ErrInput
+	}
+	rows, err := s.pool.Query(ctx, `SELECT r.artifact_digest FROM harness_releases r WHERE r.source='oci' AND (r.enabled OR EXISTS(
+            SELECT 1 FROM agent_specs x JOIN agents a ON a.id=x.agent_id WHERE x.release_id=r.id AND x.host_id=$1 AND a.phase<>'DELETED'))
+        UNION SELECT manifest_digest FROM harness_imports WHERE status='IMPORTING'`, host)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	keep := map[string]bool{}
+	for rows.Next() {
+		var d string
+		if err = rows.Scan(&d); err != nil {
+			return nil, err
+		}
+		keep[d] = true
+	}
+	return keep, rows.Err()
+}

@@ -25,7 +25,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-const tenantKVMScopes = "org:read member:read member:manage agent:read agent:create agent:assign agent:operate agent:delete agent:invoke agent:content:read provider:manage quota:manage usage:read"
+const tenantKVMScopes = "org:read member:read member:manage agent:read agent:create agent:assign agent:operate agent:manage agent:delete agent:invoke agent:content:read provider:manage quota:manage usage:read"
 
 // tenantIdentity signs delegated tokens for one organization, as a customer's
 // identity provider would. Tokens are short-lived, so each call signs afresh.

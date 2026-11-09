@@ -5,10 +5,11 @@ platform **by digest**. The host never builds tenant code: it pulls, verifies an
 caches packages, and boots them.
 
 > **Status.** Import from public and private registries, verification, caching,
-> release states, deprecation and booting agents from imported releases work; booting
-> is validated on real KVM (two tenant agents on one imported release share the cached
-> image and answer invocations). Signature policy, cache eviction and the reference
-> Dagger module come next. See [ROADMAP.md](../ROADMAP.md) (REG-01 to REG-04).
+> release states, deprecation, booting agents from imported releases, manual upgrade and
+> rollback, and cache eviction work; booting is validated on real KVM (two tenant agents
+> on one imported release share the cached image and answer invocations). Signature
+> policy and the reference Dagger module come next. See [ROADMAP.md](../ROADMAP.md)
+> (REG-01 to REG-04).
 
 ## Package format
 
@@ -122,6 +123,65 @@ An agent stays pinned to its release; deprecating the release does not stop it.
 Without a configured registry, or if the host does not hold the package, provisioning
 fails and the agent is not created.
 
+## Upgrading and rolling back an agent
+
+Upgrades are manual: an owner, administrator or agent operator pins the agent to another
+approved release, then restarts it.
+
+```bash
+curl -X POST https://api.example/v1/agents/$AGENT_ID/release \
+  -H "Authorization: Bearer $TOKEN" -H "Idempotency-Key: upgrade-echo-2.0.0" \
+  -H "Content-Type: application/json" \
+  -d '{"harness":{"name":"echo","version":"2.0.0"}}'
+# {"agent_id":"agt_...","harness":{"name":"echo","version":"2.0.0"},
+#  "previous":{"name":"echo","version":"1.0.0"},"applies":"next_boot"}
+```
+
+- The target must be approved and not deprecated, and the agent live. The change is
+  audited with the new release, and `GET /v1/agents/{id}` shows the pinned release.
+- It applies at the next boot. A running VM keeps its harness until it stops; nothing
+  is restarted for you. Before booting, the worker compares the agent's release with the
+  image it recorded for the agent; if they differ it verifies the new cached image
+  (hash) and records it, which is only possible while the VM is stopped.
+- The agent keeps its encrypted data volume. Migrating data between harness versions is
+  the harness's job.
+
+Recommended procedure:
+
+1. **Prepare.** Import the new release on the agent's host and wait for `READY`. Do not
+   deprecate the current release yet: it is your rollback target.
+2. **Back up.** Capture a cold encrypted archive of the agent
+   ([worker.md](worker.md#cold-encrypted-archive-capture)). Restoring an archive is not
+   automated yet (REC-01), so keep in mind that a rollback after the new version has
+   migrated the data may not be possible.
+3. **Upgrade.** Pin the new release, then `POST /v1/agents/{id}/sleep` and `.../wake`.
+4. **Check.** The wake operation succeeds once the VM has booted the new image and its
+   guest has established the platform contract. Then send the agent a real invocation
+   and check the answer: that is what proves the new harness works.
+5. **Roll back if needed.** Pin the previous release and sleep/wake again. If the new
+   release cannot boot (for example, it is missing from the host's cache), the wake keeps
+   retrying and the agent stays stopped: pinning the previous release is enough for the
+   pending wake to succeed.
+6. **Clean up.** Once every agent has moved, deprecate the old release; its package
+   then leaves the cache (below).
+
+## Cache eviction
+
+The worker removes cached packages that no agent of its host can boot any more. In the
+import loop (so never during a download), at most once an hour when idle, it keeps:
+
+- every approved (not deprecated) release, used or not;
+- deprecated releases still pinned by an agent of this host that is not deleted;
+- packages being imported;
+- any image the host still records for an agent, such as the release it ran before a
+  change that has not been booted yet.
+
+Everything else in `<cache>/sha256/` is moved out of the content-addressed path in one
+step and deleted, with leftovers of interrupted downloads. VMs already running keep their
+own hard link to their image. To free the space of a release, deprecate it. A deprecated
+package cannot be imported again (the release already exists), so evict only what you
+will not roll back to.
+
 ## Worker trust policy
 
 In the worker configuration ([example](../runtime/worker/config.example.json)):
@@ -182,8 +242,8 @@ deliveries or VM lifecycle work.
 
 - No signature or attestation policy yet (REG-009): trust rests on the approved
   registry/repository and the pinned digest.
-- The cache is per host and is not evicted yet (REG-03); a multi-host installation must
-  import on every host that will run the release.
+- The cache is per host; a multi-host installation must import on every host that will
+  run the release.
 - Import has been tested against an in-process OCI registry (token flow, private
   access with Basic and token credentials, CDN redirect, tampering); a live GHCR import
   has not been run yet.

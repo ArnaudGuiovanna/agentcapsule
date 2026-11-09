@@ -4,6 +4,7 @@ package runtime
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -127,5 +128,62 @@ func TestHarnessImagesAreSharedReadOnlyFiles(t *testing.T) {
 	agent := &HostAgent{ID: "a", UID: 60000, Volume: volume, Harness: good, Run: &VMRun{ID: "0123456789abcdef", Generation: 1, Phase: "STARTING"}}
 	if err := h.prepare(agent); err == nil {
 		t.Fatal("a registry harness was prepared without the authenticated contract")
+	}
+}
+
+func TestHarnessChangesOnlyBetweenBoots(t *testing.T) {
+	dir := t.TempDir()
+	image := func(name string) *HarnessImage {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, make([]byte, 128<<10), 0o444); err != nil {
+			t.Fatal(err)
+		}
+		return &HarnessImage{Path: p, Digest: "sha256:" + strings.Repeat(name[:1], 64), Entrypoint: []string{"/bin/harness"}}
+	}
+	v1, v2 := image("a.ext4"), image("b.ext4")
+	h := &FirecrackerHost{root: t.TempDir()}
+	seed := func(a *HostAgent) {
+		a.Volume = filepath.Join(h.root, "volumes", a.ID)
+		if err := h.locked(t.Context(), func(r *hostRegistry) error { r.Agents[a.ID] = a; return h.save(r) }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run := &VMRun{ID: "0123456789abcdef", Generation: 1, Phase: "STARTING"}
+	run.Socket = filepath.Join(h.jail(run), "vsock")
+	seal := strings.Repeat("ab", 16)
+	seed(&HostAgent{ID: "running", UID: 60000, Generation: 1, Harness: v1, Run: run})
+	seed(&HostAgent{ID: "stopped", UID: 60001, Harness: v1})
+	seed(&HostAgent{ID: "sealed", UID: 60002, Harness: v1, Fenced: true, SealID: seal})
+	seed(&HostAgent{ID: "removed", UID: 60003, Harness: v2, Fenced: true, SealID: seal, VolumeRemoved: true})
+
+	if err := h.ReplaceHarness(t.Context(), "running", v2); !errors.Is(err, ErrHarnessInUse) {
+		t.Fatal("a running VM's harness was replaced", err)
+	}
+	if err := h.ReplaceHarness(t.Context(), "running", v1); err != nil {
+		t.Fatal("an unchanged harness must be accepted while running", err)
+	}
+	if err := h.ReplaceHarness(t.Context(), "sealed", v2); !errors.Is(err, ErrHostFenced) {
+		t.Fatal("a sealed agent's harness was replaced", err)
+	}
+	if err := h.ReplaceHarness(t.Context(), "stopped", &HarnessImage{Path: "rel.ext4", Digest: v2.Digest, Entrypoint: v2.Entrypoint}); err == nil {
+		t.Fatal("an invalid image was recorded")
+	}
+	if err := h.ReplaceHarness(t.Context(), "stopped", v2); err != nil {
+		t.Fatal(err)
+	}
+	got, err := h.HarnessOf(t.Context(), "stopped")
+	if err != nil || !sameHarness(got, v2) {
+		t.Fatal("the new harness was not recorded", got, err)
+	}
+	// Back to the built-in harness (a rollback to a platform release).
+	if err = h.ReplaceHarness(t.Context(), "stopped", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, err = h.HarnessOf(t.Context(), "stopped"); err != nil || got != nil {
+		t.Fatal("the built-in harness was not restored", got, err)
+	}
+	inUse, err := h.HarnessImagesInUse(t.Context())
+	if err != nil || !inUse[v1.Path] || inUse[v2.Path] || len(inUse) != 1 {
+		t.Fatal("images in use", inUse, err)
 	}
 }

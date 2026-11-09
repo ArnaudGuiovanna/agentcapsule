@@ -90,3 +90,25 @@ func (s *Server) deprecateHarnessRelease(w http.ResponseWriter, r *http.Request)
 	out, err := s.accounts.DeprecateHarnessRelease(r.Context(), p, r.PathValue("id"), key)
 	receipt(w, out, err)
 }
+
+// agentRelease pins an agent to another approved release (upgrade or
+// rollback). It takes effect at the agent's next boot.
+func (s *Server) agentRelease(w http.ResponseWriter, r *http.Request) {
+	if !method(w, r, "POST") {
+		return
+	}
+	p, ok := s.principal(w, r)
+	if !ok {
+		return
+	}
+	key, ok := idempotency(w, r)
+	if !ok {
+		return
+	}
+	var in controlplane.ReleaseChange
+	if !decode(w, r, &in) {
+		return
+	}
+	out, err := s.catalog.ChangeAgentRelease(r.Context(), p, r.PathValue("id"), key, in)
+	receipt(w, out, err)
+}

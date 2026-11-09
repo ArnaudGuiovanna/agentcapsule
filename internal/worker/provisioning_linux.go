@@ -66,13 +66,9 @@ func (w *Placements) provision(ctx context.Context, job controlplane.WorkerJob) 
 	if e.Stage == "READY" {
 		return nil
 	}
-	var harness *runtime.HarnessImage
-	if e.HarnessSource == "oci" {
-		if harness, err = w.harnessImage(ctx, e); err != nil {
-			return err
-		}
-	} else if e.HarnessDigest != p.digest {
-		return controlplane.ErrRelease
+	harness, err := w.resolveHarness(ctx, e)
+	if err != nil {
+		return err
 	}
 	if e.Stage == "INSTALLING" {
 		binding, err := w.authority.Register(ctx, e.AgentID, e.VolumeID)

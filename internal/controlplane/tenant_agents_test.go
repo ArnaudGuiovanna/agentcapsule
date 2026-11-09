@@ -11,7 +11,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-const agentScopes = "org:read member:read member:manage team:read team:manage agent:read agent:create agent:assign agent:operate agent:delete identity:manage audit:read agent:invoke agent:content:read provider:manage quota:manage usage:read"
+const agentScopes = "org:read member:read member:manage team:read team:manage agent:read agent:create agent:assign agent:operate agent:manage agent:delete identity:manage audit:read agent:invoke agent:content:read provider:manage quota:manage usage:read"
 
 func agentLab(t *testing.T) (*tenantLab, *AgentCatalog, Principal) {
 	t.Helper()

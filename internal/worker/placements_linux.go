@@ -210,6 +210,12 @@ func (w *Placements) startRenewal(ctx context.Context, id string, forFence bool,
 	if _, err := w.Reconcile(ctx); err != nil {
 		return runtime.VMRun{}, err
 	}
+	if !forFence {
+		// A release change takes effect at this boot, if the VM is not running.
+		if err := w.syncHarness(ctx, id); err != nil {
+			return runtime.VMRun{}, err
+		}
+	}
 	var p controlplane.Placement
 	var err error
 	if renewal != nil {

@@ -1395,6 +1395,48 @@ paths:
         '403': {$ref: '#/components/responses/Problem'}
         '404': {$ref: '#/components/responses/Problem'}
         default: {$ref: '#/components/responses/Problem'}
+  /v1/agents/{id}/release:
+    post:
+      description: >-
+        Pins a live agent to another approved, non-deprecated harness release:
+        an upgrade, or a rollback to the release it had. Owners, administrators
+        and agent operators may (agent:manage). The agent keeps its encrypted
+        data volume; migrating data between harness versions is the harness's
+        job. The change applies at the agent's next boot: a running VM keeps its
+        harness until it stops (sleep, then wake, to apply it now). If the host
+        cannot verify the release's cached package, the boot fails and the agent
+        stays stopped until the release is changed back or imported on that
+        host. Audited with the new release.
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [harness]
+              properties:
+                harness: {$ref: '#/components/schemas/HarnessReference'}
+      responses:
+        '200':
+          description: Release pinned (or already pinned), or initial response replayed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [agent_id, harness, previous, applies]
+                properties:
+                  agent_id: {type: string}
+                  harness: {$ref: '#/components/schemas/HarnessReference'}
+                  previous: {$ref: '#/components/schemas/HarnessReference'}
+                  applies: {type: string, enum: [next_boot]}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}  # agent_unavailable: not live (provisioning or deleted)
+        '422': {$ref: '#/components/responses/Problem'}  # harness_unavailable: unknown or deprecated release
+        default: {$ref: '#/components/responses/Problem'}
   /v1/agents/{id}/attachments:
     post:
       description: >-
@@ -2057,14 +2099,24 @@ components:
           required: [token]
           properties:
             token: {type: string, description: "acps_ secret, shown only once."}
+    HarnessReference:
+      type: object
+      additionalProperties: false
+      required: [name, version]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 100}
+        version: {type: string, minLength: 1, maxLength: 100}
     TenantAgent:
       type: object
-      required: [id, name, state, harness_digest, resources, created_at, desired_state, converged]
+      required: [id, name, state, harness_digest, harness, resources, created_at, desired_state, converged]
       properties:
         id: {type: string}
         name: {type: string}
         state: {type: string, description: "Observed state (STOPPED, STARTING, READY, ...)."}
         harness_digest: {type: string}
+        harness:
+          allOf: [{$ref: '#/components/schemas/HarnessReference'}]
+          description: Release the agent is pinned to; it boots at the next start.
         resources: {$ref: '#/components/schemas/Resources'}
         created_at: {type: string, format: date-time}
         desired_state:

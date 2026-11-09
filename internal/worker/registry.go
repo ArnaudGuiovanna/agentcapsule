@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
@@ -40,6 +41,12 @@ type HarnessImporter struct {
 	worker  string
 	// Lease and Timeout bound one attempt; Lease must exceed Timeout.
 	Lease, Timeout time.Duration
+	// EvictEvery spaces cache evictions in Run (default one hour).
+	EvictEvery time.Duration
+	// inUse lists the image paths this host's agents may boot from. Without
+	// it (no runtime attached) nothing is ever evicted.
+	inUse atomic.Pointer[func(context.Context) (map[string]bool, error)]
+	host  string
 }
 
 // OpenRegistry returns nil when the host does not import harnesses.
@@ -86,7 +93,8 @@ func NewHarnessImporter(s *controlplane.Store, f *ociregistry.Fetcher, cache, wo
 			return nil, err
 		}
 	}
-	return &HarnessImporter{store: s, fetcher: f, cache: cache, worker: workerID, Lease: 35 * time.Minute, Timeout: 30 * time.Minute}, nil
+	return &HarnessImporter{store: s, fetcher: f, cache: cache, worker: workerID, Lease: 35 * time.Minute, Timeout: 30 * time.Minute,
+		EvictEvery: time.Hour}, nil
 }
 
 // PackageDir is where a verified package of this digest lives.
@@ -94,8 +102,11 @@ func (h *HarnessImporter) PackageDir(digest string) string {
 	return filepath.Join(h.cache, "sha256", strings.TrimPrefix(digest, "sha256:"))
 }
 
-// Run imports until ctx ends, polling when there is nothing to do.
+// Run imports until ctx ends, polling when there is nothing to do. When idle,
+// it evicts unused packages at most every EvictEvery. Imports and evictions run
+// in this one loop, so an eviction never races with a download on this host.
 func (h *HarnessImporter) Run(ctx context.Context, poll time.Duration, report func(error)) error {
+	var lastEviction time.Time
 	for {
 		worked, err := h.ImportOne(ctx)
 		if report != nil && err != nil {
@@ -103,6 +114,12 @@ func (h *HarnessImporter) Run(ctx context.Context, poll time.Duration, report fu
 		}
 		if worked && err == nil {
 			continue
+		}
+		if !worked && time.Since(lastEviction) >= h.EvictEvery {
+			lastEviction = time.Now()
+			if _, err = h.Evict(ctx); report != nil && err != nil {
+				report(err)
+			}
 		}
 		select {
 		case <-ctx.Done():
@@ -163,6 +180,77 @@ func (h *HarnessImporter) fetch(ctx context.Context, job controlplane.ImportJob)
 	}
 	pkg.Dir = final
 	return pkg, nil
+}
+
+// Evict removes cached packages that no agent of this host can boot any more
+// and leftovers of interrupted downloads. It keeps every package the control
+// plane retains for this host (approved releases, releases pinned by its
+// agents, imports in progress) and every image the host still records for an
+// agent. It must not run concurrently with ImportOne; Run serializes them.
+// VMs already running keep their own hard link to the image.
+func (h *HarnessImporter) Evict(ctx context.Context) ([]string, error) {
+	inUse := h.inUse.Load()
+	if inUse == nil || h.host == "" {
+		return nil, nil
+	}
+	keep, err := h.store.RetainedHarnessDigests(ctx, h.host)
+	if err != nil {
+		return nil, err
+	}
+	booting, err := (*inUse)(ctx)
+	if err != nil {
+		return nil, err
+	}
+	staging := filepath.Join(h.cache, ".staging")
+	leftovers, err := os.ReadDir(staging)
+	if err != nil {
+		return nil, err
+	}
+	for _, e := range leftovers {
+		if err = removeTree(filepath.Join(staging, e.Name())); err != nil {
+			return nil, err
+		}
+	}
+	entries, err := os.ReadDir(filepath.Join(h.cache, "sha256"))
+	if err != nil {
+		return nil, err
+	}
+	var evicted []string
+	for _, e := range entries {
+		digest := "sha256:" + e.Name()
+		dir := h.PackageDir(digest)
+		if !harnesspkg.ValidDigest(digest) || keep[digest] || booting[filepath.Join(dir, harnesspkg.RootfsFile)] {
+			continue
+		}
+		// Leave the content-addressed path atomically, then delete.
+		doomed, err := os.MkdirTemp(staging, "evict-")
+		if err != nil {
+			return evicted, err
+		}
+		// Moving a directory to another parent needs write access to it.
+		if err = os.Chmod(dir, 0o755); err == nil {
+			err = os.Rename(dir, filepath.Join(doomed, "pkg"))
+		}
+		if err != nil {
+			return evicted, errors.Join(err, os.Remove(doomed))
+		}
+		if err = removeTree(doomed); err != nil {
+			return evicted, err
+		}
+		evicted = append(evicted, digest)
+	}
+	return evicted, nil
+}
+
+// removeTree deletes a directory whose subdirectories were sealed read-only.
+func removeTree(root string) error {
+	_ = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if err == nil && d.IsDir() {
+			_ = os.Chmod(p, 0o700)
+		}
+		return nil
+	})
+	return os.RemoveAll(root)
 }
 
 func classifyImport(err error) (string, bool) {
