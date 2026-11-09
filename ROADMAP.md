@@ -4,7 +4,8 @@ Agent Capsule is **pre-MVP**. The core path works and is validated on real KVM: 
 organization creates an agent, a member sends it an invocation with an encrypted
 attachment, the agent runs in its own Firecracker microVM, reads the file and calls
 its model through the platform channel, and posts a result only that member can
-read. Large parts of the MVP described in [docs/product.md](docs/product.md) are
+read. Two organizations run side by side on one host without seeing each other's
+agents, files, models or audit trail. Large parts of the MVP described in [docs/product.md](docs/product.md) are
 still missing, notably standard interoperability (A2A, SLIM, Directory),
 observability and a restore procedure.
 
@@ -42,7 +43,7 @@ a production host yet.
 | TEN-02 | Delegated identity (JWT from the customer's IdP) bound to the database authority | In progress | Operator tooling for trust rotation |
 | TEN-03 | RBAC for five roles; administration separate from invoke/read-content rights | Partial | Remaining routes and result/inbox filters |
 | TEN-04 | Members, teams, assignments, revocation, organization disable | In progress | Reassignment to another target; admission/reassignment races |
-| TEN-05 | Tenant agents and the per-organization data model; peer requests and agent search confined to one organization | In progress | KVM run of the two-organization scenario |
+| TEN-05 | Tenant agents and the per-organization data model; peer requests and agent search confined to one organization; two organizations validated side by side on KVM | Done | — |
 | TEN-06 | Service accounts and audit | Partial | Audit export and retention |
 | TEN-07 | Quotas and reservations (agents, VMs, CPU/RAM, disk, queues, LLM, storage) | Partial | Physical limits (CAP-03) and load behavior (OPS-03) |
 
