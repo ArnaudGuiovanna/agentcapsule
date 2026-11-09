@@ -8,6 +8,7 @@ import (
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/directory"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmgateway"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/restoreauthority"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/runtime"
@@ -19,6 +20,7 @@ type platformAPI struct {
 	caller      controlplane.VMCaller
 	transit     func() *controlplane.Transit
 	llm         func() *controlplane.LLMService
+	directory   func() *directory.Client
 	authority   *restoreauthority.Catalog
 	incarnation uint64
 }

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"syscall"
 	"testing"
@@ -25,6 +26,7 @@ type fakePlatform struct {
 	mu          sync.Mutex
 	llmKeys     []string
 	completions []InvocationCompletion
+	queries     []DirectoryQuery
 }
 
 func (f *fakePlatform) Validate(context.Context) error { return nil }
@@ -40,6 +42,12 @@ func (f *fakePlatform) CompleteLLM(_ context.Context, key string, in LLMRequest)
 	defer f.mu.Unlock()
 	f.llmKeys = append(f.llmKeys, key)
 	return LLMResult{Text: "model answer to: " + in.Messages[0].Content, InputTokens: 3, OutputTokens: 4}, nil
+}
+func (f *fakePlatform) FindAgents(_ context.Context, q DirectoryQuery) ([]DirectoryAgent, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.queries = append(f.queries, q)
+	return []DirectoryAgent{{AgentID: "agt_b", Description: "Summarizes documents.", Skills: []int{10302}, Domains: []int{111}}}, nil
 }
 func (f *fakePlatform) CompleteInvocation(_ context.Context, _ string, in InvocationCompletion) (CompletionReceipt, error) {
 	f.mu.Lock()
@@ -256,6 +264,31 @@ func TestPythonHarnessSpeaksTheGuestProtocol(t *testing.T) {
 	if c.OperationID != "op-llm" || c.Outcome != "completed" || c.Content[0].Text != "model answer to: what is a capsule" ||
 		len(keys) != 1 || keys[0] != "llm-evt-llm" {
 		t.Fatalf("deferred answer %+v keys %v", c, keys)
+	}
+
+	// A Directory search, deferred the same way.
+	if r, err = h.control.Invoke(call, invocationEvent(t, id.AgentID, "evt-find", "op-find", "/find 10302 10301")); err != nil || !IsWorkingResult(r.Result) {
+		t.Fatal("a search was not acknowledged as working", err, string(r.Result))
+	}
+	deadline = time.Now().Add(20 * time.Second)
+	for {
+		platform.mu.Lock()
+		n := len(platform.completions)
+		platform.mu.Unlock()
+		if n > 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the search answer was never posted")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	platform.mu.Lock()
+	c, queries := platform.completions[1], platform.queries
+	platform.mu.Unlock()
+	if c.OperationID != "op-find" || c.Content[0].Text != "agt_b: Summarizes documents." || len(queries) != 1 ||
+		!reflect.DeepEqual(queries[0].Skills, []int{10302, 10301}) {
+		t.Fatalf("search answer %+v queries %v", c, queries)
 	}
 
 	// SIGTERM ends it cleanly; its state survives a restart.

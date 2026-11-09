@@ -13,6 +13,7 @@ import (
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/directory"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/keyauthority"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/restoreauthority"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/runtime"
@@ -30,6 +31,8 @@ type Placements struct {
 	registry atomic.Pointer[HarnessImporter]
 	transit  atomic.Pointer[controlplane.Transit]
 	llm      atomic.Pointer[controlplane.LLMService]
+	// directory answers the agents' searches; nil without a Directory.
+	directory atomic.Pointer[directory.Client]
 	// Tests inject cancellation/crashes at the durable claim boundary.
 	afterClaim          func()
 	afterConfirm        func(runtime.VMRun)
@@ -86,7 +89,7 @@ func (w *Placements) runtimeOptions(opts runtime.FirecrackerOptions, keys keyaut
 		}
 		opts.PlatformHandler = func(id string, run runtime.VMRun) (http.Handler, error) {
 			identity := capsuleprotocol.Identity{Incarnation: run.Incarnation, AgentID: id, Generation: run.Generation, VMID: run.ID, FenceOnly: run.FenceOnly}
-			api := platformAPI{store: store, host: w.host, caller: controlplane.VMCaller{AgentID: id, HostID: hostID, Generation: run.Generation, VMID: run.ID}, transit: w.transit.Load, llm: w.llm.Load, authority: w.authority, incarnation: run.Incarnation}
+			api := platformAPI{store: store, host: w.host, caller: controlplane.VMCaller{AgentID: id, HostID: hostID, Generation: run.Generation, VMID: run.ID}, transit: w.transit.Load, llm: w.llm.Load, directory: w.directory.Load, authority: w.authority, incarnation: run.Incarnation}
 			return capsuleprotocol.NewPlatformHandler(identity, api)
 		}
 	}

@@ -30,6 +30,8 @@ deletes a tenant agent. A tenant principal never reaches the legacy lists.
 | `GET /v1/agents/{id}/assignments` | `agent:assign` | `org_owner`, `org_admin` |
 | `POST /v1/agents/{id}/assignments/{assignment_id}/revoke` | `agent:assign` | `org_owner`, `org_admin` |
 | `POST /v1/agents/{id}/assignments/{assignment_id}/replace` | `agent:assign` | `org_owner`, `org_admin` |
+| `PUT /v1/agents/{id}/directory` | `agent:manage` | `org_owner`, `org_admin`, `agent_operator` |
+| `GET /v1/agents/{id}/directory` | `agent:read` | a role that can read metadata, or a `read_metadata` assignment |
 
 Creation reuses the worker's existing provisioning (reservation, volume,
 activation, automatic wake). The operations of a tenant agent have no owner
@@ -297,3 +299,45 @@ begins with `/llm <alias> <text>`. It reads the files, calls the model and files
 a response that gives, for each file, its size and digest, followed by the
 model's text. The computation is kept before the filing: a replayed filing does
 not call the model again.
+
+## Directory publication (INT-02)
+
+An organization makes an agent findable by the other agents of the same
+organization with `PUT /v1/agents/{id}/directory`:
+
+```json
+{"visible": true, "description": "Summarizes documents.", "skills": [10302], "domains": [111]}
+```
+
+Skills and domains are OASF 1.1.0 class IDs (see
+[docs/interop.md](../interop.md)). The worker's publisher then writes an OASF
+record to the platform's private AGNTCY Directory. The record holds the
+description, the skill and domain IDs, and an opaque name
+`agentcapsule/<organization>/<agent>`; nothing else about the agent or its
+organization. `GET` shows the description and the record's `publication`:
+
+| `publication` | Meaning |
+|---|---|
+| `pending` | The Directory is behind the last change; the publisher retries with backoff while it is unreachable |
+| `published` | The current description is the record in the Directory (`record_cid`) |
+| `unpublished` | No record: the agent is hidden, no longer live, its organization is suspended, or it was never described |
+| `invalid` | The OASF schema refused the record; `error` gives the schema server's reason, and the previous record was withdrawn |
+
+Each change becomes a revision in PostgreSQL. Hiding the agent, deleting it or
+suspending its organization creates one too, through triggers. The publisher
+records each step before the next: the new record is recorded before the old
+one is deleted. A crash therefore leaves at worst a record to delete again,
+never a record the platform does not know about. Every change is audited
+(`agent.directory_changed`, no policy version bump: who can find an agent is not
+an authorization rule).
+
+**Search from an agent.** A running agent searches through the platform
+channel (`/v1/directory/find`, `find_agents(skills)` in the Python SDK) by
+skill IDs; one of them suffices. The Directory narrows the candidates to the
+caller's organization and skills. PostgreSQL then keeps only the current records
+of agents that are still discoverable, live, of the caller's organization, not
+the caller, and still offer one of the skills. Descriptions come from
+PostgreSQL. Finding an agent grants no right: a request to it still goes through
+consent and mandates. A host without Directory, or a Directory outage, answers
+`unavailable`; requests to agents already known are not affected.
+

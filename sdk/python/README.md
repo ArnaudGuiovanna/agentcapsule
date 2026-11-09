@@ -46,6 +46,8 @@ harness.run()
   `on_background(harness)`, which runs in its own thread after each delivery and
   every few seconds: call `harness.platform.complete_llm(...)`, then
   `harness.platform.complete_invocation(key, operation_id, "completed", content)`.
+  `harness.platform.find_agents([10302])` searches the organization's agents by
+  OASF skill IDs in the private Directory the same way (`/find` in the example).
   Every platform call takes an idempotency key: a retry with the same key replays
   the outcome instead of doing it twice. Use keys derived from the event or
   operation ID.

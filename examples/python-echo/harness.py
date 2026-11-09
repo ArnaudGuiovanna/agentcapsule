@@ -7,6 +7,8 @@
   answer cannot be produced during the delivery (the platform channel waits for
   it to end), so the harness records the work, answers "working", and posts the
   model's answer afterwards.
+* "/find <skill> [<skill>...]" lists the agents of the organization that offer
+  any of these OASF skill IDs in the private Directory, the same deferred way.
 """
 
 import os
@@ -20,6 +22,9 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS echo_counter (id INTEGER PRIMARY KEY CHECK (id = 1), n INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS llm_work (
   event_id TEXT PRIMARY KEY, operation_id TEXT NOT NULL, alias TEXT NOT NULL, prompt TEXT NOT NULL,
+  answer TEXT, done INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS find_work (
+  event_id TEXT PRIMARY KEY, operation_id TEXT NOT NULL, skills TEXT NOT NULL,
   answer TEXT, done INTEGER NOT NULL DEFAULT 0)
 """
 
@@ -49,6 +54,15 @@ def invoke(invocation, tx):
         tx.execute("INSERT INTO llm_work(event_id, operation_id, alias, prompt) VALUES (?,?,?,?)",
                    (invocation.event_id, invocation.operation_id, alias, prompt.strip()))
         return WORKING
+    if text == "/find" or text.startswith("/find "):
+        words = text[len("/find"):].split()
+        if not words or not all(w.isdigit() for w in words):
+            return text_result("Usage: /find <skill> [<skill>...] (OASF skill IDs).")
+        if harness.platform is None:
+            return text_result("The platform channel is unavailable; the directory cannot be reached.")
+        tx.execute("INSERT INTO find_work(event_id, operation_id, skills) VALUES (?,?,?)",
+                   (invocation.event_id, invocation.operation_id, " ".join(words)))
+        return WORKING
     tx.execute("INSERT INTO echo_counter(id, n) VALUES (1, 1) ON CONFLICT(id) DO UPDATE SET n = n + 1")
     n = tx.execute("SELECT n FROM echo_counter WHERE id = 1").fetchone()[0]
     return text_result("python echo #%d: %s" % (n, text))
@@ -60,8 +74,46 @@ def event(event, tx):
     return b""
 
 
+def finish(h, operation_id, answer):
+    try:
+        h.platform.complete_invocation("done-" + operation_id, operation_id, "completed", [{"type": "text", "text": answer}])
+    except PlatformError as error:
+        if error.code not in PERMANENT:
+            raise
+        # Already closed by the platform (timeout, cancellation, deletion).
+
+
+def find(h):
+    """Answers one pending /find; True if there was one."""
+    def pending(tx):
+        schema(tx)
+        return tx.execute("SELECT event_id, operation_id, skills, answer FROM find_work WHERE done = 0 "
+                          "ORDER BY rowid LIMIT 1").fetchone()
+
+    row = h.store.local(["agent/" + h.agent_id], pending)
+    if row is None:
+        return False
+    event_id, operation_id, skills, answer = row
+    if answer is None:
+        try:
+            found = h.platform.find_agents([int(s) for s in skills.split()])
+            answer = "\n".join("%s: %s" % (a["agent_id"], a["description"]) for a in found) or "No agent offers these skills."
+        except PlatformError as error:
+            if error.code not in PERMANENT:
+                raise  # the Directory may come back; retried later
+            answer = "The directory search failed (%s)." % error.code
+        h.store.local(["agent/" + h.agent_id],
+                      lambda tx: tx.execute("UPDATE find_work SET answer = ? WHERE event_id = ?", (answer, event_id)))
+    finish(h, operation_id, answer)
+    h.store.local(["agent/" + h.agent_id], lambda tx: tx.execute("UPDATE find_work SET done = 1 WHERE event_id = ?", (event_id,)))
+    return True
+
+
 @harness.on_background
 def background(h):
+    if h.platform is not None and find(h):
+        return True
+
     def pending(tx):
         schema(tx)
         return tx.execute("SELECT event_id, operation_id, alias, prompt, answer FROM llm_work WHERE done = 0 "
@@ -81,12 +133,7 @@ def background(h):
             answer = "The model call failed (%s)." % error.code
         h.store.local(["agent/" + h.agent_id],
                       lambda tx: tx.execute("UPDATE llm_work SET answer = ? WHERE event_id = ?", (answer, event_id)))
-    try:
-        h.platform.complete_invocation("done-" + operation_id, operation_id, "completed", [{"type": "text", "text": answer}])
-    except PlatformError as error:
-        if error.code not in PERMANENT:
-            raise
-        # Already closed by the platform (timeout, cancellation, deletion).
+    finish(h, operation_id, answer)
     h.store.local(["agent/" + h.agent_id], lambda tx: tx.execute("UPDATE llm_work SET done = 1 WHERE event_id = ?", (event_id,)))
     return True
 

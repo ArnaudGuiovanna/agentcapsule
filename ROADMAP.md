@@ -86,8 +86,8 @@ a production host yet.
 | ID | Item | Status | Remaining |
 |---|---|---|---|
 | INT-01 | Qualify OASF, Directory, A2A, SLIM releases; pin a compatibility matrix; private single-host services ([deploy/interop](deploy/interop)) tested in CI | Done | — |
-| INT-02 | OASF records, private Directory sync, filtered Agent Cards | Not started | All |
-| INT-03 | Real A2A adapter: tasks, statuses, artifacts, result return | Not started | All |
+| INT-02 | OASF records published from PostgreSQL to the private Directory (outbox, revisions, schema refusals shown); skill search from a running agent filtered again in PostgreSQL; SDK `find_agents` | In progress | Search from a VM on KVM (with the INT-05 journey); Agent Cards move to INT-03 |
+| INT-03 | Agent Cards and a real A2A adapter: tasks, statuses, artifacts, result return | Not started | All |
 | INT-04 | Host SLIM gateway, authenticated endpoints, vsock bridge, delegation limits | Not started | All |
 | INT-05 | End-to-end flagship journey including Directory/SLIM failures | Not started | All |
 

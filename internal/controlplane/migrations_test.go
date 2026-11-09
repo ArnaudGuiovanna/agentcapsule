@@ -319,6 +319,10 @@ func TestReadyChecksInstalledMigrationLedger(t *testing.T) {
 func revertTenantAgents(t *testing.T, s *Store) {
 	t.Helper()
 	if _, err := s.pool.Exec(t.Context(), `
+        DROP TABLE IF EXISTS agent_directory;
+        DROP TRIGGER IF EXISTS agent_directory_follow_agent ON agents;
+        DROP TRIGGER IF EXISTS agent_directory_follow_organization ON organizations;
+        DROP FUNCTION IF EXISTS agent_directory_follow_agent(), agent_directory_follow_organization();
         DROP TABLE IF EXISTS harness_audit, harness_imports;
         DROP INDEX IF EXISTS harness_releases_package;
         ALTER TABLE harness_releases DROP CONSTRAINT IF EXISTS harness_releases_oci, DROP CONSTRAINT IF EXISTS harness_releases_deprecation,

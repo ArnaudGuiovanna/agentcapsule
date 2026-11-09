@@ -112,3 +112,34 @@ func (s *Server) agentRelease(w http.ResponseWriter, r *http.Request) {
 	out, err := s.catalog.ChangeAgentRelease(r.Context(), p, r.PathValue("id"), key, in)
 	receipt(w, out, err)
 }
+
+// agentDirectory reads (GET) or sets (PUT) how an organization agent is
+// described in the private Directory.
+func (s *Server) agentDirectory(w http.ResponseWriter, r *http.Request) {
+	if !method(w, r, "GET", "PUT") {
+		return
+	}
+	p, ok := s.principal(w, r)
+	if !ok {
+		return
+	}
+	if r.Method == "GET" {
+		out, err := s.catalog.GetDirectoryProfile(r.Context(), p, r.PathValue("id"))
+		if err != nil {
+			failure(w, err)
+			return
+		}
+		jsonResponse(w, http.StatusOK, out)
+		return
+	}
+	key, ok := idempotency(w, r)
+	if !ok {
+		return
+	}
+	var in controlplane.DirectoryProfile
+	if !decode(w, r, &in) {
+		return
+	}
+	out, err := s.catalog.SetDirectoryProfile(r.Context(), p, r.PathValue("id"), key, in)
+	receipt(w, out, err)
+}

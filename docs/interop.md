@@ -2,9 +2,10 @@
 
 Agent Capsule supports one pinned interoperability profile, `agentcapsule-int-1`
 ([profile.json](../runtime/interop/profile.json)), qualified on a single host.
-It covers OASF records, a private AGNTCY Directory, A2A and SLIM. This closes
-INT-01, but not gate G2: the platform does not use these services yet
-(INT-02 to INT-05).
+It covers OASF records, a private AGNTCY Directory, A2A and SLIM. The platform
+publishes and searches agent records through the Directory (INT-02, see
+[Directory publication](api/agents-assignments.md#directory-publication-int-02));
+it does not use A2A or SLIM yet (INT-03 to INT-05), so gate G2 is not reached.
 
 ## The profile
 
@@ -27,16 +28,16 @@ published build metadata has an empty commit field.
 result, an Agent Card or a SLIM name grants no right. Every search result is
 filtered again in PostgreSQL by organization, assignment and caller, and every
 request goes through the existing consent, mandate, quota and cross-organization
-checks. Records will hold only what the agent's owner chose to publish
-(A2A-011).
+checks. Records hold only what the organization chose to publish: a
+description and skill and domain IDs, under an opaque name (A2A-011).
 
 **Directory is an index the platform can rebuild.** PostgreSQL remains the
 source of truth and publishes each visible agent's record. The API server
 therefore uses its embedded SQLite database and a local OCI layout, with no
 PostgreSQL or registry of its own; losing it means publishing again, not losing
-data. Directory has no notion of organization, so record names will carry an
-organization scope that confines a search on the server, before the platform's
-own filter (INT-02).
+data. Directory has no notion of organization, so record names carry one
+(`agentcapsule/<organization>/<agent>`): a search is confined to the caller's
+organization on the server, then filtered again by the platform.
 
 **The mailbox, not SLIM, guarantees delivery.** The qualification measured what
 SLIM does and does not do:
@@ -121,6 +122,7 @@ lab certificates, then runs Go tests against them:
 | `TestSLIMNodeAdmitsOnlyTheSLIMAuthority` | The bridge certificate connects; no certificate, a foreign authority and the Directory authority are refused |
 | `TestSLIMKeepsNothingForAnAbsentRecipient` | A session to an absent name fails; a message sent while the recipient is down is never delivered after it returns |
 | `TestA2AOverSLIMThroughThePrivateNode` | A2A `SendMessage` and `GetTask` over SLIM: completed task with its artifact, and the recipient sees the sender's verified identity |
+| `TestPublisherAgainstThePrivateDirectory` | The platform's own publisher (`internal/directory`): its records pass the real schema, a new description replaces the old record, an unknown skill is refused and withdraws the record, a hidden agent is no longer found, and a neighbouring organization's scope finds nothing |
 
 The library tests also run, without Docker:
 - the A2A JSON-RPC round trip;
@@ -217,7 +219,7 @@ container users. On a host:
 
 | Item | Work |
 | --- | --- |
-| INT-02 | One OASF record per visible agent, published from PostgreSQL through an outbox and removed when the agent is hidden or deleted. Search through Directory, then filtered by organization, assignment and caller. Validation errors reported to the owner. |
+| INT-02 | Done: one OASF record per described, discoverable agent, published from PostgreSQL by the worker and withdrawn when the agent is hidden, deleted or its organization suspended; search by skill from a running agent, filtered again in PostgreSQL; schema refusals shown to the organization. |
 | INT-03 | A2A adapter: an Agent Card per visible agent, `SendMessage` and `GetTask` mapped onto peer requests with the state table above. |
 | INT-04 | SLIM bridge process: SLIM names for live recipients, delivery from the mailbox through SLIM to the worker and the guest over vsock, receipts, supervision and restart. |
 | INT-05 | The flagship journey: agent A finds agent B, which is stopped, and gets its answer over A2A and SLIM; then the same journey with Directory or SLIM down. |

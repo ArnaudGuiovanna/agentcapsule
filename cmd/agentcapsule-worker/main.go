@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/directory"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/restoreauthority"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/volumearchive"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/worker"
@@ -143,6 +144,26 @@ func run() int {
 				}
 			})
 		}()
+	}
+	dir, publishEvery, err := c.OpenDirectory()
+	if err != nil {
+		return fail("directory_configuration_invalid")
+	}
+	if dir != nil {
+		defer dir.Close()
+		if err = w.EnableDirectory(dir); err != nil {
+			return fail("directory_unavailable")
+		}
+		if !archiveRequested {
+			// Brings the Directory to the organizations' descriptions; an outage
+			// only delays publication, every step is recorded in PostgreSQL.
+			publisher := &directory.Publisher{Store: s, Directory: dir}
+			go publisher.Run(ctx, publishEvery, func(error) {
+				if ctx.Err() == nil {
+					fmt.Fprintln(os.Stderr, "directory_publish_retry")
+				}
+			})
+		}
 	}
 	if archiveRequested {
 		archives, err := volumearchive.New(*archiveRoot)

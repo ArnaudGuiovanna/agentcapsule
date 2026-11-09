@@ -160,6 +160,27 @@ head are committed together. An old attempt can no longer publish its result.
 Abandoning waits for a durable barrier, revokes the mandate and keeps the
 uncertainty about an effect whose result was never acknowledged.
 
+To publish the organizations' agents to the private Directory and answer the
+agents' searches (INT-02, [deploy/interop](../deploy/interop)), add:
+
+```json
+"directory": {
+  "address": "127.0.0.1:8443",
+  "ca": "/etc/agentcapsule/interop/control-plane/directory-ca.pem",
+  "cert": "/etc/agentcapsule/interop/control-plane/directory.crt",
+  "key": "/etc/agentcapsule/interop/control-plane/directory.key",
+  "publish_interval": "5s"
+}
+```
+
+The address is the Directory's mutual-TLS edge; the key must be private to the
+worker. The worker then runs the publisher (one claim of up to 16 agents per
+interval, at once again while work remains, leases of one minute, backoff from 5
+seconds to 5 minutes while the Directory is unreachable) and serves
+`/v1/directory/find` on the platform channel. Without this section, searches
+answer `unavailable` and nothing is published; descriptions are still kept.
+See [Directory publication](api/agents-assignments.md#directory-publication-int-02).
+
 Harness calls now transmit structured private contents (`payload.content`)
 rather than references chosen by the client. When transit is configured, the
 worker itself encrypts the request/response before the commit and refuses

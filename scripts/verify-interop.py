@@ -6,7 +6,8 @@ modules, the SLIM native library), no Docker. With --services: also the private
 services of deploy/interop (OASF schema server, Directory behind its mutual-TLS
 edge, SLIM node) started from pinned images with lab certificates, then driven
 by Go tests: publish, search and validation in Directory, refused identities,
-exchanges through the SLIM node, and A2A over SLIM.
+exchanges through the SLIM node, A2A over SLIM, and the platform's own
+Directory publisher (internal/directory).
 """
 import argparse
 import contextlib
@@ -38,6 +39,8 @@ SERVICE_TESTS = {
     "TestSLIMKeepsNothingForAnAbsentRecipient",
 }
 A2A_SLIM_TESTS = {"TestA2AOverSLIMThroughThePrivateNode"}
+# The platform's own Directory client and publisher (internal/directory).
+PLATFORM_TESTS = {"TestPublisherAgainstThePrivateDirectory"}
 
 
 def sha256(path):
@@ -100,7 +103,8 @@ def main():
             shutil.copytree(ROOT / "runtime/interop/a2aslim", modules["a2aslim"])
             shutil.copytree(ROOT / "deploy/interop", modules["deploy"])
             frozen = {name: tree_digests(path) for name, path in modules.items()}
-            sources = [Path(__file__).resolve(), profile_path, *sorted((ROOT / "runtime/interop").rglob("*")), *sorted((ROOT / "deploy/interop").rglob("*"))]
+            sources = [Path(__file__).resolve(), profile_path, *sorted((ROOT / "runtime/interop").rglob("*")), *sorted((ROOT / "deploy/interop").rglob("*")),
+                       ROOT / "go.mod", ROOT / "go.sum", *sorted((ROOT / "internal/directory").glob("*.go"))]
             report["source_sha256"] = {str(p.relative_to(ROOT)): sha256(p) for p in sources if p.is_file()}
             shutil.copy2(profile_path, output / "profile.json")
             # Allow no inherited credentials, Go flags, or protocol endpoint settings.
@@ -202,6 +206,11 @@ def main():
                 report["passed_tests"] = passed_tests(log, LIBRARY_TESTS | SERVICE_TESTS)
                 log = run("a2aslim-tests", [go, "test", "-mod=readonly", "-tags=interop_services", "-count=1", "-json", "-timeout=300s", "."], a2aslim, timeout=900, extra=extra)
                 report["passed_a2aslim_tests"] = passed_tests(log, A2A_SLIM_TESTS)
+                # In place, read-only: only internal/directory and its imports
+                # are built, without CGO.
+                log = run("platform-tests", [go, "test", "-mod=readonly", "-tags=interop_services", "-count=1", "-json", "-timeout=300s",
+                                             "-run", "AgainstThePrivateDirectory", "./internal/directory"], ROOT, timeout=900, extra={**extra, "CGO_ENABLED": "0"})
+                report["passed_platform_tests"] = passed_tests(log, PLATFORM_TESTS)
                 stats("after_tests")
             if {name: tree_digests(path) for name, path in modules.items()} != frozen:
                 raise RuntimeError("Go modified a frozen module; update committed dependencies first")

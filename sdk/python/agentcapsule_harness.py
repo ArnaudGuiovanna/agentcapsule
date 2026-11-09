@@ -511,6 +511,24 @@ class Platform:
             raise ProtocolError("llm result")
         return out["llm_result"]
 
+    def find_agents(self, skills: List[int]) -> List[Dict[str, Any]]:
+        """Finds agents of this agent's organization that offer any of the
+        OASF skills (class IDs, schema 1.1.0) in the private Directory. Each
+        result has agent_id, description, skills and domains, as the platform
+        describes the agent now. Finding an agent grants no right: a request
+        to it still needs the recipient side's consent. Reads only, so it
+        takes no idempotency key."""
+        if (not isinstance(skills, list) or not 1 <= len(skills) <= 20 or len(set(skills)) != len(skills)
+                or any(type(x) is not int or not 1 <= x <= 99_999_999 for x in skills)):
+            raise ProtocolError("skills")
+        out = self._call("/v1/directory/find", {"query": {"skills": skills}})
+        found = out.get("found", [])
+        if not isinstance(found, list) or not all(
+                isinstance(a, dict) and isinstance(a.get("agent_id"), str) and isinstance(a.get("description"), str)
+                for a in found):
+            raise ProtocolError("directory result")
+        return found
+
     def complete_invocation(self, key: str, operation_id: str, outcome: str,
                             content: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
         """Posts the outcome of an invocation answered WORKING: "completed"

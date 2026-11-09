@@ -28,6 +28,13 @@
   "delivery_lease": "30s",
   "retry_base": "1s",
   "retry_max": "30s",
+  "directory": {
+    "address": "127.0.0.1:8443",
+    "ca": "/etc/agentcapsule/interop/control-plane/directory-ca.pem",
+    "cert": "/etc/agentcapsule/interop/control-plane/directory.crt",
+    "key": "/etc/agentcapsule/interop/control-plane/directory.key",
+    "publish_interval": "5s"
+  },
   "registry": {
     "max_harness_mib": 1024,
     "rules": [

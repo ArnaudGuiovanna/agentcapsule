@@ -73,6 +73,7 @@ type platformRequest struct {
 	LLM          *LLMRequest           `json:"llm,omitempty"`
 	Attachment   *AttachmentRead       `json:"attachment,omitempty"`
 	Completion   *InvocationCompletion `json:"completion,omitempty"`
+	Query        *DirectoryQuery       `json:"query,omitempty"`
 }
 type platformResponse struct {
 	Protocol     string             `json:"protocol"`
@@ -84,6 +85,7 @@ type platformResponse struct {
 	LLMResult    *LLMResult         `json:"llm_result,omitempty"`
 	Segment      *AttachmentSegment `json:"segment,omitempty"`
 	Completion   *CompletionReceipt `json:"completion,omitempty"`
+	Found        []DirectoryAgent   `json:"found,omitempty"`
 }
 type platformHandler struct {
 	id        Identity
@@ -166,9 +168,24 @@ func (p *platformHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if in.Query != nil && r.URL.Path != "/v1/directory/find" {
+		write(http.StatusBadRequest, "invalid")
+		return
+	}
 	// Validate is performed INSIDE each mutating API transaction, not as an
 	// earlier authorization check that could race with generation replacement.
 	switch {
+	case r.URL.Path == "/v1/directory/find":
+		if in.Query == nil || in.OwnerMessage != nil || in.LLM != nil || in.Attachment != nil || in.Completion != nil || in.Reply != nil || in.Submission != nil || in.RequestID != "" || in.Key != "" || in.Candidates != nil || in.Query.Validate() != nil {
+			write(http.StatusBadRequest, "invalid")
+			return
+		}
+		api, ok := p.api.(DirectoryAPI)
+		if !ok {
+			write(http.StatusServiceUnavailable, "unavailable")
+			return
+		}
+		out.Found, err = api.FindAgents(ctx, *in.Query)
 	case r.URL.Path == "/v1/owner/messages":
 		if in.OwnerMessage == nil || in.LLM != nil || in.Attachment != nil || in.Completion != nil || in.Submission != nil || in.Reply != nil || in.RequestID != "" || in.Candidates != nil || in.Key == "" || len(in.Key) > 256 || in.OwnerMessage.Validate() != nil {
 			write(http.StatusBadRequest, "invalid")

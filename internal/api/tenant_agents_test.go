@@ -15,7 +15,7 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/delegatedidentity"
 )
 
-const allAgentScopes = allTeamScopes + " agent:read agent:create agent:assign agent:operate agent:delete identity:manage audit:read agent:invoke agent:content:read provider:manage quota:manage usage:read"
+const allAgentScopes = allTeamScopes + " agent:read agent:create agent:assign agent:operate agent:manage agent:delete identity:manage audit:read agent:invoke agent:content:read provider:manage quota:manage usage:read"
 
 func apiAgentsLab(t *testing.T) (*apiDelegationFixture, time.Time, string) {
 	t.Helper()

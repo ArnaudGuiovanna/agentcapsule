@@ -25,6 +25,9 @@ func (r remotePlatform) Reply(ctx context.Context, id, key string, in Reply) (Pl
 func (r remotePlatform) Search(ctx context.Context, candidates []string) ([]string, error) {
 	return r.client.Search(ctx, candidates)
 }
+func (r remotePlatform) FindAgents(ctx context.Context, q DirectoryQuery) ([]DirectoryAgent, error) {
+	return r.client.FindAgents(ctx, q)
+}
 func (r remotePlatform) CompleteLLM(ctx context.Context, key string, in LLMRequest) (LLMResult, error) {
 	return r.client.CompleteLLM(ctx, key, in)
 }

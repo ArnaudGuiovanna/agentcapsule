@@ -1437,6 +1437,54 @@ paths:
         '409': {$ref: '#/components/responses/Problem'}  # agent_unavailable: not live (provisioning or deleted)
         '422': {$ref: '#/components/responses/Problem'}  # harness_unavailable: unknown or deprecated release
         default: {$ref: '#/components/responses/Problem'}
+  /v1/agents/{id}/directory:
+    get:
+      description: >-
+        How a live organization agent is described in the platform's private
+        AGNTCY Directory, and where its record stands (publication): pending
+        while the Directory is behind, published, unpublished (hidden, not
+        live, or never described) or invalid (the OASF schema refused the
+        record; error says why). Readable by whoever may read the agent's
+        metadata.
+      security: [{delegatedBearer: []}]
+      parameters: [{$ref: '#/components/parameters/ResourceID'}]
+      responses:
+        '200':
+          description: Description and publication state
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DirectoryEntry'}
+        '404': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
+    put:
+      description: >-
+        Describes a live organization agent for the private Directory and sets
+        whether other agents of the organization can find it (agent:manage;
+        owners, administrators and agent operators). Skills and domains are
+        OASF 1.1.0 class IDs; the schema server decides whether they exist and
+        a refusal shows as publication invalid. Only the description, skills,
+        domains and an opaque record name are published. A record grants no
+        right: search results are filtered again by organization and
+        visibility, and a request to the agent still needs consent. Hiding the
+        agent keeps its description and removes its record. Audited.
+      security: [{delegatedBearer: []}]
+      parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DirectoryProfile'}
+      responses:
+        '200':
+          description: Description recorded (or unchanged), or initial response replayed
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DirectoryEntry'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}  # agent_unavailable: not live (provisioning or deleted)
+        default: {$ref: '#/components/responses/Problem'}
   /v1/agents/{id}/attachments:
     post:
       description: >-
@@ -2101,6 +2149,39 @@ components:
           required: [token]
           properties:
             token: {type: string, description: "acps_ secret, shown only once."}
+    DirectoryProfile:
+      type: object
+      additionalProperties: false
+      required: [visible, description, skills]
+      properties:
+        visible: {type: boolean, description: Whether other agents of the organization can find it}
+        description: {type: string, minLength: 1, maxLength: 1000, description: No control characters except newlines}
+        skills:
+          type: array
+          minItems: 1
+          maxItems: 20
+          uniqueItems: true
+          items: {type: integer, minimum: 1, maximum: 99999999}
+          description: OASF 1.1.0 skill class IDs, such as 10301 (text completion) or 10302 (summarization)
+        domains:
+          type: array
+          maxItems: 20
+          uniqueItems: true
+          items: {type: integer, minimum: 1, maximum: 99999999}
+          description: OASF 1.1.0 domain class IDs, such as 111 (artificial intelligence)
+    DirectoryEntry:
+      type: object
+      required: [agent_id, visible, description, skills, domains, publication]
+      properties:
+        agent_id: {type: string}
+        visible: {type: boolean}
+        description: {type: string}
+        skills: {type: array, items: {type: integer}}
+        domains: {type: array, items: {type: integer}}
+        publication: {type: string, enum: [pending, published, unpublished, invalid]}
+        error: {type: string, description: The schema server's reason when publication is invalid}
+        record_cid: {type: string, description: Content ID of the record in the Directory when published}
+        updated_at: {type: string, format: date-time, description: Last change of the description or of its record; absent if never described}
     HarnessReference:
       type: object
       additionalProperties: false
