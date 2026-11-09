@@ -5,7 +5,8 @@ program that runs an agent inside its microVM. It is one file with no dependency
 beyond the Python standard library (3.9 or later), and it implements the guest side
 of the private `capsule.v1` protocol, like the Go reference harness
 (`cmd/capsule-echo`). [examples/python-echo](../../examples/python-echo) is a
-complete harness built with it.
+complete harness built with it. An agent that already exists does not need this
+SDK: [capsule-adapter](../../docs/adapter.md) runs it unchanged.
 
 ```python
 from agentcapsule_harness import WORKING, Harness, text_result

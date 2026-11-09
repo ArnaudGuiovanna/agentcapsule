@@ -37,6 +37,10 @@ budgets.
   share its image, attached read-only and run chrooted in the guest. Agents can be
   upgraded and rolled back, and unused packages leave the cache. Harnesses can be
   written in Go or in Python ([Python SDK](sdk/python/README.md)).
+- **Unmodified agents**: `capsule-adapter` runs an existing agent's command for each
+  invocation and serves the OpenAI and Anthropic APIs on the VM's loopback, so the
+  agent's own SDK reaches the organization's models through the platform, tools
+  included, with no credential in the VM ([docs/adapter.md](docs/adapter.md)).
 
 ## Architecture
 
@@ -67,6 +71,8 @@ budgets.
 - `capsule-init`: PID 1 in the guest; holds boot credentials and volume secrets away
   from the harness and relays its platform calls.
 - `capsule-echo`: the reference harness used by tests.
+- `capsule-adapter`: runs an unmodified agent as a harness (command per
+  invocation, model endpoint on the guest loopback).
 - `agentcapsule-harness`: builds and publishes harness packages (developer/CI tool).
 
 The delivery, messaging, lifecycle, revocation and deferred-result protocols are
@@ -124,6 +130,7 @@ Installation is not packaged yet. The building blocks are documented:
 | Agents, assignments, invocations, attachments, deferred results | [docs/api/agents-assignments.md](docs/api/agents-assignments.md) |
 | LLM gateway | [docs/api/llm.md](docs/api/llm.md) |
 | Harness packages, publishing and imports | [docs/registry.md](docs/registry.md) |
+| Running an existing agent unchanged | [docs/adapter.md](docs/adapter.md) |
 | Guest runtime and the `capsule.v1` contract | [docs/guest/](docs/guest/) |
 | Interoperability profile (A2A, OASF, Directory, SLIM) | [docs/interop.md](docs/interop.md) |
 | Architecture decisions | [docs/adr/](docs/adr/) |
@@ -133,7 +140,7 @@ Installation is not packaged yet. The building blocks are documented:
 ## Repository layout
 
 ```
-cmd/          binaries (api, worker, admin, harness tool, capsule-init, capsule-echo)
+cmd/          binaries (api, worker, admin, harness tool, capsule-init, capsule-echo, capsule-adapter)
 internal/     Go packages: controlplane, api, worker, runtime, capsuleprotocol, ...
 openapi/      canonical OpenAPI 3.1 contract
 spec/         Quint protocol models
@@ -142,7 +149,7 @@ runtime/      Firecracker patch, guest kernel config, example configs, interop q
 deploy/       private interoperability services for one host (Directory, OASF, SLIM)
 scripts/      builds, CI checks and KVM/PostgreSQL verification campaigns
 sdk/python/   Python harness SDK (capsule.v1, standard library only)
-examples/     example harnesses (python-echo, go-echo)
+examples/     example harnesses (python-echo, go-echo) and an adapted agent (adapted-agent)
 .dagger/      reference Dagger module: builds, publishes, signs and verifies harnesses
 ```
 

@@ -6,12 +6,14 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -69,6 +71,9 @@ func TestPlatformUnixBridgeBindsKernelPeerAndRemoteIdentity(t *testing.T) {
 			llm, err := local.CompleteLLM(t.Context(), "model-key", LLMRequest{Alias: "fast", Messages: []LLMMessage{{Role: "user", Content: "via bridge"}}})
 			if err != nil || llm.Text != "echo:via bridge" {
 				t.Fatal("model call did not cross the local bridge", llm, err)
+			}
+			if fw, err := local.ForwardLLM(t.Context(), "forward-key", LLMForward{Alias: "fast", Dialect: "anthropic", Body: json.RawMessage(`{"messages":[]}`)}); err != nil || !strings.Contains(string(fw.Body), `"alias":"fast"`) {
+				t.Fatal("native model request did not cross the local bridge", err)
 			}
 			attachmentFault = ""
 			if file, err := local.FetchAttachment(t.Context(), attachmentRef(attachmentFile)); err != nil || len(file) != len(attachmentFile) {

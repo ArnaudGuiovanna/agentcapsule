@@ -6,6 +6,9 @@
 //
 //	dagger call python-echo export --path=./build/python-echo
 //	dagger call go-echo export --path=./build/go-echo
+//	dagger call adapted-agent export --path=./build/adapted-agent
+//	dagger call adapt --image=registry.example/acme/agent:1.0 --config=./adapter.json \
+//	  --manifest=./harness.yaml export --path=./build/agent
 //	dagger call publish --pkg=./build/python-echo --registry=ghcr.io --repository=acme/python-echo \
 //	  --tag=1.0.0 --username=acme-bot --password=env:GHCR_TOKEN
 //	dagger call sign --ref=ghcr.io/acme/python-echo:1.0.0@sha256:... --key=file:./publisher.key \
@@ -125,6 +128,48 @@ func (m *Agentcapsule) GoEcho() *dagger.Directory {
 	return m.Pack(rootfs, m.Source.File("examples/go-echo/harness.yaml"), 32)
 }
 
+// Adapter returns capsule-adapter as a single static binary: the program that
+// runs an unmodified agent as a capsule.v1 harness.
+func (m *Agentcapsule) Adapter() *dagger.File {
+	return m.builder().
+		WithEnvVariable("CGO_ENABLED", "1").
+		WithExec([]string{"go", "build", "-buildvcs=false", "-trimpath", "-tags=netgo,osusergo,sqlite_omit_load_extension",
+			"-ldflags=-linkmode external -extldflags '-static'", "-o", "/out/capsule-adapter", "./cmd/capsule-adapter"}).
+		File("/out/capsule-adapter")
+}
+
+// Adapt packs an existing agent image, unchanged, with capsule-adapter: its
+// filesystem plus /agentcapsule/capsule-adapter and /agentcapsule/adapter.json.
+// The manifest's entrypoint runs the adapter, e.g.
+// [/agentcapsule/capsule-adapter, /agentcapsule/adapter.json].
+func (m *Agentcapsule) Adapt(
+	// The agent's image (an image address, or a container built with Dagger).
+	image *dagger.Container,
+	// The adapter configuration: the agent's command and options.
+	config *dagger.File,
+	// The harness manifest.
+	manifest *dagger.File,
+	// Size of harness.ext4 in MiB.
+	// +default=256
+	sizeMib int,
+) *dagger.Directory {
+	rootfs := image.Rootfs().
+		// The guest provides its own devices and kernel filesystems.
+		WithoutDirectory("dev").WithoutDirectory("proc").WithoutDirectory("sys").
+		WithNewDirectory("dev").WithNewDirectory("proc").WithNewDirectory("sys").
+		WithFile("agentcapsule/capsule-adapter", m.Adapter(), dagger.DirectoryWithFileOpts{Permissions: 0o755}).
+		WithFile("agentcapsule/adapter.json", config, dagger.DirectoryWithFileOpts{Permissions: 0o644})
+	return m.Pack(rootfs, manifest, sizeMib)
+}
+
+// AdaptedAgent builds the adapted-agent example: an ordinary Python image with
+// the official OpenAI SDK (examples/adapted-agent/Dockerfile), adapted.
+func (m *Agentcapsule) AdaptedAgent() *dagger.Directory {
+	example := m.Source.Directory("examples/adapted-agent")
+	image := example.DockerBuild(dagger.DirectoryDockerBuildOpts{Platform: platform})
+	return m.Adapt(image, example.File("adapter.json"), example.File("harness.yaml"), 256)
+}
+
 // registryArgs adds the shared registry flags and password.
 func registryArgs(c *dagger.Container, args []string, username string, password *dagger.Secret, local bool) (*dagger.Container, []string) {
 	if username != "" {
@@ -213,9 +258,9 @@ func (m *Agentcapsule) Verify(ctx context.Context,
 	return c.WithExec(args).Stdout(ctx)
 }
 
-// Check runs the whole supply chain against a throwaway registry: builds both
-// reference harnesses, publishes them, signs them with a new publisher key,
-// and verifies each as the platform would, signature required.
+// Check runs the whole supply chain against a throwaway registry: builds the
+// reference harnesses and the adapted agent, publishes them, signs them with a
+// new publisher key, and verifies each as the platform would, signature required.
 func (m *Agentcapsule) Check(ctx context.Context) (string, error) {
 	registry := dag.Container(dagger.ContainerOpts{Platform: platform}).
 		From(registryImage).
@@ -226,7 +271,7 @@ func (m *Agentcapsule) Check(ctx context.Context) (string, error) {
 		WithDirectory("/keys", dag.Directory()).
 		WithExec([]string{"agentcapsule-harness", "keygen", "--out", "/keys/publisher"})
 	var report []string
-	for name, pkg := range map[string]*dagger.Directory{"python-echo": m.PythonEcho(), "go-echo": m.GoEcho()} {
+	for name, pkg := range map[string]*dagger.Directory{"python-echo": m.PythonEcho(), "go-echo": m.GoEcho(), "adapted-agent": m.AdaptedAgent()} {
 		dir := "/packages/" + name
 		c = c.WithDirectory(dir, pkg)
 		ref, err := c.WithExec([]string{"agentcapsule-harness", "push", "--dir", dir, "--registry", "registry:5000",

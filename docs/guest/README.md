@@ -66,7 +66,10 @@ creates neither a filesystem nor a missing marker. `e2fsck` may fix the errors
 its automatic mode covers; codes requiring intervention or a reboot are
 refused before mounting.
 
-The mount code refuses to run outside the guest's root PID 1. The supervisor
+The mount code refuses to run outside the guest's root PID 1. At boot,
+`capsule-init` also sets the loopback interface up. The VM has no other
+interface, so this opens no route out: it only lets an adapted agent reach the
+model endpoint of [capsule-adapter](../adapter.md) on 127.0.0.1. The supervisor
 starts the harness under UID/GID 1000 in a dedicated cgroup. The harness
 receives its non-secret configuration on FD 3 and its Unix listener on FD 4.
 `SO_PEERCRED` authorizes only the supervisor to use this local server; the mTLS

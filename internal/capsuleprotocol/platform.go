@@ -54,7 +54,7 @@ func safePlatformCode(err error) string {
 	if errors.As(err, &remote) {
 		switch remote.Code {
 		case "unauthorized", "not_found", "unavailable", "mandate", "conflict", "expired", "transition", "commit_unknown", "invalid",
-			"quota_exceeded", "rate_limited", "rejected", "outcome_unknown":
+			"quota_exceeded", "rate_limited", "rejected", "outcome_unknown", "dialect":
 			return remote.Code
 		}
 	}
@@ -74,6 +74,7 @@ type platformRequest struct {
 	Attachment   *AttachmentRead       `json:"attachment,omitempty"`
 	Completion   *InvocationCompletion `json:"completion,omitempty"`
 	Query        *DirectoryQuery       `json:"query,omitempty"`
+	Forward      *LLMForward           `json:"forward,omitempty"`
 }
 type platformResponse struct {
 	Protocol     string             `json:"protocol"`
@@ -86,6 +87,7 @@ type platformResponse struct {
 	Segment      *AttachmentSegment `json:"segment,omitempty"`
 	Completion   *CompletionReceipt `json:"completion,omitempty"`
 	Found        []DirectoryAgent   `json:"found,omitempty"`
+	Forwarded    *LLMForwardResult  `json:"forwarded,omitempty"`
 }
 type platformHandler struct {
 	id        Identity
@@ -129,7 +131,7 @@ func (p *platformHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	timeout := 15 * time.Second
-	if r.URL.Path == "/v1/llm/complete" {
+	if r.URL.Path == "/v1/llm/complete" || r.URL.Path == "/v1/llm/forward" {
 		// Only this route may outlive the server's short write deadline; the
 		// listener's other bounds still apply.
 		timeout = LLMCallTimeout
@@ -168,7 +170,7 @@ func (p *platformHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if in.Query != nil && r.URL.Path != "/v1/directory/find" {
+	if in.Query != nil && r.URL.Path != "/v1/directory/find" || in.Forward != nil && r.URL.Path != "/v1/llm/forward" {
 		write(http.StatusBadRequest, "invalid")
 		return
 	}
@@ -215,6 +217,21 @@ func (p *platformHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		result, err = api.CompleteLLM(ctx, in.Key, *in.LLM)
 		if err == nil {
 			out.LLMResult = &result
+		}
+	case r.URL.Path == "/v1/llm/forward":
+		if in.Forward == nil || in.LLM != nil || in.Attachment != nil || in.Completion != nil || in.OwnerMessage != nil || in.Submission != nil || in.Reply != nil || in.RequestID != "" || in.Candidates != nil || in.Key == "" || len(in.Key) > 200 || in.Forward.Validate() != nil {
+			write(http.StatusBadRequest, "invalid")
+			return
+		}
+		api, ok := p.api.(LLMForwardAPI)
+		if !ok {
+			write(http.StatusServiceUnavailable, "unavailable")
+			return
+		}
+		var result LLMForwardResult
+		result, err = api.ForwardLLM(ctx, in.Key, *in.Forward)
+		if err == nil {
+			out.Forwarded = &result
 		}
 	case r.URL.Path == "/v1/attachments/read":
 		if in.Attachment == nil || in.LLM != nil || in.Completion != nil || in.OwnerMessage != nil || in.Submission != nil || in.Reply != nil || in.RequestID != "" || in.Candidates != nil || in.Key != "" ||
@@ -288,7 +305,7 @@ func (p *platformHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusServiceUnavailable
 		case "quota_exceeded", "rate_limited":
 			status = http.StatusTooManyRequests
-		case "invalid":
+		case "invalid", "dialect":
 			status = http.StatusBadRequest
 		}
 		write(status, code)

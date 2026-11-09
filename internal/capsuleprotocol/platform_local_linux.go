@@ -31,6 +31,9 @@ func (r remotePlatform) FindAgents(ctx context.Context, q DirectoryQuery) ([]Dir
 func (r remotePlatform) CompleteLLM(ctx context.Context, key string, in LLMRequest) (LLMResult, error) {
 	return r.client.CompleteLLM(ctx, key, in)
 }
+func (r remotePlatform) ForwardLLM(ctx context.Context, key string, in LLMForward) (LLMForwardResult, error) {
+	return r.client.ForwardLLM(ctx, key, in)
+}
 func (r remotePlatform) ReadAttachment(ctx context.Context, id string, index int) (AttachmentSegment, error) {
 	return r.client.ReadAttachment(ctx, id, index)
 }

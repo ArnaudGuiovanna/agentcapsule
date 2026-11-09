@@ -54,6 +54,7 @@ a production host yet.
 | CAP-01 | Private `capsule.v1` contract, typed envelope, platform channel (peers, LLM, attachments, deferred results); Go and Python harnesses | Partial | Capability negotiation against tenant policy; events |
 | CAP-02 | Cold create, desired/observed state, wake/sleep/delete, reconciliation, single RW generation | Partial | Automatic restart policy for agents that should be running |
 | CAP-03 | Jailer/cgroups hardening, egress control, CPU/RAM/IO/pid/time limits, bounded restarts | Partial | Egress profiles, IO limits, restart budgets |
+| CAP-04 | Unmodified agents ([docs/adapter.md](docs/adapter.md)): `capsule-adapter` runs the agent's command for each invocation and serves the OpenAI and Anthropic APIs on the guest loopback, forwarded as written (tools included) through the metered platform channel; `dagger call adapt` packs an existing image; official SDKs qualified against a real model | In progress | KVM campaign with the adapted example (guest image rebuild); agents that expose a server, such as A2A (INT-03) |
 
 ## Invocations and events
 
@@ -69,7 +70,7 @@ a production host yet.
 | ID | Item | Status | Remaining |
 |---|---|---|---|
 | LLM-01 | Providers, aliases, encrypted credentials kept out of VMs, rotation, audit | In progress | Per-agent/team alias access, dedicated secret store (D-05) |
-| LLM-02 | OpenAI-compatible and Anthropic adapters, bounded retries, breaker, unknown outcomes | In progress | Live test of the Anthropic adapter, streaming |
+| LLM-02 | OpenAI-compatible and Anthropic adapters, bounded retries, breaker, unknown outcomes; native requests forwarded as written (CAP-04) | In progress | Live test against Anthropic's own API, streaming from the provider |
 | LLM-03 | Token budgets (hard/soft), reservations, usage and estimated cost | In progress | Cost budgets, operator reconciliation of unknown outcomes |
 
 ## Harness registry
@@ -121,9 +122,9 @@ a production host yet.
 ## Known limits worth knowing before contributing
 
 - Tested on a single Linux host under WSL2 with KVM; not yet on a production server.
-- One organization has been exercised on KVM end to end; isolation between two
-  organizations on KVM is not yet demonstrated.
-- The reference harness is an echo/test harness, not a general agent runtime.
+- The reference harnesses are echo/test harnesses. An existing agent runs through
+  `capsule-adapter`, one command run per invocation; agents that expose a server
+  (A2A, HTTP) are not supported yet.
 - Attachments are held in API memory during upload (8 MiB each) and stored in
   PostgreSQL; there is no object storage.
 - Cancelling a `working` invocation does not stop computation already running in the

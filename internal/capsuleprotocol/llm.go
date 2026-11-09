@@ -1,7 +1,9 @@
 package capsuleprotocol
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -14,7 +16,7 @@ const (
 	MaxLLMMessages   = 64
 	MaxLLMBytes      = 256 * 1024
 	MaxLLMOutputCap  = 32768
-	LLMCallTimeout   = 120 * time.Second
+	LLMCallTimeout   = 300 * time.Second
 	llmClientTimeout = LLMCallTimeout + 10*time.Second
 )
 
@@ -30,8 +32,12 @@ type LLMRequest struct {
 	Temperature *float64     `json:"temperature,omitempty"`
 }
 
+func validAlias(alias string) bool {
+	return alias != "" && len(alias) <= 100 && !strings.ContainsAny(alias, " \t\r\n\x00") && utf8.ValidString(alias)
+}
+
 func (r LLMRequest) Validate() error {
-	if r.Alias == "" || len(r.Alias) > 100 || strings.ContainsAny(r.Alias, " \t\r\n\x00") || !utf8.ValidString(r.Alias) {
+	if !validAlias(r.Alias) {
 		return ErrProtocol
 	}
 	if len(r.Messages) < 1 || len(r.Messages) > MaxLLMMessages || r.MaxTokens < 0 || r.MaxTokens > MaxLLMOutputCap {
@@ -79,4 +85,56 @@ func (p *PlatformClient) CompleteLLM(ctx context.Context, key string, in LLMRequ
 		return LLMResult{}, ErrProtocol
 	}
 	return *r.LLMResult, nil
+}
+
+// LLMForward is an agent's native model request, as its own SDK wrote it for the
+// model endpoint inside the VM: dialect "openai" (Chat Completions) or
+// "anthropic" (Messages). Alias is the model name it used. The host replaces the
+// model and adds the credential; it checks the body (no stream, one choice,
+// bounded output) before anything reaches the provider.
+type LLMForward struct {
+	Alias   string          `json:"alias"`
+	Dialect string          `json:"dialect"`
+	Body    json.RawMessage `json:"body"`
+}
+
+// MaxLLMForwardBytes bounds a forwarded request and its answer so that each fits
+// the platform channel's envelope.
+const MaxLLMForwardBytes = 960 << 10
+
+func (f LLMForward) Validate() error {
+	body := bytes.TrimSpace(f.Body)
+	if !validAlias(f.Alias) || (f.Dialect != "openai" && f.Dialect != "anthropic") ||
+		len(body) < 2 || len(body) > MaxLLMForwardBytes || body[0] != '{' || !json.Valid(body) {
+		return ErrProtocol
+	}
+	return nil
+}
+
+// LLMForwardResult is the provider's JSON answer, unchanged, with the usage the
+// platform settled.
+type LLMForwardResult struct {
+	Body         json.RawMessage `json:"body"`
+	InputTokens  int64           `json:"input_tokens"`
+	OutputTokens int64           `json:"output_tokens"`
+	SoftExceeded bool            `json:"soft_budget_exceeded,omitempty"`
+}
+
+// LLMForwardAPI is optional on a PlatformAPI, like LLMAPI.
+type LLMForwardAPI interface {
+	ForwardLLM(context.Context, string, LLMForward) (LLMForwardResult, error)
+}
+
+func (p *PlatformClient) ForwardLLM(ctx context.Context, key string, in LLMForward) (LLMForwardResult, error) {
+	if err := in.Validate(); err != nil {
+		return LLMForwardResult{}, err
+	}
+	r, err := p.callWithTimeout(ctx, "/v1/llm/forward", &platformRequest{Key: key, Forward: &in}, llmClientTimeout)
+	if err != nil {
+		return LLMForwardResult{}, err
+	}
+	if r.Forwarded == nil || !json.Valid(r.Forwarded.Body) {
+		return LLMForwardResult{}, ErrProtocol
+	}
+	return *r.Forwarded, nil
 }

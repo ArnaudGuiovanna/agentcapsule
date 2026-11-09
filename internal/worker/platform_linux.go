@@ -97,6 +97,8 @@ func platformError(err error) error {
 		code = "conflict"
 	case errors.Is(err, llmgateway.ErrInvalid):
 		code = "invalid"
+	case errors.Is(err, llmgateway.ErrDialect):
+		code = "dialect"
 	}
 	return &capsuleprotocol.PlatformError{Code: code}
 }
@@ -233,6 +235,24 @@ func (a platformAPI) CompleteLLM(ctx context.Context, key string, in capsuleprot
 	}
 	return capsuleprotocol.LLMResult{Text: res.Text, FinishReason: res.FinishReason,
 		InputTokens: res.Usage.InputTokens, OutputTokens: res.Usage.OutputTokens, SoftExceeded: res.SoftBudgetExceeded}, nil
+}
+
+// ForwardLLM serves an agent's native model request from the model endpoint
+// inside its VM, with the same admission rules as CompleteLLM.
+func (a platformAPI) ForwardLLM(ctx context.Context, key string, in capsuleprotocol.LLMForward) (capsuleprotocol.LLMForwardResult, error) {
+	if a.llm == nil {
+		return capsuleprotocol.LLMForwardResult{}, platformError(controlplane.ErrUnavailable)
+	}
+	svc := a.llm()
+	if svc == nil {
+		return capsuleprotocol.LLMForwardResult{}, platformError(controlplane.ErrUnavailable)
+	}
+	res, err := svc.ForwardFromVM(ctx, a.caller, key, in.Alias, in.Dialect, in.Body, a.withApplication)
+	if err != nil {
+		return capsuleprotocol.LLMForwardResult{}, platformError(err)
+	}
+	return capsuleprotocol.LLMForwardResult{Body: res.Body, InputTokens: res.Usage.InputTokens, OutputTokens: res.Usage.OutputTokens,
+		SoftExceeded: res.SoftBudgetExceeded}, nil
 }
 
 // Close releases this worker's platform listeners, leaving VMMs available for a

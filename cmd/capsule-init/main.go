@@ -74,6 +74,10 @@ func run() error {
 			return err
 		}
 	}
+	// Loopback only: an adapted agent reaches its model endpoint on 127.0.0.1.
+	if err := guestinit.BringLoopbackUp(); err != nil {
+		return err
+	}
 	for _, dir := range []string{"/run/capsule", "/run/cryptsetup", "/dev/mapper", "/sys/fs/cgroup/capsule-harness"} {
 		if err := os.MkdirAll(dir, 0700); err != nil {
 			return err

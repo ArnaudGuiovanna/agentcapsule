@@ -38,13 +38,16 @@ Do not run `go test ./...` at the repository root with sources outside
 | `verify-product-guest.py` | Reusable encrypted guest under jailed Firecracker (root, KVM) |
 | `verify-vm-isolation.py` | Disposable jailer isolation tests (root) |
 | `verify-vm-storage.py` | Disposable Firecracker/KVM storage lab |
+| `verify-adapter.py` | Live qualification of `capsule-adapter`'s model endpoint: the official OpenAI and Anthropic SDKs (`adapter-sdk-requirements.txt`) and an unmodified agent, through the platform's gateway code to a real provider (a local Ollama); see [docs/adapter.md](../docs/adapter.md) |
 | `verify-interop.py` | Qualifies the pinned A2A/OASF/Directory/SLIM profile: the libraries, and with `--services` the private services of `deploy/interop` (Docker Compose); see [docs/interop.md](../docs/interop.md) |
 | `build-firecracker.py` | Builds the pinned Firecracker variant with VMM-owned file locks |
 | `build-guest-kernel.py` | Builds the pinned guest kernel with device-mapper/dm-crypt, without root |
 | `build-product-guest.py` | Builds capsule-init and the echo harness into a pinned initramfs |
 | `build-control-guest.py` | Builds the disposable authenticated SQL harness fixture |
 | `build-python-harness.py` | Builds the python-echo harness package with plain Docker (pinned base image, then `pack`); the reference build is the Dagger module (`dagger call python-echo`). Its `package/` directory is required by `verify-product-guest.py --python-harness` |
+| `build-adapted-harness.py` | Packs an ordinary agent image (examples/adapted-agent by default) with `capsule-adapter`, using plain Docker; the reference build is `dagger call adapted-agent` (any image: `dagger call adapt`). Its `package/` directory is required by `verify-product-guest.py --adapted-harness` |
 | `openapi-requirements.txt` | Python requirements for validating the OpenAPI specification |
+| `adapter-sdk-requirements.txt` | Model SDKs for `verify-adapter.py`, pinned by hash |
 
 ## Local Go check (no PostgreSQL)
 
@@ -138,6 +141,7 @@ sudo python3 scripts/verify-product-guest.py --go <path-to-go> \
   --kernel <guest-kernel> --guest-build <product-guest-build-dir> \
   --native-headers <tools-dir>/guest-build/usr/include \
   --python-harness <python-harness-build-dir>/package \
+  --adapted-harness <adapted-harness-build-dir>/package \
   --pg-bin <postgres-bin-dir> --pg-user <non-root-user> \
   --output <output-dir>/product-guest
 

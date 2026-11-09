@@ -195,41 +195,56 @@ func (g *Gateway) Complete(ctx context.Context, route Route, req Request) (Respo
 	if err != nil {
 		return Response{}, err
 	}
-	if err = g.admit(route.Key); err != nil {
+	var out Response
+	err = g.exchange(ctx, route.Key, target, body, headers, func(raw []byte) (err error) {
+		out, err = parse(raw)
+		return err
+	})
+	if err != nil {
 		return Response{}, err
+	}
+	return out, nil
+}
+
+// exchange is one logical upstream call with the bounded retries and the
+// breaker of Complete. parse runs on a 2xx body; its failure means the provider
+// did work the gateway cannot account for, hence ErrOutcomeUnknown.
+func (g *Gateway) exchange(ctx context.Context, breakerKey, target string, body []byte, headers map[string]string, parse func([]byte) error) error {
+	if err := g.admit(breakerKey); err != nil {
+		return err
 	}
 	var last error
 	for attempt := 0; attempt < g.cfg.MaxAttempts; attempt++ {
 		if attempt > 0 {
-			if err = g.cfg.Sleep(ctx, g.cfg.Backoff<<(attempt-1)); err != nil {
-				g.record(route.Key, true) // release a half-open probe; not a provider fault
-				return Response{}, err
+			if err := g.cfg.Sleep(ctx, g.cfg.Backoff<<(attempt-1)); err != nil {
+				g.record(breakerKey, true) // release a half-open probe; not a provider fault
+				return err
 			}
 		}
-		out, retry, err := g.once(ctx, target, body, headers, parse)
+		retry, err := g.once(ctx, target, body, headers, parse)
 		switch {
 		case err == nil:
-			g.record(route.Key, true)
-			return out, nil
+			g.record(breakerKey, true)
+			return nil
 		case errors.Is(err, ErrRejected):
-			g.record(route.Key, true) // the provider is healthy; the request was wrong
-			return Response{}, err
+			g.record(breakerKey, true) // the provider is healthy; the request was wrong
+			return err
 		}
 		last = err
 		if !retry {
 			break
 		}
 	}
-	g.record(route.Key, false)
-	return Response{}, last
+	g.record(breakerKey, false)
+	return last
 }
 
-func (g *Gateway) once(ctx context.Context, target string, body []byte, headers map[string]string, parse func([]byte) (Response, error)) (Response, bool, error) {
+func (g *Gateway) once(ctx context.Context, target string, body []byte, headers map[string]string, parse func([]byte) error) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, g.cfg.Timeout)
 	defer cancel()
 	hr, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(body))
 	if err != nil {
-		return Response{}, false, ErrInvalid
+		return false, ErrInvalid
 	}
 	hr.Header.Set("Content-Type", "application/json")
 	for k, v := range headers {
@@ -239,28 +254,27 @@ func (g *Gateway) once(ctx context.Context, target string, body []byte, headers 
 	if err != nil {
 		if ctx.Err() != nil || isTimeout(err) {
 			// Sent, answer never seen: do not retry, do not claim zero cost.
-			return Response{}, false, ErrOutcomeUnknown
+			return false, ErrOutcomeUnknown
 		}
-		return Response{}, true, ErrUnavailable // could not connect; nothing was accepted
+		return true, ErrUnavailable // could not connect; nothing was accepted
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, g.cfg.MaxResponse+1))
 	if err != nil || int64(len(raw)) > g.cfg.MaxResponse {
-		return Response{}, false, ErrOutcomeUnknown
+		return false, ErrOutcomeUnknown
 	}
 	switch {
 	case resp.StatusCode == http.StatusTooManyRequests:
-		return Response{}, true, ErrRateLimited
+		return true, ErrRateLimited
 	case resp.StatusCode >= 500:
-		return Response{}, true, ErrUnavailable
+		return true, ErrUnavailable
 	case resp.StatusCode >= 400:
-		return Response{}, false, fmt.Errorf("%w: status %d", ErrRejected, resp.StatusCode)
+		return false, fmt.Errorf("%w: status %d", ErrRejected, resp.StatusCode)
 	}
-	out, err := parse(raw)
-	if err != nil {
-		return Response{}, false, ErrOutcomeUnknown
+	if err = parse(raw); err != nil {
+		return false, ErrOutcomeUnknown
 	}
-	return out, false, nil
+	return false, nil
 }
 
 func isTimeout(err error) bool {

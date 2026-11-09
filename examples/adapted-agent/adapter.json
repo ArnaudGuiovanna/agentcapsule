@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "command": ["/usr/local/bin/python3", "-I", "/opt/agent/agent.py"],
+  "input": "stdin",
+  "timeout_seconds": 900
+}

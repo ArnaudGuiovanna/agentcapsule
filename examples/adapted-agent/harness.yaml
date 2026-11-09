@@ -1,0 +1,8 @@
+schema: agentcapsule.harness/v1
+name: adapted-agent
+version: 1.0.0
+protocol: capsule.v1
+architecture: x86_64
+base: agentcapsule-guest/1
+entrypoint: [/agentcapsule/capsule-adapter, /agentcapsule/adapter.json]
+description: An unmodified OpenAI SDK agent run through capsule-adapter

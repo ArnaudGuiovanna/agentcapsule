@@ -36,8 +36,9 @@ func (c ServiceConfig) OpenLLM(s *controlplane.Store) (*controlplane.LLMService,
 	if err != nil {
 		return nil, err
 	}
-	// Two attempts of 50 s fit inside the bridge's 120 s call budget.
-	return controlplane.NewLLMService(accounts, llmgateway.New(llmgateway.Config{Timeout: 50 * time.Second}))
+	// Two attempts of 140 s fit inside the bridge's 300 s call budget; one
+	// attempt leaves room for a long answer from an adapted agent.
+	return controlplane.NewLLMService(accounts, llmgateway.New(llmgateway.Config{Timeout: 140 * time.Second}))
 }
 
 // EnableLLM attaches the model gateway once, like EnableTransit.

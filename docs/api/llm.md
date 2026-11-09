@@ -127,8 +127,8 @@ ledger's request key.
   must call its model to answer therefore acknowledges "working", calls the
   model, then files its result
   (see [agents-assignments.md](agents-assignments.md#deferred-result-the-working-state)).
-- **Timeouts**: 120 s in total (two attempts of 50 s); only this route extends
-  the server's write deadline.
+- **Timeouts**: 300 s in total (two attempts of 140 s); only the model routes
+  extend the server's write deadline.
 - **Errors** (enumerated codes, never a provider message): `quota_exceeded` and
   `rate_limited` (429), `rejected` (provider 4xx), `outcome_unknown` (timeout
   after sending: the reservation keeps counting; **do not** retry with the same
@@ -140,3 +140,38 @@ ledger's request key.
   `"llm": {"receipt_key": "/absolute/path/key"}`, the same private 32-byte key as
   the API (provider credentials are encrypted under a key derived from it).
   Without it, the bridge answers `unavailable`.
+
+## Native requests from the model endpoint
+
+`POST /v1/llm/forward`, on the same channel, carries a request exactly as the
+agent's own SDK wrote it to the model endpoint of
+[capsule-adapter](../adapter.md):
+
+```json
+{"alias":"gpt-4o","dialect":"openai","body":{"model":"gpt-4o","messages":[...],"tools":[...]}}
+```
+
+`dialect` is `openai` (Chat Completions) or `anthropic` (Messages). The answer
+is `{"body": <the provider's JSON answer>, "input_tokens", "output_tokens",
+"soft_budget_exceeded"}`. Identity, policy, host lock, timeouts and replay are
+those of `/v1/llm/complete`. In addition:
+
+- **The body is the agent's.** Messages, tools, images and options reach the
+  provider unchanged. The gateway sets `model` to the alias's upstream model and
+  adds the credential.
+- **Same API on both sides.** An `openai` body goes only to an
+  `openai_compatible` provider, an `anthropic` body only to an `anthropic`
+  provider. Otherwise the code is `dialect`, and the reservation is released.
+- **Refused before any reservation** (`invalid`):
+  - a stream;
+  - several choices (`n` > 1);
+  - an output cap above 1,000,000 tokens;
+  - an Anthropic body without `max_tokens`;
+  - a body that is not a JSON object with messages;
+  - a body over 960 KiB.
+- **Accounting.** The reservation is the body's size / 3 plus its output cap
+  (`max_tokens` or `max_completion_tokens`, 4,096 when absent). Settlement uses
+  the provider-reported usage; Anthropic's cached input
+  (`cache_creation_input_tokens`, `cache_read_input_tokens`) counts as input. An
+  answer that cannot be read, or that exceeds 960 KiB, was still produced: its
+  outcome is `outcome_unknown`.
