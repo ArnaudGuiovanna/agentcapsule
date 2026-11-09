@@ -76,6 +76,57 @@ a small tool-using agent written against the official OpenAI SDK. Its image
 (`Dockerfile`, pinned dependencies) contains nothing of Agent Capsule:
 `dagger call adapted-agent export --path=./build/adapted-agent`.
 
+## Agents with their own model access: the example of Pi
+
+Many agents ship their own access to models: a subscription login, API keys
+in environment variables, or a credentials file. None of it works in a
+capsule, by design. The VM has no network, and no credential belongs in the
+image or the VM. The organization's provider and key, declared once in the
+platform, replace them. The agent is configured, not modified, to use the
+model endpoint. A personal subscription login has no place here: it needs an
+interactive sign-in, would leave a token in the VM, and a personal plan is not
+meant for a shared service.
+
+[Pi](https://pi.dev), the coding agent, shows what this takes. It ignores
+`ANTHROPIC_BASE_URL` and `OPENAI_BASE_URL`, because it passes its own address to
+each SDK. Its own `models.json` points a provider at the endpoint, for either API:
+
+```json
+{"providers": {
+  "capsule-anthropic": {"baseUrl": "http://127.0.0.1:8411", "api": "anthropic-messages", "apiKey": "agentcapsule",
+    "models": [{"id": "claude-sonnet", "contextWindow": 200000, "maxTokens": 8192}]},
+  "capsule-openai": {"baseUrl": "http://127.0.0.1:8411/v1", "api": "openai-completions", "apiKey": "agentcapsule",
+    "models": [{"id": "gpt-4o", "contextWindow": 128000, "maxTokens": 8192}]}}}
+```
+
+Use `openai-completions`, not `openai-responses`: the endpoint serves Chat
+Completions, not the Responses API.
+
+`adapter.json` then runs Pi once per invocation. Pi's configuration ships in the
+image, and its sessions go to the encrypted home so that `--continue` carries
+the conversation from one invocation to the next:
+
+```json
+{
+  "version": 1,
+  "command": ["/usr/local/bin/pi", "--print", "--provider", "capsule-anthropic", "--model", "claude-sonnet",
+              "--continue", "--session-dir", "/var/lib/agent/pi-sessions"],
+  "input": "argument",
+  "env": {"PI_CODING_AGENT_DIR": "/opt/pi/agent", "PI_OFFLINE": "1", "PI_SKIP_VERSION_CHECK": "1", "PI_TELEMETRY": "0"}
+}
+```
+
+The `PI_*` variables stop Pi from reaching the network at startup (model
+catalog, version check, telemetry). The organization creates an alias named
+`claude-sonnet` (or maps it in `models`) on its Anthropic provider.
+`scripts/verify-adapter.py --pi` checks this with Pi 1.5.0, unmodified, through
+both APIs:
+- Pi reads an attached file with its own `read` tool;
+- the next invocation answers from Pi's session alone.
+
+Pi itself (Node.js and its package) still has to be packed into an image; that
+image has not run in a microVM yet.
+
 ## Configuration (`adapter.json`)
 
 Strict JSON, unknown fields refused, at most 64 KiB.
@@ -194,7 +245,7 @@ and model it chooses.
 | Check | What it shows |
 |---|---|
 | `go test ./internal/agentadapter` | The protocol side: acknowledgment, order, replay, files, revocation, the real command runner. The endpoint side: forwarding, alias mapping, stream replay, the error shapes of both APIs. |
-| `scripts/verify-adapter.py` | The official OpenAI and Anthropic Python SDKs (pinned in `scripts/adapter-sdk-requirements.txt`), with and without streaming, with tools, through the endpoint and the platform's gateway code to a real provider (a local Ollama serves both APIs), then an unmodified agent answering an invocation from an attached file. |
+| `scripts/verify-adapter.py` | The official OpenAI and Anthropic Python SDKs (pinned in `scripts/adapter-sdk-requirements.txt`), with and without streaming, with tools, through the endpoint and the platform's gateway code to a real provider (a local Ollama serves both APIs). Then an unmodified agent answers an invocation from an attached file. With `--pi`, Pi does the same through both APIs and keeps its session across invocations. |
 | `scripts/verify-postgres.py` | The platform side of `/v1/llm/forward`: placement, reservation, settlement, budget refusal, API mismatch. |
 | `scripts/verify-product-guest.py --adapted-harness` | The example image, adapted, imported and run in a jailed microVM: its SDK reaches a host model through the loopback endpoint, reads an attached file with a tool call, answers again after sleep and wake, and every call is metered. |
 

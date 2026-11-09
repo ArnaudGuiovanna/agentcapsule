@@ -291,3 +291,98 @@ func TestLiveUnmodifiedAgentAnswersAnInvocation(t *testing.T) {
 		t.Fatal("the agent did not read the file through a tool call", answer, p.calls)
 	}
 }
+
+// Pi, the coding agent, unmodified: configured only through its own files
+// (models.json pointing a provider at the endpoint, offline settings), run once
+// per invocation by the adapter. It must read the attached file with its own
+// read tool through the organization's model, then remember the conversation
+// in the next invocation (its session lives in the agent's home).
+//
+//	AGENTCAPSULE_ADAPTER_PI        the pi executable
+//	AGENTCAPSULE_ADAPTER_NODE_DIR  directory holding the node it runs on
+func TestLivePiAnswersInvocations(t *testing.T) {
+	base, model, _ := liveEnv(t)
+	pi, nodeDir := os.Getenv("AGENTCAPSULE_ADAPTER_PI"), os.Getenv("AGENTCAPSULE_ADAPTER_NODE_DIR")
+	if pi == "" || nodeDir == "" {
+		t.Skip("AGENTCAPSULE_ADAPTER_PI and AGENTCAPSULE_ADAPTER_NODE_DIR select the Pi check")
+	}
+	for _, c := range []struct{ provider, model, alias string }{
+		{"capsule-anthropic", "claude-capsule", "an"},
+		{"capsule-openai", "gpt-capsule", "oa"},
+	} {
+		t.Run(c.provider, func(t *testing.T) {
+			p := &livePlatform{gatewayForwarder: &gatewayForwarder{g: llmgateway.New(llmgateway.Config{Timeout: 3 * time.Minute}), base: base, model: model},
+				file: []byte("The access code of the vault is 4417.\n")}
+			dir := t.TempDir()
+			cfg, err := ParseConfig([]byte(`{"version":1,"command":["` + pi + `","--print","--provider","` + c.provider + `","--model","` + c.model + `",` +
+				`"--tools","read","--continue","--session-dir","/placeholder"],"input":"argument","timeout_seconds":600,` +
+				`"models":{"claude-capsule":"an","gpt-capsule":"oa"}}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg.ModelAddress = serveEndpoint(t, cfg, p)
+			home := t.TempDir()
+			cfg.Command[len(cfg.Command)-1] = filepath.Join(home, "pi-sessions")
+			// Pi's own configuration, as an image would ship it: a provider for
+			// each API, both pointing at the adapter's endpoint.
+			agentDir := filepath.Join(dir, "pi-agent")
+			if err = os.MkdirAll(agentDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			models := `{"providers":{
+  "capsule-anthropic":{"baseUrl":"http://` + cfg.ModelAddress + `","api":"anthropic-messages","apiKey":"agentcapsule",
+    "models":[{"id":"claude-capsule","contextWindow":32000,"maxTokens":1024}]},
+  "capsule-openai":{"baseUrl":"http://` + cfg.ModelAddress + `/v1","api":"openai-completions","apiKey":"agentcapsule",
+    "models":[{"id":"gpt-capsule","contextWindow":32000,"maxTokens":1024}]}}}`
+			if err = os.WriteFile(filepath.Join(agentDir, "models.json"), []byte(models), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg.Env = map[string]string{"PATH": nodeDir + ":/usr/local/bin:/usr/bin:/bin", "PI_CODING_AGENT_DIR": agentDir,
+				"PI_OFFLINE": "1", "PI_SKIP_VERSION_CHECK": "1", "PI_TELEMETRY": "0"}
+			store, err := harnessstore.Open(t.Context(), filepath.Join(dir, "adapter.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			engine, err := New("a", home, store, p, CommandRunner(cfg, home))
+			if err != nil {
+				t.Fatal(err)
+			}
+			ask := func(id, text string, refs ...capsuleprotocol.AttachmentRef) string {
+				t.Helper()
+				b, _ := json.Marshal(capsuleprotocol.Invocation{Kind: "message.user", OperationID: "op-" + id, Attachments: refs,
+					Mandate: capsuleprotocol.InstructionMandate{ID: "grant", MaxAgentRequests: 1, ExpiresAt: time.Now().Add(time.Hour)},
+					Content: []capsuleprotocol.TextContent{{Type: "text", Text: text}}})
+				e := harnessstore.Event{ID: id, Subjects: []string{"agent/a", "event/" + id}, Body: b}
+				if _, err := store.Apply(t.Context(), e, func(ctx context.Context, tx harnessstore.SQL) ([]byte, error) { return engine.Handle(ctx, e, tx) }); err != nil {
+					t.Fatal(err)
+				}
+				before := len(p.completions)
+				if _, err := engine.Step(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				if len(p.completions) != before+1 || p.completions[before].Outcome != "completed" {
+					t.Fatal("Pi did not answer", p.completions)
+				}
+				return p.completions[before].Content[0].Text
+			}
+			ref := capsuleprotocol.AttachmentRef{ID: "att_0123456789abcdef0123456789abcdef", Name: "vault.txt", MediaType: "text/plain", Size: int64(len(p.file)),
+				SHA256: strings.Repeat("0", 64)}
+			first := ask("pi-1", "Read the attached file with the read tool, then tell me the access code of the vault.", ref)
+			t.Log("Pi, first answer:", first, "model calls:", p.calls)
+			if !strings.Contains(first, "4417") || p.calls < 2 {
+				t.Fatal("Pi did not read the attached file through a tool call", first, p.calls)
+			}
+			calls := p.calls
+			second := ask("pi-2", "Without reading any file again, what was the access code I asked you about?")
+			t.Log("Pi, second answer:", second, "model calls:", p.calls-calls)
+			if !strings.Contains(second, "4417") {
+				t.Fatal("Pi did not keep its session across invocations", second)
+			}
+			sessions, _ := filepath.Glob(filepath.Join(home, "pi-sessions", "*"))
+			if len(sessions) == 0 {
+				t.Fatal("no Pi session in the agent's home")
+			}
+		})
+	}
+}
