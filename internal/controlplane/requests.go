@@ -3,6 +3,7 @@ package controlplane
 import (
 	"context"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -92,7 +93,11 @@ func (s *Store) submitPayload(ctx context.Context, callerAgentID, key string, in
 		return Receipt{}, ErrMandate
 	}
 	if payload != nil {
-		ref, err := payload.transit.put(ctx, tx, "request", receipt.RequestID, []string{callerAgentID, recipient.ID}, payload.body)
+		owners, err := delegationOwners(ctx, tx, input.MandateID, sender, recipient)
+		if err != nil {
+			return Receipt{}, err
+		}
+		ref, err := payload.transit.putOwned(ctx, tx, "request", receipt.RequestID, []string{callerAgentID, recipient.ID}, owners, payload.body)
 		if err != nil {
 			return Receipt{}, err
 		}
@@ -204,4 +209,30 @@ func (s *Store) QuiesceAgent(ctx context.Context, callerUserID, agentID string) 
 		return err
 	}
 	return commit(ctx, tx)
+}
+
+// delegationOwners binds the content of an exchange between agents of an
+// organization to the person whose invocation granted the mandate: private
+// content belongs to whoever asked, not to whoever administers the agents
+// (D-02), on both sides. Agents of a person keep their owner (nil map).
+func delegationOwners(ctx context.Context, tx pgx.Tx, mandateID string, parties ...agent) (map[string]string, error) {
+	if !slices.ContainsFunc(parties, func(a agent) bool { return a.Tenant != "" }) {
+		return nil, nil
+	}
+	var requester string
+	err := tx.QueryRow(ctx, `SELECT coalesce(o.requested_by_principal_id,'') FROM owner_instructions i
+        JOIN platform_operations o ON o.id=i.operation_id WHERE i.mandate_id=$1`, mandateID).Scan(&requester)
+	if errors.Is(err, pgx.ErrNoRows) || err == nil && requester == "" {
+		return nil, ErrMandate
+	}
+	if err != nil {
+		return nil, err
+	}
+	owners := map[string]string{}
+	for _, a := range parties {
+		if a.Tenant != "" {
+			owners[a.ID] = requester
+		}
+	}
+	return owners, nil
 }

@@ -77,7 +77,15 @@ func (s *Store) replyPayload(ctx context.Context, callerAgentID, requestID, key 
 		return Receipt{}, ErrTransition
 	}
 	if payload != nil {
-		ref, err := payload.transit.put(ctx, tx, "reply", requestID, []string{r.Sender, r.Recipient}, payload.body)
+		var mandate string
+		if err := tx.QueryRow(ctx, "SELECT mandate_id FROM agent_requests WHERE id=$1", requestID).Scan(&mandate); err != nil {
+			return Receipt{}, err
+		}
+		owners, err := delegationOwners(ctx, tx, mandate, agents[r.Sender], agents[r.Recipient])
+		if err != nil {
+			return Receipt{}, err
+		}
+		ref, err := payload.transit.putOwned(ctx, tx, "reply", requestID, []string{r.Sender, r.Recipient}, owners, payload.body)
 		if err != nil {
 			return Receipt{}, err
 		}

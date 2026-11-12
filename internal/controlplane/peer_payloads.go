@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"strings"
 	"unicode/utf8"
 
@@ -172,19 +173,23 @@ func (t *Transit) readPeerContent(ctx context.Context, tx pgx.Tx, r requestRow, 
 	}
 	// Bind both kind/reference and the exact set of current participants before
 	// decryption. Swapping valid payload references must never reveal content.
+	owners, err := peerOwners(ctx, tx, r, agents)
+	if err != nil {
+		return peerContent{}, err
+	}
 	var bound bool
-	err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM transit_payloads WHERE id=$1 AND kind=$2 AND ref_id=$3 AND content_hash=$4)
+	err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM transit_payloads WHERE id=$1 AND kind=$2 AND ref_id=$3 AND content_hash=$4)
         AND (SELECT count(*)=2 FROM transit_parties WHERE payload_id=$1)
         AND EXISTS(SELECT 1 FROM transit_parties WHERE payload_id=$1 AND agent_id=$5 AND owner_user_id=$6)
         AND EXISTS(SELECT 1 FROM transit_parties WHERE payload_id=$1 AND agent_id=$7 AND owner_user_id=$8)`,
-		ref, kind, r.ID, hash, r.Sender, agents[r.Sender].Owner, r.Recipient, agents[r.Recipient].Owner).Scan(&bound)
+		ref, kind, r.ID, hash, r.Sender, owners[r.Sender], r.Recipient, owners[r.Recipient]).Scan(&bound)
 	if err != nil {
 		return peerContent{}, err
 	}
 	if !bound {
 		return peerContent{}, ErrTransitPayload
 	}
-	parties := []transitParty{{r.Sender, agents[r.Sender].Owner}, {r.Recipient, agents[r.Recipient].Owner}}
+	parties := []transitParty{{r.Sender, owners[r.Sender]}, {r.Recipient, owners[r.Recipient]}}
 	if parties[0].Agent > parties[1].Agent {
 		parties[0], parties[1] = parties[1], parties[0]
 	}
@@ -202,4 +207,36 @@ func (t *Transit) readPeerContent(ctx context.Context, tx pgx.Tx, r requestRow, 
 		return peerContent{}, ErrTransitPayload
 	}
 	return content, nil
+}
+
+// peerOwners names the identity each party of a request is bound to: the owner
+// of an agent of a person, or, between agents of an organization, the person
+// whose invocation granted the request's mandate, who must still belong to the
+// organization (D-02).
+func peerOwners(ctx context.Context, tx pgx.Tx, r requestRow, agents map[string]agent) (map[string]string, error) {
+	sender, recipient := agents[r.Sender], agents[r.Recipient]
+	if sender.Tenant == "" && recipient.Tenant == "" {
+		return map[string]string{r.Sender: sender.Owner, r.Recipient: recipient.Owner}, nil
+	}
+	var mandate string
+	if err := tx.QueryRow(ctx, "SELECT mandate_id FROM agent_requests WHERE id=$1", r.ID).Scan(&mandate); err != nil {
+		return nil, err
+	}
+	owners, err := delegationOwners(ctx, tx, mandate, sender, recipient)
+	if errors.Is(err, ErrMandate) {
+		return nil, ErrTransitPayload
+	}
+	if err != nil {
+		return nil, err
+	}
+	for id, owner := range owners {
+		var known bool
+		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM principals WHERE tenant_id=$1 AND id=$2)`, agents[id].Tenant, owner).Scan(&known); err != nil {
+			return nil, err
+		}
+		if !known {
+			return nil, ErrNotFound
+		}
+	}
+	return owners, nil
 }
