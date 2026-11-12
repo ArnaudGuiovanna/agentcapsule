@@ -40,6 +40,8 @@ def main():
                    help="python-echo package directory written by scripts/build-python-harness.py (<output>/package)")
     p.add_argument("--adapted-harness", type=Path, required=True,
                    help="adapted-agent package directory written by scripts/build-adapted-harness.py (<output>/package)")
+    p.add_argument("--a2a-harness", type=Path, required=True,
+                   help="a2a-agent package directory written by scripts/build-a2a-harness.py (<output>/package)")
     p.add_argument("--pi-harness", type=Path,
                    help="optional pi-agent package written by scripts/build-pi-harness.py (<output>/adapted/package): Pi in a VM on a real model")
     p.add_argument("--ollama-url", help="OpenAI-compatible base URL of the host's model server for --pi-harness, e.g. http://127.0.0.1:11434/v1")
@@ -71,6 +73,7 @@ def main():
         assert sha(ROOT / name) == expected, "rebuild guest after source changes: " + name
     python_package = {name: sha(a.python_harness / name) for name in ["harness.yaml", "checksums.json", "harness.ext4"]}
     adapted_package = {name: sha(a.adapted_harness / name) for name in ["harness.yaml", "checksums.json", "harness.ext4"]}
+    a2a_package = {name: sha(a.a2a_harness / name) for name in ["harness.yaml", "checksums.json", "harness.ext4"]}
     pi_package = {name: sha(a.pi_harness / name) for name in ["harness.yaml", "checksums.json", "harness.ext4"]} if a.pi_harness else None
     out = a.output
     out.mkdir(parents=True, exist_ok=False, mode=0o700)
@@ -93,6 +96,7 @@ def main():
                    "upstream_sha256": sha(a.upstream_firecracker), "native_header_sha256": sha(native / "libcryptsetup.h"),
                    "python_harness_sha256": python_package,
                    "adapted_harness_sha256": adapted_package,
+                   "a2a_harness_sha256": a2a_package,
                    "pi_harness_sha256": pi_package, "pi_model_server": {"url": a.ollama_url, "model": a.ollama_model} if a.pi_harness else None,
                    "scope": __doc__}
     library = Path("/usr/lib/x86_64-linux-gnu/libcryptsetup.so.12")
@@ -100,7 +104,8 @@ def main():
     (out / "environment.json").write_text(json.dumps(environment, indent=2) + "\n")
     env = {k: v for k, v in os.environ.items() if not k.startswith(("AGENTCAPSULE_", "AC_RUNTIME_CHILD_", "CAPSULE_CRASH_"))}
     env.update(AGENTCAPSULE_KVM_CONFIG=str(out / "config.json"), AGENTCAPSULE_KVM_PYTHON_HARNESS=str(a.python_harness),
-               AGENTCAPSULE_KVM_ADAPTED_HARNESS=str(a.adapted_harness), CPATH=str(native), CGO_ENABLED="1",
+               AGENTCAPSULE_KVM_ADAPTED_HARNESS=str(a.adapted_harness), AGENTCAPSULE_KVM_A2A_HARNESS=str(a.a2a_harness),
+               CPATH=str(native), CGO_ENABLED="1",
                GOPATH=str(out / "go-path"), GOCACHE=str(out / "go-cache"), TMPDIR=str(out / "tmp"))
     if a.pi_harness:
         env.update(AGENTCAPSULE_KVM_PI_HARNESS=str(a.pi_harness), AGENTCAPSULE_KVM_OLLAMA_URL=a.ollama_url, AGENTCAPSULE_KVM_OLLAMA_MODEL=a.ollama_model)
@@ -172,7 +177,8 @@ def main():
             required_worker = {"TestProductWorkerProvisioningAndEncryptedWake", "TestProductWorkerTwoOwnersPrivateExchange",
                 "TestProductWorkerContractOutagePreservesCensusAndMaintenance", "TestProductWorkerTenantAsyncInvocationWithFileAndModel",
                 "TestProductWorkerTenantRunsAnImportedHarness", "TestProductWorkerTenantUpgradesAndRollsBackAnImportedHarness",
-                "TestProductWorkerTenantRunsAPythonHarness", "TestProductWorkerTenantRunsAnAdaptedAgent", "TestProductWorkerTwoOrganizationsStayIsolated"}
+                "TestProductWorkerTenantRunsAPythonHarness", "TestProductWorkerTenantRunsAnAdaptedAgent", "TestProductWorkerTwoOrganizationsStayIsolated",
+                "TestProductWorkerTenantAgentsTalkOverA2A"}
             if a.pi_harness:
                 required_worker.add("TestProductWorkerTenantRunsPiOnOllama")
             assert required_worker <= worker_passed, "missing required product worker scenario"
@@ -197,9 +203,10 @@ def main():
             "harness_upgrade_rollback": "passed" if "TestProductWorkerTenantUpgradesAndRollsBackAnImportedHarness" in worker_passed else "not_run",
             "python_harness": "passed" if "TestProductWorkerTenantRunsAPythonHarness" in worker_passed else "not_run",
             "adapted_agent": "passed" if "TestProductWorkerTenantRunsAnAdaptedAgent" in worker_passed else "not_run",
+            "a2a_between_agents": "passed" if "TestProductWorkerTenantAgentsTalkOverA2A" in worker_passed else "not_run",
             "pi_on_real_model": "passed" if "TestProductWorkerTenantRunsPiOnOllama" in worker_passed else "not_run",
             "two_organizations_isolated": "passed" if "TestProductWorkerTwoOrganizationsStayIsolated" in worker_passed else "not_run",
-            "scope": "Real jailed encrypted guests and separate unprivileged harness processes. When worker_tests is nonempty, all mandatory worker scenarios passed: contract outage/recovery while preserving the physical census, credential replacement and forced retirement after a blocked quiesce; provisioning and encrypted wake; two owners/agents created via HTTP, manual consent while recipient sleeps, private reply and owner inbox, distinct persistent guest stores across clean sleep/wake, stale control rejection, queued-request cancellation and physical deletion; a tenant agent (delegated identity) acknowledging an invocation as working, then reading its encrypted attachment and calling its model over the platform channel and posting the answer; two tenant agents running a harness imported from an OCI registry, sharing one read-only cached image attached as a second drive and run chrooted by capsule-init; a tenant agent upgraded to another imported release and rolled back across sleep/wake with its encrypted volume, each change applied at the next boot, then the unused deprecated package evicted from the cache while the running release stays; a harness written in Python (built off-host from a pinned base image) imported and run in the guest, answering from its own SQLite state kept across sleep/wake and posting a deferred model answer over the platform channel; an ordinary agent image (Python, the official OpenAI SDK, a tool loop) adapted without change by capsule-adapter, answering invocations by running the agent, whose SDK reached the organization's model through the endpoint on the guest loopback and the platform channel (tools forwarded, every call metered), reading an attached file with its own tool call and answering again after sleep/wake; when pi_on_real_model passed, Pi (the coding agent, unmodified, packed from an installed release) running in a microVM on the host's real model server, reading an attached file with its own read tool and answering from its session in the next invocation and again after sleep/wake; two organizations, each trusting its own identity provider, running agents at the same time in separate jailed VMs (distinct users, volumes and keys), with every resource of the other organization answering 404, its model alias unusable and its files impossible to attach, and lists and audit trails limited to one organization. Direct setup covers installation only. Nonempty conformance_tests separately establish the P1 permanent-seal projection on local mTLS/SQLite, PostgreSQL and a real host registry: same inode, future seal revalidation, missing-file/busy-lock/restart refusals. Its initial placements and VMM retirement are fixtures, not a physical replay of the trace. No concurrent in-flight writer crash, restore protocol or complete MVP validation is claimed."}, indent=2) + "\n")
+            "scope": "Real jailed encrypted guests and separate unprivileged harness processes. When worker_tests is nonempty, all mandatory worker scenarios passed: contract outage/recovery while preserving the physical census, credential replacement and forced retirement after a blocked quiesce; provisioning and encrypted wake; two owners/agents created via HTTP, manual consent while recipient sleeps, private reply and owner inbox, distinct persistent guest stores across clean sleep/wake, stale control rejection, queued-request cancellation and physical deletion; a tenant agent (delegated identity) acknowledging an invocation as working, then reading its encrypted attachment and calling its model over the platform channel and posting the answer; two tenant agents running a harness imported from an OCI registry, sharing one read-only cached image attached as a second drive and run chrooted by capsule-init; a tenant agent upgraded to another imported release and rolled back across sleep/wake with its encrypted volume, each change applied at the next boot, then the unused deprecated package evicted from the cache while the running release stays; a harness written in Python (built off-host from a pinned base image) imported and run in the guest, answering from its own SQLite state kept across sleep/wake and posting a deferred model answer over the platform channel; an ordinary agent image (Python, the official OpenAI SDK, a tool loop) adapted without change by capsule-adapter, answering invocations by running the agent, whose SDK reached the organization's model through the endpoint on the guest loopback and the platform channel (tools forwarded, every call metered), reading an attached file with its own tool call and answering again after sleep/wake; two agents of one organization, each an A2A server written with the official A2A Go SDK and run unchanged by capsule-adapter, one asking the other over A2A through the adapter's endpoint on its guest loopback (Agent Card, a peer request under the invocation's mandate, the answer as the task's artifact), refused while the recipient is not discoverable, delivered at once under the auto inbound policy, and waking the recipient when it sleeps; when pi_on_real_model passed, Pi (the coding agent, unmodified, packed from an installed release) running in a microVM on the host's real model server, reading an attached file with its own read tool and answering from its session in the next invocation and again after sleep/wake; two organizations, each trusting its own identity provider, running agents at the same time in separate jailed VMs (distinct users, volumes and keys), with every resource of the other organization answering 404, its model alias unusable and its files impossible to attach, and lists and audit trails limited to one organization. Direct setup covers installation only. Nonempty conformance_tests separately establish the P1 permanent-seal projection on local mTLS/SQLite, PostgreSQL and a real host registry: same inode, future seal revalidation, missing-file/busy-lock/restart refusals. Its initial placements and VMM retirement are fixtures, not a physical replay of the trace. No concurrent in-flight writer crash, restore protocol or complete MVP validation is claimed."}, indent=2) + "\n")
     finally:
         cleanup_errors = []
         if pgroot is not None:

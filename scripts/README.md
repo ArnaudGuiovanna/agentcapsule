@@ -46,6 +46,7 @@ Do not run `go test ./...` at the repository root with sources outside
 | `build-control-guest.py` | Builds the disposable authenticated SQL harness fixture |
 | `build-python-harness.py` | Builds the python-echo harness package with plain Docker (pinned base image, then `pack`); the reference build is the Dagger module (`dagger call python-echo`). Its `package/` directory is required by `verify-product-guest.py --python-harness` |
 | `build-adapted-harness.py` | Packs an ordinary agent image (examples/adapted-agent by default) with `capsule-adapter`, using plain Docker; the reference build is `dagger call adapted-agent` (any image: `dagger call adapt`). Its `package/` directory is required by `verify-product-guest.py --adapted-harness` |
+| `build-a2a-harness.py` | Packs examples/a2a-agent (an A2A server agent written with the official A2A Go SDK) with `capsule-adapter`, without Docker: two static binaries and the adapter's configuration. Its `package/` directory is required by `verify-product-guest.py --a2a-harness` |
 | `build-pi-harness.py` | Packs an installed Pi release and the Node.js it runs on as examples/pi-agent (Debian base, then `build-adapted-harness.py`); a test build that depends on the local installation. Its `adapted/package` directory feeds `verify-product-guest.py --pi-harness` |
 | `openapi-requirements.txt` | Python requirements for validating the OpenAPI specification |
 | `adapter-sdk-requirements.txt` | Model SDKs for `verify-adapter.py`, pinned by hash |
@@ -143,6 +144,7 @@ sudo python3 scripts/verify-product-guest.py --go <path-to-go> \
   --native-headers <tools-dir>/guest-build/usr/include \
   --python-harness <python-harness-build-dir>/package \
   --adapted-harness <adapted-harness-build-dir>/package \
+  --a2a-harness <a2a-harness-build-dir>/package \
   [--pi-harness <pi-harness-build-dir>/adapted/package \
    --ollama-url http://127.0.0.1:11434/v1 --ollama-model <model with tool calling>] \
   --pg-bin <postgres-bin-dir> --pg-user <non-root-user> \

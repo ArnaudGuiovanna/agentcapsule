@@ -222,3 +222,85 @@ func TestProductWorkerTenantRunsPiOnOllama(t *testing.T) {
 		t.Fatal("Pi lost its session across sleep and wake", third)
 	}
 }
+
+// Two agents of one organization, each an A2A server written with the official
+// A2A Go SDK (examples/a2a-agent, packed by scripts/build-a2a-harness.py) and
+// run unchanged by capsule-adapter, talk over A2A from their own microVMs.
+// Asked by bob, agent a resolves b's Agent Card at the adapter's A2A endpoint
+// on its loopback and sends b a message: a peer request under the invocation's
+// mandate, delivered to b's VM, where b's adapter sends it to b's server as one
+// message. b's answer comes back to a as the task's artifact, and a answers
+// bob with it. b has no card until the organization makes it discoverable, and
+// it accepts requests at once only under the "auto" inbound policy. Asked again
+// while b sleeps, the request wakes b.
+func TestProductWorkerTenantAgentsTalkOverA2A(t *testing.T) {
+	pkg := os.Getenv("AGENTCAPSULE_KVM_A2A_HARNESS")
+	if pkg == "" {
+		t.Fatal("AGENTCAPSULE_KVM_A2A_HARNESS must name the a2a-agent package (verify-product-guest.py --a2a-harness)")
+	}
+	l := newRegistryLab(t)
+	ref := l.importPackage(pkg, "acme/a2a-agent", "1.0.0")
+	a := l.createOn("a2a-a", "a2a-agent", "1.0.0").AgentID
+	b := l.createOn("a2a-b", "a2a-agent", "1.0.0").AgentID
+	for _, id := range []string{a, b} {
+		l.bootsFrom(id, ref, 2)
+	}
+	exchanges := func() map[string]int {
+		t.Helper()
+		rows, err := l.db.Query(t.Context(), "SELECT state,count(*) FROM agent_requests WHERE sender_agent_id=$1 AND recipient_agent_id=$2 GROUP BY state", a, b)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		out := map[string]int{}
+		for rows.Next() {
+			var state string
+			var n int
+			if err = rows.Scan(&state, &n); err != nil {
+				t.Fatal(err)
+			}
+			out[state] = n
+		}
+		return out
+	}
+
+	t.Log("stage: the adapter sends an invocation to the agent's own A2A server")
+	if got := l.ask(b, "a2a-direct", "hello"); !strings.Contains(got, "echo: hello") {
+		t.Fatal("b did not answer through its A2A server", got)
+	}
+
+	t.Log("stage: a hidden agent has no card")
+	if got := l.ask(a, "a2a-hidden", "ask "+b+" are you there?"); !strings.Contains(got, "could not ask "+b) {
+		t.Fatal("a reached an agent that is not discoverable", got)
+	}
+	if n := exchanges(); len(n) != 0 {
+		t.Fatal("a request reached a hidden agent", n)
+	}
+
+	t.Log("stage: a asks b over A2A")
+	l.request(l.owner(), "PUT", "/v1/agents/"+b+"/directory", "b-visible", map[string]any{"visible": true,
+		"description": "Answers with the text it receives.", "skills": []int{10301}}, 200, nil)
+	l.request(l.owner(), "PUT", "/v1/agents/"+b+"/inbound", "b-auto", map[string]string{"mode": "auto"}, 200, nil)
+	question := "what is the capital of France?"
+	if got := l.ask(a, "a2a-ask", "ask "+b+" "+question); !strings.Contains(got, b+" answered: echo: "+question) {
+		t.Fatal("a did not get b's answer over A2A", got)
+	}
+	if n := exchanges(); len(n) != 1 || n["REPLIED"] != 1 {
+		t.Fatal("the exchange is not one replied request", n)
+	}
+
+	t.Log("stage: a request wakes the agent it is for")
+	l.lifecycle(b, "sleep", "a2a-b-sleep")
+	if _, ok := l.runs(1)[a]; !ok {
+		t.Fatal("a stopped with b")
+	}
+	if got := l.ask(a, "a2a-wake", "ask "+b+" are you awake?"); !strings.Contains(got, b+" answered: echo: are you awake?") {
+		t.Fatal("a did not get an answer from a sleeping b", got)
+	}
+	if _, ok := l.runs(2)[b]; !ok {
+		t.Fatal("b did not wake for the request")
+	}
+	if n := exchanges(); len(n) != 1 || n["REPLIED"] != 2 {
+		t.Fatal("exchanges", n)
+	}
+}

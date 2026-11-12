@@ -306,6 +306,13 @@ SDK's server, a framework's A2A endpoint). `server` in `adapter.json` replaces
 - **One job at a time**, as with a command: the adapter sends the next message
   once the previous task has ended.
 
+[examples/a2a-agent](../examples/a2a-agent) is such an agent: a Go program
+written with the official A2A Go SDK that answers with the text it receives,
+or, for `ask <agent> <question>`, asks that agent through
+`AGENTCAPSULE_A2A_URL` and answers with its reply. It needs no base image:
+`scripts/build-a2a-harness.py` packs its static binary with the adapter,
+without Docker.
+
 ## Model endpoint
 
 | Path | API |
@@ -379,8 +386,8 @@ SDK's server, a framework's A2A endpoint). `server` in `adapter.json` replaces
 |---|---|
 | `go test ./internal/agentadapter` | The protocol side: acknowledgment, order, replay, files, revocation, the real command runner. The endpoint side: forwarding, alias mapping, stream replay, the error shapes of both APIs. The A2A side, driven by the official A2A Go SDK (v2.8.0): cards and discovery, a request followed from consent to its reply, a blocking message, outcomes without a reply, and every refusal. Server agents, built with the SDK's server: answers, failures and requests for input, a real server process supervised through a crash and a restart, and a server agent that asks another agent over A2A while it answers an invocation. |
 | `scripts/verify-adapter.py` | The official OpenAI and Anthropic Python SDKs (pinned in `scripts/adapter-sdk-requirements.txt`), with and without streaming, with tools, through the endpoint and the platform's gateway code to a real provider (a local Ollama serves both APIs). Then an unmodified agent answers an invocation from an attached file. With `--pi`, Pi does the same through both APIs and keeps its session across invocations. |
-| `scripts/verify-postgres.py` | The platform side of `/v1/llm/forward`: placement, reservation, settlement, budget refusal, API mismatch. The reads behind the A2A endpoint: cards follow the recipient rules, a request's state is its sender's only. |
-| `scripts/verify-product-guest.py --adapted-harness` | The example image, adapted, imported and run in a jailed microVM: its SDK reaches a host model through the loopback endpoint, reads an attached file with a tool call, answers again after sleep and wake, and every call is metered. With `--pi-harness`, Pi does the same on a real model and keeps its session across sleep and wake. |
+| `scripts/verify-postgres.py` | The platform side of `/v1/llm/forward`: placement, reservation, settlement, budget refusal, API mismatch. The reads behind the A2A endpoint: cards follow the recipient rules, a request's state is its sender's only, and both cross capsule-init's bridge. The inbound policy an organization sets on an agent. The example A2A agent, against the official SDK's client and server. |
+| `scripts/verify-product-guest.py --adapted-harness` | The example image, adapted, imported and run in a jailed microVM: its SDK reaches a host model through the loopback endpoint, reads an attached file with a tool call, answers again after sleep and wake, and every call is metered. With `--pi-harness`, Pi does the same on a real model and keeps its session across sleep and wake. With `--a2a-harness`, two example A2A agents in their own microVMs: one asks the other over A2A, refused while the other is hidden, answered once it is discoverable under the `auto` policy, and again after it went to sleep, which the request wakes. |
 
 ```bash
 python -m venv /tmp/sdk && /tmp/sdk/bin/pip install --require-hashes --only-binary=:all: -r scripts/adapter-sdk-requirements.txt

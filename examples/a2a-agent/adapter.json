@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "server": {
+    "command": ["/opt/agent/a2a-agent", "-listen", "127.0.0.1:9100"],
+    "a2a_url": "http://127.0.0.1:9100",
+    "ready_seconds": 60
+  },
+  "timeout_seconds": 300
+}

@@ -91,7 +91,7 @@ a production host yet.
 |---|---|---|---|
 | INT-01 | Qualify OASF, Directory, A2A, SLIM releases; pin a compatibility matrix; private single-host services ([deploy/interop](deploy/interop)) tested in CI | Done | — |
 | INT-02 | OASF records published from PostgreSQL to the private Directory (outbox, revisions, schema refusals shown); skill search from a running agent filtered again in PostgreSQL; SDK `find_agents` | In progress | Search from a VM on KVM (with the INT-05 journey); Agent Cards move to INT-03 |
-| INT-03 | Agent Cards and a real A2A adapter: tasks, statuses, artifacts, result return. In the guest, `capsule-adapter` serves each reachable agent of the organization as an A2A 1.0 agent (Agent Card, JSON-RPC `SendMessage` and `GetTask`) mapped onto peer requests, with two platform-channel reads (card, request state), and runs agents that are A2A servers themselves, supervised, each job one message; qualified with the official A2A Go SDK on both sides and on PostgreSQL ([docs/adapter.md](docs/adapter.md#other-agents-a2a-endpoint)) | In progress | The same mapping on the platform side, for the SLIM bridge (INT-04); KVM validation with two adapted agents |
+| INT-03 | Agent Cards and a real A2A adapter: tasks, statuses, artifacts, result return. In the guest, `capsule-adapter` serves each reachable agent of the organization as an A2A 1.0 agent (Agent Card, JSON-RPC `SendMessage` and `GetTask`) mapped onto peer requests, with two platform-channel reads (card, request state), and runs agents that are A2A servers themselves, supervised, each job one message; an organization sets per agent whether requests from its other agents are delivered at once (`PUT /v1/agents/{id}/inbound`); qualified with the official A2A Go SDK on both sides and on PostgreSQL ([docs/adapter.md](docs/adapter.md#other-agents-a2a-endpoint)); KVM scenario written (two example A2A agents, `verify-product-guest.py --a2a-harness`) | In progress | Run the KVM scenario; approval of held requests by a person of the organization; the same mapping on the platform side, for the SLIM bridge (INT-04) |
 | INT-04 | Host SLIM gateway, authenticated endpoints, vsock bridge, delegation limits | Not started | All |
 | INT-05 | End-to-end flagship journey including Directory/SLIM failures | Not started | All |
 
@@ -129,6 +129,9 @@ a production host yet.
   `capsule-adapter`: one command run per invocation, or an A2A server kept running;
   it can send requests to other agents over A2A. Agents that expose a plain HTTP
   server are not supported yet.
+- Between agents of an organization, a request is delivered only if the
+  recipient's inbound policy is `auto`. Under `manual`, the default, it waits
+  for an approval that no route can give yet, until its deadline.
 - Attachments are held in API memory during upload (8 MiB each) and stored in
   PostgreSQL; there is no object storage.
 - Cancelling a `working` invocation does not stop computation already running in the
