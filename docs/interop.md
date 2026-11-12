@@ -6,16 +6,18 @@ It covers OASF records, a private AGNTCY Directory, A2A and SLIM. The platform
 publishes and searches agent records through the Directory (INT-02, see
 [Directory publication](api/agents-assignments.md#directory-publication-int-02)).
 Inside each VM, [capsule-adapter](adapter.md#other-agents-a2a-endpoint) serves
-the organization's agents as A2A agents, built on the A2A Go SDK v2.8.0 (INT-03,
-first part). Between its own endpoints (the SLIM bridge), the platform does not
-use A2A or SLIM yet (INT-03 to INT-05), so gate G2 is not reached.
+the organization's agents as A2A agents, built on the A2A Go SDK v2.8.0 (INT-03).
+Between the platform's endpoints, deliveries can cross SLIM through the
+platform's [SLIM bridge](#the-slim-bridge-int-04) (INT-04, qualified against the
+private node, not yet on KVM). Gate G2 is not reached: the flagship journey
+(INT-05) remains.
 
 ## The profile
 
 | Component | Pinned version | Role in Agent Capsule |
 | --- | --- | --- |
 | A2A | [Specification v1.0.1](https://github.com/a2aproject/A2A/releases/tag/v1.0.1), wire `1.0`, [Go SDK v2.8.0](https://github.com/a2aproject/a2a-go/releases/tag/v2.8.0) | Agent Cards and tasks between agents. Supported: JSON-RPC binding, `SendMessage`, `GetTask`, text parts and artifacts. Not advertised: REST, gRPC, streaming, push notifications, resubscription, signed cards. |
-| A2A over SLIM | [slim-a2a-go v0.5.2](https://github.com/agntcy/slim-a2a-go/tree/v0.5.2), binding `a2aslimrpc/v1` | The same A2A tasks carried over SLIM. Compiles only with A2A Go SDK v2.1.0–v2.2.0, so it lives in its own module ([a2aslim](../runtime/interop/a2aslim)) and later in the SLIM bridge process; the platform keeps v2.8.0. |
+| A2A over SLIM | [slim-a2a-go v0.5.2](https://github.com/agntcy/slim-a2a-go/tree/v0.5.2), binding `a2aslimrpc/v1` | The same A2A tasks carried over SLIM. Compiles only with A2A Go SDK v2.1.0–v2.2.0, so it lives in its own module ([a2aslim](../runtime/interop/a2aslim)), as does the platform's [SLIM bridge](../runtime/slimbridge); the platform keeps v2.8.0. |
 | OASF | Schema 1.1.0 ([source v1.1.3](https://github.com/agntcy/oasf/releases/tag/v1.1.0)), [schema server v2.0.0](https://github.com/agntcy/oasf-server/releases/tag/v2.0.0) | Describes each visible agent. Skills `10301` (text completion) and `10302` (summarization), domain `111` (artificial intelligence). Validated by a private schema server, never the public one. |
 | Directory | [v1.8.0](https://github.com/agntcy/dir/releases/tag/v1.8.0) API server, Go API v1.8.0 | Private search of agent records, including stopped agents. |
 | SLIM | [Node 3.4.6](https://github.com/agntcy/slim/releases/tag/slim-v3.4.6), [Go bindings v3.3.9](https://github.com/agntcy/slim-bindings-go/tree/v3.3.9) with native core 3.4.6 | Transport between the platform's endpoints. |
@@ -112,6 +114,58 @@ metadata of its own.
 | `CANCELED` | `TASK_STATE_CANCELED` | Canceled before an outcome |
 | `EXPIRED`, `FAILED` | `TASK_STATE_FAILED` | A2A has no expired state; the metadata says which |
 
+## The SLIM bridge (INT-04)
+
+`agentcapsule-slim-bridge` ([runtime/slimbridge](../runtime/slimbridge), its own
+module) is the platform's only SLIM client. Its worker
+([configuration](worker.md)) talks to it over two local Unix sockets
+([internal/slimlink](../internal/slimlink)); each side checks the other's user
+on every connection.
+
+**Path of a delivery.** The mailbox stays in charge:
+1. The worker claims the recipient's mailbox head and wakes its VM, as without
+   SLIM.
+2. Before spending an attempt, it asks the bridge to answer on the recipient's
+   SLIM name, `agentcapsule/<organization>/<agent>` (the Directory record name),
+   or `agentcapsule/personal/<agent>`. An absent bridge or node delays the
+   delivery without spending an attempt.
+3. It spends the attempt and hands the event to the bridge with a single-use
+   nonce. The bridge sends it, as its own name `agentcapsule/platform/<host>`,
+   as one A2A 1.0 message to the recipient's name (a raw part with the nonce and
+   the event).
+4. The bridge answering on that name receives it from the node, with the
+   sender's identity as SLIM verified it, and calls its worker back. On one host
+   this is the same bridge. It sends and answers through two SLIM services, each
+   with its own connection, because SLIM routes locally between the
+   applications of one service; every delivery therefore crosses the node.
+5. The worker accepts the call only for an attempt it is running, with the same
+   name and the same event (digest of identifier, subjects and body), from a
+   bridge's name. It delivers the event that crossed SLIM to the VM over vsock,
+   in the attempt's own scope, and returns the guest's receipt.
+6. The receipt comes back as the A2A task's artifact. The worker checks it is
+   the one the guest gave, and only then acknowledges the mailbox.
+
+Owner instructions do not cross SLIM. Holding the SLIM secret is not enough to
+deliver anything: the worker answers only its own attempts.
+
+**Supervision.** SLIM clients do not recover from a node restart, so the bridge
+sends a message through the node to its own probe name
+(`agentcapsule/platform/<host>.probe`) every 5 seconds, and exits (code 3,
+`slim_node_lost`) after three failures in a row. A probe that the native call
+keeps past its deadline counts as failed. Its supervisor starts a new process
+(for example systemd with `Restart=always`; no unit is shipped yet). Names nobody delivered to for 10 minutes
+stop being served. Each A2A server keeps its tasks for 10 to 20 minutes only.
+
+**Limits.**
+- On one host, a delivery leaves the worker and comes back to it through the
+  node: SLIM adds a hop and checks nothing the mailbox does not.
+- The node sees the event in clear, as the worker does; the hops are mutual TLS,
+  without SLIM's end-to-end encryption (MLS).
+- The callback check relies on the worker's memory of its running attempts. A
+  bridge on another host would need the same check against PostgreSQL;
+  multi-host workers are not supported yet.
+- Not yet run on KVM: the KVM journeys deliver straight over vsock.
+
 ## What the qualification checks
 
 `scripts/verify-interop.py --services` starts the private services with fresh
@@ -126,6 +180,8 @@ lab certificates, then runs Go tests against them:
 | `TestSLIMNodeAdmitsOnlyTheSLIMAuthority` | The bridge certificate connects; no certificate, a foreign authority and the Directory authority are refused |
 | `TestSLIMKeepsNothingForAnAbsentRecipient` | A session to an absent name fails; a message sent while the recipient is down is never delivered after it returns |
 | `TestA2AOverSLIMThroughThePrivateNode` | A2A `SendMessage` and `GetTask` over SLIM: completed task with its artifact, and the recipient sees the sender's verified identity |
+| `TestBridgesCarryDeliveriesThroughTheNode` | The SLIM bridge: a delivery from one bridge to an agent's name served by another bridge, then by the same bridge (one host), reaches the fake worker unchanged with the sending bridge's verified identity, and the receipt comes back; the worker's refusal and failure come back as codes; an absent name answers `unreachable` within the call's bound; platform names and unknown fields are refused |
+| `TestABridgeEndsWhenTheNodeIsLostAndANewOneWorks` | After the node restarts, the bridge ends with `slim_node_lost` (code 3) and a new bridge delivers again |
 | `TestPublisherAgainstThePrivateDirectory` | The platform's own publisher (`internal/directory`): its records pass the real schema, a new description replaces the old record, an unknown skill is refused and withdraws the record, a hidden agent is no longer found, and a neighbouring organization's scope finds nothing |
 
 The library tests also run, without Docker:
@@ -169,7 +225,14 @@ About 150 MiB in total. In separate runs:
   - The asynchronous app constructor panics outside a Tokio runtime; use the
     blocking one.
   - Every refusal surfaces as the same opaque `datapath error`.
-  - There is no reconnection after a node restart.
+  - There is no reconnection after a node restart. The client retries the old
+    address, and once the node is gone a call can outlive its deadline.
+  - An application that calls its own name over SLIM RPC never gets an answer;
+    the bridge therefore probes a separate name.
+  - Between applications of one service, SLIM routes locally, without the node:
+    the bridge sends and answers through two services.
+  - The verified identity of an application is its name followed by `_` and an
+    instance suffix (`agentcapsule/platform/host-1_9j3adqQG`).
   - A binary linked against the archive requires glibc 2.39.
 - **slim-a2a-go v0.5.2.** It does not compile with A2A Go SDK v2.2.1 or later,
   because of API changes in that SDK (for example a push-notification request
@@ -224,6 +287,6 @@ container users. On a host:
 | Item | Work |
 | --- | --- |
 | INT-02 | Done: one OASF record per described, discoverable agent, published from PostgreSQL by the worker and withdrawn when the agent is hidden, deleted or its organization suspended; search by skill from a running agent, filtered again in PostgreSQL; schema refusals shown to the organization. |
-| INT-03 | In the guest, done: an Agent Card per agent the caller may reach, `SendMessage` and `GetTask` mapped onto peer requests with the state table above, and agents that are A2A servers themselves, each job one message; qualified with the A2A Go SDK v2.8.0 on both sides. Between agents of one organization, the recipient's inbound policy (`auto` or `manual`) decides whether a request is delivered at once. Remaining: running the KVM journey (written: two example A2A agents, `verify-product-guest.py --a2a-harness`); the same mapping on the platform's side, for the SLIM bridge. |
-| INT-04 | SLIM bridge process: SLIM names for live recipients, delivery from the mailbox through SLIM to the worker and the guest over vsock, receipts, supervision and restart. |
+| INT-03 | In the guest, done: an Agent Card per agent the caller may reach, `SendMessage` and `GetTask` mapped onto peer requests with the state table above, and agents that are A2A servers themselves, each job one message; qualified with the A2A Go SDK v2.8.0 on both sides. Between agents of one organization, the recipient's inbound policy (`auto` or `manual`) decides whether a request is delivered at once. Remaining: running the KVM journey again after the transit fix (two example A2A agents, `verify-product-guest.py --a2a-harness`); the approval of held requests by a person of the organization. |
+| INT-04 | In progress: the bridge process (SLIM names for the recipients, delivery from the mailbox through SLIM to the worker and the guest over vsock, receipts, supervision and restart), qualified against the private node. Remaining: a KVM journey through the bridge; systemd units for the bridge and the services. |
 | INT-05 | The flagship journey: agent A finds agent B, which is stopped, and gets its answer over A2A and SLIM; then the same journey with Directory or SLIM down. |

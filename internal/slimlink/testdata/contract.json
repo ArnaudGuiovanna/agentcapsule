@@ -1,0 +1,11 @@
+{
+  "paths": {"serve": "/v1/serve", "send": "/v1/send", "health": "/v1/health", "deliver": "/v1/deliver"},
+  "codes": ["unreachable", "refused", "failed", "invalid", "unavailable"],
+  "platform_namespace": "agentcapsule/platform/",
+  "serve": {"name": "agentcapsule/org_1/agt-b"},
+  "send": {"to": "agentcapsule/org_1/agt-b", "nonce": "9f3c2a1b5d7e8f60718293a4b5c6d7e8f9a0b1c2d3e4f5061728394a5b6c7d8e", "event": {"id": "mbx_1", "subjects": ["agent/agt-a", "agent/agt-b", "request/arq_1", "event/mbx_1"], "body": "eyJ0ZXh0IjoiaGVsbG8ifQ=="}},
+  "deliver": {"to": "agentcapsule/org_1/agt-b", "caller": "agentcapsule/platform/host-1/5f1c9e2a", "nonce": "9f3c2a1b5d7e8f60718293a4b5c6d7e8f9a0b1c2d3e4f5061728394a5b6c7d8e", "event": {"id": "mbx_1", "subjects": ["agent/agt-a", "agent/agt-b", "request/arq_1", "event/mbx_1"], "body": "eyJ0ZXh0IjoiaGVsbG8ifQ=="}},
+  "receipt": {"result": "eyJyZWNlaXZlZCI6dHJ1ZX0=", "replayed": false},
+  "health": {"name": "agentcapsule/platform/host-1"},
+  "failure": {"error": "refused"}
+}

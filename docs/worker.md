@@ -181,6 +181,28 @@ seconds to 5 minutes while the Directory is unreachable) and serves
 answer `unavailable` and nothing is published; descriptions are still kept.
 See [Directory publication](api/agents-assignments.md#directory-publication-int-02).
 
+To carry deliveries between agents over SLIM (INT-04), run the SLIM bridge
+([runtime/slimbridge](../runtime/slimbridge), see
+[docs/interop.md](interop.md#the-slim-bridge-int-04)) under its own user and
+add:
+
+```json
+"slim": {
+  "bridge_socket": "/run/agentcapsule-slim/bridge.sock",
+  "worker_socket": "/run/agentcapsule-slim/worker.sock",
+  "bridge_uid": 990
+}
+```
+
+The worker creates `worker_socket` for the bridge's user (mode 0600) and checks
+the peer's user on every connection, in both directions; `bridge_uid` cannot be
+root. Requests, replies and status events between agents then cross the bridge
+and the SLIM node before reaching the recipient's VM over vsock; owner
+instructions do not. Once the recipient's VM is ready and before an attempt is
+spent, the worker asks the bridge to answer on the recipient's SLIM name: while
+the bridge or the node is away, deliveries wait with backoff and spend no
+attempt. Without this section, deliveries go straight to the VM.
+
 Harness calls now transmit structured private contents (`payload.content`)
 rather than references chosen by the client. When transit is configured, the
 worker itself encrypts the request/response before the commit and refuses

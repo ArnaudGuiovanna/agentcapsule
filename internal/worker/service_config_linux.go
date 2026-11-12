@@ -55,6 +55,7 @@ type ServiceConfig struct {
 	LLM              *ServiceLLM          `json:"llm,omitempty"`
 	Registry         *ServiceRegistry     `json:"registry,omitempty"`
 	Directory        *ServiceDirectory    `json:"directory,omitempty"`
+	SLIM             *ServiceSLIM         `json:"slim,omitempty"`
 }
 
 // OpenVolumeKeys never initializes an authority. Its public identity must have

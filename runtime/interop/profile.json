@@ -21,7 +21,7 @@
     "go_commit": "7744bf6f2c78f00f7c87e96894346b0762adeb4f",
     "binding": "a2aslimrpc/v1 (transport \"slimrpc\")",
     "a2a_go_version": "v2.2.0",
-    "constraint": "compiles with a2a-go v2.1.0 to v2.2.0 only; kept in its own module (runtime/interop/a2aslim) and later in the SLIM bridge process"
+    "constraint": "compiles with a2a-go v2.1.0 to v2.2.0 only; kept in its own module (runtime/interop/a2aslim), as is the platform's SLIM bridge (runtime/slimbridge)"
   },
   "oasf": {
     "schema_version": "1.1.0",

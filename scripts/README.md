@@ -39,7 +39,7 @@ Do not run `go test ./...` at the repository root with sources outside
 | `verify-vm-isolation.py` | Disposable jailer isolation tests (root) |
 | `verify-vm-storage.py` | Disposable Firecracker/KVM storage lab |
 | `verify-adapter.py` | Live qualification of `capsule-adapter`'s model endpoint: the official OpenAI and Anthropic SDKs (`adapter-sdk-requirements.txt`), an unmodified agent and, with `--pi`, Pi, through the platform's gateway code to a real provider (a local Ollama); see [docs/adapter.md](../docs/adapter.md) |
-| `verify-interop.py` | Qualifies the pinned A2A/OASF/Directory/SLIM profile: the libraries, and with `--services` the private services of `deploy/interop` (Docker Compose); see [docs/interop.md](../docs/interop.md) |
+| `verify-interop.py` | Qualifies the pinned A2A/OASF/Directory/SLIM profile: the libraries, and with `--services` the private services of `deploy/interop` (Docker Compose) and the platform's SLIM bridge (`runtime/slimbridge`) against them; see [docs/interop.md](../docs/interop.md) |
 | `build-firecracker.py` | Builds the pinned Firecracker variant with VMM-owned file locks |
 | `build-guest-kernel.py` | Builds the pinned guest kernel with device-mapper/dm-crypt, without root |
 | `build-product-guest.py` | Builds capsule-init and the echo harness into a pinned initramfs |

@@ -22,6 +22,7 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/directory"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/restoreauthority"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/slimlink"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/volumearchive"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/worker"
 )
@@ -164,6 +165,24 @@ func run() int {
 				}
 			})
 		}
+	}
+	link, linkListener, err := c.OpenSLIM()
+	if err != nil {
+		return fail("slim_configuration_invalid")
+	}
+	if link != nil && !archiveRequested {
+		if err = w.EnableSLIM(link); err != nil {
+			return fail("slim_unavailable")
+		}
+		// The bridge calls back here to reach the VMs; it starts and restarts
+		// on its own, and deliveries wait for it without spending attempts.
+		go func() {
+			if err := slimlink.ServeLocal(ctx, linkListener, link); err != nil && ctx.Err() == nil {
+				fmt.Fprintln(os.Stderr, "slim_callback_stopped")
+			}
+		}()
+	} else if linkListener != nil {
+		linkListener.Close()
 	}
 	if archiveRequested {
 		archives, err := volumearchive.New(*archiveRoot)

@@ -44,6 +44,11 @@ func (w *Placements) deliver(ctx context.Context, target string, event harnessst
 		if err != nil {
 			return err
 		}
+		// Owner instructions are not between agents: they never cross SLIM.
+		if link := w.slim.Load(); link != nil && !invoke {
+			result, err = w.sendSLIM(ctx, link, target, c, event)
+			return err
+		}
 		result, err = w.deliverToGuest(ctx, target, c, event, invoke)
 		return err
 	}
@@ -92,6 +97,9 @@ func (w *Placements) WithPreparedDelivery(ctx context.Context, target string, fn
 			return err
 		}
 		if err = client.Health(ctx); err != nil {
+			return err
+		}
+		if err = w.serveSLIM(ctx, target); err != nil {
 			return err
 		}
 		return fn(context.WithValue(ctx, preparedDeliveryKey{}, target))

@@ -2,12 +2,16 @@
 """Reproducible qualification of the pinned interoperability profile.
 
 Without --services: the libraries only (A2A, OASF, Directory and SLIM Go
-modules, the SLIM native library), no Docker. With --services: also the private
-services of deploy/interop (OASF schema server, Directory behind its mutual-TLS
-edge, SLIM node) started from pinned images with lab certificates, then driven
-by Go tests: publish, search and validation in Directory, refused identities,
-exchanges through the SLIM node, A2A over SLIM, and the platform's own
-Directory publisher (internal/directory).
+modules, the SLIM native library, the SLIM bridge's contract and
+configuration), no Docker. With --services: also the private services of
+deploy/interop (OASF schema server, Directory behind its mutual-TLS edge, SLIM
+node) started from pinned images with lab certificates, then driven by Go
+tests: publish, search and validation in Directory, refused identities,
+exchanges through the SLIM node, A2A over SLIM, the platform's SLIM bridge
+(runtime/slimbridge: deliveries between two bridges and on one host, refusals,
+the end of a bridge whose node restarts), and the platform's own Directory
+publisher (internal/directory). The bridge test restarts the SLIM node, so it
+runs last.
 """
 import argparse
 import contextlib
@@ -16,6 +20,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -39,6 +44,9 @@ SERVICE_TESTS = {
     "TestSLIMKeepsNothingForAnAbsentRecipient",
 }
 A2A_SLIM_TESTS = {"TestA2AOverSLIMThroughThePrivateNode"}
+# The platform's SLIM bridge (runtime/slimbridge, INT-04).
+BRIDGE_LIBRARY_TESTS = {"TestTheWorkerContractIsTheSameOnBothSides", "TestConfigurationIsCheckedBeforeConnecting", "TestNames"}
+BRIDGE_SERVICE_TESTS = {"TestBridgesCarryDeliveriesThroughTheNode", "TestABridgeEndsWhenTheNodeIsLostAndANewOneWorks"}
 # The platform's own Directory client and publisher (internal/directory).
 PLATFORM_TESTS = {"TestPublisherAgainstThePrivateDirectory"}
 
@@ -98,12 +106,18 @@ def main():
             raise RuntimeError("--services needs Docker with Compose and openssl")
         with tempfile.TemporaryDirectory(prefix="agentcapsule-interop-") as temporary, contextlib.ExitStack() as cleanup:
             work = Path(temporary)
-            modules = {"probe": work / "probe", "a2aslim": work / "a2aslim", "deploy": work / "deploy"}
+            modules = {"probe": work / "probe", "a2aslim": work / "a2aslim", "slimbridge": work / "runtime/slimbridge",
+                       "slimlink-contract": work / "internal/slimlink/testdata", "deploy": work / "deploy"}
             shutil.copytree(ROOT / "runtime/interop/probe", modules["probe"])
             shutil.copytree(ROOT / "runtime/interop/a2aslim", modules["a2aslim"])
+            # The bridge reads the worker's contract examples at the same
+            # relative path as in the repository.
+            shutil.copytree(ROOT / "runtime/slimbridge", modules["slimbridge"])
+            shutil.copytree(ROOT / "internal/slimlink/testdata", modules["slimlink-contract"])
             shutil.copytree(ROOT / "deploy/interop", modules["deploy"])
             frozen = {name: tree_digests(path) for name, path in modules.items()}
             sources = [Path(__file__).resolve(), profile_path, *sorted((ROOT / "runtime/interop").rglob("*")), *sorted((ROOT / "deploy/interop").rglob("*")),
+                       *sorted((ROOT / "runtime/slimbridge").rglob("*")), *sorted((ROOT / "internal/slimlink/testdata").rglob("*")),
                        ROOT / "go.mod", ROOT / "go.sum", *sorted((ROOT / "internal/directory").glob("*.go"))]
             report["source_sha256"] = {str(p.relative_to(ROOT)): sha256(p) for p in sources if p.is_file()}
             shutil.copy2(profile_path, output / "profile.json")
@@ -162,9 +176,14 @@ def main():
             probe = modules["probe"]
             run("modules", [go, "mod", "download"], probe)
             run("module-integrity", [go, "mod", "verify"], probe)
+            bridge = modules["slimbridge"]
+            run("slimbridge-modules", [go, "mod", "download"], bridge)
+            run("slimbridge-module-integrity", [go, "mod", "verify"], bridge)
             if not args.services:
                 log = run("tests", [go, "test", "-mod=readonly", "-count=1", "-json", "-timeout=60s", "."], probe)
                 report["passed_tests"] = passed_tests(log, LIBRARY_TESTS)
+                log = run("slimbridge-tests", [go, "test", "-mod=readonly", "-count=1", "-json", "-timeout=120s", "."], bridge)
+                report["passed_bridge_tests"] = passed_tests(log, BRIDGE_LIBRARY_TESTS)
             else:
                 a2aslim = modules["a2aslim"]
                 run("a2aslim-modules", [go, "mod", "download"], a2aslim)
@@ -206,6 +225,17 @@ def main():
                 report["passed_tests"] = passed_tests(log, LIBRARY_TESTS | SERVICE_TESTS)
                 log = run("a2aslim-tests", [go, "test", "-mod=readonly", "-tags=interop_services", "-count=1", "-json", "-timeout=300s", "."], a2aslim, timeout=900, extra=extra)
                 report["passed_a2aslim_tests"] = passed_tests(log, A2A_SLIM_TESTS)
+                # The bridge test restarts the node: the script carries only
+                # what Docker needs to find its daemon; the test gets its path.
+                restart = work / "restart-slim"
+                kept = {k: v for k, v in docker_env.items() if k in ("PATH", "HOME", "USER", "XDG_RUNTIME_DIR", "XDG_CONFIG_HOME") or k.startswith(("DOCKER_", "INTEROP_"))}
+                restart.write_text("#!/bin/sh\nset -e\n" + " ".join(["exec", "env", "-i", *(shlex.quote(f"{k}={v}") for k, v in kept.items()),
+                                   "sh", "-c", shlex.quote(" ".join(shlex.quote(c) for c in compose) + " restart slim >/dev/null && " +
+                                                           " ".join(shlex.quote(c) for c in compose) + " port slim 46357")]) + "\n")
+                restart.chmod(0o700)
+                log = run("slimbridge-tests", [go, "test", "-mod=readonly", "-tags=interop_services", "-count=1", "-json", "-timeout=600s", "."], bridge,
+                          timeout=900, extra={**extra, "INTEROP_SLIM_RESTART": str(restart)})
+                report["passed_bridge_tests"] = passed_tests(log, BRIDGE_LIBRARY_TESTS | BRIDGE_SERVICE_TESTS)
                 # In place, read-only: only internal/directory and its imports
                 # are built, without CGO.
                 log = run("platform-tests", [go, "test", "-mod=readonly", "-tags=interop_services", "-count=1", "-json", "-timeout=300s",

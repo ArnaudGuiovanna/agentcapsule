@@ -17,6 +17,7 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/keyauthority"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/restoreauthority"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/runtime"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/slimlink"
 )
 
 type Placements struct {
@@ -33,6 +34,9 @@ type Placements struct {
 	llm      atomic.Pointer[controlplane.LLMService]
 	// directory answers the agents' searches; nil without a Directory.
 	directory atomic.Pointer[directory.Client]
+	// slim carries deliveries between agents through the SLIM bridge; nil
+	// when they go straight to the VM over vsock.
+	slim atomic.Pointer[slimlink.Link]
 	// Tests inject cancellation/crashes at the durable claim boundary.
 	afterClaim          func()
 	afterConfirm        func(runtime.VMRun)

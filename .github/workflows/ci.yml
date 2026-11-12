@@ -155,6 +155,7 @@ jobs:
           cache-dependency-path: |
             runtime/interop/probe/go.sum
             runtime/interop/a2aslim/go.sum
+            runtime/slimbridge/go.sum
 
       - name: Qualify the pinned profile against its private services
         run: |
