@@ -43,6 +43,15 @@ func (r remotePlatform) CompleteInvocation(ctx context.Context, key string, in I
 func (r remotePlatform) PostOwner(ctx context.Context, key string, input OwnerPost) (OwnerPostReceipt, error) {
 	return r.client.PostOwner(ctx, key, input)
 }
+func (r remotePlatform) DescribeAgent(ctx context.Context, id string) (DirectoryAgent, error) {
+	return r.client.DescribeAgent(ctx, id)
+}
+func (r remotePlatform) RequestStatus(ctx context.Context, id string) (RequestStatus, error) {
+	return r.client.RequestStatus(ctx, id)
+}
+
+// The guest's A2A endpoint reads cards and request states through this bridge.
+var _ PeerAPI = remotePlatform{}
 
 // NewLocalPlatformServer retains the remote credential inside the supervisor.
 // A local client cannot itself be re-exported as a trusted remote endpoint.
