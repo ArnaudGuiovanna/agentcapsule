@@ -32,6 +32,8 @@ deletes a tenant agent. A tenant principal never reaches the legacy lists.
 | `POST /v1/agents/{id}/assignments/{assignment_id}/replace` | `agent:assign` | `org_owner`, `org_admin` |
 | `PUT /v1/agents/{id}/directory` | `agent:manage` | `org_owner`, `org_admin`, `agent_operator` |
 | `GET /v1/agents/{id}/directory` | `agent:read` | a role that can read metadata, or a `read_metadata` assignment |
+| `PUT /v1/agents/{id}/inbound` | `agent:manage` | `org_owner`, `org_admin`, `agent_operator` |
+| `GET /v1/agents/{id}/inbound` | `agent:read` | a role that can read metadata, or a `read_metadata` assignment |
 
 Creation reuses the worker's existing provisioning (reservation, volume,
 activation, automatic wake). The operations of a tenant agent have no owner
@@ -65,8 +67,9 @@ Mutation, audit (`tenant_agent_audit`) and receipt are atomic.
   management, invocation and reading the result.
 - Widening a target's rights requires revoking its assignment and creating a new
   one; see "Atomic replacement" below for the single-transaction alternative.
-- Messaging, instructions and transit for the legacy domain remain separate and
-  do not concern tenant agents.
+- Messaging settings, the inbox and instructions of the legacy domain remain
+  separate and do not concern tenant agents. Requests between the agents of one
+  organization follow the organization's inbound policy (below).
 
 ## Invocation and private results
 
@@ -83,8 +86,9 @@ revoking the assignment or the member closes it again. Work accepted before a
 revocation may complete for the organization without making its result readable
 to the former member.
 
-The legacy agent-to-agent messaging domains (requests, mandates, inbox) do not
-apply to tenant agents.
+The legacy messaging settings and inbox (`/v1/me/...`) do not apply to tenant
+agents. Their requests to each other run under the mandate of the invocation
+being worked on and the recipient's inbound policy.
 
 ## Atomic replacement
 
@@ -340,6 +344,18 @@ the caller, and still offer one of the skills. Descriptions come from
 PostgreSQL. Finding an agent grants no right: a request to it still goes through
 consent and mandates. A host without Directory, or a Directory outage, answers
 `unavailable`; requests to agents already known are not affected.
+
+**Inbound policy.** Whether a request from another agent of the organization
+is delivered at once or held for approval is the organization's decision, per
+agent: `PUT /v1/agents/{id}/inbound` with `{"mode": "auto"}` or
+`{"mode": "manual"}` (`agent:manage`; `GET` for whoever may read the agent's
+metadata). `manual` is the default. A request to an `auto` agent is delivered at
+once, still under the sender's mandate and only if the recipient is
+discoverable and live. The organization has no approval route yet: a request
+held for approval waits until its deadline or until its sender cancels it. A
+change applies to requests submitted afterwards, bumps the organization's
+policy version (who may deliver work to an agent is an authorization rule) and
+is audited (`agent.inbound_changed`).
 
 **Agent Cards and request state (INT-03).** Two more reads on the platform
 channel serve the A2A endpoint of [capsule-adapter](../adapter.md#other-agents-a2a-endpoint):

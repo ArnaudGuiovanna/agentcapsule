@@ -56,6 +56,7 @@ func NewForHost(store *controlplane.Store, accounts *controlplane.Accounts, host
 	s.mux.HandleFunc("/v1/agents/{id}/idle-policy", s.idlePolicy)
 	s.mux.HandleFunc("/v1/agents/{id}/release", s.agentRelease)
 	s.mux.HandleFunc("/v1/agents/{id}/directory", s.agentDirectory)
+	s.mux.HandleFunc("/v1/agents/{id}/inbound", s.agentInbound)
 	s.mux.HandleFunc("/v1/agents/{id}/attachments", s.attachments)
 	s.mux.HandleFunc("/v1/attachments/{id}", s.attachment)
 	s.mux.HandleFunc("/v1/me/messaging-settings", s.messagingSettings)

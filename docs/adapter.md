@@ -230,8 +230,13 @@ task, _ := client.GetTask(ctx, &a2a.GetTaskRequest{ID: result.(*a2a.Task).ID})
 - **A message is a request.** `SendMessage` sends the message's text parts to
   the agent through the platform (`/v1/agent-requests`, as any harness does).
   The task's ID is the request's ID. The request is stored before the call
-  answers; it then waits for the recipient side's consent (or its automatic
-  policy), wakes the recipient if it sleeps, and is delivered. The task's
+  answers; it then waits for the recipient side's consent, wakes the recipient
+  if it sleeps, and is delivered. Between agents of an organization, consent is
+  the recipient's inbound policy (`PUT /v1/agents/{id}/inbound`, see
+  [agents-assignments.md](api/agents-assignments.md#directory-publication-int-02)):
+  `auto` delivers at once; under `manual`, the default, the task stays
+  `WORKING` until the request's deadline, since an organization has no
+  approval route yet. The task's
   states follow the request's, as listed in
   [interop.md](interop.md#decisions). The request's own state is repeated in
   the task's metadata (`agentcapsule.request_state`).

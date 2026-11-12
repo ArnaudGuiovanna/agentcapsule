@@ -143,3 +143,36 @@ func (s *Server) agentDirectory(w http.ResponseWriter, r *http.Request) {
 	out, err := s.catalog.SetDirectoryProfile(r.Context(), p, r.PathValue("id"), key, in)
 	receipt(w, out, err)
 }
+
+// agentInbound reads (GET) or sets (PUT) how an organization agent accepts
+// requests from the organization's other agents.
+func (s *Server) agentInbound(w http.ResponseWriter, r *http.Request) {
+	if !method(w, r, "GET", "PUT") {
+		return
+	}
+	p, ok := s.principal(w, r)
+	if !ok {
+		return
+	}
+	if r.Method == "GET" {
+		out, err := s.catalog.GetInboundPolicy(r.Context(), p, r.PathValue("id"))
+		if err != nil {
+			failure(w, err)
+			return
+		}
+		jsonResponse(w, http.StatusOK, out)
+		return
+	}
+	key, ok := idempotency(w, r)
+	if !ok {
+		return
+	}
+	var in struct {
+		Mode string `json:"mode"`
+	}
+	if !decode(w, r, &in) {
+		return
+	}
+	out, err := s.catalog.SetInboundPolicy(r.Context(), p, r.PathValue("id"), key, in.Mode)
+	receipt(w, out, err)
+}

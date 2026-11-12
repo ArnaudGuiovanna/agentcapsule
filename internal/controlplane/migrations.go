@@ -88,6 +88,9 @@ var releaseSignaturesSQL string
 //go:embed migrations/0023_agent_directory.sql
 var agentDirectorySQL string
 
+//go:embed migrations/0024_agent_inbound.sql
+var agentInboundSQL string
+
 // Append migrations; never edit an installed migration. The original schema
 // also upgrades pre-ledger installations, preserving its historical backfills.
 // Later calls validate its checksum without replaying DDL or those backfills.
@@ -115,6 +118,7 @@ var controlPlaneMigrations = []schemaMigration{
 	{version: 21, name: "agent-release-change", sql: agentReleaseChangeSQL},
 	{version: 22, name: "release-signatures", sql: releaseSignaturesSQL},
 	{version: 23, name: "agent-directory", sql: agentDirectorySQL},
+	{version: 24, name: "agent-inbound", sql: agentInboundSQL},
 }
 
 func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error {

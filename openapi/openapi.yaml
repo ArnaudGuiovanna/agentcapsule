@@ -1485,6 +1485,56 @@ paths:
         '404': {$ref: '#/components/responses/Problem'}
         '409': {$ref: '#/components/responses/Problem'}  # agent_unavailable: not live (provisioning or deleted)
         default: {$ref: '#/components/responses/Problem'}
+  /v1/agents/{id}/inbound:
+    get:
+      description: >-
+        How a live organization agent accepts requests from the other agents of
+        its organization: auto (accepted by policy, delivered at once) or
+        manual (held for approval, the default). Readable by whoever may read
+        the agent's metadata.
+      security: [{delegatedBearer: []}]
+      parameters: [{$ref: '#/components/parameters/ResourceID'}]
+      responses:
+        '200':
+          description: Inbound policy
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/InboundPolicy'}
+        '404': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
+    put:
+      description: >-
+        Sets how a live organization agent accepts requests from the other
+        agents of its organization (agent:manage; owners, administrators and
+        agent operators). auto delivers each request at once, still under the
+        sender's mandate and the recipient's visibility; manual holds it for
+        approval. The organization has no approval route yet, so a held request
+        waits until its deadline or until its sender cancels it. A change applies
+        to requests submitted afterwards, bumps the organization's policy
+        version and is audited (agent.inbound_changed).
+      security: [{delegatedBearer: []}]
+      parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [mode]
+              properties:
+                mode: {type: string, enum: [auto, manual]}
+      responses:
+        '200':
+          description: Policy recorded (or unchanged), or initial response replayed
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/InboundPolicy'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}  # agent_unavailable: not live (provisioning or deleted)
+        default: {$ref: '#/components/responses/Problem'}
   /v1/agents/{id}/attachments:
     post:
       description: >-
@@ -2169,6 +2219,12 @@ components:
           uniqueItems: true
           items: {type: integer, minimum: 1, maximum: 99999999}
           description: OASF 1.1.0 domain class IDs, such as 111 (artificial intelligence)
+    InboundPolicy:
+      type: object
+      required: [agent_id, mode]
+      properties:
+        agent_id: {type: string}
+        mode: {type: string, enum: [auto, manual]}
     DirectoryEntry:
       type: object
       required: [agent_id, visible, description, skills, domains, publication]
