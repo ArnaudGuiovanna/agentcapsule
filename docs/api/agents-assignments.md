@@ -341,3 +341,17 @@ PostgreSQL. Finding an agent grants no right: a request to it still goes through
 consent and mandates. A host without Directory, or a Directory outage, answers
 `unavailable`; requests to agents already known are not affected.
 
+**Agent Cards and request state (INT-03).** Two more reads on the platform
+channel serve the A2A endpoint of [capsule-adapter](../adapter.md#other-agents-a2a-endpoint):
+
+- `/v1/directory/agent` (`agent_id`) describes one agent the caller may send
+  requests to, with exactly the rules of a request: another agent, live,
+  discoverable, of the caller's organization. Missing, hidden and foreign
+  agents are the same `not_found`. It needs no Directory: the description and
+  skills come from PostgreSQL, empty for an agent never described.
+- `/v1/agent-requests/{id}/status` returns the state, recipient and deadline
+  of a request the caller sent; any other request is `not_found`. The reply
+  itself only arrives as an event.
+
+Both pass the placement check of every VM call and decide nothing.
+

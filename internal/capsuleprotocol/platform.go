@@ -75,19 +75,22 @@ type platformRequest struct {
 	Completion   *InvocationCompletion `json:"completion,omitempty"`
 	Query        *DirectoryQuery       `json:"query,omitempty"`
 	Forward      *LLMForward           `json:"forward,omitempty"`
+	AgentID      string                `json:"agent_id,omitempty"`
 }
 type platformResponse struct {
-	Protocol     string             `json:"protocol"`
-	Identity     Identity           `json:"identity"`
-	Receipt      *PlatformReceipt   `json:"receipt,omitempty"`
-	Agents       []string           `json:"agents,omitempty"`
-	Code         string             `json:"code,omitempty"`
-	OwnerReceipt *OwnerPostReceipt  `json:"owner_receipt,omitempty"`
-	LLMResult    *LLMResult         `json:"llm_result,omitempty"`
-	Segment      *AttachmentSegment `json:"segment,omitempty"`
-	Completion   *CompletionReceipt `json:"completion,omitempty"`
-	Found        []DirectoryAgent   `json:"found,omitempty"`
-	Forwarded    *LLMForwardResult  `json:"forwarded,omitempty"`
+	Protocol      string             `json:"protocol"`
+	Identity      Identity           `json:"identity"`
+	Receipt       *PlatformReceipt   `json:"receipt,omitempty"`
+	Agents        []string           `json:"agents,omitempty"`
+	Code          string             `json:"code,omitempty"`
+	OwnerReceipt  *OwnerPostReceipt  `json:"owner_receipt,omitempty"`
+	LLMResult     *LLMResult         `json:"llm_result,omitempty"`
+	Segment       *AttachmentSegment `json:"segment,omitempty"`
+	Completion    *CompletionReceipt `json:"completion,omitempty"`
+	Found         []DirectoryAgent   `json:"found,omitempty"`
+	Forwarded     *LLMForwardResult  `json:"forwarded,omitempty"`
+	Described     *DirectoryAgent    `json:"described,omitempty"`
+	RequestStatus *RequestStatus     `json:"request_status,omitempty"`
 }
 type platformHandler struct {
 	id        Identity
@@ -170,7 +173,16 @@ func (p *platformHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if in.Query != nil && r.URL.Path != "/v1/directory/find" || in.Forward != nil && r.URL.Path != "/v1/llm/forward" {
+	statusID := ""
+	if strings.HasPrefix(r.URL.Path, "/v1/agent-requests/") && strings.HasSuffix(r.URL.Path, "/status") {
+		statusID = strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/agent-requests/"), "/status")
+		if statusID == "" || strings.Contains(statusID, "/") || len(statusID) > 100 {
+			write(http.StatusBadRequest, "invalid")
+			return
+		}
+	}
+	if in.Query != nil && r.URL.Path != "/v1/directory/find" || in.Forward != nil && r.URL.Path != "/v1/llm/forward" ||
+		in.AgentID != "" && r.URL.Path != "/v1/directory/agent" {
 		write(http.StatusBadRequest, "invalid")
 		return
 	}
@@ -188,6 +200,36 @@ func (p *platformHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		out.Found, err = api.FindAgents(ctx, *in.Query)
+	case r.URL.Path == "/v1/directory/agent":
+		if !ValidAgentID(in.AgentID) || in.Query != nil || in.OwnerMessage != nil || in.LLM != nil || in.Attachment != nil || in.Completion != nil || in.Reply != nil || in.Submission != nil || in.RequestID != "" || in.Key != "" || in.Candidates != nil {
+			write(http.StatusBadRequest, "invalid")
+			return
+		}
+		api, ok := p.api.(PeerAPI)
+		if !ok {
+			write(http.StatusServiceUnavailable, "unavailable")
+			return
+		}
+		var described DirectoryAgent
+		described, err = api.DescribeAgent(ctx, in.AgentID)
+		if err == nil {
+			out.Described = &described
+		}
+	case statusID != "":
+		if in.RequestID != statusID || in.Query != nil || in.OwnerMessage != nil || in.LLM != nil || in.Attachment != nil || in.Completion != nil || in.Reply != nil || in.Submission != nil || in.Key != "" || in.Candidates != nil {
+			write(http.StatusBadRequest, "invalid")
+			return
+		}
+		api, ok := p.api.(PeerAPI)
+		if !ok {
+			write(http.StatusServiceUnavailable, "unavailable")
+			return
+		}
+		var status RequestStatus
+		status, err = api.RequestStatus(ctx, in.RequestID)
+		if err == nil {
+			out.RequestStatus = &status
+		}
 	case r.URL.Path == "/v1/owner/messages":
 		if in.OwnerMessage == nil || in.LLM != nil || in.Attachment != nil || in.Completion != nil || in.Submission != nil || in.Reply != nil || in.RequestID != "" || in.Candidates != nil || in.Key == "" || len(in.Key) > 256 || in.OwnerMessage.Validate() != nil {
 			write(http.StatusBadRequest, "invalid")

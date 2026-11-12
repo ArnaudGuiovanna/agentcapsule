@@ -258,3 +258,33 @@ func (a platformAPI) ForwardLLM(ctx context.Context, key string, in capsuleproto
 // Close releases this worker's platform listeners, leaving VMMs available for a
 // replacement worker. Store ownership remains with the caller.
 func (w *Placements) Close() { w.host.Close() }
+
+// DescribeAgent and RequestStatus are the reads behind the guest's A2A
+// endpoint (INT-03); PostgreSQL answers both, after the placement check.
+func (a platformAPI) DescribeAgent(ctx context.Context, agentID string) (capsuleprotocol.DirectoryAgent, error) {
+	var d controlplane.DirectoryAgent
+	err := a.withApplication(ctx, func(ctx context.Context) error {
+		var err error
+		d, err = a.store.DescribeAgentFromVM(ctx, a.caller, agentID)
+		return err
+	})
+	if err != nil {
+		return capsuleprotocol.DirectoryAgent{}, platformError(err)
+	}
+	return capsuleprotocol.DirectoryAgent{AgentID: d.AgentID, Description: d.Description, Skills: d.Skills, Domains: d.Domains}, nil
+}
+
+func (a platformAPI) RequestStatus(ctx context.Context, requestID string) (capsuleprotocol.RequestStatus, error) {
+	var r controlplane.RequestState
+	err := a.withApplication(ctx, func(ctx context.Context) error {
+		var err error
+		r, err = a.store.RequestStateFromVM(ctx, a.caller, requestID)
+		return err
+	})
+	if err != nil {
+		return capsuleprotocol.RequestStatus{}, platformError(err)
+	}
+	return capsuleprotocol.RequestStatus{RequestID: r.RequestID, RecipientAgentID: r.RecipientAgentID, State: r.State, ExpiresAt: r.ExpiresAt}, nil
+}
+
+var _ capsuleprotocol.PeerAPI = platformAPI{}
