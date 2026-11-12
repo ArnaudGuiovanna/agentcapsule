@@ -3,6 +3,7 @@ module github.com/ArnaudGuiovanna/agentcapsule
 go 1.27.2
 
 require (
+	github.com/a2aproject/a2a-go/v2 v2.8.0
 	github.com/agntcy/dir/api v1.8.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/jackc/pgx/v5 v5.12.0
@@ -17,6 +18,7 @@ require (
 	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.12-20260825204119-511051f7f437.2 // indirect
 	github.com/Masterminds/semver/v3 v3.5.0 // indirect
 	github.com/agntcy/oasf-sdk/pkg v1.1.0 // indirect
+	github.com/google/uuid v1.6.0 // indirect
 	github.com/ipfs/go-cid v0.6.2 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
@@ -32,6 +34,7 @@ require (
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/spaolacci/murmur3 v1.1.0 // indirect
 	golang.org/x/crypto v0.57.0 // indirect
+	golang.org/x/mod v0.41.0 // indirect
 	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect

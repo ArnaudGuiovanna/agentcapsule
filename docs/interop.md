@@ -4,8 +4,11 @@ Agent Capsule supports one pinned interoperability profile, `agentcapsule-int-1`
 ([profile.json](../runtime/interop/profile.json)), qualified on a single host.
 It covers OASF records, a private AGNTCY Directory, A2A and SLIM. The platform
 publishes and searches agent records through the Directory (INT-02, see
-[Directory publication](api/agents-assignments.md#directory-publication-int-02));
-it does not use A2A or SLIM yet (INT-03 to INT-05), so gate G2 is not reached.
+[Directory publication](api/agents-assignments.md#directory-publication-int-02)).
+Inside each VM, [capsule-adapter](adapter.md#other-agents-a2a-endpoint) serves
+the organization's agents as A2A agents, built on the A2A Go SDK v2.8.0 (INT-03,
+first part). Between its own endpoints (the SLIM bridge), the platform does not
+use A2A or SLIM yet (INT-03 to INT-05), so gate G2 is not reached.
 
 ## The profile
 
@@ -95,15 +98,16 @@ platform over `capsule.v1`.
   firewall's job.
 
 **A2A states.** Peer requests keep their internal states (A2A-008); the A2A
-adapter projects them as follows and repeats the internal state in the task
-status metadata.
+adapter projects them as follows and repeats the internal state in the task's
+metadata (`agentcapsule.request_state`), since an A2A 1.0 task status has no
+metadata of its own.
 
 | Peer request state | A2A task state | Meaning |
 | --- | --- | --- |
 | `PENDING_APPROVAL` | `TASK_STATE_SUBMITTED` | Waiting for the recipient side's consent; nothing delivered |
 | `DELIVERING` | `TASK_STATE_SUBMITTED` | Stored; waking or delivering. Delivery is not success |
 | `PROCESSING` | `TASK_STATE_WORKING` | Delivered to the recipient's harness |
-| `REPLIED` | `TASK_STATE_COMPLETED` | The reply is the task's artifact |
+| `REPLIED` | `TASK_STATE_COMPLETED` | The reply is the task's artifact; until the reply event reaches the sender, the task stays `WORKING` |
 | `DECLINED` | `TASK_STATE_REJECTED` | Refused by the recipient side |
 | `CANCELED` | `TASK_STATE_CANCELED` | Canceled before an outcome |
 | `EXPIRED`, `FAILED` | `TASK_STATE_FAILED` | A2A has no expired state; the metadata says which |
@@ -220,6 +224,6 @@ container users. On a host:
 | Item | Work |
 | --- | --- |
 | INT-02 | Done: one OASF record per described, discoverable agent, published from PostgreSQL by the worker and withdrawn when the agent is hidden, deleted or its organization suspended; search by skill from a running agent, filtered again in PostgreSQL; schema refusals shown to the organization. |
-| INT-03 | A2A adapter: an Agent Card per visible agent, `SendMessage` and `GetTask` mapped onto peer requests with the state table above. |
+| INT-03 | In the guest, done: an Agent Card per agent the caller may reach, `SendMessage` and `GetTask` mapped onto peer requests with the state table above, and agents that are A2A servers themselves, each job one message; qualified with the A2A Go SDK v2.8.0 on both sides. Remaining: the same mapping on the platform's side, for the SLIM bridge; the KVM journey. |
 | INT-04 | SLIM bridge process: SLIM names for live recipients, delivery from the mailbox through SLIM to the worker and the guest over vsock, receipts, supervision and restart. |
 | INT-05 | The flagship journey: agent A finds agent B, which is stopped, and gets its answer over A2A and SLIM; then the same journey with Directory or SLIM down. |

@@ -6,9 +6,11 @@ attachment, the agent runs in its own Firecracker microVM, reads the file and ca
 its model through the platform channel, and posts a result only that member can
 read. Two organizations run side by side on one host without seeing each other's
 agents, files, models or audit trail. Existing agents run unchanged through
-`capsule-adapter`: an OpenAI SDK agent, and Pi, the coding agent, on a real model. Large parts of the MVP described in [docs/product.md](docs/product.md) are
-still missing, notably standard interoperability (A2A, SLIM, Directory),
-observability and a restore procedure.
+`capsule-adapter`: an OpenAI SDK agent, and Pi, the coding agent, on a real model.
+Visible agents are published to a private AGNTCY Directory and searchable by skill,
+and an adapted agent reaches the other agents of its organization as A2A agents.
+Large parts of the MVP described in [docs/product.md](docs/product.md) are still
+missing, notably A2A and SLIM between agents, observability and a restore procedure.
 
 Status words used below:
 
@@ -55,7 +57,7 @@ a production host yet.
 | CAP-01 | Private `capsule.v1` contract, typed envelope, platform channel (peers, LLM, attachments, deferred results); Go and Python harnesses | Partial | Capability negotiation against tenant policy; events |
 | CAP-02 | Cold create, desired/observed state, wake/sleep/delete, reconciliation, single RW generation | Partial | Automatic restart policy for agents that should be running |
 | CAP-03 | Jailer/cgroups hardening, egress control, CPU/RAM/IO/pid/time limits, bounded restarts | Partial | Egress profiles, IO limits, restart budgets |
-| CAP-04 | Unmodified agents ([docs/adapter.md](docs/adapter.md)): `capsule-adapter` runs the agent's command for each invocation and serves the OpenAI and Anthropic APIs on the guest loopback, forwarded as written (tools included) through the metered platform channel; `dagger call adapt` packs an existing image; official SDKs qualified against a real model (validated on KVM) | Done | — (agents that expose a server, such as A2A, come with INT-03) |
+| CAP-04 | Unmodified agents ([docs/adapter.md](docs/adapter.md)): `capsule-adapter` runs the agent's command for each invocation and serves the OpenAI and Anthropic APIs on the guest loopback, forwarded as written (tools included) through the metered platform channel; `dagger call adapt` packs an existing image; official SDKs qualified against a real model (validated on KVM) | Done | — (A2A between agents and A2A server agents: INT-03) |
 
 ## Invocations and events
 
@@ -89,7 +91,7 @@ a production host yet.
 |---|---|---|---|
 | INT-01 | Qualify OASF, Directory, A2A, SLIM releases; pin a compatibility matrix; private single-host services ([deploy/interop](deploy/interop)) tested in CI | Done | — |
 | INT-02 | OASF records published from PostgreSQL to the private Directory (outbox, revisions, schema refusals shown); skill search from a running agent filtered again in PostgreSQL; SDK `find_agents` | In progress | Search from a VM on KVM (with the INT-05 journey); Agent Cards move to INT-03 |
-| INT-03 | Agent Cards and a real A2A adapter: tasks, statuses, artifacts, result return | Not started | All |
+| INT-03 | Agent Cards and a real A2A adapter: tasks, statuses, artifacts, result return. In the guest, `capsule-adapter` serves each reachable agent of the organization as an A2A 1.0 agent (Agent Card, JSON-RPC `SendMessage` and `GetTask`) mapped onto peer requests, with two platform-channel reads (card, request state), and runs agents that are A2A servers themselves, supervised, each job one message; qualified with the official A2A Go SDK on both sides and on PostgreSQL ([docs/adapter.md](docs/adapter.md#other-agents-a2a-endpoint)) | In progress | The same mapping on the platform side, for the SLIM bridge (INT-04); KVM validation with two adapted agents |
 | INT-04 | Host SLIM gateway, authenticated endpoints, vsock bridge, delegation limits | Not started | All |
 | INT-05 | End-to-end flagship journey including Directory/SLIM failures | Not started | All |
 
@@ -124,8 +126,9 @@ a production host yet.
 
 - Tested on a single Linux host under WSL2 with KVM; not yet on a production server.
 - The reference harnesses are echo/test harnesses. An existing agent runs through
-  `capsule-adapter`, one command run per invocation; agents that expose a server
-  (A2A, HTTP) are not supported yet.
+  `capsule-adapter`: one command run per invocation, or an A2A server kept running;
+  it can send requests to other agents over A2A. Agents that expose a plain HTTP
+  server are not supported yet.
 - Attachments are held in API memory during upload (8 MiB each) and stored in
   PostgreSQL; there is no object storage.
 - Cancelling a `working` invocation does not stop computation already running in the

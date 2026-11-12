@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -53,6 +54,16 @@ type Engine struct {
 	platform Platform
 	run      Runner
 	mu       sync.Mutex
+	// running is the job whose command runs now, if any. The A2A endpoint
+	// sends requests to other agents under its mandate, and only then.
+	running atomic.Pointer[runningJob]
+}
+
+// runningJob is what the A2A endpoint needs of the job that runs now.
+type runningJob struct {
+	work     string   // the adapter_work id, which scopes the idempotency keys
+	subjects []string // the delivered event's fence subjects
+	mandate  *capsuleprotocol.InstructionMandate
 }
 
 func New(agent, home string, store *harnessstore.Store, platform Platform, run Runner) (*Engine, error) {
@@ -63,6 +74,25 @@ func New(agent, home string, store *harnessstore.Store, platform Platform, run R
 }
 
 const schema = `
+CREATE TABLE IF NOT EXISTS adapter_a2a_tasks(
+ seq INTEGER PRIMARY KEY AUTOINCREMENT,
+ key TEXT NOT NULL UNIQUE,
+ work TEXT NOT NULL,
+ recipient TEXT NOT NULL,
+ message_id TEXT NOT NULL,
+ context_id TEXT NOT NULL,
+ content BLOB NOT NULL,
+ request_id TEXT UNIQUE,
+ state TEXT NOT NULL DEFAULT '',
+ updated_ns INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS adapter_a2a_results(
+ request_id TEXT PRIMARY KEY,
+ state TEXT NOT NULL,
+ reply BLOB,
+ reason TEXT NOT NULL DEFAULT '',
+ received_ns INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS adapter_work(
  seq INTEGER PRIMARY KEY AUTOINCREMENT,
  id TEXT NOT NULL UNIQUE,
@@ -81,6 +111,9 @@ CREATE TABLE IF NOT EXISTS adapter_work(
 type input struct {
 	Text        string                          `json:"text"`
 	Attachments []capsuleprotocol.AttachmentRef `json:"attachments,omitempty"`
+	// Mandate bounds the requests the run may send to other agents. Only an
+	// invocation carries one; a request from another agent never does.
+	Mandate *capsuleprotocol.InstructionMandate `json:"mandate,omitempty"`
 }
 
 func joined(content []capsuleprotocol.TextContent) string {
@@ -130,7 +163,8 @@ func (h *Engine) Handle(ctx context.Context, e harnessstore.Event, tx harnesssto
 		if h.platform == nil {
 			return json.Marshal(capsuleprotocol.OwnerMessage{Content: []capsuleprotocol.TextContent{{Type: "text", Text: "The platform channel is unavailable; the agent cannot answer."}}})
 		}
-		if err = h.record(ctx, tx, e, "invocation", in.OperationID, input{Text: joined(in.Content), Attachments: in.Attachments}); err != nil {
+		mandate := in.Mandate
+		if err = h.record(ctx, tx, e, "invocation", in.OperationID, input{Text: joined(in.Content), Attachments: in.Attachments, Mandate: &mandate}); err != nil {
 			return nil, err
 		}
 		return capsuleprotocol.WorkingResult(), nil
@@ -146,17 +180,65 @@ func (h *Engine) Handle(ctx context.Context, e harnessstore.Event, tx harnesssto
 			return nil, err
 		}
 		return received()
+	case "reply":
+		// The answer to a request the agent sent through its A2A endpoint.
+		peer, err := capsuleprotocol.DecodePeerEvent(e, h.agent)
+		if err != nil {
+			return nil, err
+		}
+		reply, err := json.Marshal(peer.Payload.Content)
+		if err != nil {
+			return nil, err
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO adapter_a2a_results(request_id,state,reply,received_ns) VALUES(?,'REPLIED',?,?)
+            ON CONFLICT(request_id) DO NOTHING`, peer.RequestID, reply, time.Now().UnixNano()); err != nil {
+			return nil, err
+		}
+		return received()
 	case "status":
-		// A request that ended (canceled, expired) needs no answer any more.
-		if kind.RequestID != "" {
-			if _, err := tx.ExecContext(ctx, `UPDATE adapter_work SET state='stopped',reason='request_terminal' WHERE kind='request' AND target=? AND state='pending'`, kind.RequestID); err != nil {
+		// The host writes this notification with Go field names (RequestID,
+		// Status, Reason); JSON field matching ignores case only, not the
+		// underscore, so both spellings are read.
+		var status struct {
+			RequestID string `json:"RequestID"`
+			Snake     string `json:"request_id"`
+			Status    string `json:"Status"`
+			Reason    string `json:"Reason"`
+		}
+		_ = json.Unmarshal(e.Body, &status)
+		if status.RequestID == "" {
+			status.RequestID = status.Snake
+		}
+		if status.RequestID == "" || len(status.RequestID) > 100 {
+			return received()
+		}
+		// A request the agent received that ended (canceled, expired) needs no
+		// answer any more.
+		if _, err := tx.ExecContext(ctx, `UPDATE adapter_work SET state='stopped',reason='request_terminal' WHERE kind='request' AND target=? AND state='pending'`, status.RequestID); err != nil {
+			return nil, err
+		}
+		// A request the agent sent ended without a reply.
+		switch status.Status {
+		case "DECLINED", "EXPIRED", "CANCELED", "FAILED":
+			if _, err := tx.ExecContext(ctx, `INSERT INTO adapter_a2a_results(request_id,state,reason,received_ns) VALUES(?,?,?,?)
+                ON CONFLICT(request_id) DO NOTHING`, status.RequestID, status.Status, truncate(status.Reason, 100), time.Now().UnixNano()); err != nil {
 				return nil, err
 			}
 		}
 		return received()
 	}
-	// Replies to requests the agent never sends, and control fixtures.
+	// Control fixtures.
 	return received()
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 // MaxAnswerBytes is the longest answer posted; longer output is cut, with a note.
@@ -227,7 +309,9 @@ func (h *Engine) Step(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	if !completed.Valid {
+		h.running.Store(&runningJob{work: id, subjects: subjects, mandate: in.Mandate})
 		out, err := h.execute(ctx, target, in)
+		h.running.Store(nil)
 		if ctx.Err() != nil {
 			// Stopping (sleep, shutdown): the interrupted run is not an
 			// outcome. It runs again from the start after the restart.

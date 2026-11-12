@@ -377,8 +377,13 @@ func TestConfig(t *testing.T) {
 		t.Fatal("invalid alias accepted")
 	}
 	env := c.Environment("/var/lib/agent", nil)
-	if !slices.Contains(env, "HOME=/var/lib/agent") || !slices.Contains(env, "ANTHROPIC_BASE_URL=http://127.0.0.1:8411") {
+	if !slices.Contains(env, "HOME=/var/lib/agent") || !slices.Contains(env, "ANTHROPIC_BASE_URL=http://127.0.0.1:8411") ||
+		!slices.Contains(env, "AGENTCAPSULE_A2A_URL=http://127.0.0.1:8412") {
 		t.Fatal(env)
+	}
+	s, err := ParseConfig([]byte(`{"version":1,"server":{"command":["/opt/agent/serve"],"a2a_url":"http://127.0.0.1:9000/"}}`))
+	if err != nil || s.Server.URL != "http://127.0.0.1:9000/" || s.Server.Ready() != 2*time.Minute || len(s.Command) != 0 {
+		t.Fatal(s, err)
 	}
 	for _, bad := range []string{
 		`{"version":2,"command":["/a"]}`,
@@ -394,6 +399,18 @@ func TestConfig(t *testing.T) {
 		`{"version":1,"command":["/a"],"model_address":"127.0.0.1:0"}`,
 		`{"version":1,"command":["/a"],"unknown":true}`,
 		`{"version":1,"command":["/a"]} {}`,
+		`{"version":1,"command":["/a"],"a2a_address":"127.0.0.1:8411"}`,
+		`{"version":1,"command":["/a"],"a2a_address":"10.0.0.1:8412"}`,
+		`{"version":1}`,
+		`{"version":1,"command":["/a"],"server":{"command":["/b"],"a2a_url":"http://127.0.0.1:9000"}}`,
+		`{"version":1,"input":"argument","server":{"command":["/b"],"a2a_url":"http://127.0.0.1:9000"}}`,
+		`{"version":1,"server":{"command":["relative"],"a2a_url":"http://127.0.0.1:9000"}}`,
+		`{"version":1,"server":{"command":["/b"],"a2a_url":"http://10.0.0.1:9000"}}`,
+		`{"version":1,"server":{"command":["/b"],"a2a_url":"https://127.0.0.1:9000"}}`,
+		`{"version":1,"server":{"command":["/b"],"a2a_url":"http://127.0.0.1"}}`,
+		`{"version":1,"server":{"command":["/b"],"a2a_url":"http://user:pw@127.0.0.1:9000"}}`,
+		`{"version":1,"server":{"command":["/b"],"a2a_url":"http://127.0.0.1:8412"}}`,
+		`{"version":1,"server":{"command":["/b"],"a2a_url":"http://127.0.0.1:9000","ready_seconds":4000}}`,
 	} {
 		if _, err := ParseConfig([]byte(bad)); err == nil {
 			t.Error("accepted", bad)
