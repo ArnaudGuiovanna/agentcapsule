@@ -7,14 +7,18 @@
 //	a2a-agent -listen 127.0.0.1:9100
 //
 // A message "ask <agent> <question>" sends the question to that agent and
-// answers with its reply; any other message is answered with its own text.
+// answers with its reply. "find <skill> <question>" first lists the agents
+// offering that OASF skill (<AGENTCAPSULE_A2A_URL>/agents?skill=<skill>) and
+// asks the first one. Any other message is answered with its own text.
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"iter"
 	"log"
 	"net/http"
@@ -60,6 +64,7 @@ func newAgent(self, peers string) http.Handler {
 		Skills: []a2a.AgentSkill{
 			{ID: "echo", Name: "Echo", Description: "Answers with the text it receives.", Tags: []string{"text"}},
 			{ID: "ask", Name: "Ask another agent", Description: "ask <agent> <question>: asks that agent and answers with its reply.", Tags: []string{"text"}},
+			{ID: "find", Name: "Find and ask an agent", Description: "find <OASF skill> <question>: asks the first agent offering that skill.", Tags: []string{"text"}},
 		},
 	}
 	mux := http.NewServeMux()
@@ -81,12 +86,24 @@ func executor(peers string) a2asrv.AgentExecutor {
 				}
 			}
 			answer := "echo: " + text
-			if verb, rest, _ := strings.Cut(text, " "); verb == "ask" {
+			switch verb, rest, _ := strings.Cut(text, " "); verb {
+			case "ask":
 				agent, question, _ := strings.Cut(rest, " ")
 				reply, err := ask(ctx, peers, agent, question)
 				if err != nil {
 					answer = fmt.Sprintf("could not ask %s: %v", agent, err)
 				} else {
+					answer = agent + " answered: " + reply
+				}
+			case "find":
+				skill, question, _ := strings.Cut(rest, " ")
+				agent, reply, err := find(ctx, peers, skill, question)
+				switch {
+				case err != nil:
+					answer = fmt.Sprintf("could not find an agent offering skill %s: %v", skill, err)
+				case agent == "":
+					answer = "no agent offers skill " + skill
+				default:
 					answer = agent + " answered: " + reply
 				}
 			}
@@ -108,6 +125,48 @@ func ask(ctx context.Context, peers, agent, question string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return askCard(ctx, card, question)
+}
+
+// find lists the agents offering skill, as a registry of A2A agents would,
+// and asks the first one. It returns "" and no error when none does.
+func find(ctx context.Context, peers, skill, question string) (string, string, error) {
+	if peers == "" || skill == "" || question == "" {
+		return "", "", errors.New("usage: find <skill> <question>, with AGENTCAPSULE_A2A_URL set")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(peers, "/")+"/agents?skill="+skill, nil)
+	if err != nil {
+		return "", "", err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", "", err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", "", err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", "", fmt.Errorf("the registry answered %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var list struct {
+		Agents []*a2a.AgentCard `json:"agents"`
+	}
+	if err = json.Unmarshal(body, &list); err != nil {
+		return "", "", err
+	}
+	if len(list.Agents) == 0 {
+		return "", "", nil
+	}
+	card := list.Agents[0]
+	reply, err := askCard(ctx, card, question)
+	return card.Name, reply, err
+}
+
+// askCard sends question to the agent the card describes and returns the text
+// of its reply.
+func askCard(ctx context.Context, card *a2a.AgentCard, question string) (string, error) {
 	client, err := a2aclient.NewFromCard(ctx, card)
 	if err != nil {
 		return "", err

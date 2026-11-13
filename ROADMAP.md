@@ -8,9 +8,11 @@ read. Two organizations run side by side on one host without seeing each other's
 agents, files, models or audit trail. Existing agents run unchanged through
 `capsule-adapter`: an OpenAI SDK agent, and Pi, the coding agent, on a real model.
 Visible agents are published to a private AGNTCY Directory and searchable by skill,
-and an adapted agent reaches the other agents of its organization as A2A agents.
-Large parts of the MVP described in [docs/product.md](docs/product.md) are still
-missing, notably A2A and SLIM between agents, observability and a restore procedure.
+and an adapted agent reaches the other agents of its organization as A2A agents,
+across a SLIM node through the platform's bridge. Large parts of the MVP
+described in [docs/product.md](docs/product.md) are still missing, notably the
+flagship interoperability journey (gate G2), observability and a restore
+procedure.
 
 Status words used below:
 

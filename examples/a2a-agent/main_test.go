@@ -16,7 +16,8 @@ import (
 )
 
 // peers stands for the adapter's endpoint: agent b's card at /agents/b and its
-// JSON-RPC endpoint at the same URL.
+// JSON-RPC endpoint at the same URL; /agents?skill=10301 lists b, any other
+// skill no agent, and skill 99999 fails as an unavailable registry would.
 func peers(t *testing.T) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
@@ -37,6 +38,17 @@ func peers(t *testing.T) *httptest.Server {
 		SupportedInterfaces: []*a2a.AgentInterface{a2a.NewAgentInterface(server.URL+"/agents/b", a2a.TransportProtocolJSONRPC)},
 		DefaultInputModes:   []string{"text/plain"}, DefaultOutputModes: []string{"text/plain"}})
 	rpc := a2asrv.NewJSONRPCHandler(a2asrv.NewHandler(b))
+	mux.HandleFunc("/agents", func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Query().Get("skill") {
+		case "10301":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"agents":[{"name":"b","version":"1","supportedInterfaces":[{"url":"` + server.URL + `/agents/b","protocolBinding":"JSONRPC","protocolVersion":"1.0"}],"defaultInputModes":["text/plain"],"defaultOutputModes":["text/plain"],"capabilities":{},"skills":[]}]}`))
+		case "99999":
+			http.Error(w, "the platform is unavailable; try again", http.StatusServiceUnavailable)
+		default:
+			_, _ = w.Write([]byte(`{"agents":[]}`))
+		}
+	})
 	mux.HandleFunc("/agents/b", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
 			card.ServeHTTP(w, r)
@@ -86,6 +98,16 @@ func TestTheAgentAnswersAndAsksAnotherAgent(t *testing.T) {
 		t.Fatal(got)
 	}
 	if got := say(t, agent.URL, "ask b"); !strings.HasPrefix(got, "could not ask b: usage") {
+		t.Fatal(got)
+	}
+	// find lists the agents offering a skill, then asks the first one.
+	if got := say(t, agent.URL, "find 10301 who answers?"); got != "b answered: b heard who answers?" {
+		t.Fatal(got)
+	}
+	if got := say(t, agent.URL, "find 10302 anyone?"); got != "no agent offers skill 10302" {
+		t.Fatal(got)
+	}
+	if got := say(t, agent.URL, "find 99999 anyone?"); !strings.HasPrefix(got, "could not find an agent offering skill 99999: the registry answered 503") {
 		t.Fatal(got)
 	}
 }
