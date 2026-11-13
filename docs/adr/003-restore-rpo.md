@@ -302,10 +302,15 @@ The earlier runs keep the tests they had:
 
 Some runs have no Go projection:
 
-- The writer and retirement runs need the restore coordinator and the guest:
-  `writerBlocksFenceTest`, `admittedWriterFinishesBeforeRevocationTest`,
-  `physicalRetirementAbortsOldWriterTest`,
-  `sealRetirementCannotInstallUnreservedImageTest`.
+- The writer runs need a guest that is writing while a fence or a restore
+  arrives: `writerBlocksFenceTest`,
+  `admittedWriterFinishesBeforeRevocationTest`. The retirement runs are
+  covered in part by the coordinator (below):
+  `TestInstallVolumeRequiresRetiredRegisteredInodeAndExactImage` refuses to
+  install while a VMM is registered or holds the volume lock
+  (`physicalRetirementAbortsOldWriterTest`), and a restore needs a LIVE agent
+  and its reservation before it installs
+  (`sealRetirementCannotInstallUnreservedImageTest`).
 - The key runs belong to the key authority (D-05):
   `destructionWaitsForAllCachedCopiesTest`,
   `destructionRequiresPermanentSealTest`,
@@ -318,51 +323,112 @@ Some runs have no Go projection:
   `TestInitializationIdentityAndMissingAuthorityFailClosed` checks an outage
   and a recovery on a key grant, not on an activation.
 
+#### Done: the restore coordinator
+
+November 13, 2026. The worker restores one agent, on its own host, from one
+of its archives, into a new incarnation: `agentcapsule-worker -restore-agent`
+([recovery.md](../recovery.md#restoring-an-agent-from-an-archive)). Before it
+stops anything, it authenticates and hashes the archive, and asks the agent's
+harness whether it can report its outcomes.
+
+- **Order.** The steps are the model's:
+  1. `beginRestore`: one PostgreSQL transaction records the restore
+     (`volume_restores`) and makes the volume `RESTORING` at the next
+     incarnation. Then `ReserveIncarnation` reserves the same one in the
+     authority.
+  2. `retire`: the agent's VMs are removed.
+  3. `install`: the archive is written into the registered volume inode, in
+     place, and must match its digest.
+  4. `launchRestore`: a restricted boot opens the image at the new
+     incarnation. The worker fences it with every revocation.
+  5. `repairHistory` or `declareLoss`, then `activate`: `Catalog.Activate`,
+     with the inspection below. `Publish` records the activation in
+     PostgreSQL.
+  6. The restricted boot is removed. One transaction copies the declared
+     losses into PostgreSQL and makes the volume `READY` again.
+- **Inspection.** The guest reports which outcomes its store holds, with the
+  digest of each stored result: the new `outcomes` control feature
+  ([capsule-control.md](../guest/capsule-control.md)). It reads `capsule_inbox`,
+  which `Apply` commits with the effects. The Go harnesses and the Python SDK
+  implement it.
+- **Repair.** An archive can hold the outcomes that another lacks only by being
+  newer. So the worker refuses an archive when a newer nightly archive of the
+  agent is in the archive root: before anything stops, and again as the
+  activation's `Repair`, which aborts before any declaration. An archive taken
+  on demand is not recorded; the operator chose it.
+- **Crashes.** Each step commits before the next one starts. Until the end,
+  the volume stays `RESTORING`: no ordinary boot, adoption, delivery or archive
+  reaches it, so a half-restored image never serves. The same command resumes
+  the restore from its last durable step. A new restore ID replaces an
+  unfinished restore that has not activated, one incarnation further. A
+  restore that stopped between its SQL record and its reservation is reserved
+  first.
+- **The incarnation in the control plane.** Migration 0029 replaces the
+  `enrollment_identity_guard` function. The incarnation moves only one step up,
+  to the one that an unfinished restore reserved, while the volume becomes
+  `RESTORING`. A `RESTORING` volume becomes `READY` only once its restore is
+  activated. Every other rule stands. `store_initializations` records one
+  initialization per incarnation: the restricted boot records the new one.
+- **The worker.** It already compared every guest's incarnation with
+  `store_enrollments`. It now boots, adopts, delivers to and observes the new
+  incarnation, and refuses the old one everywhere. The authority refuses the
+  old one's fence receipts, bindings and outcomes (`ErrStale`).
+- **The guest (build v20).** The restricted boot of a restored image carries
+  `X-Capsule-Restore`. The guest then moves the image's marker forward to the
+  new incarnation, never back. Without it, the marker must match as before.
+- **Losses in PostgreSQL.** `volume_restore_losses` (migration 0029), keyed by
+  restore and outcome, with the incarnation and `declared_at`. The rows are
+  never changed or deleted. The worker maps each loss to its delivery by
+  computing the outcome ID of each of the agent's mailboxes
+  (`harnessstore.StoredOutcomeFingerprint`, agent ID and mailbox ID): the row
+  names the mailbox and, for an owner instruction, the invocation. A loss
+  without a mailbox is work that the restored database lost too (default 1
+  below).
+
+Tests: the PostgreSQL tests of `internal/controlplane/volume_restores_test.go`
+(the guard, the operation, its atomic steps, the loss mapping); the
+coordinator tests of `internal/worker/restore_test.go`, with a fake host and a
+real guest protocol (exactly the outcomes after the archive declared lost, a
+stop after each step, a copy cut half way, a failure after the declaration, a
+superseded restore, refusals before anything stops); and the KVM product test
+`TestProductWorkerRestoresAgentFromArchive`, compiled and still to be run as
+root.
+
 #### What remains
 
-1. **There is no production restore path.** Nothing in production calls
-   `ReserveIncarnation`, `Activate` or `WithActivation`. No coordinator drains
-   a store, retires it, installs an image, boots it restricted, inspects it
-   and activates it. The control plane cannot hold a restored incarnation
-   either:
-   - the `enrollment_identity_guard` trigger forbids any change to
-     `store_enrollments.incarnation`;
-   - the worker requires the guest's incarnation to match that column.
-
-   The code above is ready for the coordinator, but nothing reaches it today.
-2. **Control-plane state.** Not added: without the coordinator, it cannot be
-   tested end to end. It needs these pieces:
-   - After activation, the coordinator copies the declared losses into
-     PostgreSQL. A new migration adds a table keyed by operation, with the
-     incarnation and the time.
-   - The authority stores outcome IDs, not invocation IDs. The control plane
-     finds the invocation by computing the outcome ID again: `outcome-v1/`
-     followed by a SHA-256 of a domain tag, the agent ID and the event ID
-     (`harnessstore.StoredOutcomeFingerprint`). An invocation's event ID is
-     its mailbox ID.
-   - An outcome ID that matches no invocation comes from work that the
-     restored database also lost, in its 15-minute window. That window is
-     announced as a whole (default 1 below).
-   - Rescheduling reopens a completed invocation. Today `SUCCEEDED` is final:
-     the mailbox row becomes `DELIVERED`, the outbox row is deleted, and the
+1. **Running the lost work again.** The coordinator records the losses; it
+   does not reopen anything. The lost invocations keep their `completed` state.
+   The next step needs:
+   - A rerun reopens a completed invocation. Today `SUCCEEDED` is final: the
+     mailbox row becomes `DELIVERED`, the outbox row is deleted, and the
      input's 7-day purge delay starts. The rerun must put the same mailbox ID
-     back in the queue, with a mandate that has not expired.
+     back in the queue, with a mandate that has not expired. The instruction's
+     mandate is bound to its mailbox ID (`mandate_origin_once`), so it is
+     reused, or renewed under a rule to decide.
+   - The candidates are the rows of `volume_restore_losses` with an
+     `invocation_id`, for the agent's current incarnation. A rerun is due only
+     while the authority's `OutcomeStatus` is `lost` and the subject is not
+     revoked (the model's `due`). The worker records it already:
+     `RecordOutcome` on the rerun's delivery records the rerun.
    - The input is still stored, because its 7 days exceed the 24-hour volume
      window. Its purge must wait while the invocation is `lost`.
    - Attachment bytes are purged once an invocation finishes, so a rerun
      cannot send them again. That case needs a product decision. Until then,
      such an invocation should stay `lost`.
    - Agent-to-agent requests and messages also reach the guest with an event
-     ID, and can be lost in the same way. The invocation API below does not
-     cover them.
-3. **API.** `openapi/openapi.yaml` is unchanged, for the same reason. With
-   the defaults below, it will expose:
+     ID, and can be lost in the same way. Their losses are recorded with their
+     mailbox and no invocation. The invocation API below does not cover them.
+   - Losses without a mailbox belong to the database's own window. They are
+     announced as a whole (default 1 below).
+2. **API.** `openapi/openapi.yaml` is unchanged. With the defaults below, it
+   will expose:
    - `state: lost`, in the `Invocation` enum and in the `state` filter of the
      list route. The loss is declared and the rerun is pending, or will not
      happen because the subject is revoked.
-   - `lost_at` (date-time): when the loss was declared. A `completed`
-     invocation with `lost_at` was rerun after a restore loss. Its
-     `completed_at` is the rerun's.
+   - `lost_at` (date-time): when the loss was declared, from
+     `volume_restore_losses.declared_at`. A `completed` invocation with
+     `lost_at` was rerun after a restore loss. Its `completed_at` is the
+     rerun's.
    - While an invocation is `lost`, a result that the restored database
      still holds stays readable. The rerun's result replaces it.
 
@@ -373,8 +439,16 @@ Some runs have no Go projection:
    the state. A client that ignores `lost_at` still reads a completed rerun
    as a normal completion. The authority's `lost` and `rerun_confirmed` map
    to `lost`, and to `completed` with `lost_at`.
-4. **Measurement.** Once the coordinator exists, the restore exercise of
-   REC-03 must show a declared loss end to end.
+3. **Another host.** A restore onto another host needs D-05: the keys,
+   secrets and revocations outside the restored domain.
+4. **Barriers during a restore.** A revocation barrier that targets a
+   restoring agent waits until its image is installed: a fence boot is refused
+   before. The model lets a revocation finish without a store that does not
+   execute; the barrier code does not use that yet. Likewise, the removal of a
+   deleted agent's volume needs it `READY`: a deletion requested during a
+   restore ends after the restore.
+5. **Measurement.** The KVM test shows a declared loss end to end, once run.
+   The restore exercise of REC-03 must measure it on the standby.
 
 ### Questions for the product owner
 

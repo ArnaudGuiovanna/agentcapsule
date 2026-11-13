@@ -6,7 +6,8 @@ discovers the deliveries, closures, expirations and deletions to process in
 PostgreSQL. With `key_authority` and `provisioning` configured, it also resumes
 creation reservations. The API path with two owners and two VMs, including
 provisioning and encrypted wake, is exercised by
-`scripts/verify-product-guest.py`. The restore scenarios remain open.
+`scripts/verify-product-guest.py`. The worker also restores an agent from an
+archive, on its own host ([Restoring an agent](#restoring-an-agent)).
 
 Build with the repository's Go version, CGO and the libcryptsetup headers:
 
@@ -67,8 +68,9 @@ harness source accepts the approved local image whose digest is exactly
 New installations register each volume with an initial incarnation of 1. The
 worker checks this incarnation before key delivery, confirmation and adoption;
 the guest verifies its persistent marker. An old guest or catalog without this
-identity must not be relabeled at startup. The restore coordinator and data
-recovery remain to be delivered.
+identity must not be relabeled at startup. Only a restore moves a volume to a
+new incarnation, one step up; the guest then moves its marker on the restricted
+boot of the restored image.
 
 Creation goes through the durable LUKS2 container, an immutable host
 registration (inode, size and resources), then a restricted boot. The worker
@@ -363,8 +365,36 @@ authorities. No decryption key is copied into the archive. The files and the
 manifest are verified on read; a signature never exempts you from inspecting the
 recovered data or from respecting the restore barriers.
 
-This local storage provides an encrypted source for the future restore. It is
+This local storage is the encrypted source of a restore (next section). It is
 not an off-VPS backup, a restore test on a second host or a proof of erasure of
-all key copies. Neither way brings a backup back as an active VM. The restricted coordinator, the history inspection/repair and the
-tenant rules of the product spec ([product.md](product.md)) remain to be wired
-before declaring this restore operational.
+all key copies.
+
+## Restoring an agent
+
+The operator can restore one agent of this host from one of its archives, into
+a new incarnation, with the same worker configuration and protected PostgreSQL
+environment. Like the archive on demand, it is a separate process: stop the
+maintenance worker first, and restart it after. It needs product provisioning,
+both authorities, and a restore authority catalogue at version 2.
+
+```sh
+/opt/agentcapsule/agentcapsule-worker \
+  -config /etc/agentcapsule/worker.json \
+  -restore-agent "$AGENT_ID" \
+  -restore-id rst_0123456789abcdef0123456789abcdef \
+  -archive-id "$ARCHIVE_ID" \
+  -archive-root /var/lib/agentcapsule-archives
+```
+
+Choose a new `rst_` identifier followed by 32 lowercase hexadecimal digits. The
+restore is recorded in PostgreSQL under it before anything stops; until the
+command succeeds, the agent stays out of service. Run the same command again,
+with the same identifier, to resume it after a crash or an error. A new
+identifier replaces an unfinished restore that has not activated. The worker
+prints a receipt with the new incarnation and the number of declared losses,
+or `restore_failed_<reason>`. See
+[Restoring an agent from an archive](recovery.md#restoring-an-agent-from-an-archive)
+for the steps, the losses and the crashes.
+
+A restore onto another host is not possible: it needs the keys, secrets and
+revocations outside the restored domain (D-05).

@@ -367,8 +367,137 @@ The selection, the records and retention are tested on PostgreSQL. The KVM test
 archived by the running maintenance loop while it delivers to another agent,
 then an overdue running agent stopped for its archive and woken by its next
 invocation. Each archive is opened with the restore authority (manifest, size,
-digest). This test is compiled and remains to be run under KVM. A restore from
-an archive is not yet built.
+digest). This test is compiled and remains to be run under KVM. Restoring an
+agent from one of these archives is the next section.
+
+## Restoring an agent from an archive
+
+The worker restores one agent, on its own host, from one of its archives
+(REC-02). The agent gets a **new incarnation** of the same volume, and every
+outcome the archive lacks is **declared lost**, as
+[ADR 003](adr/003-restore-rpo.md#model-revision-option-b) requires. This is the
+building block of a disaster restore. A restore onto another host needs the
+keys, secrets and revocations outside the restored domain (D-05): it is not
+possible yet.
+
+### Run it
+
+The restore is a mode of the worker, like the archive on demand
+([worker.md](worker.md#restoring-an-agent)). It needs product provisioning, both
+authorities, and a restore authority catalogue at version 2: run
+`agentcapsule-admin init-restore-authority` again on an older one. Stop the
+maintenance worker first, so that it releases its listeners, and restart it
+after.
+
+```sh
+/opt/agentcapsule/agentcapsule-worker \
+  -config /etc/agentcapsule/worker.json \
+  -restore-agent "$AGENT_ID" \
+  -restore-id rst_0123456789abcdef0123456789abcdef \
+  -archive-id "$ARCHIVE_ID" \
+  -archive-root /var/lib/agentcapsule-archives
+```
+
+- **The restore ID** is a new `rst_` identifier with 32 lowercase hexadecimal
+  digits. Keep it: the same command with the same ID resumes the restore. The
+  ID above is an example.
+- **The archive** is one of the agent's archives in the archive root: a nightly
+  one (`volume_archives`) or one taken on demand. It must be of the agent's
+  current volume and of its size. The worker authenticates it and hashes it
+  before it stops anything.
+- **The newest archive.** An archive can hold outcomes that another lacks only
+  by being newer. So the worker refuses a nightly archive when a newer one of
+  the agent is still in the archive root (`restore_failed_newer_archive`).
+  Nothing has stopped then. To restore an older one anyway, move the newer one
+  out of the root first. An archive taken on demand is not recorded, so it is
+  never refused for this reason.
+- **The harness** must report the outcomes its store holds (the `outcomes`
+  feature of [the control protocol](guest/capsule-control.md)). The Go
+  harnesses and the Python SDK of this version do; a harness package built
+  before must be rebuilt and imported again. Before it stops anything,
+  the worker checks the agent's harness: it asks the running VM, or boots a
+  sleeping agent restricted for the check (`restore_failed_unsupported_harness`).
+
+On success, the worker prints a receipt and exits:
+
+```json
+{"restore_id":"rst_…","agent_id":"…","archive_id":"arc_…","incarnation":2,"losses":2,"unmatched_losses":0}
+```
+
+On failure, it prints `restore_failed_<reason>` on standard error. The reasons
+are `archive`, `newer_archive`, `busy`, `authority`, `unsupported_harness`,
+`state` and `error`.
+
+### What it does
+
+The steps follow the restore model:
+1. **Out of service.** One PostgreSQL transaction records the restore
+   (`volume_restores`, migration 0029) and makes the volume `RESTORING` at the
+   next incarnation. From then on, the agent gets no ordinary boot, no delivery
+   and no archive: its deliveries wait. Every check of the old incarnation
+   fails.
+2. **Reservation.** The restore authority reserves the same incarnation. The
+   old incarnation can no longer record an outcome.
+3. **Retirement.** The agent's VMs are removed.
+4. **Install.** The archive is written into the agent's volume file, in place:
+   the volume keeps its identity and its key. The bytes written must match the
+   archive's digest.
+5. **Restricted boot.** The image boots at the new incarnation, restricted: no
+   delivery, no platform channel. The guest moves the image's marker to the new
+   incarnation. The worker fences it with every revocation.
+6. **Activation.** The restore authority inspects the outcomes that the image
+   holds against those it recorded for the agent. It asks for a repair first.
+   Then it declares lost, for the new incarnation, each recorded outcome still
+   missing, and only then publishes the activation in PostgreSQL.
+7. **Back in service.** The restricted boot is removed. One transaction copies
+   the declared losses into PostgreSQL and makes the volume `READY` again. The
+   agent wakes on its next delivery, at the new incarnation.
+
+### Crashes
+
+A crash at any step leaves the volume `RESTORING`: nothing serves it. Run the
+same command again, with the same restore ID: it resumes from the last step
+that committed.
+- A crash during the copy redoes the copy from the archive.
+- A crash during the restricted boot boots again.
+- Once the activation is published, the worker only removes the boot, copies
+  the losses and puts the volume back in service.
+
+To use another archive, run the command with a **new** restore ID. It replaces
+an unfinished restore that has not activated yet, one incarnation further. An
+activated restore cannot be replaced: resume it.
+
+### The losses
+
+The restore authority keeps the declared losses outside the restored domain.
+The worker copies the losses of the new incarnation into PostgreSQL
+(`volume_restore_losses`), in the transaction that puts the volume back in
+service. Each row names the restore, the incarnation, the outcome and the time,
+and, when the database still knows it, the delivery whose outcome it is: its
+mailbox, and its invocation for an owner instruction. The worker finds them by
+computing the outcome ID of each of the agent's mailboxes. A loss without a
+mailbox is work that the restored database lost too, within its own window.
+The rows are never changed or deleted.
+
+The invocations of the lost outcomes keep their state for now: they are not run
+again, and the API does not show them as lost. That is the next step
+([ADR 003](adr/003-restore-rpo.md#what-remains)).
+
+### Tests
+
+- PostgreSQL: the incarnation changes only through a restore, the steps of the
+  operation, the atomic steps, the mapping of the losses
+  (`internal/controlplane/volume_restores_test.go`).
+- The coordinator, with a fake host and a real guest protocol over a harness
+  database: only the outcomes after the archive declared lost, a stop after
+  each step and resumption, a copy cut half way, a failure after the
+  declaration, a superseded restore, refusals before anything stops
+  (`internal/worker/restore_test.go`).
+- KVM: `TestProductWorkerRestoresAgentFromArchive` restores a real agent from
+  an archive taken on demand, stopped twice and resumed. It checks the
+  installed bytes, the losses and their invocations, the agent answering at the
+  new incarnation, and the old incarnation refused. It is compiled and remains
+  to be run as root (`scripts/verify-product-guest.py`).
 
 ## Still to do (ADR 004)
 
@@ -379,12 +508,14 @@ an archive is not yet built.
 2. **Volume archives off the host.** Nightly archives are taken on the host
    without stopping the maintenance worker (above). Shipping them to the
    S3-compatible store and to the standby, encrypted as they are, remains.
-3. **The declared-loss state.** The P2 model is revised and the restore
-   authority declares losses ([ADR 003](adr/003-restore-rpo.md#model-revision-option-b)).
-   The restore coordinator and the `lost` state of the API remain.
+3. **The declared-loss state in the API.** A restore declares and records the
+   losses ([above](#restoring-an-agent-from-an-archive)). Running the lost
+   invocations again and the API's `lost` state remain
+   ([ADR 003](adr/003-restore-rpo.md#what-remains)).
 4. **A failover exercise** that measures the RPO and the RTO of the whole
    platform, on real hosts. The database's part is measured
    ([the standby](#qualify-the-standby)); the configuration, the authorities,
-   the agents and the address are not.
+   the agents and the address are not. Restoring an agent onto another host
+   needs D-05.
 5. **CI.** Ubuntu 24.04 ships an older pgBackRest than the qualified 2.58.
    Running this qualification in CI needs a pinned 2.58.
