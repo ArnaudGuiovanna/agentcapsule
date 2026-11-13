@@ -57,7 +57,10 @@ host registry:
 
 Both authorities must be separate from the runtime and its backups. The service
 refuses an absent authority or one with a different identity; it does not
-initialize it at startup. The UIDs of removed agents stay reserved. This first
+initialize it at startup. Running `init-restore-authority` again on an existing
+catalog keeps its identity and upgrades its schema. Version 2 adds the losses
+that a restore declares ([ADR 003](adr/003-restore-rpo.md)). Before the
+upgrade, the worker keeps running; only the loss operations are refused. The UIDs of removed agents stay reserved. This first
 harness source accepts the approved local image whose digest is exactly
 `sha256:<initrd.sha256>`; OCI import and assembly remain to be built.
 

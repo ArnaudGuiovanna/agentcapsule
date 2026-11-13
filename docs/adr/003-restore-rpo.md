@@ -193,24 +193,185 @@ not that it eventually runs.
 - A result that was never confirmed is not declared lost. Its work simply runs
   again.
 
-### What remains for the code (REC-02)
+### What is done and what remains for the code (REC-02)
 
-- **Activation path.** `restoreauthority.Catalog.WithActivation` has no
-  production caller yet. Its `inspect` callback refuses a missing outcome with
-  `ErrHistory`: that is the old guarantee. It must instead compute the missing
-  outcomes, record them as declared losses (same transaction, or before), then
-  publish `Ready`. A repair from an available archive comes first.
-- **Authority catalogue.** A table of declared losses (event, store,
-  incarnation) and of reruns, never deleted. The catalogue stays outside the
-  restored domain (D-05).
-- **Rerun.** The job is rescheduled with the same identifier, unless its
-  subject is revoked. `RecordOutcome` rejects a new digest for a known ID
-  (`ErrConflict`), so the rerun needs its own record before the external
-  success.
-- **API.** A distinct result state for a declared loss and for a confirmed
-  rerun, with its documentation (product spec §10.4).
-- **Conformance.** No Go test reads this model's traces today. The runs above
-  are the P2 scenarios to project when REC-02 adds them.
+#### Done: the restore authority
+
+All of this is in `internal/restoreauthority`.
+
+- **Catalogue.** Schema version 2 adds two tables, kept outside the restored
+  domain with the rest of the catalogue:
+  - `losses`: outcome, store, incarnation;
+  - `reruns`: outcome, incarnation, digest.
+
+  Triggers refuse any update or delete, so a declared loss and its rerun are
+  never withdrawn. The version is SQLite's `user_version`; version 1 did not
+  record it. Running `agentcapsule-admin init-restore-authority` again
+  upgrades a version 1 catalogue in place and keeps its identity. Until then,
+  a version 1 catalogue keeps working and keeps the old guarantee, and the
+  loss operations return `ErrUnavailable`. `Open` never changes the schema.
+  An unknown version fails closed.
+- **Activation path.** `Catalog.Activate` takes the coordinator's `Inspect`,
+  `Repair` and `Publish` callbacks:
+  1. It inspects the image against the outcomes the authority recorded for
+     the store. Each outcome carries its current digest: its latest rerun's
+     digest, or else the first one.
+  2. If outcomes are missing, `Repair` copies them from an available archive.
+     It runs outside the catalogue transaction. An error aborts before any
+     declaration.
+  3. It inspects again and declares each outcome still missing, for the
+     receipt's incarnation. That transaction commits before `Publish` runs,
+     so a published `Ready` never hides an undeclared loss. It declares only
+     what the inspection reports. It refuses an outcome the authority never
+     recorded (`ErrInput`).
+  4. `WithActivation` inspects a third time and runs `Publish`. It is the
+     model's guard: it refuses with `ErrHistory` while a missing outcome has no
+     loss declared for this incarnation. A loss declared for an earlier
+     incarnation does not count. The old refusal remains only here.
+- **Rerun.** `RecordRerun` records the rerun of a loss declared for the
+  current incarnation. It runs after the rerun's local commit and before its
+  external success. A loss has one rerun: a retry with the same digest is a
+  no-op, and another digest is `ErrConflict`. Without a loss declared for this
+  incarnation, it returns `ErrNotDeclared`. `RecordOutcome`, which the worker
+  already calls on every delivery, calls it when the delivered outcome is
+  declared lost for the current incarnation. So the worker needs no change.
+  Otherwise `RecordOutcome` accepts a known ID only with its current digest.
+- **Reading.** `Losses(store)` lists a store's losses and their reruns, in
+  every incarnation. `OutcomeStatus(id)` gives the model's `outcomeStatus`
+  for the current incarnation of the outcome's store: `unrecorded`,
+  `confirmed`, `lost` or `rerun_confirmed`, with the outcome's losses. The
+  model's `due` also needs the job's subject, which only the control plane
+  knows.
+
+#### Go projections of the runs
+
+The Go tests are written by hand from the runs in
+[restore_authority_test.qnt](../../spec/restore_authority_test.qnt). No Go
+test reads the model's traces. The tests are in
+`internal/restoreauthority/losses_test.go`, unless the table names
+`catalog_test.go`.
+
+| Quint run | Go test |
+| --- | --- |
+| `undeclaredLossPreventsActivationTest` | `TestUndeclaredLossPreventsActivation`; on real SQLite data, `TestActivationRequiresActualRecoveredData` (`catalog_test.go`) |
+| `declaredLossAllowsActivationTest` | `TestDeclaredLossAllowsActivation` |
+| `declaredLossBreaksFormerGuaranteeTest` | `TestDeclaredLossBreaksFormerGuarantee` |
+| `declaredLossIsRerunOnceTest` | `TestDeclaredLossIsRerunOnce` |
+| `rerunNeedsDeclaredLossTest` | `TestRerunNeedsDeclaredLoss` |
+| `noDeclarationWithoutLossTest` | `TestNoDeclarationWithoutLoss`, which also checks `lossesNameAcknowledgedWork` |
+| `repairComesBeforeDeclarationTest` | `TestRepairComesBeforeDeclaration`; on real SQLite data, `TestActivationRequiresActualRecoveredData` |
+| `lostArchiveLeadsToDeclaredLossTest`, `unavailableArchivePreventsRepairTest` | `TestLostArchiveLeadsToDeclaredLoss` |
+| `declaredLossSurvivesControlBackupRestoreTest` | `TestDeclaredLossSurvivesControlBackupRestore` |
+| `oldImageDoesNotReviveOffboardedJobTest` | `TestOldImageDoesNotReviveOffboardedJob` |
+| `freshBackupKeepsAcknowledgedOutcomeTest` | `TestFreshBackupKeepsAcknowledgedOutcome` |
+| `unacknowledgedOutcomeCanBeRecomputedTest` | `TestUnacknowledgedOutcomeCanBeRecomputed` |
+| `oldImageReconcilesRevocationsAndOutcomesTest` | `TestOldImageReconcilesRevocationsAndOutcomes` |
+| `markerCannotInventRecoveryDataTest` | `TestActivationRequiresActualRecoveredData` (`catalog_test.go`) |
+| `earlierDeclarationDoesNotCoverLaterLossTest` | `TestEarlierDeclarationDoesNotCoverLaterLoss` |
+| `eachRestoreDeclaresItsOwnLossTest` | `TestEachRestoreDeclaresItsOwnLoss` |
+| `backupAfterRerunNeedsNoDeclarationTest` | `TestBackupAfterRerunNeedsNoDeclaration` |
+| `forgottenLossTest` (rollback) | `TestDeclaredLossIsNeverWithdrawn`: the catalogue refuses to delete or change a loss or a rerun. It cannot detect a catalogue restored from its own backup, so the catalogue must stay outside the restored domain (D-05). |
+| `undeclaredLossTest`, `silentRerunTest` (missing history) | No Go switch turns the guard off. `TestUndeclaredLossPreventsActivation` checks the guard that these runs remove. |
+
+Two more tests cover the code rather than a run.
+`TestAuthoritySIGKILLBeforeAndAfterCommit` (`catalog_test.go`) kills the
+process before and after the commit of a declaration and of a rerun; a retry
+records each one once. `TestVersionOneCatalogueUpgradesOnInitialize` covers
+the schema upgrade.
+
+The earlier runs keep the tests they had:
+
+- `activationRechecksNewRevocationTest` and
+  `rescanAfterConcurrentRevocationTest`:
+  `TestReceiptRevisionAndForgeryCannotPublish` and
+  `TestPublicationSerializesConcurrentRevocation`.
+- `oldReceiptCannotBindToNewImageTest`:
+  `TestConcurrentReservationAndOldReceiptCannotRebind`.
+- `sealedStoreCannotBeRestoredTest`:
+  `TestReceiptRevisionAndForgeryCannotPublish`.
+- `sealedStoreCannotBlockFutureRevocationTest`:
+  `TestCurrentFenceAndRevocationPublicationRequireIndependentACKs`.
+- `revokedSubjectCannotAcquireNewKeyTest`:
+  `TestSubjectKeyGateUsesIndependentIntent`.
+- `lostReceiptIsRetriedFromDurableFenceTest`:
+  `TestLostGuestFenceACKDoesNotBecomeIndependentReceipt` (`internal/worker`,
+  with PostgreSQL).
+
+Some runs have no Go projection:
+
+- The writer and retirement runs need the restore coordinator and the guest:
+  `writerBlocksFenceTest`, `admittedWriterFinishesBeforeRevocationTest`,
+  `physicalRetirementAbortsOldWriterTest`,
+  `sealRetirementCannotInstallUnreservedImageTest`.
+- The key runs belong to the key authority (D-05):
+  `destructionWaitsForAllCachedCopiesTest`,
+  `destructionRequiresPermanentSealTest`,
+  `destroyedKeyCannotDecryptOldBackupTest`, `liveKeyDecryptsBackupTest`,
+  `oldImageDoesNotReviveDestroyedKeyTest`.
+- Three authority runs are covered only in part:
+  `authorityOutageBlocksOtherwiseReadyActivationTest`,
+  `authorityRecoveryAllowsActivationTest` and
+  `authorityStateSurvivesControlBackupRestoreTest`.
+  `TestInitializationIdentityAndMissingAuthorityFailClosed` checks an outage
+  and a recovery on a key grant, not on an activation.
+
+#### What remains
+
+1. **There is no production restore path.** Nothing in production calls
+   `ReserveIncarnation`, `Activate` or `WithActivation`. No coordinator drains
+   a store, retires it, installs an image, boots it restricted, inspects it
+   and activates it. The control plane cannot hold a restored incarnation
+   either:
+   - the `enrollment_identity_guard` trigger forbids any change to
+     `store_enrollments.incarnation`;
+   - the worker requires the guest's incarnation to match that column.
+
+   The code above is ready for the coordinator, but nothing reaches it today.
+2. **Control-plane state.** Not added: without the coordinator, it cannot be
+   tested end to end. It needs these pieces:
+   - After activation, the coordinator copies the declared losses into
+     PostgreSQL. A new migration adds a table keyed by operation, with the
+     incarnation and the time.
+   - The authority stores outcome IDs, not invocation IDs. The control plane
+     finds the invocation by computing the outcome ID again: `outcome-v1/`
+     followed by a SHA-256 of a domain tag, the agent ID and the event ID
+     (`harnessstore.StoredOutcomeFingerprint`). An invocation's event ID is
+     its mailbox ID.
+   - An outcome ID that matches no invocation comes from work that the
+     restored database also lost, in its 15-minute window. That window is
+     announced as a whole (default 1 below).
+   - Rescheduling reopens a completed invocation. Today `SUCCEEDED` is final:
+     the mailbox row becomes `DELIVERED`, the outbox row is deleted, and the
+     input's 7-day purge delay starts. The rerun must put the same mailbox ID
+     back in the queue, with a mandate that has not expired.
+   - The input is still stored, because its 7 days exceed the 24-hour volume
+     window. Its purge must wait while the invocation is `lost`.
+   - Attachment bytes are purged once an invocation finishes, so a rerun
+     cannot send them again. That case needs a product decision. Until then,
+     such an invocation should stay `lost`.
+   - Agent-to-agent requests and messages also reach the guest with an event
+     ID, and can be lost in the same way. The invocation API below does not
+     cover them.
+3. **API.** `openapi/openapi.yaml` is unchanged, for the same reason. With
+   the defaults below, it will expose:
+   - `state: lost`, in the `Invocation` enum and in the `state` filter of the
+     list route. The loss is declared and the rerun is pending, or will not
+     happen because the subject is revoked.
+   - `lost_at` (date-time): when the loss was declared. A `completed`
+     invocation with `lost_at` was rerun after a restore loss. Its
+     `completed_at` is the rerun's.
+   - While an invocation is `lost`, a result that the restored database
+     still holds stays readable. The rerun's result replaces it.
+
+   These names follow the existing schema. States are single lowercase words
+   (`accepted`, `expired`, `canceled`). Lifecycle times end in `_at`
+   (`created_at`, `completed_at`, `run_at`, `result_due_at`). One optional
+   time marks both cases. Unlike a separate boolean, it cannot disagree with
+   the state. A client that ignores `lost_at` still reads a completed rerun
+   as a normal completion. The authority's `lost` and `rerun_confirmed` map
+   to `lost`, and to `completed` with `lost_at`.
+4. **Measurement.** Once the coordinator exists, the restore exercise of
+   REC-03 must show a declared loss end to end.
 
 ### Questions for the product owner
 
@@ -226,3 +387,21 @@ not that it eventually runs.
    final state, such as "cancelled"?
 4. Some jobs act outside the agent (an email, a payment). Should a caller be
    able to refuse the automatic rerun of such a job?
+
+### Defaults pending the product owner's confirmation
+
+The code and the plan above use these defaults until the product owner
+answers.
+
+1. A loss is declared result by result for the outcomes that the authority
+   recorded but the restored image lacks: the volume window, up to 24 hours.
+   The database window, up to 15 minutes, is announced as a time window. The
+   catalogue is assumed to survive a disaster; where it lives is D-05.
+2. In the API, a declared loss whose rerun is pending has the state `lost`.
+   A rerun that completes has the state `completed` and keeps `lost_at` as
+   its marker (see "What remains").
+3. A lost job whose subject was revoked stays `lost`. It is not rescheduled
+   and gets no other state.
+4. The rerun is automatic and keeps the event ID, so the agent can
+   deduplicate it. A caller cannot refuse it for now. An opt-out for jobs that
+   act outside the agent is a follow-up.
