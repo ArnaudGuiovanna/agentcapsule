@@ -37,7 +37,7 @@ a production host yet.
 | API-01 | Shared API conventions, canonical OpenAPI 3.1 document | Partial | Remaining endpoint families (events, registry, interop) |
 | API-02 | Admin CLI, HTTP examples, redacted diagnostics | Partial | Diagnostic export, guarded destructive commands |
 | OPS-01 | Validated configuration, separate secrets, preflight, mock vs production install | Partial | TLS everywhere, private Directory/SLIM, pinned versions, preflight on a target host |
-| OPS-02 | Metrics (Prometheus/OpenTelemetry), correlation IDs, redacted logs, alerts | Not started | All |
+| OPS-02 | Metrics (Prometheus/OpenTelemetry), correlation IDs, redacted logs, alerts: `/metrics` on loopback for the API (route, status, latency) and the worker (jobs, retry reasons, boots, queue delay, capacity, disk), JSON events from closed vocabularies, `X-Request-ID` in each request's event, alert rules with promtool tests ([docs/observability.md](docs/observability.md)) | In progress | A promtool run of the alert tests; traces from API requests into worker jobs; worker metrics on KVM (`verify-runtime.py --control-guest`) |
 | OPS-03 | Host capacity, sparse disks, retention/GC, pressure thresholds, scheduler under load | Partial | Thresholds and alerts, load tests |
 
 ## Organizations and identity

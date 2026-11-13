@@ -1,0 +1,52 @@
+# promtool test rules alerts_test.yml (scripts/verify-alerts.py runs it).
+rule_files:
+  - alerts.yml
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    input_series:
+      - series: 'agentcapsule_worker_root_disk_used_ratio{job="agentcapsule-worker",instance="host-1"}'
+        values: '0.50 0.75x20 0.85x10'
+      - series: 'agentcapsule_worker_job_oldest_due_seconds{job="agentcapsule-worker",instance="host-1",kind="delivery"}'
+        values: '0 400x10'
+      - series: 'up{job="agentcapsule-api",instance="host-1"}'
+        values: '1 0x5'
+      - series: 'agentcapsule_worker_job_retries_total{job="agentcapsule-worker",instance="host-1",kind="delivery",reason="slim_unavailable"}'
+        values: '0+1x30'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: AgentCapsuleDiskPressure
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: AgentCapsuleDiskPressure
+        exp_alerts:
+          - exp_labels: {severity: warning, job: agentcapsule-worker, instance: host-1}
+            exp_annotations:
+              summary: The runtime root's file system is more than 70 % full.
+      - eval_time: 15m
+        alertname: AgentCapsuleDiskCritical
+        exp_alerts: []
+      - eval_time: 28m
+        alertname: AgentCapsuleDiskCritical
+        exp_alerts:
+          - exp_labels: {severity: critical, job: agentcapsule-worker, instance: host-1}
+            exp_annotations:
+              summary: The runtime root's file system is more than 80 % full.
+      - eval_time: 8m
+        alertname: AgentCapsuleQueueDelayed
+        exp_alerts:
+          - exp_labels: {severity: warning, job: agentcapsule-worker, instance: host-1, kind: delivery}
+            exp_annotations:
+              summary: A due worker job has waited more than 5 minutes past its time.
+      - eval_time: 4m
+        alertname: AgentCapsuleTargetDown
+        exp_alerts:
+          - exp_labels: {severity: critical, job: agentcapsule-api, instance: host-1}
+            exp_annotations:
+              summary: An Agent Capsule process does not answer its metrics scrape.
+      - eval_time: 25m
+        alertname: AgentCapsuleSLIMUnavailable
+        exp_alerts:
+          - exp_labels: {severity: warning, job: agentcapsule-worker, instance: host-1, kind: delivery, reason: slim_unavailable}
+            exp_annotations:
+              summary: Deliveries between agents wait for the SLIM bridge or node.

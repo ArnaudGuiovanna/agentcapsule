@@ -34,6 +34,10 @@ bin/agentcapsule-api \
   -listen 127.0.0.1:8080
 ```
 
+Add `-metrics-listen 127.0.0.1:9464` to serve Prometheus metrics on loopback
+([observability.md](../observability.md)). Each request writes one JSON event,
+with its `X-Request-ID`, on standard output.
+
 Bootstrap applies the migration and writes the secrets to private files
 without printing them. Retrying with the same files confirms the same token
 without extending its lifetime. After an unknown commit result, keep these

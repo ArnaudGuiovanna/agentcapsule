@@ -61,6 +61,9 @@ jobs:
       - name: Repository hygiene (no personal paths, no committed evidence sources)
         run: python3 scripts/check-repo-hygiene.py
 
+      - name: Alert rules use only metrics the code registers
+        run: python3 scripts/verify-alerts.py
+
       - name: Validate the OpenAPI 3.1 contract
         run: |
           python3 -m venv "$RUNNER_TEMP/openapi"

@@ -123,6 +123,8 @@ func run() int {
 	if err = w.EnableTelemetry(registry, opts.Root, opts.MaxActive); err != nil {
 		return fail("telemetry_unavailable")
 	}
+	importRetries := registry.Counter("agentcapsule_worker_harness_import_retries_total", "Harness imports that failed and will be tried again.")
+	publishRetries := registry.Counter("agentcapsule_worker_directory_publish_retries_total", "Directory publication passes that failed (the Directory unreachable or refusing).")
 	if c.MetricsListen != "" && !archiveRequested {
 		// Metrics are technical, but a scraper reaches them on the host only.
 		host, _, err := net.SplitHostPort(c.MetricsListen)
@@ -170,6 +172,7 @@ func run() int {
 		go func() {
 			_ = importer.Run(ctx, maintenance.Interval, func(error) {
 				if ctx.Err() == nil {
+					importRetries.Inc()
 					problems.Event("harness_import_retry")
 				}
 			})
@@ -190,6 +193,7 @@ func run() int {
 			publisher := &directory.Publisher{Store: s, Directory: dir}
 			go publisher.Run(ctx, publishEvery, func(error) {
 				if ctx.Err() == nil {
+					publishRetries.Inc()
 					problems.Event("directory_publish_retry")
 				}
 			})

@@ -1,0 +1,19 @@
+# Scrape configuration for one Agent Capsule host (OPS-02). Both processes
+# serve /metrics on loopback only; run Prometheus (or an OpenTelemetry
+# collector with a Prometheus receiver) on the same host. The addresses are
+# examples: agentcapsule-api -metrics-listen and the worker's "metrics_listen".
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+rule_files:
+  - alerts.yml
+scrape_configs:
+  - job_name: agentcapsule-api
+    static_configs:
+      - targets: ["127.0.0.1:9464"]
+  - job_name: agentcapsule-worker
+    static_configs:
+      - targets: ["127.0.0.1:9465"]
+  - job_name: node
+    static_configs:
+      - targets: ["127.0.0.1:9100"]

@@ -1,0 +1,122 @@
+# Alerts of one Agent Capsule host (OPS-02, OPS-03), on the metrics the API
+# and the worker serve at /metrics (agentcapsule-api -metrics-listen, the
+# worker's "metrics_listen"). The scrape jobs are named agentcapsule-api and
+# agentcapsule-worker (prometheus.yml). Annotations are fixed text: metrics
+# carry no organization, agent or member, so neither do alerts.
+groups:
+  - name: agentcapsule
+    rules:
+      - alert: AgentCapsuleTargetDown
+        expr: up{job=~"agentcapsule-api|agentcapsule-worker"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: An Agent Capsule process does not answer its metrics scrape.
+
+      - alert: AgentCapsuleAPIServerErrors
+        expr: |
+          sum by (job, instance) (rate(agentcapsule_api_requests_total{status_class="5xx"}[5m]))
+            / sum by (job, instance) (rate(agentcapsule_api_requests_total[5m])) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: More than 5 % of API requests fail with a server error.
+
+      - alert: AgentCapsuleQueueDelayed
+        expr: agentcapsule_worker_job_oldest_due_seconds > 300
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: A due worker job has waited more than 5 minutes past its time.
+
+      - alert: AgentCapsuleJobsFailing
+        expr: agentcapsule_worker_jobs_failing > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Worker jobs keep failing (three attempts or more).
+
+      - alert: AgentCapsuleVMBootFailures
+        expr: increase(agentcapsule_worker_vm_starts_total{outcome="failed"}[15m]) > 3
+        labels:
+          severity: warning
+        annotations:
+          summary: VMs failed to boot more than 3 times in 15 minutes.
+
+      - alert: AgentCapsuleCapacityExhausted
+        expr: agentcapsule_worker_vms_running >= agentcapsule_worker_vm_capacity
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: The host runs as many VMs as max_active allows; waking an agent stops another.
+
+      - alert: AgentCapsuleDiskPressure
+        expr: agentcapsule_worker_root_disk_used_ratio > 0.70
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: The runtime root's file system is more than 70 % full.
+
+      - alert: AgentCapsuleDiskCritical
+        expr: agentcapsule_worker_root_disk_used_ratio > 0.80
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: The runtime root's file system is more than 80 % full.
+
+      - alert: AgentCapsuleSLIMUnavailable
+        expr: increase(agentcapsule_worker_job_retries_total{reason="slim_unavailable"}[10m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Deliveries between agents wait for the SLIM bridge or node.
+
+      - alert: AgentCapsuleDirectoryUnavailable
+        expr: increase(agentcapsule_worker_directory_publish_retries_total[10m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: The worker cannot publish to the Directory.
+
+      - alert: AgentCapsuleWakeBudgetExhausted
+        expr: increase(agentcapsule_worker_job_retries_total{reason="wake_budget"}[15m]) > 0
+        labels:
+          severity: info
+        annotations:
+          summary: An organization's agents reached their wake budget; requests wait.
+
+      - alert: AgentCapsuleMetricsStale
+        expr: increase(agentcapsule_telemetry_collect_errors_total[10m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: A process cannot read its current state for its metrics (database or disk).
+
+  # Host resources, from node_exporter on the same host.
+  - name: agentcapsule-host
+    rules:
+      - alert: AgentCapsuleHostMemoryLow
+        expr: node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Less than 10 % of the host's memory is available.
+
+      - alert: AgentCapsuleHostCPUSaturated
+        expr: 1 - avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) > 0.90
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: The host's CPUs are more than 90 % busy.

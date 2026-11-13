@@ -91,9 +91,12 @@ the product path on KVM.
 
 The loop performs one pass immediately, then waits `poll_interval` after each
 pass. Each attempt has its own `attempt_timeout`; a failure keeps the SQL job
-and the other jobs in the list are still attempted. The logs contain the fixed
-codes `maintenance_started`, `maintenance_complete` and `maintenance_retry`,
-with no DSN, raw SQL error, certificate or user content. `SIGTERM` and `SIGINT`
+and the other jobs in the list are still attempted. The logs are JSON events
+from a closed vocabulary (`maintenance_started`, `maintenance_complete`,
+`maintenance_retry` with its reason, …), with no DSN, raw SQL error,
+certificate or user content. With `"metrics_listen": "127.0.0.1:9465"`, the
+worker serves Prometheus metrics at `/metrics` on that loopback address; see
+[observability.md](observability.md). `SIGTERM` and `SIGINT`
 stop the loop and release its listeners; confirmed VMMs remain adoptable.
 
 A replacement request is committed with `STOPPING`. It stays present after the

@@ -11,8 +11,8 @@ through a gateway that keeps provider credentials outside the VM and enforces
 budgets.
 
 > **Status: pre-MVP, not for production.** The core path is implemented and tested
-> on real KVM, but several MVP areas (A2A/SLIM/Directory interoperability,
-> observability, restore) are missing. See [ROADMAP.md](ROADMAP.md).
+> on real KVM, but several MVP areas (restore, release validation, parts of
+> operations) are missing. See [ROADMAP.md](ROADMAP.md).
 
 ## What works today
 
