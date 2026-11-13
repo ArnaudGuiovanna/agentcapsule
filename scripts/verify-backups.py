@@ -113,7 +113,8 @@ def main():
     for logs in ("pgbackrest", "pgbackrest-standby", "pgbackrest-promoted"):
         (out / logs).mkdir()  # pgBackRest does not create its log path
     report = {"status": "failed", "images": {"s3": SEAWEED, "sftp": SFTP}, "archive_timeout_seconds": ARCHIVE_TIMEOUT}
-    libs = ":".join(str(x) for x in [a.pg_library_path, a.pgbackrest.resolve().parents[2] / "lib/x86_64-linux-gnu"] if x)
+    # pgBackRest's own libraries, extracted beside it: <root>/usr/bin/pgbackrest, <root>/usr/lib/x86_64-linux-gnu.
+    libs = ":".join(str(x) for x in [a.pg_library_path, a.pgbackrest.resolve().parents[1] / "lib/x86_64-linux-gnu"] if x)
     env = {**os.environ, "LD_LIBRARY_PATH": libs}
     for k in list(env):
         if k.startswith(("PG", "PGBACKREST_")):
