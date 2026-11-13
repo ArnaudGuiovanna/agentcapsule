@@ -39,6 +39,16 @@ func (c *Catalog) Snapshot(ctx context.Context, keys *keyauthority.Files, recipi
 	if err := CheckSeparation(c.root, path); err != nil {
 		return position, err
 	}
+	// Arm nothing on a catalogue that cannot hold the stream.
+	if err := c.run(ctx, false, func(tx *sql.Tx) error {
+		v, err := version(ctx, tx)
+		if err == nil && v < 3 {
+			err = ErrUnavailable // upgrade with Initialize first
+		}
+		return err
+	}); err != nil {
+		return position, err
+	}
 	if err := createReplicaFile(ctx, path); err != nil {
 		return position, err
 	}

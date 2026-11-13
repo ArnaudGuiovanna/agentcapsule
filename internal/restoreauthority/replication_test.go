@@ -610,6 +610,33 @@ func TestReplicaCreatedFromASnapshotCatchesUp(t *testing.T) {
 	}
 }
 
+func TestSnapshotNeedsVersionThreeBeforeArming(t *testing.T) {
+	dir := t.TempDir()
+	keys, c := primary(t, dir)
+	if _, err := c.db.Exec("DROP TABLE replication_log; DROP TABLE replication; PRAGMA user_version=2"); err != nil {
+		t.Fatal(err)
+	}
+	_, recipient := newUnlockKey(t)
+	if _, err := c.Snapshot(t.Context(), keys, recipient, filepath.Join(dir, "snapshot.sqlite")); !errors.Is(err, ErrUnavailable) {
+		t.Fatal("snapshot of a version 2 catalogue", err)
+	}
+	if armed, err := keys.Replicated(); err != nil || armed {
+		t.Fatal("the key authority was armed by halves", err)
+	}
+	// A version 2 catalogue keeps working, standalone.
+	if _, err := c.Register(t.Context(), "store-a", "volume-a"); err != nil {
+		t.Fatal(err)
+	}
+	upgraded, err := Initialize(t.Context(), c.root, keys.Identity())
+	if err != nil {
+		t.Fatal(err)
+	}
+	upgraded.Close()
+	if _, err = c.Snapshot(t.Context(), keys, recipient, filepath.Join(dir, "snapshot.sqlite")); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSnapshotHoldsNoSecretInClear(t *testing.T) {
 	dir := t.TempDir()
 	keys, c := primary(t, dir)
