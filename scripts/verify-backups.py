@@ -30,6 +30,9 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 SEAWEED = "chrislusf/seaweedfs@sha256:ccad23e18639c8b98cee17e7100b95830a06077b56d8e5b006d6dcf8ec5e94a0"  # 4.53
 SFTP = "atmoz/sftp@sha256:c5fb9e4beb8b7054a4c0b65c5e11df47cc20da95ad6002e88aecff62bab06372"  # alpine, 2026-11-06
+SFTP_USER = "backup"
+# atmoz/sftp gives each user its home under /home inside the container.
+SFTP_HOME = "/home/" + SFTP_USER
 STANZA = "agentcapsule"
 ARCHIVE_TIMEOUT = 30  # seconds for the run; production uses at most 900 (RPO 15 minutes)
 
@@ -105,7 +108,7 @@ def main():
         containers.append(f"{tag}-sftp")
         run("services", ["docker", "run", "-d", "--name", f"{tag}-sftp", "-p", f"127.0.0.1:{sftp_port}:22",
                          "-v", f"{certs / 'host_key'}:/etc/ssh/ssh_host_ed25519_key:ro",
-                         "-v", f"{certs / 'client_key.pub'}:/home/backup/.ssh/keys/client.pub:ro", SFTP, "backup::1001:1001:repo"])
+                         "-v", f"{certs / 'client_key.pub'}:{SFTP_HOME}/.ssh/keys/client.pub:ro", SFTP, f"{SFTP_USER}::1001:1001:repo"])
         deadline = time.monotonic() + 120
         while True:
             if run("services", ["docker", "exec", f"{tag}-s3", "sh", "-c", "echo 's3.bucket.create -name agentcapsule-backups' | weed shell"],
@@ -208,7 +211,7 @@ def main():
         copies = work / "copies"
         copies.mkdir()
         run("scan", ["docker", "cp", f"{tag}-s3:/data", copies / "s3"])
-        run("scan", ["docker", "cp", f"{tag}-sftp:/home/backup/repo", copies / "sftp"])
+        run("scan", ["docker", "cp", f"{tag}-sftp:{SFTP_HOME}/repo", copies / "sftp"])
         report["plaintext_in_stores"] = {"s3": holds(copies / "s3"), "sftp": holds(copies / "sftp")}
         report["plaintext_in_primary_wal"] = len(holds(data / "pg_wal")) > 0
         if not report["plaintext_in_primary_wal"]:
