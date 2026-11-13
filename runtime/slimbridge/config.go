@@ -36,7 +36,8 @@ type Config struct {
 	// IdleSeconds: a name nobody delivered to for this long stops being
 	// served (default 600). ProbeSeconds: how often the bridge sends itself a
 	// message through the node (default 5); three failures in a row end the
-	// process, since SLIM clients do not reconnect. CallSeconds bounds one
+	// process, since a SLIM client does not follow a node that stays away or
+	// comes back elsewhere. CallSeconds bounds one
 	// delivery across SLIM (default 300).
 	IdleSeconds  int `json:"idle_seconds,omitempty"`
 	ProbeSeconds int `json:"probe_seconds,omitempty"`

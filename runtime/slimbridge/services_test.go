@@ -264,8 +264,10 @@ func TestBridgesCarryDeliveriesThroughTheNode(t *testing.T) {
 	}
 }
 
-// SLIM clients do not reconnect: when the node restarts, the bridge sees its
-// probes fail and ends, so that its supervisor starts a new one, which works.
+// A node that comes back at another address (Docker publishes it on a new
+// port) is never found again by a SLIM client: the bridge sees its probes fail
+// and ends, so that its supervisor starts a new one, which works. A node that
+// restarts at the same address is found again (verify-interop.py --systemd).
 func TestABridgeEndsWhenTheNodeIsLostAndANewOneWorks(t *testing.T) {
 	restart := os.Getenv("INTEROP_SLIM_RESTART")
 	if restart == "" {

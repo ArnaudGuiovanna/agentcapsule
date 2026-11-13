@@ -1,0 +1,66 @@
+# The platform's SLIM bridge (INT-04, docs/interop.md#the-slim-bridge-int-04),
+# the host's only SLIM client. It runs as its own unprivileged user, created by
+# agentcapsule-slim.sysusers; the worker's "slim.bridge_uid" is that user's UID
+# (id -u agentcapsule-slim). Its socket lives in /run/agentcapsule-slim and the
+# worker's in /run/agentcapsule-worker (agentcapsule-slim.tmpfiles).
+#
+# A SLIM client finds a node that restarts at the same address again, but not
+# one that stays away or comes back elsewhere. A node lost for three probes in
+# a row (about 15 seconds) ends the bridge with code 3 (slim_node_lost), and
+# systemd starts a new one every 5 seconds, without limit. While it is away the
+# worker spends no delivery attempt. Code 2 (invalid configuration or socket)
+# is not retried: fix it, then restart the unit.
+[Unit]
+Description=Agent Capsule SLIM bridge
+Documentation=https://github.com/ArnaudGuiovanna/agentcapsule/blob/main/docs/interop.md#the-slim-bridge-int-04
+After=network-online.target agentcapsule-interop.service
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+User=agentcapsule-slim
+Group=agentcapsule-slim
+ExecStart=/opt/agentcapsule/agentcapsule-slim-bridge -config /etc/agentcapsule/slim-bridge.json
+Restart=always
+RestartSec=5s
+RestartPreventExitStatus=2
+TimeoutStopSec=15s
+UMask=0077
+
+# The bridge needs no privilege, no device and no file but its configuration,
+# its credentials and its socket.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ReadWritePaths=/run/agentcapsule-slim
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+# Local sockets to the worker, and the SLIM node. deploy/interop publishes the
+# node on loopback only; for a node on another host, allow its address too.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=localhost
+
+[Install]
+WantedBy=multi-user.target

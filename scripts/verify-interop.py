@@ -12,18 +12,37 @@ exchanges through the SLIM node, A2A over SLIM, the platform's SLIM bridge
 the end of a bridge whose node restarts), and the platform's own Directory
 publisher (internal/directory). The bridge test restarts the SLIM node, so it
 runs last.
+
+With --systemd: also the shipped units of deploy/systemd. systemd-analyze
+verifies them, inside a throwaway root, without a single warning; the bridge's
+exposure is scored; the sysusers and tmpfiles entries are applied to that root.
+With --services as well, the real bridge runs under its unit in the caller's
+systemd user manager, next to the services under theirs: a delivery round trip,
+a node restart at the same address, the services stopped for longer than three
+probes (the bridge ends with code 3 and systemd starts new ones until the node
+is back), a clean stop, and an invalid configuration that is not retried. The
+user manager cannot apply User=, Group=, capability sets or IP filters: those
+lines are left to the system manager and recorded as not exercised.
 """
 import argparse
+import base64
 import contextlib
 import hashlib
+import http.client
+import http.server
 import json
 import os
 from pathlib import Path
 import platform
+import re
+import secrets
 import shlex
 import shutil
+import socket
+import socketserver
 import subprocess
 import tempfile
+import threading
 import time
 import urllib.request
 import zipfile
@@ -49,6 +68,11 @@ BRIDGE_LIBRARY_TESTS = {"TestTheWorkerContractIsTheSameOnBothSides", "TestConfig
 BRIDGE_SERVICE_TESTS = {"TestBridgesCarryDeliveriesThroughTheNode", "TestABridgeEndsWhenTheNodeIsLostAndANewOneWorks"}
 # The platform's own Directory client and publisher (internal/directory).
 PLATFORM_TESTS = {"TestPublisherAgainstThePrivateDirectory"}
+# deploy/systemd. The user manager applies neither users, capabilities nor IP
+# filters; these lines are dropped from the copies it runs.
+SYSTEMD_UNITS = ("agentcapsule-slim-bridge.service", "agentcapsule-interop.service")
+SYSTEM_MANAGER_ONLY = ("User", "Group", "CapabilityBoundingSet", "AmbientCapabilities")
+MAX_BRIDGE_EXPOSURE = 2.0
 
 
 def sha256(path):
@@ -81,15 +105,302 @@ def stop_services(compose, docker_env, output):
         raise RuntimeError("could not remove the services: " + down.stderr.strip()[-500:])
 
 
+def check_units(units, work, output):
+    """Static checks of deploy/systemd, installed as root would install them but
+    inside a throwaway root: base units copied from this host, stand-ins for the
+    bridge, Docker and docker.service."""
+    for tool in ("systemd-analyze", "systemd-sysusers", "systemd-tmpfiles"):
+        if not shutil.which(tool):
+            raise RuntimeError("--systemd needs " + tool)
+    root = work / "systemd-root"
+    shutil.copytree("/usr/lib/systemd/system", root / "usr/lib/systemd/system", symlinks=True)
+    for stand_in in ("opt/agentcapsule/agentcapsule-slim-bridge", "usr/bin/docker"):
+        path = root / stand_in
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("#!/bin/sh\n")
+        path.chmod(0o755)
+    system = root / "etc/systemd/system"
+    system.mkdir(parents=True)
+    (system / "docker.service").write_text("[Unit]\nDescription=stand-in\n[Service]\nExecStart=/usr/bin/docker\n")
+    for name in SYSTEMD_UNITS:
+        shutil.copy2(units / name, system / name)
+
+    def tool(name, *command):
+        print("systemd-" + name, flush=True)
+        result = subprocess.run(command, cwd=root, capture_output=True, text=True, timeout=120, check=False)
+        (output / f"systemd-{name}.log").write_text(result.stdout + result.stderr)
+        return result
+
+    verify = tool("verify", "systemd-analyze", "verify", "--man=no", f"--root={root}", *(f"/etc/systemd/system/{n}" for n in SYSTEMD_UNITS))
+    # verify exits 0 on an unknown key or a value it cannot parse: any output fails.
+    if verify.returncode or (verify.stdout + verify.stderr).strip():
+        raise RuntimeError("systemd-analyze verify reported problems; see systemd-verify.log")
+    security = tool("security", "systemd-analyze", "security", "--offline=yes", f"--root={root}", "--no-pager",
+                    "/etc/systemd/system/agentcapsule-slim-bridge.service")
+    score = re.search(r"Overall exposure level for \S+: ([0-9.]+)", security.stdout)
+    if security.returncode or not score or float(score.group(1)) > MAX_BRIDGE_EXPOSURE:
+        raise RuntimeError(f"the bridge's unit is exposed above {MAX_BRIDGE_EXPOSURE}; see systemd-security.log")
+    for name in ("passwd", "group", "shadow", "gshadow"):
+        (root / "etc" / name).touch()
+    sysusers = tool("sysusers", "systemd-sysusers", f"--root={root}", str(units / "agentcapsule-slim.sysusers"))
+    if sysusers.returncode or not (root / "etc/passwd").read_text().startswith("agentcapsule-slim:"):
+        raise RuntimeError("the bridge's user was not created; see systemd-sysusers.log")
+    tmpfiles = tool("tmpfiles", "systemd-tmpfiles", f"--root={root}", "--dry-run", "--create", str(units / "agentcapsule-slim.tmpfiles"))
+    created = re.findall(r"Would create directory \S+?(/run/agentcapsule-\w+)$", tmpfiles.stdout + tmpfiles.stderr, re.M)
+    if tmpfiles.returncode or sorted(created) != ["/run/agentcapsule-slim", "/run/agentcapsule-worker"]:
+        raise RuntimeError("the socket directories would not be created; see systemd-tmpfiles.log")
+    version = subprocess.check_output(["systemd-analyze", "--version"], text=True).splitlines()[0]
+    return {"systemd": version, "verified_units": list(SYSTEMD_UNITS), "warnings": 0, "bridge_exposure": float(score.group(1))}
+
+
+class UnixHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, path, timeout):
+        super().__init__("localhost", timeout=timeout)
+        self.socket_path = path
+
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(self.timeout)
+        self.sock.connect(self.socket_path)
+
+
+def bridge_call(path, method, route, body=None, timeout=60):
+    connection = UnixHTTPConnection(str(path), timeout)
+    try:
+        connection.request(method, route, body=None if body is None else json.dumps(body), headers={"Content-Type": "application/json"})
+        response = connection.getresponse()
+        return response.status, response.read()
+    finally:
+        connection.close()
+
+
+class FakeWorker(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+    """Stands for the worker on its socket: records each delivery the bridge
+    calls back with and answers with a receipt derived from the event."""
+    daemon_threads = True
+
+    def __init__(self, path):
+        self.calls = []
+        worker = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+                if self.path != "/v1/deliver":
+                    self.send_error(400)
+                    return
+                worker.calls.append(body)
+                answer = json.dumps({"result": base64.b64encode(b"guest:" + body["event"]["id"].encode()).decode(), "replayed": False}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(answer)))
+                self.end_headers()
+                self.wfile.write(answer)
+
+        old = os.umask(0o177)  # mode 0600, as the worker's own socket
+        try:
+            super().__init__(path, Handler)
+        finally:
+            os.umask(old)
+
+    def get_request(self):
+        connection, _ = self.socket.accept()
+        return connection, ("bridge", 0)
+
+
+def systemctl(*args, check=True):
+    return subprocess.run(["systemctl", "--user", *args], capture_output=True, text=True, timeout=600, check=check)
+
+
+def unit_state(unit):
+    shown = systemctl("show", unit, "-p", "ActiveState", "-p", "SubState", "-p", "Result", "-p", "NRestarts", "-p", "ExecMainStatus").stdout
+    return dict(line.split("=", 1) for line in shown.splitlines() if "=" in line)
+
+
+def wait_for(what, condition, seconds):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if condition():
+            return
+        time.sleep(1)
+    raise RuntimeError("timed out waiting for " + what)
+
+
+def rewrite_unit(text, drop=(), replace=None, environment=()):
+    lines = []
+    for line in text.splitlines():
+        if line.split("=", 1)[0] in drop:
+            continue
+        for old, new in (replace or {}).items():
+            line = line.replace(old, new)
+        lines.append(line)
+        if line == "[Service]":
+            lines.extend("Environment=" + shlex.quote(f"{k}={v}") for k, v in environment)
+    return "\n".join(lines) + "\n"
+
+
+def supervise_units(units, deploy, bridge_binary, example, certs, compose, docker_env, output, cleanup):
+    """The real bridge under its shipped unit and the services under theirs, in
+    the caller's systemd user manager (see the module's docstring)."""
+    manager = systemctl("is-system-running", check=False).stdout.strip()
+    if manager not in ("running", "degraded") or not os.environ.get("XDG_RUNTIME_DIR"):
+        raise RuntimeError("--systemd with --services needs the caller's systemd user manager (systemctl --user)")
+    # The Go tests ran with a node on a new port after each restart. On a host
+    # the node keeps its address: the services' unit publishes it again on a
+    # fixed loopback port, which recreates the node's container.
+    with socket.socket() as free:
+        free.bind(("127.0.0.1", 0))
+        docker_env = {**docker_env, "INTEROP_SLIM_PORT": str(free.getsockname()[1])}
+    slim_node = "127.0.0.1:" + docker_env["INTEROP_SLIM_PORT"]
+    tag = f"q{os.getpid()}"
+    bridge_unit, interop_unit = f"agentcapsule-slim-bridge-{tag}.service", f"agentcapsule-interop-{tag}.service"
+    # The bridge's sandbox hides /home, /run/user and /tmp (ProtectHome,
+    # PrivateTmp); /dev/shm stays visible to it and to this script.
+    base = Path(tempfile.mkdtemp(prefix="agentcapsule-units-", dir="/dev/shm"))
+    cleanup.callback(shutil.rmtree, base, True)
+    binary, etc, run_slim, run_worker = base / "bin/agentcapsule-slim-bridge", base / "etc", base / "run-slim", base / "run-worker"
+    for directory, mode in ((binary.parent, 0o755), (etc, 0o755), (run_slim, 0o750), (run_worker, 0o711)):
+        directory.mkdir()
+        directory.chmod(mode)  # as agentcapsule-slim.tmpfiles
+    shutil.copy2(bridge_binary, binary)
+    for name in ("slim-ca.pem", "client.crt"):
+        shutil.copy2(certs / "slim-bridge" / name, etc / name)
+    for name, content in (("client.key", (certs / "slim-bridge/client.key").read_bytes()), ("secret", secrets.token_hex(32).encode())):
+        (etc / name).write_bytes(content)
+        (etc / name).chmod(0o600)
+    paths = {"/etc/agentcapsule/slim-bridge/": f"{etc}/", "/run/agentcapsule-slim/": f"{run_slim}/", "/run/agentcapsule-worker/": f"{run_worker}/"}
+    config = json.loads(example.read_text())
+    for key, value in config.items():
+        for old, new in paths.items():
+            if isinstance(value, str):
+                value = value.replace(old, new)
+        config[key] = value
+    config["node"], config["worker_uid"] = "https://" + slim_node, os.getuid()
+    config_path = etc / "slim-bridge.json"
+    config_path.write_text(json.dumps(config, indent=2) + "\n")
+    config_path.chmod(0o644)
+    bridge_socket = run_slim / "bridge.sock"
+
+    installed = Path(os.environ["XDG_RUNTIME_DIR"]) / "systemd/user"
+    installed.mkdir(parents=True, exist_ok=True)
+    (installed / bridge_unit).write_text(rewrite_unit((units / SYSTEMD_UNITS[0]).read_text(), drop=SYSTEM_MANAGER_ONLY, replace={
+        "/opt/agentcapsule/agentcapsule-slim-bridge": str(binary), "/etc/agentcapsule/slim-bridge.json": str(config_path),
+        "ReadWritePaths=/run/agentcapsule-slim": f"ReadWritePaths={run_slim}", "agentcapsule-interop.service": interop_unit}))
+    kept = {k: v for k, v in docker_env.items() if k in ("PATH", "HOME", "XDG_CONFIG_HOME") or k.startswith(("DOCKER_", "INTEROP_"))}
+    project = compose[compose.index("-p") + 1]
+    (installed / interop_unit).write_text(rewrite_unit((units / SYSTEMD_UNITS[1]).read_text(), drop=("Requires",), replace={
+        "After=docker.service ": "After=", "/opt/agentcapsule/interop": str(deploy), "/usr/bin/docker": shutil.which("docker"),
+        "Environment=INTEROP_CERTS=/etc/agentcapsule/interop": "Environment=INTEROP_CERTS=" + shlex.quote(str(certs))},
+        environment=sorted({**kept, "COMPOSE_PROJECT_NAME": project}.items())))
+
+    def remove():
+        systemctl("stop", bridge_unit, interop_unit, check=False)
+        with (output / "systemd.log").open("w") as log:
+            subprocess.run(["journalctl", "--user", "--no-pager", "-o", "short-iso", "-u", bridge_unit, "-u", interop_unit],
+                           stdout=log, stderr=subprocess.STDOUT, timeout=120, check=False)
+        for unit in (bridge_unit, interop_unit):
+            (installed / unit).unlink(missing_ok=True)
+        systemctl("daemon-reload", check=False)
+        systemctl("reset-failed", bridge_unit, interop_unit, check=False)
+
+    cleanup.callback(remove)
+    systemctl("daemon-reload")
+    worker = FakeWorker(str(run_worker / "slim.sock"))
+    threading.Thread(target=worker.serve_forever, daemon=True).start()
+    cleanup.callback(worker.server_close)
+    cleanup.callback(worker.shutdown)
+
+    def healthy():
+        try:
+            return bridge_call(bridge_socket, "GET", "/v1/health", timeout=5)[0] == 200
+        except (OSError, http.client.HTTPException):
+            return False
+
+    target = "agentcapsule/org_units/agt-units"
+
+    def round_trip(label):
+        status, _ = bridge_call(bridge_socket, "POST", "/v1/serve", {"name": target})
+        if status != 204:
+            raise RuntimeError(f"{label}: the bridge refused to serve ({status})")
+        event = {"id": "mbx_" + label, "subjects": ["agent/agt-sender", "agent/agt-units", "event/mbx_" + label],
+                 "body": base64.b64encode(json.dumps({"text": label}).encode()).decode()}
+        status, body = bridge_call(bridge_socket, "POST", "/v1/send", {"to": target, "nonce": secrets.token_hex(32), "event": event}, timeout=120)
+        if status != 200 or base64.b64decode(json.loads(body)["result"]) != b"guest:" + event["id"].encode():
+            raise RuntimeError(f"{label}: no receipt ({status} {body[:200]!r})")
+        call = worker.calls[-1]
+        if call["to"] != target or call["event"] != event or not call["caller"].startswith(config["name"] + "_"):
+            raise RuntimeError(f"{label}: the worker was called back with another delivery or caller")
+
+    def delivers(label):
+        try:
+            round_trip(label)
+            return True
+        except (RuntimeError, OSError, http.client.HTTPException, ValueError, KeyError):
+            return False
+
+    result = {"manager": "user", "not_exercised": ["User=, Group=, CapabilityBoundingSet=, AmbientCapabilities= (system manager only)",
+                                                    "IPAddressDeny=/IPAddressAllow= (the user manager attaches no IP filter)",
+                                                    "Requires=docker.service (a system unit)"]}
+    print("systemd-supervision", flush=True)
+    # The services are up; the unit's start publishes the node on its port.
+    systemctl("start", interop_unit)
+    published = subprocess.check_output([*compose, "port", "slim", "46357"], env=docker_env, text=True, timeout=60).strip()
+    if unit_state(interop_unit)["ActiveState"] != "active" or published != slim_node:
+        raise RuntimeError(f"the services' unit is not active, or the node is at {published}")
+    systemctl("start", bridge_unit)
+    wait_for("the bridge under its unit to reach the node", healthy, 90)
+    round_trip("started")
+    # A node that restarts at the same address: SLIM's client reconnects.
+    subprocess.run([*compose, "restart", "slim"], env=docker_env, capture_output=True, timeout=300, check=True)
+    wait_for("a delivery after the node restarted", lambda: delivers("node-restarted"), 120)
+    result["bridge_restarts_after_node_restart"] = int(unit_state(bridge_unit)["NRestarts"])
+    # The services stopped through their unit for longer than three probes:
+    # the bridge ends with code 3, and systemd starts new ones until the node
+    # is back.
+    before = int(unit_state(bridge_unit)["NRestarts"])
+    systemctl("stop", interop_unit)
+    state = subprocess.check_output([*compose, "ps", "-a", "--format", "{{.State}}", "slim"], env=docker_env, text=True, timeout=60).strip()
+    if state != "exited":
+        raise RuntimeError("stopping the services' unit left the node " + state)
+    wait_for("systemd to restart the bridge after the node was lost", lambda: int(unit_state(bridge_unit)["NRestarts"]) > before, 120)
+    systemctl("start", interop_unit)
+    wait_for("a delivery once the services' unit started again", lambda: delivers("node-back"), 180)
+    journal = subprocess.run(["journalctl", "--user", "--no-pager", "-o", "cat", "-u", bridge_unit], capture_output=True, text=True, timeout=60).stdout
+    if "slim_node_lost" not in journal or "status=3/" not in journal:
+        raise RuntimeError("the bridge did not end with code 3 (slim_node_lost)")
+    result["bridge_restarts_during_outage"] = int(unit_state(bridge_unit)["NRestarts"]) - before
+    # A clean stop: code 0, no restart, the socket removed.
+    systemctl("stop", bridge_unit)
+    state = unit_state(bridge_unit)
+    if state["ActiveState"] != "inactive" or state["Result"] != "success" or bridge_socket.exists():
+        raise RuntimeError(f"the bridge did not stop cleanly: {state}")
+    # An invalid configuration (writable by others) ends with code 2, which
+    # systemd does not retry.
+    restarts = int(state["NRestarts"])
+    config_path.chmod(0o666)
+    systemctl("start", bridge_unit, check=False)
+    wait_for("the bridge to refuse its configuration", lambda: unit_state(bridge_unit)["ActiveState"] == "failed", 30)
+    time.sleep(12)  # more than two RestartSec
+    state = unit_state(bridge_unit)
+    if state["ActiveState"] != "failed" or state["ExecMainStatus"] != "2" or int(state["NRestarts"]) > restarts:
+        raise RuntimeError(f"an invalid configuration was retried: {state}")
+    result["invalid_configuration"] = {"exit": 2, "retried": False}
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--go", default="go", help="Go 1.27.3 executable")
     parser.add_argument("--output", required=True, type=Path, help="new evidence directory")
     parser.add_argument("--services", action="store_true", help="also start and test the private services (Docker Compose)")
+    parser.add_argument("--systemd", action="store_true", help="also check deploy/systemd; with --services, run the bridge and the services under them (systemctl --user)")
     args = parser.parse_args()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
-    report = {"status": "failed", "services_tested": args.services, "gate_g2_complete": False}
+    report = {"status": "failed", "services_tested": args.services, "systemd_units_tested": args.systemd, "gate_g2_complete": False}
     started = time.monotonic()
     profile = {}
     try:
@@ -107,7 +418,7 @@ def main():
         with tempfile.TemporaryDirectory(prefix="agentcapsule-interop-") as temporary, contextlib.ExitStack() as cleanup:
             work = Path(temporary)
             modules = {"probe": work / "probe", "a2aslim": work / "a2aslim", "slimbridge": work / "runtime/slimbridge",
-                       "slimlink-contract": work / "internal/slimlink/testdata", "deploy": work / "deploy"}
+                       "slimlink-contract": work / "internal/slimlink/testdata", "deploy": work / "deploy", "systemd": work / "deploy-systemd"}
             shutil.copytree(ROOT / "runtime/interop/probe", modules["probe"])
             shutil.copytree(ROOT / "runtime/interop/a2aslim", modules["a2aslim"])
             # The bridge reads the worker's contract examples at the same
@@ -115,8 +426,9 @@ def main():
             shutil.copytree(ROOT / "runtime/slimbridge", modules["slimbridge"])
             shutil.copytree(ROOT / "internal/slimlink/testdata", modules["slimlink-contract"])
             shutil.copytree(ROOT / "deploy/interop", modules["deploy"])
+            shutil.copytree(ROOT / "deploy/systemd", modules["systemd"])
             frozen = {name: tree_digests(path) for name, path in modules.items()}
-            sources = [Path(__file__).resolve(), profile_path, *sorted((ROOT / "runtime/interop").rglob("*")), *sorted((ROOT / "deploy/interop").rglob("*")),
+            sources = [Path(__file__).resolve(), profile_path, *sorted((ROOT / "runtime/interop").rglob("*")), *sorted((ROOT / "deploy/interop").rglob("*")), *sorted((ROOT / "deploy/systemd").rglob("*")),
                        *sorted((ROOT / "runtime/slimbridge").rglob("*")), *sorted((ROOT / "internal/slimlink/testdata").rglob("*")),
                        ROOT / "go.mod", ROOT / "go.sum", *sorted((ROOT / "internal/directory").glob("*.go"))]
             report["source_sha256"] = {str(p.relative_to(ROOT)): sha256(p) for p in sources if p.is_file()}
@@ -179,6 +491,8 @@ def main():
             bridge = modules["slimbridge"]
             run("slimbridge-modules", [go, "mod", "download"], bridge)
             run("slimbridge-module-integrity", [go, "mod", "verify"], bridge)
+            if args.systemd:
+                report["systemd"] = {"static": check_units(modules["systemd"], work, output)}
             if not args.services:
                 log = run("tests", [go, "test", "-mod=readonly", "-count=1", "-json", "-timeout=60s", "."], probe)
                 report["passed_tests"] = passed_tests(log, LIBRARY_TESTS)
@@ -242,6 +556,11 @@ def main():
                                              "-run", "AgainstThePrivateDirectory", "./internal/directory"], ROOT, timeout=900, extra={**extra, "CGO_ENABLED": "0"})
                 report["passed_platform_tests"] = passed_tests(log, PLATFORM_TESTS)
                 stats("after_tests")
+                if args.systemd:
+                    # Last: it stops and starts the services.
+                    run("slimbridge-build", [go, "build", "-mod=readonly", "-trimpath", "-o", str(work / "agentcapsule-slim-bridge"), "."], bridge, timeout=900)
+                    report["systemd"]["supervision"] = supervise_units(modules["systemd"], modules["deploy"], work / "agentcapsule-slim-bridge",
+                                                                       bridge / "config.example.json", certs, compose, docker_env, output, cleanup)
             if {name: tree_digests(path) for name, path in modules.items()} != frozen:
                 raise RuntimeError("Go modified a frozen module; update committed dependencies first")
             if any(sha256(ROOT / name) != digest for name, digest in report["source_sha256"].items()):

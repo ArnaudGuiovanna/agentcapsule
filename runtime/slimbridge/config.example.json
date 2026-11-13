@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "node": "https://127.0.0.1:46357",
+  "ca": "/etc/agentcapsule/slim-bridge/slim-ca.pem",
+  "cert": "/etc/agentcapsule/slim-bridge/client.crt",
+  "key": "/etc/agentcapsule/slim-bridge/client.key",
+  "secret_file": "/etc/agentcapsule/slim-bridge/secret",
+  "name": "agentcapsule/platform/host-stable-id",
+  "socket": "/run/agentcapsule-slim/bridge.sock",
+  "worker_socket": "/run/agentcapsule-worker/slim.sock",
+  "worker_uid": 0
+}

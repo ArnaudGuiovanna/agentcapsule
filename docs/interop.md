@@ -53,8 +53,10 @@ SLIM does and does not do:
 - Acknowledgments are optional. Without them a publish succeeds even if nobody
   receives it. With them, exhausted retries are still reported as success, and
   later publishes on that session wait forever unless bounded by the caller.
-- Clients do not reconnect after a node restart; only a new client process
-  recovers.
+- A client finds a node that restarts at the same address again, subscriptions
+  included. It never follows a node that comes back at another address, and a
+  call made while the node is away can outlive its deadline. A client that has
+  lost its node for good is replaced by a new process.
 
 The platform's durable mailbox therefore stays the only delivery guarantee:
 a task is stored before the sender gets an answer, redelivered with the same
@@ -64,7 +66,7 @@ never on a SLIM acknowledgment.
 
 **SLIM lives in a separate bridge process.** The bindings need CGO, a 336 MiB
 static library, glibc 2.39 or later, and add about 77 MiB to a binary; their
-client must be restarted when the node restarts; and the A2A transport pins an
+client must be replaced when it loses its node; and the A2A transport pins an
 older A2A SDK. The control plane, the worker and `capsule-init` stay pure Go
 without CGO. Harnesses in the guest never see SLIM: they keep talking to the
 platform over `capsule.v1`.
@@ -148,13 +150,16 @@ on every connection.
 Owner instructions do not cross SLIM. Holding the SLIM secret is not enough to
 deliver anything: the worker answers only its own attempts.
 
-**Supervision.** SLIM clients do not recover from a node restart, so the bridge
-sends a message through the node to its own probe name
+**Supervision.** A SLIM client finds a node that restarts at the same address
+again, but not one that stays away or comes back elsewhere. The bridge
+therefore sends a message through the node to its own probe name
 (`agentcapsule/platform/<host>.probe`) every 5 seconds, and exits (code 3,
-`slim_node_lost`) after three failures in a row. A probe that the native call
-keeps past its deadline counts as failed. Its supervisor starts a new process
-(for example systemd with `Restart=always`; no unit is shipped yet). Names nobody delivered to for 10 minutes
-stop being served. Each A2A server keeps its tasks for 10 to 20 minutes only.
+`slim_node_lost`) after three failures in a row: a node away for more than about
+15 seconds ends the process. A probe that the native call keeps past its
+deadline counts as failed. systemd then starts a new process every 5 seconds
+until the node is back ([Running on a host](#running-on-a-host)). Names nobody
+delivered to for 10 minutes stop being served. Each A2A server keeps its tasks
+for 10 to 20 minutes only.
 
 **Limits.**
 - On one host, a delivery leaves the worker and comes back to it through the
@@ -165,6 +170,56 @@ stop being served. Each A2A server keeps its tasks for 10 to 20 minutes only.
   bridge on another host would need the same check against PostgreSQL;
   multi-host workers are not supported yet.
 - Not yet run on KVM: the KVM journeys deliver straight over vsock.
+
+## Running on a host
+
+[deploy/systemd](../deploy/systemd) holds the units of one host. The worker and
+the control plane have none yet.
+
+| File | Install as | Role |
+| --- | --- | --- |
+| `agentcapsule-interop.service` | `/etc/systemd/system/` | The private services (OASF, Directory, SLIM node) under Docker Compose, started at boot after Docker and stopped with the host. Docker restarts a failed container. Images are pulled at installation, never at boot. |
+| `agentcapsule-slim-bridge.service` | `/etc/systemd/system/` | The bridge, as the user `agentcapsule-slim`. systemd starts it again 5 seconds after any end, without limit, except after an invalid configuration (code 2). |
+| `agentcapsule-slim.sysusers` | `/usr/lib/sysusers.d/agentcapsule-slim.conf` | The bridge's user. |
+| `agentcapsule-slim.tmpfiles` | `/usr/lib/tmpfiles.d/agentcapsule-slim.conf` | `/run/agentcapsule-slim` for the bridge's socket. `/run/agentcapsule-worker` for the worker's: the bridge can reach that socket, not remove or replace it. |
+
+To install them:
+1. **Services.**
+   - Copy `deploy/interop` to `/opt/agentcapsule/interop` and the certificates
+     to `/etc/agentcapsule/interop`, in the layout of
+     [make-certs.sh](../deploy/interop/make-certs.sh).
+   - Pull the images:
+     `docker compose -f /opt/agentcapsule/interop/compose.yml pull`.
+   - Run `systemctl enable --now agentcapsule-interop`.
+2. **Bridge binary.** Build it from its own module, with the SLIM library of
+   the pinned archive (see [Reproduce](#reproduce)):
+   `cd runtime/slimbridge && CGO_LDFLAGS=-L<dir> go build -trimpath -o /opt/agentcapsule/agentcapsule-slim-bridge .`.
+3. **User and directories.** Install the two snippets, then run
+   `systemd-sysusers` and `systemd-tmpfiles --create`.
+4. **Credentials.** In `/etc/agentcapsule/slim-bridge/`:
+   - `slim-ca.pem` and `client.crt`;
+   - `client.key` and `secret`, owned by `agentcapsule-slim`, mode 0600. The
+     secret is 32 or more random bytes, for example `openssl rand -hex 32`.
+5. **Configuration.** Write `/etc/agentcapsule/slim-bridge.json` from
+   [config.example.json](../runtime/slimbridge/config.example.json):
+   - `name` is `agentcapsule/platform/<host_id>`;
+   - `worker_uid` stays 0, since the worker runs as root;
+   - the file is owned by root and not writable by others.
+6. **Start.** Add the worker's `slim` section ([worker.md](worker.md)), with
+   `bridge_uid` set to `id -u agentcapsule-slim`, and restart the worker. Then
+   run `systemctl enable --now agentcapsule-slim-bridge`. The worker and the
+   bridge can start in either order.
+
+The bridge's unit:
+- grants it no privilege, capability or device;
+- leaves the file system read-only, except its socket directory, and hides
+  `/home` and `/tmp`;
+- lets it reach loopback addresses only (`IPAddressAllow=localhost`). For a node
+  on another host, add the node's address in a drop-in;
+- allows the system calls of an ordinary service, without privileged or
+  resource calls.
+
+`systemd-analyze security` rates its exposure 1.1 ("OK").
 
 ## What the qualification checks
 
@@ -183,6 +238,26 @@ lab certificates, then runs Go tests against them:
 | `TestBridgesCarryDeliveriesThroughTheNode` | The SLIM bridge: a delivery from one bridge to an agent's name served by another bridge, then by the same bridge (one host), reaches the fake worker unchanged with the sending bridge's verified identity, and the receipt comes back; the worker's refusal and failure come back as codes; an absent name answers `unreachable` within the call's bound; platform names and unknown fields are refused |
 | `TestABridgeEndsWhenTheNodeIsLostAndANewOneWorks` | After the node restarts, the bridge ends with `slim_node_lost` (code 3) and a new bridge delivers again |
 | `TestPublisherAgainstThePrivateDirectory` | The platform's own publisher (`internal/directory`): its records pass the real schema, a new description replaces the old record, an unknown skill is refused and withdraws the record, a hidden agent is no longer found, and a neighbouring organization's scope finds nothing |
+
+With `--systemd`, the script also checks [deploy/systemd](../deploy/systemd):
+- **Static checks**, in a throwaway root:
+  - `systemd-analyze verify` passes both units without a single warning. It
+    exits 0 on an unknown key, so any output fails.
+  - The bridge's exposure is at most 2.0.
+  - sysusers creates the bridge's user, and tmpfiles both directories.
+- **Supervision**, with `--services` as well. The real bridge runs under its
+  unit in the caller's systemd user manager, and the services under theirs,
+  with a fake worker. The run checks:
+  - a delivery round trip, with the worker's socket in a directory the bridge
+    can only traverse;
+  - a node restart at the same address: SLIM reconnects, and deliveries go on;
+  - the services stopped through their unit: the bridge ends with code 3,
+    systemd starts it again until the node is back, and deliveries resume;
+  - a clean stop, which removes the socket;
+  - an invalid configuration: it ends with code 2 and is not retried.
+
+  The user manager does not apply `User=`, `Group=`, capability sets or IP
+  filters, so those lines are not exercised.
 
 The library tests also run, without Docker:
 - the A2A JSON-RPC round trip;
@@ -225,8 +300,11 @@ About 150 MiB in total. In separate runs:
   - The asynchronous app constructor panics outside a Tokio runtime; use the
     blocking one.
   - Every refusal surfaces as the same opaque `datapath error`.
-  - There is no reconnection after a node restart. The client retries the old
-    address, and once the node is gone a call can outlive its deadline.
+  - The client reconnects only to the address it was given: a node that
+    restarts there is found again, but a node that comes back on another port
+    is not. An earlier reading of "no reconnection at all" came from tests whose
+    node changed port on restart. Once the node is gone, a call can outlive its
+    deadline.
   - An application that calls its own name over SLIM RPC never gets an answer;
     the bridge therefore probes a separate name.
   - Between applications of one service, SLIM routes locally, without the node:
@@ -254,6 +332,8 @@ verified by SHA256) and the images (about 400 MB).
 python3 scripts/verify-interop.py --go /path/to/go1.27.3/bin/go --output <new-dir>
 # With the private services: status passed, int01_complete true.
 python3 scripts/verify-interop.py --go /path/to/go1.27.3/bin/go --services --output <new-dir>
+# Also the systemd units, run under the caller's user manager.
+python3 scripts/verify-interop.py --go /path/to/go1.27.3/bin/go --services --systemd --output <new-dir>
 ```
 
 The output directory keeps for every run:
@@ -275,7 +355,8 @@ It always removes the services, their volumes and networks. CI runs it with
 To run the services on a host:
 1. Run [make-certs.sh](../deploy/interop/make-certs.sh), or provide the same
    file layout from your own authorities.
-2. Start them with `INTEROP_CERTS=<dir> docker compose -f deploy/interop/compose.yml up -d --wait`.
+2. Start them with `INTEROP_CERTS=<dir> docker compose -f deploy/interop/compose.yml up -d --wait`,
+   or install their unit ([Running on a host](#running-on-a-host)).
 
 The lab certificates expire after 30 days, and their keys are readable by the
 container users. On a host:
@@ -288,5 +369,5 @@ container users. On a host:
 | --- | --- |
 | INT-02 | Done: one OASF record per described, discoverable agent, published from PostgreSQL by the worker and withdrawn when the agent is hidden, deleted or its organization suspended; search by skill from a running agent, filtered again in PostgreSQL; schema refusals shown to the organization. |
 | INT-03 | In the guest, done: an Agent Card per agent the caller may reach, `SendMessage` and `GetTask` mapped onto peer requests with the state table above, and agents that are A2A servers themselves, each job one message; qualified with the A2A Go SDK v2.8.0 on both sides. Between agents of one organization, the recipient's inbound policy (`auto` or `manual`) decides whether a request is delivered at once. The KVM journey of two example A2A agents (`verify-product-guest.py --a2a-harness`) passes since the transit fix. A held request is accepted or declined by whoever may configure the recipient or is assigned to it with invoke (`/v1/agents/{id}/held-requests`, migration 0025). |
-| INT-04 | In progress: the bridge process (SLIM names for the recipients, delivery from the mailbox through SLIM to the worker and the guest over vsock, receipts, supervision and restart), qualified against the private node. Remaining: a KVM journey through the bridge; systemd units for the bridge and the services. |
+| INT-04 | In progress: the bridge process (SLIM names for the recipients, delivery from the mailbox through SLIM to the worker and the guest over vsock, receipts, supervision and restart), qualified against the private node; systemd units for the bridge and the services, qualified under systemd (`verify-interop.py --systemd`). Remaining: a KVM journey through the bridge; a wake budget. |
 | INT-05 | The flagship journey: agent A finds agent B, which is stopped, and gets its answer over A2A and SLIM; then the same journey with Directory or SLIM down. |

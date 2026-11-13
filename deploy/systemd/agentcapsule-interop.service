@@ -1,0 +1,29 @@
+# The private interoperability services of one host (deploy/interop, profile
+# agentcapsule-int-1): the OASF schema server, the Directory behind its
+# mutual-TLS edge and the SLIM node, run by Docker Compose from pinned images.
+# Docker restarts a container that fails (restart: unless-stopped); this unit
+# starts the services at boot and stops them with the host. Stopping keeps the
+# Directory's volume. Images are pulled at installation, never at boot.
+#
+# Install deploy/interop in /opt/agentcapsule/interop and the certificates in
+# /etc/agentcapsule/interop (the layout of make-certs.sh), then
+#   docker compose -f /opt/agentcapsule/interop/compose.yml pull
+[Unit]
+Description=Agent Capsule interoperability services (OASF, Directory, SLIM node)
+Documentation=https://github.com/ArnaudGuiovanna/agentcapsule/blob/main/docs/interop.md#running-on-a-host
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/agentcapsule/interop
+Environment=INTEROP_CERTS=/etc/agentcapsule/interop
+ExecStart=/usr/bin/docker compose -f compose.yml up -d --wait --pull never --remove-orphans
+ExecStop=/usr/bin/docker compose -f compose.yml stop
+TimeoutStartSec=15min
+TimeoutStopSec=2min
+
+[Install]
+WantedBy=multi-user.target

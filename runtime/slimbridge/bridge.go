@@ -36,8 +36,9 @@ type delivery struct {
 	Event Event  `json:"event"`
 }
 
-// ErrNodeLost ends the process: SLIM clients do not reconnect after the node
-// restarts, only a new process does. The supervisor starts it again.
+// ErrNodeLost ends the process: a SLIM client follows a node that restarts at
+// the same address, but not one that stays away or comes back elsewhere; a new
+// process does. The supervisor starts it again.
 var ErrNodeLost = errors.New("slim node lost")
 
 // served is an agent's name the bridge answers on.

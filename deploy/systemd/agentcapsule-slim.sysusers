@@ -1,0 +1,4 @@
+# Install as /usr/lib/sysusers.d/agentcapsule-slim.conf (systemd-sysusers).
+# The SLIM bridge's own user: it owns the bridge's key and SLIM secret, and its
+# UID is the worker's "slim.bridge_uid".
+u agentcapsule-slim - "Agent Capsule SLIM bridge" - -

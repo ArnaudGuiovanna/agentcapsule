@@ -10,10 +10,11 @@
 // delivery is one A2A 1.0 message over SLIM (slim-a2a-go); its answer, a task
 // with the guest's receipt as artifact, is what the mailbox acknowledges.
 //
-// SLIM clients do not reconnect after the node restarts, so the bridge probes
-// itself through the node and exits after three failures in a row; its
-// supervisor (for example systemd with Restart=always) starts a new one. While it is away the
-// worker spends no delivery attempt.
+// A SLIM client reconnects to a node that restarts at the same address, but
+// not to one that stays away or comes back elsewhere, so the bridge probes
+// itself through the node and exits after three failures in a row; systemd
+// starts a new one (deploy/systemd/agentcapsule-slim-bridge.service). While it
+// is away the worker spends no delivery attempt.
 //
 //	agentcapsule-slim-bridge -config /etc/agentcapsule/slim-bridge.json
 package main

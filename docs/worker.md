@@ -183,16 +183,22 @@ See [Directory publication](api/agents-assignments.md#directory-publication-int-
 
 To carry deliveries between agents over SLIM (INT-04), run the SLIM bridge
 ([runtime/slimbridge](../runtime/slimbridge), see
-[docs/interop.md](interop.md#the-slim-bridge-int-04)) under its own user and
-add:
+[docs/interop.md](interop.md#the-slim-bridge-int-04)) under its own user, with
+the units of [deploy/systemd](../deploy/systemd)
+([Running on a host](interop.md#running-on-a-host)), and add:
 
 ```json
 "slim": {
   "bridge_socket": "/run/agentcapsule-slim/bridge.sock",
-  "worker_socket": "/run/agentcapsule-slim/worker.sock",
+  "worker_socket": "/run/agentcapsule-worker/slim.sock",
   "bridge_uid": 990
 }
 ```
+
+`bridge_uid` is the bridge's user (`id -u agentcapsule-slim`). The two
+directories come from `agentcapsule-slim.tmpfiles`. The worker's directory
+belongs to root, so the bridge can reach the worker's socket but cannot remove
+or replace it.
 
 The worker creates `worker_socket` for the bridge's user (mode 0600) and checks
 the peer's user on every connection, in both directions; `bridge_uid` cannot be

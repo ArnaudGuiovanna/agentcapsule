@@ -1,0 +1,7 @@
+# Install as /usr/lib/tmpfiles.d/agentcapsule-slim.conf (systemd-tmpfiles).
+# One directory per side of the local SLIM link, created at boot, before the
+# worker or the bridge starts. The bridge creates its socket in its own
+# directory; the worker (root) creates its socket in a directory the bridge can
+# only traverse, so the bridge cannot remove or replace it.
+d /run/agentcapsule-slim   0750 agentcapsule-slim root -
+d /run/agentcapsule-worker 0711 root              root -
