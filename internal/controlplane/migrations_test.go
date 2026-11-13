@@ -319,6 +319,12 @@ func TestReadyChecksInstalledMigrationLedger(t *testing.T) {
 func revertTenantAgents(t *testing.T, s *Store) {
 	t.Helper()
 	if _, err := s.pool.Exec(t.Context(), `
+        DROP TABLE IF EXISTS volume_restore_losses, volume_restores;
+        DROP FUNCTION IF EXISTS preserve_restore_loss(), preserve_volume_restore();
+        ALTER TABLE store_initializations DROP CONSTRAINT IF EXISTS store_initializations_pkey,
+          ADD PRIMARY KEY (agent_id);
+        ALTER TABLE store_enrollments DROP CONSTRAINT IF EXISTS store_enrollments_stage_check;
+        ALTER TABLE store_enrollments ADD CONSTRAINT store_enrollments_stage_check CHECK (stage IN ('INSTALLING','FENCING','READY'));
         DROP TABLE IF EXISTS volume_archives;
         DROP TABLE IF EXISTS peer_wakes;
         ALTER TABLE platform_operations DROP COLUMN IF EXISTS request_id;

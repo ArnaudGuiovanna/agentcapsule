@@ -13,7 +13,9 @@ var ErrStoreEnrollment = errors.New("store enrollment is not ready or no longer 
 // Enrollment is trusted worker input. The volume identity is allocated in the
 // reservation transaction and survives retries. Incarnation identifies the
 // installed storage image independently of process boot generations. New
-// enrollment starts at 1; only a future restore coordinator may replace it.
+// enrollment starts at 1; only a restore moves it, one step up
+// (BeginVolumeRestore). Stage RESTORING: a restore holds the volume out of
+// service.
 type Enrollment struct {
 	Incarnation                                                  uint64
 	AgentID, OperationID, VolumeID, HostID, Stage, HarnessDigest string
@@ -55,6 +57,9 @@ type VolumeBootPlan struct {
 	Initialize                bool
 	AcknowledgeInitialization bool
 	UncleanStop               bool
+	// Restore is the restricted boot of an image that a restore installed:
+	// the guest moves the image's marker to the new incarnation.
+	Restore bool
 }
 
 func (s *Store) PrepareVolumeBoot(ctx context.Context, proof VMCaller, worker string) (VolumeBootPlan, error) {
@@ -93,6 +98,16 @@ func (s *Store) PrepareVolumeBoot(ctx context.Context, proof VMCaller, worker st
 		}
 		if (a.Phase == "LIVE" || a.Phase == "QUIESCING") && e.Stage == "READY" {
 			return VolumeBootPlan{Enrollment: e, AcknowledgeInitialization: a.Phase == "LIVE" && !e.Initialized, UncleanStop: p.UncleanStop}, nil
+		}
+		if (a.Phase == "LIVE" || a.Phase == "QUIESCING") && e.Stage == "RESTORING" {
+			// Only an installed image boots, restricted, while it is restored.
+			installed, err := restoreInstalled(ctx, tx, e)
+			if err != nil {
+				return result, err
+			}
+			if installed {
+				return VolumeBootPlan{Enrollment: e, AcknowledgeInitialization: !e.Initialized, UncleanStop: p.UncleanStop, Restore: true}, nil
+			}
 		}
 		return result, ErrStoreEnrollment
 	}
@@ -342,22 +357,30 @@ func (s *Store) RecordEnrollmentInitialized(ctx context.Context, proof Enrollmen
 	if err != nil {
 		return err
 	}
-	if !((a.Phase == "PROVISIONING" && e.Stage == "FENCING") || (a.Phase == "LIVE" && e.Stage == "READY")) ||
+	restored := false
+	if (a.Phase == "LIVE" || a.Phase == "QUIESCING") && e.Stage == "RESTORING" {
+		if restored, err = restoreInstalled(ctx, tx, e); err != nil {
+			return err
+		}
+	}
+	if !((a.Phase == "PROVISIONING" && e.Stage == "FENCING") || (a.Phase == "LIVE" && e.Stage == "READY") || restored) ||
 		e.VolumeID != proof.VolumeID || e.Incarnation != proof.Incarnation || p.State != "RUNNING" || !p.FenceOnly ||
 		proof.Generation == 0 || proof.VMID == "" || p.Generation != proof.Generation || p.VMID != proof.VMID {
 		return ErrStoreEnrollment
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO store_initializations(agent_id,volume_id,boot_generation,boot_vm_id,incarnation)
-        VALUES($1,$2,$3,$4,$5) ON CONFLICT(agent_id) DO NOTHING`, proof.AgentID, proof.VolumeID, proof.Generation, proof.VMID, proof.Incarnation); err != nil {
+        VALUES($1,$2,$3,$4,$5) ON CONFLICT(agent_id,incarnation) DO NOTHING`, proof.AgentID, proof.VolumeID, proof.Generation, proof.VMID, proof.Incarnation); err != nil {
 		return err
 	}
 	return commit(ctx, tx)
 }
 
+// ordinaryStoreReady refuses an ordinary boot of a volume whose current
+// incarnation has no initialization receipt, or that a restore holds.
 func ordinaryStoreReady(ctx context.Context, tx pgx.Tx, id string) error {
 	var missing bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM store_enrollments e WHERE e.agent_id=$1
-        AND NOT EXISTS(SELECT 1 FROM store_initializations i WHERE i.agent_id=e.agent_id AND i.volume_id=e.volume_id AND i.incarnation=e.incarnation))`, id).Scan(&missing); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM store_enrollments e WHERE e.agent_id=$1 AND (e.stage='RESTORING'
+        OR NOT EXISTS(SELECT 1 FROM store_initializations i WHERE i.agent_id=e.agent_id AND i.volume_id=e.volume_id AND i.incarnation=e.incarnation)))`, id).Scan(&missing); err != nil {
 		return err
 	}
 	if missing {
