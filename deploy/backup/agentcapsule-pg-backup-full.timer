@@ -1,0 +1,12 @@
+# A full base backup every Sunday night.
+[Unit]
+Description=Weekly full PostgreSQL backup
+
+[Timer]
+OnCalendar=Sun *-*-* 02:00:00
+RandomizedDelaySec=15min
+Persistent=true
+Unit=agentcapsule-pg-backup@full.service
+
+[Install]
+WantedBy=timers.target

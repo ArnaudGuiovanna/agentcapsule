@@ -34,6 +34,7 @@ Do not run `go test ./...` at the repository root with sources outside
 | `test_check_go.py` | Unit tests of `check-go.py` |
 | `check-repo-hygiene.py` | Rejects new tracked files with a personal absolute path or Go sources committed under `_evidence/` (baseline: `hygiene-baseline.json`) |
 | `verify-postgres.py` | Go/race tests against a private, owned PostgreSQL cluster, with crash/WAL recovery; optional live LLM phase |
+| `verify-backups.py` | Continuous WAL archiving with pgBackRest to S3 and SFTP (Docker, pinned images): loss bound, restore from each store, no clear text |
 | `verify-runtime.py` | Real Go host-driver/KVM tests (root orchestration; optional PostgreSQL placement checks) |
 | `verify-product-guest.py` | Reusable encrypted guest under jailed Firecracker (root, KVM) |
 | `verify-vm-isolation.py` | Disposable jailer isolation tests (root) |

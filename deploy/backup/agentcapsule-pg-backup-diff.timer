@@ -1,0 +1,12 @@
+# A differential base backup the other nights; WAL archiving runs continuously.
+[Unit]
+Description=Daily differential PostgreSQL backup
+
+[Timer]
+OnCalendar=Mon..Sat *-*-* 02:00:00
+RandomizedDelaySec=15min
+Persistent=true
+Unit=agentcapsule-pg-backup@diff.service
+
+[Install]
+WantedBy=timers.target

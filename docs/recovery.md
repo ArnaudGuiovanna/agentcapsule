@@ -1,0 +1,106 @@
+# Backup and recovery
+
+The objectives come from [ADR 004](adr/004-recovery-objectives.md):
+- **A local restart** (a process, PostgreSQL, a host reboot) loses nothing.
+- **After a disaster**, the platform restarts on a standby host within an
+  hour. It may lose up to 15 minutes of database work and up to 24 hours of an
+  agent's memory. Any such loss is announced and the work is run again.
+
+This page covers what is in place. The rest of the plan is at the end.
+
+## PostgreSQL: continuous archiving (REC-03)
+
+[pgBackRest](https://pgbackrest.org/) pushes every WAL segment, and every base
+backup, to **two repositories**. Each one is encrypted (AES-256) with its own
+passphrase before it leaves the host:
+1. **S3-compatible object storage**, versioned at the provider.
+2. **The standby host, over SFTP.** Its host key is checked strictly. It is
+   also where the standby will read WAL to replay.
+
+Neither store sees data in clear, and either one alone restores the
+database. `archive_timeout = 300` closes a segment at least every 5 minutes,
+so a commit reaches both repositories within about 5 minutes. The RPO is 15
+minutes, which keeps a margin for an outage of one store. Base backups run at
+night:
+- a full backup on Sunday;
+- a differential backup on the other days.
+
+Each repository keeps its own backups: four weeks on S3, two on the standby.
+The WAL archive follows them.
+
+### Install
+
+The files are in [deploy/backup](../deploy/backup).
+
+1. **Install pgBackRest**: `apt install pgbackrest`. The configuration is
+   qualified with pgBackRest 2.58.
+2. **Repositories.**
+   - Create the bucket at the provider, with versioning, and a credential
+     limited to that bucket.
+   - On the standby, create a `backup` user, limited to SFTP in its home, with
+     a `repo` directory.
+3. **Configuration and secrets.**
+   - Copy `pgbackrest.conf` to `/etc/pgbackrest/` (root:postgres, 0640).
+     Replace the endpoint, region, bucket and standby host.
+   - Write `conf.d/secrets.conf` from the example (postgres, 0600). Generate
+     each passphrase with `openssl rand -hex 32`.
+   - **Keep a copy of both passphrases off the host**: without them, the
+     backups cannot be read.
+4. **SSH.**
+   - Create the SSH key `backup_ed25519` of the `postgres` user and authorize
+     it on the standby.
+   - Put the standby's host key in `/etc/pgbackrest/known_hosts`
+     (`ssh-keyscan -t ed25519 standby.example.net`).
+5. **PostgreSQL.** Append [postgresql.conf](../deploy/backup/postgresql.conf)
+   to the cluster's configuration, then restart PostgreSQL.
+6. **First backup.** As `postgres`, create the stanza, check it, and take a
+   first full backup into each repository:
+   ```sh
+   pgbackrest --stanza=agentcapsule stanza-create
+   pgbackrest --stanza=agentcapsule check    # archives a segment to both repositories
+   pgbackrest --stanza=agentcapsule --repo=1 --type=full backup
+   pgbackrest --stanza=agentcapsule --repo=2 --type=full backup
+   ```
+7. **Timers.** Install `agentcapsule-pg-backup@.service` and the two timers in
+   `/etc/systemd/system`, then run:
+   ```sh
+   systemctl enable --now agentcapsule-pg-backup-full.timer agentcapsule-pg-backup-diff.timer
+   ```
+
+### Qualify
+
+`scripts/verify-backups.py` runs the shipped configuration against an object
+store (SeaweedFS 4.53) and an SFTP server (OpenSSH), both run with Docker and
+pinned by digest. It needs no root and runs in about two minutes:
+
+```sh
+python3 scripts/verify-backups.py --pg-bin <postgres-bin-dir> --pgbackrest <pgbackrest> \
+  [--pg-library-path <dir>] --output <new-dir>
+```
+
+It checks:
+- **The stanza and the backups**: creating the stanza and a full backup into
+  each repository.
+- **The loss bound**: a commit, with no manual switch, reaches both
+  repositories within `archive_timeout` (30 s in the run; 30.3 s measured on
+  2026-11-13).
+- **Restoring**: from each repository alone, into a new data directory, every
+  committed row is back (201 of 201).
+- **Encryption**: neither store holds a marker written in the rows, while the
+  primary's own WAL does. That control proves the search works.
+
+pgBackRest writes `<redacted>` in its logs for the S3 secret and the cipher
+passphrases.
+
+## Still to do (ADR 004)
+
+1. **The standby.** It replays the WAL archive continuously
+   (`restore_command` from repository 2), ready to be promoted.
+2. **Freshness.** Metrics and alerts for the age of the last archived segment
+   and of each volume archive.
+3. **Nightly volume archives.** Archives of sleeping agents, without stopping
+   the maintenance worker (REC-02).
+4. **The declared-loss state**: in the P2 model, then in the code and the API.
+5. **A failover exercise** that measures the RPO and the RTO.
+6. **CI.** Ubuntu 24.04 ships an older pgBackRest than the qualified 2.58.
+   Running this qualification in CI needs a pinned 2.58.

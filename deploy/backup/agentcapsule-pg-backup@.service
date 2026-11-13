@@ -1,0 +1,17 @@
+# A base backup of PostgreSQL into both repositories (REC-03): %i is "full"
+# or "diff". Each repository gets its own backup, so that either store alone
+# restores the database.
+[Unit]
+Description=Agent Capsule PostgreSQL %i backup
+After=postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=oneshot
+User=postgres
+Group=postgres
+ExecStart=/usr/bin/pgbackrest --stanza=agentcapsule --repo=1 --type=%i backup
+ExecStart=/usr/bin/pgbackrest --stanza=agentcapsule --repo=2 --type=%i backup
+TimeoutStartSec=6h
+Nice=10
+IOSchedulingClass=idle
