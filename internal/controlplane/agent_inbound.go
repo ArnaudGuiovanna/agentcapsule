@@ -8,9 +8,9 @@ import (
 
 // InboundPolicy says how requests from the other agents of the organization
 // reach one of its agents: accepted by policy ("auto": delivered at once) or
-// held for approval ("manual", the default). An organization has no approval
-// route yet, so a request held for approval waits until its deadline or until
-// its sender cancels it.
+// held for approval ("manual", the default). A held request waits until a
+// person of the organization accepts or declines it (DecideHeldRequest), its
+// deadline passes or its sender cancels it.
 type InboundPolicy struct {
 	AgentID string `json:"agent_id"`
 	Mode    string `json:"mode"`

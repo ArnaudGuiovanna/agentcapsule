@@ -351,11 +351,31 @@ agent: `PUT /v1/agents/{id}/inbound` with `{"mode": "auto"}` or
 `{"mode": "manual"}` (`agent:manage`; `GET` for whoever may read the agent's
 metadata). `manual` is the default. A request to an `auto` agent is delivered at
 once, still under the sender's mandate and only if the recipient is
-discoverable and live. The organization has no approval route yet: a request
-held for approval waits until its deadline or until its sender cancels it. A
-change applies to requests submitted afterwards, bumps the organization's
-policy version (who may deliver work to an agent is an authorization rule) and
-is audited (`agent.inbound_changed`).
+discoverable and live. A change applies to requests submitted afterwards,
+bumps the organization's policy version (who may deliver work to an agent is
+an authorization rule) and is audited (`agent.inbound_changed`).
+
+**Held requests.** A request held for approval waits for a person of the
+organization: whoever may configure the recipient (`agent:manage`: owners,
+administrators, agent operators) or whoever is assigned to it with `invoke`
+(`agent:invoke`). Anyone else gets 404 if they cannot see the agent and 403
+otherwise.
+
+- `GET /v1/agents/{id}/held-requests` lists the requests the agent holds, the
+  nearest deadline first (`after`, `limit` up to 100). Each one gives the
+  sending agent, `requested_by` (the person whose invocation granted the
+  sender's mandate), and when it was sent and expires. The content is not
+  shown: it belongs to `requested_by` (D-02). A request past its deadline or
+  closing is no longer listed.
+- `POST /v1/agents/{id}/held-requests/{request_id}/accept` delivers it as
+  `auto` would have, still under the sender's mandate.
+  `.../decline` refuses it and tells the sender. Both take an empty body and an
+  idempotency key, and answer `{"request_id", "state"}` (`DELIVERING` or
+  `DECLINED`). Both agents must be live (409 `agent_unavailable`). A request
+  already decided, closing or past its deadline is 409 `invalid_transition`.
+  The same key for the opposite decision is 422. Each decision is audited
+  (`agent.request_accepted`, `agent.request_declined`), with the request as
+  the audit event's `reference`.
 
 **Agent Cards and request state (INT-03).** Two more reads on the platform
 channel serve the A2A endpoint of [capsule-adapter](../adapter.md#other-agents-a2a-endpoint):

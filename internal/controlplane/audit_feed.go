@@ -20,7 +20,8 @@ type AuditEvent struct {
 	Actor string `json:"actor"`
 	// Target is the principal, agent, service account or tenant concerned.
 	Target string `json:"target"`
-	// Reference is the team, assignment or token the action refers to, if any.
+	// Reference is the team, assignment, request or token the action refers
+	// to, if any.
 	Reference string `json:"reference,omitempty"`
 }
 
@@ -33,7 +34,7 @@ type AuditPage struct {
 const auditUnion = `
     SELECT id,created_at,action,actor_principal_id AS actor,target_principal_id AS target,'' AS reference FROM tenant_member_audit WHERE tenant_id=$1 AND changed
     UNION ALL SELECT id,created_at,action,actor_principal_id,coalesce(target_principal_id,team_id),team_id FROM tenant_team_audit WHERE tenant_id=$1 AND changed
-    UNION ALL SELECT id,created_at,action,actor_principal_id,agent_id,coalesce(assignment_id,'') FROM tenant_agent_audit WHERE tenant_id=$1
+    UNION ALL SELECT id,created_at,action,actor_principal_id,agent_id,coalesce(assignment_id,request_id,'') FROM tenant_agent_audit WHERE tenant_id=$1
     UNION ALL SELECT id,created_at,action,actor_principal_id,service_principal_id,coalesce(token_id,'') FROM tenant_service_audit WHERE tenant_id=$1
     UNION ALL SELECT id,created_at,'llm.'||action,actor_principal_id,coalesce(provider_id,budget_id),coalesce(alias,'') FROM llm_audit WHERE tenant_id=$1
     UNION ALL SELECT id,created_at,action,'platform:'||actor_account,tenant_id,'' FROM organization_audit WHERE tenant_id=$1 AND changed

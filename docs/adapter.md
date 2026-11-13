@@ -235,8 +235,9 @@ task, _ := client.GetTask(ctx, &a2a.GetTaskRequest{ID: result.(*a2a.Task).ID})
   the recipient's inbound policy (`PUT /v1/agents/{id}/inbound`, see
   [agents-assignments.md](api/agents-assignments.md#directory-publication-int-02)):
   `auto` delivers at once; under `manual`, the default, the task stays
-  `WORKING` until the request's deadline, since an organization has no
-  approval route yet. The task's
+  `SUBMITTED` until a person of the organization accepts the request
+  (`/v1/agents/{id}/held-requests`) or declines it (the task is then
+  `REJECTED`), or until its deadline. The task's
   states follow the request's, as listed in
   [interop.md](interop.md#decisions). The request's own state is repeated in
   the task's metadata (`agentcapsule.request_state`).

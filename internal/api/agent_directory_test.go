@@ -2,9 +2,12 @@ package api
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestHTTPAgentDirectoryProfile(t *testing.T) {
@@ -96,5 +99,93 @@ func TestHTTPAgentInboundPolicy(t *testing.T) {
 	}
 	if r = call(t, l.server, "GET", "/v1/agents/agt_unknown/inbound", owner, "", ""); r.Code != 404 {
 		t.Fatal("unknown agent", r.Code)
+	}
+}
+
+// A request held by an organization agent's manual inbound policy is listed
+// and decided over HTTP by whoever may configure the agent or is assigned to it
+// with invoke; others are refused, and the content never appears.
+func TestHTTPHeldRequests(t *testing.T) {
+	l, at, owner := apiAgentsLab(t)
+	sender := apiActiveTenantAgent(t, l, owner, "sender")
+	recipient := apiActiveTenantAgent(t, l, owner, "recipient")
+	bob := apiAddMember(t, l, owner, "bob", "agent_user")
+	apiAddMember(t, l, owner, "carol", "agent_user")
+	assignment := `{"principal_id":"` + bob.PrincipalID + `","permissions":["invoke"]}`
+	if r := call(t, l.server, "POST", "/v1/agents/"+recipient+"/assignments", owner, "asg", assignment); r.Code != 201 {
+		t.Fatal("assign", r.Code, r.Body.String())
+	}
+	bobToken := l.sign(t, at, "bob-all", "bob", allAgentScopes)
+	carolToken := l.sign(t, at, "carol-all", "carol", allAgentScopes)
+	db, err := pgxpool.New(t.Context(), l.dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err = db.Exec(t.Context(), `UPDATE agents SET discoverable=true WHERE id=$1;`, recipient); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(t.Context(), `INSERT INTO mandates(id,agent_id,origin_event_id,max_requests,remaining,expires_at)
+        VALUES ('mandate-sender',$1,'evt-sender',3,3,clock_timestamp()+interval '1 hour')`, sender); err != nil {
+		t.Fatal(err)
+	}
+	held := func(key string) string {
+		t.Helper()
+		r, err := l.store.Submit(t.Context(), sender, key, controlplane.Submission{RecipientAgentID: recipient, MandateID: "mandate-sender",
+			PayloadRef: "payload-" + key, PayloadHash: [32]byte{1}, ExpiresAt: time.Now().Add(time.Hour)})
+		if err != nil || r.State != controlplane.PendingApproval {
+			t.Fatal("held request", r, err)
+		}
+		return r.RequestID
+	}
+	first, second := held("first"), held("second")
+	list := "/v1/agents/" + recipient + "/held-requests"
+
+	var page struct {
+		Items []controlplane.HeldRequest `json:"items"`
+	}
+	r := call(t, l.server, "GET", list, bobToken, "", "")
+	if r.Code != 200 || json.Unmarshal(r.Body.Bytes(), &page) != nil || len(page.Items) != 2 || page.Items[0].SenderAgentID != sender {
+		t.Fatal("list", r.Code, r.Body.String())
+	}
+	if r = call(t, l.server, "GET", list+"?limit=x", bobToken, "", ""); r.Code != 400 {
+		t.Fatal("limit", r.Code)
+	}
+	if r = call(t, l.server, "GET", list, carolToken, "", ""); r.Code != 404 {
+		t.Fatal("a member without any right to the agent", r.Code)
+	}
+	if r = call(t, l.server, "POST", list, owner, "k", "{}"); r.Code != 405 {
+		t.Fatal("method", r.Code)
+	}
+
+	accept := list + "/" + first + "/accept"
+	if r = call(t, l.server, "POST", accept, carolToken, "c", "{}"); r.Code != 404 {
+		t.Fatal("carol accepted", r.Code)
+	}
+	if r = call(t, l.server, "POST", accept, bobToken, "", "{}"); r.Code != 400 {
+		t.Fatal("no idempotency key", r.Code)
+	}
+	if r = call(t, l.server, "POST", accept, bobToken, "yes", `{"note":"x"}`); r.Code != 400 {
+		t.Fatal("unknown field", r.Code)
+	}
+	r = call(t, l.server, "POST", accept, bobToken, "yes", "{}")
+	var out controlplane.HeldRequestDecision
+	if r.Code != 200 || json.Unmarshal(r.Body.Bytes(), &out) != nil || out != (controlplane.HeldRequestDecision{RequestID: first, State: controlplane.Delivering}) {
+		t.Fatal("accept", r.Code, r.Body.String())
+	}
+	if replay := call(t, l.server, "POST", accept, bobToken, "yes", "{}"); replay.Code != 200 || replay.Header().Get("Idempotency-Replayed") != "true" {
+		t.Fatal("replay", replay.Code)
+	}
+	if r = call(t, l.server, "POST", accept, owner, "again", "{}"); r.Code != 409 {
+		t.Fatal("accepted twice", r.Code)
+	}
+	if r = call(t, l.server, "POST", list+"/"+second+"/decline", owner, "no", "{}"); r.Code != 200 || json.Unmarshal(r.Body.Bytes(), &out) != nil || out.State != "DECLINED" {
+		t.Fatal("decline", r.Code, r.Body.String())
+	}
+	if r = call(t, l.server, "GET", list, owner, "", ""); r.Code != 200 || !strings.Contains(r.Body.String(), `"items":[]`) {
+		t.Fatal("decided requests are still listed", r.Code, r.Body.String())
+	}
+	if r = call(t, l.server, "POST", "/v1/agents/"+sender+"/held-requests/"+second+"/accept", owner, "elsewhere", "{}"); r.Code != 404 {
+		t.Fatal("a request through another agent", r.Code)
 	}
 }

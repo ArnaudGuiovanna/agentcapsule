@@ -1508,10 +1508,11 @@ paths:
         agents of its organization (agent:manage; owners, administrators and
         agent operators). auto delivers each request at once, still under the
         sender's mandate and the recipient's visibility; manual holds it for
-        approval. The organization has no approval route yet, so a held request
-        waits until its deadline or until its sender cancels it. A change applies
-        to requests submitted afterwards, bumps the organization's policy
-        version and is audited (agent.inbound_changed).
+        approval by a person of the organization (see
+        /v1/agents/{id}/held-requests), until its deadline or until its sender
+        cancels it. A change applies to requests submitted afterwards, bumps
+        the organization's policy version and is audited
+        (agent.inbound_changed).
       security: [{delegatedBearer: []}]
       parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
       requestBody:
@@ -1534,6 +1535,79 @@ paths:
         '403': {$ref: '#/components/responses/Problem'}
         '404': {$ref: '#/components/responses/Problem'}
         '409': {$ref: '#/components/responses/Problem'}  # agent_unavailable: not live (provisioning or deleted)
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/agents/{id}/held-requests:
+    get:
+      description: >-
+        Requests from the other agents of the organization that this agent
+        holds for approval (manual inbound policy), the nearest deadline first.
+        A request past its deadline or closing is not listed. For whoever may
+        configure the agent (agent:manage; owners, administrators and agent
+        operators) or is assigned to it with invoke (agent:invoke). Metadata
+        only: the content belongs to the person on whose behalf the sender
+        acts, named in requested_by.
+      security: [{delegatedBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/ResourceID'}
+        - {name: after, in: query, schema: {type: string, maxLength: 100}, description: "Last request id received."}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 100}}
+      responses:
+        '200':
+          description: Page sorted by deadline, then id
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/HeldRequest'}}
+        '400': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/agents/{id}/held-requests/{request_id}/accept:
+    post:
+      description: >-
+        Accepts a request this agent holds for approval: it is delivered as the
+        auto policy would have, still under the sender's mandate. Same rights as
+        the list. Both agents must be live (409 agent_unavailable); a request
+        already decided, closing or past its deadline is 409
+        invalid_transition. Audited (agent.request_accepted, with the request).
+        The initial receipt is kept for the same Idempotency-Key; the same key
+        for the opposite decision is 422.
+      security: [{delegatedBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/ResourceID'}
+        - {name: request_id, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 100}}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody: {$ref: '#/components/requestBodies/EmptyCommand'}
+      responses:
+        '200': {$ref: '#/components/responses/RequestDecision'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/agents/{id}/held-requests/{request_id}/decline:
+    post:
+      description: >-
+        Declines a request this agent holds for approval; the sender is told,
+        and nothing is delivered. Same rights, conditions and idempotency as
+        accept. Audited (agent.request_declined, with the request).
+      security: [{delegatedBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/ResourceID'}
+        - {name: request_id, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 100}}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody: {$ref: '#/components/requestBodies/EmptyCommand'}
+      responses:
+        '200': {$ref: '#/components/responses/RequestDecision'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
         default: {$ref: '#/components/responses/Problem'}
   /v1/agents/{id}/attachments:
     post:
@@ -2225,6 +2299,15 @@ components:
       properties:
         agent_id: {type: string}
         mode: {type: string, enum: [auto, manual]}
+    HeldRequest:
+      type: object
+      required: [id, sender_agent_id, created_at, expires_at]
+      properties:
+        id: {type: string}
+        sender_agent_id: {type: string}
+        requested_by: {type: string, description: "Principal whose invocation granted the sender's mandate, when one did"}
+        created_at: {type: string, format: date-time}
+        expires_at: {type: string, format: date-time}
     DirectoryEntry:
       type: object
       required: [agent_id, visible, description, skills, domains, publication]
