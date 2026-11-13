@@ -27,7 +27,9 @@ the provider) and SFTP on the standby host (an OpenSSH server). The run:
    state is right, and the file holds no secret.
 
 Runs as an ordinary user with Docker; both images are pinned by digest. Every
-credential is generated for the run and removed with it.
+credential is generated for the run and removed with it. The stores, the
+primary, the standby and the promoted standby's repository are built by Lab,
+which scripts/verify-failover.py shares.
 """
 
 import argparse
@@ -98,50 +100,52 @@ def kill(*needles):
     return killed
 
 
-def main():
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--pg-bin", type=Path, required=True, help="PostgreSQL bin directory (initdb, pg_ctl, psql)")
-    p.add_argument("--pg-library-path", type=Path, help="library directory for PostgreSQL and pgBackRest")
-    p.add_argument("--pgbackrest", type=Path, required=True, help="pgbackrest executable")
-    p.add_argument("--output", type=Path, required=True, help="new evidence directory")
-    a = p.parse_args()
-    for tool in ("docker", "openssl", "ssh-keygen"):
-        if not shutil.which(tool):
-            p.error(tool + " is required")
-    out = a.output.resolve()
-    out.mkdir(parents=True, exist_ok=False)
-    for logs in ("pgbackrest", "pgbackrest-standby", "pgbackrest-promoted"):
-        (out / logs).mkdir()  # pgBackRest does not create its log path
-    report = {"status": "failed", "images": {"s3": SEAWEED, "sftp": SFTP}, "archive_timeout_seconds": ARCHIVE_TIMEOUT}
-    # pgBackRest's own libraries, extracted beside it: <root>/usr/bin/pgbackrest, <root>/usr/lib/x86_64-linux-gnu.
-    libs = ":".join(str(x) for x in [a.pg_library_path, a.pgbackrest.resolve().parents[1] / "lib/x86_64-linux-gnu"] if x)
-    env = {**os.environ, "LD_LIBRARY_PATH": libs}
-    for k in list(env):
-        if k.startswith(("PG", "PGBACKREST_")):
-            env.pop(k)  # nothing inherited may redirect the run
-    work = Path(tempfile.mkdtemp(prefix="acpbk-", dir="/tmp"))  # short: Unix socket paths
-    containers, paused, clusters, credentials = [], [], [], []
-    tag = f"acpbk-{os.getpid()}"
+class Lab:
+    """The two stores, the primary and the standby, as deploy/ ships them.
 
-    def run(label, command, timeout=300, check=True, **kw):
-        with (out / (label + ".log")).open("a") as log:
+    verify-backups.py and verify-failover.py share it. Every credential is
+    generated for the run and listed in credentials; close() removes what the
+    run started, then searches the evidence for each of them.
+    """
+
+    def __init__(self, out, pg_bin, pgbackrest, pg_library_path, prefix):
+        self.out, self.pg_bin, self.pgbackrest = out, pg_bin, pgbackrest
+        for logs in ("pgbackrest", "pgbackrest-standby", "pgbackrest-promoted"):
+            (out / logs).mkdir()  # pgBackRest does not create its log path
+        # pgBackRest's own libraries, extracted beside it: <root>/usr/bin/pgbackrest, <root>/usr/lib/x86_64-linux-gnu.
+        self.libs = ":".join(str(x) for x in [pg_library_path, pgbackrest.resolve().parents[1] / "lib/x86_64-linux-gnu"] if x)
+        self.env = {**os.environ, "LD_LIBRARY_PATH": self.libs}
+        for k in list(self.env):
+            if k.startswith(("PG", "PGBACKREST_")):
+                self.env.pop(k)  # nothing inherited may redirect the run
+        self.work = Path(tempfile.mkdtemp(prefix=prefix + "-", dir="/tmp"))  # short: Unix socket paths
+        self.tag = f"{prefix}-{os.getpid()}"
+        self.containers, self.paused, self.clusters, self.credentials = [], [], [], []
+        # Both timeouts scaled down together, as they are equal in production.
+        self.timeouts = {"archive_timeout = 300": f"archive_timeout = {ARCHIVE_TIMEOUT}",
+                         "checkpoint_timeout = 300": f"checkpoint_timeout = {ARCHIVE_TIMEOUT}"}
+
+    def run(self, label, command, timeout=300, check=True, **kw):
+        with (self.out / (label + ".log")).open("a") as log:
             log.write("$ " + " ".join(str(c) for c in command) + "\n")
             log.flush()
-            r = subprocess.run([str(c) for c in command], env=kw.pop("environment", env), stdout=log, stderr=subprocess.STDOUT,
+            r = subprocess.run([str(c) for c in command], env=kw.pop("environment", self.env), stdout=log, stderr=subprocess.STDOUT,
                                timeout=timeout, check=False, **kw)
         if check and r.returncode:
             raise RuntimeError(f"{label} failed ({r.returncode}); see {label}.log")
         return r.returncode
 
-    def output(command, **kw):
-        return subprocess.check_output([str(c) for c in command], env=env, text=True, timeout=120, **kw).strip()
+    def output(self, command, **kw):
+        return subprocess.check_output([str(c) for c in command], env=self.env, text=True, timeout=120, **kw).strip()
 
-    pg = lambda name: a.pg_bin / name  # noqa: E731
+    def pg(self, name):
+        return self.pg_bin / name
 
-    def psql(s, *sql, quiet=False):
-        return output([pg("psql"), "-h", s, "-d", "postgres", "-Atq", "-v", "ON_ERROR_STOP=1", *[x for q in sql for x in ("-c", q)]],
-                      stderr=subprocess.DEVNULL if quiet else None)
+    def psql(self, s, *sql, quiet=False):
+        return self.output([self.pg("psql"), "-h", s, "-d", "postgres", "-Atq", "-v", "ON_ERROR_STOP=1", *[x for q in sql for x in ("-c", q)]],
+                           stderr=subprocess.DEVNULL if quiet else None)
 
+    @staticmethod
     def wait(probe, limit, failure, every=0.5):
         """Seconds until probe() holds; a query that fails counts as not yet."""
         start = time.monotonic()
@@ -155,14 +159,22 @@ def main():
                 raise RuntimeError(failure)
             time.sleep(every)
 
+    @staticmethod
     def secrets_file(directory, lines):
         directory.mkdir()
         (directory / "secrets.conf").write_text("\n".join(["[global]", *lines, ""]))
         (directory / "secrets.conf").chmod(0o600)
 
-    try:
-        # Certificates and keys for the run only.
-        certs = work / "certs"
+    def backrest(self, conf, include):
+        return [self.pgbackrest, f"--config={conf}", f"--config-include-path={include}", f"--stanza={STANZA}"]
+
+    def archive_command(self, backrest):
+        return " ".join(["env", f"LD_LIBRARY_PATH={self.libs}", *(str(x) for x in backrest), "archive-push", "%p"])
+
+    def stores(self):
+        """Certificates and credentials for the run, then the object store and the standby's SFTP server."""
+        run, certs = self.run, self.work / "certs"
+        self.certs = certs
         certs.mkdir()
         run("setup", ["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-days", "1",
                       "-subj", "/CN=backup lab CA", "-keyout", certs / "ca.key", "-out", certs / "ca.pem"])
@@ -173,13 +185,12 @@ def main():
                       "-CAcreateserial", "-days", "1", "-extfile", certs / "san.ext", "-out", certs / "s3.crt"])
         # One S3 credential for the primary, a read-only one for the standby,
         # and a new one for the standby once promoted.
-        keys = {name: (name + secrets.token_hex(6), secrets.token_hex(24)) for name in ("primary", "standby", "promoted")}
-        actions = {"primary": ["Admin", "Read", "Write", "List", "Tagging"], "standby": ["Read", "List"],
-                   "promoted": ["Admin", "Read", "Write", "List", "Tagging"]}
-        (certs / "s3.json").write_text(json.dumps({"identities": [{"name": n, "credentials": [{"accessKey": k, "secretKey": s}], "actions": actions[n]}
-                                                                  for n, (k, s) in keys.items()]}))
-        passes = {name: secrets.token_hex(32) for name in ("s3", "sftp", "promoted")}
-        credentials = [s for _, s in keys.values()] + list(passes.values())
+        self.keys = {name: (name + secrets.token_hex(6), secrets.token_hex(24)) for name in ("primary", "standby", "promoted")}
+        self.s3_actions = {"primary": ["Admin", "Read", "Write", "List", "Tagging"], "standby": ["Read", "List"],
+                           "promoted": ["Admin", "Read", "Write", "List", "Tagging"]}
+        self.write_s3_identities(self.keys)
+        self.passes = {name: secrets.token_hex(32) for name in ("s3", "sftp", "promoted")}
+        self.credentials += [s for _, s in self.keys.values()] + list(self.passes.values())
         for f in certs.iterdir():
             f.chmod(0o644)  # read by the container's user
         run("setup", ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", certs / "host_key"])
@@ -190,67 +201,192 @@ def main():
         # repository is a directory of this host, as it is on the standby's
         # disk; its user has this user's uid, so that the standby reads what
         # it writes, as postgres does on the standby through the backup group.
-        s3_port, sftp_port = free_port(), free_port()
-        sftp_repo = work / "sftp-repo"
-        sftp_repo.mkdir()
-        sftp_repo.chmod(0o750)
-        containers.append(f"{tag}-s3")
-        run("services", ["docker", "run", "-d", "--name", f"{tag}-s3", "-p", f"127.0.0.1:{s3_port}:8333", "-v", f"{certs}:/etc/seaweed:ro",
+        self.s3_port, self.sftp_port = free_port(), free_port()
+        self.sftp_repo = self.work / "sftp-repo"
+        self.sftp_repo.mkdir()
+        self.sftp_repo.chmod(0o750)
+        tag = self.tag
+        self.containers.append(f"{tag}-s3")
+        run("services", ["docker", "run", "-d", "--name", f"{tag}-s3", "-p", f"127.0.0.1:{self.s3_port}:8333", "-v", f"{certs}:/etc/seaweed:ro",
                          SEAWEED, "server", "-dir=/data", "-s3", "-s3.port=8333", "-s3.config=/etc/seaweed/s3.json",
                          "-s3.cert.file=/etc/seaweed/s3.crt", "-s3.key.file=/etc/seaweed/s3.key"])
-        containers.append(f"{tag}-sftp")
-        run("services", ["docker", "run", "-d", "--name", f"{tag}-sftp", "-p", f"127.0.0.1:{sftp_port}:22",
+        self.containers.append(f"{tag}-sftp")
+        run("services", ["docker", "run", "-d", "--name", f"{tag}-sftp", "-p", f"127.0.0.1:{self.sftp_port}:22",
                          "-v", f"{certs / 'host_key'}:/etc/ssh/ssh_host_ed25519_key:ro",
                          "-v", f"{certs / 'client_key.pub'}:{SFTP_HOME}/.ssh/keys/client.pub:ro",
-                         "-v", f"{sftp_repo}:{SFTP_HOME}/repo", SFTP, f"{SFTP_USER}::{os.getuid()}:{os.getgid()}:repo"])
+                         "-v", f"{self.sftp_repo}:{SFTP_HOME}/repo", SFTP, f"{SFTP_USER}::{os.getuid()}:{os.getgid()}:repo"])
         deadline = time.monotonic() + 120
         while True:
             if run("services", ["docker", "exec", f"{tag}-s3", "sh", "-c", "echo 's3.bucket.create -name agentcapsule-backups' | weed shell"],
-                   timeout=60, check=False) == 0 and "agentcapsule-backups" in output(["docker", "exec", f"{tag}-s3", "sh", "-c", "echo s3.bucket.list | weed shell"]):
+                   timeout=60, check=False) == 0 and "agentcapsule-backups" in self.output(["docker", "exec", f"{tag}-s3", "sh", "-c", "echo s3.bucket.list | weed shell"]):
                 break
             if time.monotonic() > deadline:
                 raise RuntimeError("the object store did not start; see services.log")
             time.sleep(2)
-        (certs / "known_hosts").write_text(f"[127.0.0.1]:{sftp_port} " + (certs / "host_key.pub").read_text().rsplit(" ", 1)[0] + "\n")
-        s3_here = lambda n: f"repo{n}-s3-endpoint=127.0.0.1\nrepo{n}-storage-port={s3_port}\nrepo{n}-storage-ca-file={certs / 'ca.pem'}"  # noqa: E731
+        (certs / "known_hosts").write_text(f"[127.0.0.1]:{self.sftp_port} " + (certs / "host_key.pub").read_text().rsplit(" ", 1)[0] + "\n")
 
-        # pgBackRest as deploy/backup ships it: the configuration, with only
-        # this environment's addresses and paths replaced, and the secrets in
-        # their own file under conf.d.
-        conf, include = work / "pgbackrest.conf", work / "conf.d"
-        data, sock = work / "primary", work / "s"
+    def write_s3_identities(self, keys):
+        """The object store's credentials: SeaweedFS reads this file at start, and again on SIGHUP."""
+        (self.certs / "s3.json").write_text(json.dumps({"identities": [
+            {"name": n, "credentials": [{"accessKey": k, "secretKey": s}], "actions": self.s3_actions[n]} for n, (k, s) in keys.items()]}))
+        (self.certs / "s3.json").chmod(0o644)
+
+    def s3_here(self, n):
+        return f"repo{n}-s3-endpoint=127.0.0.1\nrepo{n}-storage-port={self.s3_port}\nrepo{n}-storage-ca-file={self.certs / 'ca.pem'}"
+
+    def primary(self, data, sock):
+        """pgBackRest and PostgreSQL as deploy/backup ships them, then the cluster started. Returns pgBackRest's command."""
+        # The configuration, with only this environment's addresses and paths
+        # replaced, and the secrets in their own file under conf.d.
+        self.conf, self.include = self.work / "pgbackrest.conf", self.work / "conf.d"
         sock.mkdir()
-        conf.write_text(shipped("deploy/backup/pgbackrest.conf", {
-            "repo1-s3-endpoint=s3.example.net": s3_here(1),
+        self.conf.write_text(shipped("deploy/backup/pgbackrest.conf", {
+            "repo1-s3-endpoint=s3.example.net": self.s3_here(1),
             "repo1-s3-region=fr-par": "repo1-s3-region=us-east-1",
-            "repo2-sftp-host=standby.example.net": f"repo2-sftp-host=127.0.0.1\nrepo2-sftp-host-port={sftp_port}",
-            "/var/lib/postgresql/.ssh/backup_ed25519": str(certs / "client_key"),
-            "/etc/pgbackrest/known_hosts": str(certs / "known_hosts"),
-            "spool-path=/var/spool/pgbackrest": f"spool-path={work / 'spool'}\nlock-path={work / 'lock'}\nlog-level-console=info",
-            "log-path=/var/log/pgbackrest": f"log-path={out / 'pgbackrest'}",
+            "repo2-sftp-host=standby.example.net": f"repo2-sftp-host=127.0.0.1\nrepo2-sftp-host-port={self.sftp_port}",
+            "/var/lib/postgresql/.ssh/backup_ed25519": str(self.certs / "client_key"),
+            "/etc/pgbackrest/known_hosts": str(self.certs / "known_hosts"),
+            "spool-path=/var/spool/pgbackrest": f"spool-path={self.work / 'spool'}\nlock-path={self.work / 'lock'}\nlog-level-console=info",
+            "log-path=/var/log/pgbackrest": f"log-path={self.out / 'pgbackrest'}",
             "pg1-path=/var/lib/postgresql/18/main": f"pg1-path={data}\npg1-socket-path={sock}",
         }))
-        secrets_file(include, [f"repo1-s3-key={keys['primary'][0]}", f"repo1-s3-key-secret={keys['primary'][1]}",
-                               f"repo1-cipher-pass={passes['s3']}", f"repo2-cipher-pass={passes['sftp']}"])
-        backrest = [a.pgbackrest, f"--config={conf}", f"--config-include-path={include}", f"--stanza={STANZA}"]
-        archive = " ".join(["env", f"LD_LIBRARY_PATH={libs}", *(str(x) for x in backrest), "archive-push", "%p"])
-        run("primary", [pg("initdb"), "-D", data, "--auth-local=trust", "--auth-host=reject", "--no-locale", "--encoding=UTF8"])
-        # Both timeouts scaled down together, as they are equal in production.
-        timeouts = {"archive_timeout = 300": f"archive_timeout = {ARCHIVE_TIMEOUT}",
-                    "checkpoint_timeout = 300": f"checkpoint_timeout = {ARCHIVE_TIMEOUT}"}
+        self.secrets_file(self.include, [f"repo1-s3-key={self.keys['primary'][0]}", f"repo1-s3-key-secret={self.keys['primary'][1]}",
+                                         f"repo1-cipher-pass={self.passes['s3']}", f"repo2-cipher-pass={self.passes['sftp']}"])
+        backrest = self.backrest(self.conf, self.include)
+        self.run("primary", [self.pg("initdb"), "-D", data, "--auth-local=trust", "--auth-host=reject", "--no-locale", "--encoding=UTF8"])
         settings = shipped("deploy/backup/postgresql.conf", {
-            "archive_command = 'pgbackrest --stanza=agentcapsule archive-push %p'": f"archive_command = '{archive}'", **timeouts})
+            "archive_command = 'pgbackrest --stanza=agentcapsule archive-push %p'": f"archive_command = '{self.archive_command(backrest)}'",
+            **self.timeouts})
         with (data / "postgresql.conf").open("a") as f:
             f.write(f"listen_addresses = ''\nunix_socket_directories = '{sock}'\n" + settings)
-        run("primary", [pg("pg_ctl"), "-D", data, "-l", out / "primary-server.log", "-w", "start"])
-        clusters.append(data)
+        self.run("primary", [self.pg("pg_ctl"), "-D", data, "-l", self.out / "primary-server.log", "-w", "start"])
+        self.clusters.append(data)
+        return backrest
+
+    def standby(self, standby, ssock):
+        """The standby as deploy/standby ships it, built as docs/recovery.md gives it, then started. Returns its pgBackRest command.
+
+        Repository 1 is the SFTP directory on its own disk, repository 2 is S3,
+        read-only. The primary must have a backup in its repository 2.
+        """
+        sconf, sinclude = self.work / "standby.conf", self.work / "standby.d"
+        ssock.mkdir()
+        sconf.write_text(shipped("deploy/standby/pgbackrest.conf", {
+            "repo1-path=/srv/backup/repo": f"repo1-path={self.sftp_repo}",
+            "repo2-s3-endpoint=s3.example.net": self.s3_here(2),
+            "repo2-s3-region=fr-par": "repo2-s3-region=us-east-1",
+            "spool-path=/var/spool/pgbackrest": f"spool-path={self.work / 'standby-spool'}\nlock-path={self.work / 'standby-lock'}\nlog-level-console=info",
+            "log-path=/var/log/pgbackrest": f"log-path={self.out / 'pgbackrest-standby'}",
+            "pg1-path=/var/lib/postgresql/18/main": f"pg1-path={standby}\npg1-socket-path={ssock}",
+        }))
+        self.secrets_file(sinclude, [f"repo1-cipher-pass={self.passes['sftp']}", f"repo2-s3-key={self.keys['standby'][0]}",
+                                     f"repo2-s3-key-secret={self.keys['standby'][1]}", f"repo2-cipher-pass={self.passes['s3']}"])
+        on_standby = self.backrest(sconf, sinclude)
+        # pg_createcluster's part, then the build as docs/recovery.md gives it.
+        # The restored postgresql.conf is the primary's, archive_command
+        # included: the standby's settings, appended, must override it.
+        self.run("standby", [self.pg("initdb"), "-D", standby, "--auth-local=trust", "--auth-host=reject", "--no-locale", "--encoding=UTF8"])
+        # No --repo: the backup comes from the first repository that has one,
+        # the local directory, and restore_command searches both.
+        self.run("standby", [*on_standby, "--type=standby", "--delta", "restore"], timeout=600)
+        if "repo1: restore backup set" not in (self.out / "standby.log").read_text():
+            raise RuntimeError("the standby was not built from its local repository")
+        restore_command = re.search(r"^restore_command = '(.*)'$", (standby / "postgresql.auto.conf").read_text(), re.M)
+        if not (standby / "standby.signal").exists() or not restore_command or "archive-get" not in restore_command[1]:
+            raise RuntimeError("the restore did not prepare a standby")
+        if "--repo" in restore_command[1]:
+            raise RuntimeError("restore_command is limited to one repository: " + restore_command[1])
+        with (standby / "postgresql.conf").open("a") as f:
+            f.write(shipped("deploy/standby/postgresql.conf", self.timeouts) + f"listen_addresses = ''\nunix_socket_directories = '{ssock}'\n")
+        self.run("standby", [self.pg("pg_ctl"), "-D", standby, "-l", self.out / "standby-server.log", "-t", "300", "-w", "start"])
+        self.clusters.append(standby)
+        return on_standby
+
+    def own_repository(self, standby, ssock):
+        """A promoted standby's repository, as the promotion procedure gives it. Returns its pgBackRest command, configuration and include path.
+
+        A path the old primary never wrote, with a new credential and a new
+        passphrase; repository 2 waits for a new standby. The WAL written since
+        the promotion was kept and is archived there.
+        """
+        nconf, ninclude = self.work / "promoted.conf", self.work / "promoted.d"
+        text = shipped("deploy/backup/pgbackrest.conf", {
+            "repo1-path=/agentcapsule": "repo1-path=/agentcapsule-2",
+            "repo1-s3-endpoint=s3.example.net": self.s3_here(1),
+            "repo1-s3-region=fr-par": "repo1-s3-region=us-east-1",
+            "spool-path=/var/spool/pgbackrest": f"spool-path={self.work / 'promoted-spool'}\nlock-path={self.work / 'promoted-lock'}\nlog-level-console=info",
+            "log-path=/var/log/pgbackrest": f"log-path={self.out / 'pgbackrest-promoted'}",
+            "pg1-path=/var/lib/postgresql/18/main": f"pg1-path={standby}\npg1-socket-path={ssock}",
+        })
+        nconf.write_text("".join(line for line in text.splitlines(keepends=True) if not line.startswith("repo2-")))
+        self.secrets_file(ninclude, [f"repo1-s3-key={self.keys['promoted'][0]}", f"repo1-s3-key-secret={self.keys['promoted'][1]}",
+                                     f"repo1-cipher-pass={self.passes['promoted']}"])
+        on_promoted = self.backrest(nconf, ninclude)
+        self.run("promoted", [*on_promoted, "stanza-create"])
+        self.psql(ssock, f"ALTER SYSTEM SET archive_command = '{self.archive_command(on_promoted)}'", "SELECT pg_reload_conf()")
+        self.run("promoted", [*on_promoted, "check"])
+        return on_promoted, nconf, ninclude
+
+    def close(self, report):
+        """Removes what the run started and writes summary.json. Returns the exit code.
+
+        No secret of the run may be in the evidence: pgBackRest redacts them,
+        and the run searches every file of the evidence for each one.
+        """
+        for c in self.clusters:
+            subprocess.run([str(self.pg("pg_ctl")), "-D", str(c), "-m", "immediate", "-w", "stop"], env=self.env, capture_output=True, check=False)
+        kill(str(self.work))  # pgBackRest's asynchronous processes, and any other process of the run
+        for c in self.paused:
+            subprocess.run(["docker", "unpause", c], capture_output=True, check=False)
+        for c in self.containers:
+            with (self.out / "services.log").open("a") as log:
+                subprocess.run(["docker", "logs", c], stdout=log, stderr=subprocess.STDOUT, check=False)
+            subprocess.run(["docker", "rm", "-f", "-v", c], capture_output=True, check=False)
+        shutil.rmtree(self.work, ignore_errors=True)
+        needles = [c if isinstance(c, bytes) else c.encode() for c in self.credentials]
+        leaks = []
+        for f in sorted(self.out.rglob("*")):
+            if f.is_file():
+                content = f.read_bytes()
+                if any(n in content for n in needles):
+                    leaks.append(str(f.relative_to(self.out)))
+        report["secrets_in_evidence"] = leaks
+        if leaks and report["status"] == "passed":
+            report["status"], report["error"] = "failed", "a secret of the run is in the evidence"
+        (self.out / "summary.json").write_text(json.dumps(report, indent=2) + "\n")
+        print(json.dumps(report, indent=2))
+        return 0 if report["status"] == "passed" else 1
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--pg-bin", type=Path, required=True, help="PostgreSQL bin directory (initdb, pg_ctl, psql)")
+    p.add_argument("--pg-library-path", type=Path, help="library directory for PostgreSQL and pgBackRest")
+    p.add_argument("--pgbackrest", type=Path, required=True, help="pgbackrest executable")
+    p.add_argument("--output", type=Path, required=True, help="new evidence directory")
+    a = p.parse_args()
+    for tool in ("docker", "openssl", "ssh-keygen"):
+        if not shutil.which(tool):
+            p.error(tool + " is required")
+    out = a.output.resolve()
+    out.mkdir(parents=True, exist_ok=False)
+    report = {"status": "failed", "images": {"s3": SEAWEED, "sftp": SFTP}, "archive_timeout_seconds": ARCHIVE_TIMEOUT}
+    lab = Lab(out, a.pg_bin, a.pgbackrest, a.pg_library_path, "acpbk")
+    run, output, psql, wait, pg = lab.run, lab.output, lab.psql, lab.wait, lab.pg
+    work, tag = lab.work, lab.tag
+
+    try:
+        lab.stores()
+        keys, sftp_repo = lab.keys, lab.sftp_repo
+        data, sock = work / "primary", work / "s"
+        backrest = lab.primary(data, sock)
 
         # Base-backup freshness, written for node_exporter as the timer does.
         textfile = out / "textfile"
         textfile.mkdir()
-        never_written = [*(k for k, _ in keys.values()), *credentials, str(work), "127.0.0.1"]
+        never_written = [*(k for k, _ in keys.values()), *lab.credentials, str(work), "127.0.0.1"]
 
-        def freshness(label, config=conf, config_include=include):
+        def freshness(label, config=lab.conf, config_include=lab.include):
             code = run(label, [sys.executable, "-I", ROOT / "deploy/backup/agentcapsule-backup-metrics.py", f"--pgbackrest={a.pgbackrest}",
                                f"--config={config}", f"--config-include-path={config_include}", f"--textfile-directory={textfile}"], check=False)
             path = textfile / "agentcapsule-backup.prom"
@@ -304,7 +440,7 @@ def main():
         report["commit_to_archived_seconds"] = round(time.monotonic() - committed, 1)
         expected = int(psql(sock, "SELECT count(*) FROM ledger"))
         run("primary", [pg("pg_ctl"), "-D", data, "-m", "fast", "-w", "stop"])
-        clusters.remove(data)
+        lab.clusters.remove(data)
 
         # A restore from each repository alone: every committed row is there.
         report["restores"] = {}
@@ -314,7 +450,7 @@ def main():
             run("restore", [*backrest, f"--repo={repo}", f"--pg1-path={target}", "--archive-mode=off", "restore"], timeout=600)
             run("restore", [pg("pg_ctl"), "-D", target, "-l", out / f"restore{repo}-server.log", "-o",
                             f"-c listen_addresses='' -c unix_socket_directories={rsock} -c archive_mode=off", "-w", "start"])
-            clusters.append(target)
+            lab.clusters.append(target)
             deadline = time.monotonic() + 120
             while psql(rsock, "SELECT pg_is_in_recovery()") == "t":
                 if time.monotonic() > deadline:
@@ -325,43 +461,13 @@ def main():
             if found != expected:
                 raise RuntimeError(f"restore from repository {repo}: {found} rows, {expected} committed")
             run("restore", [pg("pg_ctl"), "-D", target, "-m", "fast", "-w", "stop"])
-            clusters.remove(target)
+            lab.clusters.remove(target)
 
-        # The standby, as deploy/standby ships it: repository 1 is the SFTP
-        # directory on its own disk, repository 2 is S3, read-only.
-        standby, ssock, sconf, sinclude = work / "standby", work / "t", work / "standby.conf", work / "standby.d"
-        ssock.mkdir()
-        sconf.write_text(shipped("deploy/standby/pgbackrest.conf", {
-            "repo1-path=/srv/backup/repo": f"repo1-path={sftp_repo}",
-            "repo2-s3-endpoint=s3.example.net": s3_here(2),
-            "repo2-s3-region=fr-par": "repo2-s3-region=us-east-1",
-            "spool-path=/var/spool/pgbackrest": f"spool-path={work / 'standby-spool'}\nlock-path={work / 'standby-lock'}\nlog-level-console=info",
-            "log-path=/var/log/pgbackrest": f"log-path={out / 'pgbackrest-standby'}",
-            "pg1-path=/var/lib/postgresql/18/main": f"pg1-path={standby}\npg1-socket-path={ssock}",
-        }))
-        secrets_file(sinclude, [f"repo1-cipher-pass={passes['sftp']}", f"repo2-s3-key={keys['standby'][0]}",
-                                f"repo2-s3-key-secret={keys['standby'][1]}", f"repo2-cipher-pass={passes['s3']}"])
-        on_standby = [a.pgbackrest, f"--config={sconf}", f"--config-include-path={sinclude}", f"--stanza={STANZA}"]
+        # The standby, as deploy/standby ships it, built from its own disk.
         run("primary", [pg("pg_ctl"), "-D", data, "-l", out / "primary-server.log", "-w", "start"])
-        clusters.append(data)
-        # pg_createcluster's part, then the build as docs/recovery.md gives it.
-        # The restored postgresql.conf is the primary's, archive_command
-        # included: the standby's settings, appended, must override it.
-        run("standby", [pg("initdb"), "-D", standby, "--auth-local=trust", "--auth-host=reject", "--no-locale", "--encoding=UTF8"])
-        # No --repo: the backup comes from the first repository that has one,
-        # the local directory, and restore_command searches both.
-        run("standby", [*on_standby, "--type=standby", "--delta", "restore"], timeout=600)
-        if "repo1: restore backup set" not in (out / "standby.log").read_text():
-            raise RuntimeError("the standby was not built from its local repository")
-        restore_command = re.search(r"^restore_command = '(.*)'$", (standby / "postgresql.auto.conf").read_text(), re.M)
-        if not (standby / "standby.signal").exists() or not restore_command or "archive-get" not in restore_command[1]:
-            raise RuntimeError("the restore did not prepare a standby")
-        if "--repo" in restore_command[1]:
-            raise RuntimeError("restore_command is limited to one repository: " + restore_command[1])
-        with (standby / "postgresql.conf").open("a") as f:
-            f.write(shipped("deploy/standby/postgresql.conf", timeouts) + f"listen_addresses = ''\nunix_socket_directories = '{ssock}'\n")
-        run("standby", [pg("pg_ctl"), "-D", standby, "-l", out / "standby-server.log", "-t", "300", "-w", "start"])
-        clusters.append(standby)
+        lab.clusters.append(data)
+        standby, ssock = work / "standby", work / "t"
+        on_standby = lab.standby(standby, ssock)
         s = report["standby"] = {}
         s["catch_up_seconds"] = wait(lambda: psql(ssock, "SELECT count(*) FROM ledger", quiet=True) == str(expected), 300,
                                      "the standby did not replay the archive")
@@ -380,7 +486,7 @@ def main():
         # The same with the SFTP server down: the segment comes from S3.
         run("backup", [*backrest, "check"])
         run("services", ["docker", "pause", f"{tag}-sftp"])
-        paused.append(f"{tag}-sftp")
+        lab.paused.append(f"{tag}-sftp")
         segment = psql(sock, f"INSERT INTO ledger(id,note) VALUES (203, '{marker} through S3') RETURNING pg_walfile_name(pg_current_wal_insert_lsn())")
         s["commit_to_standby_sftp_down_seconds"] = wait(lambda: psql(ssock, "SELECT count(*) FROM ledger WHERE id = 203") == "1",
                                                         ARCHIVE_TIMEOUT * 4 + 60, "with SFTP down, a commit did not reach the standby from S3")
@@ -388,7 +494,7 @@ def main():
             raise RuntimeError(f"{segment} reached the SFTP repository while its server was paused")
         s["segment_from_s3"] = segment
         run("services", ["docker", "unpause", f"{tag}-sftp"])
-        paused.remove(f"{tag}-sftp")
+        lab.paused.remove(f"{tag}-sftp")
 
         # The disaster. Everything so far is in both repositories, and the
         # archive_timeout clock restarts. The primary commits a row a second
@@ -408,8 +514,8 @@ def main():
             time.sleep(max(0.0, start + n - time.monotonic()))
         lost_at = time.monotonic()
         run("disaster", [pg("pg_ctl"), "-D", data, "-m", "immediate", "-w", "stop"])
-        clusters.remove(data)
-        cut = kill(f"--config={conf}", "archive-push")
+        lab.clusters.remove(data)
+        cut = kill(f"--config={lab.conf}", "archive-push")
 
         # What the archive holds, as the standby sees it: the WAL segments of
         # timeline 1 in either repository, contiguous from the first row on.
@@ -460,27 +566,9 @@ def main():
         if lost and lost_at - lost[0][3] > ARCHIVE_TIMEOUT + PUSH_MARGIN:
             raise RuntimeError("a row committed more than archive_timeout before the disaster was lost")
 
-        # After the promotion: a repository of its own, a path the old primary
-        # never wrote, with a new credential and a new passphrase; repository 2
-        # waits for a new standby. The WAL written since the promotion was kept
-        # and is archived there; the old primary's repositories get nothing.
-        nconf, ninclude = work / "promoted.conf", work / "promoted.d"
-        text = shipped("deploy/backup/pgbackrest.conf", {
-            "repo1-path=/agentcapsule": "repo1-path=/agentcapsule-2",
-            "repo1-s3-endpoint=s3.example.net": s3_here(1),
-            "repo1-s3-region=fr-par": "repo1-s3-region=us-east-1",
-            "spool-path=/var/spool/pgbackrest": f"spool-path={work / 'promoted-spool'}\nlock-path={work / 'promoted-lock'}\nlog-level-console=info",
-            "log-path=/var/log/pgbackrest": f"log-path={out / 'pgbackrest-promoted'}",
-            "pg1-path=/var/lib/postgresql/18/main": f"pg1-path={standby}\npg1-socket-path={ssock}",
-        })
-        nconf.write_text("".join(line for line in text.splitlines(keepends=True) if not line.startswith("repo2-")))
-        secrets_file(ninclude, [f"repo1-s3-key={keys['promoted'][0]}", f"repo1-s3-key-secret={keys['promoted'][1]}",
-                                f"repo1-cipher-pass={passes['promoted']}"])
-        on_promoted = [a.pgbackrest, f"--config={nconf}", f"--config-include-path={ninclude}", f"--stanza={STANZA}"]
-        run("promoted", [*on_promoted, "stanza-create"])
-        new_archive = " ".join(["env", f"LD_LIBRARY_PATH={libs}", *(str(x) for x in on_promoted), "archive-push", "%p"])
-        psql(ssock, f"ALTER SYSTEM SET archive_command = '{new_archive}'", "SELECT pg_reload_conf()")
-        run("promoted", [*on_promoted, "check"])
+        # After the promotion: a repository of its own. The old primary's
+        # repositories get nothing.
+        on_promoted, nconf, ninclude = lab.own_repository(standby, ssock)
         promoted_full_started = int(time.time())
         run("promoted", [*on_promoted, "--repo=1", "--type=full", "backup"], timeout=600)
         # Its freshness timer reports that backup in S3, and the standby's
@@ -538,25 +626,8 @@ def main():
     except Exception as error:
         report["error"] = str(error)
     finally:
-        for c in clusters:
-            subprocess.run([str(pg("pg_ctl")), "-D", str(c), "-m", "immediate", "-w", "stop"], env=env, capture_output=True, check=False)
-        kill(str(work))  # pgBackRest's asynchronous processes, if any are left
-        for c in paused:
-            subprocess.run(["docker", "unpause", c], capture_output=True, check=False)
-        for c in containers:
-            with (out / "services.log").open("a") as log:
-                subprocess.run(["docker", "logs", c], stdout=log, stderr=subprocess.STDOUT, check=False)
-            subprocess.run(["docker", "rm", "-f", "-v", c], capture_output=True, check=False)
-        shutil.rmtree(work, ignore_errors=True)
-        # No secret of the run in the evidence: pgBackRest redacts them.
-        leaks = sorted(str(f.relative_to(out)) for f in out.rglob("*") if f.is_file()
-                       and any(c.encode() in f.read_bytes() for c in credentials))
-        report["secrets_in_evidence"] = leaks
-        if leaks and report["status"] == "passed":
-            report["status"], report["error"] = "failed", "a secret of the run is in the evidence"
-        (out / "summary.json").write_text(json.dumps(report, indent=2) + "\n")
-        print(json.dumps(report, indent=2))
-    return 0 if report["status"] == "passed" else 1
+        exit_code = lab.close(report)
+    return exit_code
 
 
 if __name__ == "__main__":
