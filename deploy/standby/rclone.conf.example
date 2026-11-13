@@ -1,0 +1,36 @@
+# /etc/agentcapsule-archive-ship/rclone.conf on the standby host: reads the
+# volume archives back (REC-02, ADR 004), with agentcapsule-archive-ship.py
+# fetch. It holds secrets. Owner root, group agentcapsule-ship, mode 0640.
+#
+# It names the same two stores as the host's configuration
+# (deploy/backup/rclone.conf.example), with the host's passphrases:
+# - "standby" is this host's own disk, the directory the host writes over
+#   SFTP. agentcapsule-ship reads it through the archives group.
+# - "s3" is the bucket, with a credential of its own that can only list and
+#   read it.
+# Either store alone restores an archive.
+
+[standby]
+type = crypt
+remote = /srv/backup/archives/volumes
+filename_encryption = standard
+directory_name_encryption = true
+password = <the host's standby password, as rclone obscure prints it>
+password2 = <the host's standby password2>
+
+[s3-bucket]
+type = s3
+provider = Other
+endpoint = https://s3.example.net
+region = fr-par
+access_key_id = <access key of a read-only credential limited to this bucket>
+secret_access_key = <its secret>
+no_check_bucket = true
+
+[s3]
+type = crypt
+remote = s3-bucket:agentcapsule-volume-archives
+filename_encryption = standard
+directory_name_encryption = true
+password = <the host's s3 password>
+password2 = <the host's s3 password2>

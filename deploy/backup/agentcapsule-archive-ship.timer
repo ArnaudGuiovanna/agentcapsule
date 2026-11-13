@@ -1,0 +1,15 @@
+# Ship the volume archives every hour. The worker captures agents one by one,
+# all day long, so there is no nightly moment to follow: an archive reaches
+# both stores about an hour after its capture at most, well within the 24-hour
+# volume RPO. AgentCapsuleArchiveShipBehind fires when a store has not been
+# brought up to date for 3 hours.
+[Unit]
+Description=Agent Capsule volume archive shipping every hour
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=1h
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target

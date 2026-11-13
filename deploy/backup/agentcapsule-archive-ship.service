@@ -1,0 +1,47 @@
+# Ships the volume archives off the host (REC-02, ADR 004): every complete
+# archive of the worker's archive root goes to the S3 store and to the
+# standby, each through an rclone crypt remote with its own passphrases. Then
+# it prunes each store by age, and writes the freshness of both for
+# node_exporter's textfile collector. Started by agentcapsule-archive-ship.timer.
+#
+# The script runs as root, and only reads: the archive root belongs to root
+# (mode 0700), and the whole file system is read-only for this service,
+# except its state directory and node_exporter's directory. rclone, which
+# talks to the stores, runs as agentcapsule-ship (agentcapsule-archive-ship.sysusers)
+# and receives each file on its standard input: it can open no file of the
+# archive root, nor any other file of root.
+[Unit]
+Description=Agent Capsule volume archive shipping
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I /opt/agentcapsule/agentcapsule-archive-ship.py --archive-root=/var/lib/agentcapsule-archives --rclone-config=/etc/agentcapsule-archive-ship/rclone.conf ship --keep=s3=30d --keep=standby=7d --textfile-directory=/var/lib/prometheus/node-exporter --state-directory=/var/lib/agentcapsule-archive-ship
+StateDirectory=agentcapsule-archive-ship
+StateDirectoryMode=0700
+# A first run may upload every archive; a run that is cut resumes at the next.
+TimeoutStartSec=6h
+Nice=10
+IOSchedulingClass=idle
+UMask=0077
+# Switch to agentcapsule-ship for rclone, and write into a directory node_exporter owns.
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_DAC_OVERRIDE
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/prometheus/node-exporter
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native

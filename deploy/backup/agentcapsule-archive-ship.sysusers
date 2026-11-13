@@ -1,0 +1,4 @@
+# Install as /usr/lib/sysusers.d/agentcapsule-ship.conf (systemd-sysusers), on
+# the host and on the standby. The user that runs rclone for the volume
+# archives: it reads the stores' configuration, and never the archive root.
+u agentcapsule-ship - "Agent Capsule volume archive shipping" - -

@@ -1,0 +1,57 @@
+# /etc/agentcapsule-archive-ship/rclone.conf on the host: the two stores of the
+# volume archives (REC-02, ADR 004), for agentcapsule-archive-ship.py. It holds
+# secrets. Owner root, group agentcapsule-ship, mode 0640: rclone reads it as
+# agentcapsule-ship, which cannot change it. Qualified with rclone 1.60.1
+# (scripts/verify-archive-shipping.py).
+#
+# The shipper writes through the crypt remotes "s3" and "standby" only. Each
+# has its own two passphrases (password, password2), so that one store's
+# secret opens nothing else. Generate each with `openssl rand -hex 32`, keep a
+# copy OFF the host (a password manager), and write here what
+# `rclone obscure <passphrase>` prints. obscure is not encryption: the mode of
+# this file protects them. Without the passphrases, the copies cannot be read.
+
+# The object store: a bucket of its own, versioned, with object lock. The
+# credential reaches this bucket only. It lists, reads, writes and deletes
+# objects, and sets their ACL (s3:PutObjectAcl): rclone 1.60 sends the ACL
+# below with every upload, and has no setting to leave it out.
+[s3-bucket]
+type = s3
+provider = Other
+endpoint = https://s3.example.net
+region = fr-par
+access_key_id = <access key of a credential limited to this bucket>
+secret_access_key = <its secret>
+acl = private
+# The bucket exists: never try to create it.
+no_check_bucket = true
+
+[s3]
+type = crypt
+remote = s3-bucket:agentcapsule-volume-archives
+# Archive IDs and file names are encrypted, directory names too.
+filename_encryption = standard
+directory_name_encryption = true
+password = <rclone obscure of the S3 store's first passphrase>
+password2 = <rclone obscure of the S3 store's second passphrase>
+
+# The standby host over SFTP. Its archives user is chrooted into
+# /srv/backup/archives and writes into volumes (deploy/standby/sshd-archives.conf).
+[standby-sftp]
+type = sftp
+host = standby.example.net
+user = archives
+key_file = /etc/agentcapsule-archive-ship/ssh_ed25519
+# The standby's host key, checked against this file.
+known_hosts_file = /etc/agentcapsule-archive-ship/known_hosts
+# internal-sftp runs no command: no shell, no remote hash.
+shell_type = none
+disable_hashcheck = true
+
+[standby]
+type = crypt
+remote = standby-sftp:volumes
+filename_encryption = standard
+directory_name_encryption = true
+password = <rclone obscure of the standby store's first passphrase>
+password2 = <rclone obscure of the standby store's second passphrase>
