@@ -321,8 +321,9 @@ read; the operator deletes them.
 
 **Events and metrics.** `volume_archive_captured` and `volume_archive_retry`,
 with a reason, and the `agentcapsule_worker_volume_archive*` metrics: see
-[observability.md](observability.md). Archives stay on this host: shipping
-them off the host is a separate step (see [recovery.md](recovery.md)).
+[observability.md](observability.md). The worker keeps its archives on this
+host. A separate service ships them off the host every hour, to the S3 store
+and the standby ([recovery.md](recovery.md#volume-archives-off-the-host-rec-02)).
 
 ## Archive on demand
 

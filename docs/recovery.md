@@ -122,6 +122,11 @@ The files are in [deploy/backup](../deploy/backup).
      ```
    - Give Prometheus the rules of
      [deploy/prometheus/alerts.yml](../deploy/prometheus/alerts.yml).
+9. **Heartbeat.** Install `agentcapsule-pg-heartbeat.service` and its timer
+   in `/etc/systemd/system`, then run
+   `systemctl enable --now agentcapsule-pg-heartbeat.timer`. It commits an
+   empty transaction every minute, so that the standby's replay can be
+   measured ([below](#how-far-behind-the-standby-is)).
 
 ### Qualify
 
@@ -223,10 +228,49 @@ On the standby host, as root.
 4. **PostgreSQL.** Append [postgresql.conf](../deploy/standby/postgresql.conf)
    to `/etc/postgresql/18/main/postgresql.conf`. Its `archive_command` is
    empty on purpose: see [Promote](#promote).
+5. **Replay freshness.** Copy
+   [agentcapsule-standby-metrics.py](../deploy/standby/agentcapsule-standby-metrics.py)
+   to `/opt/agentcapsule/` (root, 0755). Install its service and timer in
+   `/etc/systemd/system`, then run
+   `systemctl enable --now agentcapsule-standby-metrics.timer`. node_exporter
+   reads its textfile directory, as on the primary.
 
-Do not install the backup timers or the freshness timer of deploy/backup on
-the standby. The freshness script names repository 1 `s3` and repository 2
-`standby`, as on the primary; here the numbers mean other stores.
+Do not install the backup timers, the freshness timer or the heartbeat of
+deploy/backup on the standby. The freshness script names repository 1 `s3`
+and repository 2 `standby`, as on the primary; here the numbers mean other
+stores.
+
+### How far behind the standby is
+
+Every minute, `agentcapsule-standby-metrics.timer` asks the standby's
+PostgreSQL, as `postgres`, and writes for node_exporter:
+- whether it answered;
+- whether it is in recovery, replaying the archive;
+- the commit time of the last transaction it replayed
+  (`pg_last_xact_replay_timestamp()`). If it replayed none since it started,
+  the time it started.
+
+**What is measured.** The age of the last replayed transaction measures the
+replay only if the primary commits. An idle platform may commit nothing for
+hours, and its standby would look late although nothing waits. So the primary
+commits an empty transaction every minute (`agentcapsule-pg-heartbeat.timer`):
+it takes a transaction ID and changes no table. A standby that keeps up has
+then always replayed a transaction from the last 6 or 7 minutes:
+`archive_timeout`, plus the heartbeat's minute, plus the push and the poll.
+The commit time comes from the primary's clock: both hosts keep time with NTP.
+
+The cost: the heartbeat's WAL makes `archive_timeout` close a segment every 5
+minutes even when nothing else happens, 288 segments a day. Such a segment is
+nearly empty: it compressed to less than a kilobyte with zstd
+([measured](#qualify-the-shipping)).
+
+The alerts fire when:
+- the standby, in recovery, has replayed no transaction committed in the last
+  15 minutes: it is behind the database's RPO (critical);
+- it is not in recovery for 5 minutes: it was promoted, or started as a
+  primary (critical). After a planned promotion, disable its timer;
+- its PostgreSQL does not answer for 5 minutes;
+- the replay has not been collected for 10 minutes, or never was.
 
 ### Build
 
@@ -298,6 +342,12 @@ When the primary is lost. The RTO starts at the decision to fail over.
    freshness timer at once. Until there is a new standby, it reports the
    standby's repository as unreadable, and that alert stays on: there is no
    second copy.
+5. **The timers of a primary.** Disable `agentcapsule-standby-metrics.timer`
+   on the promoted host: it now reports that the server is not in recovery.
+   Enable `agentcapsule-pg-heartbeat.timer` once there is a new standby. Ship
+   the new host's volume archives to stores of its own (a new bucket, or a
+   new path, with new passphrases), as pgBackRest does: the old stores keep
+   the history up to the disaster.
 
 ### Qualify the standby
 
@@ -358,9 +408,8 @@ section of the worker ([worker.md](worker.md#nightly-encrypted-archives)):
   size, volume, no content. They decide which agents are due, and give the
   metric `agentcapsule_worker_volume_archive_oldest_seconds`.
 
-The archives are still on the host they protect. **Shipping them off the host**
-(to the S3-compatible store and the standby) is a separate step: until it is
-done, they do not survive the loss of the host.
+Every hour, the archives are copied off the host, to the S3-compatible store
+and to the standby ([below](#volume-archives-off-the-host-rec-02)).
 
 The selection, the records and retention are tested on PostgreSQL. The KVM test
 `TestProductWorkerNightlyVolumeArchives` covers real VMs: a sleeping agent
@@ -499,23 +548,292 @@ again, and the API does not show them as lost. That is the next step
   new incarnation, and the old incarnation refused. It is compiled and remains
   to be run as root (`scripts/verify-product-guest.py`).
 
+## Volume archives off the host (REC-02)
+
+Every hour, `agentcapsule-archive-ship.timer` copies every complete archive of
+the worker's archive root to the two stores of ADR 004: the S3-compatible
+object store, and the standby host over SFTP. Either store alone restores an
+archive. The files are in [deploy/backup](../deploy/backup) and
+[deploy/standby](../deploy/standby). The tool is rclone, qualified in version
+1.60.1: Ubuntu 26.04's package `1.60.1+dfsg-4ubuntu3.2`, which depends only on
+libc6.
+
+- **What is shipped.** Each archive directory, `arc_` and 32 hexadecimal
+  digits, with its `volume.luks` and its `manifest.json`. Never a
+  `.pending-*` directory (a capture in progress) nor a `.removed-*` one (a
+  removal in progress).
+- **Encrypted again, names included.** Each store is an rclone crypt remote
+  with its own two passphrases, kept off the host like pgBackRest's. The
+  containers are LUKS already, but the manifests are in clear: they name the
+  agent and its volume, and give the size, the digest and the harness. With
+  crypt, a store sees encrypted names and contents only: no archive ID, no
+  agent ID, no manifest. It still sees the number of files, their sizes and
+  their times. Crypt also authenticates each block, so a copy altered on a
+  store fails on the way back. The cost is a second encryption pass, small
+  next to the upload.
+- **Complete or not.** The data goes first, the manifest last. An archive is
+  complete on a store when its manifest is there, reads as the manifest of
+  that archive, and its data has the size the manifest gives. On S3, an
+  interrupted upload leaves no object. Over SFTP, rclone 1.60 writes in place:
+  an interrupted upload leaves a partial file under its final name, and its
+  size or its manifest gives it away. A fetch applies the same rule, then
+  checks the SHA-256 digest of the manifest.
+- **Never rewritten.** The shipper writes nothing into an archive that is
+  complete on a store. Each run lists each store first: a complete archive is
+  left alone, an incomplete one is uploaded again, over its partial files. It
+  does not rely on rclone's `--immutable`: in 1.60, an SFTP upload cut short
+  leaves a partial file that `--immutable` would then refuse at every run.
+- **A changed archive.** An archive never changes once captured: only a fault
+  or an intrusion changes one. When the host's copy differs from a store's
+  complete copy (another size, or written after the upload), the run reports
+  it: the metric `agentcapsule_archive_ship_changed_archives`, the alert
+  `AgentCapsuleArchiveChanged`, a line in the journal with the archive ID,
+  and a failed run. The store keeps the copy it received.
+- **Retention by age only.** A store removes an archive once its copy there
+  is older than the store's retention: **30 days on S3, 7 days on the
+  standby**. Removing an archive from the host removes no copy: the worker's
+  retention or a mistake on the host leaves the stores as they are. An archive
+  older than a store's retention is not shipped to it. The manifest is removed
+  first, so a copy being removed is never complete.
+- **Why these numbers.** The 24-hour RPO needs one archive per agent on each
+  store, the newest, and the worker takes one a day. Retention removes an
+  agent's newest copy only if no newer one arrived for 7 days: long after the
+  alerts on the volume archives (26 hours) and on shipping (2 hours). The
+  standby needs the latest archives for a failover; 7 days match what the host
+  keeps (7 archives per agent). S3 keeps 30 days, about the four weeks of
+  database backups it holds: a bad archive can be replaced by an older one,
+  and an intrusion found within a month leaves copies from before it. A store
+  holds about the agents' volume sizes times its retention in days.
+- **The bucket.** A bucket of its own, `agentcapsule-volume-archives`, not a
+  path in pgBackRest's. Many S3-compatible providers limit a credential to
+  whole buckets only: the shipper's credential then reaches no database backup, and
+  pgBackRest's reaches no archive. Versioning, object lock and lifecycle rules
+  are set per bucket too. One bucket per host.
+- **Protect the S3 copy from the host.** The host's credential can delete in
+  the bucket: retention needs it. A host taken over could delete the copies.
+  Turn on versioning and object lock (governance mode, 30 days by default),
+  and a lifecycle rule that removes noncurrent versions after a day and
+  incomplete multipart uploads after a day. A deletion then only hides a
+  version, which stays until its lock ends. The standby's copy has no such
+  protection yet ([still to do](#still-to-do-adr-004)).
+- **When.** Every hour, up to 5 minutes later at random. The worker captures
+  agents one by one, all day long, so there is no nightly moment to follow. An
+  archive reaches both stores about an hour after its capture at most. An
+  agent's newest archive on a store is then at most `every` (24 hours) plus
+  that hour old. To hold 24 hours strictly on the stores, set the worker's
+  `every` to `23h`.
+- **Who.** The archive root belongs to root, mode 0700, and stays so: the
+  worker refuses any other mode. The service runs the script as root, in a
+  file system that is read-only for it, except its state directory and
+  node_exporter's. The script opens the archives' files read-only. rclone,
+  which talks to the stores, runs as `agentcapsule-ship` and receives each
+  file on its standard input: it can open no file of the archive root, nor any
+  other file of root. Its configuration, with the stores' secrets, is readable
+  by `agentcapsule-ship` and writable by root only. Rejected: a group or an
+  ACL on the archive root (it would no longer be 0700), and
+  `CAP_DAC_READ_SEARCH` for rclone (it could then read every file of the host).
+
+### Freshness of the copies
+
+Each run writes, per store (`s3`, `standby`), for node_exporter
+([observability.md](observability.md)):
+- the time of the last successful ship: the store then held every complete
+  archive the host had, within its retention;
+- the number of such archives the store lacks after the run;
+- the number of archives that changed on the host after their upload;
+- whether the store could be listed.
+
+A store that cannot be listed has no counts in the file: its own alert fires
+instead. The alerts fire when:
+- a store has lacked some archives for 2 hours: two missed runs. 24 hours
+  plus 2, the bound of `AgentCapsuleVolumeArchiveStale` on the host;
+- a store could not be listed at two runs in a row (90 minutes);
+- an archive changed on the host after its upload (critical);
+- the shipper has not run for 3 hours, or never ran.
+
+The first run uploads every archive: until it ends, the 2-hour alert may fire.
+
+### Install on the host
+
+1. **rclone**: `apt install rclone`.
+2. **The bucket.** Create `agentcapsule-volume-archives` with versioning,
+   object lock and the lifecycle rule above. Create two credentials limited to
+   it:
+   - for the host: list, read, write and delete objects, and set an object's
+     ACL (`s3:PutObjectAcl`). rclone 1.60 sends `x-amz-acl: private` with
+     every upload, and cannot leave it out;
+   - for the standby: list and read only.
+3. **The standby's SFTP user**: [below](#install-on-the-standby), step 1.
+4. **The user.** Install
+   [agentcapsule-archive-ship.sysusers](../deploy/backup/agentcapsule-archive-ship.sysusers)
+   as `/usr/lib/sysusers.d/agentcapsule-ship.conf`, then run `systemd-sysusers`.
+5. **Configuration and secrets.**
+   ```sh
+   install -d -o root -g agentcapsule-ship -m 0750 /etc/agentcapsule-archive-ship
+   ssh-keygen -t ed25519 -N "" -f /etc/agentcapsule-archive-ship/ssh_ed25519
+   chgrp agentcapsule-ship /etc/agentcapsule-archive-ship/ssh_ed25519
+   chmod 0640 /etc/agentcapsule-archive-ship/ssh_ed25519
+   ssh-keyscan standby.example.net > /etc/agentcapsule-archive-ship/known_hosts
+   ```
+   Keep every host key of the standby in `known_hosts`, and check their
+   fingerprints: rclone 1.60's SSH client prefers the RSA key, and refuses
+   the server if only its ed25519 key is listed.
+   Write `/etc/agentcapsule-archive-ship/rclone.conf` from
+   [the example](../deploy/backup/rclone.conf.example) (root:agentcapsule-ship,
+   0640). Replace the endpoint, region, credential and standby host. Generate
+   four passphrases with `openssl rand -hex 32`: two for each store. **Keep a
+   copy of the four off the host**: without them, the copies cannot be read.
+   The file takes what `rclone obscure <passphrase>` prints.
+6. **The script and the timer.** Copy
+   [agentcapsule-archive-ship.py](../deploy/backup/agentcapsule-archive-ship.py)
+   to `/opt/agentcapsule/` (root, 0755). Install
+   `agentcapsule-archive-ship.service` and its timer in `/etc/systemd/system`,
+   then run `systemctl enable --now agentcapsule-archive-ship.timer`.
+7. **Check**: `systemctl start agentcapsule-archive-ship.service`. The last
+   line of its journal gives, per store, the archives uploaded, pending,
+   changed and removed by retention.
+
+### Install on the standby
+
+1. **The SFTP user** `archives`, separate from pgBackRest's `backup`: neither
+   key reaches the other's files. The host writes into its `volumes`
+   directory, which is `/srv/backup/archives/volumes` on this disk:
+   ```sh
+   useradd --system --user-group --home-dir /srv/backup/archives --shell /usr/sbin/nologin archives
+   install -d -o root -g root -m 0755 /srv/backup/archives
+   install -d -o archives -g archives -m 0750 /srv/backup/archives/volumes
+   install -m 0644 ssh_ed25519.pub /etc/ssh/authorized_keys/archives   # the host's public key
+   ```
+   Append [sshd-archives.conf](../deploy/standby/sshd-archives.conf) to
+   `/etc/ssh/sshd_config`, then run `sshd -t && systemctl reload ssh`. Its
+   umask makes the files 0640 and the directories 0750.
+2. **To fetch archives back**, install in advance, as the standby's pgBackRest
+   secrets, so that a fetch fits in the RTO:
+   - rclone, the `agentcapsule-ship` user (the same sysusers file), and the
+     script in `/opt/agentcapsule/`;
+   - `usermod -aG archives agentcapsule-ship`: it reads the archives through
+     that group, and cannot write them;
+   - `/etc/agentcapsule-archive-ship/rclone.conf` from
+     [the standby's example](../deploy/standby/rclone.conf.example)
+     (root:agentcapsule-ship, 0640): the host's four passphrases, and the
+     read-only S3 credential. There, `standby` is this disk and `s3` the
+     bucket.
+
+### Fetch an archive back
+
+On the standby, or any host that takes over, as root:
+1. **Choose the archive**: the agent's newest in `volume_archives`, in the
+   restored database, that a store holds. To list the archives of a store:
+   ```sh
+   rclone --config /etc/agentcapsule-archive-ship/rclone.conf lsf standby:   # or s3:
+   ```
+2. **Fetch it** into the worker's archive root:
+   ```sh
+   python3 -I /opt/agentcapsule/agentcapsule-archive-ship.py --archive-root /var/lib/agentcapsule-archives \
+     fetch --store standby --archive arc_<32 hex>
+   ```
+   With `--store s3`, from the bucket. The script refuses an archive already
+   in the root. It copies into a hidden `.pending-` directory, checks that the
+   copy is complete (manifest, size, SHA-256 digest), then renames it into the
+   root: files 0600 and directories 0700, as the worker writes them.
+3. The restore authority authenticates the manifest when the archive is
+   opened. Installing the volume and declaring the loss is the restore
+   coordinator's job, still to do.
+
+### Qualify the shipping
+
+`scripts/verify-archive-shipping.py` runs the shipped script and
+configurations with rclone 1.60.1 against an S3 store (SeaweedFS 4.53, over
+TLS) and an SFTP server (OpenSSH, with the Match block above), both run with
+Docker and pinned by digest, as `verify-backups.py` does. The archives are
+captured with the platform's own code and signed by a real restore authority;
+random bytes stand for the LUKS container, which needs root. It needs no root:
+
+```sh
+python3 scripts/verify-archive-shipping.py --rclone <rclone> --go <go> \
+  --pg-bin <postgres-bin-dir> [--pg-library-path <dir>] --output <new-dir>
+```
+
+It checks:
+- **The first ship.** The four archives within S3's 30 days reach S3; the
+  three within the standby's 7 days reach the standby; one 40 days old reaches
+  neither. A 12 MiB archive goes to S3 in parts. `.pending-` and `.removed-`
+  directories never leave the host.
+- **A second run** uploads nothing: both stores' listings, times included,
+  stay the same.
+- **Interruptions.**
+  - A shipper killed during an upload to S3 leaves no object there.
+  - A network cut, the SFTP server paused during an upload, leaves a partial
+    data file on the standby's disk (10 MB) and no manifest. A fetch refuses
+    that copy, and the next run uploads it again. Back from the cut, sshd
+    answered again after 1.4 seconds.
+  - A manifest cut short on the standby's disk no longer decrypts. The next
+    run uploads it again, without the data.
+- **A changed archive.** One archive grown by 5 bytes, another rewritten in
+  place with the same size: both are reported changed, on both stores, and no
+  store is written.
+- **The metrics**, after each run: mode 0644, no leftover file, no archive ID,
+  agent ID or secret. With the standby's SFTP server stopped, that store is
+  unreadable, without counts, and keeps its last success; S3's values do not
+  change.
+- **A fetch from each store alone**, the other one stopped, with the
+  standby's configuration: 5 archives from S3 and 4 from the standby's disk.
+  Each copy is byte-identical, and the restore authority opens it (signed
+  manifest, binding, size, digest). The standby's S3 credential can neither
+  write nor delete.
+- **No clear text.** Neither the S3 API's view (names and objects), nor
+  SeaweedFS's data directory, nor the standby's disk holds an archive ID, an
+  agent ID, a volume ID, a file name, a manifest field or a marker written in
+  the volumes. The host's own archive root holds them all, and a copy sent in
+  clear through the same stores is found in all three: the controls that the
+  search works. On the standby's disk, files are 0640 and directories 0750.
+- **Retention by age.** An archive removed from the host stays on both
+  stores. With a retention between the ages of the copies (155 seconds in the
+  run), the older copies go, 4 on S3 and 3 on the standby; the newest stays,
+  and the host's archive root does not change.
+- **The standby's replay**, on a primary and a standby that replays its WAL
+  archive (PostgreSQL 18.6), with `archive_timeout` scaled to 10 seconds, the
+  heartbeat to 2 and the alert to 30:
+  - with the heartbeat, the last replayed transaction was at most 12 seconds
+    old, over a minute. The segments archived meanwhile compressed to 678 to
+    810 bytes with zstd;
+  - without it, the idle primary's standby passed the alert after 59 seconds,
+    although nothing was late: the reason for the heartbeat;
+  - with archiving cut, it passed the alert after 29 seconds, and was back
+    below it 6 seconds after archiving resumed;
+  - promoted, it reports that it is not in recovery; stopped, that PostgreSQL
+    does not answer, without replay values.
+- **The units.** `systemd-analyze verify` (systemd 259), in a throwaway root,
+  prints nothing for the six units, and `systemd-sysusers` creates
+  `agentcapsule-ship`. `systemd-analyze security` rates the shipper 3.8, the
+  heartbeat 2.3 and the standby's metrics 3.1.
+
+The run takes about 7 minutes. It searches its evidence for every secret it
+generated, and finds none. Passed on 2026-11-13.
+
 ## Still to do (ADR 004)
 
-1. **Freshness of the standby.** WAL archiving, the base backups and the
-   volume archives on the host have their metrics and alerts
-   ([observability.md](observability.md)). The standby's replay has no metric
-   yet (`pg_last_xact_replay_timestamp()` on the standby).
-2. **Volume archives off the host.** Nightly archives are taken on the host
-   without stopping the maintenance worker (above). Shipping them to the
-   S3-compatible store and to the standby, encrypted as they are, remains.
-3. **The declared-loss state in the API.** A restore declares and records the
+1. **The declared-loss state in the API.** A restore declares and records the
    losses ([above](#restoring-an-agent-from-an-archive)). Running the lost
    invocations again and the API's `lost` state remain
    ([ADR 003](adr/003-restore-rpo.md#what-remains)).
-4. **A failover exercise** that measures the RPO and the RTO of the whole
+2. **Restoring onto the standby.** A fetch of an archive is qualified
+   ([above](#fetch-an-archive-back)). Installing it there and restoring the
+   agent needs D-05: the keys and the authorities outside the restored domain.
+3. **A failover exercise** that measures the RPO and the RTO of the whole
    platform, on real hosts. The database's part is measured
    ([the standby](#qualify-the-standby)); the configuration, the authorities,
-   the agents and the address are not. Restoring an agent onto another host
-   needs D-05.
-5. **CI.** Ubuntu 24.04 ships an older pgBackRest than the qualified 2.58.
-   Running this qualification in CI needs a pinned 2.58.
+   the agents and the address are not.
+4. **The standby's copy of the volume archives against the host.** The host's
+   SFTP account can delete there: retention needs it. A host taken over could
+   delete the standby's copies; object lock protects only S3's. A retention
+   run on the standby itself, with an SFTP account that can neither delete
+   nor rename (`internal-sftp -P`), would close that gap.
+5. **Object lock, with the chosen provider.** Versioning, object lock and the
+   lifecycle rules are recommended, not qualified: SeaweedFS stands for the
+   provider without them.
+6. **CI.** Ubuntu 24.04 ships an older pgBackRest than the qualified 2.58.
+   Running `verify-backups.py` in CI needs a pinned 2.58.
+   `verify-archive-shipping.py` needs rclone 1.60.1, Docker, Go and
+   PostgreSQL; it does not run in CI yet. Its unit tests and the alert tests
+   do.

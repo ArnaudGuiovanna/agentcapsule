@@ -29,8 +29,9 @@ host ([deploy/prometheus/prometheus.yml](../deploy/prometheus/prometheus.yml)).
 A non-loopback address is refused at start (`metrics_listen_must_be_loopback`).
 
 node_exporter, scraped as the job `node`, serves the host's resources and,
-through its textfile collector, the base-backup times
-([recovery.md](recovery.md)).
+through its textfile collector, what three scripts write
+([recovery.md](recovery.md)): the base-backup times, the shipping of the
+volume archives and, on the standby host, its replay.
 
 ## Metrics
 
@@ -61,6 +62,15 @@ through its textfile collector, the base-backup times
 | `agentcapsule_backup_last_success_timestamp_seconds` | gauge | `repo` (`s3`, `standby`), `type` (`full`, `diff`) | When the newest base backup of that type in that repository finished; 0 when it holds none (node_exporter) |
 | `agentcapsule_backup_repository_readable` | gauge | `repo` | 1 when pgBackRest could read the repository's list of backups (node_exporter) |
 | `agentcapsule_backup_collected_timestamp_seconds` | gauge | — | When the backup times above were last collected (node_exporter) |
+| `agentcapsule_archive_ship_last_success_timestamp_seconds` | gauge | `store` (`s3`, `standby`) | When the store last held every complete volume archive the host had, within the store's retention; 0 when it never did (node_exporter) |
+| `agentcapsule_archive_ship_pending_archives` | gauge | `store` | Complete volume archives of the host, within the store's retention, that the store lacked after the last run (node_exporter) |
+| `agentcapsule_archive_ship_changed_archives` | gauge | `store` | Volume archives complete on the store whose host copy changed after the upload; the store keeps its copy (node_exporter) |
+| `agentcapsule_archive_ship_store_readable` | gauge | `store` | 1 when the last run could list the store (node_exporter) |
+| `agentcapsule_archive_ship_collected_timestamp_seconds` | gauge | — | When the shipper last wrote these metrics (node_exporter) |
+| `agentcapsule_standby_postgres_up` | gauge | — | 1 when the standby's PostgreSQL answered (node_exporter, standby host) |
+| `agentcapsule_standby_in_recovery` | gauge | — | 1 while the standby replays the WAL archive; 0 once promoted (node_exporter, standby host) |
+| `agentcapsule_standby_replay_timestamp_seconds` | gauge | — | Commit time of the last transaction the standby replayed; its start time if it replayed none since (node_exporter, standby host) |
+| `agentcapsule_standby_collected_timestamp_seconds` | gauge | — | When the standby's replay was last collected (node_exporter, standby host) |
 
 The worker reads its gauges at each scrape, from PostgreSQL and the host, with
 a 5-second bound.
@@ -92,6 +102,24 @@ node_exporter's textfile collector:
   script stops running.
 - A repository that cannot be read has no backup times in the file. Its own
   alert fires instead.
+
+**Volume archives off the host** (REC-02). Every hour,
+`agentcapsule-archive-ship.timer` runs
+[agentcapsule-archive-ship.py](../deploy/backup/agentcapsule-archive-ship.py),
+which ships the archives to both stores, then writes
+`agentcapsule-archive-ship.prom`. The same rules hold: atomic replacement,
+mode 0644, declared label values, no archive ID, agent ID, path or message. A
+store that cannot be listed has no counts in the file. The last successful
+ship is a time, kept in the shipper's state directory, so its alert's age
+keeps growing if the shipper stops.
+
+**The standby's replay** (REC-03). On the standby host, every minute,
+`agentcapsule-standby-metrics.timer` runs
+[agentcapsule-standby-metrics.py](../deploy/standby/agentcapsule-standby-metrics.py),
+which asks PostgreSQL and writes `agentcapsule-standby.prom`. The primary
+commits an empty transaction every minute (`agentcapsule-pg-heartbeat.timer`),
+so the age of the last replayed transaction stays a few minutes even on an
+idle platform, and measures the replay ([recovery.md](recovery.md#how-far-behind-the-standby-is)).
 
 ## Events
 
@@ -158,18 +186,28 @@ Their annotations are fixed text.
 | `AgentCapsuleBackupRepositoryUnreadable` | pgBackRest cannot read a repository, for 30 minutes |
 | `AgentCapsuleBackupMetricsStale` | The backup times have not been collected for an hour, or never were |
 | `AgentCapsuleVolumeArchiveStale` | An agent of the host has no volume archive from the last 26 hours, for 15 minutes (volume RPO 24 h). It covers the archives on the host only |
+| `AgentCapsuleArchiveShipBehind` | A store has lacked some of the host's volume archives for 2 hours, for 15 minutes: two missed hourly runs |
+| `AgentCapsuleArchiveStoreUnreadable` | The shipper could not list a store for 90 minutes: two runs in a row |
+| `AgentCapsuleArchiveChanged` | A volume archive changed on the host after its upload; the store keeps its copy (critical) |
+| `AgentCapsuleArchiveShipMetricsStale` | The shipper has not run for 3 hours, or never ran |
+| `AgentCapsuleStandbyReplayBehind` | The standby, in recovery, has replayed no transaction committed in the last 15 minutes, for 2 minutes: it is behind the database's RPO (critical) |
+| `AgentCapsuleStandbyNotInRecovery` | The standby is not in recovery for 5 minutes: promoted, or started as a primary (critical) |
+| `AgentCapsuleStandbyDown` | The standby's PostgreSQL does not answer for 5 minutes |
+| `AgentCapsuleStandbyMetricsStale` | The standby's replay has not been collected for 10 minutes, or never was |
 
 [alerts_test.yml](../deploy/prometheus/alerts_test.yml) holds promtool unit
-tests for the disk, queue, scrape, SLIM and backup alerts. Each backup
-threshold is tested on both sides.
+tests for the disk, queue, scrape, SLIM, backup, shipping and standby alerts.
+Each backup, shipping and standby threshold is tested on both sides.
 `scripts/verify-alerts.py` checks that every metric the alerts use is
-registered by the code or declared by `agentcapsule-backup-metrics.py`. For
-the script's metrics, it also checks each label and value that the rules and
+registered by the code or declared by one of the three textfile scripts. For
+the scripts' metrics, it also checks each label and value that the rules and
 tests match against the script's vocabulary, so a typo fails. With
 `--promtool` or `--promtool-image <image@sha256:…>`, it also runs
 `promtool check rules` and `promtool test rules`. CI runs it with Prometheus
 v3.5.0, pinned by digest. A raised disk threshold, or a raised WAL or backup
-threshold, makes the tests fail.
+threshold, makes the tests fail. So does each of 16 changes to the shipping
+and standby rules: a threshold raised or lowered, a longer delay, the standby
+alert without its recovery guard (checked on 2026-11-13).
 
 On KVM, the A2A journey of the product campaign wires the worker's telemetry
 as its service does. It checks the real metrics: running VMs, boots,
@@ -184,5 +222,3 @@ on the delivery of the request its agent sent to another agent. It passed on
   request ID only.
 - An operator command for diagnostics (API-02).
 - Alert thresholds tuned under load (OPS-03).
-- The freshness of the volume archive copies off the host, once they are
-  shipped (ADR 004).
