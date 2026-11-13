@@ -33,6 +33,7 @@ var (
 	ErrRevoked     = errors.New("subject key access revoked")
 	ErrSealed      = errors.New("store permanently sealed")
 	ErrHistory     = errors.New("acknowledged outcome history is incomplete")
+	ErrNotDeclared = errors.New("no loss declared for this outcome and incarnation")
 )
 
 type Catalog struct {
@@ -88,6 +89,71 @@ CREATE TABLE outcomes (
 );
 CREATE INDEX outcomes_by_store ON outcomes(store);
 `
+
+// The schema version is SQLite's user_version. Version 1, the schema above,
+// did not record it (user_version 0). Initialize upgrades an older catalogue;
+// Open never changes the schema. An unknown version fails closed.
+const schemaVersion = 2
+
+// lossSchema is version 2: the declared losses and reruns of D-03 option B
+// (docs/adr/003-restore-rpo.md). Triggers refuse any update or delete, so a
+// declared loss and a recorded rerun are never withdrawn.
+const lossSchema = `
+CREATE UNIQUE INDEX outcomes_by_identity ON outcomes(id,store);
+CREATE TABLE losses (
+ outcome TEXT NOT NULL, store TEXT NOT NULL, incarnation INTEGER NOT NULL CHECK(incarnation>1),
+ PRIMARY KEY(outcome,incarnation), FOREIGN KEY(outcome,store) REFERENCES outcomes(id,store)
+);
+CREATE INDEX losses_by_store ON losses(store,incarnation);
+CREATE TABLE reruns (
+ outcome TEXT NOT NULL, incarnation INTEGER NOT NULL, digest BLOB NOT NULL CHECK(length(digest)=32),
+ PRIMARY KEY(outcome,incarnation), FOREIGN KEY(outcome,incarnation) REFERENCES losses(outcome,incarnation)
+);
+CREATE TRIGGER losses_never_updated BEFORE UPDATE ON losses BEGIN SELECT RAISE(ABORT,'declared loss is permanent'); END;
+CREATE TRIGGER losses_never_deleted BEFORE DELETE ON losses BEGIN SELECT RAISE(ABORT,'declared loss is permanent'); END;
+CREATE TRIGGER reruns_never_updated BEFORE UPDATE ON reruns BEGIN SELECT RAISE(ABORT,'rerun record is permanent'); END;
+CREATE TRIGGER reruns_never_deleted BEFORE DELETE ON reruns BEGIN SELECT RAISE(ABORT,'rerun record is permanent'); END;
+PRAGMA user_version=2;
+`
+
+func version(ctx context.Context, tx *sql.Tx) (int, error) {
+	var v int
+	if err := tx.QueryRowContext(ctx, "PRAGMA user_version").Scan(&v); err != nil {
+		return 0, errors.Join(ErrUnavailable, err)
+	}
+	switch v {
+	case 0:
+		return 1, nil
+	case schemaVersion:
+		return v, nil
+	}
+	return 0, ErrUnavailable
+}
+
+// upgrade only adds empty tables; it never rewrites recorded state.
+func upgrade(ctx context.Context, tx *sql.Tx) error {
+	v, err := version(ctx, tx)
+	if err == nil && v == 1 {
+		_, err = tx.ExecContext(ctx, lossSchema)
+	}
+	return err
+}
+
+// lossesAvailable is false on a version 1 catalogue: no loss can be declared
+// there. Operations that need the loss tables fail closed until Initialize
+// has upgraded it.
+func lossesAvailable(ctx context.Context, tx *sql.Tx) (bool, error) {
+	v, err := version(ctx, tx)
+	return v >= 2, err
+}
+
+func requireLosses(ctx context.Context, tx *sql.Tx) error {
+	available, err := lossesAvailable(ctx, tx)
+	if err == nil && !available {
+		err = ErrUnavailable
+	}
+	return err
+}
 
 func validID(id, prefix string) bool {
 	if len(id) != len(prefix)+32 || !strings.HasPrefix(id, prefix) || strings.ToLower(id) != id {
@@ -256,7 +322,7 @@ func Initialize(ctx context.Context, root, keyIdentity string) (*Catalog, error)
 			return nil, err
 		}
 		defer clear(secret[:])
-		if _, err = tx.ExecContext(ctx, schema); err != nil {
+		if _, err = tx.ExecContext(ctx, schema+lossSchema); err != nil {
 			return nil, err
 		}
 		if _, err = tx.ExecContext(ctx, "INSERT INTO authority VALUES(1,?,?,?,0)", "restoreauth_"+hex.EncodeToString(nonce[:]), keyIdentity, secret[:]); err != nil {
@@ -271,6 +337,9 @@ func Initialize(ctx context.Context, root, keyIdentity string) (*Catalog, error)
 	}
 	if identityErr == nil && identity != c.identity {
 		return nil, ErrUnavailable
+	}
+	if err = upgrade(ctx, tx); err != nil {
+		return nil, err
 	}
 	if err = tx.Commit(); err != nil {
 		return nil, err
@@ -341,6 +410,9 @@ func (c *Catalog) transaction(ctx context.Context, fn func(*sql.Tx) error) error
 	}
 	if identity != c.identity || keyIdentity != c.keyIdentity {
 		return ErrUnavailable
+	}
+	if _, err = version(ctx, tx); err != nil {
+		return err
 	}
 	if err = fn(tx); err != nil {
 		return err
@@ -603,7 +675,7 @@ func (c *Catalog) currentFences(ctx context.Context, tx *sql.Tx, r Receipt) erro
 
 // WithCurrentFences publishes a normal boot or new enrollment after current
 // guest fences. Restored activation additionally requires actual history
-// inspection through WithActivation. Callbacks must not re-enter this catalogue.
+// inspection through Activate. Callbacks must not re-enter this catalogue.
 func (c *Catalog) WithCurrentFences(ctx context.Context, r Receipt, publish func() error) error {
 	if publish == nil {
 		return ErrInput
@@ -677,6 +749,10 @@ func (c *Catalog) WithRevocation(ctx context.Context, subject string, targets []
 
 // RecordOutcome follows a verified local commit and precedes an external success
 // ACK. The coordinator checks Ready; this method rejects obsolete incarnations.
+// A known ID accepts only its current result: the digest of its latest rerun,
+// or else the first digest. When the outcome's loss is declared for b's
+// incarnation, this delivery is its rerun and is recorded as one (RecordRerun).
+// The delivery path thus needs no separate call.
 func (c *Catalog) RecordOutcome(ctx context.Context, b Binding, outcome Outcome) error {
 	if !validName(outcome.ID) {
 		return ErrInput
@@ -685,62 +761,49 @@ func (c *Catalog) RecordOutcome(ctx context.Context, b Binding, outcome Outcome)
 		if err := current(ctx, tx, b); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, "INSERT INTO outcomes VALUES(?,?,?) ON CONFLICT(id) DO NOTHING", outcome.ID, b.Store, outcome.Digest[:]); err != nil {
+		withLosses, err := lossesAvailable(ctx, tx)
+		if err != nil {
 			return err
 		}
-		var store string
-		var digest []byte
-		if err := tx.QueryRowContext(ctx, "SELECT store,digest FROM outcomes WHERE id=?", outcome.ID).Scan(&store, &digest); err != nil {
+		if withLosses {
+			lost, err := declared(ctx, tx, outcome.ID, b.Incarnation)
+			if err != nil {
+				return err
+			}
+			if lost {
+				return recordRerun(ctx, tx, b, outcome)
+			}
+		}
+		if _, err = tx.ExecContext(ctx, "INSERT INTO outcomes VALUES(?,?,?) ON CONFLICT(id) DO NOTHING", outcome.ID, b.Store, outcome.Digest[:]); err != nil {
 			return err
 		}
-		if store != b.Store || !hmac.Equal(digest, outcome.Digest[:]) {
+		got, err := recordedOutcomes(ctx, tx, withLosses, "o.id=?", outcome.ID)
+		if err != nil {
+			return err
+		}
+		if len(got) != 1 || got[0].store != b.Store || !hmac.Equal(got[0].Digest[:], outcome.Digest[:]) {
 			return ErrConflict
 		}
 		return nil
 	})
 }
 
-// WithActivation excludes root changes while the trusted coordinator verifies
-// the CURRENT restored data and publishes the Ready state. inspect must check
-// real effects AND deduplication/results, not just IDs. publish must still enforce
+// WithActivation is the model's activate: it excludes root changes while the
+// trusted coordinator verifies the CURRENT restored data and publishes the
+// Ready state. It refuses with ErrHistory while the image lacks a recorded
+// outcome whose loss is not declared for this incarnation. It never declares
+// a loss itself: the restore path is Activate. publish must still enforce
 // physical/phase preconditions. No callback may re-enter this catalogue.
-func (c *Catalog) WithActivation(ctx context.Context, r Receipt, inspect func([]Outcome) error, publish func() error) error {
+func (c *Catalog) WithActivation(ctx context.Context, r Receipt, inspect Inspection, publish func() error) error {
 	if inspect == nil || publish == nil {
 		return ErrInput
 	}
 	return c.transaction(ctx, func(tx *sql.Tx) error {
-		revision, err := c.validateReceipt(ctx, tx, r)
+		missing, err := c.missingOutcomes(ctx, tx, r, inspect)
 		if err != nil {
 			return err
 		}
-		var ack int64
-		if err = tx.QueryRowContext(ctx, "SELECT ack_revision FROM stores WHERE id=?", r.Store).Scan(&ack); err != nil {
-			return err
-		}
-		if revision != r.Revision || ack < 0 || uint64(ack) != revision {
-			return ErrStale
-		}
-		rows, err := tx.QueryContext(ctx, "SELECT id,digest FROM outcomes WHERE store=? ORDER BY id", r.Store)
-		if err != nil {
-			return err
-		}
-		required := []Outcome{}
-		for rows.Next() {
-			var o Outcome
-			var digest []byte
-			if err = rows.Scan(&o.ID, &digest); err != nil || len(digest) != 32 {
-				rows.Close()
-				return ErrUnavailable
-			}
-			copy(o.Digest[:], digest)
-			required = append(required, o)
-		}
-		err = rows.Err()
-		rows.Close()
-		if err != nil {
-			return err
-		}
-		if err = inspect(required); err != nil {
+		if err = accounted(ctx, tx, missing, r.Incarnation); err != nil {
 			return err
 		}
 		return publish()

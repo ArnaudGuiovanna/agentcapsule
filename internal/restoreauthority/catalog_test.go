@@ -152,6 +152,9 @@ func reopen(t *testing.T, c *Catalog) *Catalog {
 	return next
 }
 
+// nothingMissing inspects an image that holds every recorded outcome.
+func nothingMissing([]Outcome) ([]string, error) { return nil, nil }
+
 func receipt(t *testing.T, c *Catalog, b Binding) Receipt {
 	t.Helper()
 	r, err := c.Scan(t.Context(), b)
@@ -311,7 +314,7 @@ func TestConcurrentReservationAndOldReceiptCannotRebind(t *testing.T) {
 		t.Fatal(err)
 	}
 	called := false
-	if err = peer.WithActivation(t.Context(), r, func([]Outcome) error { return nil }, func() error { called = true; return nil }); !errors.Is(err, ErrStale) || called {
+	if err = peer.WithActivation(t.Context(), r, nothingMissing, func() error { called = true; return nil }); !errors.Is(err, ErrStale) || called {
 		t.Fatal("reservation retained old fence ACK", err)
 	}
 	if _, err = c.Register(t.Context(), old.Store, "another-volume"); !errors.Is(err, ErrConflict) {
@@ -342,10 +345,10 @@ func TestReceiptRevisionAndForgeryCannotPublish(t *testing.T) {
 	}
 	called := false
 	publish := func() error { called = true; return nil }
-	if err := c.WithActivation(t.Context(), old, func([]Outcome) error { return nil }, publish); !errors.Is(err, ErrStale) || called {
+	if err := c.WithActivation(t.Context(), old, nothingMissing, publish); !errors.Is(err, ErrStale) || called {
 		t.Fatal("stale activation snapshot accepted", err)
 	}
-	if err := c.WithActivation(t.Context(), current, func([]Outcome) error { return nil }, publish); err != nil || !called {
+	if err := c.WithActivation(t.Context(), current, nothingMissing, publish); err != nil || !called {
 		t.Fatal("current activation denied", err)
 	}
 	if err := c.RecordRetiredSeal(t.Context(), b); err != nil {
@@ -355,7 +358,7 @@ func TestReceiptRevisionAndForgeryCannotPublish(t *testing.T) {
 	if _, err := peer.ReserveIncarnation(t.Context(), b, "resurrect"); !errors.Is(err, ErrSealed) {
 		t.Fatal("sealed store restored", err)
 	}
-	if err := peer.WithActivation(t.Context(), current, func([]Outcome) error { return nil }, publish); !errors.Is(err, ErrSealed) {
+	if err := peer.WithActivation(t.Context(), current, nothingMissing, publish); !errors.Is(err, ErrSealed) {
 		t.Fatal("sealed store activated", err)
 	}
 }
@@ -410,26 +413,28 @@ func TestActivationRequiresActualRecoveredData(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := receipt(t, c, next)
-	inspect := func(required []Outcome) error {
+	inspect := func(required []Outcome) ([]string, error) {
 		if len(required) != 1 || required[0] != o {
 			t.Fatal("lost independent outcome journal", required)
 		}
 		db := open()
 		defer db.Close()
+		missing := []string{}
 		for _, o := range required {
 			var effect, result []byte
 			err := db.QueryRow("SELECT e.body,s.result FROM effects e JOIN seen s ON s.event=e.event WHERE e.event=?", o.ID).Scan(&effect, &result)
 			if errors.Is(err, sql.ErrNoRows) {
-				return ErrHistory
+				missing = append(missing, o.ID)
+				continue
 			}
 			if err != nil {
-				return err
+				return nil, err
 			}
 			if sha256.Sum256(effect) != o.Digest || sha256.Sum256(result) != o.Digest {
-				return ErrHistory
+				missing = append(missing, o.ID)
 			}
 		}
-		return nil
+		return missing, nil
 	}
 	if err = os.WriteFile(path, backup, 0600); err != nil {
 		t.Fatal(err)
@@ -439,11 +444,11 @@ func TestActivationRequiresActualRecoveredData(t *testing.T) {
 	if err = c.WithActivation(t.Context(), r, inspect, publish); !errors.Is(err, ErrHistory) || called {
 		t.Fatal("journal ID invented absent application data", err)
 	}
-	if err = os.WriteFile(path, archive, 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err = c.WithActivation(t.Context(), r, inspect, publish); err != nil || !called {
-		t.Fatal("actual recovered data rejected", err)
+	// The repair copies the actual archived data; the journal ID alone never does.
+	repair := func(missing []Outcome) error { return os.WriteFile(path, archive, 0600) }
+	losses, err := c.Activate(t.Context(), r, Restoration{Inspect: inspect, Repair: repair, Publish: publish})
+	if err != nil || !called || len(losses) != 0 {
+		t.Fatal("actual recovered data rejected", losses, err)
 	}
 }
 
@@ -454,7 +459,7 @@ func TestPublicationSerializesConcurrentRevocation(t *testing.T) {
 	entered, release := make(chan struct{}), make(chan struct{})
 	publication := make(chan error, 1)
 	go func() {
-		publication <- c.WithActivation(t.Context(), r, func([]Outcome) error { return nil }, func() error { close(entered); <-release; return nil })
+		publication <- c.WithActivation(t.Context(), r, nothingMissing, func() error { close(entered); <-release; return nil })
 	}()
 	<-entered
 	intent := make(chan error, 1)
@@ -473,7 +478,7 @@ func TestPublicationSerializesConcurrentRevocation(t *testing.T) {
 	if err := <-intent; err != nil {
 		t.Fatal(err)
 	}
-	if err := c.WithActivation(t.Context(), r, func([]Outcome) error { return nil }, func() error { t.Error("old publication called"); return nil }); !errors.Is(err, ErrStale) {
+	if err := c.WithActivation(t.Context(), r, nothingMissing, func() error { t.Error("old publication called"); return nil }); !errors.Is(err, ErrStale) {
 		t.Fatal("new revision not observed", err)
 	}
 }
@@ -522,6 +527,38 @@ func TestSubjectKeyGateUsesIndependentIntent(t *testing.T) {
 type crashConfig struct {
 	Root, Identity, Boundary, Operation string
 	Binding                             Binding
+	Receipt                             Receipt
+}
+
+// everythingMissing inspects an image that lacks every recorded outcome.
+func everythingMissing(recorded []Outcome) ([]string, error) {
+	ids := []string{}
+	for _, o := range recorded {
+		ids = append(ids, o.ID)
+	}
+	return ids, nil
+}
+
+// prepareCrash brings the catalogue to the state the operation needs. The
+// declaration and the rerun follow a restore of an image that lacks the outcome.
+func prepareCrash(t *testing.T, c *Catalog, conf *crashConfig) {
+	t.Helper()
+	if conf.Operation != "declare" && conf.Operation != "rerun" {
+		return
+	}
+	if err := c.RecordOutcome(t.Context(), conf.Binding, Outcome{ID: "durable-result", Digest: sha256.Sum256([]byte("committed data"))}); err != nil {
+		t.Fatal(err)
+	}
+	next, err := c.ReserveIncarnation(t.Context(), conf.Binding, "restore")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conf.Binding, conf.Receipt = next, receipt(t, c, next)
+	if conf.Operation == "rerun" {
+		if _, err = c.declareLosses(t.Context(), conf.Receipt, everythingMissing); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func crashOperation(ctx context.Context, c *Catalog, conf crashConfig) error {
@@ -534,17 +571,23 @@ func crashOperation(ctx context.Context, c *Catalog, conf crashConfig) error {
 		return err
 	case "outcome":
 		return c.RecordOutcome(ctx, conf.Binding, Outcome{ID: "durable-result", Digest: sha256.Sum256([]byte("committed data"))})
+	case "declare":
+		_, err := c.declareLosses(ctx, conf.Receipt, everythingMissing)
+		return err
+	case "rerun":
+		return c.RecordRerun(ctx, conf.Binding, Outcome{ID: "durable-result", Digest: sha256.Sum256([]byte("rerun data"))})
 	default:
 		return ErrInput
 	}
 }
 
 func TestAuthoritySIGKILLBeforeAndAfterCommit(t *testing.T) {
-	for _, operation := range []string{"reserve", "revoke", "outcome"} {
+	for _, operation := range []string{"reserve", "revoke", "outcome", "declare", "rerun"} {
 		for _, boundary := range []string{"before_commit", "after_commit"} {
 			t.Run(operation+"/"+boundary, func(t *testing.T) {
 				c, b := fixture(t)
 				conf := crashConfig{Root: c.root, Identity: c.identity, Binding: b, Boundary: boundary, Operation: operation}
+				prepareCrash(t, c, &conf)
 				ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 				defer cancel()
 				cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestAuthorityCrashChild$", "-test.timeout=30s")
@@ -591,7 +634,8 @@ func TestAuthoritySIGKILLBeforeAndAfterCommit(t *testing.T) {
 					want = 1
 				}
 				var got int64
-				query := map[string]string{"reserve": "SELECT incarnation-1 FROM stores WHERE id='store-a'", "revoke": "SELECT revision FROM authority", "outcome": "SELECT count(*) FROM outcomes"}[operation]
+				query := map[string]string{"reserve": "SELECT incarnation-1 FROM stores WHERE id='store-a'", "revoke": "SELECT revision FROM authority", "outcome": "SELECT count(*) FROM outcomes",
+					"declare": "SELECT count(*) FROM losses", "rerun": "SELECT count(*) FROM reruns"}[operation]
 				if err = peer.db.QueryRow(query).Scan(&got); err != nil || got != want {
 					t.Fatal("unexpected durable transaction outcome", got, want, err)
 				}
