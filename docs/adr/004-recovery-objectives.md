@@ -60,9 +60,10 @@ backups are encrypted before upload. There are two copies:
   reactivate members, tokens, delegations or keys revoked since (product spec).
   D-05 has to be settled before a disaster restore can be qualified.
 - **The P2 model** ([restore_authority.qnt](../../spec/restore_authority.qnt))
-  still requires `noLostAcknowledgedOutcome`. Under D-03 option B, it must
-  become "no **unannounced** loss", with an observable declared-loss state. The
-  traces and their tests must be regenerated before incompatible code (REC-02).
+  was revised on November 13, 2026: `noLostAcknowledgedOutcome` became
+  `noUndeclaredLoss` ("no **unannounced** loss"), with an observable
+  declared-loss state kept by the restore authority. The contract diff is in
+  [ADR 003](003-restore-rpo.md#model-revision-option-b).
 - **Callers see the difference.** After a restore, a result lost in the window
   has a distinct state, and the work is run again. The API needs this state and
   its documentation.
