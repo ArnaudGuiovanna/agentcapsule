@@ -3,6 +3,7 @@
 package worker
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -11,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -18,6 +20,7 @@ import (
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmgateway"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/telemetry"
 )
 
 // An ordinary agent image (Python, the official OpenAI SDK, a tool loop),
@@ -267,6 +270,16 @@ func TestProductWorkerTenantAgentsTalkOverA2A(t *testing.T) {
 		t.Fatal("AGENTCAPSULE_KVM_A2A_HARNESS must name the a2a-agent package (verify-product-guest.py --a2a-harness)")
 	}
 	l := newRegistryLab(t)
+	// The worker's metrics and job events, as its service wires them (OPS-02).
+	registry := telemetry.NewRegistry()
+	if err := l.worker.EnableTelemetry(registry, l.root, 2); err != nil {
+		t.Fatal(err)
+	}
+	jobLog := &lockedBuffer{}
+	vocabulary := map[string][]string{"event": {"job_done", "job_retried"}, "kind": JobKinds(), "reason": RetryReasons()}
+	if err := l.worker.EnableJobEvents(telemetry.NewLogger(jobLog, vocabulary), telemetry.NewLogger(jobLog, vocabulary)); err != nil {
+		t.Fatal(err)
+	}
 	ref := l.importPackage(pkg, "acme/a2a-agent", "1.0.0")
 	a := l.createOn("a2a-a", "a2a-agent", "1.0.0").AgentID
 	b := l.createOn("a2a-b", "a2a-agent", "1.0.0").AgentID
@@ -310,7 +323,8 @@ func TestProductWorkerTenantAgentsTalkOverA2A(t *testing.T) {
 		"description": "Answers with the text it receives.", "skills": []int{10301}}, 200, nil)
 	l.request(l.owner(), "PUT", "/v1/agents/"+b+"/inbound", "b-auto", map[string]string{"mode": "auto"}, 200, nil)
 	question := "what is the capital of France?"
-	if got := l.ask(a, "a2a-ask", "ask "+b+" "+question); !strings.Contains(got, b+" answered: echo: "+question) {
+	got, traced := l.askTraced(a, "a2a-ask", "ask "+b+" "+question)
+	if !strings.Contains(got, b+" answered: echo: "+question) {
 		t.Fatal("a did not get b's answer over A2A", got)
 	}
 	if n := exchanges(); len(n) != 1 || n["REPLIED"] != 1 {
@@ -380,6 +394,76 @@ func TestProductWorkerTenantAgentsTalkOverA2A(t *testing.T) {
 	if queue.PeerWakesLastHour != 2 {
 		t.Fatal("wakes counted", queue.PeerWakesLastHour)
 	}
+
+	t.Log("stage: the worker's metrics and job events tell what happened, by request ID")
+	scrape := httptest.NewRecorder()
+	registry.Handler(5*time.Second).ServeHTTP(scrape, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	metrics := scrape.Body.String()
+	value := func(series string) float64 {
+		t.Helper()
+		for _, line := range strings.Split(metrics, "\n") {
+			if rest, ok := strings.CutPrefix(line, series+" "); ok {
+				v, err := strconv.ParseFloat(rest, 64)
+				if err != nil {
+					t.Fatal(line, err)
+				}
+				return v
+			}
+		}
+		t.Fatal("no series", series, metrics)
+		return 0
+	}
+	if value("agentcapsule_worker_vms_running") != 2 || value("agentcapsule_worker_vm_capacity") != 2 ||
+		value(`agentcapsule_worker_vm_starts_total{outcome="started"}`) < 3 ||
+		value(`agentcapsule_worker_jobs_total{kind="delivery",outcome="done"}`) < 4 ||
+		value(`agentcapsule_worker_job_retries_total{kind="delivery",reason="wake_budget"}`) < 1 {
+		t.Fatal("worker metrics", metrics)
+	}
+	if ratio := value("agentcapsule_worker_root_disk_used_ratio"); ratio <= 0 || ratio >= 1 {
+		t.Fatal("disk ratio", ratio)
+	}
+	// The invocation's delivery to a and a's request to b both lead back to
+	// bob's API request.
+	events := jobLog.String()
+	if n := strings.Count(events, `"event":"job_done","kind":"delivery","request_id":"`+traced+`"`); n < 2 {
+		t.Fatal("job events carrying the request ID", n, events)
+	}
+	if !strings.Contains(events, `"event":"job_retried","kind":"delivery"`) || !strings.Contains(events, `"reason":"wake_budget"`) {
+		t.Fatal("no job event for the wait at the wake budget", events)
+	}
+}
+
+// askTraced is ask, and also returns the X-Request-ID of bob's invocation.
+func (l *registryLab) askTraced(agentID, key, text string) (string, string) {
+	t := l.t
+	t.Helper()
+	body, _ := json.Marshal(map[string]any{"content": []map[string]string{{"type": "text", "text": text}}})
+	r, err := http.NewRequestWithContext(t.Context(), http.MethodPost, l.server.URL+"/v1/agents/"+agentID+"/invocations", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Header.Set("Authorization", "Bearer "+l.user())
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Idempotency-Key", key)
+	resp, err := l.server.Client().Do(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var inv controlplane.Invocation
+	err = json.NewDecoder(resp.Body).Decode(&inv)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted || err != nil || len(resp.Header.Get("X-Request-ID")) != 32 {
+		t.Fatal("traced invocation", resp.StatusCode, err)
+	}
+	l.await("invocation "+key, true, func() bool {
+		var v controlplane.Invocation
+		l.request(l.user(), "GET", "/v1/invocations/"+inv.ID, "", nil, 200, &v)
+		if v.State == "failed" || v.State == "canceled" || v.State == "expired" {
+			t.Fatal("invocation ended without an answer", v.State, v.ErrorCode)
+		}
+		return v.State == "completed"
+	})
+	return string(l.request(l.user(), "GET", "/v1/invocations/"+inv.ID+"/result", "", nil, 200, nil)), resp.Header.Get("X-Request-ID")
 }
 
 // passHeldByWakeBudget runs one dispatch pass and reports whether a delivery

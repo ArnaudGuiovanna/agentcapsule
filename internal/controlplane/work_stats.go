@@ -2,7 +2,11 @@ package controlplane
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // WorkKindStats describes one kind of durable job of a host, for metrics
@@ -46,4 +50,37 @@ func (s *Store) RunningPlacements(ctx context.Context, host string) (int, error)
 	var n int
 	err := s.pool.QueryRow(ctx, "SELECT count(*) FROM agent_placements WHERE host_id=$1 AND state='RUNNING'", host).Scan(&n)
 	return n, err
+}
+
+// originOfRequest is the API request behind a request between agents: the
+// one that created the invocation whose mandate the sender used.
+const originOfRequest = `SELECT o.request_id FROM agent_requests r JOIN owner_instructions i ON i.mandate_id=r.mandate_id
+    JOIN platform_operations o ON o.id=i.operation_id WHERE r.id=$1`
+
+// JobOrigin returns the X-Request-ID of the API request that started a job
+// (OPS-02), or "" when none did: a delivery of an invocation, or of a request,
+// reply or status between agents under the mandate an invocation granted; a
+// closure or an expiration of such a request; a provisioning or lifecycle
+// operation; the deletion of an agent.
+func (s *Store) JobOrigin(ctx context.Context, j WorkerJob) (string, error) {
+	var query string
+	switch j.Kind {
+	case "delivery":
+		query = `SELECT coalesce((SELECT o.request_id FROM platform_operations o WHERE o.id=m.instruction_id),
+            (` + strings.ReplaceAll(originOfRequest, "$1", "m.ref_id") + `)) FROM agent_mailboxes m WHERE m.id=$1`
+	case "closure", "expiration":
+		query = originOfRequest
+	case "provision", "lifecycle":
+		query = "SELECT request_id FROM platform_operations WHERE id=$1"
+	case "deletion":
+		query = "SELECT request_id FROM platform_operations WHERE agent_id=$1 AND kind='delete' ORDER BY seq DESC LIMIT 1"
+	default:
+		return "", nil
+	}
+	var id *string
+	err := s.pool.QueryRow(ctx, query, j.ID).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) || id == nil {
+		return "", nil
+	}
+	return *id, err
 }

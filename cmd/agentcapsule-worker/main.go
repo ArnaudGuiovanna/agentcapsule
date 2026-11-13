@@ -117,10 +117,14 @@ func run() int {
 	// Events, one JSON object per line, from a closed vocabulary (OPS-02):
 	// progress on standard output, retries and failures on standard error.
 	vocabulary := map[string][]string{"event": {"maintenance_started", "maintenance_complete", "maintenance_retry", "wake_budget_exhausted",
-		"harness_import_retry", "directory_publish_retry", "slim_callback_stopped"}, "reason": {"wake_budget", "slim_unavailable", "capacity", "error"}}
+		"harness_import_retry", "directory_publish_retry", "slim_callback_stopped", "job_done", "job_retried"},
+		"reason": worker.RetryReasons(), "kind": worker.JobKinds()}
 	events, problems := telemetry.NewLogger(os.Stdout, vocabulary), telemetry.NewLogger(os.Stderr, vocabulary)
 	registry := telemetry.NewRegistry()
 	if err = w.EnableTelemetry(registry, opts.Root, opts.MaxActive); err != nil {
+		return fail("telemetry_unavailable")
+	}
+	if err = w.EnableJobEvents(events, problems); err != nil {
 		return fail("telemetry_unavailable")
 	}
 	importRetries := registry.Counter("agentcapsule_worker_harness_import_retries_total", "Harness imports that failed and will be tried again.")

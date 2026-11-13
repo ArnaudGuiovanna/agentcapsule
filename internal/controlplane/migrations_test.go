@@ -320,6 +320,7 @@ func revertTenantAgents(t *testing.T, s *Store) {
 	t.Helper()
 	if _, err := s.pool.Exec(t.Context(), `
         DROP TABLE IF EXISTS peer_wakes;
+        ALTER TABLE platform_operations DROP COLUMN IF EXISTS request_id;
         DROP INDEX IF EXISTS agent_requests_held;
         DROP TABLE IF EXISTS agent_directory;
         DROP TRIGGER IF EXISTS agent_directory_follow_agent ON agents;

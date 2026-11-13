@@ -19,6 +19,7 @@ import (
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/delegatedidentity"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/telemetry"
 )
 
 type Server struct {
@@ -155,7 +156,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		problem(w, 400, "invalid_path")
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(telemetry.WithRequestID(r.Context(), requestID), 10*time.Second)
 	defer cancel()
 	s.mux.ServeHTTP(w, r.WithContext(ctx))
 }

@@ -92,6 +92,7 @@ func (w *Placements) DispatchPass(ctx context.Context, o DispatchOptions, attemp
 		}
 		err = w.executeWork(attempt, job, o.DeliveryLease)
 		w.countJob(job.Kind, err)
+		w.logJob(job, err)
 		if err == nil && w.afterWork != nil {
 			w.afterWork(job)
 		}

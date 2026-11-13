@@ -10,7 +10,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/telemetry"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // Every problem code written in the API's sources is in problemCodes, so that
@@ -109,5 +111,32 @@ func TestHTTPTelemetry(t *testing.T) {
 		if strings.Contains(out, secret) {
 			t.Fatalf("%.12s… reached the telemetry", secret)
 		}
+	}
+}
+
+// The operation a request creates records the request's X-Request-ID, which
+// the worker's job events repeat (OPS-02).
+func TestHTTPOperationsRecordTheirRequestID(t *testing.T) {
+	l, _, owner := apiAgentsLab(t)
+	body := `{"name":"traced","harness":{"name":"reference","version":"1.0.0"},"resources":{"vcpus":1,"memory_mib":256,"data_volume_mib":128}}`
+	r := call(t, l.server, "POST", "/v1/agents", owner, "create-traced", body)
+	var out controlplane.AgentCreation
+	if r.Code != 202 || json.Unmarshal(r.Body.Bytes(), &out) != nil {
+		t.Fatal(r.Code, r.Body.String())
+	}
+	db, err := pgxpool.New(t.Context(), l.dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var recorded string
+	if err = db.QueryRow(t.Context(), "SELECT request_id FROM platform_operations WHERE id=$1", out.OperationID).Scan(&recorded); err != nil || recorded != r.Header().Get("X-Request-ID") {
+		t.Fatal("the operation did not record the request's ID", recorded, err)
+	}
+	// A replay answers from the receipt: the operation keeps its first request.
+	again := call(t, l.server, "POST", "/v1/agents", owner, "create-traced", body)
+	if err = db.QueryRow(t.Context(), "SELECT request_id FROM platform_operations WHERE id=$1", out.OperationID).Scan(&recorded); err != nil ||
+		recorded != r.Header().Get("X-Request-ID") || recorded == again.Header().Get("X-Request-ID") {
+		t.Fatal("a replay changed the operation's request ID", err)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"slices"
 	"syscall"
 	"time"
 
@@ -132,4 +133,39 @@ func (w *Placements) countStart(started time.Time, err error) {
 	}
 	m.starts.Inc("started")
 	m.startSeconds.Since(started)
+}
+
+// JobKinds and RetryReasons are the vocabularies of the worker's job events.
+func JobKinds() []string     { return slices.Clone(jobKinds) }
+func RetryReasons() []string { return slices.Clone(retryReasons) }
+
+type jobEvents struct{ progress, problems *telemetry.Logger }
+
+// EnableJobEvents writes one event per job processed: job_done to progress,
+// job_retried with its reason to problems. Each carries the job's kind and,
+// when an API request started the work, that request's X-Request-ID (OPS-02),
+// so that a person's report leads from the API's log to the worker's.
+func (w *Placements) EnableJobEvents(progress, problems *telemetry.Logger) error {
+	if progress == nil || problems == nil || !w.jobEvents.CompareAndSwap(nil, &jobEvents{progress, problems}) {
+		return controlplane.ErrConflict
+	}
+	return nil
+}
+
+func (w *Placements) logJob(j controlplane.WorkerJob, err error) {
+	e := w.jobEvents.Load()
+	if e == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	fields := []telemetry.Field{telemetry.Code("kind", j.Kind)}
+	if origin, lookup := w.store.JobOrigin(ctx, j); lookup == nil && origin != "" {
+		fields = append(fields, telemetry.RequestID(origin))
+	}
+	if err == nil {
+		e.progress.Event("job_done", fields...)
+		return
+	}
+	e.problems.Event("job_retried", append(fields, telemetry.Code("reason", RetryReason(err)))...)
 }

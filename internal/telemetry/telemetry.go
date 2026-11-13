@@ -417,3 +417,21 @@ func (l *Logger) Event(name string, fields ...Field) {
 	_, _ = io.WriteString(l.w, b.String())
 	l.mu.Unlock()
 }
+
+type requestIDKey struct{}
+
+// WithRequestID carries an API request's ID with its context, so that what
+// the request starts (operations, then the worker's jobs) can be correlated
+// with it. An ID that is not 32 lowercase hex digits is not carried.
+func WithRequestID(ctx context.Context, id string) context.Context {
+	if !requestIDPattern.MatchString(id) {
+		return ctx
+	}
+	return context.WithValue(ctx, requestIDKey{}, id)
+}
+
+// RequestIDFrom returns the request ID the context carries, or "".
+func RequestIDFrom(ctx context.Context) string {
+	id, _ := ctx.Value(requestIDKey{}).(string)
+	return id
+}

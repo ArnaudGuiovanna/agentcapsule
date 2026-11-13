@@ -39,6 +39,8 @@ type Placements struct {
 	slim atomic.Pointer[slimlink.Link]
 	// metrics counts jobs and boots; nil without telemetry (OPS-02).
 	metrics atomic.Pointer[workerTelemetry]
+	// jobEvents logs each job with its origin; nil without telemetry.
+	jobEvents atomic.Pointer[jobEvents]
 	// Tests inject cancellation/crashes at the durable claim boundary.
 	afterClaim          func()
 	afterConfirm        func(runtime.VMRun)

@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/telemetry"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -104,6 +105,14 @@ func (s *Store) beginCensus(ctx context.Context, exclusive bool) (pgx.Tx, error)
 	if _, err = tx.Exec(ctx, "SELECT "+lock+"(hashtextextended(current_schema()::text,756610045))"); err != nil {
 		rollback(tx)
 		return nil, err
+	}
+	// An API request's ID, for the operations this transaction creates
+	// (migration 0027). Local to the transaction; validated by telemetry.
+	if id := telemetry.RequestIDFrom(ctx); id != "" {
+		if _, err = tx.Exec(ctx, "SELECT set_config('agentcapsule.request_id', $1, true)", id); err != nil {
+			rollback(tx)
+			return nil, err
+		}
 	}
 	if _, err = tx.Exec(ctx, "SET LOCAL synchronous_commit = on"); err == nil {
 		var safe bool

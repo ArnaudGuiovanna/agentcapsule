@@ -64,11 +64,26 @@ Each process writes one JSON object per line, with `time` and `event` first:
 | Worker | `maintenance_started`, `maintenance_complete` | — |
 | Worker | `maintenance_retry` | `reason` (as above) |
 | Worker | `wake_budget_exhausted`, `harness_import_retry`, `directory_publish_retry`, `slim_callback_stopped` | — |
+| Worker | `job_done` (standard output), `job_retried` (standard error) | `kind`, `request_id` of the API request that started the work, if any, and `reason` for a retry |
 
 **Correlation.** Every API response carries `X-Request-ID`, a random 128-bit
-value. The request's `http_request` event carries the same value, so a
-person's report ("my call failed, request ID …") leads to its log line. The ID
-says nothing about the person or the content.
+value. The ID says nothing about the person or the content. It follows the
+work:
+1. The request's `http_request` event carries it.
+2. The operation the request creates (an invocation, an agent, a wake or sleep)
+   records it. The API sets it for its database transaction, and the
+   operation's column takes it as default (migration 0027).
+3. The worker's `job_done` and `job_retried` events carry it for every job that
+   work causes:
+   - the invocation's delivery;
+   - the provisioning or lifecycle operation;
+   - the requests, replies and statuses its agent then exchanges with other
+     agents under the mandate the invocation granted;
+   - their closures and expirations.
+
+So a person's report ("my call failed, request ID …") leads from the API's
+log to every job it caused, on the other agents' side included. Work that no
+API request started (an agent's own schedule, an expiry) carries no ID.
 
 ## Alerts
 
@@ -100,7 +115,7 @@ fail.
 
 ## Not yet covered
 
-- Traces. Request IDs do not yet follow work from the API into the worker's
-  jobs.
+- Distributed traces (spans and timings across processes). Correlation is by
+  request ID only.
 - An operator command for diagnostics (API-02).
 - Alert thresholds tuned under load (OPS-03).
