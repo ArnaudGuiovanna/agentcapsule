@@ -28,6 +28,42 @@ night:
 Each repository keeps its own backups: four weeks on S3, two on the standby.
 The WAL archive follows them.
 
+### Freshness
+
+Operators must learn that the RPO no longer holds before they need a backup.
+Metrics and alerts watch both parts of it.
+[observability.md](observability.md) lists them.
+
+**WAL archiving.** At each scrape, the worker reads PostgreSQL's archiver:
+- whether archiving is on, and `archive_timeout`;
+- the time since the last archive;
+- whether a completed segment waits;
+- whether the latest attempt failed.
+
+The alerts fire when:
+- archiving is off, or `archive_timeout` is off or above 15 minutes;
+- archiving has failed for 5 minutes;
+- nothing was archived for 15 minutes while a segment waits: the RPO is
+  breached;
+- a segment has waited at every scrape for 15 minutes: archiving does not keep
+  up.
+
+An idle database writes no WAL, so it has nothing to archive. Its old last
+archive raises no alert.
+
+**Base backups.** Every 15 minutes, a timer runs `pgbackrest info` and writes,
+for node_exporter, when the newest full and the newest differential backup of
+each repository finished. The alerts fire when:
+- a repository has no base backup from the last 26 hours (one per night, plus
+  2 hours of margin);
+- a repository has no full backup from the last 8 days (one per week, plus a
+  day);
+- pgBackRest cannot read a repository for 30 minutes;
+- the times have not been collected for an hour.
+
+The times come from the repositories, not from the backup jobs. A backup that
+expired or was lost, or a store that cannot be read, shows too.
+
 ### Install
 
 The files are in [deploy/backup](../deploy/backup).
@@ -66,12 +102,26 @@ The files are in [deploy/backup](../deploy/backup).
    ```sh
    systemctl enable --now agentcapsule-pg-backup-full.timer agentcapsule-pg-backup-diff.timer
    ```
+8. **Freshness.**
+   - Copy `agentcapsule-backup-metrics.py` to `/opt/agentcapsule/` (root,
+     0755).
+   - node_exporter's textfile collector must read
+     `/var/lib/prometheus/node-exporter`. That is the default of the Debian
+     and Ubuntu `prometheus-node-exporter` package. Otherwise, change
+     `--textfile-directory` in the service.
+   - Install `agentcapsule-backup-metrics.service` and its timer in
+     `/etc/systemd/system`, then run:
+     ```sh
+     systemctl enable --now agentcapsule-backup-metrics.timer
+     ```
+   - Give Prometheus the rules of
+     [deploy/prometheus/alerts.yml](../deploy/prometheus/alerts.yml).
 
 ### Qualify
 
 `scripts/verify-backups.py` runs the shipped configuration against an object
 store (SeaweedFS 4.53) and an SFTP server (OpenSSH), both run with Docker and
-pinned by digest. It needs no root and runs in about two minutes:
+pinned by digest. It needs no root and runs in about four minutes:
 
 ```sh
 python3 scripts/verify-backups.py --pg-bin <postgres-bin-dir> --pgbackrest <pgbackrest> \
@@ -85,9 +135,15 @@ It checks:
   repositories within `archive_timeout` (30 s in the run; 30.3 s measured on
   2026-11-13).
 - **Restoring**: from each repository alone, into a new data directory, every
-  committed row is back (201 of 201).
+  committed row is back (201 of 201). The restore from S3 goes through its
+  differential backup.
 - **Encryption**: neither store holds a marker written in the rows, while the
   primary's own WAL does. That control proves the search works.
+- **Freshness**: `agentcapsule-backup-metrics.py`, run after the full backups
+  and after a differential one into S3, reports the times of those backups.
+  With the standby's store stopped, that repository is reported unreadable
+  and S3's times stay. The file has mode 0644 and holds none of the run's
+  secrets. Passed on 2026-11-13.
 
 pgBackRest writes `<redacted>` in its logs for the S3 secret and the cipher
 passphrases.
@@ -132,13 +188,14 @@ an archive is not yet built.
 
 1. **The standby.** It replays the WAL archive continuously
    (`restore_command` from repository 2), ready to be promoted.
-2. **Freshness.** Alerts for the age of the last archived segment and of each
-   volume archive. The volume archive metrics exist; the WAL metric and the
-   rules do not.
+2. **Freshness of the volume archives.** WAL archiving and the base backups
+   have their metrics and alerts (above). The volume archive metrics exist;
+   their alert rules remain.
 3. **Volume archives off the host.** Nightly archives are taken on the host
    without stopping the maintenance worker (above). Shipping them to the
    S3-compatible store and to the standby, encrypted as they are, remains.
-4. **The declared-loss state**: in the P2 model, then in the code and the API.
+4. **The declared-loss state** in the code and the API. The P2 model is
+   revised ([ADR 003](adr/003-restore-rpo.md#model-revision-option-b)).
 5. **A failover exercise** that measures the RPO and the RTO.
 6. **CI.** Ubuntu 24.04 ships an older pgBackRest than the qualified 2.58.
    Running this qualification in CI needs a pinned 2.58.

@@ -28,6 +28,10 @@ host ([deploy/prometheus/prometheus.yml](../deploy/prometheus/prometheus.yml)).
 
 A non-loopback address is refused at start (`metrics_listen_must_be_loopback`).
 
+node_exporter, scraped as the job `node`, serves the host's resources and,
+through its textfile collector, the base-backup times
+([recovery.md](recovery.md)).
+
 ## Metrics
 
 | Metric | Type | Labels | Meaning |
@@ -49,9 +53,45 @@ A non-loopback address is refused at start (`metrics_listen_must_be_loopback`).
 | `agentcapsule_worker_volume_archive_oldest_seconds` | gauge | — | Age of the oldest among the agents' newest archives. An agent never archived counts from its initialization |
 | `agentcapsule_telemetry_collect_errors_total` | counter | — | Scrapes whose current values could not be read |
 | `agentcapsule_telemetry_series_dropped_total` | counter | — | Samples dropped at a metric's series limit (512) |
+| `agentcapsule_postgres_wal_archiving_enabled` | gauge | — | 1 when PostgreSQL archives its WAL: `archive_mode` on and an archive command or library set (worker) |
+| `agentcapsule_postgres_wal_archive_timeout_seconds` | gauge | — | PostgreSQL's `archive_timeout`; 0 when off (worker) |
+| `agentcapsule_postgres_wal_archive_age_seconds` | gauge | — | Time since PostgreSQL last archived a WAL file (worker). If it archived none since its statistics began, the time since then |
+| `agentcapsule_postgres_wal_archive_pending` | gauge | — | 1 when a completed WAL segment waits for archiving (worker) |
+| `agentcapsule_postgres_wal_archive_failing` | gauge | — | 1 when the latest archive attempt failed (worker) |
+| `agentcapsule_backup_last_success_timestamp_seconds` | gauge | `repo` (`s3`, `standby`), `type` (`full`, `diff`) | When the newest base backup of that type in that repository finished; 0 when it holds none (node_exporter) |
+| `agentcapsule_backup_repository_readable` | gauge | `repo` | 1 when pgBackRest could read the repository's list of backups (node_exporter) |
+| `agentcapsule_backup_collected_timestamp_seconds` | gauge | — | When the backup times above were last collected (node_exporter) |
 
 The worker reads its gauges at each scrape, from PostgreSQL and the host, with
 a 5-second bound.
+
+**WAL archiving** (REC-03) is read from `pg_stat_archiver` and the settings.
+Every role may read them, so the worker's database role needs no grant.
+PostgreSQL leaves some fields empty, and the worker handles each case:
+- **Nothing archived** since the statistics began (the cluster's creation, a
+  crash recovery, a reset). The age counts from that start, or from the
+  server's start: nothing was archived for at least that long.
+- **No failure** recorded. The archiving is not failing. A failure older than
+  the last success is over: a retry archived the segment.
+- **A pending segment** is a completed one after the last archived file. The
+  open segment does not count: `archive_timeout` closes it. So an idle
+  database has nothing pending, however old its last archive. A standby has no
+  write position, so nothing is pending there.
+
+No WAL file name, command or path is exposed.
+
+**Base backups** run outside the worker, under systemd. Every 15 minutes,
+`agentcapsule-backup-metrics.timer` runs
+[agentcapsule-backup-metrics.py](../deploy/backup/agentcapsule-backup-metrics.py).
+It reads `pgbackrest info` and writes `agentcapsule-backup.prom` for
+node_exporter's textfile collector:
+- The file is replaced atomically and has mode 0644.
+- Its labels take declared values only. No text from pgBackRest is copied:
+  no backup label, path, host or message.
+- The values are timestamps, so the alerts' ages keep growing even if the
+  script stops running.
+- A repository that cannot be read has no backup times in the file. Its own
+  alert fires instead.
 
 ## Events
 
@@ -109,14 +149,26 @@ Their annotations are fixed text.
 | `AgentCapsuleWakeBudgetExhausted` | An organization reached its wake budget (info) |
 | `AgentCapsuleMetricsStale` | A process cannot read its current state for its metrics |
 | `AgentCapsuleHostMemoryLow`, `AgentCapsuleHostCPUSaturated` | Host memory below 10 %, or CPUs over 90 % busy, from node_exporter |
+| `AgentCapsuleWALArchivingMisconfigured` | PostgreSQL does not archive its WAL, or `archive_timeout` is off or above 15 minutes, for 5 minutes (critical) |
+| `AgentCapsuleWALArchiveFailing` | The latest WAL archive attempt has failed for 5 minutes (critical) |
+| `AgentCapsuleWALArchiveStale` | No WAL archived for 15 minutes while a completed segment waits: the database's RPO is breached (critical) |
+| `AgentCapsuleWALArchiveBacklog` | A completed segment has waited at every scrape for 15 minutes: archiving does not keep up |
+| `AgentCapsuleBackupStale` | A repository has no base backup that finished in the last 26 hours |
+| `AgentCapsuleFullBackupStale` | A repository has no full backup that finished in the last 8 days |
+| `AgentCapsuleBackupRepositoryUnreadable` | pgBackRest cannot read a repository, for 30 minutes |
+| `AgentCapsuleBackupMetricsStale` | The backup times have not been collected for an hour, or never were |
 
 [alerts_test.yml](../deploy/prometheus/alerts_test.yml) holds promtool unit
-tests for the disk, queue, scrape and SLIM alerts.
+tests for the disk, queue, scrape, SLIM and backup alerts. Each backup
+threshold is tested on both sides.
 `scripts/verify-alerts.py` checks that every metric the alerts use is
-registered by the code. With `--promtool` or `--promtool-image <image@sha256:…>`,
-it also runs `promtool check rules` and `promtool test rules`. CI runs it with
-Prometheus v3.5.0, pinned by digest. A raised disk threshold makes the tests
-fail.
+registered by the code or declared by `agentcapsule-backup-metrics.py`. For
+the script's metrics, it also checks each label and value that the rules and
+tests match against the script's vocabulary, so a typo fails. With
+`--promtool` or `--promtool-image <image@sha256:…>`, it also runs
+`promtool check rules` and `promtool test rules`. CI runs it with Prometheus
+v3.5.0, pinned by digest. A raised disk threshold, or a raised WAL or backup
+threshold, makes the tests fail.
 
 On KVM, the A2A journey of the product campaign wires the worker's telemetry
 as its service does. It checks the real metrics: running VMs, boots,
@@ -131,5 +183,5 @@ on the delivery of the request its agent sent to another agent. It passed on
   request ID only.
 - An operator command for diagnostics (API-02).
 - Alert thresholds tuned under load (OPS-03).
-- Alerts on the freshness of backups: the volume archive metrics exist, their
-  rules are still to write (ADR 004, step 3).
+- Alerts on the freshness of agent volume archives. The metrics exist,
+  their rules are still to write (ADR 004, step 3).

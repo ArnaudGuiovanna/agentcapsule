@@ -14,6 +14,8 @@ scrape_configs:
   - job_name: agentcapsule-worker
     static_configs:
       - targets: ["127.0.0.1:9465"]
+  # node_exporter: the host's resources and, through its textfile collector,
+  # the base-backup times (deploy/backup/agentcapsule-backup-metrics.py).
   - job_name: node
     static_configs:
       - targets: ["127.0.0.1:9100"]

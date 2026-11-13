@@ -1,8 +1,9 @@
-# Alerts of one Agent Capsule host (OPS-02, OPS-03), on the metrics the API
-# and the worker serve at /metrics (agentcapsule-api -metrics-listen, the
-# worker's "metrics_listen"). The scrape jobs are named agentcapsule-api and
-# agentcapsule-worker (prometheus.yml). Annotations are fixed text: metrics
-# carry no organization, agent or member, so neither do alerts.
+# Alerts of one Agent Capsule host (OPS-02, OPS-03, REC-03), on the metrics the
+# API and the worker serve at /metrics (agentcapsule-api -metrics-listen, the
+# worker's "metrics_listen") and on node_exporter's. The scrape jobs are named
+# agentcapsule-api, agentcapsule-worker and node (prometheus.yml). Annotations
+# are fixed text: metrics carry no organization, agent or member, so neither do
+# alerts.
 groups:
   - name: agentcapsule
     rules:
@@ -101,6 +102,81 @@ groups:
           severity: warning
         annotations:
           summary: A process cannot read its current state for its metrics (database or disk).
+
+  # Backup freshness against the recovery objectives (REC-03, ADR 004): the
+  # database's RPO is 15 minutes. WAL archiving comes from the worker, which
+  # reads PostgreSQL; base backups come from node_exporter's textfile
+  # collector, written by deploy/backup/agentcapsule-backup-metrics.py.
+  - name: agentcapsule-backups
+    rules:
+      - alert: AgentCapsuleWALArchivingMisconfigured
+        expr: |
+          agentcapsule_postgres_wal_archiving_enabled == 0
+            or agentcapsule_postgres_wal_archive_timeout_seconds == 0
+            or agentcapsule_postgres_wal_archive_timeout_seconds > 900
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: PostgreSQL does not archive its WAL within the 15-minute RPO (archive_mode, archive_command or archive_timeout).
+
+      - alert: AgentCapsuleWALArchiveFailing
+        expr: agentcapsule_postgres_wal_archive_failing == 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: PostgreSQL's WAL archiving keeps failing; the database's 15-minute RPO is at risk.
+
+      - alert: AgentCapsuleWALArchiveStale
+        expr: agentcapsule_postgres_wal_archive_age_seconds > 900 and agentcapsule_postgres_wal_archive_pending == 1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: No WAL archived for 15 minutes while a completed segment waits; the database's RPO is breached.
+
+      - alert: AgentCapsuleWALArchiveBacklog
+        expr: agentcapsule_postgres_wal_archive_pending == 1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Completed WAL segments have waited for archiving for 15 minutes; archiving does not keep up.
+
+      - alert: AgentCapsuleBackupStale
+        expr: time() - max by (job, instance, repo) (agentcapsule_backup_last_success_timestamp_seconds) > 26 * 3600
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: A backup repository has no base backup that finished in the last 26 hours.
+
+      - alert: AgentCapsuleFullBackupStale
+        expr: time() - agentcapsule_backup_last_success_timestamp_seconds{type="full"} > 8 * 86400
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: A backup repository has no full backup that finished in the last 8 days.
+
+      - alert: AgentCapsuleBackupRepositoryUnreadable
+        expr: agentcapsule_backup_repository_readable == 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: pgBackRest cannot read a backup repository; its backups cannot be checked.
+
+      - alert: AgentCapsuleBackupMetricsStale
+        expr: |
+          time() - agentcapsule_backup_collected_timestamp_seconds > 3600
+            or absent(agentcapsule_backup_collected_timestamp_seconds)
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Backup freshness has not been collected for an hour (agentcapsule-backup-metrics.timer or node_exporter's textfile collector).
 
   # Host resources, from node_exporter on the same host.
   - name: agentcapsule-host

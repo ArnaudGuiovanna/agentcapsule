@@ -55,8 +55,8 @@ jobs:
           go vet -tags=kvm_integration,kvm_control_integration,kvm_product_integration ./internal/worker ./internal/runtime
           go vet -tags=llmlive ./internal/llmgateway ./internal/controlplane
 
-      - name: Runner unit tests
-        run: python3 -m unittest discover -s scripts -p test_check_go.py -v
+      - name: Script unit tests (the check runner, the backup freshness script)
+        run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
 
       - name: Repository hygiene (no personal paths, no committed evidence sources)
         run: python3 scripts/check-repo-hygiene.py

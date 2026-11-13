@@ -47,9 +47,9 @@ type workerTelemetry struct {
 
 // EnableTelemetry registers the worker's metrics (OPS-02): jobs by kind and
 // outcome, why work waits, VM boots and their duration, and, read at each
-// scrape, the host's queue by kind, its running VMs against its capacity, and
-// how full the runtime root's file system is. No agent or organization
-// identifier is a label.
+// scrape, the host's queue by kind, its running VMs against its capacity, how
+// full the runtime root's file system is, and PostgreSQL's WAL archiving. No
+// agent or organization identifier is a label.
 func (w *Placements) EnableTelemetry(registry *telemetry.Registry, root string, maxActive int) error {
 	kind := telemetry.Label{Name: "kind", Values: jobKinds}
 	m := &workerTelemetry{
@@ -103,10 +103,42 @@ func (w *Placements) EnableTelemetry(registry *telemetry.Registry, root string, 
 		}
 		return nil
 	})
+	w.enableArchivingTelemetry(registry)
 	if !w.metrics.CompareAndSwap(nil, m) {
 		return controlplane.ErrConflict
 	}
 	return nil
+}
+
+// enableArchivingTelemetry exposes PostgreSQL's WAL archiving, read at each
+// scrape (REC-03, ADR 004): whether it is on, archive_timeout, the age of the
+// last archive, whether a completed segment waits, and whether the latest
+// attempt failed. Its own collection, so that a failure to read it does not
+// stop the queue's metrics.
+func (w *Placements) enableArchivingTelemetry(registry *telemetry.Registry) {
+	enabled := registry.Gauge("agentcapsule_postgres_wal_archiving_enabled", "1 when PostgreSQL archives its WAL: archive_mode on, and an archive command or library set.")
+	timeout := registry.Gauge("agentcapsule_postgres_wal_archive_timeout_seconds", "PostgreSQL's archive_timeout; 0 when off.")
+	age := registry.Gauge("agentcapsule_postgres_wal_archive_age_seconds", "Seconds since PostgreSQL last archived a WAL file, or since its archiver statistics began if none since.")
+	pending := registry.Gauge("agentcapsule_postgres_wal_archive_pending", "1 when a completed WAL segment waits for archiving.")
+	failing := registry.Gauge("agentcapsule_postgres_wal_archive_failing", "1 when PostgreSQL's latest WAL archive attempt failed.")
+	flag := func(b bool) float64 {
+		if b {
+			return 1
+		}
+		return 0
+	}
+	registry.Collect(func(ctx context.Context) error {
+		a, err := w.store.WALArchiving(ctx)
+		if err != nil {
+			return err
+		}
+		enabled.Set(flag(a.Enabled))
+		timeout.Set(a.Timeout.Seconds())
+		age.Set(a.Age.Seconds())
+		pending.Set(flag(a.Pending))
+		failing.Set(flag(a.Failing))
+		return nil
+	})
 }
 
 func (w *Placements) countJob(kind string, err error) {

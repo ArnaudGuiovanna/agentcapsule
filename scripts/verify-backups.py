@@ -10,7 +10,11 @@ the provider) and SFTP on the standby host (an OpenSSH server). The run:
 3. restores the cluster from each repository alone into a new data directory
    and finds every committed row there;
 4. checks that neither store holds the marker in clear, while the cluster's own
-   WAL does (the control that the search works).
+   WAL does (the control that the search works);
+5. runs deploy/backup/agentcapsule-backup-metrics.py, as its timer does, after
+   the full backups, after a differential one, and with the standby's store
+   stopped: the times it reports are those of the backups, each repository's
+   state is right, and the file holds no secret.
 
 Runs as an ordinary user with Docker; both images are pinned by digest. Every
 credential is generated for the run and removed with it.
@@ -24,6 +28,7 @@ import secrets
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -91,6 +96,7 @@ def main():
         run("setup", ["openssl", "x509", "-req", "-in", certs / "s3.csr", "-CA", certs / "ca.pem", "-CAkey", certs / "ca.key",
                       "-CAcreateserial", "-days", "1", "-extfile", certs / "san.ext", "-out", certs / "s3.crt"])
         access, secret = "backup" + secrets.token_hex(6), secrets.token_hex(24)
+        passphrases = [secrets.token_hex(32), secrets.token_hex(32)]
         (certs / "s3.json").write_text(json.dumps({"identities": [{"name": "backup", "credentials": [{"accessKey": access, "secretKey": secret}],
                                                                   "actions": ["Admin", "Read", "Write", "List", "Tagging"]}]}))
         for f in certs.iterdir():
@@ -142,7 +148,7 @@ def main():
             shipped = shipped.replace(old, new)
         conf.write_text(shipped)
         (include / "secrets.conf").write_text("\n".join(["[global]", f"repo1-s3-key={access}", f"repo1-s3-key-secret={secret}",
-                                                         f"repo1-cipher-pass={secrets.token_hex(32)}", f"repo2-cipher-pass={secrets.token_hex(32)}", ""]))
+                                                         f"repo1-cipher-pass={passphrases[0]}", f"repo2-cipher-pass={passphrases[1]}", ""]))
         (include / "secrets.conf").chmod(0o600)
         backrest = [a.pgbackrest, f"--config={conf}", f"--config-include-path={include}", f"--stanza={STANZA}"]
         archive = " ".join(["env", f"LD_LIBRARY_PATH={libs}", *(str(x) for x in backrest), "archive-push", "%p"])
@@ -159,10 +165,48 @@ def main():
         clusters.append(data)
         psql = lambda s, *sql: output([pg("psql"), "-h", s, "-d", "postgres", "-Atq", "-v", "ON_ERROR_STOP=1", *[x for q in sql for x in ("-c", q)]])  # noqa: E731
 
+        # Base-backup freshness, written for node_exporter as the timer does.
+        textfile = out / "textfile"
+        textfile.mkdir()
+        never_written = [access, secret, *passphrases, str(work), "127.0.0.1"]
+
+        def freshness(label):
+            code = run(label, [sys.executable, "-I", ROOT / "deploy/backup/agentcapsule-backup-metrics.py", f"--pgbackrest={a.pgbackrest}",
+                               f"--config={conf}", f"--config-include-path={include}", f"--textfile-directory={textfile}"], check=False)
+            path = textfile / "agentcapsule-backup.prom"
+            text = path.read_text()
+            leaked = [i for i, s in enumerate(never_written) if s in text]
+            if path.stat().st_mode & 0o777 != 0o644 or leaked or [f.name for f in textfile.iterdir()] != [path.name]:
+                raise RuntimeError(f"{label}: the metrics file is not as written (mode, a leftover file, or secrets {leaked})")
+            samples = {}
+            for line in text.splitlines():
+                if not line.startswith("#"):
+                    series, value = line.rsplit(" ", 1)
+                    samples[series.removeprefix("agentcapsule_backup_")] = int(value)
+            report.setdefault("freshness", {})[label] = {"exit_code": code, "samples": samples}
+            return code, samples
+
+        def finished(samples, repo, kind):
+            return samples.get(f'last_success_timestamp_seconds{{repo="{repo}",type="{kind}"}}')
+
         run("backup", [*backrest, "stanza-create"])
         run("backup", [*backrest, "check"])
+        full_started = int(time.time())
         for repo in ("1", "2"):
             run("backup", [*backrest, f"--repo={repo}", "--type=full", "backup"], timeout=600)
+        code, after_full = freshness("freshness-after-full")
+        fulls = {repo: finished(after_full, repo, "full") for repo in ("s3", "standby")}
+        if code or any(not full_started <= (t or 0) <= time.time() for t in fulls.values()) or \
+                finished(after_full, "s3", "diff") != 0 or finished(after_full, "standby", "diff") != 0 or \
+                after_full.get('repository_readable{repo="s3"}') != 1 or after_full.get('repository_readable{repo="standby"}') != 1 or \
+                not full_started <= after_full.get("collected_timestamp_seconds", 0) <= time.time():
+            raise RuntimeError("freshness after the full backups is wrong; see summary.json")
+        diff_started = int(time.time())
+        run("backup", [*backrest, "--repo=1", "--type=diff", "backup"], timeout=600)
+        code, after_diff = freshness("freshness-after-diff")
+        if code or not diff_started <= (finished(after_diff, "s3", "diff") or 0) <= time.time() or \
+                finished(after_diff, "standby", "diff") != 0 or {repo: finished(after_diff, repo, "full") for repo in fulls} != fulls:
+            raise RuntimeError("freshness after the differential backup is wrong; see summary.json")
         marker = "acp-plaintext-marker-" + secrets.token_hex(8)
         psql(sock, "CREATE TABLE ledger(id int PRIMARY KEY, note text NOT NULL, at timestamptz NOT NULL DEFAULT clock_timestamp())",
              f"INSERT INTO ledger(id,note) SELECT g, '{marker} ' || g FROM generate_series(1,200) g")
@@ -219,6 +263,15 @@ def main():
         if report["plaintext_in_stores"]["s3"] or report["plaintext_in_stores"]["sftp"]:
             raise RuntimeError("a store holds the marker in clear")
         report["files_in_stores"] = {k: sum(1 for f in (copies / k).rglob("*") if f.is_file()) for k in ("s3", "sftp")}
+
+        # The standby's store stopped: it is reported unreadable, without
+        # backup times, while the object storage's stay as they were.
+        run("services", ["docker", "stop", f"{tag}-sftp"])
+        code, stopped = freshness("freshness-standby-stopped")
+        if stopped.get('repository_readable{repo="standby"}') != 0 or stopped.get('repository_readable{repo="s3"}') != 1 or \
+                any("standby" in series for series in stopped if series.startswith("last_success")) or \
+                [finished(stopped, "s3", kind) for kind in ("full", "diff")] != [finished(after_diff, "s3", kind) for kind in ("full", "diff")]:
+            raise RuntimeError("freshness with the standby's store stopped is wrong; see summary.json")
         report["pgbackrest"] = output([a.pgbackrest, "version"])
         report["postgresql"] = output([pg("postgres"), "--version"])
         report["status"] = "passed"
