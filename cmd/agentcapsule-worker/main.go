@@ -13,6 +13,10 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
+	"log"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -23,6 +27,7 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/directory"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/restoreauthority"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/slimlink"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/telemetry"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/volumearchive"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/worker"
 )
@@ -109,6 +114,30 @@ func run() int {
 		return fail("runtime_initialization_failed")
 	}
 	defer w.Close() // Listener ownership ends; surviving VMMs remain adoptable.
+	// Events, one JSON object per line, from a closed vocabulary (OPS-02):
+	// progress on standard output, retries and failures on standard error.
+	vocabulary := map[string][]string{"event": {"maintenance_started", "maintenance_complete", "maintenance_retry", "wake_budget_exhausted",
+		"harness_import_retry", "directory_publish_retry", "slim_callback_stopped"}, "reason": {"wake_budget", "slim_unavailable", "capacity", "error"}}
+	events, problems := telemetry.NewLogger(os.Stdout, vocabulary), telemetry.NewLogger(os.Stderr, vocabulary)
+	registry := telemetry.NewRegistry()
+	if err = w.EnableTelemetry(registry, opts.Root, opts.MaxActive); err != nil {
+		return fail("telemetry_unavailable")
+	}
+	if c.MetricsListen != "" && !archiveRequested {
+		// Metrics are technical, but a scraper reaches them on the host only.
+		host, _, err := net.SplitHostPort(c.MetricsListen)
+		if ip := net.ParseIP(host); err != nil || ip == nil || !ip.IsLoopback() {
+			return fail("metrics_listen_must_be_loopback")
+		}
+		metricsListener, err := net.Listen("tcp", c.MetricsListen)
+		if err != nil {
+			return fail("metrics_listener_unavailable")
+		}
+		metrics := &http.Server{Handler: registry.Handler(5 * time.Second), ReadHeaderTimeout: 5 * time.Second, WriteTimeout: 15 * time.Second,
+			ErrorLog: log.New(io.Discard, "", 0)}
+		go func() { _ = metrics.Serve(metricsListener) }()
+		defer metrics.Close()
+	}
 	transit, err := c.OpenTransit(s)
 	if err != nil {
 		return fail("transit_configuration_invalid")
@@ -141,7 +170,7 @@ func run() int {
 		go func() {
 			_ = importer.Run(ctx, maintenance.Interval, func(error) {
 				if ctx.Err() == nil {
-					fmt.Fprintln(os.Stderr, "harness_import_retry")
+					problems.Event("harness_import_retry")
 				}
 			})
 		}()
@@ -161,7 +190,7 @@ func run() int {
 			publisher := &directory.Publisher{Store: s, Directory: dir}
 			go publisher.Run(ctx, publishEvery, func(error) {
 				if ctx.Err() == nil {
-					fmt.Fprintln(os.Stderr, "directory_publish_retry")
+					problems.Event("directory_publish_retry")
 				}
 			})
 		}
@@ -178,7 +207,7 @@ func run() int {
 		// on its own, and deliveries wait for it without spending attempts.
 		go func() {
 			if err := slimlink.ServeLocal(ctx, linkListener, link); err != nil && ctx.Err() == nil {
-				fmt.Fprintln(os.Stderr, "slim_callback_stopped")
+				problems.Event("slim_callback_stopped")
 			}
 		}()
 	} else if linkListener != nil {
@@ -203,14 +232,14 @@ func run() int {
 			// An organization at its wake budget is a limit, not a fault: say
 			// so, so that an operator does not look for one.
 			if errors.Is(err, controlplane.ErrWakeBudget) {
-				fmt.Fprintln(os.Stderr, "wake_budget_exhausted")
+				problems.Event("wake_budget_exhausted")
 			}
-			fmt.Fprintln(os.Stderr, "maintenance_retry")
+			problems.Event("maintenance_retry", telemetry.Code("reason", worker.RetryReason(err)))
 		} else if err == nil {
-			fmt.Fprintln(os.Stdout, "maintenance_complete")
+			events.Event("maintenance_complete")
 		}
 	}
-	fmt.Fprintln(os.Stdout, "maintenance_started")
+	events.Event("maintenance_started")
 	err = w.RunMaintenance(ctx, maintenance)
 	if errors.Is(err, context.Canceled) {
 		return 0

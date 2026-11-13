@@ -37,6 +37,8 @@ type Placements struct {
 	// slim carries deliveries between agents through the SLIM bridge; nil
 	// when they go straight to the VM over vsock.
 	slim atomic.Pointer[slimlink.Link]
+	// metrics counts jobs and boots; nil without telemetry (OPS-02).
+	metrics atomic.Pointer[workerTelemetry]
 	// Tests inject cancellation/crashes at the durable claim boundary.
 	afterClaim          func()
 	afterConfirm        func(runtime.VMRun)
@@ -239,10 +241,14 @@ func (w *Placements) startRenewal(ctx context.Context, id string, forFence bool,
 		w.afterClaim()
 	}
 	var run runtime.VMRun
+	started := time.Now()
 	if p.FenceOnly {
 		run, err = w.host.StartForFence(ctx, id, p.Generation)
 	} else {
 		run, err = w.host.Start(ctx, id, p.Generation)
+	}
+	if p.State != "RUNNING" && !p.FenceOnly && !forFence {
+		w.countStart(started, err) // a boot for work, not a fence or a reused VMM
 	}
 	if err == nil {
 		if w.afterRunning != nil {

@@ -7,9 +7,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -87,6 +91,12 @@ func serviceProcess(t *testing.T, options runtime.FirecrackerOptions, schema str
 		Firecracker: ServiceImage{options.Firecracker, options.FirecrackerSHA256}, Jailer: ServiceImage{options.Jailer, options.JailerSHA256},
 		Kernel: ServiceImage{options.Kernel, options.KernelSHA256}, Initrd: ServiceImage{options.Initrd, options.InitrdSHA256},
 		MaxActive: options.MaxActive, BootTimeout: "12s", BootLease: "1m", PollInterval: "100ms", AttemptTimeout: "20s"}
+	free, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.MetricsListen = free.Addr().String()
+	free.Close()
 	b, err := json.Marshal(c)
 	if err != nil {
 		t.Fatal(err)
@@ -109,6 +119,17 @@ func serviceProcess(t *testing.T, options runtime.FirecrackerOptions, schema str
 	}
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
+	// The service's metrics (OPS-02), on its loopback listener.
+	waitMaintenance(t, func() bool {
+		r, err := http.Get("http://" + c.MetricsListen + "/metrics")
+		if err != nil {
+			return false
+		}
+		body, _ := io.ReadAll(r.Body)
+		r.Body.Close()
+		return r.StatusCode == 200 && strings.Contains(string(body), "agentcapsule_worker_vm_capacity "+strconv.Itoa(options.MaxActive)+"\n") &&
+			strings.Contains(string(body), "# TYPE agentcapsule_worker_jobs_total counter")
+	})
 	var once sync.Once
 	stop := func() {
 		once.Do(func() {

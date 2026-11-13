@@ -56,6 +56,9 @@ type ServiceConfig struct {
 	Registry         *ServiceRegistry     `json:"registry,omitempty"`
 	Directory        *ServiceDirectory    `json:"directory,omitempty"`
 	SLIM             *ServiceSLIM         `json:"slim,omitempty"`
+	// MetricsListen serves Prometheus metrics at /metrics on a loopback
+	// address (OPS-02); none when empty.
+	MetricsListen string `json:"metrics_listen,omitempty"`
 }
 
 // OpenVolumeKeys never initializes an authority. Its public identity must have
