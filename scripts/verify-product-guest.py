@@ -74,8 +74,11 @@ def main():
             if not stat.S_ISREG(info.st_mode) or info.st_mode & 0o077 or info.st_size > 4096:
                 p.error("--pi-api-key-file must be a regular file of at most 4 KiB that only its owner can read (chmod 600)")
             pi_api_key = f.read().strip()
-        if not pi_api_key or any(c.isspace() for c in pi_api_key):
-            p.error("--pi-api-key-file must hold the key alone, on one line")
+        # The platform refuses a provider secret with a control character; a
+        # terminal may have wrapped a pasted key in ESC[200~ ... ESC[201~.
+        if not pi_api_key or any(c.isspace() or ord(c) < 0x20 or ord(c) == 0x7f for c in pi_api_key):
+            p.error("--pi-api-key-file must hold the key alone, on one line, without spaces or control characters "
+                    "(a terminal paste may add ESC[200~ and ESC[201~ around it)")
     if bool(a.pg_bin) != bool(a.pg_user):
         p.error("--pg-bin and --pg-user must be supplied together")
     if a.pg_user and pwd.getpwnam(a.pg_user).pw_uid == 0:
