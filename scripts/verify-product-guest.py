@@ -76,9 +76,11 @@ def main():
             pi_api_key = f.read().strip()
         # The platform refuses a provider secret with a control character; a
         # terminal may have wrapped a pasted key in ESC[200~ ... ESC[201~.
-        if not pi_api_key or any(c.isspace() or ord(c) < 0x20 or ord(c) == 0x7f for c in pi_api_key):
-            p.error("--pi-api-key-file must hold the key alone, on one line, without spaces or control characters "
-                    "(a terminal paste may add ESC[200~ and ESC[201~ around it)")
+        # The platform's rules for a provider secret: 8 to 4096 bytes, no space
+        # or control character. A terminal paste may add ESC[200~ and ESC[201~.
+        if not 8 <= len(pi_api_key.encode()) <= 4096 or any(c.isspace() or ord(c) < 0x20 or ord(c) == 0x7f for c in pi_api_key):
+            p.error(f"--pi-api-key-file must hold the key alone, on one line: 8 to 4096 bytes without spaces or control characters "
+                    f"(a terminal paste may add ESC[200~ and ESC[201~ around it); it holds {len(pi_api_key.encode())} bytes")
     if bool(a.pg_bin) != bool(a.pg_user):
         p.error("--pg-bin and --pg-user must be supplied together")
     if a.pg_user and pwd.getpwnam(a.pg_user).pw_uid == 0:

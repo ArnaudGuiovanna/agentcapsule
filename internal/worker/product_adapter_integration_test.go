@@ -159,17 +159,12 @@ func TestProductWorkerTenantRunsPiOnARealModel(t *testing.T) {
 	if err = l.worker.EnableLLM(svc); err != nil {
 		t.Fatal(err)
 	}
-	var p controlplane.LLMProvider
-	l.request(l.owner(), "POST", "/v1/llm/providers", "provider", controlplane.CreateLLMProviderInput{Name: "pi-model-server", Kind: "openai_compatible",
-		BaseURL: url, Secret: secret}, 201, &p)
-	// Pi asks for "pi-model" (its models.json); the organization decides what it is.
-	l.request(l.owner(), "POST", "/v1/llm/aliases", "alias", controlplane.CreateLLMAliasInput{Alias: "pi-model", ProviderID: p.ID, UpstreamModel: model}, 201, nil)
-
 	// A local model server unloads an idle model and may take minutes to load
 	// it again: load it first, so that Pi's answers are timed, not the loading.
-	// It also checks the key and the account before any VM starts. No output
-	// cap: OpenAI's reasoning models (gpt-5 and later) refuse max_tokens, and
-	// the answer to "hi" is short anyway.
+	// It also checks the key and the account before anything else, with the
+	// provider's own answer (which masks the key). No output cap: OpenAI's
+	// reasoning models (gpt-5 and later) refuse max_tokens, and the answer to
+	// "hi" is short anyway.
 	warm := &http.Client{Timeout: 10 * time.Minute}
 	body, _ := json.Marshal(map[string]any{"model": model, "messages": []map[string]string{{"role": "user", "content": "hi"}}})
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, strings.TrimRight(url, "/")+"/chat/completions", strings.NewReader(string(body)))
@@ -192,6 +187,12 @@ func TestProductWorkerTenantRunsPiOnARealModel(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("the model server refused %s: HTTP %d: %s", model, resp.StatusCode, strings.TrimSpace(string(answer)))
 	}
+
+	var p controlplane.LLMProvider
+	l.request(l.owner(), "POST", "/v1/llm/providers", "provider", controlplane.CreateLLMProviderInput{Name: "pi-model-server", Kind: "openai_compatible",
+		BaseURL: url, Secret: secret}, 201, &p)
+	// Pi asks for "pi-model" (its models.json); the organization decides what it is.
+	l.request(l.owner(), "POST", "/v1/llm/aliases", "alias", controlplane.CreateLLMAliasInput{Alias: "pi-model", ProviderID: p.ID, UpstreamModel: model}, 201, nil)
 
 	ref := l.importPackage(pkg, "acme/pi-agent", "1.0.0")
 	agent := l.createWith("pi", "pi-agent", "1.0.0", 1024).AgentID
