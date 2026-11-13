@@ -134,14 +134,22 @@ func TestProductWorkerTenantRunsAnAdaptedAgent(t *testing.T) {
 
 // Pi, the coding agent, unmodified (scripts/build-pi-harness.py packs an
 // installed release with the Node.js it runs on), runs in a jailed microVM and
-// reaches a real model: the organization's provider is the host's Ollama.
-// Pi reads an attached file with its own read tool. It then answers from its
-// session alone, in the next invocation and again after sleep and wake: the
+// reaches a real model: the organization's provider is the host's model server
+// (Ollama) or a hosted OpenAI-compatible provider, whose key the organization
+// holds. Pi reads an attached file with its own read tool. It then answers from
+// its session alone, in the next invocation and again after sleep and wake: the
 // session is on the agent's encrypted volume.
-func TestProductWorkerTenantRunsPiOnOllama(t *testing.T) {
-	pkg, url, model := os.Getenv("AGENTCAPSULE_KVM_PI_HARNESS"), os.Getenv("AGENTCAPSULE_KVM_OLLAMA_URL"), os.Getenv("AGENTCAPSULE_KVM_OLLAMA_MODEL")
+func TestProductWorkerTenantRunsPiOnARealModel(t *testing.T) {
+	pkg, url, model := os.Getenv("AGENTCAPSULE_KVM_PI_HARNESS"), os.Getenv("AGENTCAPSULE_KVM_PI_MODEL_URL"), os.Getenv("AGENTCAPSULE_KVM_PI_MODEL")
 	if pkg == "" || url == "" || model == "" {
-		t.Fatal("AGENTCAPSULE_KVM_PI_HARNESS, AGENTCAPSULE_KVM_OLLAMA_URL and AGENTCAPSULE_KVM_OLLAMA_MODEL are required (verify-product-guest.py --pi-harness)")
+		t.Fatal("AGENTCAPSULE_KVM_PI_HARNESS, AGENTCAPSULE_KVM_PI_MODEL_URL and AGENTCAPSULE_KVM_PI_MODEL are required (verify-product-guest.py --pi-harness)")
+	}
+	// A local Ollama needs no key; a hosted provider does. The key is sealed in
+	// the organization's provider and sent with the warm-up call, never logged.
+	key := os.Getenv("AGENTCAPSULE_KVM_PI_API_KEY")
+	secret := key
+	if secret == "" {
+		secret = "a-local-server-needs-no-key"
 	}
 	l := newRegistryLab(t)
 	svc, err := controlplane.NewLLMService(l.accounts, llmgateway.New(llmgateway.Config{Timeout: 3 * time.Minute, MaxAttempts: 1}))
@@ -152,25 +160,35 @@ func TestProductWorkerTenantRunsPiOnOllama(t *testing.T) {
 		t.Fatal(err)
 	}
 	var p controlplane.LLMProvider
-	l.request(l.owner(), "POST", "/v1/llm/providers", "provider", controlplane.CreateLLMProviderInput{Name: "host-ollama", Kind: "openai_compatible",
-		BaseURL: url, Secret: "ollama-ignores-keys"}, 201, &p)
+	l.request(l.owner(), "POST", "/v1/llm/providers", "provider", controlplane.CreateLLMProviderInput{Name: "pi-model-server", Kind: "openai_compatible",
+		BaseURL: url, Secret: secret}, 201, &p)
 	// Pi asks for "pi-model" (its models.json); the organization decides what it is.
 	l.request(l.owner(), "POST", "/v1/llm/aliases", "alias", controlplane.CreateLLMAliasInput{Alias: "pi-model", ProviderID: p.ID, UpstreamModel: model}, 201, nil)
 
-	// A model server unloads an idle model and may take minutes to load it
-	// again: load it first, so that Pi's answers are timed, not the loading.
+	// A local model server unloads an idle model and may take minutes to load
+	// it again: load it first, so that Pi's answers are timed, not the loading.
+	// It also checks the key and the account before any VM starts.
 	warm := &http.Client{Timeout: 10 * time.Minute}
 	body, _ := json.Marshal(map[string]any{"model": model, "max_tokens": 1, "messages": []map[string]string{{"role": "user", "content": "hi"}}})
-	resp, err := warm.Post(strings.TrimRight(url, "/")+"/chat/completions", "application/json", strings.NewReader(string(body)))
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, strings.TrimRight(url, "/")+"/chat/completions", strings.NewReader(string(body)))
 	if err != nil {
-		t.Fatal("the host's model server did not load the model", err)
+		t.Fatal(err)
 	}
-	// A refusal (an account without credits answers 402) would otherwise only
-	// show later as a failed invocation, without the server's reason.
+	req.Header.Set("Content-Type", "application/json")
+	if key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
+	resp, err := warm.Do(req)
+	if err != nil {
+		t.Fatal("the model server did not load the model", err)
+	}
+	// A refusal (a wrong key answers 401, an account without credits 402 or
+	// 429) would otherwise only show later as a failed invocation, without the
+	// server's reason.
 	answer, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("the host's model server refused %s: HTTP %d: %s", model, resp.StatusCode, strings.TrimSpace(string(answer)))
+		t.Fatalf("the model server refused %s: HTTP %d: %s", model, resp.StatusCode, strings.TrimSpace(string(answer)))
 	}
 
 	ref := l.importPackage(pkg, "acme/pi-agent", "1.0.0")
