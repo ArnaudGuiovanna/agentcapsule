@@ -83,12 +83,19 @@ type capabilitiesResponse struct {
 	Code     string           `json:"code,omitempty"`
 }
 
+// controlFeatures are the features that every boot of this identity must
+// offer (RequireControlContract).
 func controlFeatures(id Identity) []ControlFeature {
 	features := []ControlFeature{ControlHealth, ControlFences}
 	if !id.FenceOnly {
 		features = append(features, ControlEvents, ControlInvokeText)
 	}
 	return features
+}
+
+// offeredFeatures adds the optional ones that this server implements.
+func offeredFeatures(id Identity) []ControlFeature {
+	return append(controlFeatures(id), ControlOutcomes)
 }
 
 func validProtocolOffer(version string) bool {
@@ -149,14 +156,14 @@ func (s *Server) serveCapabilities(w http.ResponseWriter, r *http.Request) {
 		write(http.StatusNotAcceptable, "unsupported_protocol")
 		return
 	}
-	out.Features = controlFeatures(s.credentials.Identity)
+	out.Features = offeredFeatures(s.credentials.Identity)
 	out.Limits = &ControlLimits{MessageBytes: MaxMessageBytes, ContentBytes: MaxContentBytes}
 	w.Header().Set("X-Capsule-Protocol", Version)
 	write(http.StatusOK, "")
 }
 
 func validCapabilities(out capabilitiesResponse) bool {
-	if out.Limits == nil || out.Limits.MessageBytes < 1 || out.Limits.MessageBytes > MaxMessageBytes || out.Limits.ContentBytes < 1 || out.Limits.ContentBytes > MaxContentBytes || out.Limits.ContentBytes > out.Limits.MessageBytes || len(out.Features) < 2 || len(out.Features) > 4 {
+	if out.Limits == nil || out.Limits.MessageBytes < 1 || out.Limits.MessageBytes > MaxMessageBytes || out.Limits.ContentBytes < 1 || out.Limits.ContentBytes > MaxContentBytes || out.Limits.ContentBytes > out.Limits.MessageBytes || len(out.Features) < 2 || len(out.Features) > 5 {
 		return false
 	}
 	seen := make(map[ControlFeature]bool, len(out.Features))
@@ -166,7 +173,7 @@ func validCapabilities(out capabilitiesResponse) bool {
 		}
 		seen[feature] = true
 		switch feature {
-		case ControlHealth, ControlFences:
+		case ControlHealth, ControlFences, ControlOutcomes:
 		case ControlEvents, ControlInvokeText:
 			if out.Identity.FenceOnly {
 				return false

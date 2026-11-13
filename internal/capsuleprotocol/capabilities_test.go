@@ -25,7 +25,7 @@ func TestControlNegotiationUsesAuthenticatedBootAndPreservesEffects(t *testing.T
 	if err != nil || features.Protocol != Version || features.Identity != h.Identity || features.Limits != (ControlLimits{MaxMessageBytes, MaxContentBytes}) {
 		t.Fatal("negotiated contract", features, err)
 	}
-	if !reflect.DeepEqual(features.Features, []ControlFeature{ControlHealth, ControlFences, ControlEvents, ControlInvokeText}) {
+	if !reflect.DeepEqual(features.Features, []ControlFeature{ControlHealth, ControlFences, ControlEvents, ControlInvokeText, ControlOutcomes}) {
 		t.Fatal("unexpected control features", features.Features)
 	}
 	if features.Supports("llm.invoke") || features.Supports("agent:invoke") {
@@ -189,7 +189,7 @@ func TestCapabilitiesRequireAuthenticationAndRespectFenceOnly(t *testing.T) {
 	}
 	c, dial := serverFixture(t, h, g, nil)
 	out, err := c.Negotiate(t.Context(), []string{Version})
-	if err != nil || !reflect.DeepEqual(out.Features, []ControlFeature{ControlHealth, ControlFences}) {
+	if err != nil || !reflect.DeepEqual(out.Features, []ControlFeature{ControlHealth, ControlFences, ControlOutcomes}) {
 		t.Fatal("restricted boot advertised application handlers", out, err)
 	}
 	if _, err = c.Send(t.Context(), event("restricted")); !errors.Is(err, ErrFenceOnly) {

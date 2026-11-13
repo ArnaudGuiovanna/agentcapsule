@@ -56,6 +56,10 @@ harness.run()
   a participant is revoked; an event involving a fenced subject is refused before
   your handler runs. Background work goes through
   `harness.store.local(subjects, fn)`, which refuses fenced subjects the same way.
+- **Restore.** A restore asks the harness which outcomes its store holds
+  (`POST /v1/outcomes`, read-only). The SDK answers from `capsule_inbox`, with
+  the same fingerprints as Go: keep every delivery in `capsule_inbox`, as `apply`
+  does. See [docs/recovery.md](../../docs/recovery.md#restoring-an-agent-from-an-archive).
 - **Stop.** The supervisor sends `SIGTERM` before the agent sleeps; `run()` stops
   accepting requests, lets those already admitted finish, and returns. Exit
   promptly: the volume is closed after the harness exits.
@@ -89,5 +93,5 @@ The entrypoint in `harness.yaml` runs the interpreter in isolated mode
 `internal/capsuleprotocol/python_harness_test.go` runs `examples/python-echo` as a
 real process and drives it with the Go client that `capsule-init` uses:
 negotiation, health, replays and conflicts, fences, a deferred model answer through
-the platform channel, a clean exit on `SIGTERM`, state across restarts and refusal of
-other peers. The product KVM campaign then runs the packed image in a microVM.
+the platform channel, a clean exit on `SIGTERM`, state across restarts, the outcomes
+a restore inspects and refusal of other peers. The product KVM campaign then runs the packed image in a microVM.

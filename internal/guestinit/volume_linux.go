@@ -186,18 +186,41 @@ type volumeIdentity struct {
 	UUID        string `json:"uuid"`
 }
 
-func checkVolumeIdentity(r io.Reader, want volumeIdentity) error {
+func readVolumeIdentity(r io.Reader) (volumeIdentity, error) {
 	var have volumeIdentity
 	d := json.NewDecoder(r)
 	d.DisallowUnknownFields()
-	if want.Incarnation == 0 || d.Decode(&have) != nil || have != want {
-		return ErrGuest
+	if d.Decode(&have) != nil {
+		return have, ErrGuest
 	}
 	var extra any
 	if d.Decode(&extra) != io.EOF {
+		return have, ErrGuest
+	}
+	return have, nil
+}
+
+func checkVolumeIdentity(r io.Reader, want volumeIdentity) error {
+	have, err := readVolumeIdentity(r)
+	if want.Incarnation == 0 || err != nil || have != want {
 		return ErrGuest
 	}
 	return nil
+}
+
+// restoredVolumeIdentity decides the restricted boot of a restored image. The
+// image keeps its volume and UUID, and its marker names an incarnation up to
+// want's. It returns true when the marker must move to want's incarnation,
+// false when an interrupted boot of this restore already moved it. An image
+// of another volume, or of a later incarnation, is refused: a restore never
+// moves a marker back.
+func restoredVolumeIdentity(r io.Reader, want volumeIdentity) (bool, error) {
+	have, err := readVolumeIdentity(r)
+	if want.Incarnation == 0 || err != nil || have.Incarnation == 0 || have.Incarnation > want.Incarnation ||
+		have.VolumeID != want.VolumeID || have.UUID != want.UUID {
+		return false, ErrGuest
+	}
+	return have.Incarnation < want.Incarnation, nil
 }
 
 func volumeMarker(v capsuleprotocol.VolumeBoot) error {
@@ -211,16 +234,30 @@ func volumeMarker(v capsuleprotocol.VolumeBoot) error {
 		if err != nil || !st.Mode().IsRegular() || st.Mode().Perm() != 0400 || st.Size() > 512 || st.Sys().(*syscall.Stat_t).Uid != 0 {
 			return ErrGuest
 		}
-		return checkVolumeIdentity(f, want)
+		if !v.Restore {
+			return checkVolumeIdentity(f, want)
+		}
+		move, err := restoredVolumeIdentity(f, want)
+		if err != nil || !move {
+			return err
+		}
+		return writeVolumeMarker(path, want, true)
 	}
 	if !errors.Is(err, os.ErrNotExist) || !v.Initialize {
 		return ErrGuest
 	}
+	return writeVolumeMarker(path, want, false)
+}
+
+// writeVolumeMarker publishes the marker in one step: a new marker is linked,
+// so an existing one is never overwritten; a restored one is renamed over the
+// image's older marker.
+func writeVolumeMarker(path string, want volumeIdentity, replace bool) error {
 	b, err := json.Marshal(want)
 	if err != nil {
 		return ErrGuest
 	}
-	f, err = os.CreateTemp(mountRoot, ".volume-")
+	f, err := os.CreateTemp(mountRoot, ".volume-")
 	if err != nil {
 		return ErrGuest
 	}
@@ -238,7 +275,12 @@ func volumeMarker(v capsuleprotocol.VolumeBoot) error {
 	if err = f.Close(); err != nil {
 		return ErrGuest
 	}
-	if err = os.Link(f.Name(), path); err != nil {
+	if replace {
+		err = os.Rename(f.Name(), path)
+	} else {
+		err = os.Link(f.Name(), path)
+	}
+	if err != nil {
 		return ErrGuest
 	}
 	return syncDirectory(mountRoot)

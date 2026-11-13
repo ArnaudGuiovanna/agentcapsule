@@ -304,8 +304,34 @@ func TestPythonHarnessSpeaksTheGuestProtocol(t *testing.T) {
 	if r, err = h.control.Invoke(call, first); err != nil || !r.Replayed || answer(t, r) != "python echo #1: hello" {
 		t.Fatal("a replay after restart changed its answer", err)
 	}
-	if r, err = h.control.Invoke(call, invocationEvent(t, id.AgentID, "evt-4", "op-4", "after restart")); err != nil || answer(t, r) != "python echo #3: after restart" {
+	replayed := r
+	fourth := invocationEvent(t, id.AgentID, "evt-4", "op-4", "after restart")
+	if r, err = h.control.Invoke(call, fourth); err != nil || answer(t, r) != "python echo #3: after restart" {
 		t.Fatal("state did not survive the restart", err)
+	}
+	// A restore inspects the outcomes the store holds, with Go's fingerprints.
+	contract, err := h.control.Negotiate(call, []string{Version})
+	if err != nil || !contract.Supports(ControlOutcomes) {
+		t.Fatal("the Python harness does not offer outcome inspection", contract, err)
+	}
+	want := map[string][32]byte{}
+	var ids []string
+	for _, applied := range []struct {
+		event  harnessstore.Event
+		result []byte
+	}{{first, replayed.Result}, {fourth, r.Result}, {peer, nil}} {
+		outcome, digest, err := harnessstore.OutcomeFingerprint(id.AgentID, applied.event, applied.result)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if applied.result != nil {
+			want[outcome] = digest
+		}
+		ids = append(ids, outcome)
+	}
+	held, err := h.control.Outcomes(call, ids)
+	if err != nil || !reflect.DeepEqual(held, want) {
+		t.Fatal("outcomes held by the Python harness", held, err)
 	}
 	h.stop(t)
 

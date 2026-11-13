@@ -55,6 +55,7 @@ MAX_CONTENT_BYTES = 512 << 10
 MAX_BOOT_BYTES = 4096
 MAX_INVOCATION_ATTACHMENTS = 8
 MAX_ATTACHMENT_BYTES = 8 << 20
+MAX_OUTCOME_QUERY = 1024
 LLM_CALL_TIMEOUT = 130.0
 CALL_TIMEOUT = 20.0
 
@@ -63,6 +64,7 @@ WORKING = {"status": "working"}
 _ATTACHMENT_ID = re.compile(r"^att_[0-9a-f]{32}$")
 _MEDIA_TYPE = re.compile(r"^[a-z0-9][a-z0-9!#$&^_.+-]{0,62}/[a-z0-9][a-z0-9!#$&^_.+-]{0,62}$")
 _PROTOCOL_OFFER = re.compile(r"^capsule\.v[1-9][0-9]{0,5}$")
+_OUTCOME_ID = re.compile(r"^outcome-v1/[0-9a-f]{64}$")
 
 
 class ProtocolError(Exception):
@@ -180,6 +182,17 @@ def _go_json(v: Any) -> bytes:
     return s.encode("utf-8")
 
 
+def stored_outcome_fingerprint(store: str, event_id: str, envelope: bytes, result: bytes) -> "tuple[str, bytes]":
+    """The restore authority's ID of an outcome, and the digest of its stored
+    result: harnessstore.StoredOutcomeFingerprint in Go, byte for byte."""
+    if not store or not event_id:
+        raise ProtocolError("outcome store and event ID are required")
+    identity = _go_json({"Domain": "agentcapsule-outcome-id-v1", "Store": store, "Event": event_id})
+    data = _go_json({"Domain": "agentcapsule-outcome-data-v1", "Store": store, "Event": event_id,
+                     "Envelope": list(envelope), "Result": base64.b64encode(result).decode("ascii")})
+    return "outcome-v1/" + hashlib.sha256(identity).hexdigest(), hashlib.sha256(data).digest()
+
+
 def envelope_hash(event: Event) -> bytes:
     if not event.id or not event.subjects:
         raise ProtocolError("event ID and fence subjects are required")
@@ -282,6 +295,19 @@ class Store:
         finally:
             if not committed and conn.in_transaction:
                 conn.execute("ROLLBACK")
+
+    def outcomes(self, store: str, ids: List[str]) -> Dict[str, bytes]:
+        """Which of ids this database holds, each with the digest of its stored
+        result. A restore inspects a restored image with it. Writes nothing."""
+        wanted, held = set(ids), {}
+        if not wanted:
+            return held
+        # One statement reads one consistent snapshot of the inbox.
+        for event_id, envelope, result in self._conn().execute("SELECT event_id, envelope_hash, result FROM capsule_inbox"):
+            outcome, digest = stored_outcome_fingerprint(store, event_id, bytes(envelope), bytes(result))
+            if outcome in wanted:
+                held[outcome] = digest
+        return held
 
     def fence(self, subject: str) -> None:
         """Durably and irreversibly revokes subject in this store."""
@@ -632,6 +658,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 self._capabilities()
             elif self.path in ("/v1/events", "/v1/invoke", "/v1/fences"):
                 self._mutation()
+            elif self.path == "/v1/outcomes":
+                self._outcomes()
             else:
                 self._code(404, "unknown_operation")
         finally:
@@ -655,6 +683,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         features = ["health", "fences"]
         if not self.server.harness.boot.identity.fence_only:
             features += ["events", "invoke.message.user.text"]
+        features.append("outcomes")
         self._reply(200, {"features": features, "limits": {"message_bytes": MAX_MESSAGE_BYTES, "content_bytes": MAX_CONTENT_BYTES}},
                     {"X-Capsule-Protocol": PROTOCOL})
 
@@ -663,6 +692,38 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if self.headers.get("Transfer-Encoding") or length is None or not length.isdigit() or int(length) > MAX_MESSAGE_BYTES:
             return None
         return self.rfile.read(int(length))
+
+    def _outcomes(self) -> None:
+        # Read-only: a restricted boot answers it, to let a restore inspect
+        # the image before it serves again.
+        h = self.server.harness
+        identity = h.boot.identity
+        raw = self._body()
+        try:
+            if raw is None:
+                raise ProtocolError("body")
+            v = _strict_json(raw)
+            _keys(v, {"protocol", "identity", "outcomes"}, set())
+            ids = v["outcomes"]
+            if not isinstance(ids, list) or not 1 <= len(ids) <= MAX_OUTCOME_QUERY or len(set(ids)) != len(ids) \
+                    or not all(isinstance(i, str) and _OUTCOME_ID.match(i) for i in ids):
+                raise ProtocolError("outcomes")
+        except ProtocolError:
+            self._code(400, "invalid_envelope")
+            return
+        try:
+            same = v["protocol"] == PROTOCOL and Identity.from_json(v["identity"]) == identity
+        except ProtocolError:
+            same = False
+        if not same:
+            self._code(403, "wrong_identity")
+            return
+        try:
+            held = h.store.outcomes(identity.agent_id, ids)
+        except Exception:
+            self._code(503, "unavailable")
+            return
+        self._reply(200, {"held": [{"id": i, "digest": held[i].hex()} for i in sorted(held)]})
 
     def _mutation(self) -> None:
         h = self.server.harness

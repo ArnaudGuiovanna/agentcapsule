@@ -41,7 +41,7 @@ methods other than GET are refused. The current server selects only
     "generation": 1,
     "vm_id": "0123456789abcdef"
   },
-  "features": ["health", "fences", "events", "invoke.message.user.text"],
+  "features": ["health", "fences", "events", "invoke.message.user.text", "outcomes"],
   "limits": {"message_bytes": 1048576, "content_bytes": 524288}
 }
 ```
@@ -59,9 +59,10 @@ or incompatible selection.
 | `fences` | `POST /v1/fences` | Transactional tombstone of a subject; no proof of key destruction or VMM stop |
 | `events` | `POST /v1/events` | Existing durable envelope `Event{ID,Subjects,Body}`, SQLite guards and deduplication unchanged |
 | `invoke.message.user.text` | `POST /v1/invoke` | Existing `message.user` instruction, text content and mandate; not yet an arbitrary JSON invocation |
+| `outcomes` | `POST /v1/outcomes` | Read-only: which of up to 1,024 outcome IDs the store holds, each with the digest of its stored result. Optional |
 
-A `fence_only` boot advertises only `health` and `fences`, and keeps refusing
-events and invocations. The list contains neither quiesce nor volume
+A `fence_only` boot advertises only `health`, `fences` and `outcomes`, and keeps
+refusing events and invocations. The list contains neither quiesce nor volume
 preparation: these operations belong to the `VolumeServer` supervisor, not to
 the harness server. It does not advertise A2A, LLM or outgoing capabilities
 that are still to be integrated.
@@ -70,8 +71,29 @@ that are still to be integrated.
 
 The existing health, events, invoke, fences and quiesce requests/responses are
 unchanged. Old strict decoders receive no new field on these routes. No change
-to the identity, the boot version, the signed body, the volume marker or the
-event format is introduced.
+to the identity, the boot version, the signed body or the event format is
+introduced.
+
+### Outcome inspection and restored images
+
+A restore inspects a restored image on its restricted boot
+([recovery.md](../recovery.md#restoring-an-agent-from-an-archive)). The request
+body is `{"protocol", "identity", "outcomes": [IDs]}`: one to 1,024 distinct
+`outcome-v1/<64 hex>` IDs. The answer lists, under `held`, the ones the
+harness's store holds, each with `digest`, the SHA-256 of its stored result in
+lowercase hexadecimal. The guest computes both from its `capsule_inbox` rows
+with `harnessstore.StoredOutcomeFingerprint`, for the agent of its boot
+identity. It writes nothing. The Go harnesses (`NewServer`, `NewLocalServer`)
+and the Python SDK implement it. `RequireControlContract` does not require it:
+a harness without it still serves, but cannot be restored.
+
+The volume request carries `X-Capsule-Restore: true` only on the restricted boot
+of a restored image, never with `X-Capsule-Initialize: true`. The guest then
+accepts a marker of an older incarnation of the same volume and UUID, and
+replaces it with one of the boot's incarnation, in one rename. A marker of a
+later incarnation, or of another volume, is refused. Without the header, the
+marker must match exactly, as before. A host that predates restores sends no
+header.
 
 | Case | Result of `Negotiate` |
 |---|---|
@@ -85,7 +107,7 @@ event format is introduced.
 trigger this negotiation automatically. The product path uses
 `RequireControlContract(ctx)`: `health` and `fences` are mandatory in
 restricted mode; an ordinary boot also requires `events` and
-`invoke.message.user.text`. Both limits must equal those of the current client
+`invoke.message.user.text`. `outcomes` is optional. Both limits must equal those of the current client
 (1,048,576 and 524,288 bytes), which does not yet adapt its sends to a reduced
 limit. `Negotiate` alone remains a discovery and accepts narrower valid
 profiles.

@@ -29,6 +29,7 @@ type request struct {
 	Identity Identity            `json:"identity"`
 	Event    *harnessstore.Event `json:"event,omitempty"`
 	Subject  string              `json:"subject,omitempty"`
+	Outcomes []string            `json:"outcomes,omitempty"`
 }
 type response struct {
 	Protocol         string                `json:"protocol"`
@@ -36,6 +37,7 @@ type response struct {
 	Receipt          *harnessstore.Receipt `json:"receipt,omitempty"`
 	Code             string                `json:"code,omitempty"`
 	PreviousShutdown ShutdownState         `json:"previous_shutdown,omitempty"`
+	Held             []HeldOutcome         `json:"held,omitempty"`
 }
 
 func validSubject(s string) bool {
@@ -184,7 +186,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		write(http.StatusOK, "")
 		return
 	}
-	if r.Method != http.MethodPost || (r.URL.Path != "/v1/events" && r.URL.Path != "/v1/invoke" && r.URL.Path != "/v1/fences") {
+	if r.Method != http.MethodPost || (r.URL.Path != "/v1/events" && r.URL.Path != "/v1/invoke" && r.URL.Path != "/v1/fences" && r.URL.Path != "/v1/outcomes") {
 		write(http.StatusNotFound, "unknown_operation")
 		return
 	}
@@ -200,12 +202,23 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 	var err error
-	if r.URL.Path == "/v1/events" || r.URL.Path == "/v1/invoke" {
+	if r.URL.Path == "/v1/outcomes" {
+		// Read-only, so a restricted boot answers it too: it is how a restore
+		// inspects a restored image before the image serves again.
+		if in.Event != nil || in.Subject != "" || !validOutcomeQuery(in.Outcomes) {
+			write(http.StatusBadRequest, "invalid_envelope")
+			return
+		}
+		var held map[string][32]byte
+		if held, err = s.store.Outcomes(ctx, s.credentials.Identity.AgentID, in.Outcomes); err == nil {
+			reply.Held = heldOutcomes(held)
+		}
+	} else if r.URL.Path == "/v1/events" || r.URL.Path == "/v1/invoke" {
 		if s.credentials.Identity.FenceOnly {
 			write(http.StatusForbidden, "fence_only")
 			return
 		}
-		if in.Event == nil || in.Subject != "" || !validEvent(s.credentials.Identity, *in.Event) {
+		if in.Event == nil || in.Subject != "" || in.Outcomes != nil || !validEvent(s.credentials.Identity, *in.Event) {
 			write(http.StatusBadRequest, "invalid_envelope")
 			return
 		}
@@ -231,7 +244,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			reply.Receipt = &receipt
 		}
 	} else {
-		if in.Event != nil || !validSubject(in.Subject) {
+		if in.Event != nil || in.Outcomes != nil || !validSubject(in.Subject) {
 			write(http.StatusBadRequest, "invalid_envelope")
 			return
 		}

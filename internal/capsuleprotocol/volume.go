@@ -19,12 +19,17 @@ var ErrVolumeBoot = errors.New("volume bootstrap rejected or unavailable")
 // VolumeBoot is trusted host input, not a user-controlled destination. Its UUID
 // identifies the LUKS container attached to this boot. Initialize permits first
 // filesystem creation only; the guest must never luksFormat a published image.
+// Restore marks the restricted boot of an image restored from an archive into
+// a new incarnation: the guest moves the image's marker from its older
+// incarnation of the same volume to this one, never back. Only a restricted
+// boot may carry it, and never with Initialize.
 type VolumeBoot struct {
 	Incarnation      uint64        `json:"incarnation"`
 	VolumeID         string        `json:"volume_id"`
 	UUID             string        `json:"uuid"`
 	Initialize       bool          `json:"initialize"`
 	PreviousShutdown ShutdownState `json:"previous_shutdown"`
+	Restore          bool          `json:"restore,omitempty"`
 }
 
 func (v VolumeBoot) Validate() error {
@@ -35,7 +40,8 @@ func (v VolumeBoot) Validate() error {
 }
 
 func (v VolumeBoot) valid() bool {
-	if v.Incarnation == 0 || v.Incarnation > 1<<63-1 || !v.PreviousShutdown.Valid() || len(v.VolumeID) != 36 || !strings.HasPrefix(v.VolumeID, "vol_") {
+	if v.Incarnation == 0 || v.Incarnation > 1<<63-1 || !v.PreviousShutdown.Valid() || len(v.VolumeID) != 36 || !strings.HasPrefix(v.VolumeID, "vol_") ||
+		(v.Restore && v.Initialize) {
 		return false
 	}
 	h := v.VolumeID[4:]
@@ -187,10 +193,13 @@ func (s *VolumeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	flag := r.Header.Get("X-Capsule-Initialize")
-	v := VolumeBoot{VolumeID: r.Header.Get("X-Capsule-Volume"), UUID: r.Header.Get("X-Capsule-UUID"), Initialize: flag == "true", PreviousShutdown: ShutdownState(r.Header.Get("X-Capsule-Previous-Shutdown"))}
+	// A host that predates restores sends no restore header: an ordinary boot.
+	restore := r.Header.Get("X-Capsule-Restore")
+	v := VolumeBoot{VolumeID: r.Header.Get("X-Capsule-Volume"), UUID: r.Header.Get("X-Capsule-UUID"), Initialize: flag == "true", PreviousShutdown: ShutdownState(r.Header.Get("X-Capsule-Previous-Shutdown")),
+		Restore: restore == "true"}
 	var incarnationErr error
 	v.Incarnation, incarnationErr = strconv.ParseUint(r.Header.Get("X-Capsule-Incarnation"), 10, 63)
-	if incarnationErr != nil || !v.valid() || (flag != "true" && flag != "false") {
+	if incarnationErr != nil || !v.valid() || (flag != "true" && flag != "false") || (restore != "" && restore != "true" && restore != "false") {
 		write(http.StatusBadRequest, VolumeBoot{}, "invalid_volume")
 		return
 	}
@@ -198,7 +207,7 @@ func (s *VolumeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		write(http.StatusForbidden, v, "stale_incarnation")
 		return
 	}
-	if v.Initialize && !s.credentials.Identity.FenceOnly {
+	if (v.Initialize || v.Restore) && !s.credentials.Identity.FenceOnly {
 		write(http.StatusForbidden, v, "fence_only")
 		return
 	}
@@ -261,7 +270,7 @@ func (c *Client) OpenVolume(ctx context.Context, v VolumeBoot, key []byte) error
 	if !v.valid() || len(key) != 32 || v.Incarnation != c.identity.Incarnation {
 		return ErrProtocol
 	}
-	if v.Initialize && !c.identity.FenceOnly {
+	if (v.Initialize || v.Restore) && !c.identity.FenceOnly {
 		return ErrFenceOnly
 	}
 	body := &keyBody{}
@@ -278,6 +287,7 @@ func (c *Client) OpenVolume(ctx context.Context, v VolumeBoot, key []byte) error
 	r.Header.Set("X-Capsule-Incarnation", strconv.FormatUint(v.Incarnation, 10))
 	r.Header.Set("X-Capsule-UUID", v.UUID)
 	r.Header.Set("X-Capsule-Initialize", strconv.FormatBool(v.Initialize))
+	r.Header.Set("X-Capsule-Restore", strconv.FormatBool(v.Restore))
 	r.Header.Set("X-Capsule-Previous-Shutdown", string(v.PreviousShutdown))
 	resp, err := c.http.Do(r)
 	if err != nil {
