@@ -127,8 +127,8 @@ The files are in [deploy/backup](../deploy/backup).
 
 `scripts/verify-backups.py` runs the shipped configuration against an object
 store (SeaweedFS 4.53) and an SFTP server (OpenSSH), both run with Docker and
-pinned by digest. It needs no root and runs in a few minutes, the standby
-included:
+pinned by digest. It needs no root and runs in about seven minutes, the
+standby included:
 
 ```sh
 python3 scripts/verify-backups.py --pg-bin <postgres-bin-dir> --pgbackrest <pgbackrest> \
@@ -140,7 +140,7 @@ It checks:
   each repository.
 - **The loss bound**: a commit, with no manual switch, reaches both
   repositories within `archive_timeout` (30 s in the run, with
-  `checkpoint_timeout` scaled to match; 29.3 to 31.3 s measured over four
+  `checkpoint_timeout` scaled to match; 29.3 to 31.3 s measured over six
   runs on 2026-11-13).
 - **Restoring**: from each repository alone, into a new data directory, every
   committed row is back (201 of 201). The restore from S3 goes through its
@@ -294,7 +294,10 @@ When the primary is lost. The RTO starts at the decision to fail over.
    the agents and the address ([ADR 004](adr/004-recovery-objectives.md)).
    Build a new standby as soon as possible, and give the new primary its
    `repo2` back. The backup timers back up both repositories, so they wait
-   for it; until then, take the nightly backup with `--repo=1`.
+   for it; until then, take the nightly backup with `--repo=1`. Install the
+   freshness timer at once. Until there is a new standby, it reports the
+   standby's repository as unreadable, and that alert stays on: there is no
+   second copy.
 
 ### Qualify the standby
 
@@ -306,8 +309,8 @@ standby host; S3 is its repository 2, with a read-only credential. It checks:
   committed row (201 of 201) and stays in recovery. It does not inherit the
   primary's `archive_command`.
 - **The replay**: a commit made just after a segment switch, the worst case,
-  is on the standby in 33.6 s, for `archive_timeout` = 30 s. With the SFTP
-  server paused, it is there in 88.5 s, and its segment is not in the local
+  is on the standby in 33.5 s, for `archive_timeout` = 30 s. With the SFTP
+  server paused, it is there in 88.4 s, and its segment is not in the local
   directory: it came from S3. The extra minute is the primary's push waiting
   on the silent SFTP server (`io-timeout`).
 - **The disaster**: the primary commits a row a second for 45 seconds, then
@@ -324,7 +327,9 @@ standby host; S3 is its repository 2, with a read-only credential. It checks:
 - **After the promotion**: the new primary archives timeline 2 into a
   repository of its own, with the WAL kept since the promotion (its history
   file included), and takes a full backup there. The old primary's
-  repositories hold timeline 1 only.
+  repositories hold timeline 1 only. With the new configuration, the
+  freshness script reports that backup in S3, and the standby's repository
+  as unreadable.
 - **The SFTP repository's modes**: files 0640 and directories 0750, so the
   `backup` group reads them and no one else does. The run uses a single user,
   so it does not exercise the group itself.

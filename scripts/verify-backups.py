@@ -249,9 +249,9 @@ def main():
         textfile.mkdir()
         never_written = [*(k for k, _ in keys.values()), *credentials, str(work), "127.0.0.1"]
 
-        def freshness(label):
+        def freshness(label, config=conf, config_include=include):
             code = run(label, [sys.executable, "-I", ROOT / "deploy/backup/agentcapsule-backup-metrics.py", f"--pgbackrest={a.pgbackrest}",
-                               f"--config={conf}", f"--config-include-path={include}", f"--textfile-directory={textfile}"], check=False)
+                               f"--config={config}", f"--config-include-path={config_include}", f"--textfile-directory={textfile}"], check=False)
             path = textfile / "agentcapsule-backup.prom"
             text = path.read_text()
             leaked = [i for i, s in enumerate(never_written) if s in text]
@@ -480,7 +480,16 @@ def main():
         new_archive = " ".join(["env", f"LD_LIBRARY_PATH={libs}", *(str(x) for x in on_promoted), "archive-push", "%p"])
         psql(ssock, f"ALTER SYSTEM SET archive_command = '{new_archive}'", "SELECT pg_reload_conf()")
         run("promoted", [*on_promoted, "check"])
+        promoted_full_started = int(time.time())
         run("promoted", [*on_promoted, "--repo=1", "--type=full", "backup"], timeout=600)
+        # Its freshness timer reports that backup in S3, and the standby's
+        # repository unreadable, without backup times, until there is a new
+        # standby: its alert stays on, as there is no second copy.
+        code, on_new = freshness("freshness-promoted", nconf, ninclude)
+        if code or on_new.get('repository_readable{repo="s3"}') != 1 or on_new.get('repository_readable{repo="standby"}') != 0 or \
+                any("standby" in series for series in on_new if series.startswith("last_success")) or \
+                not promoted_full_started <= (finished(on_new, "s3", "full") or 0) <= time.time():
+            raise RuntimeError("freshness on the promoted standby is wrong; see summary.json")
         new, new_listing = segments(on_promoted, 1)
         old = segments(on_standby, 1)[0] | segments(on_standby, 2)[0]
         s["new_repository"] = {"timelines": sorted({t for t, _ in new}), "history_file": "00000002.history" in new_listing,
