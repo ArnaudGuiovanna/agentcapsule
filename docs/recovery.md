@@ -335,8 +335,14 @@ When the primary is lost. The RTO starts at the decision to fail over.
    psql -c "ALTER SYSTEM SET archive_command = 'pgbackrest --stanza=agentcapsule archive-push %p'" \
         -c "SELECT pg_reload_conf()"
    pgbackrest --stanza=agentcapsule check    # the new timeline reaches the new path
+   psql -c CHECKPOINT
    pgbackrest --stanza=agentcapsule --repo=1 --type=full backup
    ```
+   Run the checkpoint before the backup. Until the checkpoint that follows
+   the promotion ends, `pg_control` keeps the old timeline, and pgBackRest
+   refuses the backup: `WAL timeline 2 does not match pg_control timeline 1`.
+   PostgreSQL spreads that checkpoint over up to 90 % of
+   `checkpoint_timeout`: up to about 4.5 minutes in production.
    Leave the old repositories as they are: they hold the history up to the
    disaster.
 4. **Then the rest of the platform**: the configuration, the authorities,

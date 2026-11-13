@@ -569,6 +569,9 @@ def main():
         # After the promotion: a repository of its own. The old primary's
         # repositories get nothing.
         on_promoted, nconf, ninclude = lab.own_repository(standby, ssock)
+        # Until the checkpoint that follows the promotion ends, pg_control
+        # keeps the old timeline and pgBackRest refuses a backup.
+        psql(ssock, "CHECKPOINT")
         promoted_full_started = int(time.time())
         run("promoted", [*on_promoted, "--repo=1", "--type=full", "backup"], timeout=600)
         # Its freshness timer reports that backup in S3, and the standby's
