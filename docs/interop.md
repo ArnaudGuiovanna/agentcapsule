@@ -169,7 +169,25 @@ for 10 to 20 minutes only.
 - The callback check relies on the worker's memory of its running attempts. A
   bridge on another host would need the same check against PostgreSQL;
   multi-host workers are not supported yet.
-- Not yet run on KVM: the KVM journeys deliver straight over vsock.
+- On KVM, the product campaign covers the bridge only with
+  `--slim-bridge-build`, as described below. Its other journeys deliver straight
+  over vsock.
+
+**On KVM.** `scripts/build-slim-bridge.py` builds the bridge off-host, with the
+pinned native library of the archive that `verify-interop.py` caches. It
+records the digests of the binary and of its sources.
+`verify-product-guest.py --slim-bridge-build <dir>` then checks them, starts a
+private SLIM node with fresh lab certificates on a fixed loopback port, and
+runs `TestProductWorkerTenantAgentsTalkOverSLIM`:
+- **The layout.** The bridge runs as its own unprivileged user, in the layout
+  of deploy/systemd, and the worker is wired as its `slim` section does.
+- **Through the node.** Two A2A agents exchange a request and its reply across
+  the node.
+- **Without the bridge.** A request waits without spending an attempt, and is
+  delivered once the bridge is back.
+- **Waking.** A request wakes the sleeping recipient through SLIM.
+
+The campaign removes the node afterwards.
 
 ## Running on a host
 
