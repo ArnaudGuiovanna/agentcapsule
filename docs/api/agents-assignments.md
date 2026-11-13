@@ -114,8 +114,9 @@ an `Invocation` resource that is then tracked:
 | `GET /v1/invocations/{id}/result` | `agent:content:read` | requester AND current `read_content` |
 
 The states describe what the platform actually knows: `accepted` (persisted, not
-processed), `working`, `completed` (the agent answered), `failed`, `canceled`. A
-delivery acknowledgment is never presented as a business success. The metadata
+processed), `working`, `completed` (the agent answered), `failed`, `canceled`,
+and `lost` (a restore lost the outcome, see below). A delivery acknowledgment is
+never presented as a business success. The metadata
 contains neither the instruction nor the result; `result_available` only
 indicates that a result exists. An invocation's identifier is that of the
 underlying operation.
@@ -152,6 +153,33 @@ answers 409.
 Limits: content remains text (the guest protocol has no JSON type); there is no
 `/events` stream yet, no expiry signaled in the state, and no wake of a stopped
 recipient driven by this resource (EVT-02/CAP-02).
+
+### Lost in a restore (REC-02)
+
+An agent restored from an archive may lack outcomes it produced after the
+archive. Each one is declared lost
+([recovery.md](../recovery.md#the-lost-invocations),
+[ADR 003](../adr/003-restore-rpo.md)). The invocation then runs again under
+the same identifier:
+- its state is `lost` until the rerun ends, and `lost_at` gives the time of
+  the loss. `?state=lost` lists these invocations. A lost invocation has no
+  `completed_at`;
+- the result that the database still holds stays readable through
+  `/result`. The rerun's result replaces it;
+- the rerun then ends like any invocation, `completed` for instance, and
+  keeps `lost_at`. A `completed` invocation with `lost_at` ran again; its
+  `completed_at` is the rerun's;
+- it does not run again when the requester can no longer invoke the agent,
+  the agent is being deleted, or its content is no longer stored. It then
+  stays `lost`, and `error_code` says why: `requester_revoked`,
+  `agent_unavailable`, `input_purged` or `attachments_purged`;
+- the requester can cancel it until its rerun reaches the agent:
+  `POST /v1/invocations/{id}/cancel`. The rerun then never runs, and the
+  state becomes `canceled`, with `lost_at`.
+
+The rerun keeps the invocation's mandate and its remaining budget: with its
+first run, it makes no more agent requests than the requester allowed. These
+rules are defaults that the product owner has not confirmed yet.
 
 ## Desired and observed state, lifecycle audit (CAP-02)
 

@@ -470,8 +470,11 @@ after.
 On success, the worker prints a receipt and exits:
 
 ```json
-{"restore_id":"rst_…","agent_id":"…","archive_id":"arc_…","incarnation":2,"losses":2,"unmatched_losses":0}
+{"restore_id":"rst_…","agent_id":"…","archive_id":"arc_…","incarnation":2,"losses":2,"unmatched_losses":0,"reruns_queued":2,"reruns_skipped":0}
 ```
+
+`reruns_queued` and `reruns_skipped` count the lost invocations that run
+again and those that do not ([The losses](#the-losses)).
 
 On failure, it prints `restore_failed_<reason>` on standard error. The reasons
 are `archive`, `newer_archive`, `busy`, `authority`, `unsupported_harness`,
@@ -499,8 +502,10 @@ The steps follow the restore model:
    Then it declares lost, for the new incarnation, each recorded outcome still
    missing, and only then publishes the activation in PostgreSQL.
 7. **Back in service.** The restricted boot is removed. One transaction copies
-   the declared losses into PostgreSQL and makes the volume `READY` again. The
-   agent wakes on its next delivery, at the new incarnation.
+   the declared losses into PostgreSQL, puts each lost invocation back in the
+   queue or skips it, and makes the volume `READY` again. The agent wakes on
+   its next delivery, at the new incarnation: the first one is usually a
+   rerun.
 
 ### Crashes
 
@@ -510,7 +515,8 @@ that committed.
 - A crash during the copy redoes the copy from the archive.
 - A crash during the restricted boot boots again.
 - Once the activation is published, the worker only removes the boot, copies
-  the losses and puts the volume back in service.
+  the losses, decides the reruns and puts the volume back in service. These
+  commit together or not at all.
 
 To use another archive, run the command with a **new** restore ID. It replaces
 an unfinished restore that has not activated yet, one incarnation further. An
@@ -528,9 +534,36 @@ computing the outcome ID of each of the agent's mailboxes. A loss without a
 mailbox is work that the restored database lost too, within its own window.
 The rows are never changed or deleted.
 
-The invocations of the lost outcomes keep their state for now: they are not run
-again, and the API does not show them as lost. That is the next step
-([ADR 003](adr/003-restore-rpo.md#what-remains)).
+### The lost invocations
+
+In the same transaction, each lost invocation runs again or is skipped
+(`invocation_reruns`, migration 0030). The rules are the defaults of
+[ADR 003](adr/003-restore-rpo.md#done-running-the-lost-invocations-again),
+which the product owner has not confirmed yet.
+- **A rerun is queued** for an invocation whose delivery PostgreSQL recorded,
+  unless its requester canceled it. It goes back to the agent's queue under
+  the same mailbox ID, at its place: the lost work runs first. It gets fresh
+  attempts and its first delivery window again, counted from the restore. It
+  keeps its mandate and that mandate's remaining budget; only the mandate's
+  expiry moves with the new deadline. The input's purge waits.
+- **The rerun is skipped** when the requester can no longer invoke the agent
+  (`requester_revoked`), the agent is being deleted (`agent_unavailable`), or
+  the content is no longer stored (`input_purged`, `attachments_purged`). A
+  requester revoked after the restore is checked again before the rerun
+  reaches the agent: the rerun is then skipped, and nothing is sent.
+- **The API.** The invocation's state is `lost` until its rerun ends, with
+  `lost_at`, the time of the loss. A skipped one keeps `lost`, and its
+  `error_code` gives the reason. The result that the database still holds
+  stays readable. The rerun's result replaces it; the invocation then ends
+  like any other, `completed` for instance, and keeps `lost_at`. The filter
+  `?state=lost` lists the lost invocations.
+- **Cancel.** The requester can cancel a lost invocation until its rerun
+  reaches the agent. The rerun then never runs.
+- **The authority** records the rerun when it is delivered: the outcome's
+  status becomes `rerun_confirmed`.
+
+Agent-to-agent requests, replies and statuses that a restore lost are
+recorded with their mailbox, and are not delivered again.
 
 ### Tests
 
@@ -542,11 +575,17 @@ again, and the API does not show them as lost. That is the next step
   each step and resumption, a copy cut half way, a failure after the
   declaration, a superseded restore, refusals before anything stops
   (`internal/worker/restore_test.go`).
+- PostgreSQL: the reruns of the lost invocations, the API state, `lost_at` and
+  the filters, failures injected before and after the decisions, a crash
+  during a rerun's delivery, a revoked requester, purged content, and cancel
+  (`internal/controlplane/invocation_reruns_test.go`).
 - KVM: `TestProductWorkerRestoresAgentFromArchive` restores a real agent from
   an archive taken on demand, stopped twice and resumed. It checks the
-  installed bytes, the losses and their invocations, the agent answering at the
-  new incarnation, and the old incarnation refused. It is compiled and remains
-  to be run as root (`scripts/verify-product-guest.py`).
+  installed bytes, the losses and their invocations, the two invocations
+  `lost` then run again to `completed` with `lost_at`, the authority's
+  `rerun_confirmed`, the agent answering at the new incarnation, and the old
+  incarnation refused. It is compiled and remains to be run as root
+  (`scripts/verify-product-guest.py`).
 
 ## Volume archives off the host (REC-02)
 

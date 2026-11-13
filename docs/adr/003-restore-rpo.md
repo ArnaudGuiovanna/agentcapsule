@@ -394,51 +394,137 @@ superseded restore, refusals before anything stops); and the KVM product test
 `TestProductWorkerRestoresAgentFromArchive`, compiled and still to be run as
 root.
 
+#### Done: running the lost invocations again
+
+November 13, 2026. When a restore ends, each invocation it lost runs again
+under the same mailbox ID, or is skipped with a reason. Code:
+`internal/controlplane/invocation_reruns.go`; migration 0030
+(`invocation_reruns`).
+
+- **Where it is decided.** In the restore's last transaction
+  (`CompleteVolumeRestore`), with the copy of the losses and the return to
+  `READY`. No sweep runs after it. At that point nothing has been delivered to
+  the new incarnation: the volume was `RESTORING` since the reservation. So
+  every declared loss is still `lost` in the authority. The worker passes the
+  authority's rerun flag all the same, and a loss whose rerun is recorded is
+  not due. The requester check and the requeue are in the same PostgreSQL
+  transaction. There is no window where the agent serves while a lost
+  invocation is undecided, and none for the input's purge. A sweep would need
+  its own marker and job, and would have to ask the authority about each
+  candidate while deliveries run.
+- **Crash points.** A crash before the commit leaves nothing copied or
+  decided: the same command repeats the step. After the commit, the decisions
+  are recorded with the losses. Repeating the step returns them and decides
+  nothing again. A crash during the rerun's delivery is an ordinary retry: the
+  same event ID and envelope, a fresh lease. The authority records the rerun
+  once; the same digest again is a no-op. A stale attempt cannot acknowledge.
+- **Candidates.** A loss names an invocation, and PostgreSQL recorded its
+  delivery (`DELIVERED`): it completed, failed after "working", or is still
+  working. An invocation canceled by its requester is not run again. An
+  invocation whose delivery is still open runs again through its own retry:
+  the authority recorded its outcome, but PostgreSQL never got the ACK. It
+  gets no decision. One closed without delivery stays closed.
+- **Queued.** The mailbox goes back to `PENDING`, at its place in the queue:
+  the lost work runs first, in its first order. It gets fresh attempts and its
+  first delivery window again (its TTL, at most 24 hours), counted from the
+  decision. The operation is `PENDING` again. The input's purge waits until
+  the rerun is delivered.
+- **Skipped.** The invocation stays `lost` and does not run again. The reason
+  is its `error_code`:
+  - `requester_revoked`: the requester can no longer invoke the agent. A
+    tenant requester must be an active principal and member of an active
+    organization, with the `invoke` permission on the agent. The owner of a
+    historical agent must be an active user.
+  - `agent_unavailable`: the agent is being deleted.
+  - `input_purged`: the instruction's content is no longer stored. Its 7-day
+    retention exceeds the volume window, so only an old archive gets there.
+  - `attachments_purged`: a file is no longer stored. Files are purged as
+    soon as an invocation ends, so this is the usual case for an invocation
+    with files. It waits for a product decision (question 5). Its input is
+    kept meanwhile; a cancel destroys it.
+
+  The input of the other skipped invocations follows its normal purge: nobody
+  may use it.
+- **Before the rerun reaches the agent.** The claim of a queued rerun checks
+  the requester again, as long as no attempt has reached the agent. A revoked
+  requester's rerun is then skipped: its mailbox is closed, its mandate
+  revoked, its input's retention starts. Nothing is sent, and the queue moves
+  on. Once an attempt may have reached the agent, the rerun finishes.
+- **The mandate is reused.** The mailbox ID allows a single mandate
+  (`mandate_origin_once`), and the rerun keeps that ID, which the agent
+  deduplicates on. The rerun keeps the same mandate, its remaining budget and
+  its validity. Only its expiry moves, to the rerun's delivery deadline:
+  `AuthorizeInstruction` requires that the two are equal. So the first run and
+  its rerun together make at most the requested number of agent requests,
+  each run within a window no longer than the first one, and only on behalf of
+  a requester who still holds the right to invoke. No rerun gains more
+  authority than the original request had. A rerun that repeats a request
+  with the same idempotency key gets the first receipt back and consumes
+  nothing. A fresh budget was rejected: it would double the requests that the
+  requester allowed.
+- **The result.** While the invocation is `lost`, the result that the
+  database still holds stays readable. The rerun's result replaces it in
+  place: the same payload row, sealed again for the same requester, its
+  retention clock reset. A later completion over the platform channel
+  replaces it the same way. Only a queued rerun can replace a result.
+- **Cancel.** A `lost` invocation can be canceled by its requester until its
+  rerun reaches the agent. The rerun then never runs: its mailbox is closed,
+  its mandate revoked and its input destroyed. A skipped one can be canceled
+  too. Both become `canceled` and keep `lost_at`. A rerun being delivered is
+  not interrupted (409). A rerun acknowledged "working" is canceled like any
+  working invocation.
+- **Agent-to-agent requests, replies and statuses** are not run again. Their
+  losses stay recorded, with their mailbox and no invocation. Running them
+  again is neither cheap nor safe: it reopens requests whose final states are
+  immutable, their payloads may be purged, and the other agent's side was not
+  lost. See "What remains".
+
+#### Done: the API
+
+- `state: lost`, in the `Invocation` enum and in the `state` filter of the
+  list route. The loss is declared and the rerun has not ended: it is queued,
+  running, or skipped. Every other filter excludes a lost invocation.
+- `lost_at` (date-time): the time of the newest loss, from
+  `volume_restore_losses.declared_at`. A `completed` invocation with `lost_at`
+  ran again after a restore loss. Its `completed_at` is the rerun's. A lost
+  invocation has no `completed_at`.
+- `error_code` of a lost invocation: why it will not run again, or nothing.
+- The result route reads the result the database still holds while the
+  invocation is lost. `/v1/operations/{id}` shows the operation `PENDING` or
+  `RUNNING` again during the rerun.
+- The cancel route cancels a lost invocation as above.
+- The worker's restore receipt counts the reruns: `reruns_queued` and
+  `reruns_skipped`.
+
+These names follow the existing schema. States are single lowercase words
+(`accepted`, `expired`, `canceled`). Lifecycle times end in `_at`
+(`created_at`, `completed_at`, `run_at`, `result_due_at`). One optional time
+marks both cases. Unlike a separate boolean, it cannot disagree with the
+state. A client that ignores `lost_at` still reads a completed rerun as a
+normal completion. The authority's `lost` and `rerun_confirmed` map to `lost`,
+and to `completed` with `lost_at`.
+
+Tests: the PostgreSQL tests of
+`internal/controlplane/invocation_reruns_test.go` (the queued rerun, its
+mailbox, mandate and window; the API state, `lost_at` and the filters; the
+old result readable, then replaced; a repeated step; a failure injected before
+and after the decisions; a crash during the rerun's delivery; a revoked
+requester at the restore and before the claim; purged files and a purged
+input; cancel while queued, skipped, delivered and working; a later
+completion; the decisions' guard). The KVM product test
+`TestProductWorkerRestoresAgentFromArchive` now checks that the two lost
+invocations are `lost`, then run again and complete with `lost_at`, and that
+the authority's `OutcomeStatus` becomes `rerun_confirmed`. It is compiled and
+still to be run as root.
+
 #### What remains
 
-1. **Running the lost work again.** The coordinator records the losses; it
-   does not reopen anything. The lost invocations keep their `completed` state.
-   The next step needs:
-   - A rerun reopens a completed invocation. Today `SUCCEEDED` is final: the
-     mailbox row becomes `DELIVERED`, the outbox row is deleted, and the
-     input's 7-day purge delay starts. The rerun must put the same mailbox ID
-     back in the queue, with a mandate that has not expired. The instruction's
-     mandate is bound to its mailbox ID (`mandate_origin_once`), so it is
-     reused, or renewed under a rule to decide.
-   - The candidates are the rows of `volume_restore_losses` with an
-     `invocation_id`, for the agent's current incarnation. A rerun is due only
-     while the authority's `OutcomeStatus` is `lost` and the subject is not
-     revoked (the model's `due`). The worker records it already:
-     `RecordOutcome` on the rerun's delivery records the rerun.
-   - The input is still stored, because its 7 days exceed the 24-hour volume
-     window. Its purge must wait while the invocation is `lost`.
-   - Attachment bytes are purged once an invocation finishes, so a rerun
-     cannot send them again. That case needs a product decision. Until then,
-     such an invocation should stay `lost`.
-   - Agent-to-agent requests and messages also reach the guest with an event
-     ID, and can be lost in the same way. Their losses are recorded with their
-     mailbox and no invocation. The invocation API below does not cover them.
-   - Losses without a mailbox belong to the database's own window. They are
-     announced as a whole (default 1 below).
-2. **API.** `openapi/openapi.yaml` is unchanged. With the defaults below, it
-   will expose:
-   - `state: lost`, in the `Invocation` enum and in the `state` filter of the
-     list route. The loss is declared and the rerun is pending, or will not
-     happen because the subject is revoked.
-   - `lost_at` (date-time): when the loss was declared, from
-     `volume_restore_losses.declared_at`. A `completed` invocation with
-     `lost_at` was rerun after a restore loss. Its `completed_at` is the
-     rerun's.
-   - While an invocation is `lost`, a result that the restored database
-     still holds stays readable. The rerun's result replaces it.
-
-   These names follow the existing schema. States are single lowercase words
-   (`accepted`, `expired`, `canceled`). Lifecycle times end in `_at`
-   (`created_at`, `completed_at`, `run_at`, `result_due_at`). One optional
-   time marks both cases. Unlike a separate boolean, it cannot disagree with
-   the state. A client that ignores `lost_at` still reads a completed rerun
-   as a normal completion. The authority's `lost` and `rerun_confirmed` map
-   to `lost`, and to `completed` with `lost_at`.
+1. **Agent-to-agent losses.** A lost request, reply or status is recorded but
+   not delivered again. It needs its own design: which side runs again, how a
+   request in a final state reopens, and what happens when its payload is
+   purged.
+2. **Restores before migration 0030.** A restore that completed earlier made
+   no decision: its invocations keep their state. No deployment has one.
 3. **Another host.** A restore onto another host needs D-05: the keys,
    secrets and revocations outside the restored domain.
 4. **Barriers during a restore.** A revocation barrier that targets a
@@ -447,8 +533,9 @@ root.
    execute; the barrier code does not use that yet. Likewise, the removal of a
    deleted agent's volume needs it `READY`: a deletion requested during a
    restore ends after the restore.
-5. **Measurement.** The KVM test shows a declared loss end to end, once run.
-   The restore exercise of REC-03 must measure it on the standby.
+5. **Measurement.** The KVM test shows a declared loss and its rerun end to
+   end, once run. The restore exercise of REC-03 must measure it on the
+   standby.
 
 ### Questions for the product owner
 
@@ -464,21 +551,31 @@ root.
    final state, such as "cancelled"?
 4. Some jobs act outside the agent (an email, a payment). Should a caller be
    able to refuse the automatic rerun of such a job?
+5. A lost invocation whose files are already purged cannot be sent again as
+   it was. Should it run again without its files, wait for the requester to
+   send them again, or end?
 
 ### Defaults pending the product owner's confirmation
 
 The code and the plan above use these defaults until the product owner
-answers.
+answers. None is confirmed yet. Each one lives in one place, so that a change
+stays small.
 
 1. A loss is declared result by result for the outcomes that the authority
    recorded but the restored image lacks: the volume window, up to 24 hours.
    The database window, up to 15 minutes, is announced as a time window. The
    catalogue is assumed to survive a disaster; where it lives is D-05.
-2. In the API, a declared loss whose rerun is pending has the state `lost`.
-   A rerun that completes has the state `completed` and keeps `lost_at` as
-   its marker (see "What remains").
-3. A lost job whose subject was revoked stays `lost`. It is not rescheduled
-   and gets no other state.
+2. In the API, a declared loss whose rerun has not ended has the state
+   `lost`. A rerun that ends has the state of its end, such as `completed`,
+   and keeps `lost_at` as its marker. Code: `lostCondition` and
+   `invocationState`.
+3. A lost job whose subject was revoked stays `lost`, with `error_code`
+   `requester_revoked`. It is not rescheduled and gets no other state. Code:
+   `mayInvokeAgain`, used at the restore and before the claim.
 4. The rerun is automatic and keeps the event ID, so the agent can
-   deduplicate it. A caller cannot refuse it for now. An opt-out for jobs that
-   act outside the agent is a follow-up.
+   deduplicate it. A caller cannot refuse it in advance. It can only cancel it
+   before it reaches the agent. An opt-out for jobs that act outside the agent
+   is a follow-up. Code: `decideRerun`, `cancelLost`.
+5. A lost invocation whose files are purged stays `lost`, with `error_code`
+   `attachments_purged`, and does not run again. Its input is kept until a
+   decision or a cancel. Code: `attachmentsGone`, `decideRerun`.
