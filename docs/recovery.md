@@ -431,8 +431,8 @@ The worker restores one agent, on its own host, from one of its archives
 outcome the archive lacks is **declared lost**, as
 [ADR 003](adr/003-restore-rpo.md#model-revision-option-b) requires. This is the
 building block of a disaster restore. A restore onto another host needs the
-keys, secrets and revocations outside the restored domain (D-05): it is not
-possible yet.
+keys, secrets and revocations outside the restored domain
+([D-05](adr/005-keys-outside-restored-domain.md)): it is not possible yet.
 
 ### Run it
 
@@ -866,7 +866,8 @@ generated, and finds none. Passed on 2026-11-13.
    ([ADR 003](adr/003-restore-rpo.md#what-remains)).
 2. **Restoring onto the standby.** A fetch of an archive is qualified
    ([above](#fetch-an-archive-back)). Installing it there and restoring the
-   agent needs D-05: the keys and the authorities outside the restored domain.
+   agent needs [D-05](adr/005-keys-outside-restored-domain.md): the keys and
+   the authorities outside the restored domain.
 3. **A failover exercise** that measures the RPO and the RTO of the whole
    platform, on real hosts. The database's part is measured
    ([the standby](#qualify-the-standby)); the configuration, the authorities,

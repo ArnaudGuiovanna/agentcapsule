@@ -4,7 +4,8 @@ Date: November 13, 2026. **Decided by the user on November 13, 2026.**
 It completes D-03 ([003-restore-rpo.md](003-restore-rpo.md), option B: a loss
 within the announced window is allowed, reported and rescheduled). It sets the
 numbers that ADR left open. References: product spec, Operations and recovery
-([product.md](../product.md)); REC-02 to REC-04 and D-05 of the
+([product.md](../product.md)); REC-02 to REC-04 and D-05
+([proposal](005-keys-outside-restored-domain.md)) of the
 [roadmap](../../ROADMAP.md).
 
 ## Failure domains
@@ -54,9 +55,10 @@ backups are encrypted before upload. There are two copies:
   therefore missing from its own memory. The restore declares that loss per
   agent: what was lost is shown to the organization, and the jobs are
   rescheduled. It never serves the agent as if nothing had happened.
-- **Keys and revocations** (D-05) stay outside the restored domain. The standby
-  must reach the key authority and the restore authority without restoring
-  them from the same backups. A backup older than an offboarding must not
+- **Keys and revocations** (D-05,
+  [proposal](005-keys-outside-restored-domain.md)) stay outside the restored
+  domain. The standby must reach the key authority and the restore authority
+  without restoring them from the same backups. A backup older than an offboarding must not
   reactivate members, tokens, delegations or keys revoked since (product spec).
   D-05 has to be settled before a disaster restore can be qualified.
 - **The P2 model** ([restore_authority.qnt](../../spec/restore_authority.qnt))
