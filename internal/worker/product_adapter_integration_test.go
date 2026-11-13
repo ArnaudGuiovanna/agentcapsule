@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -164,7 +165,13 @@ func TestProductWorkerTenantRunsPiOnOllama(t *testing.T) {
 	if err != nil {
 		t.Fatal("the host's model server did not load the model", err)
 	}
+	// A refusal (an account without credits answers 402) would otherwise only
+	// show later as a failed invocation, without the server's reason.
+	answer, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("the host's model server refused %s: HTTP %d: %s", model, resp.StatusCode, strings.TrimSpace(string(answer)))
+	}
 
 	ref := l.importPackage(pkg, "acme/pi-agent", "1.0.0")
 	agent := l.createWith("pi", "pi-agent", "1.0.0", 1024).AgentID
