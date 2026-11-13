@@ -347,6 +347,7 @@ When the primary is lost. The RTO starts at the decision to fail over.
    disaster.
 4. **Then the rest of the platform**: the configuration, the authorities,
    the agents and the address ([ADR 004](adr/004-recovery-objectives.md)).
+   [Failover](#failover-rec-03) gives the whole procedure, in order.
    Build a new standby as soon as possible, and give the new primary its
    `repo2` back. The backup timers back up both repositories, so they wait
    for it; until then, take the nightly backup with `--repo=1`. Install the
@@ -394,6 +395,221 @@ standby host; S3 is its repository 2, with a read-only credential. It checks:
 - **The SFTP repository's modes**: files 0640 and directories 0750, so the
   `backup` group reads them and no one else does. The run uses a single user,
   so it does not exercise the group itself.
+
+## Failover (REC-03)
+
+When the primary host is lost, the standby takes over: first the database,
+then the API, then the agents and the address clients use. ADR 004 sets the
+objectives: the service answers on the standby within an hour of the
+decision, and the database loses at most 15 minutes. Today the database and
+the API can fail over. The agents cannot yet: restoring them on the standby
+needs D-05.
+
+### Who decides
+
+The operator on call decides. A failover loses work, so it is for a disaster
+only: the host, its disks or its datacenter lost, or a repair that would take
+longer than the RTO. A crash or a reboot loses nothing
+([ADR 004](adr/004-recovery-objectives.md)): restart instead.
+
+The usual signals are `AgentCapsuleTargetDown` for the API, a host that does
+not answer, or a provider that reports it lost. The standby's own alerts stay
+quiet: it is still replaying.
+
+**Write down the time of the decision.** The RTO starts there.
+
+### Prepare
+
+This must be ready before any disaster, so that the failover takes minutes:
+- **The standby's PostgreSQL**, replaying the archive
+  ([the standby](#the-standby-rec-03)), with its alerts.
+- **The same release** of `agentcapsule-api` and `agentcapsule-admin` as on
+  the primary, installed on the standby and not started.
+- **The new primary's repository**: the S3 path (`/agentcapsule-2`), a
+  credential that can write there, and a new passphrase. Prepare them in
+  advance, and keep them off the standby until the promotion.
+- **The API's configuration and keys.** The operator copies them at
+  installation, and again at each rotation, to a safe off both hosts:
+  - the receipt key (`-receipt-key-file`). The installation is bound to it,
+    and it also seals the LLM providers' credentials;
+  - the transit keys (`-transit-key`): every one still needed;
+  - the delegated-identity trust file (`-delegated-identity-file`). It
+    holds public keys only;
+  - the TLS certificate and key, when the API listens beyond loopback;
+  - the API's flags and environment, except the database's address.
+
+  They must be the same bytes. The API refuses another receipt key
+  (`receipt_key_does_not_match_installation`) and other transit keys
+  (`transit_keys_do_not_match_installation`).
+
+**This copy is a stand-in until D-05 is decided.** D-05 will decide where the
+keys and the authorities live, outside the restored domain, and how a standby
+gets them. Until then, the operator copies these files by hand, out of band.
+Nothing replicates them.
+
+### The procedure
+
+On the standby host, as root unless said otherwise. Follow this order.
+
+1. **Decide**, and write down the time.
+2. **Fence the old primary.** It must accept no more writes, and reach
+   neither store:
+   - stop it, or cut it off from its clients and the network, if it can
+     still be reached. If it might still be running (a network partition), do
+     this first: until it stops, clients may still write to it;
+   - remove its keys from the standby's SFTP accounts:
+     `/etc/ssh/authorized_keys/backup` (pgBackRest) and
+     `/etc/ssh/authorized_keys/archives` (the volume archives);
+   - revoke its S3 credentials at the provider: pgBackRest's and the archive
+     shipper's.
+3. **Promote** the standby's PostgreSQL, as `postgres`:
+   ```sh
+   pg_ctlcluster 18 main promote
+   psql -Atc 'SELECT pg_is_in_recovery(), pg_last_xact_replay_timestamp()'
+   ```
+   `f` means promoted. Write down the time it prints: the loss window starts
+   there ([below](#announce-the-databases-loss)).
+4. **Give it a repository of its own**: [Promote](#promote), step 3, up to
+   `pgbackrest check`. The checkpoint and the full backup are not needed to
+   serve: take them right after step 7. Disable
+   `agentcapsule-standby-metrics.timer`.
+5. **Install the API's configuration and keys** from the safe, with the modes
+   the API requires: the directory and the key files readable by the API's
+   account only (0700 and 0600), the trust file writable by its owner only.
+   Set `AGENTCAPSULE_DATABASE_URL` to the standby's own PostgreSQL.
+6. **Start the API** with the same flags as on the primary
+   ([docs/api](api/README.md)). It checks the schema and the keys before it
+   listens.
+7. **Check it** on the standby:
+   ```sh
+   curl -fsS http://127.0.0.1:8080/v1/health/ready
+   ```
+   Then make an authenticated read and an authenticated write with the
+   platform operator's token. List the organizations
+   (`GET /v1/organizations?limit=1`). Create one named for the check
+   (`POST /v1/organizations`, with an `Idempotency-Key`). An organization
+   cannot be deleted, so disable it after
+   (`POST /v1/organizations/{id}/disable`). If tenants sign in with a
+   delegated identity, have one read `GET /v1/organizations/current`.
+8. **Move the address** that clients use to the standby: DNS, a floating
+   address or the load balancer. The RTO ends when clients reach the API
+   there.
+9. **Announce** the database's loss window
+   ([below](#announce-the-databases-loss)).
+10. **Protect the new primary**: the checkpoint and the full backup of
+    [Promote](#promote), step 3, then its freshness timer. Build a new
+    standby as soon as possible.
+11. **The agents**: not possible yet. Restoring them on the standby needs
+    D-05, and a run under KVM
+    ([Restoring an agent](#restoring-an-agent-from-an-archive)).
+
+### Announce the database's loss
+
+Work that the platform confirmed in the window may be lost. Announce it to
+the callers ([ADR 003](adr/003-restore-rpo.md), option B).
+- **The window starts** at the commit time of the last transaction that the
+  standby replayed: `pg_last_xact_replay_timestamp()`, read after the
+  promotion (it no longer changes then). Every transaction committed until
+  then is on the standby. None committed later is. The time comes from the
+  primary's clock, kept by NTP.
+- **It ends** when the old primary stopped accepting writes. If it went
+  down, that is when it stopped answering, from monitoring outside the host.
+  If it might have kept running, the window ends when it was fenced.
+- **What to say**: work that the platform confirmed between those two times
+  may be lost; check it and send it again. The window covers the whole
+  platform: the restored database cannot tell which organizations wrote
+  during it.
+- **What clients see.** An ID acknowledged in the window is unknown: reading
+  it gives 404. The same request with the same `Idempotency-Key` creates it
+  again, under a new ID, because its receipt was lost with it.
+- **How long it can be.** About `archive_timeout` plus the push: up to about
+  5 minutes, 6 if the standby's SFTP server was silent, plus up to a minute
+  if the primary was idle (the heartbeat commits once a minute). A longer
+  window means the standby was behind, and `AgentCapsuleStandbyReplayBehind`
+  should have fired.
+
+### Not measured yet
+
+- **The agents**: restoring them on the standby needs D-05, and a run under
+  KVM. So does the worker, with its authorities and its own copies of the
+  receipt and transit keys.
+- **Moving the address** that clients use.
+- **The network between real hosts**: the qualification below runs on one
+  machine.
+- **The human part**: detecting the loss, deciding, and fetching the keys
+  from the safe.
+- **Fencing the archive shipper**: the qualification fences pgBackRest's
+  credential and key only.
+
+### Qualify the failover
+
+`scripts/verify-failover.py` runs this procedure for the database and the API
+on one machine. Containers and local processes stand for the hosts. The
+stores, the primary and the standby are those of `verify-backups.py`, with
+`archive_timeout` and `checkpoint_timeout` scaled down to 30 seconds. It
+builds the API and the admin tool from the sources (`--go`), needs no root,
+and runs in about 2.5 minutes:
+
+```sh
+python3 scripts/verify-failover.py --pg-bin <postgres-bin-dir> --pgbackrest <pgbackrest> \
+  --go <go> [--pg-library-path <dir>] --output <new-dir>
+```
+
+The run:
+1. **Installs the primary**: the schema, the receipt key and a platform token
+   (`bootstrap-platform`), a transit key, a tenant whose member signs in with
+   a delegated identity, base backups, and the API. A directory stands for
+   the operator's safe, where the API's keys and trust file are copied.
+2. **A client writes** through the API: it creates an organization every 0.2
+   seconds with the platform token, and records each ID it is given, and
+   when.
+3. **The standby** is built from its own disk, and replays.
+4. **The disaster** comes one and a half `archive_timeout` after a segment
+   switch: halfway through a segment. The primary's PostgreSQL and API are
+   killed with SIGKILL, with any push in progress. Its data directory and the
+   WAL that pgBackRest had not pushed are deleted.
+5. **The failover**, steps 2 to 7 above, timed from the decision. The old
+   primary's S3 credential is revoked in the store's configuration (SeaweedFS
+   reloads it on SIGHUP), and its key is removed from the SFTP account. Then
+   the promotion, the new repository, the keys installed from the safe, the
+   API started, readiness, and the first authenticated read and write. The
+   read is made twice: with the platform token, and with a delegated identity
+   (a JWT signed by the client's Ed25519 key).
+6. **The checks.**
+   - Every write acknowledged before the window is on the standby, and every
+     missing one is inside it. The survivors are a prefix of the writes.
+   - A lost ID reads 404, and its retry with the same key creates it again,
+     under a new ID.
+   - After the fence, the old primary's credential gets 403 from S3, and SFTP
+     refuses its key. The standby's credential still reads.
+   - A checkpoint, then a full backup into the new repository.
+7. **No secret of the run is in the evidence**: the S3 credentials, the
+   passphrases, the platform token, the receipt and transit keys, the
+   client's private key and its JWTs.
+
+Results of two runs on 2026-11-13, PostgreSQL 18.6 and pgBackRest 2.58:
+
+| | Run 1 | Run 2 |
+| --- | --- | --- |
+| **RTO**: from the decision to the first authenticated write | 1.60 s | 1.60 s |
+| fence, promote, own repository | 0.23, 0.53 and 0.74 s | 0.23, 0.53 and 0.74 s |
+| install the keys, start the API, ready, read, write | 0.00, 0.00, 0.05, 0.02 and 0.01 s | the same |
+| Acknowledged writes lost, of those made | 78 of 393 | 79 of 394 |
+| **RPO**: age of the oldest lost write at the disaster | 15.53 s | 15.78 s |
+| Window to announce: last replayed commit to the disaster | 15.73 s | 15.98 s |
+| Full backup into the new repository, after the RTO | 3.64 s | 4.04 s |
+
+**How the numbers scale to production.** The loss follows `archive_timeout`.
+Halfway through a 30-second segment, each run lost about half of it: 15.5 to
+16 seconds. With 300 seconds, the same moment loses about 2.5 minutes. The
+worst case, a disaster just before a segment closes or while it is pushed,
+loses `archive_timeout` plus the push: about 5 minutes, 6 with the standby's
+SFTP server silent. The RTO measured here does not depend on `archive_timeout`.
+It is the commands and the API's start, in seconds. On real hosts, the push
+to S3 and pgBackRest's check cross a network, the operator types the
+commands, and the steps above that are not measured add to it.
+
+CI runs this qualification in the `backups` job, with PostgreSQL 16.
 
 ## Volume archives (REC-02)
 
@@ -883,9 +1099,12 @@ generated, and finds none. Passed on 2026-11-13.
    agent needs [D-05](adr/005-keys-outside-restored-domain.md): the keys and
    the authorities outside the restored domain.
 3. **A failover exercise** that measures the RPO and the RTO of the whole
-   platform, on real hosts. The database's part is measured
-   ([the standby](#qualify-the-standby)); the configuration, the authorities,
-   the agents and the address are not.
+   platform, on real hosts. The database and the API fail over on one
+   machine, with their configuration and keys
+   ([Qualify the failover](#qualify-the-failover)). The agents (D-05 and
+   KVM), the address clients use, and the network between real hosts are not
+   measured. The API's keys reach the standby by an operator's copy, a
+   stand-in until D-05 is decided.
 4. **The standby's copy of the volume archives against the host.** The host's
    SFTP account can delete there: retention needs it. A host taken over could
    delete the standby's copies; object lock protects only S3's. A retention

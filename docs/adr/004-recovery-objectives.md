@@ -31,7 +31,42 @@ the standby host. Within this hour, the platform must:
 
 The RPO and the RTO must be **measured** by a restore exercise on the standby
 host (REC-03), not assumed. The measured values are recorded next to these
-objectives.
+objectives ([below](#measured-values)).
+
+## Measured values
+
+**Measured on one machine with containers, with scaled settings, not on real
+hosts.** Containers and local processes stand for the primary, the standby
+and the stores. `archive_timeout` and `checkpoint_timeout` are 30 seconds,
+not 300. Two runs of `scripts/verify-failover.py` on November 13, 2026
+([recovery.md](../recovery.md#qualify-the-failover)). Only the database and
+the API fail over; the API's keys reach the standby by an operator's copy, a
+stand-in until D-05 is decided.
+
+| What | Objective | Measured |
+| --- | --- | --- |
+| RTO of the database and the API: from the decision to the first authenticated write on the standby | 1 hour, for the whole platform | 1.6 s in both runs |
+| Database RPO: the oldest acknowledged write lost, its age at the disaster | 15 minutes | 15.5 s and 15.8 s (78 and 79 writes lost) |
+| Loss window to announce: from the last replayed commit to the disaster | | 15.7 s and 16.0 s |
+
+The disaster came halfway through a WAL segment. How the numbers scale:
+- **The loss follows `archive_timeout`.** Each run lost about half of it.
+  With 300 seconds, the same moment loses about 2.5 minutes. The worst case,
+  a disaster just before a segment closes or while it is pushed, loses
+  `archive_timeout` plus the push: about 5 minutes, 6 when the standby's SFTP
+  server is silent. That is within the RPO.
+- **The RTO measured here does not depend on `archive_timeout`.** It is the
+  fence, the promotion, the new repository and the API's start, in seconds.
+  On real hosts, the push to S3 and pgBackRest's check cross a network, and an
+  operator types the commands.
+
+Still to measure on real hosts:
+- **the agents**: adopting them on the standby needs D-05, and a run under
+  KVM;
+- **moving the address** that clients use;
+- **the network** between the hosts and to the stores;
+- **the human part**: detecting the loss, deciding, and fetching the keys from
+  the operator's safe.
 
 ## Storage
 

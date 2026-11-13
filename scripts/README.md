@@ -44,6 +44,8 @@ Do not run `go test ./...` at the repository root with sources outside
 | `test_backup_metrics.py` | Unit tests of `deploy/backup/agentcapsule-backup-metrics.py` (base-backup freshness for node_exporter) |
 | `verify-archive-shipping.py` | Shipping the volume archives with rclone 1.60.1 to S3 and SFTP (Docker, the images of `verify-backups.py`), archives captured by the platform's code (`--go`): first ship, a second run that writes nothing, a killed upload and a network cut, a changed archive, the metrics with a store stopped, a fetch from each store alone (byte-identical, opened by the restore authority), no clear text in either store (with a control), retention by age; then the standby's replay metric on a real standby (`--pg-bin`), and `systemd-analyze verify` of the units; see [docs/recovery.md](../docs/recovery.md#qualify-the-shipping) |
 | `test_archive_ship.py` | Unit tests of `deploy/backup/agentcapsule-archive-ship.py`, with a fake rclone standing for the stores |
+| `verify-failover.py` | The failover exercise of ADR 004 for the database and the API, on one machine (Docker, the images and the stores of `verify-backups.py`, which it shares): a client writes through `agentcapsule-api` (`--go`), the primary is killed, then the failover is timed from the decision to the first authenticated write on the standby (RTO), and the acknowledged writes lost are measured against the window to announce (RPO); see [docs/recovery.md](../docs/recovery.md#qualify-the-failover) |
+| `test_verify_failover.py` | Unit tests of the failover exercise's loss assessment: what the standby lacks against the announced window |
 | `test_standby_metrics.py` | Unit tests of `deploy/standby/agentcapsule-standby-metrics.py` (the standby's replay for node_exporter) |
 | `verify-alerts.py` | The alert rules: every metric they use is registered by the code or declared by a textfile script (base backups, archive shipping, the standby's replay), with its label values; with a pinned Prometheus image, `promtool check rules` and `promtool test rules` |
 | `verify-runtime.py` | Real Go host-driver/KVM tests (root orchestration; optional PostgreSQL placement checks) |
@@ -133,7 +135,8 @@ secret, which is never written to the evidence.
 ## Backup qualifications
 
 `verify-backups.py` qualifies pgBackRest 2.58, and `verify-archive-shipping.py`
-rclone 1.60.1: the packages of Ubuntu 26.04. Fetch both first:
+rclone 1.60.1: the packages of Ubuntu 26.04. `verify-failover.py` runs the
+failover exercise with the same pgBackRest. Fetch both first:
 
 ```bash
 python3 scripts/fetch-backup-tools.py --output <tools-dir> \
@@ -160,12 +163,19 @@ python3 scripts/verify-backups.py --pg-bin <postgres-bin-dir> \
 python3 scripts/verify-archive-shipping.py --rclone <tools-dir>/rclone/usr/bin/rclone \
   --go <path-to-go> --pg-bin <postgres-bin-dir> \
   [--pg-library-path <dir>] --output <output-dir>/archive-shipping
+python3 scripts/verify-failover.py --pg-bin <postgres-bin-dir> \
+  --pgbackrest <tools-dir>/pgbackrest/usr/bin/pgbackrest --go <path-to-go> \
+  [--pg-library-path <dir>] --output <output-dir>/failover
 ```
 
-Each run takes about 7 minutes, with Docker and without root. Each searches
-its evidence for every secret it generated: `secrets_in_evidence` in
-`summary.json` lists the files that hold one. See
-[docs/recovery.md](../docs/recovery.md#qualify) for what they check.
+The first two take about 7 minutes each, the failover about 2.5, with Docker
+and without root. Each searches its evidence for every secret it generated:
+`secrets_in_evidence` in `summary.json` lists the files that hold one. See
+[docs/recovery.md](../docs/recovery.md#qualify) for what they check, and
+[Qualify the failover](../docs/recovery.md#qualify-the-failover) for the
+failover's measures. The failover's `summary.json` gives the RTO with each
+step's time, the RPO (`rpo`: the acknowledged writes lost, the oldest one's
+age, the window to announce) and the scaled settings.
 
 ## KVM campaigns (root)
 
@@ -227,8 +237,9 @@ is taken from the installed package, and reports are kept seven days, including
 on failure. Only top-level reports are uploaded, not the database or the test
 volumes/keys.
 
-The `backups` job runs `verify-backups.py` and `verify-archive-shipping.py`,
-with the tools of `fetch-backup-tools.py` and PostgreSQL 16 from Ubuntu 24.04.
+The `backups` job runs `verify-backups.py`, `verify-archive-shipping.py` and
+`verify-failover.py`, with the tools of `fetch-backup-tools.py` and PostgreSQL
+16 from Ubuntu 24.04.
 Ubuntu 26.04's PostgreSQL 18 needs glibc 2.43, newer than the runner's 2.39,
 so it does not run there. The job keeps a run's evidence for seven days only
 when the run's own search found no secret in it and no file holds a private
@@ -257,8 +268,8 @@ CI does **not** validate Firecracker/jailer on the target host, physical
 storage cuts, complete product isolation, the platform's use of the AGNTCY
 services (INT-02 to INT-05) or an external restore. It does qualify the pinned
 interoperability profile against its private services (`verify-interop.py
---services`), and the backups: WAL archiving, the standby and the shipping of
-the volume archives, against stand-in stores (SeaweedFS for S3, OpenSSH for
-SFTP). The KVM/production campaigns of the [roadmap](../ROADMAP.md)
+--services`), and the backups: WAL archiving, the standby, the shipping of
+the volume archives and the failover of the database and the API on one
+machine, against stand-in stores (SeaweedFS for S3, OpenSSH for SFTP). The KVM/production campaigns of the [roadmap](../ROADMAP.md)
 remain mandatory for the relevant work packages. The workflow configuration
 alone is not proof of a green run on GitHub.

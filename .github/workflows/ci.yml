@@ -252,9 +252,9 @@ jobs:
           EOF
 
   backups:
-    name: Backups (WAL archiving, standby, archive shipping)
+    name: Backups (WAL archiving, standby, archive shipping, failover)
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 45
     steps:
       - name: Check out sources
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -323,6 +323,19 @@ jobs:
             --go "$(command -v go)" --pg-bin "$PG_BIN" \
             --output "$RUNNER_TEMP/ci/archive-shipping"
 
+      - name: Failover of the database and the API (RTO and RPO)
+        if: ${{ !cancelled() && steps.tools.outcome == 'success' }}
+        timeout-minutes: 10
+        run: |
+          # The same stores; the primary runs agentcapsule-api, built from
+          # the sources, under a client that writes steadily; the standby
+          # replays. The primary is killed, then the failover is timed from
+          # the decision to the first write on the standby; about 3 minutes.
+          # See docs/recovery.md, "Qualify the failover".
+          python3 scripts/verify-failover.py --pg-bin "$PG_BIN" \
+            --pgbackrest "$RUNNER_TEMP/backup-tools/pgbackrest/usr/bin/pgbackrest" \
+            --go "$(command -v go)" --output "$RUNNER_TEMP/ci/failover"
+
       - name: Keep only the evidence that holds no secret
         if: always()
         run: |
@@ -336,7 +349,7 @@ jobs:
           ci = Path(sys.argv[1])
           keep = ci / "upload"
           keep.mkdir(parents=True, exist_ok=True)
-          for name in ("backups", "archive-shipping"):
+          for name in ("backups", "archive-shipping", "failover"):
               evidence = ci / name
               summary = evidence / "summary.json"
               if not summary.is_file():
@@ -368,9 +381,11 @@ jobs:
         if: always()
         run: |
           cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
-          This job runs scripts/verify-backups.py and scripts/verify-archive-shipping.py
-          with pgBackRest 2.58 and rclone 1.60.1, Ubuntu 26.04's packages. PostgreSQL
-          is 16, Ubuntu 24.04's: Ubuntu 26.04's PostgreSQL 18 needs a newer glibc
-          than the runner's. SeaweedFS stands for the S3 provider, without object
-          lock. No failover between real hosts is run.
+          This job runs scripts/verify-backups.py, scripts/verify-archive-shipping.py
+          and scripts/verify-failover.py with pgBackRest 2.58 and rclone 1.60.1, Ubuntu
+          26.04's packages. PostgreSQL is 16, Ubuntu 24.04's: Ubuntu 26.04's PostgreSQL
+          18 needs a newer glibc than the runner's. SeaweedFS stands for the S3
+          provider, without object lock. The failover of the database and the API runs
+          on one machine, with archive_timeout scaled to 30 seconds; no failover between
+          real hosts is run, and the agents are not part of it (D-05, KVM).
           EOF
