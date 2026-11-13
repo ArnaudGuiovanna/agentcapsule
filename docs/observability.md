@@ -94,7 +94,9 @@ Their annotations are fixed text.
 tests for the disk, queue, scrape and SLIM alerts.
 `scripts/verify-alerts.py` checks that every metric the alerts use is
 registered by the code. With `--promtool` or `--promtool-image <image@sha256:…>`,
-it also runs `promtool check rules` and `promtool test rules`.
+it also runs `promtool check rules` and `promtool test rules`. CI runs it with
+Prometheus v3.5.0, pinned by digest. A raised disk threshold makes the tests
+fail.
 
 ## Not yet covered
 

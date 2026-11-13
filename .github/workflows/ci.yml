@@ -61,8 +61,11 @@ jobs:
       - name: Repository hygiene (no personal paths, no committed evidence sources)
         run: python3 scripts/check-repo-hygiene.py
 
-      - name: Alert rules use only metrics the code registers
-        run: python3 scripts/verify-alerts.py
+      - name: Alert rules (promtool check and unit tests, metrics registered by the code)
+        run: |
+          # Prometheus v3.5.0, pinned by digest.
+          python3 scripts/verify-alerts.py \
+            --promtool-image prom/prometheus@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996
 
       - name: Validate the OpenAPI 3.1 contract
         run: |
