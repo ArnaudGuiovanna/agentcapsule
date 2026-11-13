@@ -142,9 +142,17 @@ therefore keeps that directory in the encrypted home, copies the image's
 builds the image from an installed Pi release and the Node.js it runs on, on a
 Debian base, as a test build tied to the local installation. The product KVM
 campaign (`verify-product-guest.py --pi-harness`) ran it in a jailed microVM on
-a real model, Ollama with `gemma4:cloud`. Pi read an attached file with its own
-`read` tool, then answered from its session alone, in the next invocation and
-again after sleep and wake. Its model calls were metered for the agent.
+two real models:
+- Ollama with `gemma4:cloud`;
+- OpenAI's `gpt-5.5`, with the organization's own key (`--pi-model-url`,
+  `--pi-model`, `--pi-api-key-file`). Pi sends `max_completion_tokens`, which
+  the gateway forwards as written.
+
+Pi read an attached file with its own `read` tool, then answered from its
+session alone, in the next invocation and again after sleep and wake. Its model
+calls were metered for the agent. The key file holds the key alone, readable by
+its owner only; the campaign checks it by the platform's rules and records only
+that a key was given.
 
 ## Configuration (`adapter.json`)
 
