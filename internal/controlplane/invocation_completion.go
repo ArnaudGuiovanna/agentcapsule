@@ -92,7 +92,7 @@ func (t *Transit) CompleteInvocationFromVM(ctx context.Context, caller VMCaller,
 		if err != nil {
 			return capsuleprotocol.CompletionReceipt{}, err
 		}
-		payload, err := t.putOwned(ctx, tx, "instruction_result", in.OperationID, []string{caller.AgentID}, map[string]string{caller.AgentID: requester}, result)
+		payload, err := t.putResult(ctx, tx, in.OperationID, caller.AgentID, requester, result)
 		clear(result)
 		if err != nil {
 			return capsuleprotocol.CompletionReceipt{}, err

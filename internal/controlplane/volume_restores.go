@@ -56,11 +56,15 @@ type VolumeRestorePlan struct {
 
 // RestoreLoss is a loss that a restore copied from the restore authority.
 // MailboxID is empty when the outcome matches no delivery this database knows:
-// it lost that work too. InvocationID is set for an owner instruction.
+// it lost that work too. InvocationID is set for an owner instruction. Rerun
+// is the restore's decision for that invocation (RerunQueued, or RerunSkipped
+// with SkipReason), or empty when it made none: the invocation's delivery was
+// still open, it was canceled, or the authority had recorded its rerun.
 type RestoreLoss struct {
 	OutcomeID, MailboxID, InvocationID string
 	Incarnation                        uint64
 	DeclaredAt                         time.Time
+	Rerun, SkipReason                  string
 }
 
 const restoreColumns = `restore_id,agent_id,host_id,volume_id,archive_id,from_incarnation,incarnation,step,started_at,activated_at,completed_at`
@@ -299,12 +303,14 @@ func outcomeID(agentID, eventID string) (string, error) {
 
 // CompleteVolumeRestore ends an activated restore once its restricted boot
 // is retired. In one transaction, it copies the losses that the restore
-// authority declared for the restore's incarnation, and puts the volume back
-// in service: READY at that incarnation. Each loss is mapped to the delivery
-// whose outcome it is, by computing the outcome ID of each of the agent's
+// authority declared for the restore's incarnation, decides the rerun of each
+// lost invocation (scheduleReruns), and puts the volume back in service:
+// READY at that incarnation. Each loss is mapped to the delivery whose
+// outcome it is, by computing the outcome ID of each of the agent's
 // mailboxes; an owner instruction's mailbox gives its invocation. Repeating
-// it after success returns the recorded losses and ignores outcomeIDs.
-func (s *Store) CompleteVolumeRestore(ctx context.Context, restoreID, host string, outcomeIDs []string) ([]RestoreLoss, error) {
+// it after success returns the recorded losses and ignores declared: it
+// decides nothing again.
+func (s *Store) CompleteVolumeRestore(ctx context.Context, restoreID, host string, declared []DeclaredLoss) ([]RestoreLoss, error) {
 	tx, err := s.begin(ctx)
 	if err != nil {
 		return nil, err
@@ -326,7 +332,7 @@ func (s *Store) CompleteVolumeRestore(ctx context.Context, restoreID, host strin
 		return nil, ErrRestore
 	}
 	deliveries := map[string][2]string{}
-	if len(outcomeIDs) > 0 {
+	if len(declared) > 0 {
 		rows, err := tx.Query(ctx, "SELECT id,coalesce(instruction_id,'') FROM agent_mailboxes WHERE dest_agent_id=$1", r.AgentID)
 		if err != nil {
 			return nil, err
@@ -349,12 +355,17 @@ func (s *Store) CompleteVolumeRestore(ctx context.Context, restoreID, host strin
 			return nil, err
 		}
 	}
-	for _, id := range outcomeIDs {
-		d := deliveries[id]
+	recorded := map[string]bool{}
+	for _, l := range declared {
+		d := deliveries[l.OutcomeID]
 		if _, err = tx.Exec(ctx, `INSERT INTO volume_restore_losses(restore_id,incarnation,outcome_id,mailbox_id,invocation_id)
-            VALUES($1,$2,$3,nullif($4,''),nullif($5,'')) ON CONFLICT DO NOTHING`, restoreID, int64(r.Incarnation), id, d[0], d[1]); err != nil {
+            VALUES($1,$2,$3,nullif($4,''),nullif($5,'')) ON CONFLICT DO NOTHING`, restoreID, int64(r.Incarnation), l.OutcomeID, d[0], d[1]); err != nil {
 			return nil, err
 		}
+		recorded[l.OutcomeID] = recorded[l.OutcomeID] || l.RerunRecorded
+	}
+	if err = scheduleReruns(ctx, tx, restoreID, a, recorded); err != nil {
+		return nil, err
 	}
 	if _, err = tx.Exec(ctx, "UPDATE store_enrollments SET stage='READY' WHERE agent_id=$1", r.AgentID); err != nil {
 		return nil, err
@@ -370,8 +381,10 @@ func (s *Store) CompleteVolumeRestore(ctx context.Context, restoreID, host strin
 }
 
 func restoreLosses(ctx context.Context, tx pgx.Tx, restoreID string) ([]RestoreLoss, error) {
-	rows, err := tx.Query(ctx, `SELECT outcome_id,coalesce(mailbox_id,''),coalesce(invocation_id,''),incarnation,declared_at
-        FROM volume_restore_losses WHERE restore_id=$1 ORDER BY outcome_id`, restoreID)
+	rows, err := tx.Query(ctx, `SELECT l.outcome_id,coalesce(l.mailbox_id,''),coalesce(l.invocation_id,''),l.incarnation,l.declared_at,
+            coalesce(r.state,''),coalesce(r.skip_reason,'')
+        FROM volume_restore_losses l LEFT JOIN invocation_reruns r ON (r.restore_id,r.outcome_id)=(l.restore_id,l.outcome_id)
+        WHERE l.restore_id=$1 ORDER BY l.outcome_id`, restoreID)
 	if err != nil {
 		return nil, err
 	}
@@ -380,7 +393,7 @@ func restoreLosses(ctx context.Context, tx pgx.Tx, restoreID string) ([]RestoreL
 	for rows.Next() {
 		var l RestoreLoss
 		var incarnation int64
-		if err = rows.Scan(&l.OutcomeID, &l.MailboxID, &l.InvocationID, &incarnation, &l.DeclaredAt); err != nil {
+		if err = rows.Scan(&l.OutcomeID, &l.MailboxID, &l.InvocationID, &incarnation, &l.DeclaredAt, &l.Rerun, &l.SkipReason); err != nil {
 			return nil, err
 		}
 		l.Incarnation = uint64(incarnation)

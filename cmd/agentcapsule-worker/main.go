@@ -269,10 +269,16 @@ func run() int {
 			// until the same command succeeds (see docs/recovery.md).
 			return fail("restore_failed_" + worker.RestoreFailure(err))
 		}
-		unmatched := 0
+		unmatched, queued, skipped := 0, 0, 0
 		for _, l := range result.Losses {
 			if l.MailboxID == "" {
 				unmatched++
+			}
+			switch l.Rerun {
+			case controlplane.RerunQueued:
+				queued++
+			case controlplane.RerunSkipped:
+				skipped++
 			}
 		}
 		if err = json.NewEncoder(os.Stdout).Encode(struct {
@@ -282,7 +288,9 @@ func run() int {
 			Incarnation uint64 `json:"incarnation"`
 			Losses      int    `json:"losses"`
 			Unmatched   int    `json:"unmatched_losses"`
-		}{result.RestoreID, result.AgentID, result.ArchiveID, result.Incarnation, len(result.Losses), unmatched}); err != nil {
+			Queued      int    `json:"reruns_queued"`
+			Skipped     int    `json:"reruns_skipped"`
+		}{result.RestoreID, result.AgentID, result.ArchiveID, result.Incarnation, len(result.Losses), unmatched, queued, skipped}); err != nil {
 			return fail("restore_receipt_write_failed_retry_same_id")
 		}
 		return 0

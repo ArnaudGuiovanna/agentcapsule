@@ -68,6 +68,8 @@ func (c *AgentCatalog) Instruct(ctx context.Context, p Principal, id, key string
 // InstructionResult returns only a completed private result to its current
 // authenticated owner. Administrative operation-status access grants no data
 // access. Reading does not reset the original post-delivery retention deadline.
+// While a restore's loss is not yet rerun, the result the database still
+// holds stays readable.
 func (c *AgentCatalog) InstructionResult(ctx context.Context, p Principal, operation string) (json.RawMessage, error) {
 	if c.transit == nil {
 		return nil, ErrTransitKey
@@ -85,8 +87,9 @@ func (c *AgentCatalog) InstructionResult(ctx context.Context, p Principal, opera
 	}
 	var payload string
 	err = tx.QueryRow(ctx, `SELECT i.result_payload_id FROM owner_instructions i JOIN platform_operations o ON o.id=i.operation_id
-        JOIN transit_payloads payload ON payload.id=i.result_payload_id AND payload.kind='instruction_result' AND payload.ref_id=o.id
-        WHERE o.id=$1 AND o.owner_user_id=$2 AND o.kind='instruction' AND o.status='SUCCEEDED' AND i.result_payload_id IS NOT NULL`, operation, p.ID).Scan(&payload)
+        JOIN transit_payloads payload ON payload.id=i.result_payload_id AND payload.kind='instruction_result' AND payload.ref_id=o.id`+rerunJoins+`
+        WHERE o.id=$1 AND o.owner_user_id=$2 AND o.kind='instruction' AND (o.status='SUCCEEDED' OR `+lostCondition+`)
+          AND i.result_payload_id IS NOT NULL`, operation, p.ID).Scan(&payload)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}

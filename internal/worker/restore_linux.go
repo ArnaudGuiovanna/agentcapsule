@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
@@ -436,7 +437,8 @@ func (w *Placements) activateRestore(ctx context.Context, h restoreHost, plan co
 }
 
 // completeRestore retires the restricted boot, then copies the losses
-// declared for the restore's incarnation and puts the volume back in service.
+// declared for the restore's incarnation, queues or skips the rerun of each
+// lost invocation, and puts the volume back in service, in one transaction.
 func (w *Placements) completeRestore(ctx context.Context, h restoreHost, plan controlplane.VolumeRestorePlan) error {
 	r := plan.Restore
 	if err := h.retire(ctx, r.AgentID); err != nil {
@@ -446,14 +448,16 @@ func (w *Placements) completeRestore(ctx context.Context, h restoreHost, plan co
 	if err != nil {
 		return err
 	}
-	ids := make([]string, 0, len(losses))
+	// The volume was RESTORING since the reservation, so no rerun can be
+	// recorded yet. A recorded one is passed on all the same: it is not due.
+	declared := make([]controlplane.DeclaredLoss, 0, len(losses))
 	for _, l := range losses {
 		if l.Incarnation == r.Incarnation {
-			ids = append(ids, l.ID)
+			declared = append(declared, controlplane.DeclaredLoss{OutcomeID: l.ID, RerunRecorded: l.Rerun})
 		}
 	}
-	slices.Sort(ids)
-	_, err = w.store.CompleteVolumeRestore(ctx, r.ID, w.hostID, ids)
+	slices.SortFunc(declared, func(a, b controlplane.DeclaredLoss) int { return strings.Compare(a.OutcomeID, b.OutcomeID) })
+	_, err = w.store.CompleteVolumeRestore(ctx, r.ID, w.hostID, declared)
 	return err
 }
 

@@ -33,6 +33,10 @@ type Invocation struct {
 	// ResultDueAt is set once the agent acknowledged "working": its outcome must
 	// arrive before then, or the invocation fails with work_timeout.
 	ResultDueAt *time.Time `json:"result_due_at,omitempty"`
+	// LostAt is when a restore declared the invocation's outcome lost (ADR
+	// 003). It stays after the rerun: a completed invocation with LostAt was
+	// run again, and CompletedAt is the rerun's.
+	LostAt *time.Time `json:"lost_at,omitempty"`
 }
 
 // InvocationInput is the body of a new invocation. TTLSeconds bounds how long
@@ -57,8 +61,12 @@ const MaxScheduleHorizon = 30 * 24 * time.Hour
 
 // invocationState names what the platform actually knows. "accepted" means the
 // request is durably queued; only "completed" says the agent answered. A
-// delivery acknowledgement is never presented as business success.
-func invocationState(status, closeReason string, waiting bool) string {
+// delivery acknowledgement is never presented as business success. "lost"
+// means a restore lost the outcome and its rerun has not ended (lostCondition).
+func invocationState(status, closeReason string, waiting, lost bool) string {
+	if lost {
+		return "lost"
+	}
 	if status == "FAILED" && closeReason == "expired" {
 		return "expired"
 	}
@@ -102,25 +110,33 @@ func (c *AgentCatalog) CreateInvocation(ctx context.Context, p Principal, id, ke
 		ttl: ttl, runAt: in.RunAt, attachments: in.Attachments, work: work, request: in, resource: true})
 }
 
-const invocationSelect = `SELECT o.id,o.agent_id,o.status,o.error_code,coalesce(o.requested_by_principal_id,''),o.created_at,o.completed_at,
-        (o.status='SUCCEEDED' AND i.result_payload_id IS NOT NULL),m.expires_at,i.close_reason,i.run_at,
+// invocationSelect reads an invocation. While it is lost, its error_code is
+// why its rerun was skipped, if it was; it has no completed_at; and a result
+// that the restored database still holds stays available.
+const invocationSelect = `SELECT o.id,o.agent_id,o.status,
+        CASE WHEN rerun.state='skipped' AND ` + lostCondition + ` THEN rerun.skip_reason ELSE o.error_code END,
+        coalesce(o.requested_by_principal_id,''),o.created_at,
+        CASE WHEN ` + lostCondition + ` THEN NULL ELSE o.completed_at END,
+        ((o.status='SUCCEEDED' OR ` + lostCondition + `) AND i.result_payload_id IS NOT NULL),m.expires_at,i.close_reason,i.run_at,
         (i.run_at IS NOT NULL AND i.released_at IS NULL),
-        array(SELECT f.id FROM attachments f WHERE f.operation_id=o.id ORDER BY f.position),i.result_due_at
+        array(SELECT f.id FROM attachments f WHERE f.operation_id=o.id ORDER BY f.position),i.result_due_at,
+        ` + lostCondition + `,loss.lost_at
     FROM platform_operations o JOIN owner_instructions i ON i.operation_id=o.id JOIN agents a ON a.id=o.agent_id
-    LEFT JOIN agent_mailboxes m ON m.instruction_id=o.id `
+    LEFT JOIN agent_mailboxes m ON m.instruction_id=o.id ` + rerunJoins
 
 func scanInvocation(row pgx.Row, administrative bool) (Invocation, error) {
 	var v Invocation
 	var status string
 	var expires *time.Time
-	var waiting bool
-	if err := row.Scan(&v.ID, &v.AgentID, &status, &v.ErrorCode, &v.RequestedBy, &v.CreatedAt, &v.CompletedAt, &v.ResultAvailable, &expires, &v.CloseReason, &v.RunAt, &waiting, &v.Attachments, &v.ResultDueAt); err != nil {
+	var waiting, lost bool
+	if err := row.Scan(&v.ID, &v.AgentID, &status, &v.ErrorCode, &v.RequestedBy, &v.CreatedAt, &v.CompletedAt, &v.ResultAvailable, &expires,
+		&v.CloseReason, &v.RunAt, &waiting, &v.Attachments, &v.ResultDueAt, &lost, &v.LostAt); err != nil {
 		return Invocation{}, err
 	}
 	if expires != nil {
 		v.ExpiresAt = *expires
 	}
-	v.State = invocationState(status, v.CloseReason, waiting)
+	v.State = invocationState(status, v.CloseReason, waiting, lost)
 	if !administrative {
 		v.RequestedBy = ""
 	}
@@ -206,14 +222,16 @@ func (c *AgentCatalog) ListInvocations(ctx context.Context, p Principal, agentID
 
 // invocationFilters are fixed SQL fragments, never built from input. The empty
 // key lists everything; "failed" and "expired" are disjoint, together they are
-// the dead letters of the queue.
+// the dead letters of the queue. "lost" excludes an invocation from every
+// other state.
 var invocationFilters = map[string]string{
 	"":          "",
-	"scheduled": " AND o.status='PENDING' AND i.run_at IS NOT NULL AND i.released_at IS NULL",
-	"accepted":  " AND o.status='PENDING' AND NOT (i.run_at IS NOT NULL AND i.released_at IS NULL)",
-	"working":   " AND o.status='RUNNING'",
-	"completed": " AND o.status='SUCCEEDED'",
-	"failed":    " AND o.status='FAILED' AND i.close_reason<>'expired'",
-	"expired":   " AND o.status='FAILED' AND i.close_reason='expired'",
+	"scheduled": " AND o.status='PENDING' AND i.run_at IS NOT NULL AND i.released_at IS NULL AND NOT " + lostCondition,
+	"accepted":  " AND o.status='PENDING' AND NOT (i.run_at IS NOT NULL AND i.released_at IS NULL) AND NOT " + lostCondition,
+	"working":   " AND o.status='RUNNING' AND NOT " + lostCondition,
+	"completed": " AND o.status='SUCCEEDED' AND NOT " + lostCondition,
+	"failed":    " AND o.status='FAILED' AND i.close_reason<>'expired' AND NOT " + lostCondition,
+	"expired":   " AND o.status='FAILED' AND i.close_reason='expired' AND NOT " + lostCondition,
 	"canceled":  " AND o.status='CANCELED'",
+	"lost":      " AND " + lostCondition,
 }

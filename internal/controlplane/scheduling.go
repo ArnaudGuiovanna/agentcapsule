@@ -128,10 +128,11 @@ func cancelScheduled(ctx context.Context, tx pgx.Tx, op, code string) error {
 	return err
 }
 
-// CancelInvocation cancels a scheduled invocation before it is released, or a
-// "working" one before its agent posts the outcome. Only the requester who still
-// holds the invoke right may. Queued or in-flight delivery is never interrupted
-// from here: that is refused (409) rather than raced.
+// CancelInvocation cancels a scheduled invocation before it is released, a
+// "working" one before its agent posts the outcome, or a lost one before its
+// rerun reaches the agent (cancelLost). Only the requester who still holds the
+// invoke right may. Queued or in-flight delivery is never interrupted from
+// here: that is refused (409) rather than raced.
 func (c *AgentCatalog) CancelInvocation(ctx context.Context, p Principal, id, key string) (APIReceipt, error) {
 	if p.Kind != "tenant" || !validOrganizationText(id, 100) {
 		return APIReceipt{}, ErrNotFound
@@ -176,13 +177,21 @@ func (c *AgentCatalog) CancelInvocation(ctx context.Context, p Principal, id, ke
 		if err != nil {
 			return 0, nil, err
 		}
+		canceled := scheduled
 		if scheduled {
 			if err = cancelScheduled(ctx, tx, id, "canceled"); err != nil {
 				return 0, nil, err
 			}
-		} else if ok, err := cancelWorking(ctx, tx, id, "canceled"); err != nil {
+		} else if canceled, err = cancelWorking(ctx, tx, id, "canceled"); err != nil {
 			return 0, nil, err
-		} else if !ok {
+		}
+		if !canceled {
+			// A lost invocation, until its rerun reaches the agent.
+			if canceled, err = cancelLost(ctx, tx, id); err != nil {
+				return 0, nil, err
+			}
+		}
+		if !canceled {
 			// Queued for delivery, being delivered, or already finished: a
 			// delivery in flight is never interrupted from here.
 			return 0, nil, ErrTransition

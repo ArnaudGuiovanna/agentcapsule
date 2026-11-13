@@ -319,6 +319,8 @@ func TestReadyChecksInstalledMigrationLedger(t *testing.T) {
 func revertTenantAgents(t *testing.T, s *Store) {
 	t.Helper()
 	if _, err := s.pool.Exec(t.Context(), `
+        DROP TABLE IF EXISTS invocation_reruns;
+        DROP FUNCTION IF EXISTS preserve_invocation_rerun();
         DROP TABLE IF EXISTS volume_restore_losses, volume_restores;
         DROP FUNCTION IF EXISTS preserve_restore_loss(), preserve_volume_restore();
         ALTER TABLE store_initializations DROP CONSTRAINT IF EXISTS store_initializations_pkey,

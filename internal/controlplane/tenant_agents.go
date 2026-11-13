@@ -783,7 +783,8 @@ func (c *AgentCatalog) admitTenantInvocation(ctx context.Context, p Principal, i
 
 // instructionResultTenant returns a completed private result only to the
 // principal who asked, and only while that principal still holds read_content on
-// the agent. Roles and later assignments of other members never open it.
+// the agent. Roles and later assignments of other members never open it. While
+// the invocation is lost, the result the database still holds stays readable.
 func (c *AgentCatalog) instructionResultTenant(ctx context.Context, p Principal, operation string) (json.RawMessage, error) {
 	if !validOrganizationText(operation, 100) {
 		return nil, ErrInput
@@ -800,9 +801,9 @@ func (c *AgentCatalog) instructionResultTenant(ctx context.Context, p Principal,
 	err = tx.QueryRow(ctx, `SELECT i.result_payload_id,o.agent_id FROM owner_instructions i
         JOIN platform_operations o ON o.id=i.operation_id
         JOIN agents a ON a.id=o.agent_id
-        JOIN transit_payloads payload ON payload.id=i.result_payload_id AND payload.kind='instruction_result' AND payload.ref_id=o.id
+        JOIN transit_payloads payload ON payload.id=i.result_payload_id AND payload.kind='instruction_result' AND payload.ref_id=o.id`+rerunJoins+`
         WHERE o.id=$1 AND a.tenant_id=$2 AND o.requested_by_principal_id=$3 AND o.kind='instruction'
-          AND o.status='SUCCEEDED' AND i.result_payload_id IS NOT NULL`, operation, p.TenantID, p.ID).Scan(&payload, &agentID)
+          AND (o.status='SUCCEEDED' OR `+lostCondition+`) AND i.result_payload_id IS NOT NULL`, operation, p.TenantID, p.ID).Scan(&payload, &agentID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}

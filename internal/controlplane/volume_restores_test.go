@@ -180,7 +180,7 @@ func TestVolumeRestoreOperationAndLossMapping(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	losses, err := s.CompleteVolumeRestore(t.Context(), r.ID, host, []string{lost, unmatched})
+	losses, err := s.CompleteVolumeRestore(t.Context(), r.ID, host, declared(lost, unmatched))
 	if err != nil || len(losses) != 2 {
 		t.Fatal("losses", losses, err)
 	}
@@ -203,7 +203,7 @@ func TestVolumeRestoreOperationAndLossMapping(t *testing.T) {
 	if stage, incarnation := enrollmentState(t, s, e.AgentID); stage != "READY" || incarnation != 2 {
 		t.Fatal("volume after the restore", stage, incarnation)
 	}
-	again, err := s.CompleteVolumeRestore(t.Context(), r.ID, host, []string{unmatched})
+	again, err := s.CompleteVolumeRestore(t.Context(), r.ID, host, declared(unmatched))
 	if err != nil || len(again) != 2 {
 		t.Fatal("a repeated completion changed the losses", again, err)
 	}
@@ -329,7 +329,7 @@ func TestVolumeRestoreStepsAreAtomic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = s.CompleteVolumeRestore(t.Context(), restoreID(1), host, []string{unmatched}); err == nil {
+	if _, err = s.CompleteVolumeRestore(t.Context(), restoreID(1), host, declared(unmatched)); err == nil {
 		t.Fatal("injected failure ignored")
 	}
 	if stage, _ := enrollmentState(t, s, e.AgentID); stage != "RESTORING" {
@@ -341,7 +341,7 @@ func TestVolumeRestoreStepsAreAtomic(t *testing.T) {
 	if _, err = s.pool.Exec(t.Context(), "DROP TRIGGER fail_loss ON volume_restore_losses"); err != nil {
 		t.Fatal(err)
 	}
-	if losses, err := s.CompleteVolumeRestore(t.Context(), restoreID(1), host, []string{unmatched}); err != nil || len(losses) != 1 {
+	if losses, err := s.CompleteVolumeRestore(t.Context(), restoreID(1), host, declared(unmatched)); err != nil || len(losses) != 1 {
 		t.Fatal("completion after the failure", losses, err)
 	}
 }

@@ -1189,7 +1189,8 @@ paths:
         Technical status visible to the owner or to an authorized service. A
         foreign resource returns 404. Tenant domain (agent:read): visible to
         the requester of the operation or to a role that can read agent
-        metadata.
+        metadata. An instruction that a restore lost runs again: its operation
+        is PENDING or RUNNING again until the rerun ends.
       security: [{bearer: []}, {delegatedBearer: []}, {serviceBearer: []}]
       parameters: [{$ref: '#/components/parameters/ResourceID'}]
       responses:
@@ -1267,7 +1268,7 @@ paths:
       parameters:
         - {$ref: '#/components/parameters/ResourceID'}
         - {name: after, in: query, schema: {type: string, maxLength: 100}, description: "Last invocation identifier received."}
-        - {name: state, in: query, schema: {type: string, enum: [scheduled, accepted, working, completed, failed, expired, canceled]}, description: "State filter. `failed` and `expired` are disjoint and make up the dead letters."}
+        - {name: state, in: query, schema: {type: string, enum: [scheduled, accepted, working, completed, failed, expired, canceled, lost]}, description: "State filter. `failed` and `expired` are disjoint and make up the dead letters. `lost` lists the invocations whose outcome a restore lost and whose rerun has not ended."}
         - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 100}}
       responses:
         '200':
@@ -1342,12 +1343,14 @@ paths:
   /v1/invocations/{id}/cancel:
     post:
       description: >-
-        Cancels a scheduled invocation that has not been released yet, or a
-        "working" invocation whose agent has not yet posted its result
-        (agent:invoke). Reserved to the requester who still holds the `invoke`
-        permission. An administrator or another member gets 404. An invocation
-        that is queued or being delivered is never interrupted from here: 409.
-        The result the agent posts afterwards is rejected. Idempotent.
+        Cancels a scheduled invocation that has not been released yet, a
+        "working" invocation whose agent has not yet posted its result, or a
+        `lost` invocation whose rerun has not reached the agent yet: the rerun
+        then never runs (agent:invoke). Reserved to the requester who still
+        holds the `invoke` permission. An administrator or another member gets
+        404. Any other invocation that is queued or being delivered is never
+        interrupted from here: 409. The result the agent posts afterwards is
+        rejected. Idempotent.
       security: [{delegatedBearer: []}, {serviceBearer: []}]
       parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
       responses:
@@ -1693,7 +1696,9 @@ paths:
       description: >-
         Same rule as `/v1/operations/{id}/result`: original requester AND
         current `read_content` (agent:content:read). Neither an administrator
-        nor another member.
+        nor another member. While the invocation is `lost`, the result that
+        the database still holds stays readable; the rerun's result replaces
+        it.
       security: [{delegatedBearer: []}, {serviceBearer: []}]
       parameters: [{$ref: '#/components/parameters/ResourceID'}]
       responses:
@@ -2181,15 +2186,30 @@ components:
         agent_id: {type: string}
         state:
           type: string
-          enum: [scheduled, accepted, working, completed, failed, expired, canceled, unknown]
+          enum: [scheduled, accepted, working, completed, failed, expired, canceled, lost, unknown]
           description: >-
             accepted = persisted, not yet processed; working = being
             delivered, or delivered and acknowledged as "working" by the
             agent, which will post its result later; completed = the agent
             replied. A delivery acknowledgment is never a business success.
             `error_code` `work_timeout`: the agent did not post its result in
-            time; `agent_failed`: it declared the failure.
+            time; `agent_failed`: it declared the failure. lost = a restore of
+            the agent lost its outcome (`lost_at`), and its rerun under the
+            same identifier has not ended. Without `error_code`, the rerun is
+            queued or running. With one, it will not run again:
+            `requester_revoked` (the requester can no longer invoke the
+            agent), `agent_unavailable` (the agent is being deleted),
+            `input_purged` or `attachments_purged` (the content is no longer
+            stored). A rerun then ends like any invocation.
         error_code: {type: string}
+        lost_at:
+          type: string
+          format: date-time
+          description: >-
+            When a restore of the agent declared this invocation's outcome
+            lost. It stays once the rerun ends: a `completed` invocation with
+            `lost_at` ran again after a restore, and its `completed_at` is the
+            rerun's.
         requested_by: {type: string, description: "Visible only to administrative reader roles."}
         created_at: {type: string, format: date-time}
         completed_at: {type: string, format: date-time}

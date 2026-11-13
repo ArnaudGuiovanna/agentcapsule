@@ -111,6 +111,16 @@ func (t *Transit) ClaimInstruction(ctx context.Context, id string, lease time.Du
 	if i.Closing {
 		return attempt, ErrDeliveryClosing
 	}
+	// The rerun of a lost invocation is due only while its requester may
+	// still invoke the agent. Checked before any attempt, so nothing is sent.
+	if skipped, err := t.skipRevokedRerun(ctx, tx, i, a); err != nil {
+		return attempt, err
+	} else if skipped {
+		if err = commit(ctx, tx); err != nil {
+			return attempt, err
+		}
+		return attempt, ErrRerunSkipped
+	}
 	var now time.Time
 	if err = tx.QueryRow(ctx, "SELECT clock_timestamp()").Scan(&now); err != nil {
 		return attempt, err
@@ -281,7 +291,7 @@ func (t *Transit) AcknowledgeInstruction(ctx context.Context, id, token string, 
 			return err
 		}
 	} else {
-		payload, err := t.putOwned(ctx, tx, "instruction_result", i.Operation, []string{i.Destination}, map[string]string{i.Destination: i.Requester}, result)
+		payload, err := t.putResult(ctx, tx, i.Operation, i.Destination, i.Requester, result)
 		if err != nil {
 			return err
 		}
@@ -413,6 +423,9 @@ func (t *Transit) DispatchMailbox(ctx context.Context, id string, lease time.Dur
 		a, err := t.ClaimInstruction(ctx, id, lease)
 		if errors.Is(err, ErrExpired) || errors.Is(err, ErrAttemptsExhausted) || errors.Is(err, ErrDeliveryClosing) {
 			retire = true
+			return nil
+		}
+		if errors.Is(err, ErrRerunSkipped) {
 			return nil
 		}
 		if err != nil {

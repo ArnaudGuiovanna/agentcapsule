@@ -198,47 +198,11 @@ func (t *Transit) put(ctx context.Context, tx pgx.Tx, kind, reference string, pa
 // supplies the requesting principal: private content belongs to whoever asked,
 // not to whoever administers the agent (D-02).
 func (t *Transit) putOwned(ctx context.Context, tx pgx.Tx, kind, reference string, parties []string, owners map[string]string, body []byte) (TransitReference, error) {
-	if !transitKind(kind) || reference == "" || len(reference) > 100 || len(body) < 1 || len(body) > MaxTransitBytes || len(parties) < 1 || len(parties) > 2 {
-		return TransitReference{}, ErrInput
-	}
-	ids := slices.Clone(parties)
-	slices.Sort(ids)
-	ids = slices.Compact(ids)
-	agents, err := lockAgents(ctx, tx, ids...)
+	binding, encrypted, err := t.seal(ctx, tx, newID("pay"), kind, reference, parties, owners, body)
 	if err != nil {
 		return TransitReference{}, err
 	}
-	binding := transitBinding{Version: 1, ID: newID("pay"), Kind: kind, Reference: reference, KeyID: t.active}
-	for _, id := range ids {
-		a, ok := agents[id]
-		if !ok {
-			return TransitReference{}, ErrNotFound
-		}
-		if a.Phase != "LIVE" {
-			return TransitReference{}, ErrUnavailable
-		}
-		owner := a.Owner
-		if a.Tenant != "" {
-			if owner = owners[id]; owner == "" {
-				return TransitReference{}, ErrInput
-			}
-		}
-		binding.Parties = append(binding.Parties, transitParty{id, owner})
-	}
-	k, err := t.activeKey(ctx, tx)
-	if err != nil {
-		return TransitReference{}, err
-	}
-	hash := sha256.Sum256(body)
-	binding.Hash = hash[:]
-	aad, err := json.Marshal(binding)
-	if err != nil {
-		return TransitReference{}, err
-	}
-	nonce := make([]byte, k.cipher.NonceSize())
-	_, _ = rand.Read(nonce)
-	encrypted := k.cipher.Seal(nonce, nonce, body, aad)
-	_, err = tx.Exec(ctx, "INSERT INTO transit_payloads(id,kind,ref_id,key_id,content_hash,ciphertext) VALUES($1,$2,$3,$4,$5,$6)", binding.ID, kind, reference, t.active, hash[:], encrypted)
+	_, err = tx.Exec(ctx, "INSERT INTO transit_payloads(id,kind,ref_id,key_id,content_hash,ciphertext) VALUES($1,$2,$3,$4,$5,$6)", binding.ID, kind, reference, binding.KeyID, binding.Hash, encrypted)
 	if err != nil {
 		return TransitReference{}, err
 	}
@@ -247,7 +211,99 @@ func (t *Transit) putOwned(ctx context.Context, tx pgx.Tx, kind, reference strin
 			return TransitReference{}, err
 		}
 	}
-	return TransitReference{binding.ID, hash[:]}, nil
+	return TransitReference{binding.ID, binding.Hash}, nil
+}
+
+// seal binds body to the payload ID, its kind, its reference and its parties,
+// and encrypts it with the active key. It locks the parties' agents.
+func (t *Transit) seal(ctx context.Context, tx pgx.Tx, id, kind, reference string, parties []string, owners map[string]string, body []byte) (transitBinding, []byte, error) {
+	binding := transitBinding{Version: 1, ID: id, Kind: kind, Reference: reference, KeyID: t.active}
+	if !transitKind(kind) || reference == "" || len(reference) > 100 || len(body) < 1 || len(body) > MaxTransitBytes || len(parties) < 1 || len(parties) > 2 {
+		return binding, nil, ErrInput
+	}
+	ids := slices.Clone(parties)
+	slices.Sort(ids)
+	ids = slices.Compact(ids)
+	agents, err := lockAgents(ctx, tx, ids...)
+	if err != nil {
+		return binding, nil, err
+	}
+	for _, id := range ids {
+		a, ok := agents[id]
+		if !ok {
+			return binding, nil, ErrNotFound
+		}
+		if a.Phase != "LIVE" {
+			return binding, nil, ErrUnavailable
+		}
+		owner := a.Owner
+		if a.Tenant != "" {
+			if owner = owners[id]; owner == "" {
+				return binding, nil, ErrInput
+			}
+		}
+		binding.Parties = append(binding.Parties, transitParty{id, owner})
+	}
+	k, err := t.activeKey(ctx, tx)
+	if err != nil {
+		return binding, nil, err
+	}
+	hash := sha256.Sum256(body)
+	binding.Hash = hash[:]
+	aad, err := json.Marshal(binding)
+	if err != nil {
+		return binding, nil, err
+	}
+	nonce := make([]byte, k.cipher.NonceSize())
+	_, _ = rand.Read(nonce)
+	return binding, k.cipher.Seal(nonce, nonce, body, aad), nil
+}
+
+// putResult stores the result of an instruction. The rerun of an invocation
+// that a restore lost replaces the result that the restored database still
+// holds: the same payload row, sealed again for the same party, its retention
+// clock reset. Any other second result is still refused by the uniqueness of
+// the payload.
+func (t *Transit) putResult(ctx context.Context, tx pgx.Tx, op, agentID, requester string, body []byte) (TransitReference, error) {
+	owners := map[string]string{agentID: requester}
+	var old string
+	err := tx.QueryRow(ctx, `SELECT p.id FROM transit_payloads p WHERE p.kind='instruction_result' AND p.ref_id=$1
+        AND EXISTS(SELECT 1 FROM invocation_reruns r WHERE r.invocation_id=$1 AND r.state='queued') FOR UPDATE OF p`, op).Scan(&old)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return t.putOwned(ctx, tx, "instruction_result", op, []string{agentID}, owners, body)
+	}
+	if err != nil {
+		return TransitReference{}, err
+	}
+	binding, encrypted, err := t.seal(ctx, tx, old, "instruction_result", op, []string{agentID}, owners, body)
+	if err != nil {
+		return TransitReference{}, err
+	}
+	parties, err := tx.Query(ctx, "SELECT agent_id,owner_user_id FROM transit_parties WHERE payload_id=$1", old)
+	if err != nil {
+		return TransitReference{}, err
+	}
+	var bound []transitParty
+	for parties.Next() {
+		var p transitParty
+		if err = parties.Scan(&p.Agent, &p.Owner); err != nil {
+			parties.Close()
+			return TransitReference{}, err
+		}
+		bound = append(bound, p)
+	}
+	parties.Close()
+	if err = parties.Err(); err != nil {
+		return TransitReference{}, err
+	}
+	if !slices.Equal(bound, binding.Parties) {
+		return TransitReference{}, ErrTransitPayload
+	}
+	if _, err = tx.Exec(ctx, `UPDATE transit_payloads SET key_id=$2,content_hash=$3,ciphertext=$4,created_at=clock_timestamp(),
+        delivered_at=NULL,purge_after=NULL,purged_at=NULL WHERE id=$1`, old, binding.KeyID, binding.Hash, encrypted); err != nil {
+		return TransitReference{}, err
+	}
+	return TransitReference{old, binding.Hash}, nil
 }
 
 func payloadParties(ctx context.Context, tx pgx.Tx, id string) ([]transitParty, error) {
