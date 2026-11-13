@@ -2,9 +2,10 @@
 
 Date: November 8, 2026. **Status: option B chosen on November 8, 2026**
 (announced loss within the RPO window). The P2 model was revised on November 13,
-2026 (see [Model revision (option B)](#model-revision-option-b)). That contract
-diff must be reviewed before any incompatible code; REC-02 is unblocked under
-this condition.
+2026 (see [Model revision (option B)](#model-revision-option-b)). The
+implementation session reviewed that contract diff and reran its checks before
+the restore authority's code changed (REC-02). The product owner has not
+reviewed it yet; the defaults at the end await confirmation.
 The failure domains and the numbers (RPO, RTO, storage) were set on November 13
 in [004-recovery-objectives.md](004-recovery-objectives.md).
 References: product spec §10.4 ([product.md](../product.md)), REC-01 to REC-04,
@@ -91,7 +92,9 @@ product owner's decision.
 
 ## Model revision (option B)
 
-November 13, 2026. **Status: proposed, for review before any code.** This is
+November 13, 2026. **Status: reviewed by the implementation session (checks
+rerun), then implemented in the restore authority; the product owner's review
+is pending.** This is
 the contract diff that rule D-03 requires. Files:
 [restore_authority.qnt](../../spec/restore_authority.qnt) (the model),
 [restore_authority_test.qnt](../../spec/restore_authority_test.qnt) (runs) and
