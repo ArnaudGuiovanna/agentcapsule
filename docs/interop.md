@@ -244,7 +244,12 @@ With `--systemd`, the script also checks [deploy/systemd](../deploy/systemd):
   - `systemd-analyze verify` passes both units without a single warning. It
     exits 0 on an unknown key, so any output fails.
   - The bridge's exposure is at most 2.0.
-  - sysusers creates the bridge's user, and tmpfiles both directories.
+  - sysusers creates the bridge's user, and tmpfiles both directories with
+    their modes. Without root, tmpfiles cannot give the directories to their
+    owners; it must still resolve them.
+
+  CI runs these checks: `--systemd static`. They pass with systemd 255 (Ubuntu
+  24.04) and 259.
 - **Supervision**, with `--services` as well. The real bridge runs under its
   unit in the caller's systemd user manager, and the services under theirs,
   with a fake worker. The run checks:
@@ -332,7 +337,8 @@ verified by SHA256) and the images (about 400 MB).
 python3 scripts/verify-interop.py --go /path/to/go1.27.3/bin/go --output <new-dir>
 # With the private services: status passed, int01_complete true.
 python3 scripts/verify-interop.py --go /path/to/go1.27.3/bin/go --services --output <new-dir>
-# Also the systemd units, run under the caller's user manager.
+# Also the systemd units, run under the caller's user manager
+# ("--systemd static": only the checks that need no user manager, as in CI).
 python3 scripts/verify-interop.py --go /path/to/go1.27.3/bin/go --services --systemd --output <new-dir>
 ```
 
@@ -350,7 +356,7 @@ The script refuses:
 - an image that is not the pinned one.
 
 It always removes the services, their volumes and networks. CI runs it with
-`--services` on every push.
+`--services --systemd static` on every push.
 
 To run the services on a host:
 1. Run [make-certs.sh](../deploy/interop/make-certs.sh), or provide the same

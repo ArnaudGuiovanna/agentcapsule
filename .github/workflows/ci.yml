@@ -162,9 +162,11 @@ jobs:
           # Starts deploy/interop from pinned images with lab certificates, then
           # publishes, searches and validates OASF records in Directory, checks
           # refused identities, exchanges messages through the SLIM node and
-          # runs A2A over SLIM. Removes the services afterwards.
+          # runs A2A over SLIM. Removes the services afterwards. Also checks the
+          # systemd units of deploy/systemd without running them (the runner
+          # has no systemd user manager for the supervision checks).
           python3 scripts/verify-interop.py --go "$(command -v go)" --services \
-            --output "$RUNNER_TEMP/ci/interop"
+            --systemd static --output "$RUNNER_TEMP/ci/interop"
 
       - name: Preserve qualification reports
         if: always()

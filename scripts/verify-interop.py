@@ -16,7 +16,8 @@ runs last.
 With --systemd: also the shipped units of deploy/systemd. systemd-analyze
 verifies them, inside a throwaway root, without a single warning; the bridge's
 exposure is scored; the sysusers and tmpfiles entries are applied to that root.
-With --services as well, the real bridge runs under its unit in the caller's
+"--systemd static" stops there (CI: it needs no user manager). With
+--services and a plain --systemd, the real bridge runs under its unit in the caller's
 systemd user manager, next to the services under theirs: a delivery round trip,
 a node restart at the same address, the services stopped for longer than three
 probes (the bridge ends with code 3 and systemd starts new ones until the node
@@ -145,12 +146,21 @@ def check_units(units, work, output):
     sysusers = tool("sysusers", "systemd-sysusers", f"--root={root}", str(units / "agentcapsule-slim.sysusers"))
     if sysusers.returncode or not (root / "etc/passwd").read_text().startswith("agentcapsule-slim:"):
         raise RuntimeError("the bridge's user was not created; see systemd-sysusers.log")
-    tmpfiles = tool("tmpfiles", "systemd-tmpfiles", f"--root={root}", "--dry-run", "--create", str(units / "agentcapsule-slim.tmpfiles"))
-    created = re.findall(r"Would create directory \S+?(/run/agentcapsule-\w+)$", tmpfiles.stdout + tmpfiles.stderr, re.M)
-    if tmpfiles.returncode or sorted(created) != ["/run/agentcapsule-slim", "/run/agentcapsule-worker"]:
-        raise RuntimeError("the socket directories would not be created; see systemd-tmpfiles.log")
+    tmpfiles = tool("tmpfiles", "systemd-tmpfiles", f"--root={root}", "--create", str(units / "agentcapsule-slim.tmpfiles"))
+    # A line systemd cannot parse, or an unknown user, exits 65 and names the
+    # line. Without root (CI), the directories are created but not given to
+    # their owners: exit 73, one fchownat line for each.
+    modes = {name: (root / "run" / name).stat().st_mode & 0o7777 if (root / "run" / name).is_dir() else None
+             for name in ("agentcapsule-slim", "agentcapsule-worker")}
+    lines = [line for line in (tmpfiles.stdout + tmpfiles.stderr).splitlines() if line.strip()]
+    owners_applied = tmpfiles.returncode == 0 and not lines
+    chown_refused = os.geteuid() != 0 and tmpfiles.returncode == 73 and len(lines) == 2 and all(
+        re.fullmatch(r"fchownat\(\) of \S+/run/agentcapsule-(slim|worker) failed: Operation not permitted", line) for line in lines)
+    if modes != {"agentcapsule-slim": 0o750, "agentcapsule-worker": 0o711} or not (owners_applied or chown_refused):
+        raise RuntimeError("the socket directories were not created as written; see systemd-tmpfiles.log")
     version = subprocess.check_output(["systemd-analyze", "--version"], text=True).splitlines()[0]
-    return {"systemd": version, "verified_units": list(SYSTEMD_UNITS), "warnings": 0, "bridge_exposure": float(score.group(1))}
+    return {"systemd": version, "verified_units": list(SYSTEMD_UNITS), "warnings": 0, "bridge_exposure": float(score.group(1)),
+            "tmpfiles_owners_applied": owners_applied}
 
 
 class UnixHTTPConnection(http.client.HTTPConnection):
@@ -396,7 +406,8 @@ def main():
     parser.add_argument("--go", default="go", help="Go 1.27.3 executable")
     parser.add_argument("--output", required=True, type=Path, help="new evidence directory")
     parser.add_argument("--services", action="store_true", help="also start and test the private services (Docker Compose)")
-    parser.add_argument("--systemd", action="store_true", help="also check deploy/systemd; with --services, run the bridge and the services under them (systemctl --user)")
+    parser.add_argument("--systemd", nargs="?", const="full", choices=["static", "full"],
+                        help="also check deploy/systemd; with --services and without 'static', run the bridge and the services under them (systemctl --user)")
     args = parser.parse_args()
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -556,7 +567,7 @@ def main():
                                              "-run", "AgainstThePrivateDirectory", "./internal/directory"], ROOT, timeout=900, extra={**extra, "CGO_ENABLED": "0"})
                 report["passed_platform_tests"] = passed_tests(log, PLATFORM_TESTS)
                 stats("after_tests")
-                if args.systemd:
+                if args.systemd == "full":
                     # Last: it stops and starts the services.
                     run("slimbridge-build", [go, "build", "-mod=readonly", "-trimpath", "-o", str(work / "agentcapsule-slim-bridge"), "."], bridge, timeout=900)
                     report["systemd"]["supervision"] = supervise_units(modules["systemd"], modules["deploy"], work / "agentcapsule-slim-bridge",
