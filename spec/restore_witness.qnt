@@ -48,7 +48,72 @@ module restoreWitnessMissingHistoryBroken {
     all { pc == 10, recordReceipt({store:1,incarnation:2,revision:0,subjects:Set()}), pc' = pc+1 },
     all { pc == 11, activate(1), pc' = pc+1 }
   }
+  val checked = noUndeclaredLoss
+}
+/** D-03 option B. The same image, older than the ACK, activates once the loss is
+ * declared. Safety holds at every step; the former guarantee does not. */
+module restoreWitnessDeclaredLossGuard {
+  import restoreAuthority(STORES=Set(0,1), SUBJECTS=Set(0,1), EVENT_DEST=Map(0->1,1->0), EVENT_SUBJECT=Map(0->0,1->1),
+    MAX_INC=2, ROOT_ROLLBACK=false, ACK_EPOCH=true, RECHECK=true, HISTORY_GUARD=true, RAW_KEK=false, RETIRE_GUARD=true, SEAL_GUARD=true, CACHE_GUARD=true).* from "./restore_authority"
+  run guardTest = init.then(cacheKey(1,0)).expect(safety).then(beginEffect(1,0)).expect(safety).then(commitEffect(1)).expect(safety).then(recordOutcome(0)).expect(safety).then(beginRestore(1)).expect(safety).then(retire(1)).expect(safety).then(install(1)).expect(safety).then(launchRestore(1)).expect(safety).then(scan(1)).expect(safety).then(synchronize(1)).expect(safety).then(recordReceipt({store:1,incarnation:2,revision:0,subjects:Set()})).expect(safety).then(declareLoss(1)).expect(safety).then(activate(1)).expect(safety and not(noLostAcknowledgedOutcome))
+}
+module restoreWitnessDeclaredLossFormerInvariant {
+  import restoreAuthority(STORES=Set(0,1), SUBJECTS=Set(0,1), EVENT_DEST=Map(0->1,1->0), EVENT_SUBJECT=Map(0->0,1->1),
+    MAX_INC=2, ROOT_ROLLBACK=false, ACK_EPOCH=true, RECHECK=true, HISTORY_GUARD=true, RAW_KEK=false, RETIRE_GUARD=true, SEAL_GUARD=true, CACHE_GUARD=true).* from "./restore_authority"
+  var pc: int
+  action traceInit = all { init, pc' = 0 }
+  action traceStep = any {
+    all { pc == 0, cacheKey(1,0), pc' = pc+1 },
+    all { pc == 1, beginEffect(1,0), pc' = pc+1 },
+    all { pc == 2, commitEffect(1), pc' = pc+1 },
+    all { pc == 3, recordOutcome(0), pc' = pc+1 },
+    all { pc == 4, beginRestore(1), pc' = pc+1 },
+    all { pc == 5, retire(1), pc' = pc+1 },
+    all { pc == 6, install(1), pc' = pc+1 },
+    all { pc == 7, launchRestore(1), pc' = pc+1 },
+    all { pc == 8, scan(1), pc' = pc+1 },
+    all { pc == 9, synchronize(1), pc' = pc+1 },
+    all { pc == 10, recordReceipt({store:1,incarnation:2,revision:0,subjects:Set()}), pc' = pc+1 },
+    all { pc == 11, declareLoss(1), pc' = pc+1 },
+    all { pc == 12, activate(1), pc' = pc+1 }
+  }
+  // Violated on this schedule: the reason option B changes the model.
   val checked = noLostAcknowledgedOutcome
+  // Holds on this schedule: the option B guarantee and the rest of safety.
+  val kept = safety
+}
+/** A declared loss lives in the authority. If a control-plane backup could roll
+ * the authority back, an announced loss would be forgotten. */
+module restoreWitnessForgottenLossGuard {
+  import restoreAuthority(STORES=Set(0,1), SUBJECTS=Set(0,1), EVENT_DEST=Map(0->1,1->0), EVENT_SUBJECT=Map(0->0,1->1),
+    MAX_INC=2, ROOT_ROLLBACK=false, ACK_EPOCH=true, RECHECK=true, HISTORY_GUARD=true, RAW_KEK=false, RETIRE_GUARD=true, SEAL_GUARD=true, CACHE_GUARD=true).* from "./restore_authority"
+  run guardTest = init.then(cacheKey(1,0)).expect(safety).then(beginEffect(1,0)).expect(safety).then(commitEffect(1)).expect(safety).then(recordOutcome(0)).expect(safety).then(beginRestore(1)).expect(safety).then(takeControlBackup).expect(safety).then(retire(1)).expect(safety).then(install(1)).expect(safety).then(launchRestore(1)).expect(safety).then(scan(1)).expect(safety).then(synchronize(1)).expect(safety).then(recordReceipt({store:1,incarnation:2,revision:0,subjects:Set()})).expect(safety).then(declareLoss(1)).expect(safety).then(activate(1)).expect(safety).then(beginRestore(0)).expect(safety).then(retire(0)).expect(safety).then(install(0)).expect(safety and root.lost == Set(lossAt(0,2)))
+}
+module restoreWitnessForgottenLossBroken {
+  import restoreAuthority(STORES=Set(0,1), SUBJECTS=Set(0,1), EVENT_DEST=Map(0->1,1->0), EVENT_SUBJECT=Map(0->0,1->1),
+    MAX_INC=2, ROOT_ROLLBACK=true, ACK_EPOCH=true, RECHECK=true, HISTORY_GUARD=true, RAW_KEK=false, RETIRE_GUARD=true, SEAL_GUARD=true, CACHE_GUARD=true).* from "./restore_authority"
+  var pc: int
+  action traceInit = all { init, pc' = 0 }
+  action traceStep = any {
+    all { pc == 0, cacheKey(1,0), pc' = pc+1 },
+    all { pc == 1, beginEffect(1,0), pc' = pc+1 },
+    all { pc == 2, commitEffect(1), pc' = pc+1 },
+    all { pc == 3, recordOutcome(0), pc' = pc+1 },
+    all { pc == 4, beginRestore(1), pc' = pc+1 },
+    all { pc == 5, takeControlBackup, pc' = pc+1 },
+    all { pc == 6, retire(1), pc' = pc+1 },
+    all { pc == 7, install(1), pc' = pc+1 },
+    all { pc == 8, launchRestore(1), pc' = pc+1 },
+    all { pc == 9, scan(1), pc' = pc+1 },
+    all { pc == 10, synchronize(1), pc' = pc+1 },
+    all { pc == 11, recordReceipt({store:1,incarnation:2,revision:0,subjects:Set()}), pc' = pc+1 },
+    all { pc == 12, declareLoss(1), pc' = pc+1 },
+    all { pc == 13, activate(1), pc' = pc+1 },
+    all { pc == 14, beginRestore(0), pc' = pc+1 },
+    all { pc == 15, retire(0), pc' = pc+1 },
+    all { pc == 16, install(0), pc' = pc+1 }
+  }
+  val checked = declaredLossesSurvive
 }
 module restoreWitnessSurvivingKEKGuard {
   import restoreAuthority(STORES=Set(0,1), SUBJECTS=Set(0,1), EVENT_DEST=Map(0->1,1->0), EVENT_SUBJECT=Map(0->0,1->1),

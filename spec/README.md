@@ -48,7 +48,7 @@ npx quint verify --main=invocationCompletion --init=init --step=step \
 | `concurrent_protocol.qnt` (+ `_bounded`, `_focused`, `_loaded`, `_witness`, `_test`) | Concurrent SQL coordination with delayed RPCs; bounded and witness variants for TLC |
 | `revocation.qnt` (+ `_test`) | Deletion barrier for one subject across several stores |
 | `store_seal.qnt`, `store_enrollment.qnt` | Permanent store seal; restoration blocking new work before retiring a store |
-| `restore_authority.qnt` (+ `_test`, `_witness`) | External restore authority and outcome records |
+| `restore_authority.qnt` (+ `_test`, `_witness`) | External restore authority, outcome records and declared losses within the RPO window (D-03 option B) |
 | `credential_renewal.qnt` | Credential replacement of a live boot |
 | `service_progress.qnt` (+ `_controls`, `_test`) | Progress of observation and notification slots |
 | `invocation_completion.qnt` | Deferred results: an agent acknowledges "working" and posts one outcome; expiry, cancellation and deletion race to exactly one outcome |
