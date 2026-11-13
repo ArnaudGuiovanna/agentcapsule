@@ -1,7 +1,7 @@
 # D-05 — Keys, secrets and revocations outside the restored domain
 
-Date: November 13, 2026. **Status: proposed.** The product owner has not
-decided. This record lists what the platform holds, states the requirement,
+Date: November 13, 2026. **Status: option (a) chosen by the product owner on
+November 13, 2026** (see [Decision](#decision)). This record lists what the platform holds, states the requirement,
 compares four options and recommends one. References:
 [ADR 003](003-restore-rpo.md) (declared losses, question 1),
 [ADR 004](004-recovery-objectives.md) (standby host, RTO 1 hour), product spec
@@ -459,3 +459,26 @@ For option (a), once decided:
    that window are still announced as a time window. Is that enough, or
    should ADR 004 move PostgreSQL to synchronous replication (no database
    window on failover; each commit waits for the standby)?
+
+## Decision
+
+November 13, 2026. The product owner chose:
+
+- **Option (a): a synchronous replica of the authorities on the standby,**
+  built into the platform (question 1). The third host of (c) stays a later
+  step if depending on the standby proves costly.
+- **The token secrets in idempotency receipts** (section 1, "Short-lived
+  material"): they stay in the receipt, encrypted with a **daily key kept in
+  the authorities and destroyed after 24 hours**. A backup older than a day
+  then holds receipts that nothing can decrypt. The replay of a request keeps
+  its current behaviour.
+
+Questions 2 to 5 take the proposed answers until the product owner says
+otherwise:
+- (2) degraded mode after 30 seconds without the standby, for outcome
+  records, fence revisions and revocations; seals, new keys and key
+  destruction wait;
+- (3) secrets on the standby are wrapped to an unlock key kept off both hosts;
+- (4) no escrow of volume keys in S3;
+- (5) the database window stays announced as a time window; PostgreSQL keeps
+  its asynchronous WAL archiving.

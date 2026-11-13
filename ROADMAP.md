@@ -122,7 +122,7 @@ a production host yet.
 | D-02 | Effect of reassignment and revocation on admitted work and past results ([ADR 002](docs/adr/002-assignment-revocation.md)) |
 | D-03 | RPO, confirmed results and restore ([ADR 003](docs/adr/003-restore-rpo.md): option B, an announced loss within the window; numbers in [ADR 004](docs/adr/004-recovery-objectives.md)); the P2 model is revised for a declared loss (`noUndeclaredLoss`) and implemented: declared losses, reruns, the API's `lost` state; the product owner's confirmation of the defaults (ADR 003) remains |
 | D-04 | Delivery closure when notifications are exhausted; any priority or reservation rule that changes progress |
-| D-05 | Keys and secrets outside the restored domain; a secret store usable in self-hosting. Proposal in [ADR 005](docs/adr/005-keys-outside-restored-domain.md): a synchronous replica of the authorities on the standby (non-binding). Until decided, the volume keys and the restore catalogue never leave the primary, so a lost host loses the agents' memory |
+| D-05 | Keys and secrets outside the restored domain; a secret store usable in self-hosting. Decided in [ADR 005](docs/adr/005-keys-outside-restored-domain.md): a synchronous replica of the authorities on the standby; receipt token secrets under a daily key destroyed after 24 hours. Until decided, the volume keys and the restore catalogue never leave the primary, so a lost host loses the agents' memory |
 
 ## Known limits worth knowing before contributing
 
