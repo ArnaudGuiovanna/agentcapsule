@@ -34,7 +34,7 @@ Do not run `go test ./...` at the repository root with sources outside
 | `test_check_go.py` | Unit tests of `check-go.py` |
 | `check-repo-hygiene.py` | Rejects new tracked files with a personal absolute path or Go sources committed under `_evidence/` (baseline: `hygiene-baseline.json`) |
 | `verify-postgres.py` | Go/race tests against a private, owned PostgreSQL cluster, with crash/WAL recovery; optional live LLM phase |
-| `verify-backups.py` | Continuous WAL archiving with pgBackRest to S3 and SFTP (Docker, pinned images): loss bound, restore from each store, no clear text, and the base-backup freshness written for node_exporter |
+| `verify-backups.py` | Continuous WAL archiving with pgBackRest to S3 and SFTP (Docker, pinned images): loss bound, restore from each store, no clear text, and the base-backup freshness written for node_exporter; then the standby: replay from the SFTP directory and from S3, a disaster and a promotion (rows lost, promotion time), the new primary's own repository |
 | `test_backup_metrics.py` | Unit tests of `deploy/backup/agentcapsule-backup-metrics.py` (base-backup freshness for node_exporter) |
 | `verify-alerts.py` | The alert rules: every metric they use is registered by the code or declared by the backup freshness script (with its label values); with a pinned Prometheus image, `promtool check rules` and `promtool test rules` |
 | `verify-runtime.py` | Real Go host-driver/KVM tests (root orchestration; optional PostgreSQL placement checks) |
