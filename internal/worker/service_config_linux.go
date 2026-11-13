@@ -63,32 +63,32 @@ func (r *ServiceAuthorityReplica) valid() bool {
 // AGENTCAPSULE_DATABASE_URL. Provisioning requires an explicit key authority and
 // a dedicated UID range; without them it maintains preprovisioned placements.
 type ServiceConfig struct {
-	Version          int                  `json:"version"`
-	HostID           string               `json:"host_id"`
-	Root             string               `json:"root"`
-	Firecracker      ServiceImage         `json:"firecracker"`
-	Jailer           ServiceImage         `json:"jailer"`
-	Kernel           ServiceImage         `json:"kernel"`
-	Initrd           ServiceImage         `json:"initrd"`
-	MaxActive        int                  `json:"max_active"`
-	BootTimeout      string               `json:"boot_timeout"`
-	BootLease        string               `json:"boot_lease"`
-	PollInterval     string               `json:"poll_interval"`
-	AttemptTimeout   string               `json:"attempt_timeout"`
-	DispatchBatch    int                  `json:"dispatch_batch"`
-	WorkLease        string               `json:"work_lease"`
-	DeliveryLease    string               `json:"delivery_lease"`
-	RetryBase        string               `json:"retry_base"`
-	RetryMax         string               `json:"retry_max"`
+	Version          int                      `json:"version"`
+	HostID           string                   `json:"host_id"`
+	Root             string                   `json:"root"`
+	Firecracker      ServiceImage             `json:"firecracker"`
+	Jailer           ServiceImage             `json:"jailer"`
+	Kernel           ServiceImage             `json:"kernel"`
+	Initrd           ServiceImage             `json:"initrd"`
+	MaxActive        int                      `json:"max_active"`
+	BootTimeout      string                   `json:"boot_timeout"`
+	BootLease        string                   `json:"boot_lease"`
+	PollInterval     string                   `json:"poll_interval"`
+	AttemptTimeout   string                   `json:"attempt_timeout"`
+	DispatchBatch    int                      `json:"dispatch_batch"`
+	WorkLease        string                   `json:"work_lease"`
+	DeliveryLease    string                   `json:"delivery_lease"`
+	RetryBase        string                   `json:"retry_base"`
+	RetryMax         string                   `json:"retry_max"`
 	RestoreAuthority *ServiceKeyAuthority     `json:"restore_authority,omitempty"`
 	KeyAuthority     *ServiceKeyAuthority     `json:"key_authority,omitempty"`
 	AuthorityReplica *ServiceAuthorityReplica `json:"authority_replica,omitempty"`
-	Provisioning     *ProvisioningConfig  `json:"provisioning,omitempty"`
-	Transit          *ServiceTransit      `json:"transit,omitempty"`
-	LLM              *ServiceLLM          `json:"llm,omitempty"`
-	Registry         *ServiceRegistry     `json:"registry,omitempty"`
-	Directory        *ServiceDirectory    `json:"directory,omitempty"`
-	SLIM             *ServiceSLIM         `json:"slim,omitempty"`
+	Provisioning     *ProvisioningConfig      `json:"provisioning,omitempty"`
+	Transit          *ServiceTransit          `json:"transit,omitempty"`
+	LLM              *ServiceLLM              `json:"llm,omitempty"`
+	Registry         *ServiceRegistry         `json:"registry,omitempty"`
+	Directory        *ServiceDirectory        `json:"directory,omitempty"`
+	SLIM             *ServiceSLIM             `json:"slim,omitempty"`
 	// MetricsListen serves Prometheus metrics at /metrics on a loopback
 	// address (OPS-02); none when empty.
 	MetricsListen string `json:"metrics_listen,omitempty"`

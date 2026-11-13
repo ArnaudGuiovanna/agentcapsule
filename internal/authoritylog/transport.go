@@ -320,9 +320,11 @@ func (c *Client) Sync(ctx context.Context, r Request) (Position, error) {
 		return Position{}, ctx.Err()
 	}
 	defer func() { <-c.mu }()
-	deadline, ok := ctx.Deadline()
-	if !ok {
-		deadline = time.Now().Add(requestTimeout)
+	// One exchange never waits longer than requestTimeout: a silent
+	// connection is dropped, and the caller's retry dials again.
+	deadline := time.Now().Add(requestTimeout)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
 	}
 	if c.conn == nil {
 		dialer := &tls.Dialer{NetDialer: &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}, Config: c.config}
