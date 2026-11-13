@@ -27,6 +27,14 @@ type Server struct {
 	catalog     *controlplane.AgentCatalog
 	mux         *http.ServeMux
 	delegations atomic.Pointer[delegatedidentity.Verifier]
+	// routes are the registered patterns, the vocabulary of telemetry.
+	routes    []string
+	telemetry *apiTelemetry
+}
+
+func (s *Server) handle(pattern string, h func(http.ResponseWriter, *http.Request)) {
+	s.routes = append(s.routes, pattern)
+	s.mux.HandleFunc(pattern, h)
 }
 
 // NewForHost binds all new agent reservations to the operator-selected host.
@@ -40,35 +48,35 @@ func NewForHost(store *controlplane.Store, accounts *controlplane.Accounts, host
 	if err != nil {
 		return nil, err
 	}
-	s.mux.HandleFunc("/v1/agents", s.agents)
-	s.mux.HandleFunc("/v1/agents/{id}", s.agent)
-	s.mux.HandleFunc("/v1/operations/{id}", s.operation)
-	s.mux.HandleFunc("/v1/agents/{id}/wake", s.wake)
-	s.mux.HandleFunc("/v1/agents/{id}/sleep", s.sleep)
-	s.mux.HandleFunc("/v1/agents/{id}/messages", s.instruct)
-	s.mux.HandleFunc("/v1/operations/{id}/result", s.instructionResult)
-	s.mux.HandleFunc("/v1/agents/{id}/invocations", s.invocations)
-	s.mux.HandleFunc("/v1/invocations/{id}", s.invocation)
-	s.mux.HandleFunc("/v1/queue", s.queue)
-	s.mux.HandleFunc("/v1/queue/limits", s.queueLimits)
-	s.mux.HandleFunc("/v1/invocations/{id}/result", s.instructionResult)
-	s.mux.HandleFunc("/v1/invocations/{id}/cancel", s.cancelInvocation)
-	s.mux.HandleFunc("/v1/agents/{id}/idle-policy", s.idlePolicy)
-	s.mux.HandleFunc("/v1/agents/{id}/release", s.agentRelease)
-	s.mux.HandleFunc("/v1/agents/{id}/directory", s.agentDirectory)
-	s.mux.HandleFunc("/v1/agents/{id}/inbound", s.agentInbound)
-	s.mux.HandleFunc("/v1/agents/{id}/held-requests", s.heldRequests)
-	s.mux.HandleFunc("/v1/agents/{id}/held-requests/{request_id}/accept", s.acceptHeldRequest)
-	s.mux.HandleFunc("/v1/agents/{id}/held-requests/{request_id}/decline", s.declineHeldRequest)
-	s.mux.HandleFunc("/v1/agents/{id}/attachments", s.attachments)
-	s.mux.HandleFunc("/v1/attachments/{id}", s.attachment)
-	s.mux.HandleFunc("/v1/me/messaging-settings", s.messagingSettings)
-	s.mux.HandleFunc("/v1/me/inbox", s.inbox)
-	s.mux.HandleFunc("/v1/me/inbox/messages/{id}", s.ownerMessage)
-	s.mux.HandleFunc("/v1/me/inbox/requests/{id}/accept", s.acceptRequest)
-	s.mux.HandleFunc("/v1/me/inbox/requests/{id}/decline", s.declineRequest)
-	s.mux.HandleFunc("/v1/agent-requests/{id}", s.agentRequest)
-	s.mux.HandleFunc("/v1/agent-requests/{id}/cancel", s.cancelRequest)
+	s.handle("/v1/agents", s.agents)
+	s.handle("/v1/agents/{id}", s.agent)
+	s.handle("/v1/operations/{id}", s.operation)
+	s.handle("/v1/agents/{id}/wake", s.wake)
+	s.handle("/v1/agents/{id}/sleep", s.sleep)
+	s.handle("/v1/agents/{id}/messages", s.instruct)
+	s.handle("/v1/operations/{id}/result", s.instructionResult)
+	s.handle("/v1/agents/{id}/invocations", s.invocations)
+	s.handle("/v1/invocations/{id}", s.invocation)
+	s.handle("/v1/queue", s.queue)
+	s.handle("/v1/queue/limits", s.queueLimits)
+	s.handle("/v1/invocations/{id}/result", s.instructionResult)
+	s.handle("/v1/invocations/{id}/cancel", s.cancelInvocation)
+	s.handle("/v1/agents/{id}/idle-policy", s.idlePolicy)
+	s.handle("/v1/agents/{id}/release", s.agentRelease)
+	s.handle("/v1/agents/{id}/directory", s.agentDirectory)
+	s.handle("/v1/agents/{id}/inbound", s.agentInbound)
+	s.handle("/v1/agents/{id}/held-requests", s.heldRequests)
+	s.handle("/v1/agents/{id}/held-requests/{request_id}/accept", s.acceptHeldRequest)
+	s.handle("/v1/agents/{id}/held-requests/{request_id}/decline", s.declineHeldRequest)
+	s.handle("/v1/agents/{id}/attachments", s.attachments)
+	s.handle("/v1/attachments/{id}", s.attachment)
+	s.handle("/v1/me/messaging-settings", s.messagingSettings)
+	s.handle("/v1/me/inbox", s.inbox)
+	s.handle("/v1/me/inbox/messages/{id}", s.ownerMessage)
+	s.handle("/v1/me/inbox/requests/{id}/accept", s.acceptRequest)
+	s.handle("/v1/me/inbox/requests/{id}/decline", s.declineRequest)
+	s.handle("/v1/agent-requests/{id}", s.agentRequest)
+	s.handle("/v1/agent-requests/{id}/cancel", s.cancelRequest)
 	return s, nil
 }
 
@@ -86,53 +94,63 @@ func New(store *controlplane.Store, accounts *controlplane.Accounts) (*Server, e
 		return nil, controlplane.ErrInput
 	}
 	s := &Server{store: store, accounts: accounts, mux: http.NewServeMux()}
-	s.mux.HandleFunc("/v1/health/live", s.live)
-	s.mux.HandleFunc("/v1/health/ready", s.ready)
-	s.mux.HandleFunc("/v1/users", s.users)
-	s.mux.HandleFunc("/v1/users/{id}/tokens", s.tokens)
-	s.mux.HandleFunc("/v1/me", s.me)
-	s.mux.HandleFunc("/v1/members", s.members)
-	s.mux.HandleFunc("/v1/members/{id}/role", s.changeMemberRole)
-	s.mux.HandleFunc("/v1/members/{id}/revoke", s.revokeMember)
-	s.mux.HandleFunc("/v1/agents/{id}/assignments", s.assignments)
-	s.mux.HandleFunc("/v1/agents/{id}/assignments/{assignment_id}/revoke", s.revokeAssignment)
-	s.mux.HandleFunc("/v1/agents/{id}/assignments/{assignment_id}/replace", s.replaceAssignment)
-	s.mux.HandleFunc("/v1/audit", s.audit)
-	s.mux.HandleFunc("/v1/llm/providers", s.llmProviders)
-	s.mux.HandleFunc("/v1/llm/providers/{id}/rotate", s.rotateLLMProvider)
-	s.mux.HandleFunc("/v1/llm/providers/{id}/disable", s.disableLLMProvider)
-	s.mux.HandleFunc("/v1/llm/aliases", s.llmAliases)
-	s.mux.HandleFunc("/v1/llm/budgets", s.llmBudgets)
-	s.mux.HandleFunc("/v1/llm/budgets/{id}/disable", s.disableLLMBudget)
-	s.mux.HandleFunc("/v1/llm/usage", s.llmUsage)
-	s.mux.HandleFunc("/v1/llm/aliases/{alias}/disable", s.disableLLMAlias)
-	s.mux.HandleFunc("/v1/service-accounts", s.serviceAccounts)
-	s.mux.HandleFunc("/v1/service-accounts/{id}/disable", s.disableServiceAccount)
-	s.mux.HandleFunc("/v1/service-accounts/{id}/tokens", s.serviceTokens)
-	s.mux.HandleFunc("/v1/service-accounts/{id}/tokens/{token_id}/revoke", s.revokeServiceToken)
-	s.mux.HandleFunc("/v1/teams", s.teams)
-	s.mux.HandleFunc("/v1/teams/{id}", s.team)
-	s.mux.HandleFunc("/v1/teams/{id}/disable", s.disableTeam)
-	s.mux.HandleFunc("/v1/teams/{id}/members", s.teamMembers)
-	s.mux.HandleFunc("/v1/teams/{id}/members/{principal_id}/revoke", s.revokeTeamMember)
-	s.mux.HandleFunc("/v1/organizations", s.organizations)
-	s.mux.HandleFunc("/v1/organizations/current", s.currentOrganization)
-	s.mux.HandleFunc("/v1/organizations/{id}", s.organization)
-	s.mux.HandleFunc("/v1/organizations/{id}/disable", s.disableOrganization)
-	s.mux.HandleFunc("/v1/harness-imports", s.harnessImports)
-	s.mux.HandleFunc("/v1/harness-imports/{id}", s.harnessImport)
-	s.mux.HandleFunc("/v1/harness-releases", s.harnessReleases)
-	s.mux.HandleFunc("/v1/harness-releases/{id}/deprecate", s.deprecateHarnessRelease)
-	s.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { problem(w, 404, "not_found") })
+	s.handle("/v1/health/live", s.live)
+	s.handle("/v1/health/ready", s.ready)
+	s.handle("/v1/users", s.users)
+	s.handle("/v1/users/{id}/tokens", s.tokens)
+	s.handle("/v1/me", s.me)
+	s.handle("/v1/members", s.members)
+	s.handle("/v1/members/{id}/role", s.changeMemberRole)
+	s.handle("/v1/members/{id}/revoke", s.revokeMember)
+	s.handle("/v1/agents/{id}/assignments", s.assignments)
+	s.handle("/v1/agents/{id}/assignments/{assignment_id}/revoke", s.revokeAssignment)
+	s.handle("/v1/agents/{id}/assignments/{assignment_id}/replace", s.replaceAssignment)
+	s.handle("/v1/audit", s.audit)
+	s.handle("/v1/llm/providers", s.llmProviders)
+	s.handle("/v1/llm/providers/{id}/rotate", s.rotateLLMProvider)
+	s.handle("/v1/llm/providers/{id}/disable", s.disableLLMProvider)
+	s.handle("/v1/llm/aliases", s.llmAliases)
+	s.handle("/v1/llm/budgets", s.llmBudgets)
+	s.handle("/v1/llm/budgets/{id}/disable", s.disableLLMBudget)
+	s.handle("/v1/llm/usage", s.llmUsage)
+	s.handle("/v1/llm/aliases/{alias}/disable", s.disableLLMAlias)
+	s.handle("/v1/service-accounts", s.serviceAccounts)
+	s.handle("/v1/service-accounts/{id}/disable", s.disableServiceAccount)
+	s.handle("/v1/service-accounts/{id}/tokens", s.serviceTokens)
+	s.handle("/v1/service-accounts/{id}/tokens/{token_id}/revoke", s.revokeServiceToken)
+	s.handle("/v1/teams", s.teams)
+	s.handle("/v1/teams/{id}", s.team)
+	s.handle("/v1/teams/{id}/disable", s.disableTeam)
+	s.handle("/v1/teams/{id}/members", s.teamMembers)
+	s.handle("/v1/teams/{id}/members/{principal_id}/revoke", s.revokeTeamMember)
+	s.handle("/v1/organizations", s.organizations)
+	s.handle("/v1/organizations/current", s.currentOrganization)
+	s.handle("/v1/organizations/{id}", s.organization)
+	s.handle("/v1/organizations/{id}/disable", s.disableOrganization)
+	s.handle("/v1/harness-imports", s.harnessImports)
+	s.handle("/v1/harness-imports/{id}", s.harnessImport)
+	s.handle("/v1/harness-releases", s.harnessReleases)
+	s.handle("/v1/harness-releases/{id}/deprecate", s.deprecateHarnessRelease)
+	s.handle("/", func(w http.ResponseWriter, r *http.Request) { problem(w, 404, "not_found") })
 	return s, nil
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	id := make([]byte, 16)
 	_, _ = rand.Read(id)
-	w.Header().Set("X-Request-ID", hex.EncodeToString(id))
+	requestID := hex.EncodeToString(id)
+	w.Header().Set("X-Request-ID", requestID)
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if s.telemetry != nil {
+		recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		route, start := invalidRoute, time.Now()
+		defer func() { s.telemetry.record(route, r.Method, recorder, requestID, time.Since(start)) }()
+		w = recorder
+		if path.Clean(r.URL.Path) == r.URL.Path {
+			_, route = s.mux.Handler(r)
+		}
+	}
 	if path.Clean(r.URL.Path) != r.URL.Path || strings.Contains(strings.ToLower(r.URL.EscapedPath()), "%2f") {
 		problem(w, 400, "invalid_path")
 		return
@@ -143,6 +161,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func problem(w http.ResponseWriter, status int, code string) {
+	if recorder, ok := w.(*statusRecorder); ok {
+		recorder.problem = code
+	}
 	w.Header().Set("Content-Type", "application/problem+json")
 	if status == 401 {
 		w.Header().Set("WWW-Authenticate", "Bearer")

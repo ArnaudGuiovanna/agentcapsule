@@ -19,6 +19,7 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/delegatedidentity"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/operatorconfig"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/telemetry"
 )
 
 // The HTTP server's diagnostics must not serialize request headers or contents.
@@ -39,6 +40,7 @@ func run() int {
 	flag.Var(&transitFiles, "transit-key", "repeatable transit key ID=/absolute/private/key-file")
 	cert := flag.String("tls-cert", "", "TLS certificate chain")
 	tlsKey := flag.String("tls-key", "", "TLS private key")
+	metricsListen := flag.String("metrics-listen", "", "loopback address serving Prometheus metrics at /metrics (none when empty)")
 	flag.Parse()
 	fail := func(code string) int { fmt.Fprintln(os.Stderr, code); return 1 }
 	if flag.NArg() != 0 || *keyPath == "" || *hostID == "" || (*cert == "") != (*tlsKey == "") {
@@ -52,6 +54,13 @@ func run() int {
 		ip := net.ParseIP(host)
 		if ip == nil || !ip.IsLoopback() {
 			return fail("tls_required_for_non_loopback_listener")
+		}
+	}
+	if *metricsListen != "" {
+		// Metrics are technical, but a scraper reaches them on the host only.
+		metricsHost, _, err := net.SplitHostPort(*metricsListen)
+		if ip := net.ParseIP(metricsHost); err != nil || ip == nil || !ip.IsLoopback() {
+			return fail("metrics_listen_must_be_loopback")
 		}
 	}
 	key, err := operatorconfig.ReadPrivate(*keyPath, 32)
@@ -120,6 +129,20 @@ func run() int {
 		return fail("api_initialization_failed")
 	}
 	handler.SetDelegatedIdentityVerifier(identityVerifier)
+	// One event per request on standard output: its X-Request-ID, route
+	// pattern, status and duration, never an ID from the path or a body.
+	registry := telemetry.NewRegistry()
+	handler.EnableTelemetry(registry, os.Stdout)
+	if *metricsListen != "" {
+		metricsListener, err := net.Listen("tcp", *metricsListen)
+		if err != nil {
+			return fail("metrics_listener_unavailable")
+		}
+		metrics := &http.Server{Handler: registry.Handler(5 * time.Second), ReadHeaderTimeout: 5 * time.Second, WriteTimeout: 15 * time.Second,
+			ErrorLog: log.New(fixedLog{}, "", 0)}
+		go func() { _ = metrics.Serve(metricsListener) }()
+		defer metrics.Close()
+	}
 	server := &http.Server{Addr: *listen, Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 * 1024, ErrorLog: log.New(fixedLog{}, "", 0)}
 	listener, err := net.Listen("tcp", *listen)
 	if err != nil {

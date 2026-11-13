@@ -252,12 +252,18 @@ func TestAPIBinariesBootstrapServeAndShutdown(t *testing.T) {
 	}
 	address := l.Addr().String()
 	_ = l.Close()
+	if l, err = net.Listen("tcp", "127.0.0.1:0"); err != nil {
+		t.Fatal(err)
+	}
+	metricsAddress := l.Addr().String()
+	_ = l.Close()
 	log, err := os.Create(filepath.Join(dir, "api.log"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer log.Close()
-	cmd := exec.CommandContext(t.Context(), filepath.Join(dir, "agentcapsule-api"), "-listen", address, "-receipt-key-file", keyFile, "-host-id", "local", "-transit-active-key", "v1", "-transit-key", "v1="+transitKey)
+	cmd := exec.CommandContext(t.Context(), filepath.Join(dir, "agentcapsule-api"), "-listen", address, "-receipt-key-file", keyFile, "-host-id", "local",
+		"-transit-active-key", "v1", "-transit-key", "v1="+transitKey, "-metrics-listen", metricsAddress)
 	cmd.Env = env
 	cmd.Stdout = log
 	cmd.Stderr = log
@@ -311,6 +317,17 @@ func TestAPIBinariesBootstrapServeAndShutdown(t *testing.T) {
 	if r.StatusCode != 201 {
 		t.Fatal("real API creation", r.StatusCode)
 	}
+	created := r.Header.Get("X-Request-ID")
+	// Metrics on their own loopback listener (OPS-02), by route pattern.
+	m, err := client.Get("http://" + metricsAddress + "/metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	exposition, _ := io.ReadAll(m.Body)
+	m.Body.Close()
+	if m.StatusCode != 200 || !strings.Contains(string(exposition), `agentcapsule_api_requests_total{route="/v1/users",method="POST",status_class="2xx"} 1`) {
+		t.Fatal("metrics", m.StatusCode, string(exposition))
+	}
 	if err = cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
@@ -329,5 +346,9 @@ func TestAPIBinariesBootstrapServeAndShutdown(t *testing.T) {
 	}
 	if strings.Contains(string(output), token) || strings.Contains(string(output), "Process user") || strings.Contains(string(output), dsn) {
 		t.Fatal("sensitive data in process log")
+	}
+	// The request's event carries the X-Request-ID its response gave.
+	if !strings.Contains(string(output), `"event":"http_request","request_id":"`+created+`","route":"/v1/users","method":"POST","status":201`) {
+		t.Fatal("no event for the request", string(output))
 	}
 }
