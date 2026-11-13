@@ -244,15 +244,90 @@ Rollback-resistant restore remains the D5 workstream. The local journal/crash
 and SQL publication tests run; the deletion scenario in a real VM is compiled
 and remains to be run under KVM.
 
-## Cold encrypted archive capture
+## Nightly encrypted archives
 
-The operator can capture an agent on demand with the same worker configuration
-and the same protected PostgreSQL environment. This mode requires product
-provisioning and both independent authorities. First stop the existing
-maintenance worker so that it releases its listeners; its VMs may stay present
-and will be reconciled by this command. Restart maintenance after the capture.
-The targeted agent stays stopped on exit and can be woken through the usual
-paths.
+The maintenance worker archives each agent's encrypted volume about once a day
+(REC-02, [ADR 004](adr/004-recovery-objectives.md)). It does it itself,
+between its passes: it is never stopped for it. Add to its configuration:
+
+```json
+"archives": {
+  "root": "/var/lib/agentcapsule-archives",
+  "every": "24h",
+  "sleep_window": "2h",
+  "keep": 7
+}
+```
+
+This section needs `provisioning` and both authorities. The worker checks it at
+start:
+
+| Field | Default | Allowed | Meaning |
+| --- | --- | --- | --- |
+| `root` | (required) | absolute path | A private directory (root, mode 0700), outside the runtime and both authorities. Created if absent. |
+| `every` | `24h` | 1 hour to 7 days | The age that each agent's newest archive must not pass: the volume RPO. |
+| `sleep_window` | `every`/12 (2 hours) | 0 to `every`/2 | How long before `every` the worker starts taking the archive when the agent sleeps. |
+| `keep` | 7 | 1 to 365 | Archives kept per agent on this host. |
+| `per_pass` | 1 | 1 to 8 | Captures in one maintenance pass. |
+| `timeout` | `30m` | 1 minute to 6 hours, below `every` | Bound on one capture, the copy included. |
+
+**Which agents, and when.** The worker considers the LIVE agents of its host
+whose volume is provisioned and initialized:
+- **An agent that sleeps** is captured as it is: nothing stops. It is captured
+  at once if it has no archive yet, and otherwise once its newest archive is
+  older than `every` minus `sleep_window` (22 hours by default).
+- **An agent that runs** is left alone until its newest archive reaches
+  `every`; an agent without an archive counts from the initialization of its
+  volume. The worker then stops it briefly for the capture: authenticated
+  quiescence, then the copy. The agent **stays asleep** afterwards, and wakes
+  on its next delivery or wake, like after any sleep.
+- Sleeping agents come first, then the oldest archive.
+- An agent whose last stop was not clean (a forced or uncertain stop) is not
+  captured: a capture needs a clean stop. It is captured after its next clean
+  sleep.
+
+**Cost for the host.** A capture holds the agent's barrier, which is the host's
+exclusive admission, and the host registry while it copies the volume.
+Deliveries and boots on this host wait for it. A capture takes about the
+volume's size divided by the disk's speed: a few seconds for a small volume.
+This is why a pass takes `per_pass` captures at most (1 by default), after its
+deliveries. A pass with nothing due costs one query.
+
+**Failures.** A capture that fails leaves no partial archive: the files are
+written in a hidden staging directory and published in one rename. The agent
+is tried again later: after 30 minutes (`every`/48), then twice as long each
+time, up to 6 hours (`every`/4). The other agents go on meanwhile. A failure
+can leave a running agent stopped; it wakes on its next delivery.
+
+**Records.** Each capture is recorded in PostgreSQL (`volume_archives`,
+migration 0028): the agent, the archive ID, the volume and its incarnation, when
+the capture started and ended, the size, and when retention removed it. No
+content and no key. The row is written before the capture starts. After a crash,
+the agent's next capture settles it: an archive that was published is recorded
+as of the start of its capture; otherwise the row is dropped. A later capture
+deletes the staging directories that a crash left, once they are an hour old.
+
+**Retention.** After each capture, the worker deletes the agent's archives
+beyond the `keep` newest ones. An archive is first renamed out of its ID, then
+deleted: it is either whole or gone. The newest archive, just captured, is
+always kept, so an agent never loses its only archive. The worker does not
+remove the archives of a deleted agent. Their key is revoked, so they cannot be
+read; the operator deletes them.
+
+**Events and metrics.** `volume_archive_captured` and `volume_archive_retry`,
+with a reason, and the `agentcapsule_worker_volume_archive*` metrics: see
+[observability.md](observability.md). Archives stay on this host: shipping
+them off the host is a separate step (see [recovery.md](recovery.md)).
+
+## Archive on demand
+
+The operator can also capture one agent by hand, with the same worker
+configuration and the same protected PostgreSQL environment. This mode requires
+product provisioning and both independent authorities. It is a separate
+process: first stop the maintenance worker so that it releases its listeners;
+its VMs may stay present and will be reconciled by this command. Restart
+maintenance after the capture. The targeted agent stays stopped on exit and can
+be woken through the usual paths. Nightly archives do not need this.
 
 ```sh
 /opt/agentcapsule/agentcapsule-worker \
@@ -266,10 +341,13 @@ Choose a new `arc_` identifier followed by 32 lowercase hexadecimal digits for
 each new backup point. Reuse exactly that identifier after a lost response: an
 already published archive is verified and returned, never replaced by a more
 recent state. The identifier above is an example. A failure after quiescence has
-started can leave the agent stopped.
+started can leave the agent stopped. An archive taken by hand is not recorded
+in PostgreSQL: it does not count for the nightly schedule, and retention never
+removes it.
 
-The command waits for the authenticated quiescence, physically removes the VMM
-and checks the SQL observation of a clean stop. A forced or uncertain stop is
+Both ways capture the same way. The worker waits for the authenticated
+quiescence of a running agent, physically removes the VMM and checks the SQL
+observation of a clean stop. A forced or uncertain stop is
 refused for capture; restore a startup followed by a clean stop before retrying.
 It checks the registered inode and its exclusive lock, copies the encrypted LUKS
 container, then atomically publishes `volume.luks` and `manifest.json` in a
@@ -283,8 +361,7 @@ manifest are verified on read; a signature never exempts you from inspecting the
 recovered data or from respecting the restore barriers.
 
 This local storage provides an encrypted source for the future restore. It is
-not an off-VPS backup, a retention policy, a restore test on a second host or a
-proof of erasure of all key copies. The command brings back no backup as an
-active VM. The restricted coordinator, the history inspection/repair and the
+not an off-VPS backup, a restore test on a second host or a proof of erasure of
+all key copies. Neither way brings a backup back as an active VM. The restricted coordinator, the history inspection/repair and the
 tenant rules of the product spec ([product.md](product.md)) remain to be wired
 before declaring this restore operational.

@@ -44,6 +44,9 @@ A non-loopback address is refused at start (`metrics_listen_must_be_loopback`).
 | `agentcapsule_worker_root_disk_used_ratio` | gauge | — | Used share of the runtime root's file system |
 | `agentcapsule_worker_directory_publish_retries_total` | counter | — | Directory publication passes that failed |
 | `agentcapsule_worker_harness_import_retries_total` | counter | — | Harness imports to try again |
+| `agentcapsule_worker_volume_archives_total` | counter | `vm`, `outcome` | Volume archive captures ([worker.md](worker.md#nightly-encrypted-archives)), by the VM's state before the capture (`asleep`, `running`): `captured` or `retried` |
+| `agentcapsule_worker_volume_archive_agents` | gauge | — | Live agents of the host whose volume the worker archives |
+| `agentcapsule_worker_volume_archive_oldest_seconds` | gauge | — | Age of the oldest among the agents' newest archives. An agent never archived counts from its initialization |
 | `agentcapsule_telemetry_collect_errors_total` | counter | — | Scrapes whose current values could not be read |
 | `agentcapsule_telemetry_series_dropped_total` | counter | — | Samples dropped at a metric's series limit (512) |
 
@@ -65,6 +68,8 @@ Each process writes one JSON object per line, with `time` and `event` first:
 | Worker | `maintenance_retry` | `reason` (as above) |
 | Worker | `wake_budget_exhausted`, `harness_import_retry`, `directory_publish_retry`, `slim_callback_stopped` | — |
 | Worker | `job_done` (standard output), `job_retried` (standard error) | `kind`, `request_id` of the API request that started the work, if any, and `reason` for a retry |
+| Worker | `volume_archive_captured` (standard output) | `vm` (`asleep`, `running`), `bytes`, `seconds`, `removed` (older archives deleted) |
+| Worker | `volume_archive_retry` (standard error) | `vm`, `reason`: `placement`, `busy`, `disk_full`, `authority`, `timeout`, `retention`, `error` |
 
 **Correlation.** Every API response carries `X-Request-ID`, a random 128-bit
 value. The ID says nothing about the person or the content. It follows the
@@ -126,3 +131,5 @@ on the delivery of the request its agent sent to another agent. It passed on
   request ID only.
 - An operator command for diagnostics (API-02).
 - Alert thresholds tuned under load (OPS-03).
+- Alerts on the freshness of backups: the volume archive metrics exist, their
+  rules are still to write (ADR 004, step 3).

@@ -92,14 +92,52 @@ It checks:
 pgBackRest writes `<redacted>` in its logs for the S3 secret and the cipher
 passphrases.
 
+## Volume archives (REC-02)
+
+The maintenance worker archives each agent's encrypted volume about once a day,
+without being stopped. The volume RPO is 24 hours. Configure the `archives`
+section of the worker ([worker.md](worker.md#nightly-encrypted-archives)):
+
+- **A sleeping agent** is captured as it is, from 22 hours after its last
+  archive (`every` minus `sleep_window`), or at once if it has none.
+- **A running agent** is stopped briefly when its last archive is 24 hours old
+  (`every`): authenticated quiescence, then the copy. It stays asleep and wakes
+  on its next delivery. So the newest archive of an agent is at most `every`
+  old, plus one pass and one capture, even if the agent never sleeps. A failed
+  capture is retried after a delay, and an agent stopped uncleanly waits for its
+  next clean sleep: the metric below shows such delays.
+- **What is stored.** An archive is the agent's LUKS container, as it is on
+  disk, with a manifest signed by the restore authority. It holds no key. It is
+  published in one step: a crash leaves no partial archive.
+- **Where.** In the worker's archive root, on this host. The worker keeps the
+  `keep` newest archives of each agent (7 by default) and never deletes an
+  agent's only archive.
+- **Records.** PostgreSQL records each capture (`volume_archives`): times,
+  size, volume, no content. They decide which agents are due, and give the
+  metric `agentcapsule_worker_volume_archive_oldest_seconds`.
+
+The archives are still on the host they protect. **Shipping them off the host**
+(to the S3-compatible store and the standby) is a separate step: until it is
+done, they do not survive the loss of the host.
+
+The selection, the records and retention are tested on PostgreSQL. The KVM test
+`TestProductWorkerNightlyVolumeArchives` covers real VMs: a sleeping agent
+archived by the running maintenance loop while it delivers to another agent,
+then an overdue running agent stopped for its archive and woken by its next
+invocation. Each archive is opened with the restore authority (manifest, size,
+digest). This test is compiled and remains to be run under KVM. A restore from
+an archive is not yet built.
+
 ## Still to do (ADR 004)
 
 1. **The standby.** It replays the WAL archive continuously
    (`restore_command` from repository 2), ready to be promoted.
-2. **Freshness.** Metrics and alerts for the age of the last archived segment
-   and of each volume archive.
-3. **Nightly volume archives.** Archives of sleeping agents, without stopping
-   the maintenance worker (REC-02).
+2. **Freshness.** Alerts for the age of the last archived segment and of each
+   volume archive. The volume archive metrics exist; the WAL metric and the
+   rules do not.
+3. **Volume archives off the host.** Nightly archives are taken on the host
+   without stopping the maintenance worker (above). Shipping them to the
+   S3-compatible store and to the standby, encrypted as they are, remains.
 4. **The declared-loss state**: in the P2 model, then in the code and the API.
 5. **A failover exercise** that measures the RPO and the RTO.
 6. **CI.** Ubuntu 24.04 ships an older pgBackRest than the qualified 2.58.

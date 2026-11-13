@@ -15,6 +15,20 @@ import (
 // stopped. Owner wake/admission may resume after capture; no restore is implied.
 // The archive contains only the LUKS container and its authenticated manifest.
 func (w *Placements) CaptureArchive(ctx context.Context, id, archiveID string, archives *volumearchive.Store) (restoreauthority.Archive, error) {
+	return w.captureArchive(ctx, id, archiveID, archives, archiveHooks{})
+}
+
+// archiveHooks run under the agent's barrier, so that no delivery, wake or
+// other capture of the agent interleaves with them.
+type archiveHooks struct {
+	// begin runs after reconciliation, before anything stops: running says
+	// whether a VM of the agent runs. An error captures nothing.
+	begin func(ctx context.Context, running bool) error
+	// published runs once the archive is published.
+	published func(ctx context.Context, a restoreauthority.Archive) error
+}
+
+func (w *Placements) captureArchive(ctx context.Context, id, archiveID string, archives *volumearchive.Store, hooks archiveHooks) (restoreauthority.Archive, error) {
 	var result restoreauthority.Archive
 	if w.provisioning == nil || w.authority == nil || archives == nil || !volumearchive.ValidID(archiveID) {
 		return result, controlplane.ErrInput
@@ -37,7 +51,13 @@ func (w *Placements) CaptureArchive(ctx context.Context, id, archiveID string, a
 		if err != nil {
 			return err
 		}
-		if run, exists := runs[id]; exists {
+		run, exists := runs[id]
+		if hooks.begin != nil {
+			if err = hooks.begin(ctx, exists); err != nil {
+				return err
+			}
+		}
+		if exists {
 			if err = w.quiesceStop(ctx, id, run.Generation); err != nil {
 				return err
 			}
@@ -51,10 +71,14 @@ func (w *Placements) CaptureArchive(ctx context.Context, id, archiveID string, a
 		if err = w.authority.WithBinding(ctx, binding, func() error { return nil }); err != nil {
 			return err
 		}
-		return w.host.WithStoppedVolume(ctx, id, plan.Placement.Generation, plan.Device, plan.Inode, func(reader io.Reader) error {
+		err = w.host.WithStoppedVolume(ctx, id, plan.Placement.Generation, plan.Device, plan.Inode, func(reader io.Reader) error {
 			result, err = archives.Capture(ctx, volumearchive.Spec{ID: archiveID, Binding: binding, HarnessDigest: e.HarnessDigest, Size: int64(e.Resources.DataVolumeMiB) << 20}, reader, w.authority)
 			return err
 		})
+		if err == nil && hooks.published != nil {
+			err = hooks.published(ctx, result)
+		}
+		return err
 	})
 	if err != nil {
 		return restoreauthority.Archive{}, err

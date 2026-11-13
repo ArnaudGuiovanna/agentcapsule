@@ -218,8 +218,8 @@ Recommended procedure:
 
 1. **Prepare.** Import the new release on the agent's host and wait for `READY`. Do not
    deprecate the current release yet: it is your rollback target.
-2. **Back up.** Capture a cold encrypted archive of the agent
-   ([worker.md](worker.md#cold-encrypted-archive-capture)). Restoring an archive is not
+2. **Back up.** Capture an encrypted archive of the agent on demand
+   ([worker.md](worker.md#archive-on-demand)). Restoring an archive is not
    automated yet (REC-01), so keep in mind that a rollback after the new version has
    migrated the data may not be possible.
 3. **Upgrade.** Pin the new release, then `POST /v1/agents/{id}/sleep` and `.../wake`.

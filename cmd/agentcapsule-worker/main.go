@@ -117,8 +117,9 @@ func run() int {
 	// Events, one JSON object per line, from a closed vocabulary (OPS-02):
 	// progress on standard output, retries and failures on standard error.
 	vocabulary := map[string][]string{"event": {"maintenance_started", "maintenance_complete", "maintenance_retry", "wake_budget_exhausted",
-		"harness_import_retry", "directory_publish_retry", "slim_callback_stopped", "job_done", "job_retried"},
-		"reason": worker.RetryReasons(), "kind": worker.JobKinds()}
+		"harness_import_retry", "directory_publish_retry", "slim_callback_stopped", "job_done", "job_retried",
+		"volume_archive_captured", "volume_archive_retry"},
+		"reason": append(worker.RetryReasons(), worker.ArchiveRetryReasons()...), "kind": worker.JobKinds(), "vm": worker.ArchiveVMs()}
 	events, problems := telemetry.NewLogger(os.Stdout, vocabulary), telemetry.NewLogger(os.Stderr, vocabulary)
 	registry := telemetry.NewRegistry()
 	if err = w.EnableTelemetry(registry, opts.Root, opts.MaxActive); err != nil {
@@ -220,6 +221,34 @@ func run() int {
 		}()
 	} else if linkListener != nil {
 		linkListener.Close()
+	}
+	if !archiveRequested {
+		// Nightly archives (REC-02): taken by this process, between passes.
+		archives, err := c.OpenArchives()
+		if err != nil {
+			return fail("archive_storage_unavailable")
+		}
+		if archives != nil {
+			if _, _, err = s.VolumeArchiveFreshness(startup, c.HostID); err != nil {
+				return fail("database_schema_unavailable")
+			}
+			if err = w.EnableArchiveTelemetry(registry, archives); err != nil {
+				return fail("telemetry_unavailable")
+			}
+			archives.Report = func(r worker.ArchiveReport) {
+				vm := telemetry.Code("vm", r.VM())
+				if r.Err == nil {
+					events.Event("volume_archive_captured", vm, telemetry.Int("bytes", r.Size),
+						telemetry.Seconds("seconds", r.Duration), telemetry.Int("removed", int64(r.Removed)))
+				} else if ctx.Err() == nil {
+					problems.Event("volume_archive_retry", vm, telemetry.Code("reason", worker.ArchiveRetryReason(r.Err)))
+				}
+				if r.RetentionErr != nil && ctx.Err() == nil {
+					problems.Event("volume_archive_retry", vm, telemetry.Code("reason", "retention"))
+				}
+			}
+			maintenance.Archives = archives
+		}
 	}
 	if archiveRequested {
 		archives, err := volumearchive.New(*archiveRoot)

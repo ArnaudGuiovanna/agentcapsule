@@ -2,13 +2,15 @@
 
 // Package volumearchive publishes coherent ciphertext and its authenticated
 // manifest as one immutable directory. It stores no decryption key. The local
-// archive root must be outside runtime, key and authority restore domains;
-// off-host replication/retention is a separate storage integration.
+// archive root must be outside runtime, key and authority restore domains.
+// Remove deletes an archive in one step, for local retention. Off-host
+// replication is a separate storage integration.
 package volumearchive
 
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -18,6 +20,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/restoreauthority"
 )
@@ -126,43 +129,154 @@ func (r contextReader) Read(b []byte) (int, error) {
 	return r.reader.Read(b)
 }
 
-// Open authenticates metadata and hashes the actual immutable local ciphertext.
-// Its file descriptor remains on this inode. Untrusted remote objects must first
-// be staged privately and verified; this is not a mutable remote-stream API.
-func (s *Store) Open(ctx context.Context, id string, authority *restoreauthority.Catalog) (*os.File, restoreauthority.Archive, error) {
+// Manifest reads a published archive's manifest without authenticating it or
+// hashing the ciphertext: enough to tell which agent an archive belongs to and
+// its size, never enough to restore it (use Open). A missing archive is an
+// error that matches os.ErrNotExist.
+func (s *Store) Manifest(id string) (restoreauthority.Archive, error) {
 	var a restoreauthority.Archive
-	if !ValidID(id) || authority == nil {
-		return nil, a, ErrArchive
+	if !ValidID(id) {
+		return a, ErrArchive
 	}
 	if err := s.check(); err != nil {
-		return nil, a, err
+		return a, err
 	}
 	dir := filepath.Join(s.root, id)
 	st, err := os.Lstat(dir)
 	if err != nil {
-		return nil, a, err
+		return a, err
 	}
 	if !st.IsDir() || st.Mode().Perm() != 0700 || st.Sys().(*syscall.Stat_t).Uid != uint32(os.Geteuid()) {
-		return nil, a, ErrArchive
+		return a, ErrArchive
 	}
 	m, err := privateFile(filepath.Join(dir, "manifest.json"))
 	if err != nil {
-		return nil, a, err
+		return a, err
 	}
+	defer m.Close()
 	info, err := m.Stat()
 	if err != nil || info.Size() > 8192 {
-		m.Close()
-		return nil, a, ErrArchive
+		return a, ErrArchive
 	}
 	d := json.NewDecoder(io.LimitReader(m, 8193))
 	d.DisallowUnknownFields()
 	err = d.Decode(&a)
 	var trailing any
 	if err != nil || d.Decode(&trailing) != io.EOF || a.ID != id {
-		m.Close()
+		return restoreauthority.Archive{}, ErrArchive
+	}
+	return a, nil
+}
+
+// Remove deletes a published archive. It first renames the archive out of
+// its ID, in one step, so the archive is either whole or gone; the leftover
+// is deleted at once, or by Sweep after a crash. A missing archive is not an
+// error. Only a trusted retention policy calls it: it never checks that a
+// newer archive exists.
+func (s *Store) Remove(id string) error {
+	if !ValidID(id) {
+		return ErrArchive
+	}
+	if err := s.check(); err != nil {
+		return err
+	}
+	final := filepath.Join(s.root, id)
+	st, err := os.Lstat(final)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !st.IsDir() {
+		return ErrArchive
+	}
+	nonce := make([]byte, 16)
+	if _, err = rand.Read(nonce); err != nil {
+		return err
+	}
+	removed := filepath.Join(s.root, removedPrefix+hex.EncodeToString(nonce))
+	if err = os.Rename(final, removed); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if err = syncDir(s.root); err != nil {
+		return err
+	}
+	return os.RemoveAll(removed)
+}
+
+const (
+	pendingPrefix = ".pending-"
+	removedPrefix = ".removed-"
+)
+
+// Sweep deletes what an interrupted capture or removal left in the root:
+// staging directories untouched for staleAfter (a capture still writing
+// touches its file), and archives already renamed for removal. It never
+// touches a published archive.
+func (s *Store) Sweep(staleAfter time.Duration) error {
+	if staleAfter <= 0 {
+		return ErrArchive
+	}
+	if err := s.check(); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(s.root)
+	if err != nil {
+		return err
+	}
+	var result error
+	for _, e := range entries {
+		path := filepath.Join(s.root, e.Name())
+		switch {
+		case strings.HasPrefix(e.Name(), removedPrefix):
+		case strings.HasPrefix(e.Name(), pendingPrefix):
+			if latest, err := newest(path); err != nil || time.Since(latest) < staleAfter {
+				result = errors.Join(result, err)
+				continue
+			}
+		default:
+			continue
+		}
+		result = errors.Join(result, os.RemoveAll(path))
+	}
+	return result
+}
+
+// newest is the latest modification time of a directory and its entries.
+func newest(dir string) (time.Time, error) {
+	st, err := os.Lstat(dir)
+	if err != nil {
+		return time.Time{}, err
+	}
+	latest := st.ModTime()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return latest, err
+	}
+	for _, e := range entries {
+		if info, err := e.Info(); err == nil && info.ModTime().After(latest) {
+			latest = info.ModTime()
+		}
+	}
+	return latest, nil
+}
+
+// Open authenticates metadata and hashes the actual immutable local ciphertext.
+// Its file descriptor remains on this inode. Untrusted remote objects must first
+// be staged privately and verified; this is not a mutable remote-stream API.
+func (s *Store) Open(ctx context.Context, id string, authority *restoreauthority.Catalog) (*os.File, restoreauthority.Archive, error) {
+	if authority == nil {
 		return nil, restoreauthority.Archive{}, ErrArchive
 	}
-	m.Close()
+	a, err := s.Manifest(id)
+	if err != nil {
+		return nil, restoreauthority.Archive{}, err
+	}
+	dir := filepath.Join(s.root, id)
 	if err = authority.ValidateArchive(ctx, a); err != nil {
 		return nil, restoreauthority.Archive{}, err
 	}
@@ -176,7 +290,7 @@ func (s *Store) Open(ctx context.Context, id string, authority *restoreauthority
 			f.Close()
 		}
 	}()
-	info, err = f.Stat()
+	info, err := f.Stat()
 	if err != nil || info.Size() != a.Size {
 		return nil, restoreauthority.Archive{}, ErrArchive
 	}
@@ -229,7 +343,7 @@ func (s *Store) Capture(ctx context.Context, spec Spec, source io.Reader, author
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return zero, err
 	}
-	stage, err := os.MkdirTemp(s.root, ".pending-")
+	stage, err := os.MkdirTemp(s.root, pendingPrefix)
 	if err != nil {
 		return zero, err
 	}

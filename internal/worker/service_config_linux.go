@@ -3,6 +3,7 @@
 package worker
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/keyauthority"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/restoreauthority"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/runtime"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/volumearchive"
 )
 
 type ServiceImage struct {
@@ -59,6 +61,74 @@ type ServiceConfig struct {
 	// MetricsListen serves Prometheus metrics at /metrics on a loopback
 	// address (OPS-02); none when empty.
 	MetricsListen string `json:"metrics_listen,omitempty"`
+	// Archives makes maintenance archive each agent's encrypted volume about
+	// once a day (REC-02, ADR 004); none when absent.
+	Archives *ServiceArchives `json:"archives,omitempty"`
+}
+
+// ServiceArchives configures the nightly volume archives. Root is a private
+// directory outside the runtime and both authorities. Every bounds the age of
+// each agent's newest archive (default 24h, 1h to 7 days). During the last
+// SleepWindow before it (default Every/12, at most Every/2), a sleeping agent
+// is captured; at Every, a running agent is stopped for its capture. Keep
+// archives are kept per agent (default 7, 1 to 365). PerPass bounds the
+// captures of a maintenance pass (default 1, at most 8). Timeout bounds one
+// capture (default 30m, 1m to 6h, below Every).
+type ServiceArchives struct {
+	Root        string `json:"root"`
+	Every       string `json:"every,omitempty"`
+	SleepWindow string `json:"sleep_window,omitempty"`
+	Keep        int    `json:"keep,omitempty"`
+	PerPass     int    `json:"per_pass,omitempty"`
+	Timeout     string `json:"timeout,omitempty"`
+}
+
+// archives validates the archives section without touching its root; nil
+// without the section. Capturing needs provisioning and both authorities.
+func (c ServiceConfig) archives() (*Archives, error) {
+	s := c.Archives
+	if s == nil {
+		return nil, nil
+	}
+	invalid := errors.New("invalid archive configuration")
+	if c.Provisioning == nil || c.KeyAuthority == nil || c.RestoreAuthority == nil ||
+		!filepath.IsAbs(s.Root) || filepath.Clean(s.Root) != s.Root || c.Root == "" {
+		return nil, invalid
+	}
+	for _, root := range []string{c.Root, c.KeyAuthority.Root, c.RestoreAuthority.Root} {
+		if restoreauthority.CheckSeparation(root, s.Root) != nil {
+			return nil, invalid
+		}
+	}
+	duration := func(text string, fallback, low, high time.Duration) (time.Duration, bool) {
+		if text == "" {
+			return fallback, true
+		}
+		d, err := time.ParseDuration(text)
+		return d, err == nil && d >= low && d <= high
+	}
+	a := &Archives{Keep: cmp.Or(s.Keep, 7), PerPass: cmp.Or(s.PerPass, 1)}
+	var ok [3]bool
+	a.Every, ok[0] = duration(s.Every, 24*time.Hour, time.Hour, 7*24*time.Hour)
+	a.SleepWindow, ok[1] = duration(s.SleepWindow, a.Every/12, 0, a.Every/2)
+	a.Timeout, ok[2] = duration(s.Timeout, 30*time.Minute, time.Minute, min(6*time.Hour, a.Every-time.Second))
+	if ok != [3]bool{true, true, true} || a.Keep < 1 || a.Keep > 365 || a.PerPass < 1 || a.PerPass > 8 {
+		return nil, invalid
+	}
+	return a, nil
+}
+
+// OpenArchives opens the archive root, creating it private when absent, and
+// returns the archives for MaintenanceOptions; nil without the section.
+func (c ServiceConfig) OpenArchives() (*Archives, error) {
+	a, err := c.archives()
+	if a == nil || err != nil {
+		return nil, err
+	}
+	if a.Store, err = volumearchive.New(c.Archives.Root); err != nil {
+		return nil, err
+	}
+	return a, nil
 }
 
 // OpenVolumeKeys never initializes an authority. Its public identity must have
@@ -128,6 +198,9 @@ func (c ServiceConfig) Settings() (runtime.FirecrackerOptions, time.Duration, Ma
 		return r, 0, m, invalid
 	}
 	if (c.KeyAuthority != nil) != (c.RestoreAuthority != nil) || (c.Provisioning != nil && (c.KeyAuthority == nil || !c.Provisioning.valid())) {
+		return r, 0, m, invalid
+	}
+	if _, err := c.archives(); err != nil {
 		return r, 0, m, invalid
 	}
 	boot, err := time.ParseDuration(c.BootTimeout)

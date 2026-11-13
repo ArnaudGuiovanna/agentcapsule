@@ -100,6 +100,9 @@ var peerWakesSQL string
 //go:embed migrations/0027_operation_request_id.sql
 var operationRequestIDSQL string
 
+//go:embed migrations/0028_volume_archives.sql
+var volumeArchivesSQL string
+
 // Append migrations; never edit an installed migration. The original schema
 // also upgrades pre-ledger installations, preserving its historical backfills.
 // Later calls validate its checksum without replaying DDL or those backfills.
@@ -131,6 +134,7 @@ var controlPlaneMigrations = []schemaMigration{
 	{version: 25, name: "held-requests", sql: heldRequestsSQL},
 	{version: 26, name: "peer-wakes", sql: peerWakesSQL},
 	{version: 27, name: "operation-request-id", sql: operationRequestIDSQL},
+	{version: 28, name: "volume-archives", sql: volumeArchivesSQL},
 }
 
 func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error {
