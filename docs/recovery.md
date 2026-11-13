@@ -391,6 +391,14 @@ standby host; S3 is its repository 2, with a read-only credential. It checks:
 
 ## Volume archives (REC-02)
 
+> **Not yet true after a disaster.** The keys that open these archives stay
+> in the key authority, on the primary host: nothing copies them yet. If the
+> host is lost, the archives on S3 and on the standby cannot be opened, and
+> the agents' memory is lost, not just its last 24 hours. The restore
+> authority's catalogue is lost too. This waits for D-05
+> ([ADR 005](adr/005-keys-outside-restored-domain.md)). A restore on the same
+> host, from a local archive, is not affected.
+
 The maintenance worker archives each agent's encrypted volume about once a day,
 without being stopped. The volume RPO is 24 hours. Configure the `archives`
 section of the worker ([worker.md](worker.md#nightly-encrypted-archives)):
