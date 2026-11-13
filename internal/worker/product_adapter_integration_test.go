@@ -167,9 +167,11 @@ func TestProductWorkerTenantRunsPiOnARealModel(t *testing.T) {
 
 	// A local model server unloads an idle model and may take minutes to load
 	// it again: load it first, so that Pi's answers are timed, not the loading.
-	// It also checks the key and the account before any VM starts.
+	// It also checks the key and the account before any VM starts. No output
+	// cap: OpenAI's reasoning models (gpt-5 and later) refuse max_tokens, and
+	// the answer to "hi" is short anyway.
 	warm := &http.Client{Timeout: 10 * time.Minute}
-	body, _ := json.Marshal(map[string]any{"model": model, "max_tokens": 1, "messages": []map[string]string{{"role": "user", "content": "hi"}}})
+	body, _ := json.Marshal(map[string]any{"model": model, "messages": []map[string]string{{"role": "user", "content": "hi"}}})
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, strings.TrimRight(url, "/")+"/chat/completions", strings.NewReader(string(body)))
 	if err != nil {
 		t.Fatal(err)
