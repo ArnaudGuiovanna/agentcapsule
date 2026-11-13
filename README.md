@@ -68,6 +68,9 @@ budgets.
   platform channel, provisions encrypted volumes.
 - `agentcapsule-admin`: local, trusted installation commands (bootstrap, keys,
   host configuration). It has no network listener.
+- `agentcapsule-authority`: the replica of the key and restore authorities on
+  the standby host, and the commands that prepare it
+  ([recovery.md](docs/recovery.md#the-authorities-replica-d-05)).
 - `capsule-init`: PID 1 in the guest; holds boot credentials and volume secrets away
   from the harness and relays its platform calls.
 - `capsule-echo`: the reference harness used by tests.

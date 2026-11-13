@@ -18,13 +18,14 @@ construction:
 
 ## Endpoints
 
-Both endpoints are on loopback only. Run Prometheus or a collector on the same
+Every endpoint is on loopback only. Run Prometheus or a collector on the same
 host ([deploy/prometheus/prometheus.yml](../deploy/prometheus/prometheus.yml)).
 
 | Process | Setting | Example |
 | --- | --- | --- |
 | API | `agentcapsule-api -metrics-listen <addr>` | `127.0.0.1:9464` |
 | Worker | `"metrics_listen"` in its configuration ([worker.md](worker.md)) | `127.0.0.1:9465` |
+| Authorities' replica (standby) | `"metrics_listen"` in `agentcapsule-authority serve`'s configuration ([recovery.md](recovery.md#install-the-replica)) | `127.0.0.1:9466` |
 
 A non-loopback address is refused at start (`metrics_listen_must_be_loopback`).
 
@@ -52,6 +53,14 @@ volume archives and, on the standby host, its replay.
 | `agentcapsule_worker_volume_archives_total` | counter | `vm`, `outcome` | Volume archive captures ([worker.md](worker.md#nightly-encrypted-archives)), by the VM's state before the capture (`asleep`, `running`): `captured` or `retried` |
 | `agentcapsule_worker_volume_archive_agents` | gauge | — | Live agents of the host whose volume the worker archives |
 | `agentcapsule_worker_volume_archive_oldest_seconds` | gauge | — | Age of the oldest among the agents' newest archives. An agent never archived counts from its initialization |
+| `agentcapsule_authority_replication_enabled` | gauge | — | 1 when the worker's authorities replicate to the standby; 0 standalone, without disaster protection ([worker.md](worker.md#replica-of-the-authorities)) |
+| `agentcapsule_authority_replication_committed_sequence`, `_acknowledged_sequence` | gauge | — | Last authority record committed by the worker, and last one the replica acknowledged |
+| `agentcapsule_authority_replication_lag_records`, `_lag_seconds` | gauge | — | Authority records committed and not acknowledged, and the age of the oldest |
+| `agentcapsule_authority_replication_last_error` | gauge | `kind` | 1 for the kind of the last replication attempt's error; `none` after a success |
+| `agentcapsule_authority_replication_errors_total` | counter | `kind` | Failed replication attempts |
+| `agentcapsule_authority_replication_write_seconds` | histogram | — | Time from an authority record's local commit to the replica's acknowledgment |
+| `agentcapsule_authority_replica_applied_sequence`, `_epoch`, `_last_apply_timestamp_seconds` | gauge | — | The replica's position, epoch and last apply (`agentcapsule-authority serve`, standby host) |
+| `agentcapsule_authority_replica_refusals_total` | counter | `kind` | Requests the replica refused: `gap`, `older_epoch`, `newer_epoch`, `conflict`, `promoted`, `identity`, `invalid`, `unavailable` (standby host) |
 | `agentcapsule_telemetry_collect_errors_total` | counter | — | Scrapes whose current values could not be read |
 | `agentcapsule_telemetry_series_dropped_total` | counter | — | Samples dropped at a metric's series limit (512) |
 | `agentcapsule_postgres_wal_archiving_enabled` | gauge | — | 1 when PostgreSQL archives its WAL: `archive_mode` on and an archive command or library set (worker) |

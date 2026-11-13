@@ -396,6 +396,132 @@ standby host; S3 is its repository 2, with a read-only credential. It checks:
   `backup` group reads them and no one else does. The run uses a single user,
   so it does not exercise the group itself.
 
+## The authorities' replica (D-05)
+
+The key authority and the restore authority must never go back in time, and
+must survive the primary. [ADR 005](adr/005-keys-outside-restored-domain.md)
+keeps a synchronous replica of both on the standby: every write of the
+worker's authorities returns only once the standby holds it on disk. Volume
+keys and the catalogue's signing secret reach the standby only wrapped to the
+operator's **unlock key**, which stays off both hosts.
+
+Without the replica, the authorities are standalone: losing the primary loses
+every volume key, so every archive. Install the replica before any agent
+holds data that matters.
+
+`agentcapsule-authority` does every step. Build it like the worker, on the
+same release, and install it on both hosts.
+
+### Install the replica
+
+1. **On the primary, stop the worker** (and any archive or restore command).
+   The first snapshot must not run beside a worker that writes without the
+   replica.
+2. **Upgrade the catalogue** to version 3, which adds the log: run
+   `agentcapsule-admin init-restore-authority` again, with the same flags as
+   at installation. It keeps the identity.
+3. **Create the unlock key**, on a workstation if possible, or on the
+   primary, then move it off:
+   ```sh
+   agentcapsule-authority unlock-key -out /root/agentcapsule-unlock.key
+   ```
+   It prints the recipient, the public part. Copy the key file to the safe
+   that holds the backup passphrases ([below](#secrets-to-keep-off-the-hosts)),
+   then delete it from the host (`shred -u`). Neither host keeps it.
+4. **Create the link's certificates**, one per host. Each names the two
+   authorities; use the identities pinned in the worker's configuration:
+   ```sh
+   agentcapsule-authority certificate -role primary \
+     -restore-authority-id <restoreauth_…> -key-authority-id <keyauth_…> \
+     -certificate /etc/agentcapsule/authority-primary.crt -key /etc/agentcapsule/authority-primary.key
+   ```
+   Run it on the standby with `-role replica` and `authority-replica.*`. Once
+   the replica's account exists (step 6), give it its key file
+   (`chown agentcapsule-authority`, mode 0600). Copy each `.crt` file, never a
+   `.key`, to the other host. The certificates are pinned: replacing one means
+   copying it again.
+5. **Take the snapshot** on the primary, outside both authorities:
+   ```sh
+   agentcapsule-authority snapshot \
+     -key-authority-root <key_authority.root> -key-authority-id <keyauth_…> \
+     -restore-authority-root <restore_authority.root> -restore-authority-id <restoreauth_…> \
+     -recipient <recipient> -out /root/authority-snapshot.sqlite
+   ```
+   This **arms** both authorities: from now on the worker refuses to start
+   without `authority_replica`. The file holds the catalogue, the secret and
+   every live key wrapped to the unlock key, and no secret in clear. It still
+   lists agents, stores and revocations: copy it over SSH, then delete it.
+6. **On the standby, create the replica** as a dedicated account, for example
+   `agentcapsule-authority`, which owns only its directory:
+   ```sh
+   useradd --system --user-group --home-dir /var/lib/agentcapsule-authority-replica --shell /usr/sbin/nologin agentcapsule-authority
+   install -d -o agentcapsule-authority -g agentcapsule-authority -m 0700 /var/lib/agentcapsule-authority-replica
+   runuser -u agentcapsule-authority -- agentcapsule-authority init-replica \
+     -root /var/lib/agentcapsule-authority-replica/replica -snapshot /tmp/authority-snapshot.sqlite
+   ```
+7. **Configure and start the replica.** `/etc/agentcapsule/authority-replica.json`,
+   owned by root, not writable by others:
+   ```json
+   {
+     "version": 1,
+     "root": "/var/lib/agentcapsule-authority-replica/replica",
+     "restore_authority_id": "<restoreauth_…>",
+     "key_authority_id": "<keyauth_…>",
+     "listen": "0.0.0.0:7443",
+     "certificate": "/etc/agentcapsule/authority-replica.crt",
+     "key": "/etc/agentcapsule/authority-replica.key",
+     "primary_certificate": "/etc/agentcapsule/authority-primary.crt",
+     "metrics_listen": "127.0.0.1:9466"
+   }
+   ```
+   Run `agentcapsule-authority serve -config /etc/agentcapsule/authority-replica.json`
+   under systemd, as `agentcapsule-authority`, with `Restart=always`. Let only
+   the primary's address reach the port. It logs JSON events
+   (`replica_started`, `replica_refused` with its kind, `replica_stopped`) and
+   serves `agentcapsule_authority_replica_applied_sequence`, `_epoch`,
+   `_last_apply_timestamp_seconds` and `_refusals_total{kind}`.
+8. **On the primary, add `authority_replica`** to the worker's configuration
+   ([worker.md](worker.md#replica-of-the-authorities)), then start the
+   worker. Check `agentcapsule_authority_replication_enabled 1`, and that
+   `_acknowledged_sequence` follows `_committed_sequence`.
+
+To **rebuild** the replica (a new standby, a lost disk): stop the worker,
+take a new snapshot with the same recipient, create the replica in a new
+directory, start both. The snapshot keeps the epoch. A snapshot with another
+recipient is refused: changing the unlock key is a later step.
+
+### Secrets to keep off the hosts
+
+Keep these in a safe off both hosts, with the backup passphrases. The
+failover needs each of them, and no host can give them back:
+- **the unlock key** (step 3). Without it, the replica's keys and secret do
+  not open, and every agent's memory is lost with the primary. With it and a
+  copy of the replica, anyone can open them: keep it like the backup
+  passphrases;
+- the API's receipt key and transit keys ([Prepare](#prepare));
+- pgBackRest's cipher passphrases and the archive shipper's
+  ([Volume archives off the host](#volume-archives-off-the-host-rec-02)).
+
+The link's private keys stay on their hosts: each is replaced by a new
+certificate and a new pin.
+
+### What is not built yet
+
+- **Promotion.** The internal API exists (`restoreauthority.Promote`: it
+  checks the unlock key, refuses every later record, writes both authorities
+  with their identities and the next epoch, then deletes the wrapped copies).
+  The `agentcapsule-admin` command and the failover steps come later.
+- **Degraded mode.** While the standby does not answer, the authorities'
+  writes wait: deliveries, boots, provisioning and removals retry until it
+  returns. ADR 005 (question 2) lets some continue after 30 seconds; that is
+  a later step, with its alerts.
+- **Revocations of access** in the authority, and their replay into
+  PostgreSQL after a promotion.
+- **The daily receipt key** of ADR 005's decision.
+- **An authority service** owning both directories, serving the worker and
+  the API over a local socket. Today each worker process opens the
+  authorities and holds its own link.
+
 ## Failover (REC-03)
 
 When the primary host is lost, the standby takes over: first the database,
@@ -442,10 +568,12 @@ This must be ready before any disaster, so that the failover takes minutes:
   (`receipt_key_does_not_match_installation`) and other transit keys
   (`transit_keys_do_not_match_installation`).
 
-**This copy is a stand-in until D-05 is decided.** D-05 will decide where the
-keys and the authorities live, outside the restored domain, and how a standby
-gets them. Until then, the operator copies these files by hand, out of band.
-Nothing replicates them.
+**This copy is still made by hand.** D-05 is decided
+([ADR 005](adr/005-keys-outside-restored-domain.md)). The authorities now
+replicate to the standby ([above](#the-authorities-replica-d-05)), but these
+installation secrets do not yet: installing them on the standby in advance,
+wrapped to the unlock key, is a later step. Until then, the operator copies
+these files by hand, out of band.
 
 ### The procedure
 
@@ -1096,8 +1224,8 @@ generated, and finds none. Passed on 2026-11-13.
    ([ADR 003](adr/003-restore-rpo.md#what-remains)).
 2. **Restoring onto the standby.** A fetch of an archive is qualified
    ([above](#fetch-an-archive-back)). Installing it there and restoring the
-   agent needs [D-05](adr/005-keys-outside-restored-domain.md): the keys and
-   the authorities outside the restored domain.
+   agent needs the authorities on the standby: their replica is built
+   ([D-05](#the-authorities-replica-d-05)); its promotion command is not.
 3. **A failover exercise** that measures the RPO and the RTO of the whole
    platform, on real hosts. The database and the API fail over on one
    machine, with their configuration and keys

@@ -61,7 +61,9 @@ refuses an absent authority or one with a different identity; it does not
 initialize it at startup. Running `init-restore-authority` again on an existing
 catalog keeps its identity and upgrades its schema. Version 2 adds the losses
 that a restore declares ([ADR 003](adr/003-restore-rpo.md)). Before the
-upgrade, the worker keeps running; only the loss operations are refused. The UIDs of removed agents stay reserved. This first
+upgrade, the worker keeps running; only the loss operations are refused.
+Version 3 adds the log of the [replica](#replica-of-the-authorities); a
+version 2 catalogue keeps working standalone. The UIDs of removed agents stay reserved. This first
 harness source accepts the approved local image whose digest is exactly
 `sha256:<initrd.sha256>`; OCI import and assembly remain to be built.
 
@@ -225,6 +227,80 @@ lease, the dispatch authorization and the parties that are still active. The
 outgoing channel is used in the background by the harness, after the commit of
 the SQLite intent: no platform call blocks the callback that must first return
 its delivery acknowledgment.
+
+## Replica of the authorities
+
+D-05 ([ADR 005](adr/005-keys-outside-restored-domain.md)) keeps both
+authorities on the standby host too, in a replica. The worker keeps its
+authorities in its own process, and sends each of their writes to the
+replica over mutual TLS. Each write returns only once the replica holds it on
+disk. [recovery.md](recovery.md#the-authorities-replica-d-05) installs the
+replica.
+
+```json
+{
+  "authority_replica": {
+    "address": "standby.internal:7443",
+    "certificate": "/etc/agentcapsule/authority-primary.crt",
+    "key": "/etc/agentcapsule/authority-primary.key",
+    "replica_certificate": "/etc/agentcapsule/authority-replica.crt"
+  }
+}
+```
+
+- `address` is the standby's `agentcapsule-authority serve`.
+- `certificate` and `key` are this host's side of the link. The key file is
+  private: mode 0600, owned by the worker's account.
+- `replica_certificate` pins the standby's certificate. Nothing else is
+  trusted: no CA, no host name.
+- Both certificates name the two authorities' identities. A certificate made
+  for another installation does not load.
+- The unlock key's public part is not in this file. The snapshot stored it in
+  the restore authority.
+
+**Without this section, the authorities are standalone.** That is the
+behaviour before D-05. It gives no protection against the host's loss: its
+keys and its catalogue exist on this host only. Once a snapshot has armed the
+authorities, the worker refuses to start without this section
+(`authority_replica_required`). With the section and authorities never armed,
+it refuses too (`authority_replica_not_armed`). Unusable certificate files
+give `authority_replica_configuration_invalid`. The archive and restore
+commands use the same section.
+
+**What a write does.** The restore authority's catalogue holds the log. A
+write commits its record in the same SQLite transaction as its effect. Then
+it sends the record and waits for the replica's acknowledgment. Every
+transaction, a read too, first checks that the replica holds every record
+already committed. If not, it sends them before it acts. So a record left by
+a crash, between the commit and the acknowledgment, reaches the replica
+before anything uses it. The replica refuses a gap in the sequence, a record
+of another epoch, and a resent record whose content changed. The log keeps a
+record only until the replica acknowledges it.
+
+**When the standby does not answer**, every authority write waits, and fails
+when its attempt times out: deliveries, boots, provisioning and removals wait
+too, and retry. Reads wait only if a record is still unacknowledged. A
+degraded mode that lets some writes continue is a later step (ADR 005,
+question 2). A replicated write costs one round trip and the replica's
+fsync, on top of the local commit.
+
+The metrics, on `metrics_listen`:
+
+| Metric | Meaning |
+| --- | --- |
+| `agentcapsule_authority_replication_enabled` | 1 in synchronous mode, 0 standalone |
+| `agentcapsule_authority_replication_committed_sequence` | Last record this worker committed locally |
+| `agentcapsule_authority_replication_acknowledged_sequence` | Last record the replica acknowledged to it |
+| `agentcapsule_authority_replication_lag_records`, `_lag_seconds` | Records committed and not acknowledged, and the age of the oldest |
+| `agentcapsule_authority_replication_last_error{kind}` | 1 for the last attempt's error kind; `none` after a success |
+| `agentcapsule_authority_replication_errors_total{kind}` | Failed attempts, by kind |
+| `agentcapsule_authority_replication_write_seconds` | Time from a record's local commit to its acknowledgment |
+
+The kinds are a closed list: `unreachable`, `timeout`, `protocol`,
+`replica_behind` (the replica lacks records the log no longer holds),
+`diverged` (the replica and this host disagree), `local`, and `refused_` plus
+the replica's reason (`gap`, `older_epoch`, `newer_epoch`, `conflict`,
+`promoted`, `identity`, `invalid`, `unavailable`). Alert rules come later.
 
 ## Deleting a product volume
 

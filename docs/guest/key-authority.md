@@ -37,3 +37,48 @@ protected against such a rollback.
 The tests cover process interruptions and a key restore that keeps the
 independent tombstones. They are not yet the complete P2 restore path, nor a
 validation of an external HSM or KMS.
+
+## The replica on the standby
+
+D-05 ([ADR 005](../adr/005-keys-outside-restored-domain.md)) adds a replica of
+both authorities on the standby host. There are two modes.
+
+- **Standalone**, the default. The keys exist on this host only. If the host
+  is lost, every key is lost, so every archive can no longer be opened.
+  **This mode gives no disaster protection.**
+- **Synchronous.** The key authority and the restore authority share one
+  stream of records. Each write returns only once the replica holds it on
+  disk. The worker enables it with `authority_replica`
+  ([worker.md](../worker.md#replica-of-the-authorities)).
+
+In synchronous mode:
+- `Ensure` publishes the key file first. Nobody can use the key yet: its
+  allocation marker is missing. The stream records the key, wrapped, and
+  waits for the replica. Only then does `Ensure` publish the marker.
+- `Revoke` publishes the tombstone at once, which only denies. The stream
+  records the destruction. The replica deletes its wrapped copy in the same
+  transaction. Only then does `Revoke` remove the key file.
+- After a crash at any step, no caller can use a key that the replica lacks.
+  A retry records the same key again. The replica keeps one key per volume,
+  and a destroyed key never comes back.
+
+**The unlock key.** Keys leave the host only wrapped to the operator's unlock
+key. `agentcapsule-authority unlock-key` creates it. The primary keeps only
+its public part, the recipient, in the restore authority's catalogue. The
+replica keeps only wrapped copies. The operator keeps the unlock key off both
+hosts and gives it only to promote the replica. The wrapping is HPKE (RFC
+9180) from Go's standard library: DHKEM(X25519, HKDF-SHA256), HKDF-SHA256
+and ChaCha20-Poly1305. Each copy is bound to its authority, agent and volume.
+A commitment, a SHA-256 of the key with its binding, lets the replica tell
+two keys apart without holding either.
+
+**Arming.** The snapshot that creates the replica arms both authorities. It
+writes a `replicated` file in the key authority's directory. From then on,
+`Ensure` and `Revoke` refuse to run without the stream. A process configured
+without the replica cannot write behind its back. `WithKey` still works.
+
+The limits stay those above. SQLite's `secure_delete` overwrites a deleted
+wrapped copy in the replica's file, and in the primary's log. Neither side
+scrubs freed disk blocks, nor does this authority when it removes a key file.
+[recovery.md](../recovery.md#the-authorities-replica-d-05) explains how to
+install the replica.

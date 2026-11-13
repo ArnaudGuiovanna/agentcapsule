@@ -486,6 +486,40 @@ otherwise:
 - (5) the database window stays announced as a time window; PostgreSQL keeps
   its asynchronous WAL archiving.
 
+### Implementation status
+
+November 13, 2026. The synchronous path of §5, items 1 to 3, is built:
+- **The stream** (`internal/authoritylog`). One stream for both authorities.
+  Each record has an epoch, a sequence number and the digest of the record
+  before it. A catalogue write commits its record in its own SQLite
+  transaction; a key write goes through the same transaction. The write
+  returns once the replica holds the record on disk. Every transaction first
+  resends what the replica lacks, so a crash between the commit and the
+  acknowledgment is resent from the replica's last sequence. The log drops a
+  record once acknowledged.
+- **Wrapping.** HPKE from Go's standard library (`crypto/hpke`):
+  DHKEM(X25519, HKDF-SHA256), HKDF-SHA256, ChaCha20-Poly1305. No new
+  dependency. The primary holds the recipient only.
+- **The replica** (`restoreauthority.Replica`): one SQLite file, created from
+  a snapshot of the primary. It applies in order and refuses a gap, another
+  epoch, or a changed duplicate. Destroying a key deletes its wrapped copy in
+  the same record. It never opens as an authority. `restoreauthority.Promote`
+  is the internal promotion: unlock key, same identities, next epoch.
+- **Transport.** Mutual TLS 1.3 over TCP with pinned self-signed
+  certificates that name both identities. The replica runs as
+  `agentcapsule-authority serve` on the standby. On the primary, the worker
+  keeps its authorities in process (`authority_replica` in its
+  configuration).
+- **Standalone mode** stays the default, with no disaster protection. A
+  snapshot arms both authorities; armed, they refuse to run without the
+  replica.
+
+Later waves: degraded mode and its alerts (question 2), revocation records
+for access (§5.4), the promotion and reconciliation commands (§5.5), the
+daily receipt key, and the authority service on a local socket (§5.3).
+[recovery.md](../recovery.md#the-authorities-replica-d-05) installs the
+replica.
+
 ## Model revision (D-05, option (a))
 
 November 13, 2026. **Status: written by the modeling session; not yet
