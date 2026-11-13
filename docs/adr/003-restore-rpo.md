@@ -3,6 +3,8 @@
 Date: November 8, 2026. **Status: option B chosen on November 8, 2026**
 (announced loss within the RPO window). The P2 model and its traces remain to be
 updated before any incompatible code; REC-02 is unblocked under this condition.
+The failure domains and the numbers (RPO, RTO, storage) were set on November 13
+in [004-recovery-objectives.md](004-recovery-objectives.md).
 References: product spec §10.4 ([product.md](../product.md)), REC-01 to REC-04,
 D-05.
 

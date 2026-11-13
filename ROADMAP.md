@@ -101,9 +101,9 @@ a production host yet.
 
 | ID | Item | Status | Remaining |
 |---|---|---|---|
-| REC-01 | Recovery decision: local restart vs full disaster, RPO/RTO ([ADR 003](docs/adr/003-restore-rpo.md)) | Not started | Decision |
-| REC-02 | Restore authority, volume archives, restricted boot then activation | Partial | Inspection and repair of real history, activation path |
-| REC-03 | External encrypted, versioned backups of PostgreSQL and volumes; restore on another host | Partial | Procedure on a separate KVM host, freshness alerts |
+| REC-01 | Recovery decision: local restart vs full disaster, RPO/RTO ([ADR 003](docs/adr/003-restore-rpo.md), [ADR 004](docs/adr/004-recovery-objectives.md)): a local restart loses nothing; after a disaster, database RPO 15 min (WAL archiving), volume RPO 24 h (nightly archives while asleep), RTO 1 h on a standby host kept ready, encrypted backups to S3 and to the standby over SSH; a loss in the window is announced and rescheduled | Done | — (decision; the work is in REC-02 and REC-03) |
+| REC-02 | Restore authority, volume archives, restricted boot then activation | Partial | Inspection and repair of real history, activation path; nightly archives of sleeping agents without stopping the worker; the declared-loss state (model, code, API) |
+| REC-03 | External encrypted, versioned backups of PostgreSQL and volumes; restore on another host | Partial | WAL archiving to S3 and the standby, continuous replay on the standby, freshness metrics and alerts, a failover exercise measuring RPO and RTO ([ADR 004](docs/adr/004-recovery-objectives.md)) |
 | REC-04 | Key lifecycle and revocation outside the restored domain; archive deletion policy | Partial | Rotation and sealing policy |
 
 ## Release validation
@@ -120,7 +120,7 @@ a production host yet.
 |---|---|
 | D-01 | Identity and tenant migration (delegated identity chosen; operator bootstrap and migration of legacy data remain) |
 | D-02 | Effect of reassignment and revocation on admitted work and past results ([ADR 002](docs/adr/002-assignment-revocation.md)) |
-| D-03 | RPO, confirmed results and restore ([ADR 003](docs/adr/003-restore-rpo.md)) |
+| D-03 | RPO, confirmed results and restore ([ADR 003](docs/adr/003-restore-rpo.md): option B, an announced loss within the window; numbers in [ADR 004](docs/adr/004-recovery-objectives.md)); the P2 model still to be revised for a declared loss |
 | D-04 | Delivery closure when notifications are exhausted; any priority or reservation rule that changes progress |
 | D-05 | Keys and secrets outside the restored domain; a secret store usable in self-hosting |
 
