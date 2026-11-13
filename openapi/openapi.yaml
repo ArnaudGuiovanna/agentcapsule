@@ -1299,11 +1299,13 @@ paths:
   /v1/queue/limits:
     post:
       description: >-
-        Replaces the depth limits (quota:manage, role allowed to manage
-        quotas). Lowering a limit abandons no work that was already accepted.
-        It only rejects new admissions until the queue drains. Order within an
-        agent remains FIFO. There is no priority, as the verified delivery
-        model has none.
+        Replaces the depth limits and the wake budget (quota:manage, role
+        allowed to manage quotas). Lowering a limit abandons no work that was
+        already accepted. It only rejects new admissions until the queue
+        drains. Order within an agent remains FIFO. There is no priority, as
+        the verified delivery model has none. The wake budget bounds how many
+        sleeping agents the organization's agents may wake through requests in
+        a rolling hour; a request past it waits, then expires at its deadline.
       security: [{delegatedBearer: []}, {serviceBearer: []}]
       parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
       requestBody:
@@ -2154,13 +2156,15 @@ components:
         max_pending_per_agent: {type: integer, minimum: 1, maximum: 100000}
         max_pending_tenant: {type: integer, minimum: 1, maximum: 1000000, description: "At least equal to the per-agent limit."}
         max_attachment_bytes: {type: integer, minimum: 0, maximum: 68719476736, description: "Bytes of unpurged files the organization may hold (1 MiB to 64 GiB; 0 or absent = 512 MiB)."}
+        max_peer_wakes_per_hour: {type: integer, minimum: 0, maximum: 100000, description: "Sleeping agents the organization's agents may wake through requests in a rolling hour (0 or absent = 60). Replies, statuses, invocations by people and explicit wakes are not counted."}
         default: {type: boolean, description: "True while the organization has configured nothing (100 per agent, 1000 in total)."}
     QueueStatus:
       type: object
-      required: [limits, pending_tenant, agents]
+      required: [limits, pending_tenant, agents, peer_wakes_last_hour]
       properties:
         limits: {$ref: '#/components/schemas/QueueLimits'}
         pending_tenant: {type: integer}
+        peer_wakes_last_hour: {type: integer, description: "Sleeping agents woken by requests between agents in the last hour."}
         agents:
           type: array
           items:

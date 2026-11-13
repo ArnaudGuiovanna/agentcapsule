@@ -200,6 +200,11 @@ func run() int {
 	}
 	maintenance.Report = func(err error) {
 		if err != nil && ctx.Err() == nil {
+			// An organization at its wake budget is a limit, not a fault: say
+			// so, so that an operator does not look for one.
+			if errors.Is(err, controlplane.ErrWakeBudget) {
+				fmt.Fprintln(os.Stderr, "wake_budget_exhausted")
+			}
 			fmt.Fprintln(os.Stderr, "maintenance_retry")
 		} else if err == nil {
 			fmt.Fprintln(os.Stdout, "maintenance_complete")

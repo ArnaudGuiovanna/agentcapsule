@@ -377,6 +377,26 @@ otherwise.
   (`agent.request_accepted`, `agent.request_declined`), with the request as
   the audit event's `reference`.
 
+**Wake budget (INT-04).** The agents of an organization may wake sleeping
+agents through requests at most `max_peer_wakes_per_hour` times per rolling hour
+(default 60, 1 to 100 000, set with the other limits by
+`POST /v1/queue/limits`, `quota:manage`). `GET /v1/queue` gives
+`peer_wakes_last_hour`.
+- **What counts.** A wake counts when the worker boots a sleeping agent for a
+  request between agents of the organization. Nothing else does:
+  - a request to an agent whose VM already runs;
+  - a reply or a status, which completes work already admitted and always
+    wakes its recipient;
+  - an invocation by a person, which the queue limits bound;
+  - an explicit wake;
+  - a restart to renew credentials.
+- **When the budget is used up.** The request waits, without spending a
+  delivery attempt, until the rolling hour frees a wake, and expires at its
+  deadline otherwise. Meanwhile its A2A task stays `SUBMITTED`. A boot that
+  fails gives its wake back.
+- **Logs.** The worker logs `wake_budget_exhausted` while one of its
+  deliveries waits.
+
 **Agent Cards and request state (INT-03).** Two more reads on the platform
 channel serve the A2A endpoint of [capsule-adapter](../adapter.md#other-agents-a2a-endpoint):
 

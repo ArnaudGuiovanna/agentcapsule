@@ -74,23 +74,36 @@ func (w *Placements) WithPreparedDelivery(ctx context.Context, target string, fn
 		if err != nil {
 			return err
 		}
-		if run, ok := runs[target]; ok && run.FenceOnly {
+		run, running := runs[target]
+		if running && run.FenceOnly {
 			if err = w.stop(ctx, target, run.Generation, true); err != nil {
+				return err
+			}
+			running = false
+		}
+		// A request between agents of an organization wakes a sleeping
+		// recipient only within the organization's wake budget (INT-04). An
+		// exhausted budget is backpressure: no attempt is spent. A running
+		// VM, and a VM restarted only to renew its credentials, cost nothing.
+		var wake string
+		if !running {
+			if wake, err = w.store.ReservePeerWake(ctx, target); err != nil {
 				return err
 			}
 		}
 		if _, _, err = w.retireDueCredentials(ctx, target); err != nil {
-			return err
+			return errors.Join(err, w.releaseWake(ctx, wake))
 		}
 		_, err = w.start(ctx, target, false)
 		if errors.Is(err, runtime.ErrCapacity) {
 			if err = w.makeBarrierCapacity(ctx, target); err != nil {
-				return err
+				return errors.Join(err, w.releaseWake(ctx, wake))
 			}
 			_, err = w.start(ctx, target, false)
 		}
 		if err != nil {
-			return err
+			// A recipient that cannot boot must not use up the budget by retrying.
+			return errors.Join(err, w.releaseWake(ctx, wake))
 		}
 		client, err := w.host.Control(ctx, target)
 		if err != nil {
@@ -192,4 +205,15 @@ func (w *Placements) makeBarrierCapacity(ctx context.Context, target string) err
 	}
 	id := ids[0]
 	return w.stop(ctx, id, runs[id].Generation, true)
+}
+
+// releaseWake gives a reserved wake back when the boot it paid for failed,
+// even if the delivery's own context has ended.
+func (w *Placements) releaseWake(ctx context.Context, wake string) error {
+	if wake == "" {
+		return nil
+	}
+	release, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	return w.store.ReleasePeerWake(release, wake)
 }

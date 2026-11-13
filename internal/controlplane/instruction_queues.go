@@ -33,7 +33,11 @@ type QueueLimits struct {
 	MaxPendingTenant   int `json:"max_pending_tenant"`
 	// MaxAttachmentBytes bounds stored attachment bytes; 0 on input keeps the default.
 	MaxAttachmentBytes int64 `json:"max_attachment_bytes"`
-	Default            bool  `json:"default"`
+	// MaxPeerWakesPerHour bounds how many sleeping agents the organization's
+	// agents may wake through requests in a rolling hour (ReservePeerWake);
+	// 0 on input keeps the default.
+	MaxPeerWakesPerHour int  `json:"max_peer_wakes_per_hour"`
+	Default             bool `json:"default"`
 }
 
 type QueueAgentDepth struct {
@@ -45,6 +49,8 @@ type QueueStatus struct {
 	Limits        QueueLimits       `json:"limits"`
 	PendingTenant int               `json:"pending_tenant"`
 	Agents        []QueueAgentDepth `json:"agents"`
+	// PeerWakesLastHour: sleeping agents woken by requests in the last hour.
+	PeerWakesLastHour int `json:"peer_wakes_last_hour"`
 }
 
 // waitingInstructionsSQL lists, per agent of tenant $1, every instruction that
@@ -59,9 +65,9 @@ const waitingInstructionsSQL = `SELECT m.dest_agent_id AS agent_id FROM agent_ma
 
 func queueLimits(ctx context.Context, tx pgx.Tx, tenant string) (QueueLimits, error) {
 	l := QueueLimits{MaxPendingPerAgent: defaultMaxPendingPerAgent, MaxPendingTenant: defaultMaxPendingTenant,
-		MaxAttachmentBytes: defaultMaxAttachmentBytes, Default: true}
-	err := tx.QueryRow(ctx, `SELECT max_pending_per_agent,max_pending_tenant,max_attachment_bytes FROM queue_limits WHERE tenant_id=$1`, tenant).
-		Scan(&l.MaxPendingPerAgent, &l.MaxPendingTenant, &l.MaxAttachmentBytes)
+		MaxAttachmentBytes: defaultMaxAttachmentBytes, MaxPeerWakesPerHour: defaultMaxPeerWakesPerHour, Default: true}
+	err := tx.QueryRow(ctx, `SELECT max_pending_per_agent,max_pending_tenant,max_attachment_bytes,max_peer_wakes_per_hour FROM queue_limits WHERE tenant_id=$1`, tenant).
+		Scan(&l.MaxPendingPerAgent, &l.MaxPendingTenant, &l.MaxAttachmentBytes, &l.MaxPeerWakesPerHour)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return l, nil
 	}
@@ -97,8 +103,12 @@ func (a *Accounts) SetQueueLimits(ctx context.Context, p Principal, key string, 
 	if in.MaxAttachmentBytes == 0 {
 		in.MaxAttachmentBytes = defaultMaxAttachmentBytes
 	}
+	if in.MaxPeerWakesPerHour == 0 {
+		in.MaxPeerWakesPerHour = defaultMaxPeerWakesPerHour
+	}
 	if in.MaxPendingPerAgent < 1 || in.MaxPendingPerAgent > 100000 || in.MaxPendingTenant < in.MaxPendingPerAgent || in.MaxPendingTenant > 1000000 ||
-		in.MaxAttachmentBytes < minMaxAttachmentBytes || in.MaxAttachmentBytes > maxMaxAttachmentBytes {
+		in.MaxAttachmentBytes < minMaxAttachmentBytes || in.MaxAttachmentBytes > maxMaxAttachmentBytes ||
+		in.MaxPeerWakesPerHour < 1 || in.MaxPeerWakesPerHour > 100000 {
 		return APIReceipt{}, ErrInput
 	}
 	in.Default = false
@@ -116,11 +126,11 @@ func (a *Accounts) SetQueueLimits(ctx context.Context, p Principal, key string, 
 		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1,0))", "instruction-queue/"+p.TenantID); err != nil {
 			return 0, nil, err
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO queue_limits(tenant_id,max_pending_per_agent,max_pending_tenant,max_attachment_bytes,updated_by)
-            VALUES($1,$2,$3,$4,$5) ON CONFLICT (tenant_id) DO UPDATE SET max_pending_per_agent=EXCLUDED.max_pending_per_agent,
+		if _, err := tx.Exec(ctx, `INSERT INTO queue_limits(tenant_id,max_pending_per_agent,max_pending_tenant,max_attachment_bytes,max_peer_wakes_per_hour,updated_by)
+            VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT (tenant_id) DO UPDATE SET max_pending_per_agent=EXCLUDED.max_pending_per_agent,
             max_pending_tenant=EXCLUDED.max_pending_tenant,max_attachment_bytes=EXCLUDED.max_attachment_bytes,
-            updated_by=EXCLUDED.updated_by,updated_at=clock_timestamp()`,
-			p.TenantID, in.MaxPendingPerAgent, in.MaxPendingTenant, in.MaxAttachmentBytes, p.ID); err != nil {
+            max_peer_wakes_per_hour=EXCLUDED.max_peer_wakes_per_hour,updated_by=EXCLUDED.updated_by,updated_at=clock_timestamp()`,
+			p.TenantID, in.MaxPendingPerAgent, in.MaxPendingTenant, in.MaxAttachmentBytes, in.MaxPeerWakesPerHour, p.ID); err != nil {
 			return 0, nil, err
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO queue_audit(id,tenant_id,actor_principal_id,action) VALUES($1,$2,$3,'limits.set')`,
@@ -170,5 +180,8 @@ func (a *Accounts) QueueStatus(ctx context.Context, p Principal) (QueueStatus, e
 		return QueueStatus{}, err
 	}
 	rows.Close()
+	if out.PeerWakesLastHour, err = peerWakesLastHour(ctx, tx, p.TenantID); err != nil {
+		return QueueStatus{}, err
+	}
 	return out, commit(ctx, tx)
 }

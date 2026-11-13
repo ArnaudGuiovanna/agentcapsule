@@ -362,6 +362,16 @@ func TestHTTPTenantInvocationIsGovernedByAssignments(t *testing.T) {
 	if view.Code != 200 || !strings.Contains(view.Body.String(), `"max_pending_per_agent":1`) || strings.Contains(view.Body.String(), "hello") {
 		t.Fatal("queue view", view.Code, view.Body.String())
 	}
+	// The wake budget is one of the organization's limits (INT-04).
+	if r := call(t, l.server, "POST", "/v1/queue/limits", owner, "wake-bad", `{"max_pending_per_agent":1,"max_pending_tenant":1,"max_peer_wakes_per_hour":100001}`); r.Code != 400 {
+		t.Fatal("a wake budget out of range", r.Code)
+	}
+	if r := call(t, l.server, "POST", "/v1/queue/limits", owner, "wake-5", `{"max_pending_per_agent":1,"max_pending_tenant":1,"max_peer_wakes_per_hour":5}`); r.Code != 200 || !strings.Contains(r.Body.String(), `"max_peer_wakes_per_hour":5`) {
+		t.Fatal("set the wake budget", r.Code, r.Body.String())
+	}
+	if view = call(t, l.server, "GET", "/v1/queue", owner, "", ""); view.Code != 200 || !strings.Contains(view.Body.String(), `"max_peer_wakes_per_hour":5`) || !strings.Contains(view.Body.String(), `"peer_wakes_last_hour":0`) {
+		t.Fatal("queue view with the wake budget", view.Code, view.Body.String())
+	}
 	if r := call(t, l.server, "GET", "/v1/queue", bobToken, "", ""); r.Code != 403 {
 		t.Fatal("a member read the queue view", r.Code)
 	}

@@ -310,4 +310,89 @@ func TestProductWorkerTenantAgentsTalkOverA2A(t *testing.T) {
 	if n := exchanges(); len(n) != 1 || n["REPLIED"] != 2 {
 		t.Fatal("exchanges", n)
 	}
+
+	t.Log("stage: the organization's wake budget holds a request until it allows a wake")
+	var queue controlplane.QueueStatus
+	l.request(l.owner(), "GET", "/v1/queue", "", nil, 200, &queue)
+	if queue.PeerWakesLastHour != 1 {
+		t.Fatal("the request that woke b was not counted", queue.PeerWakesLastHour)
+	}
+	limits := controlplane.QueueLimits{MaxPendingPerAgent: 100, MaxPendingTenant: 1000, MaxPeerWakesPerHour: 1}
+	l.request(l.owner(), "POST", "/v1/queue/limits", "one-wake", limits, 200, nil)
+	l.lifecycle(b, "sleep", "a2a-b-sleep-again")
+	var inv controlplane.Invocation
+	l.request(l.user(), "POST", "/v1/agents/"+a+"/invocations", "a2a-budget", map[string]any{
+		"content": []map[string]string{{"type": "text", "text": "ask " + b + " still there?"}}}, 202, &inv)
+	held := 0
+	for deadline := time.Now().Add(2 * time.Minute); held < 5; {
+		if time.Now().After(deadline) {
+			t.Fatal("the request was never held by the wake budget", exchanges())
+		}
+		if l.passHeldByWakeBudget("the request waits for a wake") {
+			held++
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if _, ok := l.runs(1)[a]; !ok {
+		t.Fatal("a stopped while its request waited")
+	}
+	if n := exchanges(); n["DELIVERING"] != 1 || n["REPLIED"] != 2 {
+		t.Fatal("the held request is not waiting", n)
+	}
+	limits.MaxPeerWakesPerHour = 2
+	l.request(l.owner(), "POST", "/v1/queue/limits", "two-wakes", limits, 200, nil)
+	l.await("the request once the budget allows a wake", true, func() bool {
+		var v controlplane.Invocation
+		l.request(l.user(), "GET", "/v1/invocations/"+inv.ID, "", nil, 200, &v)
+		if v.State == "failed" || v.State == "canceled" || v.State == "expired" {
+			t.Fatal("invocation ended without an answer", v.State, v.ErrorCode)
+		}
+		return v.State == "completed"
+	})
+	if got := string(l.request(l.user(), "GET", "/v1/invocations/"+inv.ID+"/result", "", nil, 200, nil)); !strings.Contains(got, b+" answered: echo: still there?") {
+		t.Fatal("a did not get b's answer once b could wake", got)
+	}
+	if _, ok := l.runs(2)[b]; !ok {
+		t.Fatal("b did not wake within the new budget")
+	}
+	l.request(l.owner(), "GET", "/v1/queue", "", nil, 200, &queue)
+	if queue.PeerWakesLastHour != 2 {
+		t.Fatal("wakes counted", queue.PeerWakesLastHour)
+	}
+}
+
+// passHeldByWakeBudget runs one dispatch pass and reports whether a delivery
+// waited for the organization's wake budget. Any other failure fails the test.
+func (l *registryLab) passHeldByWakeBudget(stage string) bool {
+	l.t.Helper()
+	opts := DispatchOptions{Batch: 4, WorkLease: 3 * time.Minute, DeliveryLease: 30 * time.Second, RetryBase: time.Second, RetryMax: 10 * time.Second}
+	err := l.worker.DispatchPass(l.t.Context(), opts, 90*time.Second)
+	if err != nil && !onlyWakeBudget(err) {
+		l.t.Fatal(stage, "worker dispatch", err)
+	}
+	return err != nil
+}
+
+// onlyWakeBudget accepts a pass whose only failures are deliveries that wait
+// for the wake budget, never one that also hides another failure.
+func onlyWakeBudget(err error) bool {
+	if err == controlplane.ErrWakeBudget {
+		return true
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		children := joined.Unwrap()
+		if len(children) == 0 {
+			return false
+		}
+		for _, child := range children {
+			if !onlyWakeBudget(child) {
+				return false
+			}
+		}
+		return true
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		return onlyWakeBudget(wrapped.Unwrap())
+	}
+	return false
 }
