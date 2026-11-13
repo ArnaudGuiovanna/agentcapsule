@@ -9,10 +9,10 @@ agents, files, models or audit trail. Existing agents run unchanged through
 `capsule-adapter`: an OpenAI SDK agent, and Pi, the coding agent, on a real model.
 Visible agents are published to a private AGNTCY Directory and searchable by skill,
 and an adapted agent reaches the other agents of its organization as A2A agents,
-across a SLIM node through the platform's bridge. Large parts of the MVP
-described in [docs/product.md](docs/product.md) are still missing, notably the
-flagship interoperability journey (gate G2), observability and a restore
-procedure.
+across a SLIM node through the platform's bridge: an agent finds another by
+its skill, wakes it and gets its answer, also with the Directory or SLIM down
+(gate G2). Large parts of the MVP described in [docs/product.md](docs/product.md)
+are still missing, notably observability and a restore procedure.
 
 Status words used below:
 
@@ -92,10 +92,10 @@ a production host yet.
 | ID | Item | Status | Remaining |
 |---|---|---|---|
 | INT-01 | Qualify OASF, Directory, A2A, SLIM releases; pin a compatibility matrix; private single-host services ([deploy/interop](deploy/interop)) tested in CI | Done | — |
-| INT-02 | OASF records published from PostgreSQL to the private Directory (outbox, revisions, schema refusals shown); skill search from a running agent filtered again in PostgreSQL; SDK `find_agents` | In progress | Search from a VM on KVM (with the INT-05 journey); Agent Cards move to INT-03 |
+| INT-02 | OASF records published from PostgreSQL to the private Directory (outbox, revisions, schema refusals shown); skill search from a running agent filtered again in PostgreSQL; SDK `find_agents`; search from a VM on KVM, through the A2A adapter (`/agents?skill=`), in the INT-05 journey | Done | — (Agent Cards: INT-03) |
 | INT-03 | Agent Cards and a real A2A adapter: tasks, statuses, artifacts, result return. In the guest, `capsule-adapter` serves each reachable agent of the organization as an A2A 1.0 agent (Agent Card, JSON-RPC `SendMessage` and `GetTask`) mapped onto peer requests, with two platform-channel reads (card, request state), and runs agents that are A2A servers themselves, supervised, each job one message; an organization sets per agent whether requests from its other agents are delivered at once (`PUT /v1/agents/{id}/inbound`); qualified with the official A2A Go SDK on both sides and on PostgreSQL ([docs/adapter.md](docs/adapter.md#other-agents-a2a-endpoint)); content exchanged between agents of an organization is bound to the person whose invocation granted the mandate (found by the KVM scenario, two example A2A agents, `verify-product-guest.py --a2a-harness`, validated on KVM); a held request is accepted or declined by whoever may configure the recipient or is assigned to it with invoke (`/v1/agents/{id}/held-requests`, metadata only, audited) | Done | — |
 | INT-04 | Host SLIM gateway, authenticated endpoints, vsock bridge, delegation limits. The SLIM bridge ([runtime/slimbridge](runtime/slimbridge), [docs/interop.md](docs/interop.md#the-slim-bridge-int-04)) carries deliveries between agents from the mailbox through the SLIM node to the worker and the VM over vsock, as A2A 1.0 messages; the worker accepts back only its own running attempts and checks the guest's receipt; the bridge ends when its node is lost; optional in the worker configuration; qualified against the private node (`verify-interop.py --services`) ; a delivered request grants no mandate, so delegation is one hop deep; systemd units for the bridge and the services ([deploy/systemd](deploy/systemd)), qualified under systemd (`verify-interop.py --systemd`); a wake budget per organization (`max_peer_wakes_per_hour`, default 60): a request that would wake a sleeping agent beyond it waits, without spending an attempt, then expires at its deadline ; a KVM journey of two A2A agents through a real bridge process and a private SLIM node, with the bridge away and a wake through SLIM (`verify-product-guest.py --slim-bridge-build`, validated on KVM) | Done | — |
-| INT-05 | End-to-end flagship journey including Directory/SLIM failures | Not started | All |
+| INT-05 | End-to-end flagship journey including Directory/SLIM failures: an agent finds another by its skill from its VM while the other sleeps and gets its answer over A2A and SLIM; with the Directory down the search fails and says so while known agents stay reachable; with the SLIM node down the request waits and the restarted bridge delivers it (`verify-product-guest.py --slim-bridge-build`, validated on KVM) | Done | — |
 
 ## Recovery
 

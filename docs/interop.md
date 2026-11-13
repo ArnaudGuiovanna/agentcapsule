@@ -9,8 +9,8 @@ Inside each VM, [capsule-adapter](adapter.md#other-agents-a2a-endpoint) serves
 the organization's agents as A2A agents, built on the A2A Go SDK v2.8.0 (INT-03).
 Between the platform's endpoints, deliveries can cross SLIM through the
 platform's [SLIM bridge](#the-slim-bridge-int-04) (INT-04, qualified against the
-private node and on KVM). Gate G2 is not reached: the flagship journey
-(INT-05) remains.
+private node and on KVM). Gate G2 is reached: the flagship journey (INT-05)
+passed on KVM on 2026-11-13, with the Directory and SLIM each down in turn.
 
 ## The profile
 
@@ -391,11 +391,11 @@ container users. On a host:
 - give each key to its container user (HAProxy 99, SLIM 65532) with mode 0400;
 - keep the authorities' keys offline.
 
-## Next steps (gate G2)
+## Gate G2
 
 | Item | Work |
 | --- | --- |
-| INT-02 | Done: one OASF record per described, discoverable agent, published from PostgreSQL by the worker and withdrawn when the agent is hidden, deleted or its organization suspended; search by skill from a running agent, filtered again in PostgreSQL; schema refusals shown to the organization. |
+| INT-02 | Done: one OASF record per described, discoverable agent, published from PostgreSQL by the worker and withdrawn when the agent is hidden, deleted or its organization suspended; search by skill from a running agent, filtered again in PostgreSQL; schema refusals shown to the organization; the search from a VM on KVM, in the flagship journey. |
 | INT-03 | In the guest, done: an Agent Card per agent the caller may reach, `SendMessage` and `GetTask` mapped onto peer requests with the state table above, and agents that are A2A servers themselves, each job one message; qualified with the A2A Go SDK v2.8.0 on both sides. Between agents of one organization, the recipient's inbound policy (`auto` or `manual`) decides whether a request is delivered at once. The KVM journey of two example A2A agents (`verify-product-guest.py --a2a-harness`) passes since the transit fix. A held request is accepted or declined by whoever may configure the recipient or is assigned to it with invoke (`/v1/agents/{id}/held-requests`, migration 0025). |
 | INT-04 | Done: the bridge process (SLIM names for the recipients, delivery from the mailbox through SLIM to the worker and the guest over vsock, receipts, supervision and restart), qualified against the private node; systemd units for the bridge and the services, qualified under systemd (`verify-interop.py --systemd`); a wake budget per organization on the requests that wake sleeping agents ([agents-assignments.md](api/agents-assignments.md#directory-publication-int-02)); a KVM journey of two A2A agents through a real bridge and node (`verify-product-guest.py --slim-bridge-build`). |
-| INT-05 | The flagship journey: agent A finds agent B, which is stopped, and gets its answer over A2A and SLIM; then the same journey with Directory or SLIM down. |
+| INT-05 | Done: the flagship journey on KVM (`verify-product-guest.py --slim-bridge-build`, `TestProductWorkerTenantFlagshipJourney`). Agent a finds agent b by its skill from its own VM while b sleeps, and gets b's answer over A2A and SLIM, b waking for it. With the Directory down, a's search fails and says so, a still reaches b, whom it knows, and finds b again once the Directory is back. With the SLIM node down, the bridge ends with `slim_node_lost`, a's request waits, and the bridge started again delivers it once the node is back. |
