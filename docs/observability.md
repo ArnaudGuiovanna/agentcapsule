@@ -113,6 +113,13 @@ it also runs `promtool check rules` and `promtool test rules`. CI runs it with
 Prometheus v3.5.0, pinned by digest. A raised disk threshold makes the tests
 fail.
 
+On KVM, the A2A journey of the product campaign wires the worker's telemetry
+as its service does. It checks the real metrics: running VMs, boots,
+deliveries, the wait at the wake budget, the disk. It also checks that the
+request ID of a person's invocation is on the delivery of that invocation and
+on the delivery of the request its agent sent to another agent. It passed on
+2026-11-13.
+
 ## Not yet covered
 
 - Distributed traces (spans and timings across processes). Correlation is by
