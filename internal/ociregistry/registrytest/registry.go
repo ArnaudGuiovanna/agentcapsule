@@ -283,11 +283,27 @@ func (r *Registry) finishUpload(w http.ResponseWriter, req *http.Request, id str
 	_, ok := r.uploads[id]
 	delete(r.uploads, id)
 	r.mu.Unlock()
-	b, _ := io.ReadAll(req.Body)
-	if !ok || req.Method != http.MethodPut || digest(b) != req.URL.Query().Get("digest") {
+	b, err := readBlob(req)
+	d := digest(b)
+	if err != nil || !ok || req.Method != http.MethodPut || d != req.URL.Query().Get("digest") {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
-	r.PutBlob(b)
+	r.mu.Lock()
+	r.blobs[d] = b // read for this upload only: no other reference to copy away from
+	r.mu.Unlock()
 	w.WriteHeader(http.StatusCreated)
+}
+
+// readBlob reads an uploaded blob once, into a buffer of its announced size
+// when there is one. A package of several hundred MiB (a Node.js agent) is then
+// allocated once, instead of being grown by doubling and copied again, which
+// once made a push time out under memory pressure.
+func readBlob(req *http.Request) ([]byte, error) {
+	if req.ContentLength < 0 {
+		return io.ReadAll(req.Body)
+	}
+	b := make([]byte, req.ContentLength)
+	_, err := io.ReadFull(req.Body, b)
+	return b, err
 }
