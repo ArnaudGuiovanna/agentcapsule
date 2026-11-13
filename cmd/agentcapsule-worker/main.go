@@ -107,7 +107,7 @@ func run() int {
 		}
 		authority, e := c.OpenRestoreAuthority(startup, keys)
 		if e != nil {
-			return fail("restore_authority_unavailable")
+			return fail(worker.AuthorityFailure(e))
 		}
 		defer authority.Close()
 		if c.Provisioning != nil {

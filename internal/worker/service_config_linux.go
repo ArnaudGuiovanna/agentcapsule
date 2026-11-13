@@ -8,11 +8,13 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"syscall"
 	"time"
 
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/authoritylog"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/keyauthority"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/restoreauthority"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/runtime"
@@ -27,6 +29,34 @@ type ServiceImage struct {
 type ServiceKeyAuthority struct {
 	Root     string `json:"root"`
 	Identity string `json:"identity"`
+}
+
+// ServiceAuthorityReplica links both authorities to their replica on the
+// standby (ADR 005, option a): each of their writes returns only once the
+// replica holds it. Certificate and Key are this host's side of the mutual
+// TLS link; ReplicaCertificate pins the standby's. Without this section the
+// authorities are standalone and give no protection against the host's loss;
+// once a snapshot armed them, the worker refuses to start without it.
+type ServiceAuthorityReplica struct {
+	Address            string `json:"address"`
+	Certificate        string `json:"certificate"`
+	Key                string `json:"key"`
+	ReplicaCertificate string `json:"replica_certificate"`
+}
+
+func (r *ServiceAuthorityReplica) valid() bool {
+	if r == nil {
+		return true
+	}
+	if _, port, err := net.SplitHostPort(r.Address); err != nil || port == "" {
+		return false
+	}
+	for _, path := range []string{r.Certificate, r.Key, r.ReplicaCertificate} {
+		if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+			return false
+		}
+	}
+	return true
 }
 
 // ServiceConfig is trusted operator input; the DSN is provided separately through
@@ -50,8 +80,9 @@ type ServiceConfig struct {
 	DeliveryLease    string               `json:"delivery_lease"`
 	RetryBase        string               `json:"retry_base"`
 	RetryMax         string               `json:"retry_max"`
-	RestoreAuthority *ServiceKeyAuthority `json:"restore_authority,omitempty"`
-	KeyAuthority     *ServiceKeyAuthority `json:"key_authority,omitempty"`
+	RestoreAuthority *ServiceKeyAuthority     `json:"restore_authority,omitempty"`
+	KeyAuthority     *ServiceKeyAuthority     `json:"key_authority,omitempty"`
+	AuthorityReplica *ServiceAuthorityReplica `json:"authority_replica,omitempty"`
 	Provisioning     *ProvisioningConfig  `json:"provisioning,omitempty"`
 	Transit          *ServiceTransit      `json:"transit,omitempty"`
 	LLM              *ServiceLLM          `json:"llm,omitempty"`
@@ -149,19 +180,82 @@ func (c ServiceConfig) OpenVolumeKeys() (*keyauthority.Files, error) {
 
 // OpenRestoreAuthority opens only explicitly initialized, pinned state outside
 // the restored data root. Startup never creates a replacement catalogue.
+// With authority_replica, it links both authorities to the replica: keys
+// becomes journaled through the catalogue, one stream for both. Without it,
+// both stay standalone, unless a snapshot armed them: then it refuses
+// (ErrReplicaRequired). It does not contact the replica: the first
+// operation does.
 func (c ServiceConfig) OpenRestoreAuthority(ctx context.Context, keys *keyauthority.Files) (*restoreauthority.Catalog, error) {
-	if c.RestoreAuthority == nil || keys == nil || !filepath.IsAbs(c.RestoreAuthority.Root) {
+	if c.RestoreAuthority == nil || keys == nil || !filepath.IsAbs(c.RestoreAuthority.Root) || !c.AuthorityReplica.valid() {
 		return nil, restoreauthority.ErrInput
 	}
 	root, err := restoreauthority.Open(ctx, c.RestoreAuthority.Root, c.RestoreAuthority.Identity, keys.Identity())
 	if err != nil {
 		return nil, err
 	}
-	if err = root.SeparateFrom(c.Root); err != nil {
+	if err = root.SeparateFrom(c.Root); err == nil {
+		err = c.replicate(ctx, root, keys)
+	}
+	if err != nil {
 		root.Close()
 		return nil, err
 	}
 	return root, nil
+}
+
+func (c ServiceConfig) replicate(ctx context.Context, root *restoreauthority.Catalog, keys *keyauthority.Files) error {
+	state, err := root.Replication(ctx)
+	if err != nil {
+		return err
+	}
+	keysArmed, err := keys.Replicated()
+	if err != nil {
+		return err
+	}
+	if keysArmed != state.Armed {
+		return restoreauthority.ErrUnavailable // armed by halves: take the snapshot again
+	}
+	r := c.AuthorityReplica
+	if r == nil {
+		if state.Armed {
+			return restoreauthority.ErrReplicaRequired
+		}
+		return nil // standalone: no protection against the host's loss
+	}
+	if !state.Armed {
+		return restoreauthority.ErrNotArmed
+	}
+	config, err := authoritylog.TLSFiles{Certificate: r.Certificate, Key: r.Key, PeerCertificate: r.ReplicaCertificate,
+		RestoreAuthority: root.Identity(), KeyAuthority: keys.Identity()}.ClientTLS()
+	if err != nil {
+		return errors.Join(ErrAuthorityReplicaConfiguration, err)
+	}
+	client, err := authoritylog.NewClient(r.Address, config)
+	if err != nil {
+		return errors.Join(ErrAuthorityReplicaConfiguration, err)
+	}
+	if err = root.Replicate(ctx, client); err != nil {
+		return err
+	}
+	keys.SetJournal(root)
+	return nil
+}
+
+// ErrAuthorityReplicaConfiguration marks unusable TLS files for the replica.
+var ErrAuthorityReplicaConfiguration = errors.New("invalid authority replica configuration")
+
+// AuthorityFailure names why the authorities did not open, for the worker's
+// exit code.
+func AuthorityFailure(err error) string {
+	switch {
+	case errors.Is(err, restoreauthority.ErrReplicaRequired):
+		return "authority_replica_required"
+	case errors.Is(err, restoreauthority.ErrNotArmed):
+		return "authority_replica_not_armed"
+	case errors.Is(err, ErrAuthorityReplicaConfiguration):
+		return "authority_replica_configuration_invalid"
+	}
+	return "restore_authority_unavailable"
 }
 
 func LoadServiceConfig(path string) (ServiceConfig, error) {
@@ -198,6 +292,9 @@ func (c ServiceConfig) Settings() (runtime.FirecrackerOptions, time.Duration, Ma
 		return r, 0, m, invalid
 	}
 	if (c.KeyAuthority != nil) != (c.RestoreAuthority != nil) || (c.Provisioning != nil && (c.KeyAuthority == nil || !c.Provisioning.valid())) {
+		return r, 0, m, invalid
+	}
+	if c.AuthorityReplica != nil && (c.KeyAuthority == nil || !c.AuthorityReplica.valid()) {
 		return r, 0, m, invalid
 	}
 	if _, err := c.archives(); err != nil {
