@@ -140,6 +140,11 @@ python3 scripts/verify-backups.py --pg-bin <postgres-bin-dir> --pgbackrest <pgba
   [--pg-library-path <dir>] --output <new-dir>
 ```
 
+`scripts/fetch-backup-tools.py` gets pgBackRest 2.58 without root or apt: the
+exact package of Ubuntu 26.04, checked against its SHA-256
+([scripts/README.md](../scripts/README.md#backup-qualifications)). CI runs
+this qualification on every pull request and every push to `main`.
+
 It checks:
 - **The stanza and the backups**: creating the stanza and a full backup into
   each repository.
@@ -793,6 +798,9 @@ python3 scripts/verify-archive-shipping.py --rclone <rclone> --go <go> \
   --pg-bin <postgres-bin-dir> [--pg-library-path <dir>] --output <new-dir>
 ```
 
+`scripts/fetch-backup-tools.py` gets rclone 1.60.1 the same way as
+pgBackRest. CI runs this qualification too.
+
 It checks:
 - **The first ship.** The four archives within S3's 30 days reach S3; the
   three within the standby's 7 days reach the standby; one 40 days old reaches
@@ -871,8 +879,12 @@ generated, and finds none. Passed on 2026-11-13.
 5. **Object lock, with the chosen provider.** Versioning, object lock and the
    lifecycle rules are recommended, not qualified: SeaweedFS stands for the
    provider without them.
-6. **CI.** Ubuntu 24.04 ships an older pgBackRest than the qualified 2.58.
-   Running `verify-backups.py` in CI needs a pinned 2.58.
-   `verify-archive-shipping.py` needs rclone 1.60.1, Docker, Go and
-   PostgreSQL; it does not run in CI yet. Its unit tests and the alert tests
-   do.
+6. **PostgreSQL 18 in CI.** CI runs both qualifications (the `backups` job
+   of [ci.yml](../.github/workflows/ci.yml)). Its runner is Ubuntu 24.04,
+   which ships an older pgBackRest and rclone. So `fetch-backup-tools.py`
+   gets Ubuntu 26.04's packages, pgBackRest 2.58 and rclone 1.60.1, and
+   checks their SHA-256. They need glibc 2.38 at most, and the runner has
+   2.39. PostgreSQL is another matter: Ubuntu 26.04's PostgreSQL 18 needs
+   glibc 2.43, so CI uses Ubuntu 24.04's PostgreSQL 16. The qualifications
+   with PostgreSQL 18 run on Ubuntu 26.04 only (above). A runner on Ubuntu
+   26.04 would close that gap.

@@ -55,7 +55,7 @@ jobs:
           go vet -tags=kvm_integration,kvm_control_integration,kvm_product_integration ./internal/worker ./internal/runtime
           go vet -tags=llmlive ./internal/llmgateway ./internal/controlplane
 
-      - name: Script unit tests (the check runner, the textfile scripts, the archive shipper)
+      - name: Script unit tests (the check runner, the textfile scripts, the archive shipper, the backup tools' fetch)
         run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
 
       - name: Repository hygiene (no personal paths, no committed evidence sources)
@@ -249,4 +249,128 @@ jobs:
           not run KVM, jailed Firecracker VMs, live LLM providers or restore on a
           second host: those campaigns are in
           scripts/ and must be run on a KVM host (see scripts/README.md).
+          EOF
+
+  backups:
+    name: Backups (WAL archiving, standby, archive shipping)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up pinned Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: false
+          cache-dependency-path: go.sum
+
+      - name: Install PostgreSQL
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential postgresql-16 postgresql-client-16
+          postgres_executable="$(dpkg-query -L postgresql-16 | awk '/\/bin\/postgres$/ {print; exit}')"
+          test -x "$postgres_executable"
+          echo "PG_BIN=$(dirname "$postgres_executable")" >> "$GITHUB_ENV"
+
+      - name: Fetch pgBackRest 2.58 and rclone 1.60.1 (SHA-256 checked)
+        id: tools
+        run: |
+          # Ubuntu 26.04's exact packages, from a fixed snapshot of the Ubuntu
+          # archive, checked against the SHA-256s written in the script and
+          # extracted with dpkg-deb, without apt. Ubuntu 24.04's are older.
+          python3 scripts/fetch-backup-tools.py --output "$RUNNER_TEMP/backup-tools"
+
+      - name: Record the toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/ci"
+          {
+            go version
+            python3 --version
+            dpkg-query -W postgresql-16 postgresql-client-16 libpq5
+            docker version --format 'Docker {{.Server.Version}}'
+            systemd-analyze --version | head -n 1
+            uname -a
+            cat "$RUNNER_TEMP/backup-tools/packages.json"
+          } > "$RUNNER_TEMP/ci/backup-toolchain.log"
+
+      - name: WAL archiving, restores, the standby and its promotion
+        timeout-minutes: 15
+        run: |
+          # pgBackRest to S3 (SeaweedFS) and SFTP (OpenSSH), both pinned by
+          # digest; about 7 minutes. See docs/recovery.md, "Qualify".
+          python3 scripts/verify-backups.py --pg-bin "$PG_BIN" \
+            --pgbackrest "$RUNNER_TEMP/backup-tools/pgbackrest/usr/bin/pgbackrest" \
+            --output "$RUNNER_TEMP/ci/backups"
+
+      - name: Volume archive shipping and the standby's replay
+        if: ${{ !cancelled() && steps.tools.outcome == 'success' }}
+        timeout-minutes: 15
+        run: |
+          # rclone to the same two stores, archives captured by the platform's
+          # code, then the replay metric on a real standby and the systemd
+          # units; about 7 minutes. See docs/recovery.md, "Qualify the shipping".
+          python3 scripts/verify-archive-shipping.py \
+            --rclone "$RUNNER_TEMP/backup-tools/rclone/usr/bin/rclone" \
+            --go "$(command -v go)" --pg-bin "$PG_BIN" \
+            --output "$RUNNER_TEMP/ci/archive-shipping"
+
+      - name: Keep only the evidence that holds no secret
+        if: always()
+        run: |
+          # Each run searches its evidence for every secret it generated and
+          # writes what it found in summary.json. Keep a run's evidence only
+          # when that search ran and found nothing, and no file holds a
+          # private key. Without summary.json, nothing proves it: drop it.
+          python3 - "$RUNNER_TEMP/ci" <<'PY'
+          import json, shutil, sys
+          from pathlib import Path
+          ci = Path(sys.argv[1])
+          keep = ci / "upload"
+          keep.mkdir(parents=True, exist_ok=True)
+          for name in ("backups", "archive-shipping"):
+              evidence = ci / name
+              summary = evidence / "summary.json"
+              if not summary.is_file():
+                  print(f"{name}: no summary.json, not kept")
+                  continue
+              leaks = json.loads(summary.read_text()).get("secrets_in_evidence")
+              keys = [str(f.relative_to(evidence)) for f in evidence.rglob("*")
+                      if f.is_file() and b"PRIVATE KEY" in f.read_bytes()]
+              if leaks != [] or keys:
+                  print(f"{name}: secrets in {leaks}, private keys in {keys}: not kept")
+                  continue
+              shutil.copytree(evidence, keep / name)
+              print(f"{name}: no secret found, kept")
+          toolchain = ci / "backup-toolchain.log"
+          if toolchain.is_file():
+              shutil.copy2(toolchain, keep / toolchain.name)
+          PY
+
+      - name: Preserve qualification evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: backups-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 7
+          if-no-files-found: warn
+          path: ${{ runner.temp }}/ci/upload/
+
+      - name: State what this job does not validate
+        if: always()
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          This job runs scripts/verify-backups.py and scripts/verify-archive-shipping.py
+          with pgBackRest 2.58 and rclone 1.60.1, Ubuntu 26.04's packages. PostgreSQL
+          is 16, Ubuntu 24.04's: Ubuntu 26.04's PostgreSQL 18 needs a newer glibc
+          than the runner's. SeaweedFS stands for the S3 provider, without object
+          lock. No failover between real hosts is run.
           EOF

@@ -17,6 +17,10 @@ placeholders below with paths from your environment.
   (`<tools-dir>` below).
 - PostgreSQL (server binaries), for `verify-postgres.py` and the PostgreSQL
   phases of the KVM runners.
+- For the backup qualifications: Docker, OpenSSL, OpenSSH's client,
+  pgBackRest 2.58 and rclone 1.60.1. `fetch-backup-tools.py` gets the last two
+  without root ([below](#backup-qualifications)). The shipping run also needs
+  `systemd-analyze` and `systemd-sysusers`.
 - For KVM campaigns: access to `/dev/kvm`, Firecracker 1.17.0 (the downstream
   build produced by `build-firecracker.py` plus the upstream binary used as a
   negative control), a guest kernel (`build-guest-kernel.py`) and a guest image
@@ -34,6 +38,8 @@ Do not run `go test ./...` at the repository root with sources outside
 | `test_check_go.py` | Unit tests of `check-go.py` |
 | `check-repo-hygiene.py` | Rejects new tracked files with a personal absolute path or Go sources committed under `_evidence/` (baseline: `hygiene-baseline.json`) |
 | `verify-postgres.py` | Go/race tests against a private, owned PostgreSQL cluster, with crash/WAL recovery; optional live LLM phase |
+| `fetch-backup-tools.py` | Fetches pgBackRest 2.58 and rclone 1.60.1, Ubuntu 26.04's packages, from a fixed snapshot of the Ubuntu archive; checks each SHA-256, extracts them without root or apt and runs each once; see [below](#backup-qualifications) |
+| `test_fetch_backup_tools.py` | Unit tests of `fetch-backup-tools.py`, with small packages built on the spot and no network |
 | `verify-backups.py` | Continuous WAL archiving with pgBackRest to S3 and SFTP (Docker, pinned images): loss bound, restore from each store, no clear text, and the base-backup freshness written for node_exporter; then the standby: replay from the SFTP directory and from S3, a disaster and a promotion (rows lost, promotion time), the new primary's own repository |
 | `test_backup_metrics.py` | Unit tests of `deploy/backup/agentcapsule-backup-metrics.py` (base-backup freshness for node_exporter) |
 | `verify-archive-shipping.py` | Shipping the volume archives with rclone 1.60.1 to S3 and SFTP (Docker, the images of `verify-backups.py`), archives captured by the platform's code (`--go`): first ship, a second run that writes nothing, a killed upload and a network cut, a changed archive, the metrics with a store stopped, a fetch from each store alone (byte-identical, opened by the restore authority), no clear text in either store (with a control), retention by age; then the standby's replay metric on a real standby (`--pg-bin`), and `systemd-analyze verify` of the units; see [docs/recovery.md](../docs/recovery.md#qualify-the-shipping) |
@@ -124,6 +130,43 @@ phase does not exist and `environment.json` reports `llm_live: not_run`.
 Inherited `AGENTCAPSULE_TEST_LLM_*` variables are removed, except the optional
 secret, which is never written to the evidence.
 
+## Backup qualifications
+
+`verify-backups.py` qualifies pgBackRest 2.58, and `verify-archive-shipping.py`
+rclone 1.60.1: the packages of Ubuntu 26.04. Fetch both first:
+
+```bash
+python3 scripts/fetch-backup-tools.py --output <tools-dir> \
+  [--cache <deb-cache-dir>] [--library-path <dir-with-libpq.so.5>]
+```
+
+The script downloads the exact .deb files from a fixed snapshot of the Ubuntu
+archive (`snapshot.ubuntu.com`), with two libraries pgBackRest needs: libssh2
+1.11.1 and libxml2 2.15. It checks each file against the SHA-256 written in
+the script, which is the one in Ubuntu's signed package index. It extracts
+them with `dpkg-deb -x`, without root or apt, then runs `pgbackrest version`
+and `rclone version`. Any other SHA-256 or version stops it, and it leaves no
+directory behind. `--cache` keeps the .deb files between runs; each is checked
+again when used. pgBackRest needs `libpq.so.5`: install `libpq5`, or pass its
+directory with `--library-path`.
+
+The binaries need glibc 2.38 at most. They run on Ubuntu 24.04 (glibc 2.39)
+and later.
+
+```bash
+python3 scripts/verify-backups.py --pg-bin <postgres-bin-dir> \
+  --pgbackrest <tools-dir>/pgbackrest/usr/bin/pgbackrest \
+  [--pg-library-path <dir>] --output <output-dir>/backups
+python3 scripts/verify-archive-shipping.py --rclone <tools-dir>/rclone/usr/bin/rclone \
+  --go <path-to-go> --pg-bin <postgres-bin-dir> \
+  [--pg-library-path <dir>] --output <output-dir>/archive-shipping
+```
+
+Each run takes about 7 minutes, with Docker and without root. Each searches
+its evidence for every secret it generated: `secrets_in_evidence` in
+`summary.json` lists the files that hold one. See
+[docs/recovery.md](../docs/recovery.md#qualify) for what they check.
+
 ## KVM campaigns (root)
 
 These runners need root for the jailer, namespaces and cgroups, and access to
@@ -184,6 +227,13 @@ is taken from the installed package, and reports are kept seven days, including
 on failure. Only top-level reports are uploaded, not the database or the test
 volumes/keys.
 
+The `backups` job runs `verify-backups.py` and `verify-archive-shipping.py`,
+with the tools of `fetch-backup-tools.py` and PostgreSQL 16 from Ubuntu 24.04.
+Ubuntu 26.04's PostgreSQL 18 needs glibc 2.43, newer than the runner's 2.39,
+so it does not run there. The job keeps a run's evidence for seven days only
+when the run's own search found no secret in it and no file holds a private
+key.
+
 Go is pinned to **1.27.3**; the `go 1.25.0` line of `go.mod` remains the
 module's language/minimum version, not a promise of validation on all Go
 versions. CI uses PostgreSQL **16** from Ubuntu 24.04; the patch number and the
@@ -207,6 +257,8 @@ CI does **not** validate Firecracker/jailer on the target host, physical
 storage cuts, complete product isolation, the platform's use of the AGNTCY
 services (INT-02 to INT-05) or an external restore. It does qualify the pinned
 interoperability profile against its private services (`verify-interop.py
---services`). The KVM/production campaigns of the [roadmap](../ROADMAP.md)
+--services`), and the backups: WAL archiving, the standby and the shipping of
+the volume archives, against stand-in stores (SeaweedFS for S3, OpenSSH for
+SFTP). The KVM/production campaigns of the [roadmap](../ROADMAP.md)
 remain mandatory for the relevant work packages. The workflow configuration
 alone is not proof of a green run on GitHub.
