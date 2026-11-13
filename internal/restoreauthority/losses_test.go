@@ -524,7 +524,7 @@ func TestVersionOneCatalogueUpgradesOnInitialize(t *testing.T) {
 	if err := c.RecordOutcome(t.Context(), b, Outcome{ID: "event-0", Digest: digest("first")}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.db.Exec("DROP TABLE reruns; DROP TABLE losses; DROP INDEX outcomes_by_identity; PRAGMA user_version=0"); err != nil {
+	if _, err := c.db.Exec("DROP TABLE replication_log; DROP TABLE replication; DROP TABLE reruns; DROP TABLE losses; DROP INDEX outcomes_by_identity; PRAGMA user_version=0"); err != nil {
 		t.Fatal(err)
 	}
 	old := reopen(t, c)
@@ -569,7 +569,7 @@ func TestVersionOneCatalogueUpgradesOnInitialize(t *testing.T) {
 	if err != nil || !ready || len(losses) != 1 || losses[0].ID != "event-0" {
 		t.Fatal(losses, err)
 	}
-	if _, err = c.db.Exec("PRAGMA user_version=3"); err != nil {
+	if _, err = c.db.Exec("PRAGMA user_version=99"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = c.Lookup(t.Context(), b.Store); !errors.Is(err, ErrUnavailable) {

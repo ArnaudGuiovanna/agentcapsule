@@ -20,8 +20,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/authoritylog"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -42,6 +44,11 @@ type Catalog struct {
 	keyIdentity    string
 	device, inode  uint64
 	hook           func(string) // tests interrupt the actual transaction boundary
+
+	// repl is the link to the replica; nil in standalone mode.
+	repl      *replicator
+	recMu     sync.Mutex
+	recording map[*sql.Tx]*txRecord
 }
 
 type Binding struct {
@@ -92,8 +99,10 @@ CREATE INDEX outcomes_by_store ON outcomes(store);
 
 // The schema version is SQLite's user_version. Version 1, the schema above,
 // did not record it (user_version 0). Initialize upgrades an older catalogue;
-// Open never changes the schema. An unknown version fails closed.
-const schemaVersion = 2
+// Open never changes the schema. An unknown version fails closed. Version 3
+// adds the replication stream (replication_linux.go); a version 2 catalogue
+// keeps working in standalone mode.
+const schemaVersion = 3
 
 // lossSchema is version 2: the declared losses and reruns of D-03 option B
 // (docs/adr/003-restore-rpo.md). Triggers refuse any update or delete, so a
@@ -124,7 +133,7 @@ func version(ctx context.Context, tx *sql.Tx) (int, error) {
 	switch v {
 	case 0:
 		return 1, nil
-	case schemaVersion:
+	case 2, schemaVersion:
 		return v, nil
 	}
 	return 0, ErrUnavailable
@@ -135,6 +144,10 @@ func upgrade(ctx context.Context, tx *sql.Tx) error {
 	v, err := version(ctx, tx)
 	if err == nil && v == 1 {
 		_, err = tx.ExecContext(ctx, lossSchema)
+		v = 2
+	}
+	if err == nil && v == 2 {
+		_, err = tx.ExecContext(ctx, replicationSchema)
 	}
 	return err
 }
@@ -257,7 +270,7 @@ func openDatabase(root string, create bool) (*Catalog, error) {
 	}
 	u := url.URL{Scheme: "file", Path: filepath.Join(abs, "catalog.sqlite")}
 	q := u.Query()
-	for k, v := range map[string]string{"mode": "rw", "_journal_mode": "DELETE", "_synchronous": "FULL", "_foreign_keys": "on", "_busy_timeout": "5000", "_txlock": "immediate"} {
+	for k, v := range sqliteOptions {
 		q.Set(k, v)
 	}
 	u.RawQuery = q.Encode()
@@ -267,8 +280,13 @@ func openDatabase(root string, create bool) (*Catalog, error) {
 	}
 	db.SetMaxOpenConns(1)
 	id := st.Sys().(*syscall.Stat_t)
-	return &Catalog{db: db, root: abs, device: uint64(id.Dev), inode: id.Ino}, nil
+	return &Catalog{db: db, root: abs, device: uint64(id.Dev), inode: id.Ino, recording: map[*sql.Tx]*txRecord{}}, nil
 }
+
+// sqliteOptions are those of every authority database. secure_delete
+// overwrites deleted content, such as an acknowledged record's wrapped key.
+var sqliteOptions = map[string]string{"mode": "rw", "_journal_mode": "DELETE", "_synchronous": "FULL", "_foreign_keys": "on",
+	"_busy_timeout": "5000", "_txlock": "immediate", "_secure_delete": "on"}
 
 // Initialize is an explicit administrative operation. Repetition preserves the
 // existing identity and key-authority binding; an existing malformed DB is never
@@ -364,7 +382,7 @@ func Open(ctx context.Context, root, identity, keyIdentity string) (*Catalog, er
 		return nil, err
 	}
 	c.identity, c.keyIdentity = identity, keyIdentity
-	if err = c.transaction(ctx, func(*sql.Tx) error { return nil }); err != nil {
+	if err = c.run(ctx, false, func(*sql.Tx) error { return nil }); err != nil {
 		c.Close()
 		return nil, err
 	}
@@ -395,41 +413,104 @@ func (c *Catalog) checkFile() error {
 // Every operation obtains SQLite's cross-process write reservation. Activation
 // keeps it through inspection/publication, excluding concurrent revocations and
 // incarnation reservations. Callbacks must never re-enter this catalogue.
+// In synchronous mode, the operation returns only once the replica holds its
+// record, and it never runs on state the replica lacks (replication_linux.go).
 func (c *Catalog) transaction(ctx context.Context, fn func(*sql.Tx) error) error {
+	return c.run(ctx, true, fn)
+}
+
+// run is transaction; replicated false skips the stream, for Open's check
+// and for reading the stream's own state.
+func (c *Catalog) run(ctx context.Context, replicated bool, fn func(*sql.Tx) error) error {
+	for {
+		again, err := c.attempt(ctx, replicated, fn)
+		if !again || err != nil {
+			return err
+		}
+	}
+}
+
+func (c *Catalog) attempt(ctx context.Context, replicated bool, fn func(*sql.Tx) error) (bool, error) {
 	if err := c.checkFile(); err != nil {
-		return err
+		return false, err
 	}
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
-		return errors.Join(ErrUnavailable, err)
+		return false, errors.Join(ErrUnavailable, err)
 	}
 	defer tx.Rollback()
 	var identity, keyIdentity string
 	if err = tx.QueryRowContext(ctx, "SELECT identity,key_identity FROM authority WHERE singleton=1").Scan(&identity, &keyIdentity); err != nil {
-		return errors.Join(ErrUnavailable, err)
+		return false, errors.Join(ErrUnavailable, err)
 	}
 	if identity != c.identity || keyIdentity != c.keyIdentity {
-		return ErrUnavailable
+		return false, ErrUnavailable
 	}
-	if _, err = version(ctx, tx); err != nil {
-		return err
+	v, err := version(ctx, tx)
+	if err != nil {
+		return false, err
 	}
+	var state *replication
+	if v >= 3 {
+		if state, err = readReplication(ctx, tx); err != nil {
+			return false, err
+		}
+	}
+	if !replicated {
+		state = nil
+	}
+	if state.armed() {
+		if c.repl == nil {
+			return false, errors.Join(ErrUnavailable, ErrReplicaRequired)
+		}
+		// The barrier: never act on a record the replica lacks.
+		if state.seq > c.repl.acknowledged(state.epoch) {
+			tx.Rollback()
+			return true, c.repl.sync(ctx, c, state.epoch, state.seq)
+		}
+	}
+	rec := &txRecord{state: state}
+	c.recMu.Lock()
+	c.recording[tx] = rec
+	c.recMu.Unlock()
+	defer func() {
+		c.recMu.Lock()
+		delete(c.recording, tx)
+		c.recMu.Unlock()
+	}()
 	if err = fn(tx); err != nil {
-		return err
+		return false, err
+	}
+	var record authoritylog.Record
+	if len(rec.ops) > 0 && state.armed() {
+		if record, err = c.appendRecord(ctx, tx, state, rec.ops); err != nil {
+			return false, err
+		}
 	}
 	if err = c.checkFile(); err != nil {
-		return err
+		return false, err
 	}
 	if c.hook != nil {
 		c.hook("before_commit")
 	}
 	if err = tx.Commit(); err != nil {
-		return err // outcome may be unknown: callers retry the stable operation ID
+		return false, err // outcome may be unknown: callers retry the stable operation ID
 	}
 	if c.hook != nil {
 		c.hook("after_commit")
 	}
-	return nil
+	if record.Seq == 0 {
+		return false, nil
+	}
+	// Committed on the primary: the record is in the log with its effect.
+	c.repl.metrics.Load().Committed(record.Seq)
+	if err = c.repl.sync(ctx, c, state.epoch, record.Seq); err != nil {
+		return false, err
+	}
+	if record.HasSecret() {
+		c.prune(ctx, record.Seq)
+	}
+	return false, nil
 }
 
 // Register is trusted new-store enrollment, not recovery from missing authority
@@ -440,7 +521,7 @@ func (c *Catalog) Register(ctx context.Context, store, volume string) (Binding, 
 		return b, ErrInput
 	}
 	err := c.transaction(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, "INSERT INTO stores(id,volume,incarnation) VALUES(?,?,1) ON CONFLICT DO NOTHING", store, volume); err != nil {
+		if _, err := c.exec(ctx, tx, stmtRegister, store, volume); err != nil {
 			return err
 		}
 		got, sealed, err := binding(ctx, tx, store)
@@ -547,10 +628,10 @@ func (c *Catalog) ReserveIncarnation(ctx context.Context, old Binding, operation
 			return err
 		}
 		next.Incarnation++
-		if _, err = tx.ExecContext(ctx, "UPDATE stores SET incarnation=?,ack_revision=-1 WHERE id=?", next.Incarnation, old.Store); err != nil {
+		if _, err = c.exec(ctx, tx, stmtReserveStore, next.Incarnation, old.Store); err != nil {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, "INSERT INTO reservations VALUES(?,?,?,?)", operation, old.Store, old.Incarnation, next.Incarnation)
+		_, err = c.exec(ctx, tx, stmtReserveInsert, operation, old.Store, old.Incarnation, next.Incarnation)
 		return err
 	})
 	return next, err
@@ -569,10 +650,17 @@ func (c *Catalog) BeginRevocation(ctx context.Context, subject string) (uint64, 
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		if err = tx.QueryRowContext(ctx, "UPDATE authority SET revision=revision+1 WHERE singleton=1 AND revision<9223372036854775807 RETURNING revision").Scan(&revision); err != nil {
+		result, err := c.exec(ctx, tx, stmtRevision)
+		if err != nil {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, "INSERT INTO revocations VALUES(?,?)", subject, revision)
+		if n, err := result.RowsAffected(); err != nil || n != 1 {
+			return errors.Join(ErrUnavailable, err)
+		}
+		if err = tx.QueryRowContext(ctx, "SELECT revision FROM authority WHERE singleton=1").Scan(&revision); err != nil {
+			return err
+		}
+		_, err = c.exec(ctx, tx, stmtRevocation, subject, revision)
 		return err
 	})
 	return revision, err
@@ -646,7 +734,7 @@ func (c *Catalog) RecordVerifiedFence(ctx context.Context, r Receipt) error {
 		if _, err := c.validateReceipt(ctx, tx, r); err != nil {
 			return err
 		}
-		result, err := tx.ExecContext(ctx, "UPDATE stores SET ack_revision=? WHERE id=? AND ack_revision<=?", r.Revision, r.Store, r.Revision)
+		result, err := c.exec(ctx, tx, stmtFence, r.Revision, r.Store, r.Revision)
 		if err != nil {
 			return err
 		}
@@ -771,10 +859,10 @@ func (c *Catalog) RecordOutcome(ctx context.Context, b Binding, outcome Outcome)
 				return err
 			}
 			if lost {
-				return recordRerun(ctx, tx, b, outcome)
+				return c.recordRerun(ctx, tx, b, outcome)
 			}
 		}
-		if _, err = tx.ExecContext(ctx, "INSERT INTO outcomes VALUES(?,?,?) ON CONFLICT(id) DO NOTHING", outcome.ID, b.Store, outcome.Digest[:]); err != nil {
+		if _, err = c.exec(ctx, tx, stmtOutcome, outcome.ID, b.Store, outcome.Digest[:]); err != nil {
 			return err
 		}
 		got, err := recordedOutcomes(ctx, tx, withLosses, "o.id=?", outcome.ID)
@@ -819,7 +907,7 @@ func (c *Catalog) RecordRetiredSeal(ctx context.Context, b Binding) error {
 		if err != nil || got != b {
 			return ErrStale
 		}
-		_, err = tx.ExecContext(ctx, "UPDATE stores SET sealed=1 WHERE id=?", b.Store)
+		_, err = c.exec(ctx, tx, stmtSeal, b.Store)
 		return err
 	})
 }

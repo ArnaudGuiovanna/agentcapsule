@@ -39,6 +39,7 @@ type Files struct {
 	root     string
 	identity string
 	hook     func(string)
+	journal  Journal // nil: standalone, see journal_linux.go
 }
 
 const recordSize = 144 // magic(8), agent(36), volume(36), key(32), SHA-256(32)
@@ -168,6 +169,19 @@ func lockFile(ctx context.Context, f *os.File, exclusive bool) error {
 }
 
 func read(path, magic, agent, volume string) ([]byte, error) {
+	b, err := readRecord(path, magic)
+	if err != nil {
+		return nil, err
+	}
+	if string(b[8:44]) != agent || string(b[44:80]) != volume {
+		clear(b)
+		return nil, ErrConflict
+	}
+	return b, nil
+}
+
+// readRecord reads one complete record and checks its magic and checksum.
+func readRecord(path, magic string) ([]byte, error) {
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
@@ -186,10 +200,6 @@ func read(path, magic, agent, volume string) ([]byte, error) {
 	if string(b[:8]) != magic || string(b[112:]) != string(h[:]) {
 		clear(b)
 		return nil, ErrUnavailable
-	}
-	if string(b[8:44]) != agent || string(b[44:80]) != volume {
-		clear(b)
-		return nil, ErrConflict
 	}
 	return b, nil
 }
@@ -306,6 +316,12 @@ func (s *Files) revoked(agent, volume string) error {
 }
 
 func (s *Files) Ensure(ctx context.Context, agent, volume string) error {
+	if s.journal != nil {
+		return s.ensureJournaled(ctx, agent, volume)
+	}
+	if err := s.standalone(); err != nil {
+		return err
+	}
 	return s.withLock(ctx, agent, volume, true, func() error {
 		if err := s.revoked(agent, volume); err != nil {
 			return err
@@ -368,6 +384,12 @@ func (s *Files) WithKey(ctx context.Context, agent, volume string, use func([]by
 // tombstone must outlive all data backups. This is not proof that an external
 // copy, a former key holder's memory, or raw storage cannot contain the key.
 func (s *Files) Revoke(ctx context.Context, agent, volume string) error {
+	if s.journal != nil {
+		return s.revokeJournaled(ctx, agent, volume)
+	}
+	if err := s.standalone(); err != nil {
+		return err
+	}
 	return s.withLock(ctx, agent, volume, true, func() error {
 		err := s.revoked(agent, volume)
 		if err != nil && !errors.Is(err, ErrRevoked) {

@@ -108,7 +108,7 @@ func (c *Catalog) declareLosses(ctx context.Context, r Receipt, inspect Inspecti
 			return err
 		}
 		for _, o := range missing {
-			if _, err = tx.ExecContext(ctx, "INSERT INTO losses VALUES(?,?,?) ON CONFLICT DO NOTHING", o.ID, r.Store, r.Incarnation); err != nil {
+			if _, err = c.exec(ctx, tx, stmtLoss, o.ID, r.Store, r.Incarnation); err != nil {
 				return err
 			}
 		}
@@ -135,11 +135,11 @@ func (c *Catalog) RecordRerun(ctx context.Context, b Binding, outcome Outcome) e
 		if err := requireLosses(ctx, tx); err != nil {
 			return err
 		}
-		return recordRerun(ctx, tx, b, outcome)
+		return c.recordRerun(ctx, tx, b, outcome)
 	})
 }
 
-func recordRerun(ctx context.Context, tx *sql.Tx, b Binding, outcome Outcome) error {
+func (c *Catalog) recordRerun(ctx context.Context, tx *sql.Tx, b Binding, outcome Outcome) error {
 	var store string
 	err := tx.QueryRowContext(ctx, "SELECT store FROM losses WHERE outcome=? AND incarnation=?", outcome.ID, b.Incarnation).Scan(&store)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -151,7 +151,7 @@ func recordRerun(ctx context.Context, tx *sql.Tx, b Binding, outcome Outcome) er
 	if store != b.Store {
 		return ErrConflict
 	}
-	if _, err = tx.ExecContext(ctx, "INSERT INTO reruns VALUES(?,?,?) ON CONFLICT DO NOTHING", outcome.ID, b.Incarnation, outcome.Digest[:]); err != nil {
+	if _, err = c.exec(ctx, tx, stmtRerun, outcome.ID, b.Incarnation, outcome.Digest[:]); err != nil {
 		return err
 	}
 	var digest []byte
