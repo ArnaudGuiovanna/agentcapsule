@@ -157,6 +157,7 @@ Their annotations are fixed text.
 | `AgentCapsuleFullBackupStale` | A repository has no full backup that finished in the last 8 days |
 | `AgentCapsuleBackupRepositoryUnreadable` | pgBackRest cannot read a repository, for 30 minutes |
 | `AgentCapsuleBackupMetricsStale` | The backup times have not been collected for an hour, or never were |
+| `AgentCapsuleVolumeArchiveStale` | An agent of the host has no volume archive from the last 26 hours, for 15 minutes (volume RPO 24 h). It covers the archives on the host only |
 
 [alerts_test.yml](../deploy/prometheus/alerts_test.yml) holds promtool unit
 tests for the disk, queue, scrape, SLIM and backup alerts. Each backup
@@ -183,5 +184,5 @@ on the delivery of the request its agent sent to another agent. It passed on
   request ID only.
 - An operator command for diagnostics (API-02).
 - Alert thresholds tuned under load (OPS-03).
-- Alerts on the freshness of agent volume archives. The metrics exist,
-  their rules are still to write (ADR 004, step 3).
+- The freshness of the volume archive copies off the host, once they are
+  shipped (ADR 004).

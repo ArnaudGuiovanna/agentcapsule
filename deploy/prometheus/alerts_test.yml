@@ -205,3 +205,22 @@ tests:
           - exp_labels: {severity: warning, job: node, instance: host-1, repo: s3, type: full}
             exp_annotations:
               summary: A backup repository has no full backup that finished in the last 8 days.
+
+  # The oldest of the host's newest volume archives grows past 26 hours; on
+  # another host, a capture resets it in time.
+  - interval: 1m
+    input_series:
+      - series: 'agentcapsule_worker_volume_archive_oldest_seconds{job="agentcapsule-worker",instance="host-1"}'
+        values: '93000 93600+60x30'
+      - series: 'agentcapsule_worker_volume_archive_oldest_seconds{job="agentcapsule-worker",instance="host-2"}'
+        values: '93000 93600+60x5 0+60x25'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: AgentCapsuleVolumeArchiveStale
+        exp_alerts: []
+      - eval_time: 18m
+        alertname: AgentCapsuleVolumeArchiveStale
+        exp_alerts:
+          - exp_labels: {severity: warning, job: agentcapsule-worker, instance: host-1}
+            exp_annotations:
+              summary: An agent of this host has no volume archive from the last 26 hours.

@@ -178,6 +178,16 @@ groups:
         annotations:
           summary: Backup freshness has not been collected for an hour (agentcapsule-backup-metrics.timer or node_exporter's textfile collector).
 
+      # Volume RPO 24 h (ADR 004): a running agent is archived once its newest
+      # archive is 24 h old, a sleeping one earlier. Two hours late breaks it.
+      - alert: AgentCapsuleVolumeArchiveStale
+        expr: agentcapsule_worker_volume_archive_oldest_seconds > 26 * 3600
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: An agent of this host has no volume archive from the last 26 hours.
+
   # Host resources, from node_exporter on the same host.
   - name: agentcapsule-host
     rules:
