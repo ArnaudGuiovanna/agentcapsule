@@ -179,7 +179,22 @@ func TestQuiesceWaitsForOpeningAndSurvivesClientCancellation(t *testing.T) {
 	boot := make(chan error, 1)
 	go func() { boot <- c.OpenVolume(t.Context(), volumeCommand(true), bytes.Repeat([]byte{5}, 32)) }()
 	<-opening
-	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	// The caller goes away only once the server has recorded the shutdown. A
+	// fixed deadline (50 ms) could expire under load before the request even
+	// reached the server, and the shutdown then never started.
+	ctx, cancel := context.WithCancel(t.Context())
+	go func() {
+		defer cancel()
+		for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+			s.mu.Lock()
+			stopping := s.stopping
+			s.mu.Unlock()
+			if stopping {
+				return
+			}
+		}
+		t.Error("the server never recorded the shutdown")
+	}()
 	err = c.Quiesce(ctx)
 	cancel()
 	if !errors.Is(err, ErrTransport) {
