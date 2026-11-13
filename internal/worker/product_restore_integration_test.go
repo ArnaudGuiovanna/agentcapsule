@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/harnessstore"
@@ -38,9 +39,12 @@ func (l *registryLab) outcomeOf(agentID, invocationID string) string {
 // restore stops twice, like a crash, and resumes each time. It installs
 // exactly the archive's bytes, boots the image restricted at the new
 // incarnation, declares lost exactly the two invocations after the archive,
-// maps each to its invocation, and puts the agent back in service. The agent
-// then answers a new invocation from a VM of the new incarnation, and the
-// old incarnation's fence receipt, identity and placement observation are
+// maps each to its invocation, and puts the agent back in service. The two
+// invocations are then lost, with their old results readable, and run again
+// under the same IDs: they complete with lost_at set, at the new
+// incarnation, and the restore authority records each rerun. The agent then
+// answers a new invocation from a VM of the new incarnation, and the old
+// incarnation's fence receipt, identity and placement observation are
 // refused.
 func TestProductWorkerRestoresAgentFromArchive(t *testing.T) {
 	l := newRegistryLab(t)
@@ -155,6 +159,75 @@ func TestProductWorkerRestoresAgentFromArchive(t *testing.T) {
 		t.Fatal("volume after the restore", e, err)
 	}
 	l.runs(0)
+
+	t.Log("stage: the lost invocations are lost, then run again under the same IDs")
+	texts := map[string]string{after[0]: "lost in the restore, one", after[1]: "lost in the restore, two"}
+	for _, loss := range result.Losses {
+		if loss.Rerun != controlplane.RerunQueued || loss.SkipReason != "" {
+			t.Fatal("the rerun of a lost invocation is not queued", loss)
+		}
+	}
+	lostAt := map[string]time.Time{}
+	for _, id := range after {
+		var v controlplane.Invocation
+		l.request(l.user(), "GET", "/v1/invocations/"+id, "", nil, 200, &v)
+		if v.State != "lost" || v.LostAt == nil || v.CompletedAt != nil || !v.ResultAvailable || v.ErrorCode != "" {
+			t.Fatal("a lost invocation before its rerun", id, v.State, v.ErrorCode, v.LostAt, v.CompletedAt)
+		}
+		lostAt[id] = *v.LostAt
+		// The result the restored database still holds stays readable.
+		if body := string(l.request(l.user(), "GET", "/v1/invocations/"+id+"/result", "", nil, 200, nil)); !strings.Contains(body, texts[id]) {
+			t.Fatal("the result of a lost invocation is not readable")
+		}
+	}
+	var listed struct {
+		Items []controlplane.Invocation `json:"items"`
+	}
+	l.request(l.user(), "GET", "/v1/agents/"+agent+"/invocations?state=lost", "", nil, 200, &listed)
+	lost := []string{}
+	for _, v := range listed.Items {
+		lost = append(lost, v.ID)
+	}
+	slices.Sort(lost)
+	if !slices.Equal(lost, want) {
+		t.Fatal("the lost filter", lost, want)
+	}
+	l.await("reruns of the lost invocations", true, func() bool {
+		for _, id := range after {
+			var v controlplane.Invocation
+			l.request(l.user(), "GET", "/v1/invocations/"+id, "", nil, 200, &v)
+			if v.State == "failed" || v.State == "canceled" || v.State == "expired" {
+				t.Fatal("a rerun ended without an answer", id, v.State, v.ErrorCode)
+			}
+			if v.State != "completed" {
+				return false
+			}
+		}
+		return true
+	})
+	for _, id := range after {
+		var v controlplane.Invocation
+		l.request(l.user(), "GET", "/v1/invocations/"+id, "", nil, 200, &v)
+		if v.LostAt == nil || !v.LostAt.Equal(lostAt[id]) || v.CompletedAt == nil || !v.CompletedAt.After(*v.LostAt) || !v.ResultAvailable {
+			t.Fatal("a completed rerun", id, v.LostAt, v.CompletedAt)
+		}
+		if !l.answered(id, texts[id]) {
+			t.Fatal("the rerun's answer")
+		}
+		if got, _, err := l.worker.authority.OutcomeStatus(t.Context(), l.outcomeOf(agent, id)); err != nil || got != restoreauthority.StatusRerunConfirmed {
+			t.Fatal("the authority did not record the rerun", id, got, err)
+		}
+	}
+	if got, _, err := l.worker.authority.OutcomeStatus(t.Context(), l.outcomeOf(agent, before)); err != nil || got != restoreauthority.StatusConfirmed {
+		t.Fatal("an outcome the archive held", got, err)
+	}
+	l.request(l.user(), "GET", "/v1/agents/"+agent+"/invocations?state=lost", "", nil, 200, &listed)
+	if len(listed.Items) != 0 {
+		t.Fatal("lost invocations after the reruns", len(listed.Items))
+	}
+	if run := l.runs(1)[agent]; run.Incarnation != 2 {
+		t.Fatal("the reruns did not run at the new incarnation", run)
+	}
 
 	t.Log("stage: the agent answers at the new incarnation; the old one is refused")
 	l.answers(agent, "after-restore", "answered at the new incarnation")
