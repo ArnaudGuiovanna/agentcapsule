@@ -372,15 +372,16 @@ an archive is not yet built.
 
 ## Still to do (ADR 004)
 
-1. **Freshness of the volume archives and of the standby.** WAL archiving and
-   the base backups have their metrics and alerts (above). The volume archive
-   metrics exist; their alert rules remain. The standby's replay has no
-   metric yet (`pg_last_xact_replay_timestamp()` on the standby).
+1. **Freshness of the standby.** WAL archiving, the base backups and the
+   volume archives on the host have their metrics and alerts
+   ([observability.md](observability.md)). The standby's replay has no metric
+   yet (`pg_last_xact_replay_timestamp()` on the standby).
 2. **Volume archives off the host.** Nightly archives are taken on the host
    without stopping the maintenance worker (above). Shipping them to the
    S3-compatible store and to the standby, encrypted as they are, remains.
-3. **The declared-loss state** in the code and the API. The P2 model is
-   revised ([ADR 003](adr/003-restore-rpo.md#model-revision-option-b)).
+3. **The declared-loss state.** The P2 model is revised and the restore
+   authority declares losses ([ADR 003](adr/003-restore-rpo.md#model-revision-option-b)).
+   The restore coordinator and the `lost` state of the API remain.
 4. **A failover exercise** that measures the RPO and the RTO of the whole
    platform, on real hosts. The database's part is measured
    ([the standby](#qualify-the-standby)); the configuration, the authorities,
