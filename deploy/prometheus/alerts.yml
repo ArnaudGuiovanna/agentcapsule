@@ -188,6 +188,86 @@ groups:
         annotations:
           summary: An agent of this host has no volume archive from the last 26 hours.
 
+      # The volume archives off the host (REC-02): every hour,
+      # deploy/backup/agentcapsule-archive-ship.py ships them to the stores s3
+      # and standby, then writes these for node_exporter's textfile collector.
+      # An archive normally reaches both stores within the hour. Two hours
+      # without a complete ship is two missed runs: 24 h plus 2 h, the bound
+      # of AgentCapsuleVolumeArchiveStale.
+      - alert: AgentCapsuleArchiveShipBehind
+        expr: time() - agentcapsule_archive_ship_last_success_timestamp_seconds > 2 * 3600
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: A store has lacked some of this host's volume archives for 2 hours.
+
+      - alert: AgentCapsuleArchiveStoreUnreadable
+        expr: agentcapsule_archive_ship_store_readable == 0
+        for: 90m
+        labels:
+          severity: warning
+        annotations:
+          summary: The volume archive shipper could not list a store, at two runs in a row.
+
+      - alert: AgentCapsuleArchiveChanged
+        expr: agentcapsule_archive_ship_changed_archives > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: A volume archive changed on this host after it was shipped; the store keeps the copy it received.
+
+      - alert: AgentCapsuleArchiveShipMetricsStale
+        expr: |
+          time() - agentcapsule_archive_ship_collected_timestamp_seconds > 3 * 3600
+            or absent(agentcapsule_archive_ship_collected_timestamp_seconds)
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: The volume archive shipper has not run for 3 hours, or never ran (agentcapsule-archive-ship.timer or node_exporter's textfile collector).
+
+  # The standby (REC-03): every minute, on the standby host,
+  # deploy/standby/agentcapsule-standby-metrics.py writes these for
+  # node_exporter. The primary commits an empty transaction every minute
+  # (agentcapsule-pg-heartbeat.timer), so a standby that keeps up has always
+  # replayed one from the last 6 or 7 minutes, even on an idle platform.
+  - name: agentcapsule-standby
+    rules:
+      - alert: AgentCapsuleStandbyReplayBehind
+        expr: agentcapsule_standby_in_recovery == 1 and time() - agentcapsule_standby_replay_timestamp_seconds > 900
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: The standby has replayed no transaction committed in the last 15 minutes; it is behind the database's RPO.
+
+      - alert: AgentCapsuleStandbyNotInRecovery
+        expr: agentcapsule_standby_in_recovery == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: The standby's PostgreSQL is not in recovery; it was promoted or started as a primary, and no longer follows the archive.
+
+      - alert: AgentCapsuleStandbyDown
+        expr: agentcapsule_standby_postgres_up == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: The standby's PostgreSQL does not answer; it cannot take over.
+
+      - alert: AgentCapsuleStandbyMetricsStale
+        expr: |
+          time() - agentcapsule_standby_collected_timestamp_seconds > 600
+            or absent(agentcapsule_standby_collected_timestamp_seconds)
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: The standby's replay has not been collected for 10 minutes, or never was (agentcapsule-standby-metrics.timer or node_exporter's textfile collector).
+
   # Host resources, from node_exporter on the same host.
   - name: agentcapsule-host
     rules:

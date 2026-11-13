@@ -224,3 +224,166 @@ tests:
           - exp_labels: {severity: warning, job: agentcapsule-worker, instance: host-1}
             exp_annotations:
               summary: An agent of this host has no volume archive from the last 26 hours.
+
+  # Volume archives off the host. host-1: the S3 store last received every
+  # archive at 01:00, the standby every hour; the shipper writes hourly until
+  # 03:00, then stops. host-2: the standby's store cannot be listed from
+  # 10:00. host-3: an archive shipped to S3 changes on the host at 05:00.
+  - interval: 1m
+    input_series:
+      - series: 'agentcapsule_archive_ship_last_success_timestamp_seconds{job="node",instance="host-1",store="s3"}'
+        values: '3600x400'
+      - series: 'agentcapsule_archive_ship_last_success_timestamp_seconds{job="node",instance="host-1",store="standby"}'
+        values: '0x59 3600x59 7200x59 10800x59 14400x59 18000x59 21600x59'
+      - series: 'agentcapsule_archive_ship_collected_timestamp_seconds{job="node",instance="host-1"}'
+        values: '0x59 3600x59 7200x59 10800x300'
+      - series: 'agentcapsule_archive_ship_store_readable{job="node",instance="host-2",store="s3"}'
+        values: '1x800'
+      - series: 'agentcapsule_archive_ship_store_readable{job="node",instance="host-2",store="standby"}'
+        values: '1x599 0x200'
+      - series: 'agentcapsule_archive_ship_changed_archives{job="node",instance="host-3",store="s3"}'
+        values: '0x299 1x100'
+      - series: 'agentcapsule_archive_ship_changed_archives{job="node",instance="host-3",store="standby"}'
+        values: '0x400'
+    alert_rule_test:
+      - eval_time: 3h15m
+        alertname: AgentCapsuleArchiveShipBehind
+        exp_alerts: []
+      - eval_time: 3h17m
+        alertname: AgentCapsuleArchiveShipBehind
+        exp_alerts:
+          - exp_labels: {severity: warning, job: node, instance: host-1, store: s3}
+            exp_annotations:
+              summary: A store has lacked some of this host's volume archives for 2 hours.
+      - eval_time: 11h29m
+        alertname: AgentCapsuleArchiveStoreUnreadable
+        exp_alerts: []
+      - eval_time: 11h31m
+        alertname: AgentCapsuleArchiveStoreUnreadable
+        exp_alerts:
+          - exp_labels: {severity: warning, job: node, instance: host-2, store: standby}
+            exp_annotations:
+              summary: The volume archive shipper could not list a store, at two runs in a row.
+      - eval_time: 4h59m
+        alertname: AgentCapsuleArchiveChanged
+        exp_alerts: []
+      - eval_time: 5h1m
+        alertname: AgentCapsuleArchiveChanged
+        exp_alerts:
+          - exp_labels: {severity: critical, job: node, instance: host-3, store: s3}
+            exp_annotations:
+              summary: A volume archive changed on this host after it was shipped; the store keeps the copy it received.
+      - eval_time: 6h15m
+        alertname: AgentCapsuleArchiveShipMetricsStale
+        exp_alerts: []
+      - eval_time: 6h17m
+        alertname: AgentCapsuleArchiveShipMetricsStale
+        exp_alerts:
+          - exp_labels: {severity: warning, job: node, instance: host-1}
+            exp_annotations:
+              summary: The volume archive shipper has not run for 3 hours, or never ran (agentcapsule-archive-ship.timer or node_exporter's textfile collector).
+
+  # Neither the shipper nor the standby's collection ever ran.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="node",instance="host-1"}'
+        values: '1x30'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: AgentCapsuleArchiveShipMetricsStale
+        exp_alerts: []
+      - eval_time: 16m
+        alertname: AgentCapsuleArchiveShipMetricsStale
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations:
+              summary: The volume archive shipper has not run for 3 hours, or never ran (agentcapsule-archive-ship.timer or node_exporter's textfile collector).
+      - eval_time: 4m
+        alertname: AgentCapsuleStandbyMetricsStale
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: AgentCapsuleStandbyMetricsStale
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations:
+              summary: The standby's replay has not been collected for 10 minutes, or never was (agentcapsule-standby-metrics.timer or node_exporter's textfile collector).
+
+  # The standby; replay times are the commit times on the test's clock, which
+  # a heartbeat keeps current. standby-1: the replay stops at 00:30 while the
+  # collection goes on. standby-2: promoted at 00:10, so its replay stops too,
+  # without the replay alert. standby-3: PostgreSQL stops answering at 00:20.
+  # standby-4: the collection itself stops at 00:30.
+  - interval: 1m
+    input_series:
+      - series: 'agentcapsule_standby_in_recovery{job="node",instance="standby-1"}'
+        values: '1x80'
+      - series: 'agentcapsule_standby_replay_timestamp_seconds{job="node",instance="standby-1"}'
+        values: '0+60x30 1800x50'
+      - series: 'agentcapsule_standby_postgres_up{job="node",instance="standby-1"}'
+        values: '1x80'
+      - series: 'agentcapsule_standby_collected_timestamp_seconds{job="node",instance="standby-1"}'
+        values: '0+60x80'
+      - series: 'agentcapsule_standby_in_recovery{job="node",instance="standby-2"}'
+        values: '1x9 0x70'
+      - series: 'agentcapsule_standby_replay_timestamp_seconds{job="node",instance="standby-2"}'
+        values: '0+60x9 540x70'
+      - series: 'agentcapsule_standby_postgres_up{job="node",instance="standby-2"}'
+        values: '1x80'
+      - series: 'agentcapsule_standby_collected_timestamp_seconds{job="node",instance="standby-2"}'
+        values: '0+60x80'
+      - series: 'agentcapsule_standby_in_recovery{job="node",instance="standby-3"}'
+        values: '1x19'
+      - series: 'agentcapsule_standby_replay_timestamp_seconds{job="node",instance="standby-3"}'
+        values: '0+60x19'
+      - series: 'agentcapsule_standby_postgres_up{job="node",instance="standby-3"}'
+        values: '1x19 0x60'
+      - series: 'agentcapsule_standby_collected_timestamp_seconds{job="node",instance="standby-3"}'
+        values: '0+60x80'
+      - series: 'agentcapsule_standby_in_recovery{job="node",instance="standby-4"}'
+        values: '1x80'
+      - series: 'agentcapsule_standby_replay_timestamp_seconds{job="node",instance="standby-4"}'
+        values: '0+60x30 1800x50'
+      - series: 'agentcapsule_standby_postgres_up{job="node",instance="standby-4"}'
+        values: '1x80'
+      - series: 'agentcapsule_standby_collected_timestamp_seconds{job="node",instance="standby-4"}'
+        values: '0+60x30 1800x50'
+    alert_rule_test:
+      - eval_time: 47m
+        alertname: AgentCapsuleStandbyReplayBehind
+        exp_alerts: []
+      - eval_time: 49m
+        alertname: AgentCapsuleStandbyReplayBehind
+        exp_alerts:
+          - exp_labels: {severity: critical, job: node, instance: standby-1}
+            exp_annotations:
+              summary: The standby has replayed no transaction committed in the last 15 minutes; it is behind the database's RPO.
+          - exp_labels: {severity: critical, job: node, instance: standby-4}
+            exp_annotations:
+              summary: The standby has replayed no transaction committed in the last 15 minutes; it is behind the database's RPO.
+      - eval_time: 14m
+        alertname: AgentCapsuleStandbyNotInRecovery
+        exp_alerts: []
+      - eval_time: 16m
+        alertname: AgentCapsuleStandbyNotInRecovery
+        exp_alerts:
+          - exp_labels: {severity: critical, job: node, instance: standby-2}
+            exp_annotations:
+              summary: The standby's PostgreSQL is not in recovery; it was promoted or started as a primary, and no longer follows the archive.
+      - eval_time: 24m
+        alertname: AgentCapsuleStandbyDown
+        exp_alerts: []
+      - eval_time: 26m
+        alertname: AgentCapsuleStandbyDown
+        exp_alerts:
+          - exp_labels: {severity: warning, job: node, instance: standby-3}
+            exp_annotations:
+              summary: The standby's PostgreSQL does not answer; it cannot take over.
+      - eval_time: 45m
+        alertname: AgentCapsuleStandbyMetricsStale
+        exp_alerts: []
+      - eval_time: 47m
+        alertname: AgentCapsuleStandbyMetricsStale
+        exp_alerts:
+          - exp_labels: {severity: warning, job: node, instance: standby-4}
+            exp_annotations:
+              summary: The standby's replay has not been collected for 10 minutes, or never was (agentcapsule-standby-metrics.timer or node_exporter's textfile collector).
