@@ -860,9 +860,9 @@ generated, and finds none. Passed on 2026-11-13.
 
 ## Still to do (ADR 004)
 
-1. **The declared-loss state in the API.** A restore declares and records the
-   losses ([above](#restoring-an-agent-from-an-archive)). Running the lost
-   invocations again and the API's `lost` state remain
+1. **Lost requests between agents.** A restore queues the lost invocations
+   again and shows them as `lost` (above). The requests and messages between
+   agents that it lost stay recorded, without a rerun
    ([ADR 003](adr/003-restore-rpo.md#what-remains)).
 2. **Restoring onto the standby.** A fetch of an archive is qualified
    ([above](#fetch-an-archive-back)). Installing it there and restoring the
