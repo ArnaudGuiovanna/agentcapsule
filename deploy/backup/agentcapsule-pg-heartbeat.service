@@ -1,0 +1,43 @@
+# An empty transaction on the primary (REC-03), so that the standby's replay
+# can be measured even when the platform writes nothing. The standby reports
+# the commit time of the last transaction it replayed
+# (deploy/standby/agentcapsule-standby-metrics.py); an idle database commits
+# none, and its standby would look late. The transaction takes a transaction
+# ID and commits: no table changes. Its WAL record makes archive_timeout close
+# a segment every 5 minutes, even on an idle database.
+# Started every minute by agentcapsule-pg-heartbeat.timer.
+[Unit]
+Description=Agent Capsule PostgreSQL heartbeat for the standby's replay
+After=postgresql.service
+
+[Service]
+Type=oneshot
+User=postgres
+Group=postgres
+ExecStart=/usr/bin/psql -X -q -v ON_ERROR_STOP=1 -d postgres -o /dev/null -c "SELECT pg_current_xact_id()"
+Environment=PGAPPNAME=agentcapsule-pg-heartbeat PGCONNECT_TIMEOUT=10
+TimeoutStartSec=1min
+# Every minute: only failures reach the journal. psql writes only errors, and
+# they are logged as warnings; "Starting" and "Finished" are not logged.
+SyslogLevel=warning
+LogLevelMax=notice
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native

@@ -1,0 +1,13 @@
+# The standby's replay every minute. The value is a time, so the alert's age
+# keeps growing if this stops; AgentCapsuleStandbyMetricsStale fires after 10
+# minutes without a collection.
+[Unit]
+Description=Agent Capsule standby replay every minute
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

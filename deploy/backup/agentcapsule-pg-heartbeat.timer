@@ -1,0 +1,13 @@
+# A heartbeat transaction every minute, on the primary only. With
+# archive_timeout = 300, a standby that keeps up has replayed a transaction
+# from the last 6 or 7 minutes; AgentCapsuleStandbyReplayBehind fires at 15.
+[Unit]
+Description=Agent Capsule PostgreSQL heartbeat every minute
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target
