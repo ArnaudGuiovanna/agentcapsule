@@ -22,7 +22,8 @@ type preparedVolume struct {
 }
 
 func volumeCommand(plan controlplane.VolumeBootPlan) (capsuleprotocol.VolumeBoot, error) {
-	v := capsuleprotocol.VolumeBoot{Incarnation: plan.Enrollment.Incarnation, VolumeID: plan.Enrollment.VolumeID, Initialize: plan.Initialize, PreviousShutdown: capsuleprotocol.ShutdownClean}
+	v := capsuleprotocol.VolumeBoot{Incarnation: plan.Enrollment.Incarnation, VolumeID: plan.Enrollment.VolumeID, Initialize: plan.Initialize, PreviousShutdown: capsuleprotocol.ShutdownClean,
+		Restore: plan.Restore}
 	if plan.UncleanStop {
 		v.PreviousShutdown = capsuleprotocol.ShutdownUnclean
 	}
@@ -58,7 +59,7 @@ func (w *Placements) withVolumeBoot(opts runtime.FirecrackerOptions, keys keyaut
 			return err
 		}
 		command, err := volumeCommand(plan)
-		if err != nil || client == nil || run.Incarnation != plan.Enrollment.Incarnation || (plan.Initialize && !run.FenceOnly) {
+		if err != nil || client == nil || run.Incarnation != plan.Enrollment.Incarnation || ((plan.Initialize || plan.Restore) && !run.FenceOnly) {
 			return capsuleprotocol.ErrVolumeBoot
 		}
 		unlock := func() error {

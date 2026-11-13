@@ -52,6 +52,8 @@ type Placements struct {
 	afterRunning        func(runtime.VMRun)
 	afterWorkClaim      func(controlplane.WorkerJob)
 	afterWork           func(controlplane.WorkerJob)
+	// afterRestoreStep runs once each restore step is durable.
+	afterRestoreStep func(step string) error
 }
 
 // NewPlacements requires a stable, unique host ID bound to this private runtime

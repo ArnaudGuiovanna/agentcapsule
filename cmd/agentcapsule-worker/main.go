@@ -38,13 +38,21 @@ func run() int {
 	archiveAgent := flag.String("archive-agent", "", "capture this agent once, leaving it stopped")
 	archiveID := flag.String("archive-id", "", "stable arc_ identifier with 32 lowercase hex digits; reuse on retry")
 	archiveRoot := flag.String("archive-root", "", "absolute private archive directory outside runtime and authorities")
+	restoreAgent := flag.String("restore-agent", "", "restore this agent from -archive-id into a new incarnation, then exit")
+	restoreID := flag.String("restore-id", "", "stable rst_ identifier with 32 lowercase hex digits; reuse to resume the restore")
 	flag.Parse()
 	fail := func(code string) int { fmt.Fprintln(os.Stderr, code); return 1 }
 	if *path == "" || flag.NArg() != 0 {
 		return fail("configuration_required")
 	}
-	archiveRequested := *archiveAgent != "" || *archiveID != "" || *archiveRoot != ""
-	if archiveRequested && (*archiveAgent == "" || !volumearchive.ValidID(*archiveID) || !filepath.IsAbs(*archiveRoot)) {
+	restoreRequested := *restoreAgent != "" || *restoreID != ""
+	if restoreRequested && (*restoreAgent == "" || *archiveAgent != "" || !controlplane.ValidRestoreID(*restoreID) ||
+		!volumearchive.ValidID(*archiveID) || !filepath.IsAbs(*archiveRoot)) {
+		return fail("restore_configuration_invalid")
+	}
+	// A capture or a restore: one agent, then exit; no maintenance.
+	archiveRequested := *archiveAgent != "" || *archiveID != "" || *archiveRoot != "" || restoreRequested
+	if archiveRequested && !restoreRequested && (*archiveAgent == "" || !volumearchive.ValidID(*archiveID) || !filepath.IsAbs(*archiveRoot)) {
 		return fail("archive_configuration_invalid")
 	}
 	c, err := worker.LoadServiceConfig(*path)
@@ -249,6 +257,35 @@ func run() int {
 			}
 			maintenance.Archives = archives
 		}
+	}
+	if restoreRequested {
+		archives, err := volumearchive.New(*archiveRoot)
+		if err != nil {
+			return fail("archive_storage_unavailable")
+		}
+		result, err := w.RestoreFromArchive(ctx, *restoreID, *restoreAgent, *archiveID, archives)
+		if err != nil {
+			// Once the restore is recorded, the agent stays out of service
+			// until the same command succeeds (see docs/recovery.md).
+			return fail("restore_failed_" + worker.RestoreFailure(err))
+		}
+		unmatched := 0
+		for _, l := range result.Losses {
+			if l.MailboxID == "" {
+				unmatched++
+			}
+		}
+		if err = json.NewEncoder(os.Stdout).Encode(struct {
+			RestoreID   string `json:"restore_id"`
+			AgentID     string `json:"agent_id"`
+			ArchiveID   string `json:"archive_id"`
+			Incarnation uint64 `json:"incarnation"`
+			Losses      int    `json:"losses"`
+			Unmatched   int    `json:"unmatched_losses"`
+		}{result.RestoreID, result.AgentID, result.ArchiveID, result.Incarnation, len(result.Losses), unmatched}); err != nil {
+			return fail("restore_receipt_write_failed_retry_same_id")
+		}
+		return 0
 	}
 	if archiveRequested {
 		archives, err := volumearchive.New(*archiveRoot)
