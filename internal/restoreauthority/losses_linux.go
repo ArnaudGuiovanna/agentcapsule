@@ -8,6 +8,8 @@ import (
 	"database/sql"
 	"errors"
 	"slices"
+
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/authoritylog"
 )
 
 // Declared losses (D-03 option B, docs/adr/003-restore-rpo.md). A restored
@@ -99,7 +101,7 @@ func (c *Catalog) Activate(ctx context.Context, r Receipt, a Restoration) ([]Los
 // therefore returns the same list, and nothing missing declares nothing.
 func (c *Catalog) declareLosses(ctx context.Context, r Receipt, inspect Inspection) ([]Loss, error) {
 	var losses []Loss
-	err := c.transaction(ctx, func(tx *sql.Tx) error {
+	err := c.operate(ctx, authoritylog.WriteLoss, func(tx *sql.Tx) error {
 		if err := requireLosses(ctx, tx); err != nil {
 			return err
 		}
@@ -128,7 +130,7 @@ func (c *Catalog) RecordRerun(ctx context.Context, b Binding, outcome Outcome) e
 	if !validName(outcome.ID) {
 		return ErrInput
 	}
-	return c.transaction(ctx, func(tx *sql.Tx) error {
+	return c.operate(ctx, authoritylog.WriteRerun, func(tx *sql.Tx) error {
 		if err := current(ctx, tx, b); err != nil {
 			return err
 		}

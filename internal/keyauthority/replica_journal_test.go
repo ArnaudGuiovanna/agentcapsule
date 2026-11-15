@@ -20,8 +20,11 @@ type fakeJournal struct {
 	changes []Change
 }
 
-func (j *fakeJournal) Append(_ context.Context, write func() (*Change, error)) error {
+func (j *fakeJournal) Append(_ context.Context, revoke bool, write func() (*Change, error)) error {
 	change, err := write()
+	if change != nil && change.Revoke != revoke {
+		return errors.New("the change is not the announced one")
+	}
 	if change != nil {
 		kept := *change
 		kept.Key = bytes.Clone(change.Key)

@@ -67,6 +67,9 @@ var ErrReplicaRequired = errors.New("authority armed for a replica: configure th
 // ErrDiverged means that the primary's log and the replica disagree.
 var ErrDiverged = authoritylog.ErrDiverged
 
+// errMisclassified means that an operation ran a statement of another kind.
+var errMisclassified = errors.New("authority statement outside its operation's kind")
+
 // statement numbers are part of the record format: never renumber them, and
 // never change their text without a new number. The replica runs only these.
 type statement int
@@ -95,6 +98,53 @@ var statements = map[statement]string{
 	stmtSeal:          "UPDATE stores SET sealed=1 WHERE id=?",
 	stmtLoss:          "INSERT INTO losses VALUES(?,?,?) ON CONFLICT DO NOTHING",
 	stmtRerun:         "INSERT INTO reruns VALUES(?,?,?) ON CONFLICT DO NOTHING",
+}
+
+// statementKinds classifies every statement for degraded mode
+// (authoritylog.ContinuesDegraded). A new statement needs its kind here:
+// TestEveryStatementAndKeyWriteIsClassified fails otherwise, and exec refuses
+// a statement without one.
+var statementKinds = map[statement]string{
+	stmtRegister:      authoritylog.WriteRegistration,
+	stmtReserveStore:  authoritylog.WriteReservation,
+	stmtReserveInsert: authoritylog.WriteReservation,
+	stmtRevision:      authoritylog.WriteRevocationStart,
+	stmtRevocation:    authoritylog.WriteRevocationStart,
+	stmtFence:         authoritylog.WriteFence,
+	stmtOutcome:       authoritylog.WriteOutcome,
+	stmtSeal:          authoritylog.WriteSeal,
+	stmtLoss:          authoritylog.WriteLoss,
+	stmtRerun:         authoritylog.WriteRerun,
+}
+
+// allows reports whether an operation of kind may run statement s: one of its
+// own kind, or the rerun that RecordOutcome records for a declared loss.
+func allows(kind string, s statement) bool {
+	k, ok := statementKinds[s]
+	return ok && (k == kind || kind == authoritylog.WriteOutcome && k == authoritylog.WriteRerun)
+}
+
+// opKind is the kind of one operation of a record; "" when unknown.
+func opKind(op authoritylog.Op) string {
+	switch op.Kind {
+	case authoritylog.OpStatement:
+		return statementKinds[statement(op.Statement)]
+	case authoritylog.OpKeyCreate:
+		return authoritylog.WriteKeyCreate
+	case authoritylog.OpKeyRevoke:
+		return authoritylog.WriteKeyDestroy
+	}
+	return ""
+}
+
+// continues reports whether degraded mode lets every operation of r through.
+func continues(r authoritylog.Record) bool {
+	for _, op := range r.Ops {
+		if !authoritylog.ContinuesDegraded(opKind(op)) {
+			return false
+		}
+	}
+	return len(r.Ops) > 0
 }
 
 // replicationSchema is version 3: the primary's side of the stream.
@@ -132,10 +182,11 @@ func readReplication(ctx context.Context, tx *sql.Tx) (*replication, error) {
 	return r, nil
 }
 
-// txRecord collects the operations of one transaction.
+// txRecord collects the operations of one transaction of kind.
 type txRecord struct {
 	state *replication
 	ops   []authoritylog.Op
+	kind  string
 }
 
 func (c *Catalog) recordingOf(tx *sql.Tx) *txRecord {
@@ -146,7 +197,13 @@ func (c *Catalog) recordingOf(tx *sql.Tx) *txRecord {
 
 // exec runs one of the fixed statements and records it when it changed rows.
 // Statements that change nothing are left out: replaying them changes nothing.
+// The statement must be of its operation's kind: so an operation that
+// degraded mode lets through never writes a kind that waits.
 func (c *Catalog) exec(ctx context.Context, tx *sql.Tx, s statement, args ...any) (sql.Result, error) {
+	rec := c.recordingOf(tx)
+	if rec == nil || !allows(rec.kind, s) {
+		return nil, errors.Join(ErrUnavailable, errMisclassified)
+	}
 	result, err := tx.ExecContext(ctx, statements[s], args...)
 	if err != nil {
 		return nil, err
@@ -155,7 +212,7 @@ func (c *Catalog) exec(ctx context.Context, tx *sql.Tx, s statement, args ...any
 	if err != nil {
 		return nil, err
 	}
-	if rec := c.recordingOf(tx); rec != nil && rows > 0 && rec.state.armed() {
+	if rows > 0 && rec.state.armed() {
 		op := authoritylog.Op{Kind: authoritylog.OpStatement, Statement: int(s), Rows: rows}
 		for _, a := range args {
 			arg, err := authoritylog.ArgOf(a)
@@ -454,11 +511,15 @@ var _ keyauthority.Journal = (*Catalog)(nil)
 
 // Append runs write in a catalogue transaction, after the barrier, and
 // records the key change it returns, wrapped to the unlock key's recipient.
-func (c *Catalog) Append(ctx context.Context, write func() (*keyauthority.Change, error)) error {
+func (c *Catalog) Append(ctx context.Context, revoke bool, write func() (*keyauthority.Change, error)) error {
 	if write == nil {
 		return ErrInput
 	}
-	return c.transaction(ctx, func(tx *sql.Tx) error {
+	kind := authoritylog.WriteKeyCreate
+	if revoke {
+		kind = authoritylog.WriteKeyDestroy
+	}
+	return c.operate(ctx, kind, func(tx *sql.Tx) error {
 		rec := c.recordingOf(tx)
 		if rec == nil || !rec.state.armed() || c.repl == nil {
 			return ErrUnavailable
@@ -469,6 +530,9 @@ func (c *Catalog) Append(ctx context.Context, write func() (*keyauthority.Change
 		}
 		if err != nil || change == nil {
 			return err
+		}
+		if change.Revoke != revoke {
+			return ErrInput
 		}
 		op, err := c.keyOp(rec.state, change)
 		if err != nil {
