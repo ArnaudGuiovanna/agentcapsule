@@ -449,6 +449,51 @@ func TestDegradedModeEndsWhenTheStandbyReturnsWithoutAnotherOperation(t *testing
 	})
 }
 
+// applyingNothing answers where the replica stands but refuses every record,
+// as a standby whose disk is full or read-only does: its apply fails, and it
+// refuses as unavailable, which fences nothing.
+type applyingNothing struct {
+	target  *Replica
+	refuses atomic.Bool
+}
+
+func (l *applyingNothing) Sync(ctx context.Context, r authoritylog.Request) (authoritylog.Position, error) {
+	if l.refuses.Load() && len(r.Records) > 0 {
+		position, _ := l.target.Position(ctx)
+		return authoritylog.Position{}, &authoritylog.Refusal{Kind: authoritylog.RefusedUnavailable, Position: position}
+	}
+	return l.target.Sync(ctx, r)
+}
+
+// A standby that answers but applies nothing is unreachable for the delay:
+// its answers to where it stands must not restart the delay at each
+// exchange. Once it applies again, the degraded writes reach it and the mode
+// ends.
+func TestStandbyThatAppliesNothingStillLeadsToDegradedMode(t *testing.T) {
+	p := replicated(t)
+	standby := &applyingNothing{target: p.replica}
+	p.link.point(standby)
+	k := useClock(p.catalog)
+	b, err := p.catalog.Register(t.Context(), "store-a", "volume-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	standby.refuses.Store(true)
+	err = p.catalog.RecordOutcome(within(t, 200*time.Millisecond), b, Outcome{ID: "event-probe", Digest: digest("probe")})
+	if !errors.Is(err, ErrUnavailable) || errors.Is(err, ErrWaitsForReplica) {
+		t.Fatal("a write returned without the replica within the delay", err)
+	}
+	k.advance(authoritylog.DefaultDegradedAfter)
+	eventually(t, "degraded mode", func() bool { return isDegraded(p.catalog) })
+	if err = p.catalog.RecordOutcome(within(t, 2*time.Second), b, Outcome{ID: "event-1", Digest: digest("one")}); err != nil {
+		t.Fatal("an outcome waited in degraded mode", err)
+	}
+	standby.refuses.Store(false)
+	eventually(t, "the end of degraded mode", func() bool { return !isDegraded(p.catalog) })
+	eventually(t, "the replica catching up", func() bool { return applied(t, p) == committed(t, p.catalog) })
+	p.same(t)
+}
+
 // Finding 2: a primary that restarts cannot tell an unreachable standby from
 // a promoted one. It writes nothing, and reads nothing, until it reaches the
 // replica at its epoch, however long the standby stays away.

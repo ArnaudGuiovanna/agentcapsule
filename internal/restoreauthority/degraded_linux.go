@@ -89,15 +89,25 @@ func (r *replicator) check() {
 	}
 }
 
-// reached records a successful exchange. Degraded mode ends once the replica
-// holds the last degraded write. Under mu, after learn updated known.
+// reached records an answer of the replica at the stream's epoch. Degraded
+// mode ends once the replica holds the last degraded write. Under mu, after
+// learn updated known. It leaves failing alone: a replica that answers where
+// it stands but applies nothing (a full or read-only disk) is still
+// unreachable for the delay; only an exchange that completes clears it
+// (succeeded).
 func (r *replicator) reached() {
-	r.atEpoch, r.failing = true, time.Time{}
+	r.atEpoch = true
 	if !r.since.IsZero() && r.known.Seq >= r.last {
 		r.setSince(time.Time{})
 		return
 	}
 	r.notify()
+}
+
+// succeeded records an exchange that completed: the replica holds what it
+// was sent, or there was nothing to send. Under mu.
+func (r *replicator) succeeded() {
+	r.failing = time.Time{}
 }
 
 // fenced reports whether err says that this process may no longer write at

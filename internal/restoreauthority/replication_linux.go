@@ -497,6 +497,7 @@ func (r *replicator) exchange(ctx context.Context, c *Catalog, epoch, upTo uint6
 	defer r.mu.Unlock()
 	r.inflight = time.Time{}
 	if err == nil {
+		r.succeeded()
 		return nil
 	}
 	r.metrics.Load().Failed(err)
