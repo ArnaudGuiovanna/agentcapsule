@@ -86,8 +86,11 @@ var degradedPolicy = map[string]bool{
 	WriteKeyDestroy:      false,
 }
 
-// revocationDoneContinues is the hook for finding 1: false holds the
-// completion of a revocation until the replica holds every earlier record.
+// revocationDoneContinues is ADR 005's finding 1, decided as option (a):
+// false holds the completion of a revocation until the replica holds every
+// earlier record, so that a revocation is confirmed only once the standby
+// has it. Access revocations will follow the same rule, except a bearer
+// token's, which the blanket revocation at a failover covers.
 const revocationDoneContinues = false
 
 // WriteKinds lists every kind.

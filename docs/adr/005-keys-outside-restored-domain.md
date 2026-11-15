@@ -486,6 +486,21 @@ otherwise:
 - (5) the database window stays announced as a time window; PostgreSQL keeps
   its asynchronous WAL archiving.
 
+November 15, 2026. The product owner answered the model's findings
+([Findings](#findings-for-the-product-owner)):
+- **Finding 1: option (a).** In degraded mode, a revocation of access takes
+  effect at once on the primary, but the API reports it as pending until its
+  record is on the replica. A bearer token's revocation is confirmed at once:
+  the blanket revocation at a failover covers it. After a disaster, the
+  announcement lists the window in which pending revocations must be made
+  again. This replaces "continue" for revocations in question 2.
+- **Findings 2 to 4: confirmed.** The failover stops the old primary through
+  the provider before the promotion, and an authority that restarts writes
+  nothing until it has reached its replica (2). After a promotion, every
+  write proceeds until a new standby is seeded (3). In degraded mode,
+  incarnation reservations and declared losses wait, so no agent is restored
+  on the primary while the standby is unreachable (4).
+
 ### Implementation status
 
 November 13, 2026. The synchronous path of §5, items 1 to 3, is built:
@@ -546,7 +561,7 @@ November 15, 2026. Two more waves are built: items 9 to 13 and 16 to 18 of
   record that the replica had already acknowledged.
 
 Later waves: the announcement and token revocation after a degraded period
-(item 14), revocation records for access (§5.4, the rule pending finding 1),
+(item 14), revocation records for access (§5.4, finding 1 decided: option (a)),
 reconciliation with PostgreSQL (item 15, §5.5), the daily receipt key, and
 the authority service on a local socket (§5.3).
 [recovery.md](../recovery.md#the-authorities-replica-d-05) installs the
@@ -554,9 +569,10 @@ replica.
 
 ## Model revision (D-05, option (a))
 
-November 13, 2026. **Status: written by the modeling session; not yet
-reviewed. Two findings need the product owner (see
-[Findings](#findings-for-the-product-owner)).** This is the contract diff
+November 13, 2026. **Status: written by the modeling session. The product
+owner answered its findings on November 15, 2026
+([Decision](#decision)): option (a) for finding 1, findings 2 to 4
+confirmed.** This is the contract diff
 of §5 item 7, written like
 [ADR 003's](003-restore-rpo.md#model-revision-option-b). Files:
 [restore_authority.qnt](../../spec/restore_authority.qnt) (the model),
@@ -873,8 +889,8 @@ For revocation records:
    principal, organization, team membership, assignment, mandate, delegation
    trust, LLM provider).
 7. The API confirms a revocation only once its record is on the replica,
-   except a bearer token's in degraded mode (finding 1, pending the product
-   owner).
+   except a bearer token's in degraded mode (finding 1, option (a), decided
+   November 15, 2026). Until then it reports the revocation as pending.
 8. Outcome records keep the event ID (§5 item 4).
 
 For promotion and reconciliation:
