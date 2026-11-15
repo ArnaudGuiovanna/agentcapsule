@@ -4,6 +4,7 @@ package restoreauthority
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
@@ -54,6 +55,33 @@ import (
 // it: the next write deletes it, and a record carrying a wrapped key is
 // deleted as soon as it is acknowledged. SQLite's secure_delete overwrites the
 // deleted content.
+//
+// Degraded mode (ADR 005, question 2; items 16 to 18). When this process has
+// failed to reach the replica for longer than the delay (30 seconds by
+// default), it enters degraded mode. Every operation names its kind
+// (authoritylog.WriteKinds), and each statement is classified
+// (statementKinds). In degraded mode:
+//
+//   - the kinds degraded mode lets through (outcome records, reruns, fence
+//     revisions, the start of a revocation, and reads) run without the
+//     barrier, and their writes return once committed here. Their records
+//     stay in the log;
+//   - nothing runs on a record that degraded mode does not let through while
+//     the replica lacks it: such a record, left by a write whose
+//     acknowledgment never came, holds every operation until it is resent;
+//   - the other kinds wait for the replica, at the barrier, before they act.
+//     They fail when their context ends, with ErrWaitsForReplica.
+//
+// When the replica answers again, the log is resent in order, so the
+// degraded writes reach it before any later write, and degraded mode ends
+// once the replica holds the last of them. A monitor keeps reaching for the
+// replica while the stream fails, so this happens without a new operation.
+//
+// Only a process that has reached the replica at the stream's epoch may
+// enter degraded mode. A process that restarts, or that the replica refused
+// (another epoch, a promotion, a divergence), cannot tell an unreachable
+// standby from a promoted one (finding 2): it runs nothing, reads included,
+// until it reaches the replica again.
 
 // ErrNotArmed means that synchronous replication was configured for a
 // catalogue that no snapshot armed.
@@ -66,6 +94,11 @@ var ErrReplicaRequired = errors.New("authority armed for a replica: configure th
 
 // ErrDiverged means that the primary's log and the replica disagree.
 var ErrDiverged = authoritylog.ErrDiverged
+
+// ErrWaitsForReplica means that degraded mode held the operation: it waited
+// for the replica, and its context ended first. It is also ErrUnavailable.
+// Retry it once the standby answers.
+var ErrWaitsForReplica = errors.New("degraded mode: this authority operation waits for the replica")
 
 // errMisclassified means that an operation ran a statement of another kind.
 var errMisclassified = errors.New("authority statement outside its operation's kind")
@@ -312,9 +345,17 @@ type replicator struct {
 	link    authoritylog.Link
 	metrics atomic.Pointer[authoritylog.Metrics]
 	lock    chan struct{} // one exchange at a time
-	mu      sync.Mutex
-	known   authoritylog.Position // the replica's last position seen by this process
-	valid   bool
+	catalog *Catalog
+	after   time.Duration    // degraded mode after this long without the replica
+	now     func() time.Time // the clock of degraded mode; tests replace it
+	stop    context.Context  // ends the monitor, at Close
+	cancel  context.CancelFunc
+	wg      sync.WaitGroup
+
+	mu    sync.Mutex
+	known authoritylog.Position // the replica's last position seen by this process
+	valid bool
+	degradedState
 }
 
 func (r *replicator) acknowledged(epoch uint64) uint64 {
@@ -335,10 +376,13 @@ func (r *replicator) position(epoch uint64) (uint64, bool) {
 	return r.known.Seq, r.valid && r.known.Epoch == epoch
 }
 
-func (r *replicator) invalidate() {
+// caughtUp reports whether the replica holds every record up to seq, as
+// this process learned from it since its last failed exchange. A process
+// that never reached the replica is never caught up, even at sequence 0.
+func (r *replicator) caughtUp(epoch, seq uint64) bool {
 	r.mu.Lock()
-	r.valid = false
-	r.mu.Unlock()
+	defer r.mu.Unlock()
+	return r.valid && r.known.Epoch == epoch && r.known.Seq >= seq
 }
 
 // permanent errors stop a sync at once; the others are retried until the
@@ -352,37 +396,112 @@ func permanent(err error) bool {
 		errors.Is(err, ErrInput) || errors.Is(err, authoritylog.ErrRecord)
 }
 
-// sync returns once the replica holds every record up to upTo.
-func (r *replicator) sync(ctx context.Context, c *Catalog, epoch, upTo uint64) error {
-	select {
-	case r.lock <- struct{}{}:
-	case <-ctx.Done():
-		return errors.Join(ErrUnavailable, ctx.Err())
-	}
-	defer func() { <-r.lock }()
-	delay := 20 * time.Millisecond
-	for {
-		if r.acknowledged(epoch) >= upTo {
-			return nil
+// sync returns once the replica holds every record up to upTo, or once
+// enough, when not nil, holds. kind is the waiting operation's, for the
+// metrics.
+func (r *replicator) sync(ctx context.Context, c *Catalog, epoch, upTo uint64, kind string, enough func() bool) error {
+	waiting := false
+	defer func() {
+		if waiting {
+			r.metrics.Load().Waiting(kind, -1)
 		}
-		err := r.attempt(ctx, c, epoch, upTo)
+	}()
+	// done reports whether the wait is over; it counts a wait in degraded mode.
+	done := func() bool {
+		if r.caughtUp(epoch, upTo) || enough != nil && enough() {
+			return true
+		}
+		if !waiting && r.degraded(epoch) {
+			waiting = true
+			r.metrics.Load().Waiting(kind, 1)
+		}
+		return false
+	}
+	var last error
+	gaveUp := func() error {
+		if waiting {
+			r.metrics.Load().GaveUp(kind)
+			return errors.Join(ErrUnavailable, ErrWaitsForReplica, last, ctx.Err())
+		}
+		return errors.Join(ErrUnavailable, last, ctx.Err())
+	}
+	// Another exchange may hold the link: wake on its news, and at least
+	// every pollEvery to see the delay pass.
+	for !done() {
+		changed := r.changes()
+		poll := time.NewTimer(pollEvery)
+		select {
+		case r.lock <- struct{}{}:
+			poll.Stop()
+			err := r.syncHolding(ctx, c, epoch, upTo, done)
+			<-r.lock
+			if err == nil {
+				return nil
+			}
+			if permanent(err) {
+				return errors.Join(ErrUnavailable, err)
+			}
+			last = err
+			if ctx.Err() != nil {
+				return gaveUp()
+			}
+		case <-changed:
+			poll.Stop()
+		case <-poll.C:
+		case <-ctx.Done():
+			poll.Stop()
+			return gaveUp()
+		}
+	}
+	return nil
+}
+
+// pollEvery bounds how long a waiting operation goes without looking at the
+// stream's state.
+const pollEvery = 100 * time.Millisecond
+
+// syncHolding retries the exchange, holding the link, until done or the
+// context ends. It returns the last error, nil when done.
+func (r *replicator) syncHolding(ctx context.Context, c *Catalog, epoch, upTo uint64, done func() bool) error {
+	delay := 20 * time.Millisecond
+	for !done() {
+		err := r.exchange(ctx, c, epoch, upTo)
 		if err == nil {
+			delay = 20 * time.Millisecond
 			continue
 		}
-		r.metrics.Load().Failed(err)
-		r.invalidate()
 		if permanent(err) {
-			return errors.Join(ErrUnavailable, err)
+			return err
 		}
 		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return errors.Join(ErrUnavailable, err, ctx.Err())
+			return err
 		case <-timer.C:
 		}
 		delay = min(2*delay, time.Second)
 	}
+	return nil
+}
+
+// exchange is one attempt, with the link held. It keeps the time of an
+// exchange in progress, and of the first failure, for the degraded delay.
+func (r *replicator) exchange(ctx context.Context, c *Catalog, epoch, upTo uint64) error {
+	r.mu.Lock()
+	start := r.now()
+	r.inflight = start
+	r.mu.Unlock()
+	err := r.attempt(ctx, c, epoch, upTo)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.inflight = time.Time{}
+	if err == nil {
+		return nil
+	}
+	r.metrics.Load().Failed(err)
+	r.failed(err, start)
+	return err
 }
 
 func (c *Catalog) request(epoch uint64, records [][]byte) authoritylog.Request {
@@ -443,6 +562,7 @@ func (r *replicator) learn(ctx context.Context, c *Catalog, epoch uint64, p auth
 		return authoritylog.ErrBehind // the replica lost acknowledged records
 	}
 	r.known, r.valid = p, true
+	r.reached()
 	r.mu.Unlock()
 	r.metrics.Load().Acknowledged(p.Seq)
 	return nil
@@ -478,10 +598,25 @@ func (c *Catalog) Replication(ctx context.Context) (ReplicationState, error) {
 }
 
 // Replicate makes this catalogue, and the key authority whose journal it
-// becomes, synchronous with the replica behind link. Call it once, after Open
-// and before any use. The catalogue must be armed.
+// becomes, synchronous with the replica behind link, with the default delay
+// before degraded mode. Call it once, after Open and before any use. The
+// catalogue must be armed.
 func (c *Catalog) Replicate(ctx context.Context, link authoritylog.Link) error {
-	if link == nil {
+	return c.ReplicateWith(ctx, link, ReplicationOptions{})
+}
+
+// ReplicationOptions tune the link to the replica.
+type ReplicationOptions struct {
+	// DegradedAfter is how long the replica may stay unreachable before
+	// degraded mode begins: authoritylog.DefaultDegradedAfter when zero,
+	// else between authoritylog.MinDegradedAfter and MaxDegradedAfter.
+	DegradedAfter time.Duration
+}
+
+// ReplicateWith is Replicate with options.
+func (c *Catalog) ReplicateWith(ctx context.Context, link authoritylog.Link, o ReplicationOptions) error {
+	after := cmp.Or(o.DegradedAfter, authoritylog.DefaultDegradedAfter)
+	if link == nil || after < authoritylog.MinDegradedAfter || after > authoritylog.MaxDegradedAfter {
 		return ErrInput
 	}
 	s, err := c.Replication(ctx)
@@ -491,7 +626,8 @@ func (c *Catalog) Replicate(ctx context.Context, link authoritylog.Link) error {
 	if !s.Armed {
 		return ErrNotArmed
 	}
-	c.repl = &replicator{link: link, lock: make(chan struct{}, 1)}
+	c.repl.close()
+	c.repl = newReplicator(c, link, after)
 	return nil
 }
 
@@ -504,6 +640,7 @@ func (c *Catalog) ObserveReplication(m *authoritylog.Metrics) {
 	}
 	c.repl.metrics.Store(m)
 	m.Enabled(true)
+	m.Degraded(c.repl.degradedSince())
 }
 
 // Append is the key authority's journal: one stream for both authorities.
@@ -511,6 +648,8 @@ var _ keyauthority.Journal = (*Catalog)(nil)
 
 // Append runs write in a catalogue transaction, after the barrier, and
 // records the key change it returns, wrapped to the unlock key's recipient.
+// Both kinds of key write wait for the replica in degraded mode, before
+// write runs.
 func (c *Catalog) Append(ctx context.Context, revoke bool, write func() (*keyauthority.Change, error)) error {
 	if write == nil {
 		return ErrInput

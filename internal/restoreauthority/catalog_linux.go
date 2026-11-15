@@ -391,7 +391,12 @@ func Open(ctx context.Context, root, identity, keyIdentity string) (*Catalog, er
 
 func (c *Catalog) Identity() string             { return c.identity }
 func (c *Catalog) KeyAuthorityIdentity() string { return c.keyIdentity }
-func (c *Catalog) Close() error                 { return c.db.Close() }
+
+// Close stops the link to the replica, if any, then closes the catalogue.
+func (c *Catalog) Close() error {
+	c.repl.close()
+	return c.db.Close()
+}
 
 func (c *Catalog) checkFile() error {
 	identity, err := readIdentity(c.root)
@@ -414,14 +419,15 @@ func (c *Catalog) checkFile() error {
 // keeps it through inspection/publication, excluding concurrent revocations and
 // incarnation reservations. Callbacks must never re-enter this catalogue.
 // In synchronous mode, the operation returns only once the replica holds its
-// record, and it never runs on state the replica lacks (replication_linux.go).
+// record, and it never runs on state the replica lacks, except what degraded
+// mode lets through (replication_linux.go).
 func (c *Catalog) transaction(ctx context.Context, fn func(*sql.Tx) error) error {
 	return c.loop(ctx, true, authoritylog.WriteRead, fn)
 }
 
 // operate is transaction for an operation that writes kind, one of
-// authoritylog.WriteKinds. Each statement the operation runs must be of that
-// kind.
+// authoritylog.WriteKinds. Degraded mode decides by it, and each statement
+// the operation runs must be of that kind.
 func (c *Catalog) operate(ctx context.Context, kind string, fn func(*sql.Tx) error) error {
 	return c.loop(ctx, true, kind, fn)
 }
@@ -474,10 +480,15 @@ func (c *Catalog) attempt(ctx context.Context, replicated bool, kind string, fn 
 		if c.repl == nil {
 			return false, errors.Join(ErrUnavailable, ErrReplicaRequired)
 		}
-		// The barrier: never act on a record the replica lacks.
-		if state.seq > c.repl.acknowledged(state.epoch) {
+		// The barrier: never act on a record the replica lacks, outside
+		// what degraded mode lets through.
+		a, err := c.repl.admit(ctx, tx, state, kind)
+		if err != nil {
+			return false, err
+		}
+		if !a.ok {
 			tx.Rollback()
-			return true, c.repl.sync(ctx, c, state.epoch, state.seq)
+			return true, c.repl.wait(ctx, c, state.epoch, a, kind)
 		}
 	}
 	rec := &txRecord{state: state, kind: kind}
@@ -514,8 +525,9 @@ func (c *Catalog) attempt(ctx context.Context, replicated bool, kind string, fn 
 		return false, nil
 	}
 	// Committed on the primary: the record is in the log with its effect.
+	// In degraded mode, a record of kinds it lets through returns now.
 	c.repl.metrics.Load().Committed(record.Seq)
-	if err = c.repl.sync(ctx, c, state.epoch, record.Seq); err != nil {
+	if err = c.repl.acknowledge(ctx, c, state.epoch, record, kind); err != nil {
 		return false, err
 	}
 	if record.HasSecret() {

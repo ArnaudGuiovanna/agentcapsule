@@ -69,6 +69,13 @@ func (l *tap) set(down bool) {
 	l.mu.Unlock()
 }
 
+// point sends the link to target; the monitor may be using it.
+func (l *tap) point(target authoritylog.Link) {
+	l.mu.Lock()
+	l.target = target
+	l.mu.Unlock()
+}
+
 func (l *tap) records() [][]byte {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -587,7 +594,7 @@ func TestReplicaCreatedFromASnapshotCatchesUp(t *testing.T) {
 	if _, err = InitializeReplica(t.Context(), filepath.Join(dir, "replica"), snapshot); !errors.Is(err, ErrConflict) {
 		t.Fatal("an existing replica was replaced", err)
 	}
-	link.target = replica
+	link.point(replica)
 	link.set(false)
 	if err = keys.Revoke(t.Context(), streamAgent, streamVolume); err != nil {
 		t.Fatal(err)
