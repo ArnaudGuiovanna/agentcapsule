@@ -716,14 +716,23 @@ func TestPromotionUnwrapsWithTheUnlockKeyAndFencesTheOldPrimary(t *testing.T) {
 	if !slices.Equal(dump(t, c.db), dump(t, p.catalog.db)) {
 		t.Fatal("promoted catalogue differs")
 	}
-	// The secret is the primary's: its receipts and archives stay valid.
+	// The secret is the primary's: its archives stay valid. Its receipts do
+	// not: they carry the old epoch.
 	b := Binding{Store: "store-a", Volume: "volume-a", Incarnation: 2}
-	r, err := p.catalog.Scan(t.Context(), b)
+	archive, err := p.catalog.SignArchive(t.Context(), Archive{ID: "arc_" + strings.Repeat("1", 32), Binding: b,
+		HarnessDigest: "sha256:" + strings.Repeat("2", 64), Size: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = c.WithCurrentFences(t.Context(), r, func() error { return nil }); err != nil {
-		t.Fatal("receipt of the old primary refused", err)
+	if err = c.ValidateArchive(t.Context(), archive); err != nil {
+		t.Fatal("archive of the old primary refused", err)
+	}
+	r, err := p.catalog.Scan(t.Context(), b)
+	if err != nil || r.Epoch != 1 {
+		t.Fatal(r.Epoch, err)
+	}
+	if err = c.WithCurrentFences(t.Context(), r, func() error { return nil }); !errors.Is(err, ErrStale) {
+		t.Fatal("receipt of the old primary accepted", err)
 	}
 	state, err := c.Replication(t.Context())
 	if err != nil || state.Armed || state.Committed.Epoch != 2 {
