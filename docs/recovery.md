@@ -566,9 +566,10 @@ the standby, as root. Follow this order.
    promoted directories with the same identities, **without
    `authority_replica`**. The authorities run alone: no standby exists, so
    nothing can set them back, and every write proceeds, seals, new keys and
-   key destruction included. A boot or a restore that was in progress scans
-   again: a fence receipt signed by the old primary carries the old epoch
-   and is refused. Until step 7, losing this host loses both authorities.
+   key destruction included. A fence receipt carries the epoch that signed
+   it: nothing the old primary signed binds here, and every boot and
+   restore scans under the new epoch. Until step 7, losing this host loses
+   both authorities.
    With `authority_replica`, the worker refuses to start
    (`authority_replica_not_armed`) until step 7 arms the authorities.
 7. **Seed a new standby** as soon as possible: a new host, or the old one

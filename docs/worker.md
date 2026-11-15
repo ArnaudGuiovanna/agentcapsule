@@ -273,9 +273,9 @@ commands use the same section.
 the next epoch, without this section: no standby exists, so every write
 proceeds, seals, new keys and key destruction included. With the section,
 the worker refuses to start (`authority_replica_not_armed`) until a snapshot
-arms them for a new standby. Fence receipts carry the epoch that signed them:
-a receipt of the old primary is refused, and a boot or a restore in progress
-scans again.
+arms them for a new standby. Fence receipts carry the epoch that signed them,
+inside their MAC: a receipt of the old primary is refused, and every boot and
+restore scans under the new epoch.
 
 **What a write does.** The restore authority's catalogue holds the log. A
 write commits its record in the same SQLite transaction as its effect. Then
