@@ -558,6 +558,44 @@ func TestReplicaRefusalEndsDegradedMode(t *testing.T) {
 	stays(t, "degraded mode began again after a refusal", func() bool { return !isDegraded(p.catalog) })
 }
 
+// Only the replica fences a writer: its refusal, or a history that differs.
+// A local failure, such as an operation's deadline while the log is read,
+// leaves degraded mode on.
+func TestOnlyTheReplicaFencesAWriterInDegradedMode(t *testing.T) {
+	for _, err := range []error{errors.Join(ErrUnavailable, context.DeadlineExceeded), errors.Join(ErrInput, authoritylog.ErrRecord),
+		&authoritylog.Refusal{Kind: authoritylog.RefusedGap}, &authoritylog.Refusal{Kind: authoritylog.RefusedUnavailable},
+		authoritylog.ErrProtocol, errors.New("standby unreachable")} {
+		if fenced(err) {
+			t.Fatal("fenced by", err)
+		}
+	}
+	for _, err := range []error{authoritylog.ErrBehind, errors.Join(ErrUnavailable, ErrDiverged),
+		&authoritylog.Refusal{Kind: authoritylog.RefusedOlderEpoch}, &authoritylog.Refusal{Kind: authoritylog.RefusedNewerEpoch},
+		&authoritylog.Refusal{Kind: authoritylog.RefusedPromoted}, &authoritylog.Refusal{Kind: authoritylog.RefusedIdentity},
+		&authoritylog.Refusal{Kind: authoritylog.RefusedConflict}, &authoritylog.Refusal{Kind: authoritylog.RefusedInvalid}} {
+		if !fenced(err) {
+			t.Fatal("not fenced by", err)
+		}
+	}
+	p := replicated(t)
+	k := useClock(p.catalog)
+	b, err := p.catalog.Register(t.Context(), "store-a", "volume-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	degrade(t, p, k, b)
+	r := p.catalog.repl
+	r.mu.Lock()
+	r.failed(errors.Join(ErrUnavailable, context.DeadlineExceeded), k.now())
+	r.mu.Unlock()
+	if !isDegraded(p.catalog) {
+		t.Fatal("a local failure ended degraded mode")
+	}
+	if err = p.catalog.RecordOutcome(t.Context(), b, Outcome{ID: "event-1", Digest: digest("one")}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 type degradedCrash struct{ Dir, RestoreID, KeyID string }
 
 // The primary dies in degraded mode, after committing a degraded write and

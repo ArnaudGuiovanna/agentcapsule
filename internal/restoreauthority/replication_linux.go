@@ -438,12 +438,12 @@ func (r *replicator) sync(ctx context.Context, c *Catalog, epoch, upTo uint64, k
 			if err == nil {
 				return nil
 			}
-			if permanent(err) {
-				return errors.Join(ErrUnavailable, err)
-			}
 			last = err
 			if ctx.Err() != nil {
 				return gaveUp()
+			}
+			if permanent(err) {
+				return errors.Join(ErrUnavailable, err)
 			}
 		case <-changed:
 			poll.Stop()

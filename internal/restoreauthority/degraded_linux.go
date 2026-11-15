@@ -100,15 +100,26 @@ func (r *replicator) reached() {
 	r.notify()
 }
 
-// failed records a failed exchange that started at start. A permanent error
-// (a refusal, another epoch, a divergence) ends degraded mode: this process
-// no longer knows that it writes at the current epoch. Under mu.
+// fenced reports whether err says that this process may no longer write at
+// the stream's epoch: the replica refused it (another epoch, a promotion,
+// another history), or the histories differ.
+func fenced(err error) bool {
+	var refusal *authoritylog.Refusal
+	if errors.As(err, &refusal) {
+		return refusal.Kind != authoritylog.RefusedGap && refusal.Kind != authoritylog.RefusedUnavailable
+	}
+	return errors.Is(err, authoritylog.ErrBehind) || errors.Is(err, ErrDiverged)
+}
+
+// failed records a failed exchange that started at start. Fenced, the
+// process leaves degraded mode, and may not enter it again before it reaches
+// the replica. Under mu.
 func (r *replicator) failed(err error, start time.Time) {
 	r.valid = false
 	if r.failing.IsZero() {
 		r.failing = start
 	}
-	if permanent(err) {
+	if fenced(err) {
 		r.atEpoch = false
 		if !r.since.IsZero() {
 			r.setSince(time.Time{})
@@ -258,8 +269,8 @@ func (r *replicator) watch() {
 // monitor keeps reaching for the replica after a failed exchange, without
 // waiting for an operation: it sees the delay pass, resends the log in order
 // once the replica answers, so degraded writes first, and so ends degraded
-// mode. It stops once the replica holds the whole log, at a permanent error,
-// and at Close.
+// mode. It stops once the replica holds the whole log, when the replica
+// fences this process, and at Close.
 func (r *replicator) monitor() {
 	defer r.wg.Done()
 	delay := 20 * time.Millisecond
@@ -287,7 +298,7 @@ func (r *replicator) monitor() {
 				delay = 20 * time.Millisecond
 				continue
 			}
-			if permanent(err) {
+			if fenced(err) {
 				r.mu.Lock()
 				r.watching = false
 				r.mu.Unlock()
