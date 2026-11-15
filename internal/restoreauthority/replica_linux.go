@@ -284,8 +284,13 @@ func checkSnapshot(ctx context.Context, path string) error {
 	return nil
 }
 
-// OpenReplica opens the replica in root. Both identities are required and
-// must be those the replica was created for.
+// ErrPromoted means that the replica was promoted: it takes no record any
+// more, and no listener may serve it again. Its host now runs the primary.
+var ErrPromoted = errors.New("replica promoted: it no longer takes records")
+
+// OpenReplica opens the replica in root, to serve the stream. Both identities
+// are required and must be those the replica was created for. A promoted
+// replica is refused (ErrPromoted).
 func OpenReplica(ctx context.Context, root, restoreIdentity, keyIdentity string) (*Replica, error) {
 	if !validID(restoreIdentity, "restoreauth_") || !validID(keyIdentity, "keyauth_") {
 		return nil, ErrInput
@@ -298,7 +303,38 @@ func OpenReplica(ctx context.Context, root, restoreIdentity, keyIdentity string)
 		r.Close()
 		return nil, ErrUnavailable
 	}
+	if s.promoted {
+		r.Close()
+		return nil, ErrPromoted
+	}
 	return r, nil
+}
+
+// ReplicaStatus describes a replica.
+type ReplicaStatus struct {
+	RestoreAuthority, KeyAuthority string
+	// Position is the last record applied.
+	Position authoritylog.Position
+	// Promoted is set once Promote has marked the replica: it refuses every
+	// record from then on.
+	Promoted bool
+}
+
+// Status reads the replica's state.
+func (r *Replica) Status(ctx context.Context) (ReplicaStatus, error) {
+	s, err := readReplicaState(ctx, r.db)
+	return ReplicaStatus{RestoreAuthority: s.restore, KeyAuthority: s.key, Position: s.position(), Promoted: s.promoted}, err
+}
+
+// InspectReplica reads the status of the replica in root, promoted or not,
+// without serving it.
+func InspectReplica(ctx context.Context, root string) (ReplicaStatus, error) {
+	r, _, err := openReplica(ctx, root)
+	if err != nil {
+		return ReplicaStatus{}, err
+	}
+	defer r.Close()
+	return r.Status(ctx)
 }
 
 func openReplica(ctx context.Context, root string) (*Replica, replicaState, error) {
