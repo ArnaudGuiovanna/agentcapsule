@@ -184,7 +184,9 @@ func (c ServiceConfig) OpenVolumeKeys() (*keyauthority.Files, error) {
 // becomes journaled through the catalogue, one stream for both. Without it,
 // both stay standalone, unless a snapshot armed them: then it refuses
 // (ErrReplicaRequired). It does not contact the replica: the first
-// operation does.
+// operation does. Authorities promoted on a standby are standalone, with no
+// standby to wait for, until a snapshot arms them for a new one: the section
+// is refused until then (ErrNotArmed).
 func (c ServiceConfig) OpenRestoreAuthority(ctx context.Context, keys *keyauthority.Files) (*restoreauthority.Catalog, error) {
 	if c.RestoreAuthority == nil || keys == nil || !filepath.IsAbs(c.RestoreAuthority.Root) || !c.AuthorityReplica.valid() {
 		return nil, restoreauthority.ErrInput

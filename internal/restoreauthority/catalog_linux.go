@@ -58,8 +58,17 @@ type Binding struct {
 
 // Receipt is an authority snapshot, later acknowledged by a trusted worker only
 // after authenticated durable guest fencing. MAC is not a guest fence proof.
+//
+// Epoch is the epoch of the authority that signed it (ADR 005). A promotion
+// keeps the signing secret and takes a new epoch, and its revision counter
+// may hand out again a number that the old primary gave out without
+// replicating it. So a receipt binds only under the epoch that signed it:
+// the promoted authority refuses every receipt of the old primary, and the
+// worker scans again. A receipt never leaves the worker's memory, so no
+// stored receipt has to keep verifying across this format (receiptTag).
 type Receipt struct {
 	Authority   string
+	Epoch       uint64
 	Store       string
 	Incarnation uint64
 	Revision    uint64
@@ -666,18 +675,45 @@ func (c *Catalog) BeginRevocation(ctx context.Context, subject string) (uint64, 
 	return revision, err
 }
 
+// receiptTag versions the receipt's MAC and separates it from the archive's.
+// Version 1 had no tag and no epoch; a receipt of any other version fails the
+// MAC, which only makes the worker scan again.
+const receiptTag = "agentcapsule-fence-receipt-v2\x00"
+
 func signReceipt(r Receipt, secret []byte) []byte {
 	r.MAC = nil
 	b, _ := json.Marshal(r)
 	m := hmac.New(sha256.New, secret)
+	m.Write([]byte(receiptTag))
 	m.Write(b)
 	return m.Sum(nil)
+}
+
+// writerEpoch is the epoch this catalogue writes and signs under: that of
+// its replication row, or 1 while no snapshot has created one, as the first
+// snapshot does. Standalone mode thus keeps epoch 1, and arming changes no
+// receipt. A promotion writes the next epoch in the new catalogue's row,
+// with its tables, before anything opens it.
+func writerEpoch(ctx context.Context, tx *sql.Tx) (uint64, error) {
+	v, err := version(ctx, tx)
+	if err != nil || v < 3 {
+		return 1, err
+	}
+	r, err := readReplication(ctx, tx)
+	if err != nil || r == nil {
+		return 1, err
+	}
+	return r.epoch, nil
 }
 
 func (c *Catalog) Scan(ctx context.Context, b Binding) (Receipt, error) {
 	r := Receipt{Authority: c.identity, Store: b.Store, Incarnation: b.Incarnation, Subjects: []string{}}
 	err := c.transaction(ctx, func(tx *sql.Tx) error {
 		if err := current(ctx, tx, b); err != nil {
+			return err
+		}
+		var err error
+		if r.Epoch, err = writerEpoch(ctx, tx); err != nil {
 			return err
 		}
 		var secret []byte
@@ -706,14 +742,21 @@ func (c *Catalog) Scan(ctx context.Context, b Binding) (Receipt, error) {
 	return r, err
 }
 
+// validateReceipt is the model's canRecord: this authority signed r, under
+// its current epoch, for a revision it has given out. Every path that
+// records or activates with a receipt goes through it.
 func (c *Catalog) validateReceipt(ctx context.Context, tx *sql.Tx, r Receipt) (uint64, error) {
+	epoch, err := writerEpoch(ctx, tx)
+	if err != nil {
+		return 0, err
+	}
 	var secret []byte
 	var revision uint64
-	if err := tx.QueryRowContext(ctx, "SELECT revision,secret FROM authority WHERE singleton=1").Scan(&revision, &secret); err != nil {
+	if err = tx.QueryRowContext(ctx, "SELECT revision,secret FROM authority WHERE singleton=1").Scan(&revision, &secret); err != nil {
 		return 0, err
 	}
 	defer clear(secret)
-	if r.Authority != c.identity || r.Revision > revision || !hmac.Equal(r.MAC, signReceipt(r, secret)) {
+	if r.Authority != c.identity || r.Epoch != epoch || r.Revision > revision || !hmac.Equal(r.MAC, signReceipt(r, secret)) {
 		return 0, ErrStale
 	}
 	b, sealed, err := binding(ctx, tx, r.Store)

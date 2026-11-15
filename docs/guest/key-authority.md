@@ -77,6 +77,16 @@ writes a `replicated` file in the key authority's directory. From then on,
 `Ensure` and `Revoke` refuse to run without the stream. A process configured
 without the replica cannot write behind its back. `WithKey` still works.
 
+**Promotion.** When the primary is lost, `agentcapsule-authority promote`
+opens the replica's copies with the unlock key, checks each key against its
+commitment, and writes a new key authority on the standby with the same
+identity: every live key, every allocation marker and every tombstone. A
+destroyed key stays destroyed: the replica holds its tombstone and no copy.
+The new authority is standalone, without a `replicated` file, until a
+snapshot arms it for a new standby. The old host's key directory must be
+deleted before that host serves again: it holds keys destroyed since the
+failover. [recovery.md](../recovery.md#promote-the-replica) gives the steps.
+
 The limits stay those above. SQLite's `secure_delete` overwrites a deleted
 wrapped copy in the replica's file, and in the primary's log. Neither side
 scrubs freed disk blocks, nor does this authority when it removes a key file.

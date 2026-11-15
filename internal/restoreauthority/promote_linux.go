@@ -14,6 +14,11 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/keyauthority"
 )
 
+// ErrStillReplicating means that a record reached the replica while Promote
+// read it: the old primary still runs. Stop it, then promote again. It wraps
+// ErrConflict.
+var ErrStillReplicating = errors.Join(ErrConflict, errors.New("a record reached the replica during the promotion"))
+
 // Promotion is the result of Promote.
 type Promotion struct {
 	// The identities stay those of the replicated authorities, so archives
@@ -88,14 +93,21 @@ func unwrap(ctx context.Context, r *Replica, s replicaState, unlock *authoritylo
 // primary: a key authority in keyRoot and a restore authority in restoreRoot,
 // both new directories, with the replicated identities. It needs the
 // operator's unlock key. It first checks that every wrapped secret opens;
-// then it marks the replica promoted, so that it refuses every later record;
-// then it writes both authorities; last, it deletes the replica's wrapped
-// copies. The new primary is standalone, with the next epoch, until a new
-// snapshot arms it for a new standby. A repeated call completes an
-// interrupted one.
+// then it marks the replica promoted, durably, so that it refuses every later
+// record and no listener serves it again (OpenReplica); then it writes both
+// authorities; last, it deletes the replica's wrapped copies.
 //
-// The administrative command around it comes in a later wave; fencing the
-// old primary stays the operator's first step (docs/recovery.md).
+// The new catalogue holds the next epoch, strictly greater than the replica's
+// and so than the old primary's, in the same transaction as its tables, and
+// its directory is synced before Promote returns: its first write, and every
+// receipt it signs, carry that epoch. It is standalone: no standby exists, so
+// nothing can set it back, and every write proceeds until a new snapshot arms
+// it for a new standby, with that same epoch. A replica seeded from it refuses
+// the old primary's records (an older epoch). A repeated call completes an
+// interrupted one, or reports the promotion already done.
+//
+// The old primary must be stopped first (docs/recovery.md): with two hosts, it
+// cannot tell an unreachable standby from a promoted one.
 func Promote(ctx context.Context, replicaRoot, restoreRoot, keyRoot string, unlock *authoritylog.UnlockKey) (Promotion, error) {
 	var p Promotion
 	if unlock == nil || !validRootPath(replicaRoot) || !validRootPath(restoreRoot) || !validRootPath(keyRoot) {
@@ -119,6 +131,9 @@ func Promote(ctx context.Context, replicaRoot, restoreRoot, keyRoot string, unlo
 	if !bytes.Equal(recipient[:], s.recipient) {
 		return p, errors.Join(ErrInput, authoritylog.ErrWrap)
 	}
+	if s.epoch >= 1<<63-1 {
+		return p, ErrUnavailable // no greater epoch fits the catalogue
+	}
 	p = Promotion{RestoreAuthority: s.restore, KeyAuthority: s.key, Epoch: s.epoch + 1, Position: s.position()}
 	if s.promoted && s.wrapped == nil {
 		// Done before: check what it produced.
@@ -140,7 +155,13 @@ func Promote(ctx context.Context, replicaRoot, restoreRoot, keyRoot string, unlo
 			return p, err
 		}
 		if n, err := result.RowsAffected(); err != nil || n != 1 {
-			return p, errors.Join(ErrConflict, err) // a record arrived meanwhile: promote again
+			return p, errors.Join(ErrStillReplicating, err)
+		}
+		// In DELETE journal mode, the commit is the journal's unlink: sync
+		// the directory, or a power loss could bring the journal back and
+		// undo the mark.
+		if err = syncDir(filepath.Dir(r.path)); err != nil {
+			return p, err
 		}
 	}
 	if _, err = keyauthority.Install(ctx, keyRoot, s.key, entries); err != nil {
@@ -161,7 +182,10 @@ func Promote(ctx context.Context, replicaRoot, restoreRoot, keyRoot string, unlo
 	if _, err = tx.ExecContext(ctx, "UPDATE replica_state SET wrapped_secret=NULL WHERE singleton=1"); err != nil {
 		return p, err
 	}
-	return p, tx.Commit()
+	if err = tx.Commit(); err != nil {
+		return p, err
+	}
+	return p, syncDir(filepath.Dir(r.path))
 }
 
 func checkPromoted(ctx context.Context, restoreRoot, keyRoot string, p Promotion) error {
@@ -181,7 +205,8 @@ func checkCatalogue(ctx context.Context, restoreRoot string, p Promotion) error 
 	if err != nil {
 		return err
 	}
-	if s.Committed.Epoch != p.Epoch || s.Committed.Seq != p.Position.Seq {
+	// Once a new standby armed it, the promoted authority logs further.
+	if s.Committed.Epoch != p.Epoch || s.Committed.Seq < p.Position.Seq {
 		return ErrConflict
 	}
 	return nil

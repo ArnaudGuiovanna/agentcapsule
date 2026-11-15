@@ -9,6 +9,8 @@
 //	snapshot       on the primary: arm both authorities, write the replica's start
 //	init-replica   on the standby: create the replica from a snapshot
 //	serve          on the standby: receive the primary's records
+//	promote        on the standby, once the old primary is stopped: turn the
+//	               replica into both authorities, under the next epoch
 //
 // It is a separate binary, not a worker mode: the standby runs no worker,
 // no VM and no database writer, and the replica runs as an unprivileged
@@ -29,16 +31,18 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authoritylog"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/keyauthority"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/operatorconfig"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/restoreauthority"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/telemetry"
 )
 
-const usage = "usage: agentcapsule-authority unlock-key | certificate | snapshot | init-replica | serve"
+const usage = "usage: agentcapsule-authority unlock-key | certificate | snapshot | init-replica | serve | promote"
 
 func fail(code string) int { fmt.Fprintln(os.Stderr, code); return 1 }
 
@@ -243,15 +247,25 @@ func serve(args []string) int {
 		return fail("configuration_invalid")
 	}
 	refusals := append(authoritylog.RefusalKinds(), authoritylog.ErrorKinds()...)
-	vocabulary := map[string][]string{"event": {"replica_started", "replica_refused", "replica_request_failed", "replica_stopped"}, "kind": refusals}
+	vocabulary := map[string][]string{"event": {"replica_started", "replica_refused", "replica_request_failed", "replica_stopped", "replica_promoted"}, "kind": refusals}
 	events, problems := telemetry.NewLogger(os.Stdout, vocabulary), telemetry.NewLogger(os.Stderr, vocabulary)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	replica, err := restoreauthority.OpenReplica(ctx, c.Root, c.RestoreAuthority, c.KeyAuthority)
+	if errors.Is(err, restoreauthority.ErrPromoted) {
+		return fail("replica_promoted") // this host now runs the primary
+	}
 	if err != nil {
 		return fail("replica_unavailable")
 	}
 	defer replica.Close()
+	// A promotion stops the listener: the promoted replica takes no record,
+	// and its host now runs the primary.
+	ctx, stopServing := context.WithCancel(ctx)
+	defer stopServing()
+	var promoted atomic.Bool
+	onPromotion := func() { promoted.Store(true); stopServing() }
+	go watchPromotion(ctx, replica, promotionCheck, onPromotion)
 	config, err := authoritylog.TLSFiles{Certificate: c.Certificate, Key: c.Key, PeerCertificate: c.PrimaryCertificate,
 		RestoreAuthority: c.RestoreAuthority, KeyAuthority: c.KeyAuthority}.ServerTLS()
 	if err != nil {
@@ -287,6 +301,9 @@ func serve(args []string) int {
 		var refusal *authoritylog.Refusal
 		if errors.As(err, &refusal) {
 			problems.Event("replica_refused", telemetry.Code("kind", refusal.Kind))
+			if refusal.Kind == authoritylog.RefusedPromoted {
+				onPromotion()
+			}
 			return
 		}
 		problems.Event("replica_request_failed", telemetry.Code("kind", authoritylog.ErrorKind(err)))
@@ -294,10 +311,90 @@ func serve(args []string) int {
 	events.Event("replica_started", telemetry.Int("epoch", int64(position.Epoch)), telemetry.Int("sequence", int64(position.Seq)))
 	err = server.Serve(ctx, listener)
 	events.Event("replica_stopped")
+	if promoted.Load() {
+		events.Event("replica_promoted")
+		return fail("replica_promoted")
+	}
 	if errors.Is(err, context.Canceled) {
 		return 0
 	}
 	return fail("replica_server_stopped")
+}
+
+// promotionCheck is how often serve looks for a promotion made by another
+// process while no record arrives.
+const promotionCheck = 2 * time.Second
+
+// watchPromotion calls promoted once the replica is promoted, then returns;
+// it also returns when ctx ends.
+func watchPromotion(ctx context.Context, replica *restoreauthority.Replica, every time.Duration, promoted func()) {
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		if status, err := replica.Status(ctx); err == nil && status.Promoted {
+			promoted()
+			return
+		}
+	}
+}
+
+// promote turns the replica into the two authorities of the new primary. It
+// runs as the worker's account, which must own the replica's directory: the
+// keys it writes in clear belong to the worker, never to the replica's
+// account. The old primary must be stopped first (docs/recovery.md).
+func promote(args []string) int {
+	f := flag.NewFlagSet("promote", flag.ContinueOnError)
+	replicaRoot := f.String("replica-root", "", "the replica's directory, owned by this account")
+	keyRoot := f.String("key-authority-root", "", "new directory: the worker's key_authority.root on this host")
+	keyID := f.String("key-authority-id", "", "the key authority's identity, as the worker pins it")
+	restoreRoot := f.String("restore-authority-root", "", "new directory: the worker's restore_authority.root on this host")
+	restoreID := f.String("restore-authority-id", "", "the restore authority's identity, as the worker pins it")
+	unlockPath := f.String("unlock-key-file", "", "private file holding the unlock key, from the safe")
+	if !parse(f, args) || *replicaRoot == "" || *keyRoot == "" || *keyID == "" || *restoreRoot == "" || *restoreID == "" ||
+		!filepath.IsAbs(*unlockPath) {
+		return fail("configuration_required")
+	}
+	text, err := operatorconfig.ReadPrivateUpTo(*unlockPath, 256)
+	if err != nil {
+		return fail("unlock_key_file_must_be_private")
+	}
+	unlock, err := authoritylog.ParseUnlockKey(text)
+	clear(text)
+	if err != nil {
+		return fail("unlock_key_invalid")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	status, err := restoreauthority.InspectReplica(ctx, *replicaRoot)
+	if err != nil {
+		return fail("replica_unavailable")
+	}
+	if status.RestoreAuthority != *restoreID || status.KeyAuthority != *keyID {
+		return fail("replica_identity_mismatch")
+	}
+	result, err := restoreauthority.Promote(ctx, *replicaRoot, *restoreRoot, *keyRoot, unlock)
+	switch {
+	case errors.Is(err, authoritylog.ErrWrap):
+		return fail("unlock_key_does_not_open_replica")
+	case errors.Is(err, restoreauthority.ErrStillReplicating):
+		return fail("old_primary_still_replicating")
+	case errors.Is(err, restoreauthority.ErrConflict), errors.Is(err, keyauthority.ErrConflict):
+		return fail("promoted_authority_conflict")
+	case err != nil:
+		return fail("promotion_failed")
+	}
+	return output(struct {
+		RestoreAuthority string `json:"restore_authority_id"`
+		KeyAuthority     string `json:"key_authority_id"`
+		Epoch            uint64 `json:"epoch"`
+		PreviousEpoch    uint64 `json:"previous_epoch"`
+		Sequence         uint64 `json:"sequence"`
+	}{result.RestoreAuthority, result.KeyAuthority, result.Epoch, result.Position.Epoch, result.Position.Seq})
 }
 
 func run() int {
@@ -316,6 +413,8 @@ func run() int {
 		return initReplica(args)
 	case "serve":
 		return serve(args)
+	case "promote":
+		return promote(args)
 	}
 	return fail(usage)
 }
