@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/telemetry"
 )
 
 var (
@@ -277,4 +279,67 @@ func TestErrorKindsAreClosed(t *testing.T) {
 	if ErrorKind(errors.Join(errors.New("x"), &Refusal{Kind: RefusedOlderEpoch})) != "refused_older_epoch" {
 		t.Fatal("joined refusal lost")
 	}
+}
+
+// Every kind of operation is classified for degraded mode, and the
+// classification is the decided one: outcomes, reruns, fence revisions and
+// the start of a revocation continue; everything else waits.
+func TestWriteKindsAreClosedAndClassified(t *testing.T) {
+	kinds := WriteKinds()
+	if len(kinds) != len(degradedPolicy) {
+		t.Fatal("a kind is listed without its rule, or a rule without its kind", kinds)
+	}
+	var continues []string
+	for i, k := range kinds {
+		if _, ok := degradedPolicy[k]; !ok || slices.Contains(kinds[:i], k) {
+			t.Fatal("unclassified or repeated kind", k)
+		}
+		if ContinuesDegraded(k) {
+			continues = append(continues, k)
+		}
+	}
+	if !slices.Equal(continues, []string{WriteRead, WriteOutcome, WriteRerun, WriteFence, WriteRevocationStart}) {
+		t.Fatal("degraded mode lets through", continues)
+	}
+	if ContinuesDegraded("revocation_of_access") || ContinuesDegraded("") {
+		t.Fatal("an unknown kind continues")
+	}
+	if DefaultDegradedAfter < MinDegradedAfter || DefaultDegradedAfter > MaxDegradedAfter {
+		t.Fatal("default delay out of its bounds")
+	}
+}
+
+func TestDegradedModeMetricsUseTheClosedKinds(t *testing.T) {
+	registry := telemetry.NewRegistry()
+	m := NewMetrics(registry)
+	since := time.Unix(1_800_000_000, 0)
+	m.Degraded(since)
+	m.Waiting(WriteSeal, 1)
+	m.Waiting(WriteSeal, 1)
+	m.Waiting(WriteSeal, -1)
+	m.GaveUp(WriteKeyDestroy)
+	m.Waiting("anything else", 1)
+	var out strings.Builder
+	registry.WriteTo(&out)
+	for _, want := range []string{
+		"agentcapsule_authority_replication_degraded_since_timestamp_seconds 1.8e+09\n",
+		`agentcapsule_authority_replication_degraded_waiting{kind="seal"} 1` + "\n",
+		`agentcapsule_authority_replication_degraded_waiting{kind="outcome"} 0` + "\n",
+		`agentcapsule_authority_replication_degraded_refused_total{kind="key_destroy"} 1` + "\n",
+		`agentcapsule_authority_replication_degraded_waiting{kind="other"} 1` + "\n",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatal("missing", want, out.String())
+		}
+	}
+	m.Degraded(time.Time{})
+	out.Reset()
+	registry.WriteTo(&out)
+	if !strings.Contains(out.String(), "agentcapsule_authority_replication_degraded_since_timestamp_seconds 0\n") {
+		t.Fatal("degraded mode did not end", out.String())
+	}
+	var none *Metrics
+	none.Degraded(since)
+	none.Waiting(WriteSeal, 1)
+	none.GaveUp(WriteSeal)
 }

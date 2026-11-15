@@ -37,11 +37,14 @@ type ServiceKeyAuthority struct {
 // TLS link; ReplicaCertificate pins the standby's. Without this section the
 // authorities are standalone and give no protection against the host's loss;
 // once a snapshot armed them, the worker refuses to start without it.
+// DegradedAfter is how long the standby may stay unreachable before degraded
+// mode (ADR 005, question 2): 30s when empty, from 5s to 10m.
 type ServiceAuthorityReplica struct {
 	Address            string `json:"address"`
 	Certificate        string `json:"certificate"`
 	Key                string `json:"key"`
 	ReplicaCertificate string `json:"replica_certificate"`
+	DegradedAfter      string `json:"degraded_after,omitempty"`
 }
 
 func (r *ServiceAuthorityReplica) valid() bool {
@@ -56,7 +59,17 @@ func (r *ServiceAuthorityReplica) valid() bool {
 			return false
 		}
 	}
-	return true
+	_, ok := r.degradedAfter()
+	return ok
+}
+
+// degradedAfter parses DegradedAfter; 0, the default, when empty.
+func (r *ServiceAuthorityReplica) degradedAfter() (time.Duration, bool) {
+	if r.DegradedAfter == "" {
+		return 0, true
+	}
+	d, err := time.ParseDuration(r.DegradedAfter)
+	return d, err == nil && d >= authoritylog.MinDegradedAfter && d <= authoritylog.MaxDegradedAfter
 }
 
 // ServiceConfig is trusted operator input; the DSN is provided separately through
@@ -236,7 +249,8 @@ func (c ServiceConfig) replicate(ctx context.Context, root *restoreauthority.Cat
 	if err != nil {
 		return errors.Join(ErrAuthorityReplicaConfiguration, err)
 	}
-	if err = root.Replicate(ctx, client); err != nil {
+	after, _ := r.degradedAfter() // checked by OpenRestoreAuthority
+	if err = root.ReplicateWith(ctx, client, restoreauthority.ReplicationOptions{DegradedAfter: after}); err != nil {
 		return err
 	}
 	keys.SetJournal(root)

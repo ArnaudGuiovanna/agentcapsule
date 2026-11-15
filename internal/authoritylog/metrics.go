@@ -67,17 +67,20 @@ func ErrorKind(err error) string {
 // Metrics is the primary's view of the stream. A nil *Metrics records nothing.
 type Metrics struct {
 	enabled, committed, acknowledged, lag, lagSeconds, lastError *telemetry.Gauge
-	errors                                                       *telemetry.Counter
+	degradedSince, waiting                                       *telemetry.Gauge
+	errors, refused                                              *telemetry.Counter
 	writes                                                       *telemetry.Histogram
 
 	mu                   sync.Mutex
 	committedSeq, ackSeq uint64
 	pending              map[uint64]time.Time
+	waits                map[string]int
 }
 
 // NewMetrics registers the primary's replication metrics.
 func NewMetrics(r *telemetry.Registry) *Metrics {
 	kind := telemetry.Label{Name: "kind", Values: ErrorKinds()}
+	operation := telemetry.Label{Name: "kind", Values: WriteKinds()}
 	m := &Metrics{
 		enabled: r.Gauge("agentcapsule_authority_replication_enabled", "1 when the authorities replicate synchronously to a standby; 0 in standalone mode, without disaster protection."),
 		committed: r.Gauge("agentcapsule_authority_replication_committed_sequence",
@@ -94,9 +97,20 @@ func NewMetrics(r *telemetry.Registry) *Metrics {
 		writes: r.Histogram("agentcapsule_authority_replication_write_seconds",
 			"Time from an authority record's local commit to the replica's acknowledgment.",
 			[]float64{0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1, 5, 30}),
+		degradedSince: r.Gauge("agentcapsule_authority_replication_degraded_since_timestamp_seconds",
+			"When the authorities entered degraded mode, without the replica, as a Unix time; 0 outside degraded mode."),
+		waiting: r.Gauge("agentcapsule_authority_replication_degraded_waiting",
+			"Authority operations waiting for the replica in degraded mode, by kind.", operation),
+		refused: r.Counter("agentcapsule_authority_replication_degraded_refused_total",
+			"Authority operations that waited for the replica in degraded mode until their deadline, by kind.", operation),
 		pending: map[uint64]time.Time{},
+		waits:   map[string]int{},
 	}
 	m.setError(ErrorNone)
+	m.degradedSince.Set(0)
+	for _, k := range WriteKinds() {
+		m.waiting.Set(0, k)
+	}
 	r.Collect(func(context.Context) error {
 		m.mu.Lock()
 		defer m.mu.Unlock()
@@ -194,6 +208,39 @@ func (m *Metrics) Failed(err error) {
 	defer m.mu.Unlock()
 	m.errors.Inc(kind)
 	m.setError(kind)
+}
+
+// Degraded records the start of degraded mode, or its end with a zero time.
+func (m *Metrics) Degraded(since time.Time) {
+	if m == nil {
+		return
+	}
+	v := 0.0
+	if !since.IsZero() {
+		v = float64(since.UnixNano()) / 1e9
+	}
+	m.degradedSince.Set(v)
+}
+
+// Waiting counts an operation of this kind that starts (delta 1) or stops
+// (delta -1) waiting for the replica in degraded mode.
+func (m *Metrics) Waiting(kind string, delta int) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.waits[kind] = max(m.waits[kind]+delta, 0)
+	m.waiting.Set(float64(m.waits[kind]), kind)
+}
+
+// GaveUp counts an operation of this kind that waited for the replica in
+// degraded mode until its deadline.
+func (m *Metrics) GaveUp(kind string) {
+	if m == nil {
+		return
+	}
+	m.refused.Inc(kind)
 }
 
 // ReplicaMetrics is the replica's view of the stream. A nil value records

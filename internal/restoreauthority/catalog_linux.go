@@ -400,7 +400,12 @@ func Open(ctx context.Context, root, identity, keyIdentity string) (*Catalog, er
 
 func (c *Catalog) Identity() string             { return c.identity }
 func (c *Catalog) KeyAuthorityIdentity() string { return c.keyIdentity }
-func (c *Catalog) Close() error                 { return c.db.Close() }
+
+// Close stops the link to the replica, if any, then closes the catalogue.
+func (c *Catalog) Close() error {
+	c.repl.close()
+	return c.db.Close()
+}
 
 func (c *Catalog) checkFile() error {
 	identity, err := readIdentity(c.root)
@@ -423,23 +428,35 @@ func (c *Catalog) checkFile() error {
 // keeps it through inspection/publication, excluding concurrent revocations and
 // incarnation reservations. Callbacks must never re-enter this catalogue.
 // In synchronous mode, the operation returns only once the replica holds its
-// record, and it never runs on state the replica lacks (replication_linux.go).
+// record, and it never runs on state the replica lacks, except what degraded
+// mode lets through (replication_linux.go).
 func (c *Catalog) transaction(ctx context.Context, fn func(*sql.Tx) error) error {
-	return c.run(ctx, true, fn)
+	return c.loop(ctx, true, authoritylog.WriteRead, fn)
+}
+
+// operate is transaction for an operation that writes kind, one of
+// authoritylog.WriteKinds. Degraded mode decides by it, and each statement
+// the operation runs must be of that kind.
+func (c *Catalog) operate(ctx context.Context, kind string, fn func(*sql.Tx) error) error {
+	return c.loop(ctx, true, kind, fn)
 }
 
 // run is transaction; replicated false skips the stream, for Open's check
 // and for reading the stream's own state.
 func (c *Catalog) run(ctx context.Context, replicated bool, fn func(*sql.Tx) error) error {
+	return c.loop(ctx, replicated, authoritylog.WriteRead, fn)
+}
+
+func (c *Catalog) loop(ctx context.Context, replicated bool, kind string, fn func(*sql.Tx) error) error {
 	for {
-		again, err := c.attempt(ctx, replicated, fn)
+		again, err := c.attempt(ctx, replicated, kind, fn)
 		if !again || err != nil {
 			return err
 		}
 	}
 }
 
-func (c *Catalog) attempt(ctx context.Context, replicated bool, fn func(*sql.Tx) error) (bool, error) {
+func (c *Catalog) attempt(ctx context.Context, replicated bool, kind string, fn func(*sql.Tx) error) (bool, error) {
 	if err := c.checkFile(); err != nil {
 		return false, err
 	}
@@ -472,13 +489,18 @@ func (c *Catalog) attempt(ctx context.Context, replicated bool, fn func(*sql.Tx)
 		if c.repl == nil {
 			return false, errors.Join(ErrUnavailable, ErrReplicaRequired)
 		}
-		// The barrier: never act on a record the replica lacks.
-		if state.seq > c.repl.acknowledged(state.epoch) {
+		// The barrier: never act on a record the replica lacks, outside
+		// what degraded mode lets through.
+		a, err := c.repl.admit(ctx, tx, state, kind)
+		if err != nil {
+			return false, err
+		}
+		if !a.ok {
 			tx.Rollback()
-			return true, c.repl.sync(ctx, c, state.epoch, state.seq)
+			return true, c.repl.wait(ctx, c, state.epoch, a, kind)
 		}
 	}
-	rec := &txRecord{state: state}
+	rec := &txRecord{state: state, kind: kind}
 	c.recMu.Lock()
 	c.recording[tx] = rec
 	c.recMu.Unlock()
@@ -512,8 +534,9 @@ func (c *Catalog) attempt(ctx context.Context, replicated bool, fn func(*sql.Tx)
 		return false, nil
 	}
 	// Committed on the primary: the record is in the log with its effect.
+	// In degraded mode, a record of kinds it lets through returns now.
 	c.repl.metrics.Load().Committed(record.Seq)
-	if err = c.repl.sync(ctx, c, state.epoch, record.Seq); err != nil {
+	if err = c.repl.acknowledge(ctx, c, state.epoch, record, kind); err != nil {
 		return false, err
 	}
 	if record.HasSecret() {
@@ -529,7 +552,7 @@ func (c *Catalog) Register(ctx context.Context, store, volume string) (Binding, 
 	if !validName(store) || !validName(volume) {
 		return b, ErrInput
 	}
-	err := c.transaction(ctx, func(tx *sql.Tx) error {
+	err := c.operate(ctx, authoritylog.WriteRegistration, func(tx *sql.Tx) error {
 		if _, err := c.exec(ctx, tx, stmtRegister, store, volume); err != nil {
 			return err
 		}
@@ -619,7 +642,7 @@ func (c *Catalog) ReserveIncarnation(ctx context.Context, old Binding, operation
 	if !validName(operation) || old.Incarnation == 0 || old.Incarnation >= 1<<63-1 {
 		return next, ErrInput
 	}
-	err := c.transaction(ctx, func(tx *sql.Tx) error {
+	err := c.operate(ctx, authoritylog.WriteReservation, func(tx *sql.Tx) error {
 		var store string
 		var previous, reserved uint64
 		err := tx.QueryRowContext(ctx, "SELECT store,previous,current FROM reservations WHERE operation=?", operation).Scan(&store, &previous, &reserved)
@@ -651,7 +674,7 @@ func (c *Catalog) BeginRevocation(ctx context.Context, subject string) (uint64, 
 	if !validName(subject) {
 		return 0, ErrInput
 	}
-	err := c.transaction(ctx, func(tx *sql.Tx) error {
+	err := c.operate(ctx, authoritylog.WriteRevocationStart, func(tx *sql.Tx) error {
 		err := tx.QueryRowContext(ctx, "SELECT revision FROM revocations WHERE subject=?", subject).Scan(&revision)
 		if err == nil {
 			return nil
@@ -773,7 +796,7 @@ func (c *Catalog) validateReceipt(ctx context.Context, tx *sql.Tx, r Receipt) (u
 // for this exact snapshot and incarnation. The coordinator also enforces the
 // Ready/Reconciling phase. Never call it merely because Scan returned a MAC.
 func (c *Catalog) RecordVerifiedFence(ctx context.Context, r Receipt) error {
-	return c.transaction(ctx, func(tx *sql.Tx) error {
+	return c.operate(ctx, authoritylog.WriteFence, func(tx *sql.Tx) error {
 		if _, err := c.validateReceipt(ctx, tx, r); err != nil {
 			return err
 		}
@@ -864,7 +887,7 @@ func (c *Catalog) WithRevocation(ctx context.Context, subject string, targets []
 	if !validName(subject) || len(targets) == 0 || publish == nil {
 		return ErrInput
 	}
-	return c.transaction(ctx, func(tx *sql.Tx) error {
+	return c.operate(ctx, authoritylog.WriteRevocationDone, func(tx *sql.Tx) error {
 		for _, b := range targets {
 			ack, _, err := subjectBarrier(ctx, tx, b, subject)
 			if err != nil {
@@ -888,7 +911,7 @@ func (c *Catalog) RecordOutcome(ctx context.Context, b Binding, outcome Outcome)
 	if !validName(outcome.ID) {
 		return ErrInput
 	}
-	return c.transaction(ctx, func(tx *sql.Tx) error {
+	return c.operate(ctx, authoritylog.WriteOutcome, func(tx *sql.Tx) error {
 		if err := current(ctx, tx, b); err != nil {
 			return err
 		}
@@ -929,7 +952,7 @@ func (c *Catalog) WithActivation(ctx context.Context, r Receipt, inspect Inspect
 	if inspect == nil || publish == nil {
 		return ErrInput
 	}
-	return c.transaction(ctx, func(tx *sql.Tx) error {
+	return c.operate(ctx, authoritylog.WriteActivation, func(tx *sql.Tx) error {
 		missing, err := c.missingOutcomes(ctx, tx, r, inspect)
 		if err != nil {
 			return err
@@ -945,7 +968,7 @@ func (c *Catalog) WithActivation(ctx context.Context, r Receipt, inspect Inspect
 // It neither proves retirement nor deletes keys/data; the runtime must supply
 // that evidence before calling it. A sealed identity can never reserve again.
 func (c *Catalog) RecordRetiredSeal(ctx context.Context, b Binding) error {
-	return c.transaction(ctx, func(tx *sql.Tx) error {
+	return c.operate(ctx, authoritylog.WriteSeal, func(tx *sql.Tx) error {
 		got, _, err := binding(ctx, tx, b.Store)
 		if err != nil || got != b {
 			return ErrStale

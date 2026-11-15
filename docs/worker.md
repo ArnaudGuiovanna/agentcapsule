@@ -243,7 +243,8 @@ replica.
     "address": "standby.internal:7443",
     "certificate": "/etc/agentcapsule/authority-primary.crt",
     "key": "/etc/agentcapsule/authority-primary.key",
-    "replica_certificate": "/etc/agentcapsule/authority-replica.crt"
+    "replica_certificate": "/etc/agentcapsule/authority-replica.crt",
+    "degraded_after": "30s"
   }
 }
 ```
@@ -257,6 +258,9 @@ replica.
   for another installation does not load.
 - The unlock key's public part is not in this file. The snapshot stored it in
   the restore authority.
+- `degraded_after` is how long the standby may stay unreachable before
+  degraded mode ([below](#degraded-mode)). Optional: `30s` by default, from
+  `5s` to `10m`. Another value makes the configuration invalid.
 
 **Without this section, the authorities are standalone.** That is the
 behaviour before D-05. It gives no protection against the host's loss: its
@@ -287,12 +291,57 @@ before anything uses it. The replica refuses a gap in the sequence, a record
 of another epoch, and a resent record whose content changed. The log keeps a
 record only until the replica acknowledges it.
 
-**When the standby does not answer**, every authority write waits, and fails
-when its attempt times out: deliveries, boots, provisioning and removals wait
-too, and retry. Reads wait only if a record is still unacknowledged. A
-degraded mode that lets some writes continue is a later step (ADR 005,
-question 2). A replicated write costs one round trip and the replica's
-fsync, on top of the local commit.
+A worker process that starts, or restarts, reaches the replica before it
+does anything with its authorities, reads included. A replicated write costs
+one round trip and the replica's fsync, on top of the local commit.
+
+### Degraded mode
+
+ADR 005 (question 2) decides what happens when the standby does not answer.
+
+**For the first `degraded_after`** (30 seconds), every authority write
+waits for the standby, and fails when its attempt times out. Deliveries,
+boots, provisioning and removals retry.
+
+**Then the worker enters degraded mode.** Some writes continue without the
+standby; the others still wait:
+
+| Continue: they return once committed on this host | Wait for the standby |
+| --- | --- |
+| Outcome records, so deliveries | Registering a new store, and its new volume key: creating an agent |
+| Reruns of an outcome declared lost | Sealing a store, and destroying its volume key: deleting an agent |
+| Fence revisions, so boots | Reserving an incarnation, declaring losses, activating the image: restoring an agent |
+| The start of a revocation: new key grants and fences stop at once on this host | The completion of a revocation, published in PostgreSQL |
+| Reads | — |
+
+A write that waits fails at its deadline with "degraded mode: this
+authority operation waits for the replica", and its job retries. The
+completion of a revocation waits until the product owner answers ADR 005's
+finding 1.
+
+Nothing runs on a write of the second column that the standby lacks. If one
+was in flight when the standby stopped answering, every operation waits
+until the standby holds it.
+
+**When the standby answers again**, the worker sends it what it lacks, in
+order: the writes of degraded mode first. Degraded mode ends once the
+standby holds the last of them. The worker keeps trying the standby, about
+once a second, so this happens even without a new operation.
+
+**The risk.** Until then, those writes exist on this host only. If it is lost
+during degraded mode, the outcomes recorded since it began are lost too, and
+the failover must announce that period as a time window
+([recovery.md](recovery.md#degraded-mode)). A revocation started in that
+period was never confirmed: its completion waited.
+
+**A restart in degraded mode** does not continue it. The restarted worker
+cannot tell a standby that is down from one that was promoted (ADR 005,
+finding 2). It runs no authority operation, reads included, until it
+reaches the standby, however long that takes. A worker whose standby
+refuses it (another epoch, a promotion) leaves degraded mode and fails
+every operation.
+
+### Metrics and alerts of the replica
 
 The metrics, on `metrics_listen`:
 
@@ -305,12 +354,25 @@ The metrics, on `metrics_listen`:
 | `agentcapsule_authority_replication_last_error{kind}` | 1 for the last attempt's error kind; `none` after a success |
 | `agentcapsule_authority_replication_errors_total{kind}` | Failed attempts, by kind |
 | `agentcapsule_authority_replication_write_seconds` | Time from a record's local commit to its acknowledgment |
+| `agentcapsule_authority_replication_degraded_since_timestamp_seconds` | When degraded mode began, as a Unix time; 0 outside it |
+| `agentcapsule_authority_replication_degraded_waiting{kind}` | Operations waiting for the standby in degraded mode, by kind |
+| `agentcapsule_authority_replication_degraded_refused_total{kind}` | Operations that waited for the standby in degraded mode until their deadline, by kind |
 
-The kinds are a closed list: `unreachable`, `timeout`, `protocol`,
+The error kinds are a closed list: `unreachable`, `timeout`, `protocol`,
 `replica_behind` (the replica lacks records the log no longer holds),
 `diverged` (the replica and this host disagree), `local`, and `refused_` plus
 the replica's reason (`gap`, `older_epoch`, `newer_epoch`, `conflict`,
-`promoted`, `identity`, `invalid`, `unavailable`). Alert rules come later.
+`promoted`, `identity`, `invalid`, `unavailable`). So are the operation
+kinds: `registration`, `reservation`, `loss`, `activation`, `seal`,
+`key_create`, `key_destroy`, `revocation_done`, and the ones degraded mode
+lets through, `outcome`, `rerun`, `fence`, `revocation_start`, `read`. A
+read or a delivery waits only behind a waiting write that the standby lacks.
+
+During degraded mode, `_lag_records` and `_lag_seconds` grow: they count the
+writes that exist on this host only. The alerts are
+`AgentCapsuleAuthorityDegraded`, `AgentCapsuleAuthorityOperationsRefused` and
+`AgentCapsuleAuthorityReplicationStopped`
+([observability.md](observability.md#alerts)).
 
 ## Deleting a product volume
 

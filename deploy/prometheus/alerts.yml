@@ -268,6 +268,41 @@ groups:
         annotations:
           summary: The standby's replay has not been collected for 10 minutes, or never was (agentcapsule-standby-metrics.timer or node_exporter's textfile collector).
 
+  # The authorities' replica (D-05, ADR 005), from the worker. Its
+  # authorities write to the replica on the standby. After degraded_after
+  # (30 seconds) without it, they enter degraded mode: outcome records and
+  # fence revisions continue without the replica; creating, deleting and
+  # restoring agents wait. Losing the primary then loses what continued.
+  - name: agentcapsule-authorities
+    rules:
+      - alert: AgentCapsuleAuthorityDegraded
+        expr: agentcapsule_authority_replication_degraded_since_timestamp_seconds > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: The worker's authorities run in degraded mode without the standby; creating, deleting and restoring agents wait, and losing this host would lose the outcomes recorded since.
+
+      - alert: AgentCapsuleAuthorityOperationsRefused
+        expr: increase(agentcapsule_authority_replication_degraded_refused_total[15m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: Authority operations gave up waiting for the standby in degraded mode; creating, deleting or restoring agents fails until it returns.
+
+      # Outside degraded mode, failures that go on mean that every authority
+      # operation waits: a worker restarted without the standby, which
+      # never enters degraded mode, or a replica that refuses this host.
+      - alert: AgentCapsuleAuthorityReplicationStopped
+        expr: |
+          sum by (job, instance) (increase(agentcapsule_authority_replication_errors_total[2m])) > 0
+            unless on (job, instance) agentcapsule_authority_replication_degraded_since_timestamp_seconds > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: The worker's authorities keep failing to reach their replica outside degraded mode; every authority operation waits or fails.
+
   # Host resources, from node_exporter on the same host.
   - name: agentcapsule-host
     rules:

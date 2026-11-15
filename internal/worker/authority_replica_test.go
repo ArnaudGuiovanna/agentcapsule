@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authoritylog"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/keyauthority"
@@ -151,6 +152,29 @@ func TestAuthorityReplicaConfiguration(t *testing.T) {
 	s.AuthorityReplica = &ServiceAuthorityReplica{Address: "standby", Certificate: section.Certificate, Key: section.Key, ReplicaCertificate: section.ReplicaCertificate}
 	if _, _, _, err = s.Settings(); err == nil {
 		t.Fatal("address without a port accepted")
+	}
+	// The delay before degraded mode: 30 seconds by default, from 5 seconds
+	// to 10 minutes.
+	for value, want := range map[string]time.Duration{"": 0, "5s": 5 * time.Second, "45s": 45 * time.Second, "10m": 10 * time.Minute,
+		"4s": -1, "11m": -1, "0s": -1, "-30s": -1, "thirty": -1} {
+		s.AuthorityReplica = &ServiceAuthorityReplica{Address: section.Address, Certificate: section.Certificate, Key: section.Key,
+			ReplicaCertificate: section.ReplicaCertificate, DegradedAfter: value}
+		_, _, _, err = s.Settings()
+		if got, ok := s.AuthorityReplica.degradedAfter(); want < 0 && (err == nil || ok) || want >= 0 && (err != nil || !ok || got != want) {
+			t.Fatal("degraded_after", value, got, err)
+		}
+	}
+	c.AuthorityReplica = &ServiceAuthorityReplica{Address: section.Address, Certificate: section.Certificate, Key: section.Key,
+		ReplicaCertificate: section.ReplicaCertificate, DegradedAfter: "45s"}
+	if err = os.WriteFile(filepath.Join(dir, "keys", "replicated"), []byte("replicated\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, a, err = open(); err != nil {
+		t.Fatal("a delay was refused", err)
+	}
+	c.AuthorityReplica.DegradedAfter = "1s"
+	if _, _, err = open(); !errors.Is(err, restoreauthority.ErrInput) {
+		t.Fatal("a delay below 5 seconds was accepted", err)
 	}
 }
 

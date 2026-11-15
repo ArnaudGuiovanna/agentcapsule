@@ -505,6 +505,51 @@ failover needs each of them, and no host can give them back:
 The link's private keys stay on their hosts: each is replaced by a new
 certificate and a new pin.
 
+### Degraded mode
+
+When the standby does not answer for `degraded_after` (30 seconds by
+default, [worker.md](worker.md#degraded-mode)), the worker's authorities
+enter degraded mode, as ADR 005 (question 2) decides:
+
+- **What continues**, without the standby: deliveries (their outcome
+  records, reruns included), boots (fence revisions), the start of a
+  revocation, and reads. These writes are on the primary only until the
+  standby returns.
+- **What waits** for the standby: creating an agent (registration, new
+  volume key), deleting one (seal, key destruction), restoring one
+  (reservation, declared losses, activation), and the completion of a
+  revocation. Each attempt fails at its deadline, and its job retries.
+
+**What the operator sees.** `AgentCapsuleAuthorityDegraded` (critical)
+after a minute in degraded mode;
+`agentcapsule_authority_replication_degraded_since_timestamp_seconds` gives
+its start, and `_lag_records` how many writes the standby lacks.
+`AgentCapsuleAuthorityOperationsRefused` (warning) when an operation gave up
+waiting: users then see agent creation, deletion or restores fail. The
+worker's job events report those retries with the reason `error`.
+
+**What to do.** Bring the standby, or the link, back: check
+`agentcapsule-authority serve` on the standby
+([Install the replica](#install-the-replica), step 7) and the network
+between the hosts. The worker resends the degraded writes first, then
+leaves degraded mode by itself; the alert clears. Nothing is to be replayed
+by hand. If the standby is lost for good, build a new replica
+([Install the replica](#install-the-replica), "To rebuild"): the snapshot
+needs the worker stopped, which ends degraded mode too.
+
+**If the primary is lost during degraded mode**, the outcomes recorded since
+its start exist nowhere else. The failover must announce that period as a
+time window, from the standby's last contact to the failover, and revoke
+every bearer token issued before it (ADR 005, item 14). A revocation started
+in that period was never confirmed, since its completion waited.
+
+**Do not restart the worker to clear it.** A worker that restarts cannot
+tell a standby that is down from one that was promoted (ADR 005, finding 2):
+it runs no authority operation at all, reads and deliveries included, until
+it reaches the standby again. `AgentCapsuleAuthorityReplicationStopped`
+(critical) fires after 5 minutes of such failures. It also fires when the
+replica refuses the worker, after a promotion for instance.
+
 ### Promote the replica
 
 When the primary is lost, the replica on the standby becomes both
@@ -517,8 +562,9 @@ the standby, as root. Follow this order.
    off the network is not enough. With two hosts, the old primary cannot
    tell an unreachable standby from a promoted one, so nothing else stops it
    ([ADR 005](adr/005-keys-outside-restored-domain.md#findings-for-the-product-owner),
-   finding 2). Today its writes would wait for a replica that refuses them;
-   degraded mode, a later step, would let some continue after 30 seconds.
+   finding 2). Otherwise, after `degraded_after` without the standby, it
+   would enter [degraded mode](#degraded-mode) and keep recording outcomes
+   that the promoted side never sees.
 2. **Stop the replica's listener**, and keep it stopped:
    `systemctl disable --now` its unit. `serve` also stops by itself once its
    replica is promoted, and refuses to start again (`replica_promoted`).
@@ -592,12 +638,10 @@ the standby, as root. Follow this order.
 ### What is not built yet
 
 - **The promotion after a degraded period** (ADR 005, item 14): announcing
-  the window and revoking the bearer tokens issued before the failover.
-  Without degraded mode, every acknowledged write is on the replica.
-- **Degraded mode.** While the standby does not answer, the authorities'
-  writes wait: deliveries, boots, provisioning and removals retry until it
-  returns. ADR 005 (question 2) lets some continue after 30 seconds; that is
-  a later step, with its alerts.
+  the window and revoking the bearer tokens issued before the failover. Until
+  it is built, the operator announces that window by hand
+  ([Degraded mode](#degraded-mode)), and the bearer tokens issued before the
+  failover are not revoked.
 - **Revocations of access** in the authority, and their replay into
   PostgreSQL after a promotion.
 - **The daily receipt key** of ADR 005's decision.

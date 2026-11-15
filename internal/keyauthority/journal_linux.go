@@ -41,9 +41,11 @@ type Change struct {
 type Journal interface {
 	// Append runs write while it holds the stream's write lock, records the
 	// change that write returns, if any, and returns only once the replica
-	// holds that record, and every one before it, durably. write must not
-	// re-enter the journal.
-	Append(ctx context.Context, write func() (*Change, error)) error
+	// holds that record, and every one before it, durably. revoke tells,
+	// before write runs, whether the change destroys a key or creates one:
+	// both wait for the replica in degraded mode. write must not re-enter the
+	// journal.
+	Append(ctx context.Context, revoke bool, write func() (*Change, error)) error
 }
 
 // SetJournal makes every later Ensure and Revoke replicate through j. The
@@ -96,7 +98,7 @@ func (s *Files) ensureJournaled(ctx context.Context, agent, volume string) error
 		return ErrInput
 	}
 	path := filepath.Join(s.root, "records", volume)
-	err := s.journal.Append(ctx, func() (*Change, error) {
+	err := s.journal.Append(ctx, false, func() (*Change, error) {
 		var change *Change
 		err := s.withLock(ctx, agent, volume, true, func() error {
 			if err := s.revoked(agent, volume); err != nil {
@@ -158,7 +160,7 @@ func (s *Files) revokeJournaled(ctx context.Context, agent, volume string) error
 		return ErrInput
 	}
 	path := filepath.Join(s.root, "records", volume)
-	err := s.journal.Append(ctx, func() (*Change, error) {
+	err := s.journal.Append(ctx, true, func() (*Change, error) {
 		err := s.withLock(ctx, agent, volume, true, func() error {
 			err := s.revoked(agent, volume)
 			if err != nil && !errors.Is(err, ErrRevoked) {
