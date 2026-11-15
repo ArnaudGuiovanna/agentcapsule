@@ -391,8 +391,8 @@ coordinator tests of `internal/worker/restore_test.go`, with a fake host and a
 real guest protocol (exactly the outcomes after the archive declared lost, a
 stop after each step, a copy cut half way, a failure after the declaration, a
 superseded restore, refusals before anything stops); and the KVM product test
-`TestProductWorkerRestoresAgentFromArchive`, compiled and still to be run as
-root.
+`TestProductWorkerRestoresAgentFromArchive`, which passed on KVM on
+November 15, 2026 (guest v20).
 
 #### Done: running the lost invocations again
 
@@ -514,8 +514,8 @@ input; cancel while queued, skipped, delivered and working; a later
 completion; the decisions' guard). The KVM product test
 `TestProductWorkerRestoresAgentFromArchive` now checks that the two lost
 invocations are `lost`, then run again and complete with `lost_at`, and that
-the authority's `OutcomeStatus` becomes `rerun_confirmed`. It is compiled and
-still to be run as root.
+the authority's `OutcomeStatus` becomes `rerun_confirmed`. It passed on KVM on
+November 15, 2026, with the other 13 worker tests (guest v20).
 
 #### What remains
 

@@ -1093,8 +1093,8 @@ recorded with their mailbox, and are not delivered again.
   installed bytes, the losses and their invocations, the two invocations
   `lost` then run again to `completed` with `lost_at`, the authority's
   `rerun_confirmed`, the agent answering at the new incarnation, and the old
-  incarnation refused. It is compiled and remains to be run as root
-  (`scripts/verify-product-guest.py`).
+  incarnation refused. It passed on KVM on November 15, 2026
+  (`scripts/verify-product-guest.py`, guest v20, 14 of 14 worker tests).
 
 ## Volume archives off the host (REC-02)
 
