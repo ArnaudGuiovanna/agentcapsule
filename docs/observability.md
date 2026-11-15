@@ -59,6 +59,9 @@ volume archives and, on the standby host, its replay.
 | `agentcapsule_authority_replication_last_error` | gauge | `kind` | 1 for the kind of the last replication attempt's error; `none` after a success |
 | `agentcapsule_authority_replication_errors_total` | counter | `kind` | Failed replication attempts |
 | `agentcapsule_authority_replication_write_seconds` | histogram | — | Time from an authority record's local commit to the replica's acknowledgment |
+| `agentcapsule_authority_replication_degraded_since_timestamp_seconds` | gauge | — | When the worker's authorities entered degraded mode, without the standby, as a Unix time; 0 outside it ([worker.md](worker.md#degraded-mode)) |
+| `agentcapsule_authority_replication_degraded_waiting` | gauge | `kind` | Authority operations waiting for the standby in degraded mode: `registration`, `reservation`, `loss`, `activation`, `seal`, `key_create`, `key_destroy`, `revocation_done`; `outcome`, `rerun`, `fence`, `revocation_start` and `read` only behind a waiting write the standby lacks |
+| `agentcapsule_authority_replication_degraded_refused_total` | counter | `kind` | Authority operations that waited for the standby in degraded mode until their deadline |
 | `agentcapsule_authority_replica_applied_sequence`, `_epoch`, `_last_apply_timestamp_seconds` | gauge | — | The replica's position, epoch and last apply (`agentcapsule-authority serve`, standby host) |
 | `agentcapsule_authority_replica_refusals_total` | counter | `kind` | Requests the replica refused: `gap`, `older_epoch`, `newer_epoch`, `conflict`, `promoted`, `identity`, `invalid`, `unavailable` (standby host) |
 | `agentcapsule_telemetry_collect_errors_total` | counter | — | Scrapes whose current values could not be read |
@@ -203,9 +206,14 @@ Their annotations are fixed text.
 | `AgentCapsuleStandbyNotInRecovery` | The standby is not in recovery for 5 minutes: promoted, or started as a primary (critical) |
 | `AgentCapsuleStandbyDown` | The standby's PostgreSQL does not answer for 5 minutes |
 | `AgentCapsuleStandbyMetricsStale` | The standby's replay has not been collected for 10 minutes, or never was |
+| `AgentCapsuleAuthorityDegraded` | The worker's authorities have run in degraded mode, without the standby, for a minute: creating, deleting and restoring agents wait, and losing the host loses the outcomes recorded since (critical) |
+| `AgentCapsuleAuthorityOperationsRefused` | An authority operation gave up waiting for the standby in degraded mode in the last 15 minutes |
+| `AgentCapsuleAuthorityReplicationStopped` | Outside degraded mode, attempts to reach the authorities' replica have kept failing for 5 minutes: a worker restarted without its standby, or a replica that refuses it. Every authority operation waits or fails (critical) |
 
 [alerts_test.yml](../deploy/prometheus/alerts_test.yml) holds promtool unit
-tests for the disk, queue, scrape, SLIM, backup, shipping and standby alerts.
+tests for the disk, queue, scrape, SLIM, backup, shipping, standby and
+authority alerts. A single failed attempt to reach the authorities' replica
+stays silent.
 Each backup, shipping and standby threshold is tested on both sides.
 `scripts/verify-alerts.py` checks that every metric the alerts use is
 registered by the code or declared by one of the three textfile scripts. For
