@@ -79,6 +79,8 @@ UNITS = ["deploy/backup/agentcapsule-archive-ship.service", "deploy/backup/agent
 # heartbeat a minute, an alert at 900 s.
 PG_ARCHIVE_TIMEOUT, HEARTBEAT = 10, 2
 REPLAY_THRESHOLD = 900 * PG_ARCHIVE_TIMEOUT // 300
+# Seconds between the last copy of A to D and the capture of E (check 8).
+E_LATER = 15
 
 ARCHIVE_LAB = """\
 // archivelab captures volume archives with the platform's own code
@@ -469,7 +471,12 @@ def main():
         crash["partial_manifest"] = {"exit_code": code, "uploaded": {s: uploaded(summary, s) for s in ("s3", "standby")}}
         expect(code == 0 and uploaded(summary, "standby") == 1 and uploaded(summary, "s3") == 0 and "C" in complete_on("standby"),
                "a truncated manifest on the standby was not uploaded again")
-        # A shipper killed in an upload, then a network cut.
+        # A shipper killed in an upload, then a network cut. The retention
+        # check (8.) needs E on both stores well after every other copy, C's
+        # manifest above included. Without a pause the gap was the time to
+        # capture E and start its upload: exactly 10 s on GitHub's runners,
+        # the threshold, and below it once.
+        time.sleep(E_LATER)
         capture("E", c_agent, 48 * MIB)
         originals["E"] = {f: (host_root / archives["E"]["id"] / f).read_bytes() for f in FILES}
         e_id = archives["E"]["id"]
