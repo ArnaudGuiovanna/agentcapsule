@@ -505,12 +505,94 @@ failover needs each of them, and no host can give them back:
 The link's private keys stay on their hosts: each is replaced by a new
 certificate and a new pin.
 
+### Promote the replica
+
+When the primary is lost, the replica on the standby becomes both
+authorities: the same identities, under the **next epoch**. This is part of
+the [failover](#the-procedure), which gives the order of everything else. On
+the standby, as root. Follow this order.
+
+1. **Stop the old primary through the provider**: power it off, or delete
+   the machine, and check that the provider reports it stopped. Cutting it
+   off the network is not enough. With two hosts, the old primary cannot
+   tell an unreachable standby from a promoted one, so nothing else stops it
+   ([ADR 005](adr/005-keys-outside-restored-domain.md#findings-for-the-product-owner),
+   finding 2). Today its writes would wait for a replica that refuses them;
+   degraded mode, a later step, would let some continue after 30 seconds.
+2. **Stop the replica's listener**, and keep it stopped:
+   `systemctl disable --now` its unit. `serve` also stops by itself once its
+   replica is promoted, and refuses to start again (`replica_promoted`).
+3. **Give the replica's directory to root**, the worker's account:
+   `chown -R root:root /var/lib/agentcapsule-authority-replica`. The
+   promotion writes the volume keys in clear into the new authorities. They
+   belong to the worker's account, never to the replica's.
+4. **Fetch the unlock key** from the safe into a file only root can read
+   (mode 0600).
+5. **Promote**, into the directories the worker will use on this host:
+   ```sh
+   agentcapsule-authority promote \
+     -replica-root /var/lib/agentcapsule-authority-replica/replica \
+     -key-authority-root /var/lib/agentcapsule-key-authority -key-authority-id <keyauth_…> \
+     -restore-authority-root /var/lib/agentcapsule-restore-authority -restore-authority-id <restoreauth_…> \
+     -unlock-key-file /root/agentcapsule-unlock.key
+   ```
+   It checks both identities against the replica and that every wrapped
+   secret opens, before it writes anything. Then it marks the replica
+   promoted: from then on the replica refuses every record. It writes both
+   authorities, with the next epoch on disk before their first write, and
+   deletes the replica's wrapped copies. It prints:
+   ```json
+   {"restore_authority_id":"restoreauth_…","key_authority_id":"keyauth_…","epoch":2,"previous_epoch":1,"sequence":4182}
+   ```
+   `epoch` is the new primary's. `sequence` is the last record the replica
+   applied: every write the old primary acknowledged is at or before it.
+   Run the command again after any failure: it completes an interrupted
+   promotion, or prints the same result. Its errors:
+   - `unlock_key_file_must_be_private`: the file must be a regular file of
+     mode 0600, owned by root;
+   - `unlock_key_does_not_open_replica`: another unlock key. Nothing was
+     written;
+   - `replica_identity_mismatch`: these identities are not the replica's;
+   - `replica_unavailable`: the directory is missing, or not owned by root
+     (step 3);
+   - `old_primary_still_replicating`: a record reached the replica during
+     the promotion. The old primary still runs: go back to step 1;
+   - `promoted_authority_conflict`: a target directory holds other
+     authorities.
+
+   Then delete the key file: `shred -u /root/agentcapsule-unlock.key`.
+6. **Start the worker**, once the database runs here
+   ([the procedure](#the-procedure), step 11). Its configuration names the
+   promoted directories with the same identities, **without
+   `authority_replica`**. The authorities run alone: no standby exists, so
+   nothing can set them back, and every write proceeds, seals, new keys and
+   key destruction included. A boot or a restore that was in progress scans
+   again: a fence receipt signed by the old primary carries the old epoch
+   and is refused. Until step 7, losing this host loses both authorities.
+   With `authority_replica`, the worker refuses to start
+   (`authority_replica_not_armed`) until step 7 arms the authorities.
+7. **Seed a new standby** as soon as possible: a new host, or the old one
+   once **wiped**. The old host's authority directories hold the old epoch,
+   and keys destroyed since the failover: delete them before the host serves
+   again, and never start its worker or its replica on them. Then
+   [install the replica](#install-the-replica) with this host as the
+   primary, from step 1:
+   - a **new unlock key** (step 3 there): the old one was on this host. The
+     promoted authorities hold no recipient, so the snapshot takes the new
+     one;
+   - new certificates for both sides (step 4 there): this host now takes
+     the `primary` role;
+   - the worker stops for the snapshot (step 1 there), as for the first
+     one, then restarts with `authority_replica`.
+
+   The snapshot keeps the new epoch. The new standby refuses the old
+   primary's records (`older_epoch`), and the pins refuse its certificate.
+
 ### What is not built yet
 
-- **Promotion.** The internal API exists (`restoreauthority.Promote`: it
-  checks the unlock key, refuses every later record, writes both authorities
-  with their identities and the next epoch, then deletes the wrapped copies).
-  The `agentcapsule-admin` command and the failover steps come later.
+- **The promotion after a degraded period** (ADR 005, item 14): announcing
+  the window and revoking the bearer tokens issued before the failover.
+  Without degraded mode, every acknowledged write is on the replica.
 - **Degraded mode.** While the standby does not answer, the authorities'
   writes wait: deliveries, boots, provisioning and removals retry until it
   returns. ADR 005 (question 2) lets some continue after 30 seconds; that is
@@ -527,9 +609,10 @@ certificate and a new pin.
 When the primary host is lost, the standby takes over: first the database,
 then the API, then the agents and the address clients use. ADR 004 sets the
 objectives: the service answers on the standby within an hour of the
-decision, and the database loses at most 15 minutes. Today the database and
-the API can fail over. The agents cannot yet: restoring them on the standby
-needs D-05.
+decision, and the database loses at most 15 minutes. Today the database, the
+API and the authorities can fail over; the authorities' promotion is tested
+in Go, not yet between two hosts. The agents have not been restored on a
+standby yet: that needs a run under KVM.
 
 ### Who decides
 
@@ -550,7 +633,10 @@ This must be ready before any disaster, so that the failover takes minutes:
 - **The standby's PostgreSQL**, replaying the archive
   ([the standby](#the-standby-rec-03)), with its alerts.
 - **The same release** of `agentcapsule-api` and `agentcapsule-admin` as on
-  the primary, installed on the standby and not started.
+  the primary, installed on the standby and not started. The same for
+  `agentcapsule-worker`, with its configuration for the standby: the
+  directories the authorities will be promoted into, the same identities,
+  and no `authority_replica` ([Promote the replica](#promote-the-replica)).
 - **The new primary's repository**: the S3 path (`/agentcapsule-2`), a
   credential that can write there, and a new passphrase. Prepare them in
   advance, and keep them off the standby until the promotion.
@@ -582,33 +668,38 @@ On the standby host, as root unless said otherwise. Follow this order.
 1. **Decide**, and write down the time.
 2. **Fence the old primary.** It must accept no more writes, and reach
    neither store:
-   - stop it, or cut it off from its clients and the network, if it can
-     still be reached. If it might still be running (a network partition), do
-     this first: until it stops, clients may still write to it;
+   - power it off through the provider, and check that the provider reports
+     it stopped. Cutting it off the network is not enough: the old primary
+     cannot tell an unreachable standby from a promoted one
+     ([Promote the replica](#promote-the-replica), step 1). If it might
+     still be running (a network partition), do this first: until it stops,
+     clients may still write to it;
    - remove its keys from the standby's SFTP accounts:
      `/etc/ssh/authorized_keys/backup` (pgBackRest) and
      `/etc/ssh/authorized_keys/archives` (the volume archives);
    - revoke its S3 credentials at the provider: pgBackRest's and the archive
      shipper's.
-3. **Promote** the standby's PostgreSQL, as `postgres`:
+3. **Promote the authorities**: [Promote the replica](#promote-the-replica),
+   steps 2 to 5. They need neither the database nor the API.
+4. **Promote** the standby's PostgreSQL, as `postgres`:
    ```sh
    pg_ctlcluster 18 main promote
    psql -Atc 'SELECT pg_is_in_recovery(), pg_last_xact_replay_timestamp()'
    ```
    `f` means promoted. Write down the time it prints: the loss window starts
    there ([below](#announce-the-databases-loss)).
-4. **Give it a repository of its own**: [Promote](#promote), step 3, up to
+5. **Give it a repository of its own**: [Promote](#promote), step 3, up to
    `pgbackrest check`. The checkpoint and the full backup are not needed to
-   serve: take them right after step 7. Disable
+   serve: take them right after step 8. Disable
    `agentcapsule-standby-metrics.timer`.
-5. **Install the API's configuration and keys** from the safe, with the modes
+6. **Install the API's configuration and keys** from the safe, with the modes
    the API requires: the directory and the key files readable by the API's
    account only (0700 and 0600), the trust file writable by its owner only.
    Set `AGENTCAPSULE_DATABASE_URL` to the standby's own PostgreSQL.
-6. **Start the API** with the same flags as on the primary
+7. **Start the API** with the same flags as on the primary
    ([docs/api](api/README.md)). It checks the schema and the keys before it
    listens.
-7. **Check it** on the standby:
+8. **Check it** on the standby:
    ```sh
    curl -fsS http://127.0.0.1:8080/v1/health/ready
    ```
@@ -619,17 +710,21 @@ On the standby host, as root unless said otherwise. Follow this order.
    cannot be deleted, so disable it after
    (`POST /v1/organizations/{id}/disable`). If tenants sign in with a
    delegated identity, have one read `GET /v1/organizations/current`.
-8. **Move the address** that clients use to the standby: DNS, a floating
+9. **Move the address** that clients use to the standby: DNS, a floating
    address or the load balancer. The RTO ends when clients reach the API
    there.
-9. **Announce** the database's loss window
-   ([below](#announce-the-databases-loss)).
-10. **Protect the new primary**: the checkpoint and the full backup of
+10. **Announce** the database's loss window
+    ([below](#announce-the-databases-loss)).
+11. **Start the worker** on the promoted authorities:
+    [Promote the replica](#promote-the-replica), step 6. Restoring the
+    agents from their archives on the standby
+    ([Restoring an agent](#restoring-an-agent-from-an-archive)) has not been
+    run under KVM yet.
+12. **Protect the new primary**: the checkpoint and the full backup of
     [Promote](#promote), step 3, then its freshness timer. Build a new
-    standby as soon as possible.
-11. **The agents**: not possible yet. Restoring them on the standby needs
-    D-05, and a run under KVM
-    ([Restoring an agent](#restoring-an-agent-from-an-archive)).
+    standby as soon as possible: its PostgreSQL ([the standby](#the-standby-rec-03))
+    and the authorities' replica
+    ([Promote the replica](#promote-the-replica), step 7).
 
 ### Announce the database's loss
 
@@ -658,9 +753,12 @@ the callers ([ADR 003](adr/003-restore-rpo.md), option B).
 
 ### Not measured yet
 
-- **The agents**: restoring them on the standby needs D-05, and a run under
-  KVM. So does the worker, with its authorities and its own copies of the
+- **The agents**: restoring them on the standby needs a run under KVM. So
+  does the worker, with its promoted authorities and its own copies of the
   receipt and transit keys.
+- **The authorities' promotion between two hosts**: the Go tests run the
+  replica, the promotion and the seeding of a new standby on one machine,
+  in one or two processes.
 - **Moving the address** that clients use.
 - **The network between real hosts**: the qualification below runs on one
   machine.
@@ -696,7 +794,7 @@ The run:
    switch: halfway through a segment. The primary's PostgreSQL and API are
    killed with SIGKILL, with any push in progress. Its data directory and the
    WAL that pgBackRest had not pushed are deleted.
-5. **The failover**, steps 2 to 7 above, timed from the decision. The old
+5. **The failover**, steps 2 and 4 to 8 above, timed from the decision. The old
    primary's S3 credential is revoked in the store's configuration (SeaweedFS
    reloads it on SIGHUP), and its key is removed from the SFTP account. Then
    the promotion, the new repository, the keys installed from the safe, the

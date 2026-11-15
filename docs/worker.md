@@ -267,6 +267,16 @@ it refuses too (`authority_replica_not_armed`). Unusable certificate files
 give `authority_replica_configuration_invalid`. The archive and restore
 commands use the same section.
 
+**After a failover**, the worker on the standby runs on the authorities that
+`agentcapsule-authority promote` wrote there, with the same identities
+([recovery.md](recovery.md#promote-the-replica)). They are standalone, under
+the next epoch, without this section: no standby exists, so every write
+proceeds, seals, new keys and key destruction included. With the section,
+the worker refuses to start (`authority_replica_not_armed`) until a snapshot
+arms them for a new standby. Fence receipts carry the epoch that signed them:
+a receipt of the old primary is refused, and a boot or a restore in progress
+scans again.
+
 **What a write does.** The restore authority's catalogue holds the log. A
 write commits its record in the same SQLite transaction as its effect. Then
 it sends the record and waits for the replica's acknowledgment. Every
