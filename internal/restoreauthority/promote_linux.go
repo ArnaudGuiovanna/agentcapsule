@@ -14,6 +14,11 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/keyauthority"
 )
 
+// ErrStillReplicating means that a record reached the replica while Promote
+// read it: the old primary still runs. Stop it, then promote again. It wraps
+// ErrConflict.
+var ErrStillReplicating = errors.Join(ErrConflict, errors.New("a record reached the replica during the promotion"))
+
 // Promotion is the result of Promote.
 type Promotion struct {
 	// The identities stay those of the replicated authorities, so archives
@@ -150,7 +155,7 @@ func Promote(ctx context.Context, replicaRoot, restoreRoot, keyRoot string, unlo
 			return p, err
 		}
 		if n, err := result.RowsAffected(); err != nil || n != 1 {
-			return p, errors.Join(ErrConflict, err) // a record arrived meanwhile: promote again
+			return p, errors.Join(ErrStillReplicating, err)
 		}
 		// In DELETE journal mode, the commit is the journal's unlink: sync
 		// the directory, or a power loss could bring the journal back and
