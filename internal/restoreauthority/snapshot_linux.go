@@ -76,7 +76,7 @@ func (c *Catalog) Snapshot(ctx context.Context, keys *keyauthority.Files, recipi
 	if _, err = conn.ExecContext(ctx, "ATTACH DATABASE ? AS snap", path); err != nil {
 		return position, errors.Join(ErrUnavailable, err)
 	}
-	if _, err = conn.ExecContext(ctx, "PRAGMA snap.journal_mode=DELETE; PRAGMA snap.synchronous=FULL; PRAGMA snap.secure_delete=ON"); err != nil {
+	if _, err = conn.ExecContext(ctx, "PRAGMA snap.journal_mode=DELETE; PRAGMA snap.synchronous=EXTRA; PRAGMA snap.secure_delete=ON"); err != nil {
 		return position, errors.Join(ErrUnavailable, err)
 	}
 	tx, err := conn.BeginTx(ctx, nil)

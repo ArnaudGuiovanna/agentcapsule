@@ -294,7 +294,11 @@ func openDatabase(root string, create bool) (*Catalog, error) {
 
 // sqliteOptions are those of every authority database. secure_delete
 // overwrites deleted content, such as an acknowledged record's wrapped key.
-var sqliteOptions = map[string]string{"mode": "rw", "_journal_mode": "DELETE", "_synchronous": "FULL", "_foreign_keys": "on",
+// In DELETE journal mode a transaction commits when its journal is deleted;
+// only EXTRA syncs the directory after that deletion. Under FULL, a power
+// loss right after a commit can bring the journal back and roll the
+// transaction back: a replica could lose a record it has acknowledged.
+var sqliteOptions = map[string]string{"mode": "rw", "_journal_mode": "DELETE", "_synchronous": "EXTRA", "_foreign_keys": "on",
 	"_busy_timeout": "5000", "_txlock": "immediate", "_secure_delete": "on"}
 
 // Initialize is an explicit administrative operation. Repetition preserves the
