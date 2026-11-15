@@ -343,8 +343,9 @@ func ensureRecord(path, magic, agent, volume string, b []byte) error {
 // Install builds the key authority of a promoted standby from its replica,
 // with the identity of the authority it replicated. It never replaces another
 // authority's identity or a different key. A repeated call completes an
-// interrupted one. The new authority is standalone until a new snapshot arms
-// it for a new replica.
+// interrupted one, and never publishes again a key that the new authority
+// has destroyed meanwhile. The new authority is standalone until a new
+// snapshot arms it for a new replica.
 func Install(ctx context.Context, root, identity string, entries []Entry) (*Files, error) {
 	if !valid(identity, "keyauth_") {
 		return nil, ErrInput
@@ -387,11 +388,20 @@ func Install(ctx context.Context, root, identity string, entries []Entry) (*File
 			return nil, ErrInput
 		}
 		if e.Key != nil {
-			b := record("ACPKEY01", e.Agent, e.Volume, e.Key)
-			err = ensureRecord(filepath.Join(s.root, "records", e.Volume), "ACPKEY01", e.Agent, e.Volume, b)
-			clear(b)
-			if err != nil {
+			// A tombstone here means this authority destroyed the key after an
+			// interrupted call, once a worker ran on it: the destruction wins,
+			// and the key is not published again.
+			switch err = s.revoked(e.Agent, e.Volume); {
+			case errors.Is(err, ErrRevoked):
+			case err != nil:
 				return nil, err
+			default:
+				b := record("ACPKEY01", e.Agent, e.Volume, e.Key)
+				err = ensureRecord(filepath.Join(s.root, "records", e.Volume), "ACPKEY01", e.Agent, e.Volume, b)
+				clear(b)
+				if err != nil {
+					return nil, err
+				}
 			}
 		}
 		if e.Allocated || e.Key != nil {

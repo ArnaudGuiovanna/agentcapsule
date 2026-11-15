@@ -592,8 +592,11 @@ the standby, as root. Follow this order.
    ```
    `epoch` is the new primary's. `sequence` is the last record the replica
    applied: every write the old primary acknowledged is at or before it.
-   Run the command again after any failure: it completes an interrupted
-   promotion, or prints the same result. Its errors:
+   Run the command again after any failure, **before starting the worker**:
+   it completes an interrupted promotion, or prints the same result. Until it
+   succeeds, the replica's directory still holds wrapped copies of the keys.
+   A key that a worker destroyed meanwhile is not published again. Its
+   errors:
    - `unlock_key_file_must_be_private`: the file must be a regular file of
      mode 0600, owned by root;
    - `unlock_key_does_not_open_replica`: another unlock key. Nothing was

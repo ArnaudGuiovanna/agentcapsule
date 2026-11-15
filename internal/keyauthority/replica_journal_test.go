@@ -182,3 +182,39 @@ func TestExportAndInstallCarryEveryVolume(t *testing.T) {
 		t.Fatal("a promoted authority starts armed", err)
 	}
 }
+
+// A worker started on the authorities of an interrupted promotion may destroy
+// a key before the promotion runs again. The repeated Install, which carries
+// the replica's copy of that key, must not publish it again.
+func TestInstallAgainKeepsAKeyDestroyedMeanwhile(t *testing.T) {
+	s := fixture(t)
+	if err := s.Ensure(t.Context(), testAgent, testVolume); err != nil {
+		t.Fatal(err)
+	}
+	var entries []Entry
+	err := s.Export(t.Context(), func(e Entry) error {
+		e.Key = bytes.Clone(e.Key)
+		entries = append(entries, e)
+		return nil
+	})
+	if err != nil || len(entries) != 1 || entries[0].Key == nil {
+		t.Fatal(entries, err)
+	}
+	root := filepath.Join(t.TempDir(), "promoted")
+	installed, err := Install(t.Context(), root, s.Identity(), entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = installed.Revoke(t.Context(), testAgent, testVolume); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = Install(t.Context(), root, s.Identity(), entries); err != nil {
+		t.Fatal("install after a destruction", err)
+	}
+	if _, err = os.Stat(filepath.Join(root, "records", testVolume)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("the destroyed key was published again", err)
+	}
+	if err = installed.Ensure(t.Context(), testAgent, testVolume); !errors.Is(err, ErrRevoked) {
+		t.Fatal("the destruction was undone", err)
+	}
+}
