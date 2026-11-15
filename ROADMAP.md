@@ -12,7 +12,8 @@ and an adapted agent reaches the other agents of its organization as A2A agents,
 across a SLIM node through the platform's bridge: an agent finds another by
 its skill, wakes it and gets its answer, also with the Directory or SLIM down
 (gate G2). Large parts of the MVP described in [docs/product.md](docs/product.md)
-are still missing, notably observability and a restore procedure.
+are still missing, notably restoring agents onto another host and release
+validation.
 
 Status words used below:
 
@@ -122,7 +123,7 @@ a production host yet.
 | D-02 | Effect of reassignment and revocation on admitted work and past results ([ADR 002](docs/adr/002-assignment-revocation.md)) |
 | D-03 | RPO, confirmed results and restore ([ADR 003](docs/adr/003-restore-rpo.md): option B, an announced loss within the window; numbers in [ADR 004](docs/adr/004-recovery-objectives.md)); the P2 model is revised for a declared loss (`noUndeclaredLoss`) and implemented: declared losses, reruns, the API's `lost` state; the product owner's confirmation of the defaults (ADR 003) remains |
 | D-04 | Delivery closure when notifications are exhausted; any priority or reservation rule that changes progress |
-| D-05 | Keys and secrets outside the restored domain; a secret store usable in self-hosting. Decided in [ADR 005](docs/adr/005-keys-outside-restored-domain.md): a synchronous replica of the authorities on the standby; receipt token secrets under a daily key destroyed after 24 hours. Modelled (replica, promotion, degraded mode, PostgreSQL reconciled behind the authorities); the synchronous replica is built (`agentcapsule-authority`, mutual TLS, HPKE-wrapped keys, one stream for both authorities). Remaining: degraded mode, revocation records, promotion and reconciliation commands, the daily receipt key, the authority service. Until a replica is installed, a lost host loses the agents' memory |
+| D-05 | Keys and secrets outside the restored domain; a secret store usable in self-hosting. Decided in [ADR 005](docs/adr/005-keys-outside-restored-domain.md): a synchronous replica of the authorities on the standby; receipt token secrets under a daily key destroyed after 24 hours. Modelled (replica, promotion, degraded mode, PostgreSQL reconciled behind the authorities); the synchronous replica is built (`agentcapsule-authority`, mutual TLS, HPKE-wrapped keys, one stream for both authorities), with its promotion (`agentcapsule-authority promote`, next epoch, fence receipts bound to their epoch, the old primary refused) and degraded mode after 30 s without the standby (outcomes and fences continue; keys, seals and restores wait; alerts). Remaining: the announcement after a degraded period, revocation records (rule pending finding 1), reconciliation with PostgreSQL, the daily receipt key, the authority service. Until a replica is installed, a lost host loses the agents' memory |
 
 ## Known limits worth knowing before contributing
 
@@ -131,9 +132,11 @@ a production host yet.
   `capsule-adapter`: one command run per invocation, or an A2A server kept running;
   it can send requests to other agents over A2A. Agents that expose a plain HTTP
   server are not supported yet.
-- Between agents of an organization, a request is delivered only if the
-  recipient's inbound policy is `auto`. Under `manual`, the default, it waits
-  for an approval that no route can give yet, until its deadline.
+- Between agents of an organization, a request is delivered at once only if
+  the recipient's inbound policy is `auto`. Under `manual`, the default, it
+  waits until a person who may configure the recipient, or is assigned to it
+  with invoke, accepts it (`/v1/agents/{id}/held-requests`), or until its
+  deadline.
 - Attachments are held in API memory during upload (8 MiB each) and stored in
   PostgreSQL; there is no object storage.
 - Cancelling a `working` invocation does not stop computation already running in the

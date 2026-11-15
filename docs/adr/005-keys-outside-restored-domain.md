@@ -514,9 +514,41 @@ November 13, 2026. The synchronous path of §5, items 1 to 3, is built:
   snapshot arms both authorities; armed, they refuse to run without the
   replica.
 
-Later waves: degraded mode and its alerts (question 2), revocation records
-for access (§5.4), the promotion and reconciliation commands (§5.5), the
-daily receipt key, and the authority service on a local socket (§5.3).
+November 15, 2026. Two more waves are built: items 9 to 13 and 16 to 18 of
+[What the code must do](#what-the-code-must-do).
+- **Promotion** (`agentcapsule-authority promote`). The replica becomes both
+  authorities under the next epoch, written on disk before their first write.
+  The command pins both identities and checks that every wrapped secret
+  opens before it writes anything. It can be repeated, and it stops if a
+  record of the old primary reaches the replica meanwhile
+  (`old_primary_still_replicating`). A promoted replica refuses every record
+  and runs no listener. The promoted authorities run alone until a snapshot
+  seeds a new standby, so every write proceeds (finding 3).
+  [recovery.md](../recovery.md#promote-the-replica) gives the steps, starting
+  with stopping the old primary through the provider (finding 2).
+- **Epochs in fence receipts.** A receipt's MAC covers the epoch that signed
+  it, under a new version tag, so a receipt of the old primary binds nothing
+  after a promotion. Receipts never leave the worker's memory, so none needs
+  to keep verifying across the change.
+- **Degraded mode** (question 2), after `degraded_after` without the standby
+  (30 seconds by default). Every authority operation names its kind.
+  Outcome records, reruns, fence revisions and the start of a revocation
+  continue. Registration, incarnation reservations, declared losses,
+  activation, seals, new keys, key destruction and the completion of a
+  revocation wait (finding 4). The writes made in degraded mode are resent
+  first when the standby returns, and the mode ends once the standby holds
+  the last one. A worker that restarts runs no authority operation until it
+  reaches its standby (finding 2). Metrics and three alerts
+  ([observability.md](../observability.md)).
+- **Durability.** The authorities' SQLite databases now use
+  `synchronous=EXTRA`. In DELETE journal mode, FULL did not sync the
+  journal's deletion, which is the commit. A power loss could then undo a
+  record that the replica had already acknowledged.
+
+Later waves: the announcement and token revocation after a degraded period
+(item 14), revocation records for access (§5.4, the rule pending finding 1),
+reconciliation with PostgreSQL (item 15, §5.5), the daily receipt key, and
+the authority service on a local socket (§5.3).
 [recovery.md](../recovery.md#the-authorities-replica-d-05) installs the
 replica.
 
@@ -730,8 +762,23 @@ files only.
 | `destructionRequiresPermanentSealTest` | `TestDestructionRequiresPermanentSeal` (`internal/restoreauthority/key_runs_test.go`) | In part. The catalogue gives the evidence (acknowledged, not sealed; sealed for good after `RecordRetiredSeal`). The refusal is not in these packages: `keyauthority.Revoke` takes no seal, and only the worker orders the seal first. It needs the authority service, which owns both directories. |
 | `oldImageDoesNotReviveDestroyedKeyTest` | `TestOldImageDoesNotReviveDestroyedKey` (same file) | Full, on both authorities: the old image declares its loss and activates; the revocation, the seal and the key stay. |
 
-None of the new runs (promotion, degraded mode, reconciliation) has a Go
-projection yet: they need the replica code.
+The runs of the replica, the promotion and degraded mode, projected once
+that code was built (November 15, 2026):
+
+| Quint run | Go test | Coverage |
+| --- | --- | --- |
+| `acknowledgedWriteIsOnReplicaTest`, `destroyedKeyNeverReturnsAfterFailoverTest` | `TestAcknowledgedWritesSurviveTheFailover` (`internal/restoreauthority/promotion_test.go`) | Full. |
+| `oldPrimaryCannotResendAfterPromotionTest`, `restoreWitnessUnfencedGuard` | `TestOldPrimaryCannotResendAfterPromotion` (same file) | Full: the resend and its replay are refused twice, by the promoted replica and by the new standby. |
+| `promotedAuthorityRunsAloneUntilSeededTest` | `TestPromotedAuthorityRunsAloneUntilSeeded` (same file) | Full: every kind of write runs alone, then a new standby is seeded and a second promotion reaches epoch 3. |
+| `restoreWitnessSameEpochGuard`, `restoredImageRescansUnderNewEpochTest` | `TestReceiptOfTheOldEpochCannotBindAfterPromotion` (`internal/restoreauthority/receipt_epoch_test.go`) | Full for the guard; the rescan without its degraded period. |
+| `restoreWitnessSameEpochBroken` | `TestReceiptOfTheSameEpochWouldActivateUnfenced` (same file) | Full: without the epoch in the MAC, the old receipt would activate. |
+| `destructionResumesAfterResyncTest` | `TestDestructionResumesAfterResync` (`internal/restoreauthority/degraded_runs_test.go`) | Full. |
+| `restoreWitnessDegradedDestructionGuard` | `TestDegradedModeHoldsKeyDestruction` (same file) | Full. |
+| `subjectRevocationCompletesAfterResyncTest` | `TestSubjectRevocationCompletesAfterResync` (same file) | Full for the restore authority's subjects; access revocations wait for their records. |
+| `resyncEndsDegradedModeTest` | `TestResyncEndsDegradedMode` (same file) | Full. |
+| `degradedOutcomeIsAnnouncedAsWindowTest` | `TestDegradedOutcomeIsLostWithThePrimary` (same file) | In part: the loss is shown; its announcement is the promotion's (item 14), not built. |
+
+The reconciliation runs (`REPLAY_FIRST`) have none yet: item 15 is not built.
 
 ### Findings for the product owner
 
