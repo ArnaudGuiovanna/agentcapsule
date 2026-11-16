@@ -208,6 +208,75 @@ func TestEstimatedCostIsExactAtTheBounds(t *testing.T) {
 	}
 }
 
+// Migration 0031 on an installation that has aliases, budgets and calls:
+// every alias stays open to the organization, an alias with prices is priced,
+// a call still open reserves its cost at the higher price, and the token
+// budgets keep their limits. The test reverts the migration's objects and runs
+// its SQL again, wherever the ledger places it.
+func TestLLMAccessAndCostMigrationKeepsExistingInstallations(t *testing.T) {
+	b := newBudgetLab(t)
+	p := createProvider(t, b.tenantLab, b.owner, "old")
+	if _, err := b.a.CreateLLMAlias(t.Context(), b.owner, "oa", CreateLLMAliasInput{Alias: "local", ProviderID: p.ID, UpstreamModel: "m"}); err != nil {
+		t.Fatal(err)
+	}
+	b.budget(t, "t", CreateLLMBudgetInput{Period: "day", LimitTokens: 1000, Mode: "hard"})
+	open, err := b.reserveSplit(b.agent, "fast", "open", 100, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = b.a.MarkLLMUnknown(t.Context(), b.owner.TenantID, open.ID); err != nil {
+		t.Fatal(err)
+	}
+	done, err := b.reserveSplit(b.agent, "fast", "done", 10, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = b.a.SettleLLM(t.Context(), b.owner.TenantID, done.ID, 5, 5); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = b.s.pool.Exec(t.Context(), `
+        DROP TABLE llm_alias_grants;
+        DROP INDEX llm_usage_unresolved;
+        ALTER TABLE llm_audit DROP CONSTRAINT llm_audit_references, DROP CONSTRAINT llm_audit_action_check,
+          DROP COLUMN grant_id, DROP COLUMN usage_id, DROP COLUMN subject_id,
+          ADD CONSTRAINT llm_audit_action_check CHECK (action IN ('provider.created','provider.rotated','provider.disabled','alias.created','alias.disabled','budget.created','budget.disabled'));
+        ALTER TABLE llm_usage DROP CONSTRAINT llm_usage_resolution, DROP COLUMN priced, DROP COLUMN input_micro_per_mtok, DROP COLUMN output_micro_per_mtok,
+          DROP COLUMN reserved_cost_micro, DROP COLUMN resolved_by, DROP COLUMN resolved_at;
+        DROP INDEX llm_budgets_active_scope_unit;
+        ALTER TABLE llm_budgets DROP CONSTRAINT llm_budgets_one_limit, DROP COLUMN limit_cost_micro, ALTER COLUMN limit_tokens SET NOT NULL;
+        CREATE UNIQUE INDEX llm_budgets_active_scope ON llm_budgets(tenant_id,coalesce(agent_id,''),coalesce(alias,''),period) WHERE status='active';
+        ALTER TABLE llm_model_aliases DROP COLUMN access, DROP COLUMN priced`); err != nil {
+		t.Fatal("revert", err)
+	}
+	if _, err = b.s.pool.Exec(t.Context(), llmAccessAndCostSQL); err != nil {
+		t.Fatal("migrate", err)
+	}
+	aliases, err := b.a.ListLLMAliases(t.Context(), b.owner, "", 10)
+	if err != nil || len(aliases) != 2 {
+		t.Fatal(err, aliases)
+	}
+	for _, a := range aliases {
+		if a.Access != "organization" || a.Priced != (a.Alias == "fast") {
+			t.Fatal("alias after migration", a)
+		}
+	}
+	var openCost, doneCost int64
+	if err = b.s.pool.QueryRow(t.Context(), `SELECT (SELECT reserved_cost_micro FROM llm_usage WHERE id=$1),(SELECT reserved_cost_micro FROM llm_usage WHERE id=$2)`,
+		open.ID, done.ID).Scan(&openCost, &doneCost); err != nil {
+		t.Fatal(err)
+	}
+	if openCost != 900 || doneCost != 0 { // 300 tokens at 3 micro-units, the higher price
+		t.Fatal("reserved cost after migration", openCost, doneCost)
+	}
+	// 300 unknown + 10 settled: 690 tokens are left under the old budget.
+	if _, err = b.reserveSplit(b.other, "fast", "after", 691, 0); !errors.Is(err, ErrBudgetExceeded) {
+		t.Fatal("token budget after migration", err)
+	}
+	if _, err = b.reserveSplit(b.other, "local", "free", 690, 0); err != nil {
+		t.Fatal("an unpriced alias without a cost budget", err)
+	}
+}
+
 func TestConcurrentCostReservationsNeverOvershootAHardCostBudget(t *testing.T) {
 	b := newBudgetLab(t)
 	b.budget(t, "c", CreateLLMBudgetInput{Period: "day", LimitCostMicro: 1000, Mode: "hard"})
