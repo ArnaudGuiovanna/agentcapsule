@@ -312,7 +312,7 @@ func (h *Engine) Step(ctx context.Context) (bool, error) {
 		var remote *capsuleprotocol.PlatformError
 		if errors.As(err, &remote) {
 			switch remote.Code {
-			case "not_found", "mandate", "expired", "invalid", "conflict":
+			case "not_found", "mandate", "expired", "invalid", "conflict", "capability_denied":
 				return true, h.finish(ctx, id, nil, remote.Code)
 			case "transition":
 				if w.Kind == "invocation" { // canceled, or already ended

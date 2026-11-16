@@ -59,7 +59,11 @@ func (c ControlCapabilities) Supports(feature ControlFeature) bool {
 // sizes used by this version of the control client. Discovery alone may accept
 // a narrower profile; admission must not silently use unsupported operations or
 // exceed advertised limits. This read-only check grants no application authority.
+//
+// The accepted contract is recorded on the client: Accepts then tells which
+// optional features (such as ControlContentJSON) this boot negotiated.
 func (c *Client) RequireControlContract(ctx context.Context) error {
+	c.contract.Store(nil)
 	contract, err := c.Negotiate(ctx, []string{Version})
 	if err != nil {
 		return err
@@ -72,6 +76,7 @@ func (c *Client) RequireControlContract(ctx context.Context) error {
 	if contract.Limits != (ControlLimits{MessageBytes: MaxMessageBytes, ContentBytes: MaxContentBytes}) {
 		return ErrUnsupportedProtocol
 	}
+	c.contract.Store(&contract)
 	return nil
 }
 
@@ -94,8 +99,14 @@ func controlFeatures(id Identity) []ControlFeature {
 }
 
 // offeredFeatures adds the optional ones that this server implements.
-func offeredFeatures(id Identity) []ControlFeature {
-	return append(controlFeatures(id), ControlOutcomes)
+// ControlOutcomes predates the features header and is always offered;
+// ControlContentJSON only to a client that asked for it.
+func offeredFeatures(id Identity, json, askedJSON bool) []ControlFeature {
+	features := append(controlFeatures(id), ControlOutcomes)
+	if json && askedJSON && !id.FenceOnly {
+		features = append(features, ControlContentJSON)
+	}
+	return features
 }
 
 func validProtocolOffer(version string) bool {
@@ -156,14 +167,14 @@ func (s *Server) serveCapabilities(w http.ResponseWriter, r *http.Request) {
 		write(http.StatusNotAcceptable, "unsupported_protocol")
 		return
 	}
-	out.Features = offeredFeatures(s.credentials.Identity)
+	out.Features = offeredFeatures(s.credentials.Identity, s.json, asked(r, ControlContentJSON))
 	out.Limits = &ControlLimits{MessageBytes: MaxMessageBytes, ContentBytes: MaxContentBytes}
 	w.Header().Set("X-Capsule-Protocol", Version)
 	write(http.StatusOK, "")
 }
 
 func validCapabilities(out capabilitiesResponse) bool {
-	if out.Limits == nil || out.Limits.MessageBytes < 1 || out.Limits.MessageBytes > MaxMessageBytes || out.Limits.ContentBytes < 1 || out.Limits.ContentBytes > MaxContentBytes || out.Limits.ContentBytes > out.Limits.MessageBytes || len(out.Features) < 2 || len(out.Features) > 5 {
+	if out.Limits == nil || out.Limits.MessageBytes < 1 || out.Limits.MessageBytes > MaxMessageBytes || out.Limits.ContentBytes < 1 || out.Limits.ContentBytes > MaxContentBytes || out.Limits.ContentBytes > out.Limits.MessageBytes || len(out.Features) < 2 || len(out.Features) > 6 {
 		return false
 	}
 	seen := make(map[ControlFeature]bool, len(out.Features))
@@ -174,7 +185,7 @@ func validCapabilities(out capabilitiesResponse) bool {
 		seen[feature] = true
 		switch feature {
 		case ControlHealth, ControlFences, ControlOutcomes:
-		case ControlEvents, ControlInvokeText:
+		case ControlEvents, ControlInvokeText, ControlContentJSON:
 			if out.Identity.FenceOnly {
 				return false
 			}
@@ -202,6 +213,11 @@ func (c *Client) Negotiate(ctx context.Context, offered []string) (ControlCapabi
 		return ControlCapabilities{}, err
 	}
 	r.Header.Set(AcceptProtocolHeader, strings.Join(offered, ","))
+	features := make([]string, len(optionalFeatures))
+	for i, f := range optionalFeatures {
+		features[i] = string(f)
+	}
+	r.Header.Set(AcceptFeaturesHeader, strings.Join(features, ","))
 	r.Header.Set("Accept", "application/json")
 	resp, err := c.http.Do(r)
 	if err != nil {

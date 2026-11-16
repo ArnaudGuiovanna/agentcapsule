@@ -42,10 +42,15 @@ type OperatorAuditEvent struct {
 	// Reference is the trust's audience, and the key or token ID it concerns.
 	Reference string `json:"reference,omitempty"`
 	Changed   bool   `json:"changed"`
+	// Outcome is a guarded command's (ADR 014): done, unchanged, or refused
+	// with its reason in Reference.
+	Outcome string `json:"outcome,omitempty"`
 }
 
 // ListOperatorAudit returns the latest operator actions, newest first, for the
-// local operator. Each organization's own view is GET /v1/audit.
+// local operator: the platform credential, organizations, their identity
+// trusts, and the guarded commands with their outcome, refusals included
+// (ADR 014). Each organization's own view is GET /v1/audit.
 func (s *Store) ListOperatorAudit(ctx context.Context, limit int) ([]OperatorAuditEvent, error) {
 	if limit < 1 || limit > 1000 {
 		return nil, ErrInput
@@ -55,10 +60,11 @@ func (s *Store) ListOperatorAudit(ctx context.Context, limit int) ([]OperatorAud
 		return nil, err
 	}
 	defer rollback(tx)
-	rows, err := tx.Query(ctx, `SELECT id,created_at,action,actor,tenant_id,target,reference,changed FROM (
-        SELECT id,created_at,action,actor,'' AS tenant_id,credential_id AS target,'' AS reference,changed FROM platform_audit
-        UNION ALL SELECT id,created_at,action,'platform:'||actor_account,tenant_id,tenant_id,'',changed FROM organization_audit
-        UNION ALL SELECT id,created_at,'delegation.'||action,actor,tenant_id,issuer,btrim(concat_ws(' ',audience,nullif(key_id,''),nullif(token_id,''))),changed FROM delegation_audit
+	rows, err := tx.Query(ctx, `SELECT id,created_at,action,actor,tenant_id,target,reference,changed,outcome FROM (
+        SELECT id,created_at,action,actor,'' AS tenant_id,credential_id AS target,'' AS reference,changed,'' AS outcome FROM platform_audit
+        UNION ALL SELECT id,created_at,action,'platform:'||actor_account,tenant_id,tenant_id,'',changed,'' FROM organization_audit
+        UNION ALL SELECT id,created_at,'delegation.'||action,actor,tenant_id,issuer,btrim(concat_ws(' ',audience,nullif(key_id,''),nullif(token_id,''))),changed,'' FROM delegation_audit
+        UNION ALL SELECT id,created_at,action,actor,'',target,reason,outcome='done',outcome FROM operator_audit
     ) e ORDER BY created_at DESC,id DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
@@ -67,7 +73,7 @@ func (s *Store) ListOperatorAudit(ctx context.Context, limit int) ([]OperatorAud
 	events := []OperatorAuditEvent{}
 	for rows.Next() {
 		var e OperatorAuditEvent
-		if err = rows.Scan(&e.ID, &e.CreatedAt, &e.Action, &e.Actor, &e.TenantID, &e.Target, &e.Reference, &e.Changed); err != nil {
+		if err = rows.Scan(&e.ID, &e.CreatedAt, &e.Action, &e.Actor, &e.TenantID, &e.Target, &e.Reference, &e.Changed, &e.Outcome); err != nil {
 			return nil, err
 		}
 		events = append(events, e)

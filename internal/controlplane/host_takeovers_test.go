@@ -82,7 +82,7 @@ func TestHostTakeoverIsFinalAndStopsTheLostHost(t *testing.T) {
 		t.Fatal("agents of the lost host, one still provisioning", agents, err)
 	}
 	// A reservation that obtained nothing on the lost host can be abandoned.
-	if err = s.AbandonProvisioning(t.Context(), provisioning.AgentID); err != nil {
+	if _, err = s.AbandonProvisioning(t.Context(), testOperator, provisioning.AgentID); err != nil {
 		t.Fatal("abandon a reservation of the lost host", err)
 	}
 	if err = s.ConfigureHostStorage(t.Context(), "local", 1024); !errors.Is(err, ErrHostLost) {

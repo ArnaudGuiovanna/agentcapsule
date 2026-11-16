@@ -45,6 +45,20 @@ func (s *Store) WorkQueue(ctx context.Context, host string) ([]WorkKindStats, er
 	return out, rows.Err()
 }
 
+// InvocationBacklog counts the invocations accepted for the agents of the host
+// and not yet delivered, and how long the oldest has waited since it was
+// accepted, or released for a scheduled one (OPS-03). Worker jobs do not
+// show this wait: an agent's deliveries share one job, its head.
+func (s *Store) InvocationBacklog(ctx context.Context, host string) (int, time.Duration, error) {
+	var n int
+	var seconds float64
+	err := s.pool.QueryRow(ctx, `SELECT count(*),
+        coalesce(extract(epoch FROM clock_timestamp()-min(coalesce(i.released_at,o.created_at))),0)
+        FROM agent_mailboxes m JOIN owner_instructions i ON i.operation_id=m.instruction_id JOIN platform_operations o ON o.id=i.operation_id
+        WHERE m.kind='instruction' AND m.delivery_state='PENDING' AND o.host_id=$1`, host).Scan(&n, &seconds)
+	return n, time.Duration(seconds * float64(time.Second)), err
+}
+
 // RunningPlacements counts the host's VMs published as running.
 func (s *Store) RunningPlacements(ctx context.Context, host string) (int, error) {
 	var n int

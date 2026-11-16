@@ -21,15 +21,23 @@ import (
 // ErrTransition and must use the regular deletion path. If a worker created a
 // volume file but crashed before recording it, that file is not tracked here and
 // has to be removed by the operator.
-func (s *Store) AbandonProvisioning(ctx context.Context, agentID string) error {
+//
+// An organization's agent keeps its row, which its audit trail references: it
+// ends DELETED, its open operations CANCELED with provisioning_abandoned, and
+// its reservation no longer counts against the host's storage.
+//
+// It is an audited operator command (ADR 014): a dry run checks all of this
+// and removes nothing.
+func (s *Store) AbandonProvisioning(ctx context.Context, cmd OperatorCommand, agentID string) (OperatorOutcome, error) {
 	if !validOrganizationText(agentID, 100) {
-		return ErrInput
+		return OperatorOutcome{Action: "provisioning.abandoned", DryRun: cmd.DryRun}, ErrInput
 	}
-	tx, err := s.begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer rollback(tx)
+	return s.operatorCommand(ctx, cmd, "provisioning.abandoned", agentID, func(tx pgx.Tx) (bool, error) {
+		return true, abandonProvisioning(ctx, tx, agentID)
+	})
+}
+
+func abandonProvisioning(ctx context.Context, tx pgx.Tx, agentID string) error {
 	agents, err := lockAgents(ctx, tx, agentID)
 	if err != nil {
 		return err
@@ -74,6 +82,20 @@ func (s *Store) AbandonProvisioning(ctx context.Context, agentID string) error {
 	if blocked {
 		return ErrTransition
 	}
+	if a.Tenant != "" {
+		for _, statement := range []string{
+			"DELETE FROM worker_jobs WHERE agent_id=$1",
+			"DELETE FROM store_enrollments WHERE agent_id=$1",
+			`UPDATE platform_operations SET status='CANCELED',error_code='provisioning_abandoned',completed_at=clock_timestamp()
+                WHERE agent_id=$1 AND status IN ('PENDING','RUNNING')`,
+			"UPDATE agents SET phase='DELETED' WHERE id=$1",
+		} {
+			if _, err = tx.Exec(ctx, statement, agentID); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	// Children first. Any dependent row not listed here (for example mail) makes
 	// the foreign keys refuse the final DELETE and rolls everything back.
 	for _, statement := range []string{
@@ -87,5 +109,5 @@ func (s *Store) AbandonProvisioning(ctx context.Context, agentID string) error {
 			return fmt.Errorf("abandon provisioning: %w", ErrTransition)
 		}
 	}
-	return commit(ctx, tx)
+	return nil
 }

@@ -51,7 +51,8 @@ func nextWorkTicket(ctx context.Context, tx pgx.Tx, host string) (int64, error) 
 // DiscoverWork projects durable business intents onto a host-local work queue.
 // Only a mailbox head is scheduled, and a reply, status or instruction past
 // its deadline that no attempt reached, which dies wherever it is in the
-// queue (ADR 007). A bounded oldest-first batch admits new
+// queue (ADR 007). An agent whose VM stopped while it held work in progress
+// is resumed (ADR 017). A bounded oldest-first batch admits new
 // work; existing tickets are unchanged by repeated discovery. Multi-host fence
 // transport remains separate from this initial single-host coordinator.
 func (s *Store) DiscoverWork(ctx context.Context, host string, limit int) error {
@@ -98,6 +99,9 @@ func (s *Store) DiscoverWork(ctx context.Context, host string, limit int) error 
           WHERE o.host_id=$1 AND o.kind IN ('wake','sleep') AND o.status IN ('PENDING','RUNNING')
             AND NOT EXISTS(SELECT 1 FROM platform_operations earlier WHERE earlier.agent_id=o.agent_id AND earlier.seq<o.seq
                 AND earlier.kind IN ('wake','sleep') AND earlier.status IN ('PENDING','RUNNING'))
+        UNION ALL
+        SELECT 'resume',a.id,a.id,clock_timestamp() FROM agents a JOIN agent_placements p ON p.agent_id=a.id
+          WHERE p.host_id=$1 AND p.state='STOPPED' AND `+resumeDue+`
       ) work WHERE NOT EXISTS(SELECT 1 FROM worker_jobs j WHERE j.host_id=$1 AND j.kind=work.kind AND j.object_id=work.object_id)
       ORDER BY created,kind,object_id LIMIT $2`, host, limit)
 	if err != nil {

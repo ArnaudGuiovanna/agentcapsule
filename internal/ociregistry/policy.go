@@ -1,15 +1,19 @@
 // Package ociregistry fetches and publishes harness packages over the OCI
 // distribution API. It talks only to registries an operator approved, follows
 // redirects only to approved hosts, never connects to private addresses unless
-// a registry is explicitly marked local, and verifies every byte by digest.
+// a registry is explicitly marked local, never to link-local or cloud
+// metadata addresses at all, and verifies every byte by digest.
 package ociregistry
 
 import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"regexp"
 	"strings"
+
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/addrpolicy"
 )
 
 var (
@@ -46,8 +50,10 @@ type Rule struct {
 	// BlobHosts may serve redirected blob downloads (a registry's CDN), in
 	// addition to Host. For GHCR: pkg-containers.githubusercontent.com.
 	BlobHosts []string `json:"blob_hosts,omitempty"`
-	// Local allows plain HTTP and private or loopback addresses. Only for a
-	// registry on the operator's own network; never for a public one.
+	// Local allows plain HTTP and internal addresses (loopback, private,
+	// carrier-grade NAT). Only for a registry on the operator's own network,
+	// in development; never for a public one. It never allows link-local,
+	// "this network" or cloud metadata addresses.
 	Local bool `json:"local,omitempty"`
 	// Username and Password authenticate to a private registry. They come
 	// from operator configuration, are never logged or returned, and are sent
@@ -212,10 +218,20 @@ func validDigest(d string) bool {
 	return true
 }
 
-// publicIP reports whether an address may be dialed for a non-local registry.
-func publicIP(ip net.IP) bool {
-	return !(ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
-		ip.IsInterfaceLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() ||
-		// Carrier-grade NAT and the IPv4-mapped/compatible forms of the above.
-		(ip.To4() != nil && ip.To4()[0] == 100 && ip.To4()[1]&0xc0 == 64))
+// allowsAddress is the rule's address policy. The client applies it to every
+// connection, token requests and redirects included, after DNS resolution.
+// The classes are the model gateway's (internal/addrpolicy): a public
+// address is always allowed; an internal one (loopback, private, carrier-grade
+// NAT and the other reserved ranges) only for a local rule; an unspecified,
+// multicast, link-local, "this network" or cloud metadata address never, even
+// for a local rule. IPv4-mapped and NAT64 addresses count as the IPv4 address
+// they carry.
+func (r Rule) allowsAddress(a netip.Addr) bool {
+	switch addrpolicy.Classify(a) {
+	case addrpolicy.Public:
+		return true
+	case addrpolicy.Internal:
+		return r.Local
+	}
+	return false
 }

@@ -67,7 +67,10 @@ its automatic mode covers; codes requiring intervention or a reboot are
 refused before mounting.
 
 The mount code refuses to run outside the guest's root PID 1. At boot,
-`capsule-init` also sets the loopback interface up. The VM has no other
+`capsule-init` mounts `/tmp` as a tmpfs of a quarter of the guest's memory
+(the agent's `memory_mib`: 64 MiB for 256 MiB) and `/run` as one of 8 MiB;
+without a size the kernel lets each grow to half of the memory
+(`guestinit.BootMounts`). It also sets the loopback interface up. The VM has no other
 interface, so this opens no route out: it only lets an adapted agent reach the
 model endpoint of [capsule-adapter](../adapter.md) on 127.0.0.1. The supervisor
 starts the harness under UID/GID 1000 in a dedicated cgroup. The harness

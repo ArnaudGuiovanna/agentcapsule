@@ -233,11 +233,15 @@ key, let both sign during an overlap, then retire the old one:
 ```sh
 agentcapsule-admin configure-delegation -action add-key -operation-id acme-key-2026-12 \
   -tenant-id org_... -issuer https://idp.acme.example -audience agentcapsule:acme \
-  -key-id 2026-12 -public-key '<32 bytes, standard base64>'
+  -key-id 2026-12 -public-key '<32 bytes, standard base64>' -confirm 2026-12
 agentcapsule-admin configure-delegation -action retire-key -operation-id acme-retire-2026-11 \
   -tenant-id org_... -issuer https://idp.acme.example -audience agentcapsule:acme \
-  -key-id 2026-11 -overlap 24h
+  -key-id 2026-11 -overlap 24h -confirm 2026-11
 ```
+
+Every change but `install` repeats its target in `-confirm` (the key ID, the
+issuer for `rotate` and `revoke-trust`, the token ID for `revoke-token`) and
+takes `-dry-run` ([ADR 014](adr/014-operations-capacity-diagnostics-audit.md)).
 
 - `add-key` and `retire-key` keep the trust's `generation` and `minimum_iat`:
   tokens signed with the other keys keep working.

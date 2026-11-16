@@ -260,8 +260,9 @@ authority before PostgreSQL. It never lifts, survives a failover, and waits
 for the replica in degraded mode. The volume key is destroyed only for a
 sealed store, after every holder of the key let it go.
 
-**What ADR 006 wave 3 enforces** (another piece of work; this record does not
-build it):
+**What ADR 006 wave 3 enforces** (another piece of work, built on November 16,
+2026 as `destroy_key(binding)`, with the binding's agent, volume and
+incarnation, and the error `not_sealed`):
 
 1. `destroy_key(agent, volume)` refuses unless the restore authority holds
    the store `agent` sealed, with that `volume`. Armed, the check runs in the

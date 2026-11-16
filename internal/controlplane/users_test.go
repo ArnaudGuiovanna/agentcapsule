@@ -327,7 +327,7 @@ func TestServiceTokenCanBeReplacedAfterRevocationButNotWhileActive(t *testing.T)
 	if err := s.BootstrapServiceToken(t.Context(), "installation", fresh(), time.Hour); !errors.Is(err, ErrConflict) {
 		t.Fatal("second active service token accepted", err)
 	}
-	if err := s.RevokeOperatorCredential(t.Context(), "service", p.TokenID); err != nil {
+	if _, err := s.RevokeOperatorCredential(t.Context(), testOperator, "service", p.TokenID); err != nil {
 		t.Fatal(err)
 	}
 	replacement := fresh()

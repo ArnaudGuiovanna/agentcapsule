@@ -94,6 +94,21 @@ type ServiceConfig struct {
 	// RestartBudget bounds the failed boots and crashes of each agent's
 	// guest (CAP-03, ADR 012); see ServiceRestartBudget.
 	RestartBudget *ServiceRestartBudget `json:"restart_budget,omitempty"`
+	// StoragePressure is the used share of the volumes' or the images' file
+	// system past which new agents and imports are refused (OPS-03): 0.5 to
+	// 0.95, DefaultStoragePressure (0.80) when absent.
+	StoragePressure float64 `json:"storage_pressure,omitempty"`
+}
+
+// Pressure watches the root's file system, which holds the volumes, and the
+// one of the harness images: the registry's cache, <root>/releases by
+// default.
+func (c ServiceConfig) Pressure() *StoragePressure {
+	images := c.Root
+	if c.Registry != nil {
+		images = cmp.Or(c.Registry.Cache, filepath.Join(c.Root, "releases"))
+	}
+	return &StoragePressure{Data: c.Root, Images: images, Threshold: cmp.Or(c.StoragePressure, DefaultStoragePressure)}
 }
 
 // ServiceRestartBudget: an agent whose guest fails to boot or crashes
@@ -310,6 +325,9 @@ func (c ServiceConfig) Settings() (runtime.FirecrackerOptions, time.Duration, Ma
 		return r, 0, m, invalid
 	}
 	if _, err := c.archives(); err != nil {
+		return r, 0, m, invalid
+	}
+	if c.StoragePressure != 0 && !c.Pressure().valid() {
 		return r, 0, m, invalid
 	}
 	if _, err := c.Restarts(); err != nil {

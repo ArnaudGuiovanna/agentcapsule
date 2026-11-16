@@ -28,6 +28,12 @@ func credentialPair(t *testing.T, agent, vm string) (Credentials, Credentials) {
 }
 func serverFixture(t *testing.T, host, guest Credentials, hook func(http.ResponseWriter)) (*Client, func(context.Context) (net.Conn, error)) {
 	t.Helper()
+	return serverFixtureWith(t, host, guest, hook, nil)
+}
+
+// serverFixtureWith lets a test configure the server before it serves.
+func serverFixtureWith(t *testing.T, host, guest Credentials, hook func(http.ResponseWriter), configure func(*Server)) (*Client, func(context.Context) (net.Conn, error)) {
+	t.Helper()
 	root := t.TempDir()
 	store, err := harnessstore.Open(t.Context(), filepath.Join(root, "state.db"))
 	if err != nil {
@@ -53,6 +59,9 @@ func serverFixture(t *testing.T, host, guest Credentials, hook func(http.Respons
 		t.Fatal(err)
 	}
 	server.afterCommit = hook
+	if configure != nil {
+		configure(server)
+	}
 	// TCP is confined to loopback for portable unit tests; KVM tests use actual vsock.
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

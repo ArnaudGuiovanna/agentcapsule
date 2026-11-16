@@ -158,7 +158,14 @@ func life(t *testing.T, a implementation) {
 	if got, err := a.Losses(ctx, agent); err != nil || !reflect.DeepEqual(got, []restoreauthority.Loss{lost}) {
 		t.Fatal(got, err)
 	}
-	// Deletion: the seal, then the key's destruction.
+	// Deletion: the seal, then the key's destruction. Neither implementation
+	// destroys the key before the seal, nor without its binding.
+	if err = a.DestroyKey(ctx, next); !errors.Is(err, restoreauthority.ErrNotSealed) {
+		t.Fatal("the key of an unsealed store was destroyed", err)
+	}
+	if err = a.Revoke(ctx, agent, volume); !errors.Is(err, keyauthority.ErrInput) {
+		t.Fatal("a key was destroyed without its binding", err)
+	}
 	must(a.RecordRetiredSeal(ctx, next))
 	if _, err = a.Lookup(ctx, agent); !errors.Is(err, restoreauthority.ErrSealed) {
 		t.Fatal(err)
@@ -166,7 +173,7 @@ func life(t *testing.T, a implementation) {
 	if err = a.HoldKey(ctx, next, func(context.Context, []byte) error { t.Error("a sealed store's key held"); return nil }); !errors.Is(err, restoreauthority.ErrSealed) {
 		t.Fatal(err)
 	}
-	must(a.Revoke(ctx, agent, volume))
+	must(a.DestroyKey(ctx, next))
 	if err = a.Ensure(ctx, agent, volume); !errors.Is(err, keyauthority.ErrRevoked) {
 		t.Fatal("a destroyed key came back", err)
 	}

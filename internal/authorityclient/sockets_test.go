@@ -253,6 +253,7 @@ func TestEveryErrorKeepsItsSentinel(t *testing.T) {
 		svc.CodeSealed:          {restoreauthority.ErrSealed},
 		svc.CodeHistory:         {restoreauthority.ErrHistory},
 		svc.CodeNotDeclared:     {restoreauthority.ErrNotDeclared},
+		svc.CodeNotSealed:       {restoreauthority.ErrNotSealed},
 		svc.CodeWaitsForReplica: {ra, restoreauthority.ErrWaitsForReplica},
 		svc.CodeReplicaRequired: {ra, restoreauthority.ErrReplicaRequired},
 		svc.CodeNotArmed:        {restoreauthority.ErrNotArmed},
@@ -269,7 +270,7 @@ func TestEveryErrorKeepsItsSentinel(t *testing.T) {
 	if len(want) != len(svc.Codes()) {
 		t.Fatal("a code without its sentinels")
 	}
-	refusals := []error{restoreauthority.ErrStale, restoreauthority.ErrSealed, restoreauthority.ErrRevoked, restoreauthority.ErrConflict}
+	refusals := []error{restoreauthority.ErrStale, restoreauthority.ErrSealed, restoreauthority.ErrRevoked, restoreauthority.ErrConflict, restoreauthority.ErrNotSealed}
 	for _, code := range svc.Codes() {
 		err := svc.ErrorOf(code)
 		for _, sentinel := range want[code] {

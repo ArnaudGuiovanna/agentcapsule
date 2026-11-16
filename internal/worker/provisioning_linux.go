@@ -34,8 +34,8 @@ type provisioner struct {
 // NewProvisioningPlacements supports the approved local guest image pinned by
 // opts.InitrdSHA256. Its digest must match the reserved harness release. OCI
 // artifact fetching/assembly remains a separate future source of approved images.
-// keys creates and destroys volume keys; a key in use is held through
-// authority, under its binding.
+// keys creates volume keys; a key in use is held through authority, under
+// its binding, and destroyed through authority once its store is sealed.
 func NewProvisioningPlacements(store *controlplane.Store, hostID, workerID string, lease time.Duration, opts runtime.FirecrackerOptions, keys keyauthority.Provider, authority restoreauthority.Authority, config ProvisioningConfig) (*Placements, error) {
 	if keys == nil || authority == nil || !config.valid() {
 		return nil, controlplane.ErrInput
@@ -79,6 +79,13 @@ func (w *Placements) provision(ctx context.Context, job controlplane.WorkerJob) 
 		}
 		if err = p.keys.Ensure(ctx, e.AgentID, e.VolumeID); err != nil {
 			return err
+		}
+		// No new volume past the storage pressure threshold (OPS-03): the
+		// job waits until space returns.
+		if pressure := w.pressure.Load(); pressure != nil {
+			if err = pressure.Refuse(pressure.Data); err != nil {
+				return err
+			}
 		}
 		var volume volumestore.Container
 		err = w.authority.HoldKey(ctx, enrollmentBinding(e), func(ctx context.Context, key []byte) error {

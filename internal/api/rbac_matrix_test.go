@@ -83,6 +83,7 @@ const (
 	rbacRequester    = "S S S S S 404 404 404 S 404 401 401 404"
 	rbacContent      = "404 404 404 404 S 404 404 404 404 404 401 401 403"
 	rbacSender       = "404 404 404 404 S 404 404 404 404 404 401 401 404"
+	rbacLink         = "404 404 404 404 S 404 404 404 404 404 401 401 404"
 )
 
 var rbacRoutes = []rbacRoute{
@@ -120,6 +121,7 @@ var rbacRoutes = []rbacRoute{
 	{Method: "POST", Path: "/v1/service-accounts/{spare}/tokens/{token}/revoke", Success: 200, Want: rbacIdentity, body: `{}`, fresh: rbacFreshServiceToken, Note: "a disposable token"},
 
 	{Method: "GET", Path: "/v1/audit", Success: 200, Want: "S S 403 S 403 403 403 403 S F 401 401 403", hides: []string{"{agent}"}},
+	{Method: "GET", Path: "/v1/audit/export?from={from}&to={to}", Success: 200, Want: "S S 403 S 403 403 403 403 S F 401 401 403", fresh: rbacAuditRange, hides: []string{"{agent}"}},
 
 	{Method: "GET", Path: "/v1/llm/providers", Success: 200, Want: "S S 403 403 403 403 403 403 403 F 401 401 403", hides: []string{"{provider}"}},
 	{Method: "POST", Path: "/v1/llm/providers", Success: 201, Want: rbacCreateAdmin, body: `{"name":"{name}","kind":"openai_compatible","base_url":"https://llm.example.org/v1","secret":"matrix-credential-0123456789"}`, fresh: rbacName},
@@ -153,6 +155,10 @@ var rbacRoutes = []rbacRoute{
 	{Method: "POST", Path: "/v1/agents/{agent}/release", Success: 200, Want: rbacConfigure, body: `{"harness":{"name":"reference","version":"1.0.1"}}`},
 	{Method: "GET", Path: "/v1/agents/{agent}/directory", Success: 200, Want: rbacSeeAgent},
 	{Method: "PUT", Path: "/v1/agents/{agent}/directory", Success: 200, Want: "S S S 403 403 403 403 403 403 404 401 401 400", body: `{"visible":true,"description":"Matrix agent.","skills":[10302],"domains":[111]}`},
+	{Method: "GET", Path: "/v1/agents/{agent}/capabilities", Success: 200, Want: rbacSeeAgent},
+	{Method: "PUT", Path: "/v1/agents/{agent}/capabilities", Success: 200, Want: "S S S 403 403 403 403 403 403 404 401 401 400", body: `{"allowed":["llm.invoke","agents.delegate","agents.discover"]}`},
+	{Method: "GET", Path: "/v1/organizations/current/capabilities", Success: 200, Want: "S S 403 S 403 403 403 403 S S 401 401 403", Note: "the caller's own organization"},
+	{Method: "PUT", Path: "/v1/organizations/current/capabilities", Success: 200, Want: rbacCreateAdmin, body: `{"allowed":["llm.invoke","agents.delegate","agents.discover"]}`, Note: "the caller's own organization"},
 	{Method: "GET", Path: "/v1/agents/{agent}/inbound", Success: 200, Want: rbacSeeAgent},
 	{Method: "PUT", Path: "/v1/agents/{agent}/inbound", Success: 200, Want: "S S S 403 403 403 403 403 403 404 401 401 400", body: `{"mode":"manual"}`},
 
@@ -170,6 +176,7 @@ var rbacRoutes = []rbacRoute{
 	{Method: "GET", Path: "/v1/invocations/{inv}/result", Success: 200, Want: rbacContent, Note: "the caller's own, else the user's"},
 	{Method: "GET", Path: "/v1/operations/{inv}/result", Success: 200, Want: rbacContent, Note: "the caller's own, else the user's"},
 	{Method: "POST", Path: "/v1/invocations/{fresh}/cancel", Success: 200, Want: rbacSender, fresh: rbacFreshScheduled, Note: "a disposable invocation of the user"},
+	{Method: "POST", Path: "/v1/invocations/{fresh}/replay", Success: 202, Want: rbacManage, body: `{}`, fresh: rbacFreshDeadLetter, Note: "a disposable dead letter of the user"},
 
 	{Method: "GET", Path: "/v1/agents/{agent}/held-requests", Success: 200, Want: rbacDecideHeld},
 	{Method: "POST", Path: "/v1/agents/{agent}/held-requests/{held}/accept", Success: 200, Want: rbacDecideHeld, body: `{}`, fresh: rbacFreshHeld, Note: "a disposable held request"},
@@ -178,6 +185,9 @@ var rbacRoutes = []rbacRoute{
 	{Method: "POST", Path: "/v1/agents/{agent}/attachments", Success: 201, Want: "403 403 403 403 S S 404 404 S 404 401 401 404", body: "matrix file", upload: true},
 	{Method: "GET", Path: "/v1/attachments/{file}", Success: 200, Want: rbacRequester, Note: "the caller's own, else the user's"},
 	{Method: "DELETE", Path: "/v1/attachments/{fresh}", Success: 200, Want: rbacSender, fresh: rbacFreshFile, Note: "a disposable file of the user"},
+	{Method: "POST", Path: "/v1/attachments/{file}/link", Success: 201, Want: rbacLink, Note: "the caller's own, else the user's"},
+	{Method: "POST", Path: "/v1/invocations/{inv}/result/link", Success: 201, Want: rbacLink, Note: "the caller's own, else the user's"},
+	{Method: "GET", Path: "/v1/downloads/dl_matrix", Success: 200, Want: "404 404 404 404 404 404 404 404 404 404 404 404 404", Note: "the link is the credential: a bearer opens nothing"},
 
 	{Method: "GET", Path: "/v1/users", Success: 200, Want: rbacLegacyOnly, Note: "historical owner domain"},
 	{Method: "POST", Path: "/v1/users", Success: 201, Want: rbacLegacyOnly, body: `{"display_name":"X"}`, Note: "historical owner domain"},
@@ -250,6 +260,7 @@ var rbacPlaceholder = regexp.MustCompile(`\{[a-z_]+\}`)
 // rbacPattern reduces a path to its shape, so that /v1/agents/{agent} and the
 // server's /v1/agents/{id} match, and fixed test identifiers match too.
 func rbacPattern(path string) string {
+	path, _, _ = strings.Cut(path, "?")
 	parts := strings.Split(path, "/")
 	for i, p := range parts {
 		if rbacPlaceholder.MatchString(p) || strings.Contains(p, "_matrix") {
@@ -644,6 +655,24 @@ func rbacFreshScheduled(t *testing.T, f *rbacFixture) map[string]string {
 	return map[string]string{"fresh": inv.ID}
 }
 
+// rbacFreshDeadLetter is an invocation of the user that died without reaching
+// the agent, as its retirement leaves it (ADR 017).
+func rbacFreshDeadLetter(t *testing.T, f *rbacFixture) map[string]string {
+	var inv controlplane.Invocation
+	f.must(t, "user", "POST", "/v1/agents/"+f.ids["agent"]+"/invocations", `{"content":[{"type":"text","text":"dead"}]}`, 202, &inv)
+	for _, q := range []string{
+		`UPDATE agent_mailboxes SET delivery_state='DEAD',attempts=attempt_limit WHERE instruction_id=$1`,
+		`DELETE FROM outbox WHERE mailbox_id=(SELECT id FROM agent_mailboxes WHERE instruction_id=$1)`,
+		`UPDATE platform_operations SET status='FAILED',error_code='delivery_failed',completed_at=clock_timestamp() WHERE id=$1`,
+		`UPDATE owner_instructions SET close_reason='attempts_exhausted' WHERE operation_id=$1`,
+	} {
+		if _, err := f.db.Exec(t.Context(), q, inv.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return map[string]string{"fresh": inv.ID}
+}
+
 func rbacFreshHeld(t *testing.T, f *rbacFixture) map[string]string {
 	key := f.next()
 	r, err := f.l.store.Submit(t.Context(), f.ids["sender"], key, controlplane.Submission{RecipientAgentID: f.ids["agent"], MandateID: "matrix-mandate",
@@ -801,6 +830,12 @@ func (f *rbacFixture) resolve(t *testing.T, s, actor string, fresh map[string]st
 		t.Fatal("unknown placeholder", p)
 		return ""
 	})
+}
+
+// rbacAuditRange is an audit export's range: the last and the next hour.
+func rbacAuditRange(*testing.T, *rbacFixture) map[string]string {
+	now := time.Now().UTC()
+	return map[string]string{"from": now.Add(-time.Hour).Format(time.RFC3339), "to": now.Add(time.Hour).Format(time.RFC3339)}
 }
 
 // TestRBACMatrix runs every route against every caller and checks the status.

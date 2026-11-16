@@ -96,6 +96,21 @@ func TestRealHarnessProcessPersistenceAndFences(t *testing.T) {
 	if err = json.Unmarshal(receipt.Result, &response); err != nil || string(response.Echo) != string(e.Body) {
 		t.Fatal("reference echo response mismatch", err)
 	}
+	// The reference harness accepts JSON content (ADR 016) and echoes it.
+	if err = c.RequireControlContract(t.Context()); err != nil || !c.Accepts(capsuleprotocol.ControlContentJSON) {
+		t.Fatal("the reference harness does not accept JSON content", err)
+	}
+	content := []capsuleprotocol.ContentPart{{Type: "text", Text: "rows"}, {Type: "json", JSON: `{"n":[1,2]}`}}
+	body, err := json.Marshal(capsuleprotocol.Invocation{Kind: "message.user", OperationID: "op_json",
+		Mandate: capsuleprotocol.InstructionMandate{ID: "mdt_json", MaxAgentRequests: 1, ExpiresAt: time.Now().Add(time.Hour)}, Content: content})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err = c.Invoke(t.Context(), harnessstore.Event{ID: "json-event", Subjects: []string{"agent/a", "event/json-event"}, Body: body})
+	var echoed capsuleprotocol.OwnerMessage
+	if err != nil || json.Unmarshal(receipt.Result, &echoed) != nil || len(echoed.Content) != 2 || echoed.Content[1] != content[1] {
+		t.Fatal("JSON content not echoed", string(receipt.Result), err)
+	}
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	err = p.Stop(ctx)
 	cancel()
@@ -139,7 +154,7 @@ func TestRealHarnessProcessPersistenceAndFences(t *testing.T) {
 	}
 	defer db.Close()
 	var count int
-	if err = db.QueryRow("SELECT count(*) FROM echo_events").Scan(&count); err != nil || count != 1 {
+	if err = db.QueryRow("SELECT count(*) FROM echo_events").Scan(&count); err != nil || count != 2 { // the event and the JSON invocation
 		t.Fatal("durable effect count", count, err)
 	}
 	// A frozen real harness cannot handle SIGTERM. The supervisor must kill it

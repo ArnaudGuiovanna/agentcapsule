@@ -62,6 +62,7 @@ func NewForHost(store *controlplane.Store, accounts *controlplane.Accounts, host
 	s.handle("/v1/queue/limits", s.queueLimits)
 	s.handle("/v1/invocations/{id}/result", s.instructionResult)
 	s.handle("/v1/invocations/{id}/cancel", s.cancelInvocation)
+	s.handle("/v1/invocations/{id}/replay", s.replayInvocation)
 	s.handle("/v1/agents/{id}/idle-policy", s.idlePolicy)
 	s.handle("/v1/agents/{id}/release", s.agentRelease)
 	s.handle("/v1/agents/{id}/directory", s.agentDirectory)
@@ -71,6 +72,10 @@ func NewForHost(store *controlplane.Store, accounts *controlplane.Accounts, host
 	s.handle("/v1/agents/{id}/held-requests/{request_id}/decline", s.declineHeldRequest)
 	s.handle("/v1/agents/{id}/attachments", s.attachments)
 	s.handle("/v1/attachments/{id}", s.attachment)
+	s.handle("/v1/agents/{id}/capabilities", s.agentCapabilities)
+	s.handle("/v1/attachments/{id}/link", s.attachmentLink)
+	s.handle("/v1/invocations/{id}/result/link", s.resultLink)
+	s.handle("/v1/downloads/{token}", s.downloadLink)
 	s.handle("/v1/me/messaging-settings", s.messagingSettings)
 	s.handle("/v1/me/inbox", s.inbox)
 	s.handle("/v1/me/inbox/messages/{id}", s.ownerMessage)
@@ -108,6 +113,7 @@ func New(store *controlplane.Store, accounts *controlplane.Accounts) (*Server, e
 	s.handle("/v1/agents/{id}/assignments/{assignment_id}/replace", s.replaceAssignment)
 	s.handle("/v1/agents/{id}/assignments/{assignment_id}/reassign", s.reassignAssignment)
 	s.handle("/v1/audit", s.audit)
+	s.handle("/v1/audit/export", s.auditExport)
 	s.handle("/v1/llm/providers", s.llmProviders)
 	s.handle("/v1/llm/providers/{id}/rotate", s.rotateLLMProvider)
 	s.handle("/v1/llm/providers/{id}/disable", s.disableLLMProvider)
@@ -136,6 +142,7 @@ func New(store *controlplane.Store, accounts *controlplane.Accounts) (*Server, e
 	s.handle("/v1/organizations/current", s.currentOrganization)
 	s.handle("/v1/organizations/{id}", s.organization)
 	s.handle("/v1/organizations/{id}/disable", s.disableOrganization)
+	s.handle("/v1/organizations/current/capabilities", s.organizationCapabilities)
 	s.handle("/v1/harness-imports", s.harnessImports)
 	s.handle("/v1/harness-imports/{id}", s.harnessImport)
 	s.handle("/v1/harness-releases", s.harnessReleases)
@@ -186,6 +193,7 @@ func problem(w http.ResponseWriter, status int, code string) {
 	}{"about:blank", http.StatusText(status), status, code})
 }
 func failure(w http.ResponseWriter, err error) {
+	var refusal *controlplane.ReplayRefusal
 	switch {
 	case errors.Is(err, controlplane.ErrAuthentication):
 		problem(w, 401, "authentication_required")
@@ -216,6 +224,17 @@ func failure(w http.ResponseWriter, err error) {
 		problem(w, 409, "attachment_unavailable")
 	case errors.Is(err, controlplane.ErrExpired):
 		problem(w, 409, "expired")
+	case errors.As(err, &refusal):
+		switch refusal.Reason {
+		case controlplane.ReplayOutcomeUnknown:
+			problem(w, 409, "outcome_unknown")
+		case controlplane.SkipRequesterRevoked:
+			problem(w, 409, "requester_revoked")
+		case controlplane.SkipInputPurged:
+			problem(w, 409, "input_purged")
+		default:
+			problem(w, 409, "attachments_purged")
+		}
 	case errors.Is(err, controlplane.ErrClosurePending):
 		problem(w, 409, "closure_pending")
 	case errors.Is(err, controlplane.ErrAgentExists):
@@ -226,6 +245,11 @@ func failure(w http.ResponseWriter, err error) {
 		problem(w, 422, "harness_unavailable")
 	case errors.Is(err, controlplane.ErrStorageCapacity):
 		problem(w, 503, "storage_capacity_unavailable")
+	case errors.Is(err, controlplane.ErrStoragePressure):
+		w.Header().Set("Retry-After", "300")
+		problem(w, 503, "storage_pressure")
+	case errors.Is(err, controlplane.ErrAuditExportTooLarge):
+		problem(w, 413, "audit_export_too_large")
 	default:
 		problem(w, 503, "temporarily_unavailable")
 	}

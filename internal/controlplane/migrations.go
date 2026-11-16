@@ -121,6 +121,15 @@ var peerRedeliveriesSQL string
 //go:embed migrations/0034_operator_bootstrap.sql
 var operatorBootstrapSQL string
 
+//go:embed migrations/0035_capacity_queue_and_replays.sql
+var capacityQueueAndReplaysSQL string
+
+//go:embed migrations/0036_capabilities.sql
+var capabilitiesSQL string
+
+//go:embed migrations/0037_operations.sql
+var operationsSQL string
+
 //go:embed migrations/0039_host_takeovers.sql
 var hostTakeoversSQL string
 
@@ -162,7 +171,11 @@ var controlPlaneMigrations = []schemaMigration{
 	{version: 32, name: "llm-access-and-cost", sql: llmAccessAndCostSQL},
 	{version: 33, name: "peer-redeliveries", sql: peerRedeliveriesSQL},
 	{version: 34, name: "operator-bootstrap", sql: operatorBootstrapSQL},
-	{version: 35, name: "host-takeovers", sql: hostTakeoversSQL},
+	{version: 35, name: "capacity-queue-and-replays", sql: capacityQueueAndReplaysSQL},
+	{version: 36, name: "capabilities", sql: capabilitiesSQL},
+	{version: 37, name: "operations", sql: operationsSQL},
+	// 0038 is reserved for another branch: the integration renumbers this one 39.
+	{version: 38, name: "host-takeovers", sql: hostTakeoversSQL},
 }
 
 func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error {

@@ -197,6 +197,9 @@ and model it chooses.
 - **Files.** The invocation's attachments are written under
   `~/.agentcapsule/files/<operation>/` for the run, and removed afterwards. The
   text ends with an `Attached files:` list of their paths, types and sizes.
+- **JSON content.** The adapter accepts JSON parts
+  ([ADR 016](adr/016-content-links-capabilities.md)). A command reads each one
+  as its compact JSON, in the text, after the text parts before it.
 - **Answer.** The command's standard output, cut at 30 KiB with a note. Standard
   error is discarded. An exit status other than 0, or a run longer than the
   timeout, makes the invocation `failed`. When a run ends, whatever the program
@@ -235,7 +238,8 @@ task, _ := client.GetTask(ctx, &a2a.GetTaskRequest{ID: result.(*a2a.Task).ID})
   OASF skills (as skills `oasf-<id>`). An agent never described has a generic
   card. A card grants no right. A message to an agent without a card is
   refused (`-31403`, permission denied).
-- **A message is a request.** `SendMessage` sends the message's text parts to
+- **A message is a request.** `SendMessage` sends the message's text parts,
+  and its data parts as JSON parts ([ADR 016](adr/016-content-links-capabilities.md)), to
   the agent through the platform (`/v1/agent-requests`, as any harness does).
   The task's ID is the request's ID. The request is stored before the call
   answers; it then waits for the recipient side's consent, wakes the recipient
@@ -273,7 +277,7 @@ task, _ := client.GetTask(ctx, &a2a.GetTaskRequest{ID: result.(*a2a.Task).ID})
 - **Retries.** The same message (same `messageId`) sent again by the same run
   is the same request; with other content it is refused. A message sent again
   by a run that starts over after a crash or a sleep is a new request.
-- **Not supported.** File and data parts, follow-up messages on a task
+- **Not supported.** File parts, follow-up messages on a task
   (`taskId`), streaming (`SendStreamingMessage`, `SubscribeToTask`; the cards
   say `streaming: false`), push notifications, `ListTasks`, extended cards.
   `CancelTask` answers `TaskNotCancelable`: only the sender's owner can cancel
@@ -303,11 +307,13 @@ SDK's server, a framework's A2A endpoint). `server` in `adapter.json` replaces
   started again after 1 s, then up to 30 s between attempts. When the VM goes
   to sleep, the group gets `SIGTERM`, then `SIGKILL` 5 s later.
 - **Each job is one message.** An invocation, or a request from another agent,
-  becomes one A2A message (`SendMessage`, text, `messageId`
-  `agentcapsule-<job>`) to `server.a2a_url`, the configured address, whatever
-  the agent's card says. The adapter follows the task with `GetTask` until it
-  ends. The answer is the text of the task's artifacts (or of its status
-  message, or of a message the server answers directly).
+  becomes one A2A message (`SendMessage`, text parts and, for JSON parts, data
+  parts, `messageId` `agentcapsule-<job>`) to `server.a2a_url`, the configured
+  address, whatever the agent's card says. The adapter follows the task with
+  `GetTask` until it ends. The answer is the text and data parts of the task's
+  artifacts (or of its status message, or of a message the server answers
+  directly); data parts are posted as JSON parts, or as their text when they do
+  not fit an answer.
 - **Failures.** A task that ends `FAILED`, `REJECTED` or `CANCELED`, a task
   that asks for input (`INPUT_REQUIRED`, `AUTH_REQUIRED`; it is canceled, as
   no one can answer it here), a server that dies during the task (or a job sent

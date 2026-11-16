@@ -154,8 +154,8 @@ the request under SQL lock before claiming a boot.
 A full capacity defers the replacement without evicting another guest. Its
 progress therefore assumes that a slot becomes available again. Maintenance does
 not automatically wake `fence_only` boots; the barrier manifests carry this
-need. Nor does it restart every guest stopped for another cause: the general
-desire to run and business fairness remain to be built. The pass interval is not
+need. It boots again a guest stopped while it held work in progress (below);
+the general desire to run remains to be built. The pass interval is not
 an availability bound: outages, contention, clock drift and the number of jobs
 influence the effective time.
 
@@ -170,8 +170,34 @@ the delivery lease nor the barriers that neutralize delayed effects.
 
 The dispatcher prepares the recipient under exclusive admission before
 consuming a delivery attempt: wake, capacity, certificates and channel health.
-It may remove another VMM to free a slot. The control callback must finish its
-local SQL transaction without waiting for a platform call. The guest's outgoing
+The control callback must finish its
+local SQL transaction without waiting for a platform call.
+
+**Work that waits for capacity** ([ADR 017](adr/017-capacity-queue-and-dead-letter-replay.md)).
+A delivery, a wake or a resume that needs a VM for a stopped agent takes a
+free slot, or stops a VM that is not computing: an idle one first, then one
+that only waits (for its next delivery, a wake, or another agent's answer),
+the least recently active first. It never stops a VM that is computing: an
+invocation acknowledged "working" or a request being processed, unless the
+agent waits for another agent's answer, or a model call in flight. When no
+slot can be had, the agent waits in its host's capacity queue and shows
+`QUEUED`. It spends no delivery attempt (retry reason `capacity`). An agent
+boots only when every older waiter of its host can boot too, whatever their
+organization: new work never overtakes older work that waits. Each pass
+offers a freed slot to the oldest waiter at once. Work that waits past its
+deadline dies without its agent; an instruction then fails with
+`capacity_unavailable`. A barrier is not queued: it may stop any VM, a
+computing one last. The operator sees `agentcapsule_worker_agents_queued`,
+`agentcapsule_worker_capacity_oldest_wait_seconds` and the alert
+`AgentCapsuleWorkWaitingForCapacity`.
+
+**Interrupted work resumes.** An agent whose VM stopped while it held work in
+progress (a barrier stopped it, or it crashed) gets a `resume` job: the worker
+boots it again, through the capacity queue, and its harness takes the work up
+from its SQLite intents. It is not resumed once that work ended or passed its
+deadline, when it is `FAILED`, or when someone asked it to sleep after the work
+began (default pending the product owner). A crash spends its restart budget,
+so a guest that keeps crashing is not booted again and again. The guest's outgoing
 tasks are asynchronous. The host registry v2 uses a common queue for shared and
 exclusive calls; only consecutive readers at the head coexist. Migration from v1
 keeps the barriers present; stop the old workers before upgrading, as they
@@ -207,15 +233,18 @@ When a delivery dies:
 - the request keeps its state: a replied request stays `REPLIED`;
 - the reply stays readable by the sender's agent for 7 days from the death,
   through the request's status read on the platform channel, then is purged;
-- an instruction fails (`delivery_failed`, or `delivery_outcome_unknown` when
-  an attempt may have reached the agent), and its requester sees it as a dead
-  letter;
+- an instruction fails (`delivery_failed`, `capacity_unavailable` when its
+  deadline passed while its agent waited for a VM slot, or
+  `delivery_outcome_unknown` when an attempt may have reached the agent), and
+  its requester sees it as a dead letter. An administrator of its organization
+  or the operator may replay it (below);
 - the operator is told: `agentcapsule_worker_deliveries_dead_total`, the event
   `delivery_dead` and, for a reply or status, the alert
   `AgentCapsuleDeliveryDead` ([observability.md](observability.md)).
 
-Eviction can interrupt the guest's computation; the SQLite intent survives, but
-its general wake and a sufficient residence time are not yet guaranteed. The
+A barrier's eviction can interrupt the guest's computation; the SQLite intent
+survives and the resume job boots the agent again, but a sufficient residence
+time is not guaranteed. The
 FIFO model checks a three-client component, under weak fairness and callback
 termination, not the refinement of the Go service.
 
@@ -300,6 +329,93 @@ lease, the dispatch authorization and the parties that are still active. The
 outgoing channel is used in the background by the harness, after the commit of
 the SQLite intent: no platform call blocks the callback that must first return
 its delivery acknowledgment.
+
+## Replaying a dead letter
+
+An instruction that died without reaching its agent can be put back in its
+agent's queue ([ADR 017](adr/017-capacity-queue-and-dead-letter-replay.md)):
+
+```sh
+agentcapsule-admin replay-dead-letter -operation-id <invocation> -key <key> [-ttl 1h]
+```
+
+It keeps its identifier and its event ID, so the agent can deduplicate it,
+gets a new attempt budget and goes to the end of the agent's queue. It keeps
+its deadline unless `-ttl` gives a new window from now (1 s to 24 h); past its
+deadline, `-ttl` is required. It counts in its organization's queue limits.
+The command prints the replay as JSON; the same key prints the first replay
+again and changes nothing. It refuses, and changes nothing, when an attempt
+may have reached the agent (`outcome_unknown`: the agent's store fenced the
+event), when the requester can no longer invoke the agent
+(`requester_revoked`), when the content or a file is purged (`input_purged`,
+`attachments_purged`), past the deadline without `-ttl` (`expired`), when the
+agent is being deleted, and for anything but a dead letter. Each replay is
+recorded in `instruction_replays`. An organization's owners and administrators
+have the same replay through the API
+([agents-assignments.md](api/agents-assignments.md#queues-deadlines-and-dead-letters-evt-02)).
+
+## Storage pressure
+
+The worker watches two file systems ([ADR 014](adr/014-operations-capacity-diagnostics-audit.md)):
+the one of `root`, which holds the volumes, and the one of the harness images,
+the registry's `cache` (`<root>/releases` by default). Past
+`"storage_pressure"` (a used share from 0.5 to 0.95, 0.80 by default):
+- each maintenance pass records it in PostgreSQL (`worker_hosts`);
+- the API then refuses a new agent on this host (its volume) or a harness
+  import (its image) with `503 storage_pressure`, before reserving anything;
+- a provisioning already accepted waits before creating its volume (retry
+  reason `storage_pressure`); an import waits before downloading, and its
+  last attempt rejects it as `storage_pressure`.
+
+Agents that exist keep running: their sparse volumes may still grow into the
+remaining space. A file system that cannot be read counts as past the
+threshold. The disk alerts fire earlier, at 70 % and 80 %
+([observability.md](observability.md)).
+
+## Load test
+
+`scripts/load-test.py` drives the API and the worker against PostgreSQL
+(OPS-03). It sends invocations over HTTP to the real API at each rate in turn,
+and real dispatch passes deliver them to the mock runtime of the PostgreSQL
+tests: one SQLite store per agent, written by each delivery after
+`--service` (20 ms by default). No KVM and no root are needed. It reports,
+per rate, the admission latency, the age of the oldest waiting invocation,
+the delay of the worker's jobs, the backlog at the end of the step, the
+completions and the refusals, then the dead letters, and states the highest
+rate sustained: no refusal, no server error, and a queue that does not keep
+growing.
+
+```bash
+python3 scripts/load-test.py \
+  --pg-bin ~/.local/share/agentcapsule-tools/postgres/usr/lib/postgresql/18/bin \
+  --library-path ~/.local/share/agentcapsule-tools/postgres/usr/lib/x86_64-linux-gnu \
+  --native-tools ~/.local/share/agentcapsule-tools/guest-build \
+  --rates 5,10,20,40 --step 30s --agents 8 --workers 1 \
+  --output quint/results/load-<name>
+```
+
+`--workers` is the number of dispatch loops: one worker process runs one.
+`--fail-every N` fails one delivery in N, to produce dead letters.
+
+On 2026-11-16, on the development machine (WSL2, PostgreSQL 18 with fsync on),
+with 8 agents and 20 ms per delivery, the API admitted every rate up to
+80 per second with a p99 below 130 ms, without a refusal. Delivery was the
+limit. One dispatch loop, as one worker process runs, sustained 8
+invocations per second and fell behind at 16: the oldest waiting invocation
+reached 9 seconds after 20 seconds. Two loops sustained 10 and fell behind at
+20 (4 seconds), then 27 seconds at 80 per second. Each delivery takes several
+transactions in sequence (claim, authorization, acknowledgment, the job's
+completion), whatever the agents' own speed. The queue limits (100 waiting
+per agent, 1,000 per organization) refuse beyond that with `429 queue_full`.
+
+**On a real host.** Run the same script on the host, or on a machine like
+it, with the host's PostgreSQL version. To use an existing server instead
+of a private one, give `--dsn` a role allowed to create a schema in a
+throwaway database: the test creates its own schema and drops it at the end.
+Compare the limit with the expected peak rate of invocations, and set the
+`AgentCapsuleInvocationsDelayed` and queue limits from it. The load test does
+not boot VMs: boots, their memory and their CPU are measured by the KVM
+campaigns.
 
 ## Limits and restart budgets
 
@@ -423,7 +539,8 @@ The metrics and alerts of the replica are the service's, on its
 After all distributed barriers, the worker seals execution on the host: no new
 boot, no remaining VMM and the file identity verified. With product
 provisioning configured, it then records the seal and destroys the key through
-the authority service, then removes the single provisioned inode. A permanent journal keeps the
+the authority service, which refuses to destroy the key of a store it has not
+sealed, then removes the single provisioned inode. A permanent journal keeps the
 `REMOVING/REMOVED` steps; it forbids reformatting or recreating this identity
 after an interruption. A replaced file, an extra link or a busy lock makes the
 operation fail. The registries, tombstones and reserved UIDs are kept.

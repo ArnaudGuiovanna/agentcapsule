@@ -36,6 +36,11 @@ func run() (result error) {
 	if err != nil {
 		return err
 	}
+	if mode.fillTmp != 0 && !b.Identity.FenceOnly {
+		if err = fillTmp("/tmp", mode.fillTmp); err != nil {
+			return err
+		}
+	}
 	f := os.NewFile(4, "harness-control")
 	if f == nil {
 		return guestinit.ErrGuest
@@ -71,6 +76,11 @@ func run() (result error) {
 	s, err := capsuleprotocol.NewLocalServer(b.Identity, b.PreviousShutdown, store, h.Handle)
 	if err != nil {
 		return err
+	}
+	// The echo keeps JSON parts as they came (ADR 016); text-only plays a
+	// harness built before JSON content.
+	if !mode.textOnly {
+		s.AcceptJSONContent()
 	}
 	background := make(chan error, 1)
 	go func() {

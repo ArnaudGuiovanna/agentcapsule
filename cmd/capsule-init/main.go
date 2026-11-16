@@ -59,18 +59,8 @@ func run() error {
 	if err := syscall.Setrlimit(syscall.RLIMIT_CORE, &syscall.Rlimit{}); err != nil {
 		return err
 	}
-	for _, m := range []struct {
-		source, target, kind, data string
-		flags                      uintptr
-	}{
-		{"proc", "/proc", "proc", "", syscall.MS_NOSUID | syscall.MS_NODEV | syscall.MS_NOEXEC},
-		{"sysfs", "/sys", "sysfs", "", syscall.MS_NOSUID | syscall.MS_NODEV | syscall.MS_NOEXEC},
-		{"devtmpfs", "/dev", "devtmpfs", "mode=0755", syscall.MS_NOSUID},
-		{"tmpfs", "/run", "tmpfs", "mode=0711", syscall.MS_NOSUID | syscall.MS_NODEV | syscall.MS_NOEXEC},
-		{"tmpfs", "/tmp", "tmpfs", "mode=1777", syscall.MS_NOSUID | syscall.MS_NODEV},
-		{"cgroup2", "/sys/fs/cgroup", "cgroup2", "", syscall.MS_NOSUID | syscall.MS_NODEV | syscall.MS_NOEXEC},
-	} {
-		if err := mount(m.source, m.target, m.kind, m.flags, m.data); err != nil {
+	for _, m := range guestinit.BootMounts() {
+		if err := mount(m.Source, m.Target, m.Kind, m.Flags, m.Data); err != nil {
 			return err
 		}
 	}

@@ -36,6 +36,9 @@ var (
 	ErrSealed      = errors.New("store permanently sealed")
 	ErrHistory     = errors.New("acknowledged outcome history is incomplete")
 	ErrNotDeclared = errors.New("no loss declared for this outcome and incarnation")
+	// ErrNotSealed refuses to destroy the key of a store that is not sealed
+	// for good (docs/adr/006-authority-service.md §3).
+	ErrNotSealed = errors.New("store not permanently sealed: its key stays")
 )
 
 type Catalog struct {
@@ -980,6 +983,26 @@ func (c *Catalog) RecordRetiredSeal(ctx context.Context, b Binding) error {
 		_, err = c.exec(ctx, tx, stmtSeal, b.Store)
 		return err
 	})
+}
+
+// sealedWith checks that the catalogue holds store sealed, with volume and,
+// when incarnation is not 0, that incarnation: only then may its volume key
+// be destroyed (destructionRequiresPermanentSealTest). A store this
+// catalogue does not hold with that binding is stale; one it holds, unsealed,
+// is ErrNotSealed.
+func sealedWith(ctx context.Context, tx *sql.Tx, store, volume string, incarnation uint64) error {
+	got, sealed, err := binding(ctx, tx, store)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return ErrStale
+	case err != nil:
+		return errors.Join(ErrUnavailable, err)
+	case got.Volume != volume || (incarnation != 0 && got.Incarnation != incarnation):
+		return ErrStale
+	case !sealed:
+		return ErrNotSealed
+	}
+	return nil
 }
 
 // WithSubjectKey serializes a NEW subject-key grant against beginRevocation.

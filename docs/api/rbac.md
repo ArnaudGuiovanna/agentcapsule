@@ -107,6 +107,7 @@ platform's.
 | `POST /v1/service-accounts/{id}/tokens` (an agent_user account) | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 400 |
 | `POST /v1/service-accounts/{id}/tokens/{token_id}/revoke` (a disposable token) | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
 | `GET /v1/audit` | yes | yes | 403 | yes | 403 | 403 | 403 | 403 | yes | filtered | 401 | 401 | 403 |
+| `GET /v1/audit/export` | yes | yes | 403 | yes | 403 | 403 | 403 | 403 | yes | filtered | 401 | 401 | 403 |
 | `GET /v1/llm/providers` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | filtered | 401 | 401 | 403 |
 | `POST /v1/llm/providers` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | yes | 401 | 401 | 403 |
 | `POST /v1/llm/providers/{id}/rotate` (a disposable provider) | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
@@ -138,6 +139,10 @@ platform's.
 | `POST /v1/agents/{id}/release` | yes | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
 | `GET /v1/agents/{id}/directory` | yes | yes | yes | yes | yes | yes | 404 | 404 | yes | 404 | 401 | 401 | 400 |
 | `PUT /v1/agents/{id}/directory` | yes | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 400 |
+| `GET /v1/agents/{id}/capabilities` | yes | yes | yes | yes | yes | yes | 404 | 404 | yes | 404 | 401 | 401 | 400 |
+| `PUT /v1/agents/{id}/capabilities` | yes | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 400 |
+| `GET /v1/organizations/current/capabilities` (the caller's own organization) | yes | yes | 403 | yes | 403 | 403 | 403 | 403 | yes | yes | 401 | 401 | 403 |
+| `PUT /v1/organizations/current/capabilities` (the caller's own organization) | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | yes | 401 | 401 | 403 |
 | `GET /v1/agents/{id}/inbound` | yes | yes | yes | yes | yes | yes | 404 | 404 | yes | 404 | 401 | 401 | 400 |
 | `PUT /v1/agents/{id}/inbound` | yes | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 400 |
 | `GET /v1/agents/{id}/assignments` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
@@ -153,12 +158,16 @@ platform's.
 | `GET /v1/invocations/{id}/result` (the caller's own, else the user's) | 404 | 404 | 404 | 404 | yes | 404 | 404 | 404 | 404 | 404 | 401 | 401 | 403 |
 | `GET /v1/operations/{id}/result` (the caller's own, else the user's) | 404 | 404 | 404 | 404 | yes | 404 | 404 | 404 | 404 | 404 | 401 | 401 | 403 |
 | `POST /v1/invocations/{id}/cancel` (a disposable invocation of the user) | 404 | 404 | 404 | 404 | yes | 404 | 404 | 404 | 404 | 404 | 401 | 401 | 404 |
+| `POST /v1/invocations/{id}/replay` (a disposable dead letter of the user) | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
 | `GET /v1/agents/{id}/held-requests` | yes | yes | yes | 403 | yes | yes | 404 | 404 | yes | 404 | 401 | 401 | 400 |
 | `POST /v1/agents/{id}/held-requests/{request_id}/accept` (a disposable held request) | yes | yes | yes | 403 | yes | yes | 404 | 404 | yes | 404 | 401 | 401 | 400 |
 | `POST /v1/agents/{id}/held-requests/{request_id}/decline` (a disposable held request) | yes | yes | yes | 403 | yes | yes | 404 | 404 | yes | 404 | 401 | 401 | 400 |
 | `POST /v1/agents/{id}/attachments` | 403 | 403 | 403 | 403 | yes | yes | 404 | 404 | yes | 404 | 401 | 401 | 404 |
 | `GET /v1/attachments/{id}` (the caller's own, else the user's) | yes | yes | yes | yes | yes | 404 | 404 | 404 | yes | 404 | 401 | 401 | 404 |
 | `DELETE /v1/attachments/{id}` (a disposable file of the user) | 404 | 404 | 404 | 404 | yes | 404 | 404 | 404 | 404 | 404 | 401 | 401 | 404 |
+| `POST /v1/attachments/{id}/link` (the caller's own, else the user's) | 404 | 404 | 404 | 404 | yes | 404 | 404 | 404 | 404 | 404 | 401 | 401 | 404 |
+| `POST /v1/invocations/{id}/result/link` (the caller's own, else the user's) | 404 | 404 | 404 | 404 | yes | 404 | 404 | 404 | 404 | 404 | 401 | 401 | 404 |
+| `GET /v1/downloads/{token}` (the link is the credential: a bearer opens nothing) | 404 | 404 | 404 | 404 | 404 | 404 | 404 | 404 | 404 | 404 | 404 | 404 | 404 |
 | `GET /v1/users` (historical owner domain) | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 401 | 401 | 403 |
 | `POST /v1/users` (historical owner domain) | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 401 | 401 | 403 |
 | `POST /v1/users/{id}/tokens` (historical owner domain) | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 401 | 401 | 403 |

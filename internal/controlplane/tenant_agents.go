@@ -58,6 +58,7 @@ type CreateAssignmentInput struct {
 const tenantAgentColumns = `a.id,x.name,
         CASE WHEN a.phase<>'LIVE' THEN a.phase
           WHEN coalesce(p.state,'STOPPED')='STOPPED' AND f.agent_id IS NOT NULL THEN 'FAILED'
+          WHEN coalesce(p.state,'STOPPED')='STOPPED' AND EXISTS(SELECT 1 FROM capacity_waits q WHERE q.agent_id=a.id) THEN 'QUEUED'
           WHEN p.state='RUNNING' AND NOT p.fence_only AND pc.agent_id IS NOT NULL THEN 'READY'
           WHEN p.state='RUNNING' THEN 'STARTING' ELSE coalesce(p.state,'STOPPED') END,
         r.artifact_digest,r.name,r.version,x.vcpus,x.memory_mib,x.volume_mib,x.created_at,
@@ -155,6 +156,10 @@ func (c *AgentCatalog) reserveTenant(ctx context.Context, p Principal, key strin
 			return 0, nil, err
 		}
 		if err = lockWorkerHost(ctx, tx, c.host); err != nil {
+			return 0, nil, err
+		}
+		// A new agent needs room for its volume (OPS-03).
+		if err = refuseUnderDataPressure(ctx, tx, c.host); err != nil {
 			return 0, nil, err
 		}
 		var available bool

@@ -36,6 +36,13 @@ a key without its binding. Creation and destruction go through the service
 too (`ensure_key`, `destroy_key`). The service's unit disables core dumps,
 and the service never logs or exports a key.
 
+**Destruction checks the seal.** `destroy_key` names the binding too. The
+service refuses it unless the restore authority holds the store sealed with
+that volume (`not_sealed`), and refuses it without the incarnation. An
+agent's deletion seals its store first. A seal is permanent, so checking it
+and then destroying the key needs no transaction across both authorities.
+The worker keeps that order, but the service does not rely on it.
+
 A created key keeps its identity after an interruption. A permanent allocation
 marker prevents generating another key if the published file disappears.
 `WithKey` holds a shared lock during use and clears its buffer before releasing
@@ -75,10 +82,10 @@ validation of an external HSM or KMS.
   the stores' copies expire by age
   ([recovery.md](../recovery.md#deleting-an-agent-its-keys-and-its-archives-adr-018)).
 
-Only the worker's order puts the seal before the destruction today:
-`Revoke` checks no seal. The authority service will refuse to destroy the key
-of a store that is not sealed ([ADR 006](../adr/006-authority-service.md),
-wave 3).
+The authority service refuses to destroy the key of a store that is not
+sealed ([ADR 006](../adr/006-authority-service.md), wave 3): `destroy_key`
+takes the store's binding and answers `not_sealed` otherwise. The worker keeps
+its order, seal then key.
 
 "Kept out of data backups" includes the provider's snapshots of the host's
 disk: such a copy holds every key in clear, and brings back a destroyed one.
@@ -100,9 +107,12 @@ In synchronous mode:
 - `Ensure` publishes the key file first. Nobody can use the key yet: its
   allocation marker is missing. The stream records the key, wrapped, and
   waits for the replica. Only then does `Ensure` publish the marker.
-- `Revoke` publishes the tombstone at once, which only denies. The stream
-  records the destruction. The replica deletes its wrapped copy in the same
-  transaction. Only then does `Revoke` remove the key file.
+- `Revoke` first checks, in the catalogue transaction that will record the
+  destruction, that the store is sealed with that volume; otherwise it
+  publishes nothing. Then it publishes the tombstone at once, which only
+  denies. The stream records the destruction after the seal. The replica
+  deletes its wrapped copy in the same transaction. Only then does `Revoke`
+  remove the key file.
 - After a crash at any step, no caller can use a key that the replica lacks.
   A retry records the same key again. The replica keeps one key per volume,
   and a destroyed key never comes back.

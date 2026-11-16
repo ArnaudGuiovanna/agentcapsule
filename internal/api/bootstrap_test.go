@@ -366,13 +366,18 @@ func TestOperatorBootstrapFromEmptyDatabase(t *testing.T) {
 		}
 		return r
 	}
-	keyChange("acme-key-2026-12", "-action", "add-key", "-key-id", "2026-12", "-public-key", base64.StdEncoding.EncodeToString(pub2))
+	// Adding or retiring a key changes who may sign in: -confirm names the key (ADR 014).
+	if _, errOut, err := admin("configure-delegation", "-operation-id", "acme-key-unconfirmed", "-tenant-id", org.ID, "-issuer", issuer, "-audience", audience,
+		"-action", "add-key", "-key-id", "2026-12", "-public-key", base64.StdEncoding.EncodeToString(pub2)); err == nil || errOut != "confirmation_required\n" {
+		t.Fatal("a key was added without confirmation", err, errOut)
+	}
+	keyChange("acme-key-2026-12", "-action", "add-key", "-key-id", "2026-12", "-public-key", base64.StdEncoding.EncodeToString(pub2), "-confirm", "2026-12")
 	for _, token := range []string{sign(key1, "2026-11", "alice", "old-key"), sign(key2, "2026-12", "alice", "new-key")} {
 		if status, _ := current(token); status != 200 {
 			t.Fatal("a key was refused during the overlap", status)
 		}
 	}
-	keyChange("acme-retire-2026-11", "-action", "retire-key", "-key-id", "2026-11", "-overlap", "0s")
+	keyChange("acme-retire-2026-11", "-action", "retire-key", "-key-id", "2026-11", "-overlap", "0s", "-confirm", "2026-11")
 	if status, _ := current(sign(key1, "2026-11", "alice", "retired-key")); status != 401 {
 		t.Fatal("a retired key signed in", status)
 	}
@@ -380,7 +385,7 @@ func TestOperatorBootstrapFromEmptyDatabase(t *testing.T) {
 		t.Fatal("the new key was refused", status)
 	}
 	if _, errOut, err := admin("configure-delegation", "-operation-id", "acme-retire-last", "-tenant-id", org.ID, "-issuer", issuer, "-audience", audience,
-		"-action", "retire-key", "-key-id", "2026-12"); err == nil || errOut != "delegation_change_rejected_conflict\n" {
+		"-action", "retire-key", "-key-id", "2026-12", "-confirm", "2026-12"); err == nil || errOut != "delegation_change_rejected_conflict\n" {
 		t.Fatal("the last key was retired", err, errOut)
 	}
 

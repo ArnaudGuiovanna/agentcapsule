@@ -49,6 +49,10 @@ type HarnessImporter struct {
 	Lease, Timeout time.Duration
 	// EvictEvery spaces cache evictions in Run (default one hour).
 	EvictEvery time.Duration
+	// Pressure, when set, refuses an import while the cache's file system is
+	// past the storage pressure threshold (OPS-03): the import is tried
+	// again later, and rejected as storage_pressure after its last attempt.
+	Pressure func(dir string) error
 	// inUse lists the image paths this host's agents may boot from. Without
 	// it (no runtime attached) nothing is ever evicted.
 	inUse atomic.Pointer[func(context.Context) (map[string]bool, error)]
@@ -161,7 +165,7 @@ func (h *HarnessImporter) ImportOne(ctx context.Context) (bool, error) {
 		return true, ferr
 	}
 	_, err = h.store.CompleteHarnessImport(ctx, job, controlplane.ImportedRelease{Name: pkg.Manifest.Name, Version: pkg.Manifest.Version,
-		RootfsDigest: pkg.RootfsDigest, RootfsBytes: pkg.RootfsSize, Signer: pkg.Signer})
+		RootfsDigest: pkg.RootfsDigest, RootfsBytes: pkg.RootfsSize, Signer: pkg.Signer, Capabilities: pkg.Manifest.Capabilities})
 	return true, err
 }
 
@@ -172,6 +176,11 @@ func (h *HarnessImporter) fetch(ctx context.Context, job controlplane.ImportJob)
 	ref, err := ociregistry.ParseReference(job.Reference)
 	if err != nil {
 		return ociregistry.Package{}, err
+	}
+	if h.Pressure != nil {
+		if err = h.Pressure(h.cache); err != nil {
+			return ociregistry.Package{}, err
+		}
 	}
 	ctx, cancel := context.WithTimeout(ctx, h.Timeout)
 	defer cancel()
@@ -281,6 +290,8 @@ func classifyImport(err error) (string, bool) {
 		return "signature", false
 	case errors.Is(err, ociregistry.ErrIntegrity), errors.Is(err, harnesspkg.ErrInvalid):
 		return "integrity", false
+	case errors.Is(err, controlplane.ErrStoragePressure):
+		return "storage_pressure", true
 	default:
 		return "unavailable", true
 	}
