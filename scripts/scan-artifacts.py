@@ -147,7 +147,7 @@ def main(argv=None):
     if manifests:
         syft = TOOLS.tool("syft", a.cache)
         for manifest, shipped in manifests:
-            name = target_name("manifest" if shipped else "dev-manifest", manifest.relative_to(ROOT)
+            name = target_name("manifest" if shipped else "dev-manifest", manifest.resolve().relative_to(ROOT)
                                if manifest.resolve().is_relative_to(ROOT) else manifest)
             catalog = out / (slug(name) + ".syft.json")
             subprocess.run([str(syft), f"file:{manifest.resolve()}", "-q", "-o", f"syft-json={catalog}"],
