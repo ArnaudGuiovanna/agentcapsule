@@ -1,7 +1,8 @@
-# Scrape configuration for one Agent Capsule host (OPS-02). Both processes
+# Scrape configuration for one Agent Capsule host (OPS-02). The processes
 # serve /metrics on loopback only; run Prometheus (or an OpenTelemetry
 # collector with a Prometheus receiver) on the same host. The addresses are
-# examples: agentcapsule-api -metrics-listen and the worker's "metrics_listen".
+# examples: agentcapsule-api -metrics-listen, the worker's "metrics_listen" and
+# the authority service's "metrics_listen" (the same port on both hosts).
 global:
   scrape_interval: 30s
   evaluation_interval: 30s
@@ -14,6 +15,11 @@ scrape_configs:
   - job_name: agentcapsule-worker
     static_configs:
       - targets: ["127.0.0.1:9465"]
+  # The authority service (ADR 006): its holds and the replication to the
+  # standby on the primary, the replica's state on the standby.
+  - job_name: agentcapsule-authority
+    static_configs:
+      - targets: ["127.0.0.1:9466"]
   # node_exporter: the host's resources and, through its textfile collector,
   # the base-backup times (deploy/backup/agentcapsule-backup-metrics.py).
   - job_name: node
