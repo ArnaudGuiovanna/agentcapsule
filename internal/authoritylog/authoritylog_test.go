@@ -362,7 +362,7 @@ func TestAccessKindsAreClosedAndClassified(t *testing.T) {
 			bearer = append(bearer, k)
 		}
 	}
-	if !slices.Equal(bearer, []string{AccessAPIToken, AccessServiceToken, AccessPlatformCredential, AccessDelegatedToken}) {
+	if !slices.Equal(bearer, []string{AccessAPIToken, AccessServiceToken, AccessPlatformCredential, AccessDelegatedToken, AccessBlanket}) {
 		t.Fatal("bearer tokens:", bearer)
 	}
 	if _, known := AccessBearer("role"); known {
