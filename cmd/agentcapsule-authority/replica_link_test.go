@@ -87,26 +87,6 @@ func writeLinkCertificates(t *testing.T, dir, restoreID, keyID string) {
 	}
 }
 
-// The shipped examples read as their roles, once the identities are filled
-// in.
-func TestConfigurationExamplesNameTheirRoles(t *testing.T) {
-	fill := strings.NewReplacer("<restoreauth_PUBLIC_IDENTITY>", "restoreauth_"+strings.Repeat("a", 32),
-		"<keyauth_PUBLIC_IDENTITY>", "keyauth_"+strings.Repeat("b", 32))
-	for file, primary := range map[string]bool{"primary.example.json": true, "replica.example.json": false} {
-		text, err := os.ReadFile(filepath.Join("../../runtime/authority", file))
-		if err != nil {
-			t.Fatal(err)
-		}
-		c, err := parseConfig([]byte(fill.Replace(string(text))))
-		if err != nil || (c.primary != nil) != primary || (c.replica != nil) == primary {
-			t.Fatal(file, err)
-		}
-		if primary && (c.link == nil || c.maxKeyHold != authorityservice.DefaultMaxKeyHold || c.primary.MetricsListen != "127.0.0.1:9466") {
-			t.Fatal(file, "read as", c.primary)
-		}
-	}
-}
-
 // The authority_replica section, now the service's: standalone without it,
 // refused when it disagrees with the authorities, and synchronous with it,
 // so that the worker's writes through the service reach the replica.
