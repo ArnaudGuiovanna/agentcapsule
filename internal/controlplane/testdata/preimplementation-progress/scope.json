@@ -18,7 +18,8 @@
     "notification_failure": "Actual TCP ECONNREFUSED after SQL dispatch authorization; lease expiry permits retry. Final retirement uses production event fence and rejects delayed copies.",
     "store_availability": "Stop/drain real local mTLS server and close SQLite; actual Health/Fence failures mark it unavailable. Recovery reopens the same current SQLite file with authenticated local transport. This is not rollback restore or a VMM reboot.",
     "authority_availability": "The production owner lookup has its own real PostgreSQL pool through a loopback proxy. Closing listener and active connections causes actual lookup failure; reopening the endpoint restores lookup of the same encrypted outcome. This is read-path SQL authority availability, not D5 independent key-root recovery.",
-    "worker_availability": "A dedicated Go subprocess executes DiscoverWork, ClaimWork, ClaimDelivery, AuthorizeDispatch, encrypted resolution, delivery ACK/CompleteWork and private reply transactions. SIGKILL is observed after request acceptance/discovery; a fresh process consumes the retained ticket. mTLS/SQLite callback driving remains in the parent. This is not the full Firecracker worker service."
+    "worker_availability": "A dedicated Go subprocess executes DiscoverWork, ClaimWork, ClaimDelivery, AuthorizeDispatch, encrypted resolution, delivery ACK/CompleteWork and private reply transactions. SIGKILL is observed after request acceptance/discovery; a fresh process consumes the retained ticket. mTLS/SQLite callback driving remains in the parent. This is not the full Firecracker worker service.",
+    "deletion": "Only in deleted-destination-rejects-new-work, with no request in flight: requestDelete is the owner's production deletion request for agent a (store 0), finishDelete the production fence of agent/a in both local stores, their SQL receipts and the tombstone commit. Pending is agent a QUIESCING, complete is DELETING or DELETED. The refused arrival is a production submission from a's still-running VM, refused for its placement."
   },
   "compared": [
     "request stage/result projected from SQL",
@@ -49,7 +50,6 @@
     "barrier-reserves-capacity": "Production maintenance admission/capacity adapter",
     "fence-waits-for-current-execution": "Production admission/capacity adapter with competing request",
     "cannot-recycle-with-outstanding-notice": "Production identity retention/cleanup contract; do not invent an application recycle method",
-    "fifo-admission-cannot-overtake": "Global runtime/work admission correspondence, not per-agent mailbox FIFO alone",
-    "deleted-destination-rejects-new-work": "Deletion/retirement binding with real refusal"
+    "fifo-admission-cannot-overtake": "Global runtime/work admission correspondence, not per-agent mailbox FIFO alone"
   }
 }
