@@ -50,11 +50,11 @@ type restoreHost struct {
 	// boot starts the restricted boot of the installed image and returns its
 	// authenticated control.
 	boot func(ctx context.Context, id string) (runtime.VMRun, *capsuleprotocol.Client, error)
-	// relocate creates the volume file of an agent that moved here from a
+	// relocate creates the volume file of an agent that moves here from a
 	// lost host, and registers it on this host: the same volume ID, size and
 	// key, an empty container. It returns the file's identity. Repeating it
-	// returns the same file.
-	relocate func(ctx context.Context, plan controlplane.VolumeRestorePlan) (device, inode uint64, err error)
+	// returns the same file. The agent's barrier needs it registered.
+	relocate func(ctx context.Context, e controlplane.Enrollment) (device, inode uint64, err error)
 	// after runs once each step is durable; tests stop the restore there.
 	after func(step string) error
 }
@@ -87,22 +87,31 @@ func (w *Placements) productRestoreHost() restoreHost {
 }
 
 // relocateVolume creates, as provisioning does, the volume file of an agent
-// that moved here from a lost host (ADR 020): a container of its volume ID
+// that moves here from a lost host (ADR 020): a container of its volume ID
 // and size, formatted with its key, which the key authority holds under the
-// incarnation that the restore reserved. It registers it on this host with
-// the agent's harness. The archive's bytes replace it at the install.
-func (w *Placements) relocateVolume(ctx context.Context, plan controlplane.VolumeRestorePlan) (uint64, uint64, error) {
+// store's current binding. It registers it on this host with the agent's
+// harness. The archive's bytes replace it at the install. Nothing boots it
+// before its restore moves the agent here.
+func (w *Placements) relocateVolume(ctx context.Context, e controlplane.Enrollment) (uint64, uint64, error) {
 	p := w.provisioning
 	if p == nil {
 		return 0, 0, controlplane.ErrInput
 	}
-	e := plan.Enrollment
 	harness, err := w.resolveHarness(ctx, e)
 	if err != nil {
 		return 0, 0, err
 	}
+	// The incarnation the authority holds now: the lost host's, or the one a
+	// begun restore reserved. A sealed store is refused here.
+	binding, err := w.authority.Lookup(ctx, e.AgentID)
+	if err != nil {
+		return 0, 0, err
+	}
+	if binding.Volume != e.VolumeID {
+		return 0, 0, restoreauthority.ErrStale
+	}
 	var volume volumestore.Container
-	err = w.authority.HoldKey(ctx, enrollmentBinding(e), func(ctx context.Context, key []byte) error {
+	err = w.authority.HoldKey(ctx, binding, func(ctx context.Context, key []byte) error {
 		var err error
 		volume, err = p.volumes.Prepare(ctx, volumestore.Spec{AgentID: e.AgentID, VolumeID: e.VolumeID, SizeMiB: int64(e.Resources.DataVolumeMiB)}, key)
 		return err
@@ -118,9 +127,9 @@ func (w *Placements) relocateVolume(ctx context.Context, plan controlplane.Volum
 	return volume.Device, volume.Inode, nil
 }
 
-// arriveForRestore creates and records the volume file of an agent whose
-// relocation is pending, before anything else of the restore touches this
-// host. It does nothing for an agent whose volume is here.
+// arriveForRestore records the volume file of an agent whose relocation is
+// pending, before the install: arriveBeforeBarrier created it. It does
+// nothing for an agent whose volume is here.
 func (w *Placements) arriveForRestore(ctx context.Context, h restoreHost, plan controlplane.VolumeRestorePlan) error {
 	if plan.RelocatedFrom == "" {
 		return nil
@@ -128,11 +137,43 @@ func (w *Placements) arriveForRestore(ctx context.Context, h restoreHost, plan c
 	if h.relocate == nil {
 		return controlplane.ErrInput
 	}
-	device, inode, err := h.relocate(ctx, plan)
+	device, inode, err := h.relocate(ctx, plan.Enrollment)
 	if err != nil {
 		return err
 	}
 	return w.store.RecordRelocatedVolume(ctx, plan.Restore.ID, w.hostID, device, inode)
+}
+
+// arriveBeforeBarrier creates and registers the volume file of an agent
+// that moves here, or whose relocation is pending, before the restore takes
+// the agent's barrier on this host: the host admits a barrier only for an
+// agent it knows. An agent whose volume is here needs nothing.
+func (w *Placements) arriveBeforeBarrier(ctx context.Context, h restoreHost, restoreID, agentID string) error {
+	plan, err := w.store.VolumeRestoreTarget(ctx, restoreID, w.hostID)
+	var e controlplane.Enrollment
+	switch {
+	case err == nil && plan.RelocatedFrom == "":
+		return nil
+	case err == nil:
+		e = plan.Enrollment
+	case errors.Is(err, controlplane.ErrNotFound):
+		if _, err = w.store.VolumeEnrollment(ctx, agentID, w.hostID); err == nil {
+			return nil
+		}
+		if !errors.Is(err, controlplane.ErrStoreEnrollment) && !errors.Is(err, controlplane.ErrPlacement) {
+			return err
+		}
+		if e, _, err = w.store.TakenOverEnrollment(ctx, agentID, w.hostID); err != nil {
+			return err
+		}
+	default:
+		return err
+	}
+	if h.relocate == nil {
+		return controlplane.ErrInput
+	}
+	_, _, err = h.relocate(ctx, e)
+	return err
 }
 
 // retireForRestore runs under the agent's barrier. Reconciliation already
@@ -300,6 +341,9 @@ func (w *Placements) restore(ctx context.Context, h restoreHost, restoreID, agen
 	var result VolumeRestoreResult
 	if w.authority == nil || archives == nil || !controlplane.ValidRestoreID(restoreID) || !volumearchive.ValidID(archiveID) || agentID == "" {
 		return result, controlplane.ErrInput
+	}
+	if err := w.arriveBeforeBarrier(ctx, h, restoreID, agentID); err != nil {
+		return result, err
 	}
 	err := h.barrier(ctx, agentID, func(ctx context.Context) error {
 		plan, err := w.beginRestore(ctx, h, restoreID, agentID, archiveID, archives)

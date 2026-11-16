@@ -63,6 +63,8 @@ type restoreLab struct {
 	// installedOn is the volume identity of the last install.
 	relocations int
 	installedOn [2]uint64
+	// registered holds host/agent for each agent a host registered.
+	registered map[string]bool
 	// What creates more agents (host_restore_test.go).
 	keys     *keyauthority.Files
 	accounts *controlplane.Accounts
@@ -210,7 +212,7 @@ func newRestoreLab(t *testing.T, implementation string) *restoreLab {
 		t.Fatal(err)
 	}
 	l := &restoreLab{t: t, w: w, store: s, db: db, authority: authority, archives: archives, opts: opts, e: e, keys: keys,
-		accounts: accounts, catalog: catalog, admin: p,
+		accounts: accounts, catalog: catalog, admin: p, registered: map[string]bool{"local/" + e.AgentID: true},
 		volume: filepath.Join(parent, "volume"), state: filepath.Join(t.TempDir(), "harness.db")}
 	t.Cleanup(l.stopGuest)
 	// The agent's first boot: an empty harness database.
@@ -329,7 +331,13 @@ func (l *restoreLab) stopGuest() {
 
 func (l *restoreLab) host() restoreHost {
 	return restoreHost{
-		barrier: func(ctx context.Context, _ string, fn func(context.Context) error) error { return fn(ctx) },
+		// As the host does, a barrier only for an agent registered here.
+		barrier: func(ctx context.Context, id string, fn func(context.Context) error) error {
+			if !l.registered[l.w.hostID+"/"+id] {
+				return errors.New("unregistered barrier target")
+			}
+			return fn(ctx)
+		},
 		retire: func(ctx context.Context, id string) error {
 			l.stopGuest()
 			p, err := l.w.placement(ctx, id)
@@ -370,9 +378,21 @@ func (l *restoreLab) host() restoreHost {
 			return nil
 		},
 		// The new host's volume of a relocated agent: an empty container of
-		// the volume's size, under another identity.
-		relocate: func(context.Context, controlplane.VolumeRestorePlan) (uint64, uint64, error) {
+		// the volume's size, under another identity, registered on the host
+		// once. The key authority must give its key.
+		relocate: func(ctx context.Context, e controlplane.Enrollment) (uint64, uint64, error) {
+			if l.registered[l.w.hostID+"/"+e.AgentID] {
+				return 2, 200, nil
+			}
+			b, err := l.authority.Lookup(ctx, e.AgentID)
+			if err != nil {
+				return 0, 0, err
+			}
+			if err = l.authority.HoldKey(ctx, b, func(context.Context, []byte) error { return nil }); err != nil {
+				return 0, 0, err
+			}
 			l.relocations++
+			l.registered[l.w.hostID+"/"+e.AgentID] = true
 			return 2, 200, os.WriteFile(l.volume, make([]byte, restoreVolumeSize), 0600)
 		},
 		boot: l.boot,

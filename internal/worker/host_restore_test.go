@@ -85,6 +85,7 @@ func (l *restoreLab) addAgent(name string, provisioned bool, inode uint64) contr
 	if _, err = l.authority.Register(t.Context(), e.AgentID, e.VolumeID); err != nil {
 		t.Fatal(err)
 	}
+	l.registered["local/"+e.AgentID] = true
 	return e
 }
 
