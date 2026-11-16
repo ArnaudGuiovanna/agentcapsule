@@ -94,6 +94,25 @@ tests:
         alertname: AgentCapsuleAgentFailed
         exp_alerts: []
 
+  # Work waits for a VM slot from minute 1 and boots at minute 20 (ADR 017).
+  - interval: 1m
+    input_series:
+      - series: 'agentcapsule_worker_capacity_oldest_wait_seconds{job="agentcapsule-worker",instance="host-1"}'
+        values: '0 0+60x18 0x10'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: AgentCapsuleWorkWaitingForCapacity
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: AgentCapsuleWorkWaitingForCapacity
+        exp_alerts:
+          - exp_labels: {severity: warning, job: agentcapsule-worker, instance: host-1}
+            exp_annotations:
+              summary: Work has waited more than 10 minutes for a VM slot; raise max_active or add a host.
+      - eval_time: 25m
+        alertname: AgentCapsuleWorkWaitingForCapacity
+        exp_alerts: []
+
   # WAL archiving (REC-03). host-1: archiving stuck from the start, failing
   # from minute 6. host-2: an idle database, archived an hour ago, nothing
   # waiting. host-3: archive_mode turned off at minute 10. host-4:

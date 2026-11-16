@@ -319,6 +319,10 @@ func TestReadyChecksInstalledMigrationLedger(t *testing.T) {
 func revertTenantAgents(t *testing.T, s *Store) {
 	t.Helper()
 	if _, err := s.pool.Exec(t.Context(), `
+        DROP TABLE IF EXISTS instruction_replays, capacity_waits;
+        ALTER TABLE worker_jobs DROP CONSTRAINT IF EXISTS worker_jobs_kind_check;
+        ALTER TABLE worker_jobs ADD CONSTRAINT worker_jobs_kind_check
+          CHECK (kind IN ('delivery','closure','deletion','expiration','provision','lifecycle'));
         DROP TABLE IF EXISTS platform_audit, delegation_keys;
         DROP INDEX IF EXISTS organizations_active_name, delegation_trusts_issuer_audience;
         ALTER TABLE IF EXISTS delegation_audit DROP COLUMN IF EXISTS key_id, DROP CONSTRAINT IF EXISTS delegation_audit_action_check;

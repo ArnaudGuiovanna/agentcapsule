@@ -255,12 +255,25 @@ func (c *AgentCatalog) SetIdlePolicy(ctx context.Context, p Principal, id, key s
 	return result, commit(ctx, tx)
 }
 
+// owesWork holds while agent a owes work that the platform tracks: a delivery
+// waiting for it, a lifecycle or instruction operation still open (a scheduled
+// instruction not yet released aside), an exchange with another agent not yet
+// closed at now, or a model call in flight. An agent that owes none is idle:
+// the idle policy may put it to sleep, and work may evict its VM (ADR 017).
+func owesWork(now string) string {
+	return `(EXISTS(SELECT 1 FROM agent_mailboxes m WHERE m.dest_agent_id=a.id AND m.delivery_state='PENDING')
+   OR EXISTS(SELECT 1 FROM platform_operations o LEFT JOIN owner_instructions i ON i.operation_id=o.id
+                   WHERE o.agent_id=a.id AND o.status IN ('PENDING','RUNNING')
+                     AND NOT (o.kind='instruction' AND i.run_at IS NOT NULL AND i.released_at IS NULL))
+   OR EXISTS(SELECT 1 FROM agent_requests r WHERE (r.sender_agent_id=a.id OR r.recipient_agent_id=a.id)
+                     AND r.state IN ('PENDING_APPROVAL','DELIVERING','PROCESSING') AND r.expires_at > ` + now + `)
+   OR EXISTS(SELECT 1 FROM llm_usage u WHERE u.agent_id=a.id AND u.state='reserved'))`
+}
+
 // idleCandidates selects running tenant agents whose idle clock has elapsed and
-// that owe no work. $1 now, $2 host, $3 agent filter (” for all). "Work" is any
-// of: a delivery waiting for the agent, a lifecycle or instruction operation
-// still open, an exchange with another agent not yet closed, a model call in
-// flight, or a scheduled instruction due before the idle window would end.
-const idleCandidates = `
+// that owe no work (owesWork), nor a scheduled instruction due before the idle
+// window would end. $1 now, $2 host, $3 agent filter (” for all).
+var idleCandidates = `
 SELECT a.id,x.idle_policy_by FROM agents a
   JOIN agent_specs x ON x.agent_id=a.id
   JOIN agent_placements p ON p.agent_id=a.id
@@ -274,16 +287,10 @@ SELECT a.id,x.idle_policy_by FROM agents a
                    WHERE r.sender_agent_id=a.id OR r.recipient_agent_id=a.id),w.observed_at),
         coalesce((SELECT max(coalesce(u.settled_at,u.created_at)) FROM llm_usage u WHERE u.agent_id=a.id),w.observed_at))
        + x.idle_timeout_seconds*interval '1 second' <= ` + dbNow + `
-   AND NOT EXISTS(SELECT 1 FROM agent_mailboxes m WHERE m.dest_agent_id=a.id AND m.delivery_state='PENDING')
-   AND NOT EXISTS(SELECT 1 FROM platform_operations o LEFT JOIN owner_instructions i ON i.operation_id=o.id
-                   WHERE o.agent_id=a.id AND o.status IN ('PENDING','RUNNING')
-                     AND NOT (o.kind='instruction' AND i.run_at IS NOT NULL AND i.released_at IS NULL))
+   AND NOT ` + owesWork(dbNow) + `
    AND NOT EXISTS(SELECT 1 FROM owner_instructions i JOIN platform_operations o ON o.id=i.operation_id
                    WHERE o.agent_id=a.id AND o.status='PENDING' AND i.run_at IS NOT NULL AND i.released_at IS NULL
                      AND i.run_at <= ` + dbNow + ` + x.idle_timeout_seconds*interval '1 second')
-   AND NOT EXISTS(SELECT 1 FROM agent_requests r WHERE (r.sender_agent_id=a.id OR r.recipient_agent_id=a.id)
-                     AND r.state IN ('PENDING_APPROVAL','DELIVERING','PROCESSING') AND r.expires_at > ` + dbNow + `)
-   AND NOT EXISTS(SELECT 1 FROM llm_usage u WHERE u.agent_id=a.id AND u.state='reserved')
  ORDER BY a.id LIMIT $4`
 
 // ScheduleIdleSleeps asks agents with an idle policy and no work to go to sleep.

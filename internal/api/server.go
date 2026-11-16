@@ -62,6 +62,7 @@ func NewForHost(store *controlplane.Store, accounts *controlplane.Accounts, host
 	s.handle("/v1/queue/limits", s.queueLimits)
 	s.handle("/v1/invocations/{id}/result", s.instructionResult)
 	s.handle("/v1/invocations/{id}/cancel", s.cancelInvocation)
+	s.handle("/v1/invocations/{id}/replay", s.replayInvocation)
 	s.handle("/v1/agents/{id}/idle-policy", s.idlePolicy)
 	s.handle("/v1/agents/{id}/release", s.agentRelease)
 	s.handle("/v1/agents/{id}/directory", s.agentDirectory)
@@ -186,6 +187,7 @@ func problem(w http.ResponseWriter, status int, code string) {
 	}{"about:blank", http.StatusText(status), status, code})
 }
 func failure(w http.ResponseWriter, err error) {
+	var refusal *controlplane.ReplayRefusal
 	switch {
 	case errors.Is(err, controlplane.ErrAuthentication):
 		problem(w, 401, "authentication_required")
@@ -216,6 +218,17 @@ func failure(w http.ResponseWriter, err error) {
 		problem(w, 409, "attachment_unavailable")
 	case errors.Is(err, controlplane.ErrExpired):
 		problem(w, 409, "expired")
+	case errors.As(err, &refusal):
+		switch refusal.Reason {
+		case controlplane.ReplayOutcomeUnknown:
+			problem(w, 409, "outcome_unknown")
+		case controlplane.SkipRequesterRevoked:
+			problem(w, 409, "requester_revoked")
+		case controlplane.SkipInputPurged:
+			problem(w, 409, "input_purged")
+		default:
+			problem(w, 409, "attachments_purged")
+		}
 	case errors.Is(err, controlplane.ErrClosurePending):
 		problem(w, 409, "closure_pending")
 	case errors.Is(err, controlplane.ErrAgentExists):

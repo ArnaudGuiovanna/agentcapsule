@@ -1585,6 +1585,46 @@ paths:
         '404': {$ref: '#/components/responses/Problem'}
         '409': {$ref: '#/components/responses/Problem'}
         default: {$ref: '#/components/responses/Problem'}
+  /v1/invocations/{id}/replay:
+    post:
+      description: >-
+        Puts a dead letter (an invocation `failed` or `expired` without
+        reaching its agent) back in its agent's queue (quota:manage; owners
+        and administrators of the organization). It keeps its identifier and
+        its event ID, so the agent can deduplicate it, gets a new attempt
+        budget and goes to the end of the agent's queue. It keeps its
+        deadline, which must not have passed, unless `ttl_seconds` gives a new
+        delivery window from now. It counts in the queue limits (429
+        `queue_full`). The administrator never reads its content or result:
+        they stay the requester's, who must still hold `invoke`. 409:
+        `invalid_transition` (not a dead letter), `outcome_unknown` (an
+        attempt may have reached the agent), `requester_revoked`,
+        `input_purged`, `attachments_purged`, `expired` (deadline passed and
+        no new window), `agent_unavailable`. Audited. Idempotent.
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                ttl_seconds: {type: integer, minimum: 1, maximum: 86400, description: "New delivery window from now. Without it the deadline is kept."}
+      responses:
+        '202':
+          description: The invocation is queued again, or the initial response replayed
+          headers:
+            Idempotency-Replayed: {schema: {type: boolean}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Invocation'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
   /v1/agents/{id}/idle-policy:
     post:
       description: >-
@@ -2337,7 +2377,7 @@ components:
         id: {type: string}
         owner_user_id: {type: string}
         name: {type: string}
-        state: {type: string, description: "Observed state (STOPPED, STARTING, READY, FAILED, ...)."}
+        state: {type: string, description: "Observed state (STOPPED, STARTING, READY, FAILED, QUEUED, ...)."}
         failure_reason: {type: string, enum: [boot_failed, crashed], description: "Why a FAILED agent spent its restart budget: the kind of its last failure. Absent otherwise."}
         harness_digest: {type: string}
         resources: {$ref: '#/components/schemas/Resources'}
@@ -2464,7 +2504,11 @@ components:
             `requester_revoked` (the requester can no longer invoke the
             agent), `agent_unavailable` (the agent is being deleted),
             `input_purged` or `attachments_purged` (the content is no longer
-            stored). A rerun then ends like any invocation.
+            stored). A rerun then ends like any invocation. A dead letter
+            (`failed` or `expired` with a `close_reason`) has `error_code`
+            `delivery_failed`, `delivery_outcome_unknown` when an attempt may
+            have reached the agent, or `capacity_unavailable` when its
+            deadline passed while its agent waited for a VM slot.
         error_code: {type: string}
         lost_at:
           type: string
@@ -2489,6 +2533,7 @@ components:
           items: {type: string}
           description: "Attached files, in the given order. The agent reads them after acknowledging 'working', as long as the invocation is not finished. Their bytes are purged as soon as it is."
         result_due_at: {type: string, format: date-time, description: "Present once the agent is 'working'. Deadline for its result."}
+        replayed_at: {type: string, format: date-time, description: "When the newest replay put this dead letter back in its agent's queue. It stays once the replay ends."}
     Attachment:
       type: object
       required: [id, agent_id, name, media_type, size, sha256, state, created_at, expires_at]
@@ -2629,7 +2674,7 @@ components:
       properties:
         id: {type: string}
         name: {type: string}
-        state: {type: string, description: "Observed state (STOPPED, STARTING, READY, FAILED, ...). FAILED: the agent's guest failed to boot or crashed too often; it boots again only when woken."}
+        state: {type: string, description: "Observed state (STOPPED, STARTING, READY, FAILED, QUEUED, ...). FAILED: the agent's guest failed to boot or crashed too often; it boots again only when woken. QUEUED: work for the stopped agent waits for a VM slot on its full host, in arrival order."}
         failure_reason: {type: string, enum: [boot_failed, crashed], description: "Why a FAILED agent spent its restart budget: the kind of its last failure. Absent otherwise."}
         harness_digest: {type: string}
         harness:

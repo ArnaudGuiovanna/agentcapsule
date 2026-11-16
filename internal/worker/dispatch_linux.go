@@ -44,7 +44,10 @@ func (w *Placements) DispatchPass(ctx context.Context, o DispatchOptions, attemp
 		_, releaseErr := w.store.ReleaseDueInstructions(step, nil, o.Batch)
 		_, idleErr := w.store.ScheduleIdleSleeps(step, w.hostID, nil, o.Batch)
 		_, workErr := w.store.ExpireWorkingInvocations(step, nil, o.Batch)
-		result = errors.Join(releaseErr, idleErr, workErr)
+		// A slot freed by a sleep, a deletion or a crash goes to the oldest
+		// work waiting for capacity (ADR 017).
+		queueErr := w.store.PromoteCapacityHead(step, w.hostID)
+		result = errors.Join(releaseErr, idleErr, workErr, queueErr)
 		cancel()
 	}
 	step, cancel := context.WithTimeout(ctx, attemptTimeout)
@@ -115,6 +118,8 @@ func (w *Placements) executeWork(ctx context.Context, j controlplane.WorkerJob, 
 		return w.provision(ctx, j)
 	case "lifecycle":
 		return w.lifecycleOperation(ctx, j)
+	case "resume":
+		return w.resume(ctx, j)
 	case "delivery":
 		var err error
 		if transit := w.transit.Load(); transit != nil {

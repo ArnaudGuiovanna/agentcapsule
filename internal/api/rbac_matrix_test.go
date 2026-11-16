@@ -170,6 +170,7 @@ var rbacRoutes = []rbacRoute{
 	{Method: "GET", Path: "/v1/invocations/{inv}/result", Success: 200, Want: rbacContent, Note: "the caller's own, else the user's"},
 	{Method: "GET", Path: "/v1/operations/{inv}/result", Success: 200, Want: rbacContent, Note: "the caller's own, else the user's"},
 	{Method: "POST", Path: "/v1/invocations/{fresh}/cancel", Success: 200, Want: rbacSender, fresh: rbacFreshScheduled, Note: "a disposable invocation of the user"},
+	{Method: "POST", Path: "/v1/invocations/{fresh}/replay", Success: 202, Want: rbacManage, body: `{}`, fresh: rbacFreshDeadLetter, Note: "a disposable dead letter of the user"},
 
 	{Method: "GET", Path: "/v1/agents/{agent}/held-requests", Success: 200, Want: rbacDecideHeld},
 	{Method: "POST", Path: "/v1/agents/{agent}/held-requests/{held}/accept", Success: 200, Want: rbacDecideHeld, body: `{}`, fresh: rbacFreshHeld, Note: "a disposable held request"},
@@ -641,6 +642,24 @@ func rbacFreshScheduled(t *testing.T, f *rbacFixture) map[string]string {
 	var inv controlplane.Invocation
 	at := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
 	f.must(t, "user", "POST", "/v1/agents/"+f.ids["agent"]+"/invocations", `{"content":[{"type":"text","text":"later"}],"run_at":"`+at+`"}`, 202, &inv)
+	return map[string]string{"fresh": inv.ID}
+}
+
+// rbacFreshDeadLetter is an invocation of the user that died without reaching
+// the agent, as its retirement leaves it (ADR 017).
+func rbacFreshDeadLetter(t *testing.T, f *rbacFixture) map[string]string {
+	var inv controlplane.Invocation
+	f.must(t, "user", "POST", "/v1/agents/"+f.ids["agent"]+"/invocations", `{"content":[{"type":"text","text":"dead"}]}`, 202, &inv)
+	for _, q := range []string{
+		`UPDATE agent_mailboxes SET delivery_state='DEAD',attempts=attempt_limit WHERE instruction_id=$1`,
+		`DELETE FROM outbox WHERE mailbox_id=(SELECT id FROM agent_mailboxes WHERE instruction_id=$1)`,
+		`UPDATE platform_operations SET status='FAILED',error_code='delivery_failed',completed_at=clock_timestamp() WHERE id=$1`,
+		`UPDATE owner_instructions SET close_reason='attempts_exhausted' WHERE operation_id=$1`,
+	} {
+		if _, err := f.db.Exec(t.Context(), q, inv.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
 	return map[string]string{"fresh": inv.ID}
 }
 

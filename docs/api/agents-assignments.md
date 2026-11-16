@@ -197,8 +197,29 @@ answers 409.
   `close_reason` `expired`, `attempts_exhausted` or `closed` (state `expired` for
   the first); `expired` wins if the deadline has also passed. The operation's
   `error_code` stays `delivery_failed` / `delivery_outcome_unknown`: an unknown
-  outcome is never presented as "not processed".
+  outcome is never presented as "not processed". It is `capacity_unavailable`
+  when the deadline passed, unsent, while the agent waited for a VM slot.
   `GET .../invocations?state=failed|expired` lists them.
+- **Replay** ([ADR 017](../adr/017-capacity-queue-and-dead-letter-replay.md)):
+  `POST /v1/invocations/{id}/replay` (`quota:manage`: owners and
+  administrators) puts a dead letter back in its agent's queue, with an
+  idempotency key and `{}` or `{"ttl_seconds": n}`. It keeps its identifier
+  and its event ID, so the agent can deduplicate it, gets a new attempt budget
+  and goes to the end of the agent's queue. It keeps its deadline, which must
+  not have passed (409 `expired`), unless `ttl_seconds` (1 to 86 400) gives a
+  new window from now. It counts in the queue limits (429 `queue_full`). The
+  administrator reads neither content nor result: they stay the requester's,
+  who must still hold `invoke` (409 `requester_revoked`). Also 409:
+  `outcome_unknown` (an attempt may have reached the agent, whose store fenced
+  the event), `input_purged`, `attachments_purged`, `agent_unavailable`,
+  `invalid_transition` (not a dead letter). The invocation is `accepted` again
+  and carries `replayed_at`, which stays once it ends. Each replay is
+  audited (`instruction_replays`). The operator has the same replay
+  (`agentcapsule-admin replay-dead-letter`, [worker.md](../worker.md#replaying-a-dead-letter)).
+- **Capacity**: accepted work never fails for a full host. It waits, spending
+  no attempt, and its agent shows `QUEUED`; it boots in arrival order across
+  every organization of the host, or dies at its deadline
+  (`capacity_unavailable`). See [worker.md](../worker.md).
 - **No priority**: ordering within an agent stays FIFO. The verified delivery
   model has none; priority is P1
   ([ADR 007](../adr/007-delivery-closure-and-priority.md)). Bounded
@@ -261,6 +282,8 @@ requested. An agent created cold is therefore `stopped`/`STOPPED` and converged,
 with no VM. `converged: false` after an accepted wake means "requested, not yet
 observed"; this field **reports**, it does not restart a stopped agent.
 
+A stopped agent whose work waits for a VM slot on its full host is `QUEUED`
+(RUN-011, [ADR 017](../adr/017-capacity-queue-and-dead-letter-replay.md)).
 An agent whose guest failed to boot or crashed 5 times within an hour is
 `FAILED`, with `failure_reason` `boot_failed` or `crashed`, the kind of its
 last failure ([ADR 012](../adr/012-limits-restart-budgets-egress.md)). It is
