@@ -83,6 +83,7 @@ const (
 	rbacRequester    = "S S S S S 404 404 404 S 404 401 401 404"
 	rbacContent      = "404 404 404 404 S 404 404 404 404 404 401 401 403"
 	rbacSender       = "404 404 404 404 S 404 404 404 404 404 401 401 404"
+	rbacLink         = "404 404 404 404 S 404 404 404 404 404 401 401 404"
 )
 
 var rbacRoutes = []rbacRoute{
@@ -153,6 +154,10 @@ var rbacRoutes = []rbacRoute{
 	{Method: "POST", Path: "/v1/agents/{agent}/release", Success: 200, Want: rbacConfigure, body: `{"harness":{"name":"reference","version":"1.0.1"}}`},
 	{Method: "GET", Path: "/v1/agents/{agent}/directory", Success: 200, Want: rbacSeeAgent},
 	{Method: "PUT", Path: "/v1/agents/{agent}/directory", Success: 200, Want: "S S S 403 403 403 403 403 403 404 401 401 400", body: `{"visible":true,"description":"Matrix agent.","skills":[10302],"domains":[111]}`},
+	{Method: "GET", Path: "/v1/agents/{agent}/capabilities", Success: 200, Want: rbacSeeAgent},
+	{Method: "PUT", Path: "/v1/agents/{agent}/capabilities", Success: 200, Want: "S S S 403 403 403 403 403 403 404 401 401 400", body: `{"allowed":["llm.invoke","agents.delegate","agents.discover"]}`},
+	{Method: "GET", Path: "/v1/organizations/current/capabilities", Success: 200, Want: "S S 403 S 403 403 403 403 S S 401 401 403", Note: "the caller's own organization"},
+	{Method: "PUT", Path: "/v1/organizations/current/capabilities", Success: 200, Want: rbacCreateAdmin, body: `{"allowed":["llm.invoke","agents.delegate","agents.discover"]}`, Note: "the caller's own organization"},
 	{Method: "GET", Path: "/v1/agents/{agent}/inbound", Success: 200, Want: rbacSeeAgent},
 	{Method: "PUT", Path: "/v1/agents/{agent}/inbound", Success: 200, Want: "S S S 403 403 403 403 403 403 404 401 401 400", body: `{"mode":"manual"}`},
 
@@ -178,6 +183,9 @@ var rbacRoutes = []rbacRoute{
 	{Method: "POST", Path: "/v1/agents/{agent}/attachments", Success: 201, Want: "403 403 403 403 S S 404 404 S 404 401 401 404", body: "matrix file", upload: true},
 	{Method: "GET", Path: "/v1/attachments/{file}", Success: 200, Want: rbacRequester, Note: "the caller's own, else the user's"},
 	{Method: "DELETE", Path: "/v1/attachments/{fresh}", Success: 200, Want: rbacSender, fresh: rbacFreshFile, Note: "a disposable file of the user"},
+	{Method: "POST", Path: "/v1/attachments/{file}/link", Success: 201, Want: rbacLink, Note: "the caller's own, else the user's"},
+	{Method: "POST", Path: "/v1/invocations/{inv}/result/link", Success: 201, Want: rbacLink, Note: "the caller's own, else the user's"},
+	{Method: "GET", Path: "/v1/downloads/dl_matrix", Success: 200, Want: "404 404 404 404 404 404 404 404 404 404 404 404 404", Note: "the link is the credential: a bearer opens nothing"},
 
 	{Method: "GET", Path: "/v1/users", Success: 200, Want: rbacLegacyOnly, Note: "historical owner domain"},
 	{Method: "POST", Path: "/v1/users", Success: 201, Want: rbacLegacyOnly, body: `{"display_name":"X"}`, Note: "historical owner domain"},

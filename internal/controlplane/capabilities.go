@@ -98,7 +98,7 @@ func (s *Store) RequireCapabilityFromVM(ctx context.Context, caller VMCaller, na
 // AgentCapabilities shows an agent's catalog to whoever may read its metadata.
 func (c *AgentCatalog) AgentCapabilities(ctx context.Context, p Principal, id string) (AgentCapabilities, error) {
 	if p.Kind != "tenant" || !validOrganizationText(id, 100) {
-		return AgentCapabilities{}, ErrNotFound
+		return AgentCapabilities{}, ErrInput
 	}
 	if _, err := c.getTenant(ctx, p, id); err != nil {
 		return AgentCapabilities{}, err
