@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -49,6 +50,9 @@ type HarnessImporter struct {
 	Lease, Timeout time.Duration
 	// EvictEvery spaces cache evictions in Run (default one hour).
 	EvictEvery time.Duration
+	// RefillEvery spaces the refills of missing pinned packages in Run
+	// (default one minute).
+	RefillEvery time.Duration
 	// Pressure, when set, refuses an import while the cache's file system is
 	// past the storage pressure threshold (OPS-03): the import is tried
 	// again later, and rejected as storage_pressure after its last attempt.
@@ -114,7 +118,7 @@ func NewHarnessImporter(s *controlplane.Store, f *ociregistry.Fetcher, cache, wo
 		}
 	}
 	return &HarnessImporter{store: s, fetcher: f, cache: cache, worker: workerID, Lease: 35 * time.Minute, Timeout: 30 * time.Minute,
-		EvictEvery: time.Hour}, nil
+		EvictEvery: time.Hour, RefillEvery: time.Minute}, nil
 }
 
 // PackageDir is where a verified package of this digest lives.
@@ -123,10 +127,12 @@ func (h *HarnessImporter) PackageDir(digest string) string {
 }
 
 // Run imports until ctx ends, polling when there is nothing to do. When idle,
-// it evicts unused packages at most every EvictEvery. Imports and evictions run
-// in this one loop, so an eviction never races with a download on this host.
+// it fetches again the pinned packages the cache lacks at most every
+// RefillEvery, and evicts unused packages at most every EvictEvery. Imports,
+// refills and evictions run in this one loop, so an eviction never races with
+// a download on this host.
 func (h *HarnessImporter) Run(ctx context.Context, poll time.Duration, report func(error)) error {
-	var lastEviction time.Time
+	var lastEviction, lastRefill time.Time
 	for {
 		worked, err := h.ImportOne(ctx)
 		if report != nil && err != nil {
@@ -134,6 +140,12 @@ func (h *HarnessImporter) Run(ctx context.Context, poll time.Duration, report fu
 		}
 		if worked && err == nil {
 			continue
+		}
+		if !worked && time.Since(lastRefill) >= h.RefillEvery {
+			lastRefill = time.Now()
+			if _, err = h.Refill(ctx); report != nil && err != nil {
+				report(err)
+			}
 		}
 		if !worked && time.Since(lastEviction) >= h.EvictEvery {
 			lastEviction = time.Now()
@@ -158,7 +170,7 @@ func (h *HarnessImporter) ImportOne(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	pkg, err := h.fetch(ctx, job)
+	pkg, err := h.fetch(ctx, job, nil)
 	if err != nil {
 		code, transient := classifyImport(err)
 		_, ferr := h.store.FailHarnessImport(ctx, job, code, transient, backoff(job.Attempt))
@@ -169,10 +181,56 @@ func (h *HarnessImporter) ImportOne(ctx context.Context) (bool, error) {
 	return true, err
 }
 
+// Refill fetches again each package that an agent of this host pins and that
+// the cache lacks, by the reference and digest its release recorded at import
+// (OPR-10): a host rebuilt from its backups has its releases in PostgreSQL,
+// not its cache. Each package is verified as at its import, under the same
+// registry policy, and must hold the release's root file system. It returns
+// the digests fetched; a package it cannot fetch leaves its agents unable to
+// boot, as before. It must not run concurrently with ImportOne or Evict; Run
+// serializes them.
+func (h *HarnessImporter) Refill(ctx context.Context) ([]string, error) {
+	if h.host == "" {
+		return nil, nil
+	}
+	pinned, err := h.store.PinnedHarnessReleases(ctx, h.host)
+	if err != nil {
+		return nil, err
+	}
+	var refilled []string
+	var failures error
+	for _, r := range pinned {
+		dir := h.PackageDir(r.Digest)
+		_, err := os.Stat(filepath.Join(dir, harnesspkg.ManifestFile))
+		if err == nil {
+			continue
+		}
+		if errors.Is(err, os.ErrNotExist) {
+			// Not a package: whatever holds its name goes first.
+			err = removeTree(dir)
+		}
+		if err == nil {
+			_, err = h.fetch(ctx, controlplane.ImportJob{ID: "refill", Reference: r.Reference}, func(pkg ociregistry.Package) error {
+				if pkg.RootfsDigest != r.RootfsDigest {
+					return fmt.Errorf("%w: the package does not hold the release's root file system", ociregistry.ErrIntegrity)
+				}
+				return nil
+			})
+		}
+		if err != nil {
+			failures = errors.Join(failures, fmt.Errorf("refill %s:%s: %w", r.Name, r.Version, err))
+			continue
+		}
+		refilled = append(refilled, r.Digest)
+	}
+	return refilled, failures
+}
+
 // fetch downloads into a private staging directory, then moves the verified
-// package into the content-addressed cache. A package already cached under its
-// digest was verified before and is kept.
-func (h *HarnessImporter) fetch(ctx context.Context, job controlplane.ImportJob) (ociregistry.Package, error) {
+// package into the content-addressed cache; accept, when given, may refuse it
+// first. A package already cached under its digest was verified before and is
+// kept.
+func (h *HarnessImporter) fetch(ctx context.Context, job controlplane.ImportJob, accept func(ociregistry.Package) error) (ociregistry.Package, error) {
 	ref, err := ociregistry.ParseReference(job.Reference)
 	if err != nil {
 		return ociregistry.Package{}, err
@@ -188,8 +246,11 @@ func (h *HarnessImporter) fetch(ctx context.Context, job controlplane.ImportJob)
 	if err != nil {
 		return ociregistry.Package{}, err
 	}
-	defer os.RemoveAll(staging)
+	defer removeTree(staging)
 	pkg, err := h.fetcher.Fetch(ctx, ref, staging)
+	if err == nil && accept != nil {
+		err = accept(pkg)
+	}
 	if err != nil {
 		return ociregistry.Package{}, err
 	}

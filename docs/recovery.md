@@ -1038,6 +1038,10 @@ This must be ready before any disaster, so that the failover takes minutes:
   registry's `cache`, `<runtime root>/releases` by default) to the standby's
   whenever a release is imported: the worker checks each image against its
   digest before it boots it. The platform's built-in harness needs nothing.
+  The worker service also fetches again, from its registry and by digest, a
+  package that an agent of its host pins and its cache lacks
+  ([registry.md](registry.md#refilling-the-cache)); the copy spares the wait
+  and a registry outage.
 - **Fetching archives**: rclone, the shipper and the standby's
   `rclone.conf` ([Install on the standby](#install-on-the-standby), step 2).
 - **The new primary's repository**: the S3 path (`/agentcapsule-2`), a
