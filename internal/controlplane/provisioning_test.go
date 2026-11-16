@@ -275,6 +275,16 @@ func TestRevocationCatalogueCoversClosuresAndRetiredNotifications(t *testing.T) 
 		t.Fatal(err)
 	}
 	id := mailboxFor(t, s, r.RequestID, "status")
+	// An attempt that may have reached the store: the retirement must fence it.
+	// A notification no attempt reached dies without a revocation intent.
+	attempt, err := s.ClaimDelivery(t.Context(), id, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.AuthorizeDispatch(t.Context(), id, attempt.Token); err != nil {
+		t.Fatal(err)
+	}
+	expireLease(t, s, id)
 	if _, err = s.pool.Exec(t.Context(), "UPDATE agent_mailboxes SET expires_at=clock_timestamp()-interval '1 second' WHERE id=$1", id); err != nil {
 		t.Fatal(err)
 	}

@@ -347,6 +347,17 @@ func (s *Store) retireDelivery(ctx context.Context, mailboxID string, runtime Re
 	if !m.Closing && !expired && !exhausted {
 		return ErrTransition
 	}
+	// No attempt was ever allowed to reach the destination, and none can be
+	// now: AuthorizeDispatch needs a current lease on an open delivery before
+	// its deadline, and this transaction holds the row. With no delayed send
+	// to fence, the delivery dies here, without its destination, which may
+	// never boot (ADR 007).
+	if !m.MayHaveReached {
+		if err = markDead(ctx, tx, m, r, transit); err != nil {
+			return err
+		}
+		return commit(ctx, tx)
+	}
 	if _, err := tx.Exec(ctx, "UPDATE agent_mailboxes SET closing=true WHERE id=$1", mailboxID); err != nil {
 		return err
 	}
@@ -431,7 +442,29 @@ func (s *Store) dispatchMailbox(ctx context.Context, agentID, id string, lease t
 	return s.dispatchMailboxWithTransit(ctx, agentID, id, lease, runtime, nil)
 }
 
+// retirementDue reports whether a pending reply, status or instruction is to
+// be retired, however its destination fares: closing, past its deadline, or
+// out of attempts with no live lease. A request is closed by its own closure.
+func (s *Store) retirementDue(ctx context.Context, id string) (bool, error) {
+	var due bool
+	err := s.pool.QueryRow(ctx, `SELECT kind<>'request' AND delivery_state='PENDING' AND (closing OR expires_at<=clock_timestamp()
+        OR attempts>=attempt_limit AND (lease_until IS NULL OR lease_until<=clock_timestamp())) FROM agent_mailboxes WHERE id=$1`, id).Scan(&due)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return due, err
+}
+
 func (s *Store) dispatchMailboxWithTransit(ctx context.Context, agentID, id string, lease time.Duration, runtime DeliveryRuntime, transit *Transit) error {
+	// A delivery due to die needs no prepared destination: an agent that
+	// never boots must not keep it, nor its mailbox, alive (EVT-005, EVT-006).
+	// The retirement boots the agent only to fence an attempt that may have
+	// reached it. Preparation still spends no attempt.
+	if due, err := s.retirementDue(ctx, id); err != nil {
+		return err
+	} else if due {
+		return s.retireDelivery(ctx, id, runtime, transit)
+	}
 	var err error
 	retire := false
 	dispatch := func(ctx context.Context) error {
