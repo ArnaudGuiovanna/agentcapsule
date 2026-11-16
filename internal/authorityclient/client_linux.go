@@ -647,7 +647,18 @@ func (c *Client) WithKey(context.Context, string, string, func([]byte) error) er
 	return keyauthority.ErrInput
 }
 
-// Revoke destroys the volume key.
-func (c *Client) Revoke(ctx context.Context, agent, volume string) error {
-	return c.call(ctx, svc.OpDestroyKey, svc.KeyArgs{Agent: agent, Volume: volume}, nil)
+// Revoke refuses: across the socket a key is destroyed under its sealed
+// binding only, with DestroyKey. The service refuses a destruction without
+// the binding too.
+func (c *Client) Revoke(context.Context, string, string) error {
+	return keyauthority.ErrInput
+}
+
+// DestroyKey destroys the key of b's volume, once the restore authority
+// holds b's store sealed (restoreauthority.ErrNotSealed otherwise).
+func (c *Client) DestroyKey(ctx context.Context, b restoreauthority.Binding) error {
+	if b.Incarnation == 0 {
+		return restoreauthority.ErrInput
+	}
+	return c.call(ctx, svc.OpDestroyKey, svc.KeyArgs{Agent: b.Store, Volume: b.Volume, Incarnation: b.Incarnation}, nil)
 }

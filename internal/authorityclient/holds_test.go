@@ -151,7 +151,9 @@ func TestKeyHoldDelaysDestructionAndClearsTheKey(t *testing.T) {
 	if !bytes.Equal(copied, want) {
 		t.Fatal("the hold did not carry the volume key")
 	}
-	if err = c.Revoke(within(t, 200*time.Millisecond), agent, volume); !errors.Is(err, restoreauthority.ErrUnavailable) {
+	// The destruction waits for the hold: its seal check needs the
+	// catalogue's transaction, which the hold keeps.
+	if err = c.DestroyKey(within(t, 200*time.Millisecond), b); !errors.Is(err, restoreauthority.ErrUnavailable) {
 		t.Fatal("destruction during the hold", err)
 	}
 	if _, err = os.Lstat(tombstone); !errors.Is(err, os.ErrNotExist) {
@@ -164,7 +166,10 @@ func TestKeyHoldDelaysDestructionAndClearsTheKey(t *testing.T) {
 	if !bytes.Equal(seen, make([]byte, 32)) {
 		t.Fatal("the client kept the key after its hold")
 	}
-	if err = c.Revoke(ctx, agent, volume); err != nil {
+	if err = c.RecordRetiredSeal(ctx, b); err != nil {
+		t.Fatal(err)
+	}
+	if err = c.DestroyKey(ctx, b); err != nil {
 		t.Fatal("destruction after the hold", err)
 	}
 	if err = c.HoldKey(ctx, b, func(context.Context, []byte) error { t.Error("a destroyed key held"); return nil }); err == nil {
@@ -225,7 +230,7 @@ func TestServiceRefusesABareKeyHold(t *testing.T) {
 	if err = c.RecordRetiredSeal(ctx, b); err != nil {
 		t.Fatal(err)
 	}
-	if err = c.Revoke(within(t, 5*time.Second), agent, volume); err != nil {
+	if err = c.DestroyKey(within(t, 5*time.Second), b); err != nil {
 		t.Fatal("destruction", err)
 	}
 }
@@ -308,8 +313,16 @@ func TestKilledHolderReleasesItsHold(t *testing.T) {
 	if !strings.Contains(l.scrape(t), `agentcapsule_authority_service_holds{kind="key"} 1`) {
 		t.Fatal("the hold is not counted")
 	}
+	// The deletion: the seal, then the key. Both wait for the holder.
 	destroyed := make(chan error, 1)
-	go func() { destroyed <- c.Revoke(within(t, 30*time.Second), agent, volume) }()
+	go func() {
+		ctx := within(t, 30*time.Second)
+		err := c.RecordRetiredSeal(ctx, b)
+		if err == nil {
+			err = c.DestroyKey(ctx, b)
+		}
+		destroyed <- err
+	}()
 	select {
 	case err := <-destroyed:
 		t.Fatal("the destruction overtook a living holder", err)

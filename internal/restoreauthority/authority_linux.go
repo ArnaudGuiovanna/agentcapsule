@@ -51,6 +51,12 @@ type Authority interface {
 	RecordOutcome(ctx context.Context, b Binding, outcome Outcome) error
 	RecordRerun(ctx context.Context, b Binding, outcome Outcome) error
 	RecordRetiredSeal(ctx context.Context, b Binding) error
+	// DestroyKey destroys the key of b's volume. It refuses unless the
+	// catalogue holds b's store sealed, with b's volume and incarnation:
+	// ErrNotSealed while the store is not sealed, ErrStale for another
+	// binding. A seal is permanent. The key authority's Revoke, which names
+	// no binding, is refused by both implementations.
+	DestroyKey(ctx context.Context, b Binding) error
 	Losses(ctx context.Context, store string) ([]Loss, error)
 	OutcomeStatus(ctx context.Context, id string) (Status, []Loss, error)
 	SignArchive(ctx context.Context, a Archive) (Archive, error)
@@ -148,11 +154,25 @@ func (l Local) WithKey(ctx context.Context, agent, volume string, use func([]byt
 	return l.Keys.WithKey(ctx, agent, volume, use)
 }
 
-func (l Local) Revoke(ctx context.Context, agent, volume string) error {
-	if l.Keys == nil {
-		return keyauthority.ErrInput
+// Revoke refuses: a key is destroyed under its sealed binding only, with
+// DestroyKey. The service's client refuses the same way.
+func (l Local) Revoke(context.Context, string, string) error {
+	return keyauthority.ErrInput
+}
+
+// DestroyKey checks the seal, then destroys the key. A seal is permanent,
+// so it still holds when the destruction runs: the check needs no
+// transaction across both authorities. Armed, the key authority journals
+// the destruction through the catalogue (Append), which checks the seal
+// again in the transaction that records it.
+func (l Local) DestroyKey(ctx context.Context, b Binding) error {
+	if l.Keys == nil || b.Incarnation == 0 || !validName(b.Store) || !validName(b.Volume) {
+		return ErrInput
 	}
-	return l.Keys.Revoke(ctx, agent, volume)
+	if err := l.transaction(ctx, func(tx *sql.Tx) error { return sealedWith(ctx, tx, b.Store, b.Volume, b.Incarnation) }); err != nil {
+		return err
+	}
+	return l.Keys.Revoke(ctx, b.Store, b.Volume)
 }
 
 // Root is the catalogue's directory.

@@ -47,7 +47,16 @@ func TestRestartedServiceWaitsTheQuietPeriod(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A deleted agent, sealed by the previous process: the new one destroys
+	// its key.
+	gone, err := before.Register(ctx, agent, volume)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err = before.Ensure(ctx, agent, volume); err != nil {
+		t.Fatal(err)
+	}
+	if err = before.RecordRetiredSeal(ctx, gone); err != nil {
 		t.Fatal(err)
 	}
 	keys, catalog = reopen(t, dir, keys, catalog)
@@ -73,7 +82,7 @@ func TestRestartedServiceWaitsTheQuietPeriod(t *testing.T) {
 		"new subject":     {publishCap, func() error { _, err := c.BeginRevocation(ctx, "new-subject"); return err }},
 		"new reservation": {keyCap, func() error { _, err := c.ReserveIncarnation(ctx, reserve, "new-restore"); return err }},
 		"seal":            {keyCap, func() error { return c.RecordRetiredSeal(ctx, seal) }},
-		"destruction":     {keyCap, func() error { return c.Revoke(ctx, agent, volume) }},
+		"destruction":     {keyCap, func() error { return c.DestroyKey(ctx, gone) }},
 	}
 	var wg sync.WaitGroup
 	var mu sync.Mutex

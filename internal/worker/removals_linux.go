@@ -44,12 +44,14 @@ func (w *Placements) RemoveDeletedStore(ctx context.Context, id string) error {
 			}
 			// A pre-existing SQL seal alone is insufficient. This callback
 			// follows the host's actual permanent-seal/inode validation.
-			if w.authority != nil {
-				if err := w.authority.RecordRetiredSeal(ctx, enrollmentBinding(e)); err != nil {
-					return err
-				}
+			// The seal, then the key: the authority refuses to destroy the
+			// key of a store it has not sealed (ADR 006 §3), and
+			// provisioning always has the authorities.
+			b := enrollmentBinding(e)
+			if err := w.authority.RecordRetiredSeal(ctx, b); err != nil {
+				return err
 			}
-			if err := w.provisioning.keys.Revoke(ctx, id, e.VolumeID); err != nil {
+			if err := w.authority.DestroyKey(ctx, b); err != nil {
 				return err
 			}
 			return w.provisioning.volumes.Remove(ctx, volumestore.Spec{AgentID: id, VolumeID: e.VolumeID, SizeMiB: int64(e.Resources.DataVolumeMiB)}, local.Device, local.Inode)

@@ -330,10 +330,11 @@ func TestWorkerRunsOnPromotedAuthorities(t *testing.T) {
 	if err = worker.Ensure(ctx, agent, "vol_"+strings.Repeat("c", 32)); err != nil {
 		t.Fatal(err)
 	}
-	if err = worker.RecordRetiredSeal(ctx, restoreauthority.Binding{Store: agent, Volume: volume, Incarnation: 1}); err != nil {
+	gone := restoreauthority.Binding{Store: agent, Volume: volume, Incarnation: 1}
+	if err = worker.RecordRetiredSeal(ctx, gone); err != nil {
 		t.Fatal(err)
 	}
-	if err = worker.Revoke(ctx, agent, volume); err != nil {
+	if err = worker.DestroyKey(ctx, gone); err != nil {
 		t.Fatal(err)
 	}
 	stop()

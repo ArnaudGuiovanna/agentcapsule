@@ -15,14 +15,27 @@ import (
 
 // fakeJournal stands for the replication stream: it keeps each change and
 // fails on demand after the local write, as a standby that does not answer.
+// refuse, when set, refuses an intent before the write, as the restore
+// authority refuses to destroy an unsealed store's key.
 type fakeJournal struct {
 	fail    error
+	refuse  func(Change) error
+	intents []Change
 	changes []Change
 }
 
-func (j *fakeJournal) Append(_ context.Context, revoke bool, write func() (*Change, error)) error {
+func (j *fakeJournal) Append(_ context.Context, intent Change, write func() (*Change, error)) error {
+	j.intents = append(j.intents, intent)
+	if intent.Key != nil {
+		return errors.New("an intent carries a key")
+	}
+	if j.refuse != nil {
+		if err := j.refuse(intent); err != nil {
+			return err
+		}
+	}
 	change, err := write()
-	if change != nil && change.Revoke != revoke {
+	if change != nil && (change.Revoke != intent.Revoke || change.Agent != intent.Agent || change.Volume != intent.Volume) {
 		return errors.New("the change is not the announced one")
 	}
 	if change != nil {
@@ -89,6 +102,53 @@ func TestJournaledKeyIsUsableOnlyOnceReplicated(t *testing.T) {
 		t.Fatal("destruction not recorded", last)
 	}
 	if err := s.Ensure(t.Context(), testAgent, testVolume); !errors.Is(err, ErrRevoked) {
+		t.Fatal(err)
+	}
+}
+
+// The journal learns the binding of a change before the write: the restore
+// authority refuses there to destroy the key of a store it has not sealed
+// (docs/adr/006-authority-service.md §3). A refused destruction publishes no
+// tombstone, and the key stays usable.
+func TestJournalRefusesADestructionBeforeItsTombstone(t *testing.T) {
+	s := fixture(t)
+	notSealed := errors.New("store not sealed")
+	j := &fakeJournal{refuse: func(c Change) error {
+		if c.Revoke {
+			return notSealed
+		}
+		return nil
+	}}
+	s.SetJournal(j)
+	if err := s.Ensure(t.Context(), testAgent, testVolume); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Revoke(t.Context(), testAgent, testVolume); !errors.Is(err, notSealed) {
+		t.Fatal("the journal's refusal was not returned", err)
+	}
+	want := []Change{{Agent: testAgent, Volume: testVolume}, {Revoke: true, Agent: testAgent, Volume: testVolume}}
+	if len(j.intents) != len(want) {
+		t.Fatal("the journal did not see each change first", j.intents)
+	}
+	for i, w := range want {
+		if got := j.intents[i]; got.Revoke != w.Revoke || got.Agent != w.Agent || got.Volume != w.Volume {
+			t.Fatal("the journal did not see the change's binding", got, w)
+		}
+	}
+	if _, err := os.Lstat(filepath.Join(s.root, "revoked", testVolume)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("a refused destruction published its tombstone", err)
+	}
+	if err := s.WithKey(t.Context(), testAgent, testVolume, func([]byte) error { return nil }); err != nil {
+		t.Fatal("a refused destruction took the key", err)
+	}
+	if len(j.changes) != 1 {
+		t.Fatal("a refused destruction was recorded", j.changes)
+	}
+	j.refuse = nil
+	if err := s.Revoke(t.Context(), testAgent, testVolume); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WithKey(t.Context(), testAgent, testVolume, func([]byte) error { return nil }); !errors.Is(err, ErrRevoked) {
 		t.Fatal(err)
 	}
 }

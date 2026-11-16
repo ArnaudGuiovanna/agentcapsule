@@ -651,18 +651,29 @@ var _ keyauthority.Journal = (*Catalog)(nil)
 // records the key change it returns, wrapped to the unlock key's recipient.
 // Both kinds of key write wait for the replica in degraded mode, before
 // write runs.
-func (c *Catalog) Append(ctx context.Context, revoke bool, write func() (*keyauthority.Change, error)) error {
-	if write == nil {
+//
+// A destruction is refused before write runs unless this catalogue holds
+// the store (the agent's ID) sealed with that volume (ErrNotSealed, ADR 006
+// §3). The check runs in the transaction that records the destruction, so
+// that the seal is in the stream before it: a replica that holds the
+// destruction holds the seal.
+func (c *Catalog) Append(ctx context.Context, intent keyauthority.Change, write func() (*keyauthority.Change, error)) error {
+	if write == nil || intent.Key != nil {
 		return ErrInput
 	}
 	kind := authoritylog.WriteKeyCreate
-	if revoke {
+	if intent.Revoke {
 		kind = authoritylog.WriteKeyDestroy
 	}
 	return c.operate(ctx, kind, func(tx *sql.Tx) error {
 		rec := c.recordingOf(tx)
 		if rec == nil || !rec.state.armed() || c.repl == nil {
 			return ErrUnavailable
+		}
+		if intent.Revoke {
+			if err := sealedWith(ctx, tx, intent.Agent, intent.Volume, 0); err != nil {
+				return err
+			}
 		}
 		change, err := write()
 		if change != nil {
@@ -671,7 +682,7 @@ func (c *Catalog) Append(ctx context.Context, revoke bool, write func() (*keyaut
 		if err != nil || change == nil {
 			return err
 		}
-		if change.Revoke != revoke {
+		if change.Revoke != intent.Revoke || change.Agent != intent.Agent || change.Volume != intent.Volume {
 			return ErrInput
 		}
 		op, err := c.keyOp(rec.state, change)
