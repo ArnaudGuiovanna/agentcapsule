@@ -96,6 +96,43 @@ func clientCertificate(t *testing.T, dir, cn string) (string, string, string) {
 	return paths[0], paths[1], paths[2]
 }
 
+// The worker refuses to start on a runtime disk 95% used or more (DEP-3),
+// and starts with a warning from 80% (ADR 010). -preflight prints that check
+// once, at the operator's levels (a failure from 80%), with the archives'.
+func TestTheWorkerChecksItsRuntimeDiskAtEveryStart(t *testing.T) {
+	for _, name := range []string{"PGHOST", "PGSSLMODE", "PGSSLROOTCERT"} {
+		t.Setenv(name, "")
+	}
+	dir := t.TempDir()
+	used := uint64(96)
+	h := preflight.Host{Root: dir, Stat: os.Stat, Release: func() (string, error) { return "6.1.0", nil },
+		KVM: func(string, []preflight.KVMCapability) (int, []preflight.KVMCapability, error) { return 12, nil, nil },
+		Statfs: func(string) (syscall.Statfs_t, error) {
+			return syscall.Statfs_t{Type: 0xEF53, Blocks: 100, Bfree: 100 - used, Bavail: 100 - used, Bsize: 4096}, nil
+		},
+		ClockSynchronized: func() (bool, error) { return true, nil },
+		Version:           func(context.Context, string) (string, error) { return "", errors.New("absent") }, Now: time.Now}
+	c := ServiceConfig{Root: filepath.Join(dir, "runtime"), Archives: &ServiceArchives{Root: filepath.Join(dir, "archives")}}
+	if r := result(t, c.MandatoryPreflight(t.Context(), h), "disk_runtime"); r.Status != preflight.Fail || r.Fix == "" {
+		t.Fatalf("a runtime disk 96%% used at start: %+v", r)
+	}
+	used = 85
+	if r := result(t, c.MandatoryPreflight(t.Context(), h), "disk_runtime"); r.Status != preflight.Warn {
+		t.Fatalf("a runtime disk 85%% used at start: %+v", r)
+	}
+	seen := map[string]int{}
+	results := c.Preflight(t.Context(), h, operatorconfig.Development, "host=127.0.0.1 port=1 dbname=x connect_timeout=1")
+	for _, r := range results {
+		seen[r.Check]++
+	}
+	if seen["disk_runtime"] != 1 || seen["disk_archives"] != 1 {
+		t.Fatal("the disks in -preflight", seen)
+	}
+	if r := result(t, results, "disk_runtime"); r.Status != preflight.Fail {
+		t.Fatalf("-preflight on a runtime disk 85%% used: %+v", r)
+	}
+}
+
 // The full set on a fake host: the Directory's files, its absent edge, the
 // metrics port, a local registry rule and a clear-text database, each with
 // its answer for the mode.

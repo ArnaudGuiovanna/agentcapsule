@@ -77,7 +77,7 @@ OWNER_SCOPES = "org:read member:read member:manage audit:read"
 PREFLIGHT_CHECKS = ("mode", "configuration", "kvm", "kernel", "cgroups", "namespaces", "runtime_filesystem",
                     "artifact_firecracker", "artifact_jailer", "artifact_kernel", "artifact_initrd", "clock",
                     "disk_runtime", "authority", "metrics_listen", "registry", "postgresql")
-MANDATORY = ("kvm", "kernel", "cgroups", "namespaces", "runtime_filesystem",
+MANDATORY = ("kvm", "kernel", "cgroups", "namespaces", "runtime_filesystem", "disk_runtime",
              "artifact_firecracker", "artifact_jailer", "artifact_kernel", "artifact_initrd")
 ARTIFACTS = ("firecracker", "jailer", "kernel", "initrd")
 RESULT = re.compile(r"^(ok|warn|fail)\s+([a-z_]+): (.*)$")

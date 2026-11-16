@@ -57,17 +57,25 @@ func (c ServiceConfig) PreflightArtifacts() []preflight.Artifact {
 }
 
 // MandatoryPreflight is what the worker checks at every start (RUN-012): KVM,
-// the kernel, cgroups, namespaces, the runtime file system and the pinned
-// artifacts. It does not open the database or the network.
+// the kernel, cgroups, namespaces, the runtime file system and its free space
+// (DEP-3: a failure from 95% used), and the pinned artifacts. It does not open
+// the database or the network.
 func (c ServiceConfig) MandatoryPreflight(ctx context.Context, h preflight.Host) []preflight.Result {
 	return preflight.Mandatory(ctx, h, c.Root, c.PreflightArtifacts())
 }
 
 // Preflight runs every check of this configuration on h, for an operator
-// preparing or verifying a host (agentcapsule-worker -preflight).
+// preparing or verifying a host (agentcapsule-worker -preflight). The runtime
+// disk is judged at the operator's levels (a failure from 80% used), stricter
+// than at start.
 func (c ServiceConfig) Preflight(ctx context.Context, h preflight.Host, mode operatorconfig.Mode, dsn string) []preflight.Result {
 	out := c.MandatoryPreflight(ctx, h)
-	out = append(out, preflight.Clock(h), preflight.Disk(h, "runtime", c.Root))
+	for i, r := range out {
+		if r.Check == "disk_runtime" {
+			out[i] = preflight.Disk(h, "runtime", c.Root)
+		}
+	}
+	out = append(out, preflight.Clock(h))
 	if c.Archives != nil {
 		out = append(out, preflight.Disk(h, "archives", c.Archives.Root))
 	}

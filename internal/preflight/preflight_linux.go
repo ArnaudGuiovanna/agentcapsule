@@ -501,8 +501,24 @@ func RuntimeFileSystem(h Host, root string) Result {
 
 // Disk checks the free space of the file system holding each path: a warning
 // from 70% used, a failure from 80%, the levels of the disk alerts
-// (docs/observability.md).
+// (docs/observability.md). These are the operator's levels, for preparing or
+// verifying a host (-preflight).
 func Disk(h Host, name, path string) Result {
+	return disk(h, name, path, 70, 80, "free space or grow the file system below 70% used", "free space before the 80% alert")
+}
+
+// DiskAtStart checks the runtime root's free space at every start of the
+// worker (DEP-3): a failure from 95% used, where the agents' volumes have
+// almost no room left to grow and their writes would fail; a warning from
+// 80%. A disk at 81% does not stop running agents (ADR 010): storage pressure
+// only refuses new agents and imports there (ADR 014). The 95% level is a
+// default pending the product owner.
+func DiskAtStart(h Host, path string) Result {
+	return disk(h, "runtime", path, 80, 95, "free space or grow the file system below 80% used, then start the worker again",
+		"free space: new agents and imports are refused from 80% (storage pressure), and the worker refuses to start from 95%")
+}
+
+func disk(h Host, name, path string, warnAt, failAt uint64, failFix, warnFix string) Result {
 	check := "disk_" + name
 	st, err := h.Statfs(nearest(path))
 	if err != nil {
@@ -517,17 +533,18 @@ func Disk(h Host, name, path string) Result {
 	free := st.Bavail * uint64(st.Bsize) >> 30
 	detail := fmt.Sprintf("%s: %d%% used, %d GiB free", path, percent, free)
 	switch {
-	case percent >= 80:
-		return fail(check, detail, "free space or grow the file system below 70% used")
-	case percent >= 70:
-		return warn(check, detail, "free space before the 80% alert")
+	case percent >= failAt:
+		return fail(check, detail, failFix)
+	case percent >= warnAt:
+		return warn(check, detail, warnFix)
 	}
 	return ok(check, detail)
 }
 
 // Mandatory are the checks without which the worker does not run Firecracker
-// (RUN-012).
+// (RUN-012), with the free space of the runtime root, where the agents'
+// volumes live (DiskAtStart, DEP-3).
 func Mandatory(ctx context.Context, h Host, runtimeRoot string, artifacts []Artifact) []Result {
-	out := []Result{KVM(h), Kernel(h), Cgroups(h), Namespaces(h), RuntimeFileSystem(h, runtimeRoot)}
+	out := []Result{KVM(h), Kernel(h), Cgroups(h), Namespaces(h), RuntimeFileSystem(h, runtimeRoot), DiskAtStart(h, runtimeRoot)}
 	return append(out, Artifacts(ctx, h, artifacts)...)
 }
