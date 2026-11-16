@@ -122,12 +122,16 @@ func run() int {
 		return fail("runtime_initialization_failed")
 	}
 	defer w.Close() // Listener ownership ends; surviving VMMs remain adoptable.
+	budget, err := c.Restarts()
+	if err != nil || w.SetRestartBudget(budget) != nil {
+		return fail("configuration_invalid")
+	}
 	// Events, one JSON object per line, from a closed vocabulary (OPS-02):
 	// progress on standard output, retries and failures on standard error.
 	vocabulary := map[string][]string{"event": {"maintenance_started", "maintenance_complete", "maintenance_retry", "wake_budget_exhausted",
 		"harness_import_retry", "directory_publish_retry", "slim_callback_stopped", "job_done", "job_retried",
-		"volume_archive_captured", "volume_archive_retry", "delivery_dead"},
-		"reason": append(append(worker.RetryReasons(), worker.ArchiveRetryReasons()...), worker.DeadDeliveryReasons()...),
+		"volume_archive_captured", "volume_archive_retry", "delivery_dead", "agent_failed"},
+		"reason": append(append(append(worker.RetryReasons(), worker.ArchiveRetryReasons()...), worker.DeadDeliveryReasons()...), worker.AgentFailureReasons()...),
 		"kind":   append(worker.JobKinds(), worker.DeadDeliveryKinds()...), "vm": worker.ArchiveVMs()}
 	events, problems := telemetry.NewLogger(os.Stdout, vocabulary), telemetry.NewLogger(os.Stderr, vocabulary)
 	registry := telemetry.NewRegistry()
