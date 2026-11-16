@@ -54,11 +54,14 @@ func run() int {
 	if len(os.Args) > 1 && os.Args[1] == "activate-transit-keys" {
 		return activateTransitKeys(os.Args[2:])
 	}
+	if len(os.Args) > 1 && os.Args[1] == "transit-key-usage" {
+		return transitKeyUsage(os.Args[2:])
+	}
 	if len(os.Args) > 1 && (os.Args[1] == "configure-host" || os.Args[1] == "approve-local-harness") {
 		return configureCatalog(os.Args[1], os.Args[2:])
 	}
 	if len(os.Args) < 2 || os.Args[1] != "bootstrap" {
-		return fail("usage: agentcapsule-admin bootstrap | bootstrap-platform | list-credentials | revoke-credential | abandon-provisioning | clear-agent-failure | configure-delegation | init-key-authority | init-restore-authority | configure-host | approve-local-harness | activate-transit-keys")
+		return fail("usage: agentcapsule-admin bootstrap | bootstrap-platform | list-credentials | revoke-credential | abandon-provisioning | clear-agent-failure | configure-delegation | init-key-authority | init-restore-authority | configure-host | approve-local-harness | activate-transit-keys | transit-key-usage")
 	}
 	f := flag.NewFlagSet("bootstrap", flag.ContinueOnError)
 	keyPath := f.String("receipt-key-file", "", "private 32-byte receipt encryption key")
