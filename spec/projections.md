@@ -107,6 +107,15 @@ in the ordinary unit tests.
 | `concurrentProtocolTests.closureScopeTest` | model-only | — | Checks the model's own closure scope (`closureScope`) in its initial state. |
 | `concurrentProtocolTests.closureWithoutRecipientAllowsStaleEffectTest` | model-only | — | Defines a broken action (`commitCloseWithout`) to show why the recipient's fence is needed; Go has no such path. |
 | `concurrentProtocolTests.retiredNotificationTest` | partial | `TestExhaustedDeliveryFencesLateWorkerAndNotifiesSender` | The fixture `notification-exhaustion-is-not-reception` is not replayed: CANCELED/DEAD projection discrepancy (fixture README). |
+| `concurrentProtocolTests.restoredRecipientGetsRequestAgainTest` | full | `TestRestoreRedeliversALostRequest` |  |
+| `concurrentProtocolTests.restoreNeedsRetiredStoreTest` | partial | `TestVolumeRestoreOperationAndLossMapping`, `TestInstallVolumeRequiresRetiredRegisteredInodeAndExactImage` | Losses enter PostgreSQL only with the activation, after an image is installed; the install is refused while the old VMM holds the volume. |
+| `concurrentProtocolTests.finalRequestDoesNotReopenTest` | full | `TestRestoreDoesNotReopenAFinalRequest`, `TestBothPartiesRestored` |  |
+| `concurrentProtocolTests.closingRequestIsNotRedeliveredTest` | full | `TestClosingRequestIsNotRedelivered` |  |
+| `concurrentProtocolTests.restoredSenderGetsReplyAgainTest` | full | `TestRestoreRedeliversALostReplyAndStatus`, `TestBothPartiesRestored` |  |
+| `concurrentProtocolTests.restoredSenderGetsStatusAgainTest` | full | `TestRestoreRedeliversALostReplyAndStatus` | The status of a declined request, not of a canceled one. |
+| `concurrentProtocolTests.deletionBlocksRedeliveryTest` | full | `TestRedeliveryIsSkippedWithAReason` | Its case "other agent being deleted". |
+| `concurrentProtocolTests.closureCancelsRedeliveryTest` | full | `TestARedeliveredRequestCanBeCanceled` |  |
+| `concurrentProtocolTests.reopenedRequestBreaksTerminalStableTest` | model-only | — | Defines a broken action (`reopen`) to show why a final request is not delivered again; Go has no such path. |
 | `concurrentProtocolTests.sealAndFutureBarrierTest` | partial | `TestPreimplementationP1HostSealITF` | Privileged host test (KVM build tags); not in the PostgreSQL campaign. |
 | `concurrentProtocolTests.workerCrashRollsBackAdmissionTest` | full | `TestPreimplementationP1ITF/worker-crash-before-business-commit` |  |
 | `concurrentProtocolTests.orphanedConfirmedBootTest` | full | `TestPreimplementationP1ITF/confirmed-unpublished-boot-cleanup` |  |
@@ -372,6 +381,10 @@ in the ordinary unit tests.
 | `serviceProgressTests.scenario22Test` | partial | `TestExpiredDeliveryBehindAStuckHeadDies` | ADR 007 §7; the P3 fixture pins the model before ADR 007. |
 | `serviceProgressTests.refusal22x0Test` | partial | `TestRetirementLeavesADeletionToCancel` | ADR 007 §7; the P3 fixture pins the model before ADR 007. |
 | `serviceProgressTests.scenario22x1Test` | partial | `TestRetirementLeavesADeletionToCancel` | ADR 007 §7; the P3 fixture pins the model before ADR 007. |
+| `serviceProgressTests.scenario23Test` | partial | `TestRestoreRedeliversALostRequest` | ADR 008, not step by step; the P3 fixture pins the model before ADR 008. |
+| `serviceProgressTests.scenario23x1Test` | full | `TestRedeliveredRequestEndsAtItsDeadline` |  |
+| `serviceProgressTests.scenario24Test` | partial | `TestRestoreRedeliversALostReplyAndStatus` | ADR 008, not step by step; the P3 fixture pins the model before ADR 008. |
+| `serviceProgressTests.refusal24x0Test` | model-only | — | `stabilize` is the progress proof's assumption that faults stop; it has no Go counterpart. |
 | `serviceProgressTests.scenario19Test` | full | `TestPreimplementationP3ITF/deleted-destination-rejects-new-work` |  |
 | `serviceProgressTests.refusal19x0Test` | full | `TestPreimplementationP3ITF/deleted-destination-rejects-new-work` |  |
 
