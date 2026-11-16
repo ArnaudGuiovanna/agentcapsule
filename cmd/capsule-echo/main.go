@@ -36,6 +36,11 @@ func run() (result error) {
 	if err != nil {
 		return err
 	}
+	if mode.fillTmp != 0 && !b.Identity.FenceOnly {
+		if err = fillTmp("/tmp", mode.fillTmp); err != nil {
+			return err
+		}
+	}
 	f := os.NewFile(4, "harness-control")
 	if f == nil {
 		return guestinit.ErrGuest
