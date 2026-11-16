@@ -114,9 +114,7 @@ func (w *Placements) runtimeOptions(opts runtime.FirecrackerOptions, keys keyaut
 			})
 		}
 		opts.PlatformHandler = func(id string, run runtime.VMRun) (http.Handler, error) {
-			identity := capsuleprotocol.Identity{Incarnation: run.Incarnation, AgentID: id, Generation: run.Generation, VMID: run.ID, FenceOnly: run.FenceOnly}
-			api := platformAPI{store: store, host: w.host, caller: controlplane.VMCaller{AgentID: id, HostID: hostID, Generation: run.Generation, VMID: run.ID}, transit: w.transit.Load, llm: w.llm.Load, directory: w.directory.Load, authority: w.authority, incarnation: run.Incarnation}
-			return capsuleprotocol.NewPlatformHandler(identity, api)
+			return w.platformHandler(w.host, id, run)
 		}
 	}
 	opts.Confirm = func(ctx context.Context, id string, run runtime.VMRun) error {
@@ -166,6 +164,15 @@ func (w *Placements) runtimeOptions(opts runtime.FirecrackerOptions, keys keyaut
 		return w.withVolumeBoot(opts, keys)
 	}
 	return opts, nil
+}
+
+// platformHandler is the platform channel of one boot: the API it serves is
+// bound to that boot, and every call is admitted by host.
+func (w *Placements) platformHandler(host applicationHost, id string, run runtime.VMRun) (http.Handler, error) {
+	identity := capsuleprotocol.Identity{Incarnation: run.Incarnation, AgentID: id, Generation: run.Generation, VMID: run.ID, FenceOnly: run.FenceOnly}
+	api := platformAPI{store: w.store, host: host, caller: controlplane.VMCaller{AgentID: id, HostID: w.hostID, Generation: run.Generation, VMID: run.ID},
+		transit: w.transit.Load, llm: w.llm.Load, directory: w.directory.Load, authority: w.authority, incarnation: run.Incarnation}
+	return capsuleprotocol.NewPlatformHandler(identity, api)
 }
 
 // Register records a preprovisioned regular volume; it does not create/encrypt it.
