@@ -66,9 +66,9 @@ func run() int {
 	if f.NArg() != 0 || *keyPath == "" || *tokenPath == "" || *keyPath == *tokenPath {
 		return fail("configuration_required")
 	}
-	dsn := os.Getenv("AGENTCAPSULE_DATABASE_URL")
-	if dsn == "" {
-		return fail("database_configuration_required")
+	dsn, code := databaseURL()
+	if code != "" {
+		return fail(code)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -142,9 +142,9 @@ func configureCatalog(command string, args []string) int {
 		}
 		digest = fmt.Sprintf("sha256:%x", h.Sum(nil))
 	}
-	dsn := os.Getenv("AGENTCAPSULE_DATABASE_URL")
-	if dsn == "" {
-		return fail("database_configuration_required")
+	dsn, code := databaseURL()
+	if code != "" {
+		return fail(code)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -190,6 +190,21 @@ func initializeKeyAuthority(args []string) int {
 	return 0
 }
 func main() { os.Exit(run()) }
+
+// databaseURL returns AGENTCAPSULE_DATABASE_URL once it satisfies the mode:
+// in production, a Unix socket or verified TLS
+// (docs/adr/010-transport-security-and-preflight.md). Otherwise it returns
+// the code to print.
+func databaseURL() (string, string) {
+	mode, err := operatorconfig.ModeFromEnvironment()
+	if err != nil {
+		return "", "mode_invalid"
+	}
+	if mode == operatorconfig.Development {
+		fmt.Fprintln(os.Stderr, operatorconfig.DevelopmentWarning)
+	}
+	return operatorconfig.DatabaseURL(mode)
+}
 
 func initializeRestoreAuthority(args []string) int {
 	fail := func(code string) int { fmt.Fprintln(os.Stderr, code); return 1 }

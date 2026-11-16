@@ -14,9 +14,9 @@ import (
 )
 
 func openOperatorStore(ctx context.Context, fail func(string) int) (*controlplane.Store, int) {
-	dsn := os.Getenv("AGENTCAPSULE_DATABASE_URL")
-	if dsn == "" {
-		return nil, fail("database_configuration_required")
+	dsn, code := databaseURL()
+	if code != "" {
+		return nil, fail(code)
 	}
 	s, err := controlplane.Open(ctx, dsn)
 	if err != nil {
