@@ -162,7 +162,8 @@ func newProductPeerLab(t *testing.T) *productPeerLab {
 		t.Fatal(err)
 	}
 	lab.handler = handler
-	lab.server = httptest.NewServer(handler)
+	// HTTPS, as clients reach the API (product.md, the MVP outcome).
+	lab.server = httptest.NewTLSServer(handler)
 	lab.server.Client().Timeout = 15 * time.Second
 	t.Cleanup(lab.server.Close)
 	return lab

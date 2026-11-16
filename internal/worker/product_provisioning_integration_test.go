@@ -98,7 +98,7 @@ func TestProductWorkerProvisioningAndEncryptedWake(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(handler)
+	server := httptest.NewTLSServer(handler) // HTTPS, as clients reach the API
 	defer server.Close()
 	issued, err := b.accounts.IssueUserToken(t.Context(), b.admin, b.owner.ID, "http-owner", controlplane.IssueTokenInput{ExpiresAt: time.Now().Add(time.Hour)})
 	if err != nil {
