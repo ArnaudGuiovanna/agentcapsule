@@ -807,8 +807,6 @@ This must be ready before any disaster, so that the failover takes minutes:
   - the receipt key (`-receipt-key-file`). The installation is bound to it,
     and it also seals the LLM providers' credentials;
   - the transit keys (`-transit-key`): every one still needed;
-  - the delegated-identity trust file (`-delegated-identity-file`). It
-    holds public keys only;
   - the TLS certificate and key (`-tls-cert`, `-tls-key`): the API serves
     HTTPS only;
   - the API's flags and environment, except the database's address.
@@ -857,7 +855,8 @@ On the standby host, as root unless said otherwise. Follow this order.
    `agentcapsule-standby-metrics.timer`.
 6. **Install the API's configuration and keys** from the safe, with the modes
    the API requires: the directory and the key files readable by the API's
-   account only (0700 and 0600), the trust file writable by its owner only.
+   account only (0700 and 0600). The organizations' identity trusts are in
+   PostgreSQL: the promoted database brings them.
    Set `AGENTCAPSULE_DATABASE_URL` to the standby's own PostgreSQL.
 7. **Start the API** with the same flags as on the primary
    ([docs/api](api/README.md)). It checks the schema and the keys before it
@@ -951,7 +950,8 @@ The run:
 1. **Installs the primary**: the schema, the receipt key and a platform token
    (`bootstrap-platform`), a transit key, a tenant whose member signs in with
    a delegated identity, base backups, and the API. A directory stands for
-   the operator's safe, where the API's keys and trust file are copied.
+   the operator's safe, where the API's keys are copied. The identity trust is
+   in PostgreSQL, and reaches the standby with it.
 2. **A client writes** through the API: it creates an organization every 0.2
    seconds with the platform token, and records each ID it is given, and
    when.

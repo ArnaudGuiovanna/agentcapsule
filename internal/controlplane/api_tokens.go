@@ -50,7 +50,7 @@ func (s *Store) Authenticate(ctx context.Context, secret string) (Principal, err
 	if strings.HasPrefix(secret, serviceTokenPrefix) {
 		return s.authenticateService(ctx, secret)
 	}
-	if len(secret) != 47 || !strings.HasPrefix(secret, "acp_") {
+	if len(secret) != 47 || !strings.HasPrefix(secret, "acp_") || s.legacyClosed.Load() {
 		return Principal{}, ErrAuthentication
 	}
 	hash := sha256.Sum256([]byte(secret))

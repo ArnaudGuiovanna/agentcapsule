@@ -118,6 +118,9 @@ var llmAccessAndCostSQL string
 //go:embed migrations/0033_peer_redeliveries.sql
 var peerRedeliveriesSQL string
 
+//go:embed migrations/0034_operator_bootstrap.sql
+var operatorBootstrapSQL string
+
 // Append migrations; never edit an installed migration. The original schema
 // also upgrades pre-ledger installations, preserving its historical backfills.
 // Later calls validate its checksum without replaying DDL or those backfills.
@@ -155,6 +158,7 @@ var controlPlaneMigrations = []schemaMigration{
 	{version: 31, name: "restart-budgets", sql: restartBudgetsSQL},
 	{version: 32, name: "llm-access-and-cost", sql: llmAccessAndCostSQL},
 	{version: 33, name: "peer-redeliveries", sql: peerRedeliveriesSQL},
+	{version: 34, name: "operator-bootstrap", sql: operatorBootstrapSQL},
 }
 
 func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error {

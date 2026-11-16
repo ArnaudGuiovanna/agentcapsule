@@ -11,6 +11,11 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// ErrOrganizationNameTaken refuses a second active organization of the same
+// name, compared without case: creating an organization twice by mistake, with
+// another idempotency key, fails (ADR 001, D-01).
+var ErrOrganizationNameTaken = errors.New("an active organization already has this name")
+
 type Organization struct {
 	ID            string    `json:"id"`
 	Name          string    `json:"name"`
@@ -72,7 +77,11 @@ func (a *Accounts) CreateOrganization(ctx context.Context, p Principal, key stri
 	}
 	r, err := a.withReceipt(ctx, tx, scope(p, "POST", "/v1/organizations", key), in, func() (int, any, error) {
 		o, err := scanOrganization(tx.QueryRow(ctx, `INSERT INTO organizations(id,name) VALUES($1,$2)
+            ON CONFLICT (lower(name)) WHERE status='active' DO NOTHING
             RETURNING id,name,status,policy_version,created_at`, newID("org"), in.Name))
+		if errors.Is(err, ErrNotFound) {
+			return 0, nil, ErrOrganizationNameTaken
+		}
 		if err != nil {
 			return 0, nil, err
 		}
