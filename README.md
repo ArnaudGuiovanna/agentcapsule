@@ -84,7 +84,8 @@ against the implementation in the test suite.
 
 ## Requirements
 
-- Linux amd64 with KVM (for running capsules), Go **1.27.3**, a C compiler and the
+- Linux amd64 with KVM, a kernel 5.14 or later (6.1 or 6.18 preferred) and cgroup v2
+  (for running capsules; `agentcapsule-worker -preflight` checks the host), Go **1.27.3**, a C compiler and the
   `libcryptsetup` headers (cgo), PostgreSQL 16 or newer.
 - Firecracker 1.17.0 with the volume-lock patch in [runtime/firecracker](runtime/firecracker),
   a guest kernel built from [runtime/guest](runtime/guest), and the guest image built
