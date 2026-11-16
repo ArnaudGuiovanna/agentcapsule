@@ -64,6 +64,12 @@ func TestServiceRunsDegradedMode(t *testing.T) {
 	if err = c.RecordOutcome(ctx, b, restoreauthority.Outcome{ID: "event-1", Digest: digest("one")}); err != nil {
 		t.Fatal("an outcome waited in degraded mode", err)
 	}
+	// The API sees the same mode on its socket (ADR 006, wave 4): its
+	// readiness probe reports it.
+	api := l.apiClient(t)
+	if status, err := api.Status(ctx); err != nil || status.Mode != restoreauthority.ModeDegraded || status.DegradedSince == 0 {
+		t.Fatal("the API's view of degraded mode", status, err)
+	}
 	if _, err = c.ReserveIncarnation(within(t, 500*time.Millisecond), b, "restore"); !errors.Is(err, restoreauthority.ErrWaitsForReplica) ||
 		!errors.Is(err, restoreauthority.ErrUnavailable) {
 		t.Fatal("a reservation ran in degraded mode", err)
@@ -83,5 +89,8 @@ func TestServiceRunsDegradedMode(t *testing.T) {
 	}
 	if status, err := c.Status(ctx); err != nil || status.Mode != restoreauthority.ModeSynchronous || status.DegradedSince != 0 {
 		t.Fatal(status, err)
+	}
+	if status, err := api.Status(ctx); err != nil || status.Mode != restoreauthority.ModeSynchronous || status.DegradedSince != 0 {
+		t.Fatal("the API's view after degraded mode", status, err)
 	}
 }

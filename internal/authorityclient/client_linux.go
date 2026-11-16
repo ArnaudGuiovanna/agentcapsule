@@ -49,6 +49,11 @@ const (
 	// activationAttempts bounds the restarts of an activation whose
 	// recorded list changed meanwhile.
 	activationAttempts = 3
+	// maxSocketPath bounds a socket's path, as the service's configuration
+	// does: a Unix socket path has at most 107 bytes.
+	maxSocketPath = 100
+	// maxWaitDelay bounds the delay between two attempts of Wait.
+	maxWaitDelay = 5 * time.Second
 )
 
 // Client is a connection pool to the authority service.
@@ -71,7 +76,7 @@ var (
 // the two authorities' identities. It does not connect: each connection's
 // hello checks the service.
 func New(path, role, restoreAuthority, keyAuthority string) (*Client, error) {
-	if !filepath.IsAbs(path) || (role != svc.RoleWorker && role != svc.RoleAPI) ||
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path || len(path) > maxSocketPath || (role != svc.RoleWorker && role != svc.RoleAPI) ||
 		!authoritylog.ValidID(restoreAuthority, "restoreauth_") || !authoritylog.ValidID(keyAuthority, "keyauth_") {
 		return nil, restoreauthority.ErrInput
 	}
@@ -98,6 +103,36 @@ func (c *Client) Status(ctx context.Context) (svc.Status, error) {
 	var s svc.Status
 	err := c.call(ctx, svc.OpStatus, struct{}{}, &s)
 	return s, err
+}
+
+// Wait waits until the service answers, and returns its status. While the
+// service does not answer, it tries again, at most every 5 seconds, as long
+// as ctx lasts, and waiting receives each failed attempt. A service that
+// holds another installation's authorities, serves another role on this
+// socket, or speaks an older protocol is refused at once: waiting would not
+// change it.
+func (c *Client) Wait(ctx context.Context, waiting func(error)) (svc.Status, error) {
+	delay := 100 * time.Millisecond
+	for {
+		s, err := c.Status(ctx)
+		if err == nil {
+			return s, nil
+		}
+		if errors.Is(err, svc.ErrIdentity) || errors.Is(err, svc.ErrProtocol) || errors.Is(err, svc.ErrRole) || ctx.Err() != nil {
+			return svc.Status{}, err
+		}
+		if waiting != nil {
+			waiting(err)
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return svc.Status{}, errors.Join(err, ctx.Err())
+		case <-timer.C:
+		}
+		delay = min(2*delay, maxWaitDelay)
+	}
 }
 
 // SeparateFrom checks that dataRoot lies outside both authorities'

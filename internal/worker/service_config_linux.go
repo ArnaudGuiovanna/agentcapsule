@@ -219,30 +219,12 @@ func (c ServiceConfig) OpenAuthority() (*authorityclient.Client, error) {
 // that root lies outside both authorities' directories. A service that does
 // not answer yet is waited for while ctx lasts, and waiting receives each
 // failed attempt; a service that holds another installation's authorities,
-// or speaks an older protocol, is refused at once.
+// or speaks an older protocol, is refused at once (authorityclient's Wait).
 func WaitForAuthority(ctx context.Context, a *authorityclient.Client, root string, waiting func(error)) error {
-	delay := 100 * time.Millisecond
-	for {
-		_, err := a.Status(ctx)
-		if err == nil {
-			return a.SeparateFrom(root)
-		}
-		if errors.Is(err, authorityservice.ErrIdentity) || errors.Is(err, authorityservice.ErrProtocol) ||
-			errors.Is(err, authorityservice.ErrRole) || ctx.Err() != nil {
-			return err
-		}
-		if waiting != nil {
-			waiting(err)
-		}
-		timer := time.NewTimer(delay)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return errors.Join(err, ctx.Err())
-		case <-timer.C:
-		}
-		delay = min(2*delay, 5*time.Second)
+	if _, err := a.Wait(ctx, waiting); err != nil {
+		return err
 	}
+	return a.SeparateFrom(root)
 }
 
 // AuthorityFailure names why the worker did not reach the authorities, for
