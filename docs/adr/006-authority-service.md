@@ -1,7 +1,8 @@
 # D-05 — The authority service
 
 Date: November 16, 2026. **Status: accepted by the product owner on November
-16, 2026** (see [Questions](#questions-for-the-product-owner)). This record designs
+16, 2026** (see [Questions](#questions-for-the-product-owner)); wave 1 is built
+([Implementation status](#implementation-status)). This record designs
 item 3 of [ADR 005 §5](005-keys-outside-restored-domain.md#5-what-changes-in-code-and-docs)
 and item 5 of its [What the code must do](005-keys-outside-restored-domain.md#what-the-code-must-do).
 It changes no decision of ADR 005. It is a record of its own, not a section
@@ -106,6 +107,13 @@ command that opens a directory takes the same lock and refuses with
 lock is taken by the commands, not by `restoreauthority.Open`: the package
 tests open two handles in one process to stand for two processes.
 
+The lock file is `owner.lock`. In the replica role, the service holds the
+lock of the replica's directory, so `promote` and `init-replica` refuse
+while it runs: [recovery.md](../recovery.md#promote-the-replica) already
+asks to stop it before a promotion. `promote` takes the locks of the
+replica's directory and of its two targets. A directory that does not exist
+has no lock to take: nothing runs on it, and the lock does not create it.
+
 **The account.** The directories, the catalogue file and the key files belong
 to `agentcapsule-authority` (the existing checks compare them with the
 process's UID). No other account could read them before either, and root
@@ -149,25 +157,35 @@ closed and counted.
   role, and the two identities the client pins. The service checks the role
   against the socket and the identities against its own, then answers with
   `status`. A mismatch closes the connection: a worker never talks to another
-  installation's authorities.
+  installation's authorities. `status` reads no database, so a hold never
+  delays a hello: the epoch is read at start (only a promotion changes it,
+  and a promotion builds another catalogue), and the mode is in memory.
 - **One request at a time** per connection: `{"op": …, "timeout_ms": …,
   "args": {…}}`, then one response: `{"result": {…}}` or `{"error": "<code>"}`.
   The client keeps a small pool of connections. A hold takes one out of the
   pool for its duration.
 - **The deadline travels.** `timeout_ms` becomes the operation's context in
   the service, so a wait at the barrier ends at the caller's deadline, and
-  `ErrWaitsForReplica` and `_degraded_refused_total` keep their meaning.
+  `ErrWaitsForReplica` and `_degraded_refused_total` keep their meaning. A
+  timeout is at most 10 minutes; a client without a deadline sends that one.
+  The client waits one second past its deadline for the service's answer,
+  which says why the operation ended.
 - **Errors** are a closed vocabulary: `input`, `unavailable`, `conflict`,
   `stale`, `revoked`, `sealed`, `history`, `not_declared`,
   `waits_for_replica`, `replica_required`, `not_armed`, `diverged`, the key
-  authority's `key_unavailable`, `key_revoked`, `key_conflict`, and
-  `hold_expired`, `role`, `protocol`, `identity`. The client turns each back
-  into the same sentinel error as today (`restoreauthority.ErrStale`, …), so
+  authority's `key_unavailable`, `key_revoked`, `key_conflict`,
+  `key_input`, and `hold_expired`, `role`, `protocol`, `identity`. The
+  client turns each back into the same sentinel error as today
+  (`restoreauthority.ErrStale`, …), so
   every `errors.Is` in the worker keeps working: `RestoreFailure`,
   `archiveRetryReason`, `platformError` and the adoption's split between a
   stale binding and an outage (`internal/worker/placements_linux.go:143`). A
   connection that fails, or ends, is `unavailable`: an outage, never a stale
-  binding.
+  binding. For the same reason, an error that carries `ErrUnavailable` is
+  sent as `unavailable` (or the more precise `waits_for_replica`,
+  `replica_required`, `diverged`) even when it also carries a refusal. On
+  the client's side, `hold_expired`, `role`, `protocol` and `identity` are
+  also `ErrUnavailable`.
 - **A key** follows its `held` frame as exactly 32 raw bytes. The client
   reads them with `io.ReadFull` into a buffer it owns and clears at release.
   No key ever goes through `encoding/json`, which would leave base64 copies
@@ -193,13 +211,18 @@ exclusions are exactly today's. Holds need no change in the authority
 packages: no new lock, no new state.
 
 The client runs its own callback with a **hold context**. It is canceled when
-the connection ends, and 5 seconds before the cap. The worker's publish runs
-in it, so a client that loses its hold stops its PostgreSQL transaction. The
+the connection ends, and 5 seconds before the hold's end (a fifth of a hold
+shorter than 25 seconds). The hold's end is the shorter of the request's
+deadline and the cap; the `held` frame gives it (`hold_ms`). The worker's
+publish runs in it, so a client that loses its hold stops its PostgreSQL
+transaction. The
 callbacks of the worker's interface therefore take a context
 (`func(context.Context) error`). When the callback returns, the client sends
 `release` and waits for `released`. Only then does the operation succeed. A
 callback that failed sends `release` too; no hold writes anything in the
-root, so the outcome is the same.
+root, so the outcome is the same. A hold that ended before its callback
+returned fails as an outage, even when the callback succeeded: the
+exclusion did not cover all of it.
 
 Rules:
 
@@ -235,13 +258,19 @@ Rules:
 | `WithSubjectKey` (`catalog_linux.go:988`) | Nothing outside the package's tests | Not exposed. A future caller gets a hold like `hold_binding` | — | — | — | `revokedSubjectCannotAcquireNewKeyTest` stays in the package (`TestSubjectKeyGateUsesIndependentIntent`) |
 | The journal (`Catalog.Append`, used by `Ensure` and `Revoke`) | Key creation and destruction | Inside the service only: `ensure_key`, `destroy_key` | — | — | — | Unchanged |
 
+`hold_key` names the key's agent and volume and, for a boot or a format, the
+incarnation: it then holds the binding {agent, volume, incarnation} around
+the key, as the worker binds an agent's store to the agent's ID. Without an
+incarnation it holds the key alone (`keyauthority.Provider.WithKey`).
+
 **The activation.** Today `Inspect` asks the guest which outcomes its image
 holds, inside a catalogue transaction, up to three times: before the repair,
 when declaring losses, and at the activation. Across the socket, the
 inspection runs in the worker, outside any hold:
 
 1. `recorded_outcomes(receipt)`: the outcomes the authority recorded for the
-   store, and a digest of that list. Pages when the list is long.
+   store, and a digest of that list. Pages of 1000 outcomes; the client
+   checks the whole list against the digest.
 2. The worker inspects the guest, then calls the repair, as today.
 3. `declare_losses(receipt, digest, missing)`: the service runs today's
    `declareLosses`, with an inspection that checks the digest against the
@@ -249,7 +278,8 @@ inspection runs in the worker, outside any hold:
 4. `hold_activation(receipt, digest, missing)`: the same, through
    `WithActivation`. The worker publishes in PostgreSQL, then releases.
 
-A changed list is `stale`, and the worker starts again at step 1. This is
+A changed list is `stale`, and the worker starts again at step 1, at most
+three times. This is
 equivalent to today. The image boots restricted, with no delivery and no
 writer, so what it holds cannot change between the inspection and the
 step. In the model, a store in `Reconciling` has no writer (`canBeginEffect`
@@ -377,8 +407,14 @@ the service.
   The preprovisioned laboratory path without authorities does not change.
 - **In tests it stays.** The worker depends on an interface,
   `restoreauthority.Authority`, as it depends on `keyauthority.Provider` for
-  keys. `*restoreauthority.Catalog` implements it in process; the client
-  implements it over the socket. The worker's tests run against both.
+  keys. `restoreauthority.Local`, the catalogue and the key authority opened
+  in process, implements both; the client implements both over the socket.
+  `*restoreauthority.Catalog` alone does not: the key hold needs both
+  authorities, and today's `With*` functions keep their signatures. The
+  interface's holds are named after their operations (`CheckBinding`,
+  `HoldBinding`, `HoldKey`, `HoldFences`, `HoldRevocation`), the activation
+  is `ActivateRestored`, and each callback takes the hold's context. The
+  worker's tests run against both.
 
 ## 6. Installation
 
@@ -408,7 +444,8 @@ not writable by others:
 }
 ```
 
-`authority_replica` moves unchanged from the worker's configuration. The
+`authority_replica` moves unchanged from the worker's configuration.
+`api_uid` is required, and is not 0. The
 replica role keeps today's file, with `"role": "replica"` in version 2. The
 metrics port is the same on both hosts: one scrape job,
 `agentcapsule-authority`.
@@ -652,6 +689,47 @@ for another's. Once one process owns the catalogue, a hold could take a lock
 per store, and the revocation's revision a lock of its own. That changes which
 operations exclude each other, so it needs its own argument against the model
 and its own tests. It is not needed for D-05.
+
+## Implementation status
+
+November 16, 2026. **Wave 1 is built**, used by tests only: the worker and
+the API still open the authorities in process, and no unit or production
+configuration changed.
+
+- `internal/authorityservice`: the server, the protocol, the owner lock,
+  the link to the standby (`Link`, the worker's `replicate`, which stays
+  in the worker until wave 2), and the service's metrics:
+  `agentcapsule_authority_service_holds{kind}`, `_hold_expired_total{kind}`,
+  `_refused_peers_total{socket}`, beside the replication metrics. They
+  reach [observability.md](../observability.md) with wave 2.
+- `internal/authorityclient`: the client, implementing
+  `restoreauthority.Authority` and `keyauthority.Provider`.
+- `restoreauthority.Authority`, `Activation` and `Local` (§5), and the
+  reads the service needs: `RecordedOutcomes`, `DeclareLosses` (the
+  declaration step of `Activate`), `KnownSubject` and `KnownReservation`
+  (the quiet period), `ReplicationMode` (`status`), and `Root`. The holds
+  changed nothing else in the authority packages.
+- `agentcapsule-authority serve` reads the configuration of §6: version 1,
+  or version 2 with `role`. The primary role runs the service, with the
+  replication metrics on `metrics_listen`. Both roles, `snapshot`,
+  `init-replica`, `promote` and `agentcapsule-admin`'s init commands take
+  the owner lock (§1).
+- Tests: those of wave 1 above, and `TestKeyBytesNeverTravelInJSON` (the
+  stream between client and service, read frame by frame),
+  `TestBothImplementationsAgree` (an agent's life through `Local` and
+  through the client), `TestActivationRepairsBeforeItDeclares`,
+  `TestServiceRunsDegradedMode` (degraded mode, `waits_for_replica` and the
+  replication metrics through the socket), `TestServeConfigurationNamesItsRole`,
+  `TestInitCommandsRefuseWhileTheServiceRuns`, `TestOwnerLockIsExclusive`.
+  Each mechanism was disabled in turn, and its test failed.
+
+Building it changed this record in five places, each time for the safer
+variant: `Local` rather than `*Catalog` implements the interface (§5);
+`key_input` joins the codes, and an outage is sent as one even when it also
+carries a refusal (§2); the hold context's margin for short holds, and a
+lost hold is an outage even when its callback succeeded (§3); the replica
+role holds the lock of its directory (§1); `status` reads no database (§2).
+The model needs no change (§8).
 
 ## 11. Options considered
 
