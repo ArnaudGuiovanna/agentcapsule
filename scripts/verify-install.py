@@ -23,6 +23,8 @@ docs/bootstrap.md and docs/install.md step by step, without root:
    readiness reports the service; a plain HTTP request gets 400;
 7. the platform header file, and the organization with its first owner
    (curl, as written in bootstrap.md), replayed and refused as a duplicate;
+   its receipt names the day of the authority service's receipt key, and
+   the service holds today's and tomorrow's;
 8. the organization's identity trust (`configure-delegation -action
    install`, an Ed25519 key made here for the identity provider), replayed;
 9. the owner signs in (`GET /v1/organizations/current`) and names an
@@ -533,6 +535,17 @@ def main():
         status, again = curl("organization", "POST", "/v1/organizations", [header, "Idempotency-Key: create-acme"], body)
         run.expect(status == 201 and again == org, f"the replay gave {status} and another answer")
         run.checked("the same Idempotency-Key returns the same answer")
+        # Its receipt is encrypted with the authority service's key of the
+        # day, which the service holds with tomorrow's (ADR 006 wave 6).
+        r = run.run("organization", [a.pg_bin / "psql", "-X", "-v", "ON_ERROR_STOP=1", "-h", pg_socket, "-U", "postgres", "-d", "agentcapsule",
+                                     "-tAc", "SELECT coalesce(key_day::text,'none') FROM http_receipts WHERE key='create-acme'"], pg_env)
+        days = {time.strftime("%Y-%m-%d", time.gmtime(time.time() + d * 86400)) for d in (-1, 0, 1)}
+        run.expect(r.stdout.strip() in days, f"the receipt names the key day {r.stdout.strip()!r}, not today's")
+        r = run.run("authority-metrics", ["curl", "-sS", f"http://127.0.0.1:{authority_metrics}/metrics"], base_env)
+        for line in ('agentcapsule_authority_receipt_key_ready{day="today"} 1', 'agentcapsule_authority_receipt_key_ready{day="tomorrow"} 1',
+                     "agentcapsule_authority_receipt_keys_overdue 0"):
+            run.expect(line in r.stdout, f"the service's metrics lack {line}")
+        run.checked("the receipt names the day of its key (key_day); the service holds today's and tomorrow's receipt keys")
         status, refused = curl("organization", "POST", "/v1/organizations", [header, "Idempotency-Key: create-acme-2"],
                                body.replace('"Acme"', '"ACME"'))
         code = refused.get("code") if isinstance(refused, dict) else None

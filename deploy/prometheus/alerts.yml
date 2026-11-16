@@ -394,6 +394,28 @@ groups:
           severity: critical
         annotations:
           summary: The authority service keeps failing to reach the replica outside degraded mode; every authority operation waits or fails.
+      # The daily receipt keys (ADR 006 wave 6, docs/recovery.md).
+      - alert: AgentCapsuleReceiptKeyMissing
+        expr: agentcapsule_authority_receipt_key_ready{day="today"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: The authority service holds no receipt key of the day; the API refuses every request that takes an idempotency key.
+      - alert: AgentCapsuleNextReceiptKeyMissing
+        expr: agentcapsule_authority_receipt_key_ready{day="tomorrow"} == 0
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: Tomorrow's receipt key is missing; if the standby does not return by midnight UTC, the next day's key will be created on the primary alone.
+      - alert: AgentCapsuleReceiptKeyNotDestroyed
+        expr: agentcapsule_authority_receipt_keys_overdue > 0
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: A daily receipt key outlives its destruction time; its destruction waits for the standby or fails, and backups of its day stay readable.
 
   # Host resources, from node_exporter on the same host.
   - name: agentcapsule-host
