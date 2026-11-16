@@ -479,11 +479,13 @@ func (s *Store) dispatchMailbox(ctx context.Context, agentID, id string, lease t
 
 // retirementDue reports whether a pending reply, status or instruction is to
 // be retired, however its destination fares: closing, past its deadline, or
-// out of attempts with no live lease. A request is closed by its own closure.
+// out of attempts with no live lease. A request is closed by its own closure;
+// a delivery to an agent being deleted is canceled by the deletion.
 func (s *Store) retirementDue(ctx context.Context, id string) (bool, error) {
 	var due bool
-	err := s.pool.QueryRow(ctx, `SELECT kind<>'request' AND delivery_state='PENDING' AND (closing OR expires_at<=clock_timestamp()
-        OR attempts>=attempt_limit AND (lease_until IS NULL OR lease_until<=clock_timestamp())) FROM agent_mailboxes WHERE id=$1`, id).Scan(&due)
+	err := s.pool.QueryRow(ctx, `SELECT m.kind<>'request' AND m.delivery_state='PENDING' AND a.phase='LIVE' AND (m.closing
+        OR m.expires_at<=clock_timestamp() OR m.attempts>=m.attempt_limit AND (m.lease_until IS NULL OR m.lease_until<=clock_timestamp()))
+        FROM agent_mailboxes m JOIN agents a ON a.id=m.dest_agent_id WHERE m.id=$1`, id).Scan(&due)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}

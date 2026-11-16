@@ -300,6 +300,24 @@ func TestExpiredDeliveryDiesWithoutItsRecipient(t *testing.T) {
 	}
 }
 
+// A delivery to an agent being deleted does not die at its deadline: the
+// deletion cancels it, and nobody is to be told (ADR 007 §1).
+func TestExpiredDeliveryToADeletedAgentIsCanceled(t *testing.T) {
+	l := newDeadReplyLab(t)
+	if err := l.s.RequestDeletion(t.Context(), l.owners[0].ID, "a"); err != nil {
+		t.Fatal(err)
+	}
+	pastDeadline(t, l.s, l.reply)
+	if err := l.tr.DispatchMailbox(t.Context(), l.reply, time.Minute, unbootable{l.rt}); !errors.Is(err, errNeverBoots) {
+		t.Fatal("a delivery to an agent being deleted died", err)
+	}
+	l.deliveryState(t, "PENDING")
+	if err := l.s.ReconcileRevocation(t.Context(), "a", l.rt); err != nil {
+		t.Fatal(err)
+	}
+	l.deliveryState(t, "CANCELED")
+}
+
 // A reply that an attempt may have reached is fenced before it dies: a
 // delayed send could still apply it. Past its deadline it waits for the
 // agent to boot for that barrier, and dies then.
