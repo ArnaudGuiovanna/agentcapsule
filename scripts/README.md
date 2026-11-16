@@ -36,7 +36,9 @@ Do not run `go test ./...` at the repository root with sources outside
 |---|---|
 | `check-go.py` | Go tests with race detector, no PostgreSQL or KVM |
 | `test_check_go.py` | Unit tests of `check-go.py` |
-| `check-repo-hygiene.py` | Rejects new tracked files with a personal absolute path or Go sources committed under `_evidence/` (baseline: `hygiene-baseline.json`) |
+| `check-repo-hygiene.py` | Rejects new tracked files with a personal absolute path or Go sources committed under `_evidence/` (baseline: `hygiene-baseline.json`); runs `check-model-projections.py` |
+| `check-model-projections.py` | Fails when a run or witness of `spec/*.qnt` is missing from [spec/projections.md](../spec/projections.md), or when the table names a Go test that does not exist |
+| `test_check_model_projections.py` | Unit tests of `check-model-projections.py` |
 | `verify-postgres.py` | Go/race tests against a private, owned PostgreSQL cluster, with crash/WAL recovery; optional live LLM phase |
 | `fetch-backup-tools.py` | Fetches pgBackRest 2.58 and rclone 1.60.1, Ubuntu 26.04's packages, from a fixed snapshot of the Ubuntu archive; checks each SHA-256, extracts them without root or apt and runs each once; see [below](#backup-qualifications) |
 | `test_fetch_backup_tools.py` | Unit tests of `fetch-backup-tools.py`, with small packages built on the spot and no network |
