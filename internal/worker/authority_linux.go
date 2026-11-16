@@ -38,6 +38,14 @@ func (w *Placements) deliverToGuest(ctx context.Context, target string, client *
 			return harnessstore.Receipt{}, err
 		}
 	}
+	if !client.Accepts(capsuleprotocol.ControlContentJSON) {
+		// A harness that did not negotiate JSON content receives each JSON
+		// part as text (ADR 016). The same boot always gets the same bytes,
+		// and the outcome below is recorded for the event it received.
+		if downgraded, err := capsuleprotocol.TextOnlyEvent(event); err == nil {
+			event = downgraded
+		}
+	}
 	var result harnessstore.Receipt
 	var err error
 	if invoke {

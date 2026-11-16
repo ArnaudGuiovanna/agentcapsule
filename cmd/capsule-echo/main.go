@@ -77,6 +77,11 @@ func run() (result error) {
 	if err != nil {
 		return err
 	}
+	// The echo keeps JSON parts as they came (ADR 016); text-only plays a
+	// harness built before JSON content.
+	if !mode.textOnly {
+		s.AcceptJSONContent()
+	}
 	background := make(chan error, 1)
 	go func() {
 		background <- h.Run(ctx)
