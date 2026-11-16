@@ -243,8 +243,6 @@ def main():
         command = [work / "bin/agentcapsule-api", "-listen", f"127.0.0.1:{port}", "-host-id", HOST_ID,
                    "-receipt-key-file", etc / "receipt.key", "-transit-active-key", "v1", "-transit-key", f"v1={etc / 'transit-v1.key'}",
                    "-tls-cert", etc / "api.crt", "-tls-key", etc / "api.key", "-tls-server-name", "127.0.0.1"]
-        if (etc / "delegation.json").exists():
-            command += ["-delegated-identity-file", etc / "delegation.json"]
         log = (out / f"api-{name}.log").open("a")
         logs.append(log)
         log.write("$ " + " ".join(str(c) for c in command) + "\n")
@@ -337,7 +335,8 @@ def main():
         lab.credentials += [token, *key_forms((primary_etc / "receipt.key").read_bytes()), *key_forms((primary_etc / "transit-v1.key").read_bytes())]
 
         # A tenant whose member signs in with a delegated identity: the
-        # client's Ed25519 key signs, the API holds only the public trust.
+        # client's Ed25519 key signs; PostgreSQL holds the public trust, so
+        # the standby has it after the promotion.
         primary_port = free_port()
         start_api("primary", primary_etc, primary_dsn, primary_port)
         ready("primary", primary_port)
@@ -366,7 +365,7 @@ def main():
         # where these keys live and how a standby gets them.
         safe = work / "operator-safe"
         safe.mkdir(mode=0o700)
-        for name in ("receipt.key", "transit-v1.key", "delegation.json", "api.crt", "api.key"):
+        for name in ("receipt.key", "transit-v1.key", "api.crt", "api.key"):
             shutil.copy2(primary_etc / name, safe / name)
 
         # Base backups into both repositories, as the installation does.
@@ -451,7 +450,7 @@ def main():
         def install():
             # From the operator's copy: the same files, the same modes.
             standby_etc.mkdir(mode=0o700)
-            for name in ("receipt.key", "transit-v1.key", "delegation.json", "api.crt", "api.key"):
+            for name in ("receipt.key", "transit-v1.key", "api.crt", "api.key"):
                 shutil.copy2(safe / name, standby_etc / name)
 
         standby_port = free_port()

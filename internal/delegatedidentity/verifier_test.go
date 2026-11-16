@@ -494,3 +494,40 @@ func TestMalformedAndOversizedTokensFailWithoutIdentity(t *testing.T) {
 	rejected(t, absent, raw)
 	rejected(t, &delegatedidentity.Verifier{}, raw)
 }
+
+// Select only finds the trust a token names; it authenticates nothing.
+func TestSelectNamesTrustWithoutAuthenticating(t *testing.T) {
+	config, private := fixture(t)
+	raw := sign(t, claims(), jwt.SigningMethodEdDSA, private, nil)
+	issuer, audience, kid, err := delegatedidentity.Select(raw)
+	if err != nil || issuer != "https://client.example" || audience != "agentcapsule:tenant-a" || kid != "key-1" {
+		t.Fatal("selection", issuer, audience, kid, err)
+	}
+	_, stranger, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forged := sign(t, claims(), jwt.SigningMethodEdDSA, stranger, nil)
+	if _, _, _, err := delegatedidentity.Select(forged); err != nil {
+		t.Fatal("selection must not need the key", err)
+	}
+	rejected(t, verifier(t, config), forged)
+	two := claims()
+	two["aud"] = []string{"a", "b"}
+	noIssuer := claims()
+	delete(noIssuer, "iss")
+	for name, bad := range map[string]string{
+		"empty":     "",
+		"free-form": "alice",
+		"two-aud":   sign(t, two, jwt.SigningMethodEdDSA, private, nil),
+		"no-issuer": sign(t, noIssuer, jwt.SigningMethodEdDSA, private, nil),
+		"no-kid":    sign(t, claims(), jwt.SigningMethodEdDSA, private, func(h map[string]any) { delete(h, "kid") }),
+		"key-url":   sign(t, claims(), jwt.SigningMethodEdDSA, private, func(h map[string]any) { h["jku"] = "https://keys.example" }),
+		"unsigned":  sign(t, claims(), jwt.SigningMethodNone, jwt.UnsafeAllowNoneSignatureType, nil),
+		"oversized": strings.Repeat("a", delegatedidentity.DefaultMaxTokenBytes+1),
+	} {
+		if _, _, _, err := delegatedidentity.Select(bad); !errors.Is(err, delegatedidentity.ErrInvalidToken) {
+			t.Fatal("selected a token outside the profile:", name)
+		}
+	}
+}

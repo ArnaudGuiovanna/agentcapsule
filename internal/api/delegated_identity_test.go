@@ -204,9 +204,10 @@ func TestDelegationOperatorCLIAndRealAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer log.Close()
-	cmd := exec.CommandContext(t.Context(), filepath.Join(dir, "agentcapsule-api"), "-listen", address, "-receipt-key-file", keyFile, "-host-id", "local", "-delegated-identity-file", configFile)
-	// Development mode: plain HTTP on loopback (TLS is tested in
-	// TestAPIBinariesBootstrapServeAndShutdown).
+	// No local trust file: the API verifies with the keys the operator
+	// registered in PostgreSQL. Development mode: plain HTTP on loopback (TLS
+	// is tested in TestAPIBinariesBootstrapServeAndShutdown).
+	cmd := exec.CommandContext(t.Context(), filepath.Join(dir, "agentcapsule-api"), "-listen", address, "-receipt-key-file", keyFile, "-host-id", "local")
 	cmd.Env = append(os.Environ(), "AGENTCAPSULE_DATABASE_URL="+l.dsn, "AGENTCAPSULE_MODE=development")
 	cmd.Stdout = log
 	cmd.Stderr = log

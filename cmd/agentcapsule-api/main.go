@@ -18,7 +18,6 @@ import (
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/api"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/delegatedidentity"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/operatorconfig"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/preflight"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/telemetry"
@@ -36,7 +35,6 @@ func run(args []string) int {
 	f := flag.NewFlagSet("agentcapsule-api", flag.ContinueOnError)
 	listen := f.String("listen", "127.0.0.1:8080", "HTTPS listener; plain HTTP only on loopback in development mode")
 	keyPath := f.String("receipt-key-file", "", "private receipt encryption key")
-	delegationPath := f.String("delegated-identity-file", "", "local public Ed25519 trust configuration (does not activate database trust)")
 	hostID := f.String("host-id", "", "stable worker host for agent reservations")
 	activeTransit := f.String("transit-active-key", "", "active transit key ID pinned in PostgreSQL")
 	var transitFiles operatorconfig.KeyFiles
@@ -95,17 +93,6 @@ func run(args []string) int {
 	if err != nil {
 		return fail("receipt_key_file_invalid")
 	}
-	var identityVerifier *delegatedidentity.Verifier
-	if *delegationPath != "" {
-		cfg, e := operatorconfig.ReadDelegationConfig(*delegationPath)
-		if e != nil {
-			return fail("delegated_identity_configuration_invalid")
-		}
-		identityVerifier, e = delegatedidentity.NewVerifier(cfg)
-		if e != nil {
-			return fail("delegated_identity_configuration_invalid")
-		}
-	}
 	dsn, code := operatorconfig.DatabaseURL(mode)
 	if code != "" {
 		return fail(code)
@@ -119,6 +106,10 @@ func run(args []string) int {
 		return fail("database_initialization_failed")
 	}
 	defer s.Close()
+	// Only the organization model runs: the legacy owner domain's acp_ tokens
+	// are refused (D-01, ADR 001). Delegated tokens are verified with the keys
+	// registered in PostgreSQL by agentcapsule-admin configure-delegation.
+	s.CloseLegacyOwnerDomain()
 	if err = s.Ready(startup); err != nil {
 		cancel()
 		return fail("database_schema_unavailable")
@@ -156,7 +147,6 @@ func run(args []string) int {
 	if err != nil {
 		return fail("api_initialization_failed")
 	}
-	handler.SetDelegatedIdentityVerifier(identityVerifier)
 	// One event per request on standard output: its X-Request-ID, route
 	// pattern, status and duration, never an ID from the path or a body.
 	registry := telemetry.NewRegistry()
