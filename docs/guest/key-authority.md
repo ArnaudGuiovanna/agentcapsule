@@ -82,10 +82,10 @@ validation of an external HSM or KMS.
   the stores' copies expire by age
   ([recovery.md](../recovery.md#deleting-an-agent-its-keys-and-its-archives-adr-018)).
 
-Only the worker's order puts the seal before the destruction today:
-`Revoke` checks no seal. The authority service will refuse to destroy the key
-of a store that is not sealed ([ADR 006](../adr/006-authority-service.md),
-wave 3).
+The authority service refuses to destroy the key of a store that is not
+sealed ([ADR 006](../adr/006-authority-service.md), wave 3): `destroy_key`
+takes the store's binding and answers `not_sealed` otherwise. The worker keeps
+its order, seal then key.
 
 "Kept out of data backups" includes the provider's snapshots of the host's
 disk: such a copy holds every key in clear, and brings back a destroyed one.
