@@ -36,9 +36,13 @@ Do not run `go test ./...` at the repository root with sources outside
 |---|---|
 | `check-go.py` | Go tests with race detector, no PostgreSQL or KVM |
 | `test_check_go.py` | Unit tests of `check-go.py` |
-| `check-repo-hygiene.py` | Rejects new tracked files with a personal absolute path or Go sources committed under `_evidence/` (baseline: `hygiene-baseline.json`); runs `check-model-projections.py` |
+| `check-repo-hygiene.py` | Rejects new tracked files with a personal absolute path or Go sources committed under `_evidence/` (baseline: `hygiene-baseline.json`); runs `check-model-projections.py` and `check-acceptance.py` |
 | `check-model-projections.py` | Fails when a run or witness of `spec/*.qnt` is missing from [spec/projections.md](../spec/projections.md), or when the table names a Go test that does not exist |
 | `test_check_model_projections.py` | Unit tests of `check-model-projections.py` |
+| `check-acceptance.py` | Fails when an MVP requirement of [docs/product.md](../docs/product.md) has no row in [docs/acceptance.md](../docs/acceptance.md), when a met row cites no test, or when a cited test or file does not exist |
+| `test_check_acceptance.py` | Unit tests of `check-acceptance.py` |
+| `verify-install.py` | The install from scratch, without root: builds every binary, installs them into a throwaway prefix, then follows [docs/bootstrap.md](../docs/bootstrap.md) and [docs/install.md](../docs/install.md) (PostgreSQL, migration, platform credential, the API over HTTPS, an organization and its trust, the authority service, the worker's preflight) and ends with a call by the organization's owner; see [below](#install-from-scratch) |
+| `test_verify_install.py` | Unit tests of `verify-install.py`'s reading of the worker's preflight |
 | `verify-postgres.py` | Go/race tests against a private, owned PostgreSQL cluster, with crash/WAL recovery; optional live LLM phase |
 | `fetch-backup-tools.py` | Fetches pgBackRest 2.58 and rclone 1.60.1, Ubuntu 26.04's packages, from a fixed snapshot of the Ubuntu archive; checks each SHA-256, extracts them without root or apt and runs each once; see [below](#backup-qualifications) |
 | `test_fetch_backup_tools.py` | Unit tests of `fetch-backup-tools.py`, with small packages built on the spot and no network |
@@ -114,6 +118,27 @@ Files that predate the rules are listed in `scripts/hygiene-baseline.json`;
 fixing one never fails the check. Use `--update` only to record a reviewed
 decision, never to hide a new offending file. CI runs this check before the
 PostgreSQL campaign.
+
+## Install from scratch
+
+```bash
+python3 scripts/verify-install.py --go <path-to-go> --pg-bin <postgres-bin-dir> \
+  [--pg-library-path <dir>] [--native-tools <tools-dir>/guest-build] \
+  [--firecracker <fc> --jailer <jailer> --kernel <vmlinux> --initrd <guest-image>] \
+  --output <output-dir>/install
+```
+
+It runs as an ordinary user, with `openssl`, `curl` and `unshare`, in about a
+minute once Go's cache is warm. The worker refuses a configuration that root
+does not own, and the authority service admits only root on the worker's
+socket: the run starts both in a user namespace where its account is root
+(`unshare -r`). On Ubuntu 24.04, allow it first with
+`sysctl kernel.apparmor_restrict_unprivileged_userns=0`. Without the
+artifacts, the worker's preflight reports them as failed and the run checks
+that the worker refuses to start; `/dev/kvm` is reported as this account sees
+it. `summary.json` lists each step with the document it follows, what it
+checked and the deviations from the docs. The run removes the database, the
+binaries and every secret, then searches its evidence for each secret.
 
 ## PostgreSQL integration (required)
 
