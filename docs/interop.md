@@ -195,6 +195,16 @@ start only. The traffic shows on the bridge's side: it served both agents'
 names, and deliveries stopped while it was away. Since the bridge sends and
 answers through two SLIM services, every delivery crosses the node.
 
+To see the exchange in the node itself (A2A-005), the campaign now runs its
+node with its message processing logged
+(`log_level: "info,slim_datapath::message_processing=debug"`, a copy of
+`slim.yaml` mounted by a compose override), and the test reads the node's log
+through the campaign's control script: it must show a message forwarded to
+the recipient's name (`match and forward message name=agentcapsule/<organization>/<agent>/...`),
+then one to the sender's. A host keeps INFO: with its message processing
+logged, the node also writes each message's bytes to its log. `TestProductWorkerDeletionRemovesTheVolumeTheKeyAndTheDirectoryRecord`
+uses the campaign's Directory too: a deleted agent's record leaves it.
+
 ## Running on a host
 
 [deploy/systemd](../deploy/systemd) holds the units of one host. The worker and
