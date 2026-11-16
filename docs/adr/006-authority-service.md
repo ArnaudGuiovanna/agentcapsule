@@ -258,10 +258,12 @@ Rules:
 | `WithSubjectKey` (`catalog_linux.go:988`) | Nothing outside the package's tests | Not exposed. A future caller gets a hold like `hold_binding` | — | — | — | `revokedSubjectCannotAcquireNewKeyTest` stays in the package (`TestSubjectKeyGateUsesIndependentIntent`) |
 | The journal (`Catalog.Append`, used by `Ensure` and `Revoke`) | Key creation and destruction | Inside the service only: `ensure_key`, `destroy_key` | — | — | — | Unchanged |
 
-`hold_key` names the key's agent and volume and, for a boot or a format, the
-incarnation: it then holds the binding {agent, volume, incarnation} around
-the key, as the worker binds an agent's store to the agent's ID. Without an
-incarnation it holds the key alone (`keyauthority.Provider.WithKey`).
+`hold_key` names the key's agent, volume and incarnation: it holds the
+binding {agent, volume, incarnation} around the key, as the worker binds an
+agent's store to the agent's ID. Without an incarnation it is refused
+(`input`, since wave 2): a key held alone would keep its lock without the
+catalogue's transaction, and an armed destruction would then wait for it
+inside that transaction, with every catalogue operation behind it.
 
 **The activation.** Today `Inspect` asks the guest which outcomes its image
 holds, inside a catalogue transaction, up to three times: before the repair,
@@ -752,8 +754,7 @@ November 16, 2026. **Wave 2 is built**: the worker on the service.
   `max_key_hold`. The service refuses `hold_key` without an incarnation
   (`input`), and the client's `WithKey` refuses without sending it
   (`TestServiceRefusesABareKeyHold`). The worker formats and unlocks volumes
-  with `HoldKey`. §3's table still describes a bare hold; it no longer
-  exists across the socket.
+  with `HoldKey`. §3 says so.
 - The restore command pauses while the authorities are unavailable, logs
   `restore_paused` (`authority_unavailable`, `waits_for_replica`), and
   resumes from its last durable step; a refusal ends it (§4,
