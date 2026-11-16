@@ -43,6 +43,9 @@ func (w *Placements) RunMaintenance(ctx context.Context, opts MaintenanceOptions
 			return err
 		}
 		err := w.refreshCredentials(ctx, opts.AttemptTimeout)
+		// The API refuses new agents and imports while a file system is
+		// past the storage pressure threshold (OPS-03).
+		err = errors.Join(err, w.recordStoragePressure(ctx, opts.AttemptTimeout))
 		if opts.Dispatch != nil && ctx.Err() == nil {
 			err = errors.Join(err, w.DispatchPass(ctx, *opts.Dispatch, opts.AttemptTimeout))
 		}

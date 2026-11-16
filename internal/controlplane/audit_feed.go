@@ -3,6 +3,7 @@ package controlplane
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -39,7 +40,8 @@ const auditUnion = `
     UNION ALL SELECT id,created_at,'llm.'||action,actor_principal_id,coalesce(subject_id,provider_id,budget_id),coalesce(alias,usage_id,'') FROM llm_audit WHERE tenant_id=$1
     UNION ALL SELECT id,created_at,action,'platform:'||actor_account,tenant_id,'' FROM organization_audit WHERE tenant_id=$1 AND changed
     UNION ALL SELECT id,created_at,'delegation.'||action,'operator',tenant_id,'' FROM delegation_audit WHERE tenant_id=$1 AND changed
-    UNION ALL SELECT id,created_at,action,actor_principal_id,coalesce(agent_id,tenant_id),'' FROM capability_audit WHERE tenant_id=$1`
+    UNION ALL SELECT id,created_at,action,actor_principal_id,coalesce(agent_id,tenant_id),'' FROM capability_audit WHERE tenant_id=$1
+    UNION ALL SELECT id,created_at,'queue.'||action,actor_principal_id,tenant_id,'' FROM queue_audit WHERE tenant_id=$1`
 
 func encodeAuditCursor(e AuditEvent) string {
 	return base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf("%d|%s", e.CreatedAt.UTC().UnixMicro(), e.ID)))
@@ -108,4 +110,70 @@ func (a *Accounts) ListAudit(ctx context.Context, p Principal, cursor string, li
 		page.Next = encodeAuditCursor(page.Items[len(page.Items)-1])
 	}
 	return page, commit(ctx, tx)
+}
+
+// MaxAuditExport bounds one export; a larger range is refused with
+// ErrAuditExportTooLarge, and the auditor asks for shorter ranges.
+const MaxAuditExport = 100000
+
+// ErrAuditExportTooLarge: the range holds more than MaxAuditExport events.
+var ErrAuditExportTooLarge = errors.New("audit export range holds too many events")
+
+// AuditExport is the organization's audit trail over [From, To), for its
+// auditors (TEN-06). RetentionDays is the retention in force: events older
+// than it were deleted. Without it, every event is kept.
+type AuditExport struct {
+	OrganizationID string       `json:"organization_id"`
+	From           time.Time    `json:"from"`
+	To             time.Time    `json:"to"`
+	ExportedAt     time.Time    `json:"exported_at"`
+	RetentionDays  *int         `json:"retention_days,omitempty"`
+	Items          []AuditEvent `json:"items"`
+}
+
+// ExportAudit returns every audit event of the caller's organization created
+// in [from, to), at most 366 days, in the order of ListAudit and under the
+// same rights: audit:read and a role that may read the audit trail.
+func (a *Accounts) ExportAudit(ctx context.Context, p Principal, from, to time.Time) (AuditExport, error) {
+	if from.IsZero() || !to.After(from) || to.Sub(from) > 366*24*time.Hour {
+		return AuditExport{}, ErrInput
+	}
+	tx, err := a.store.begin(ctx)
+	if err != nil {
+		return AuditExport{}, err
+	}
+	defer rollback(tx)
+	current, err := authorizeTenant(ctx, tx, p, authorization.ScopeAuditRead)
+	if err != nil {
+		return AuditExport{}, err
+	}
+	if !authorization.CanAdminister(tenantAccess(p), authorization.Role(current.Role), authorization.ReadAudit) {
+		return AuditExport{}, ErrForbidden
+	}
+	out := AuditExport{OrganizationID: p.TenantID, From: from.UTC(), To: to.UTC(), Items: []AuditEvent{}}
+	err = tx.QueryRow(ctx, "SELECT clock_timestamp(),(SELECT retention_days FROM audit_retention)").Scan(&out.ExportedAt, &out.RetentionDays)
+	if err != nil {
+		return AuditExport{}, err
+	}
+	rows, err := tx.Query(ctx, `SELECT id,created_at,action,actor,target,reference FROM (`+auditUnion+`) e
+        WHERE created_at >= $2 AND created_at < $3 ORDER BY created_at,id LIMIT $4`, p.TenantID, from, to, MaxAuditExport+1)
+	if err != nil {
+		return AuditExport{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var e AuditEvent
+		if err = rows.Scan(&e.ID, &e.CreatedAt, &e.Action, &e.Actor, &e.Target, &e.Reference); err != nil {
+			return AuditExport{}, err
+		}
+		out.Items = append(out.Items, e)
+	}
+	if err = rows.Err(); err != nil {
+		return AuditExport{}, err
+	}
+	rows.Close()
+	if len(out.Items) > MaxAuditExport {
+		return AuditExport{}, ErrAuditExportTooLarge
+	}
+	return out, commit(ctx, tx)
 }

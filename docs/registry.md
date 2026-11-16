@@ -166,7 +166,10 @@ The import is `IMPORTING` until a worker processes it:
    published, with the ID of the key that signed it (`signer`) if any.
 
 Outcomes: `READY` with a release, or `REJECTED` with `policy`, `not_found`,
-`access_denied`, `signature`, `integrity`, `version_conflict` or `unavailable`. `access_denied`
+`access_denied`, `signature`, `integrity`, `version_conflict`, `unavailable` or
+`storage_pressure`. `storage_pressure` means the file system of the worker's cache
+stayed past its threshold for every attempt ([worker.md](worker.md#storage-pressure));
+while one is, new import requests are refused with `503 storage_pressure`. `access_denied`
 means the registry refused access: the repository is private and the worker has no
 valid credentials for it, or it does not exist (registries often do not say which).
 Network failures are retried with backoff up to 5 attempts. A rejected package can be
@@ -179,6 +182,29 @@ already released answers with that release and downloads nothing.
 agents already pinned to it keep running. Organization members with `agent:read` and
 a role that reads every agent's metadata (owner, administrator, operator, auditor) can
 list releases (`GET /v1/harness-releases`).
+
+### Live test on GHCR
+
+REG-002 asks that the import test pass on GHCR as on a local registry. The
+tests of the worker run on a local registry; `-tags ghcrlive` adds two tests
+that reach GHCR, never run by CI or the PostgreSQL campaign:
+
+```bash
+AGENTCAPSULE_TEST_POSTGRES='host=/path/to/socket user=... dbname=postgres' \
+AGENTCAPSULE_TEST_GHCR_REFERENCE=ghcr.io/<owner>/<name>:<version>@sha256:<digest> \
+go test -tags ghcrlive -run TestLiveGHCR ./internal/worker
+```
+
+`TestLiveGHCRImport` imports the public harness package that the variable
+names, with the assertions of the local-registry test: `READY` with a
+release, read-only files in the cache, nothing left to do.
+`TestLiveGHCRRejectsAnImageThatIsNotAHarness` needs no variable: it gets an
+anonymous token from GHCR, fetches the manifest of a public image that is not a
+harness package, and checks that it is rejected as `integrity` before any
+layer. The rule for GHCR names its blob CDN,
+`pkg-containers.githubusercontent.com`. On 2026-11-16 the second test passed;
+the first needs a harness package published publicly on GHCR, which the
+project does not publish yet.
 
 ## Running an imported release
 

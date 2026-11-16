@@ -18,7 +18,7 @@ import (
 
 var (
 	jobKinds     = []string{"provision", "lifecycle", "delivery", "closure", "deletion", "expiration", "resume"}
-	retryReasons = []string{"wake_budget", "agent_failed", "slim_unavailable", "capacity", "error"}
+	retryReasons = []string{"wake_budget", "agent_failed", "slim_unavailable", "capacity", "storage_pressure", "error"}
 	// A guest fails at boot or crashes; an agent that spends its restart
 	// budget is FAILED for the kind of its last failure (ADR 012).
 	guestFailureKinds   = []string{controlplane.GuestBootFailed, controlplane.GuestCrashed}
@@ -31,7 +31,8 @@ var (
 
 // RetryReason classifies why work waits for its next attempt, for metrics
 // and events: the organization's wake budget, a FAILED agent, an absent SLIM
-// bridge or node, the host's VM capacity, or any other error.
+// bridge or node, the host's VM capacity, its storage pressure, or any
+// other error.
 func RetryReason(err error) string {
 	var bridge *slimlink.BridgeError
 	var socket *net.OpError
@@ -44,6 +45,8 @@ func RetryReason(err error) string {
 		return "slim_unavailable"
 	case errors.Is(err, runtime.ErrCapacity):
 		return "capacity"
+	case errors.Is(err, controlplane.ErrStoragePressure):
+		return "storage_pressure"
 	}
 	return "error"
 }
@@ -100,6 +103,8 @@ func (w *Placements) EnableTelemetry(registry *telemetry.Registry, root string, 
 	running := registry.Gauge("agentcapsule_worker_vms_running", "VMs of this host published as running.")
 	registry.Gauge("agentcapsule_worker_vm_capacity", "VMs this host may run at once (max_active).").Set(float64(maxActive))
 	disk := registry.Gauge("agentcapsule_worker_root_disk_used_ratio", "Used share of the file system holding the runtime root (0 to 1).")
+	waiting := registry.Gauge("agentcapsule_worker_invocations_waiting", "Invocations accepted for this host's agents and not yet delivered.")
+	waited := registry.Gauge("agentcapsule_worker_invocation_oldest_waiting_seconds", "How long the oldest invocation not yet delivered has waited since it was accepted.")
 	failedAgents := registry.Gauge("agentcapsule_worker_agents_failed", "Live agents of this host that are FAILED: they boot again only when woken or cleared.")
 	queued := registry.Gauge("agentcapsule_worker_agents_queued", "Agents of this host waiting for a VM slot (QUEUED).")
 	queuedOldest := registry.Gauge("agentcapsule_worker_capacity_oldest_wait_seconds", "How long the oldest agent waiting for a VM slot has waited.")
@@ -128,6 +133,12 @@ func (w *Placements) EnableTelemetry(registry *telemetry.Registry, root string, 
 			return err
 		}
 		running.Set(float64(n))
+		backlog, oldestInvocation, err := w.store.InvocationBacklog(ctx, w.hostID)
+		if err != nil {
+			return err
+		}
+		waiting.Set(float64(backlog))
+		waited.Set(oldestInvocation.Seconds())
 		if n, err = w.store.FailedAgents(ctx, w.hostID); err != nil {
 			return err
 		}

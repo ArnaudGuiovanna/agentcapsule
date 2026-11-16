@@ -41,7 +41,7 @@ volume archives and, on the standby host, its replay.
 | `agentcapsule_api_requests_total` | counter | `route`, `method`, `status_class` | API requests, by route pattern (`/v1/agents/{id}`), never by the IDs in the path |
 | `agentcapsule_api_request_duration_seconds` | histogram | `route` | API latency |
 | `agentcapsule_worker_jobs_total` | counter | `kind`, `outcome` | Durable jobs processed: `done` or `retried` |
-| `agentcapsule_worker_job_retries_total` | counter | `kind`, `reason` | Why a job waits: `wake_budget`, `agent_failed`, `slim_unavailable`, `capacity`, `error` |
+| `agentcapsule_worker_job_retries_total` | counter | `kind`, `reason` | Why a job waits: `wake_budget`, `agent_failed`, `slim_unavailable`, `capacity`, `storage_pressure`, `error` |
 | `agentcapsule_worker_deliveries_dead_total` | counter | `kind`, `reason` | Deliveries that died ([ADR 007](adr/007-delivery-closure-and-priority.md)): `kind` `reply`, `status` or `instruction`; `reason` `attempts_exhausted` or `expired`, the deadline winning when both hold. A delivery that the deletion of an agent cancels is not counted. Every series is served from zero. It says that deliveries died, not whose. A worker that stops between a death's commit and its count loses that count; the dead delivery in PostgreSQL stays the record |
 | `agentcapsule_worker_vm_starts_total` | counter | `outcome` | VM boots for work: `started` or `failed` |
 | `agentcapsule_worker_vm_start_seconds` | histogram | — | Duration of successful boots |
@@ -49,12 +49,16 @@ volume archives and, on the standby host, its replay.
 | `agentcapsule_worker_agents_failed_total` | counter | — | Agents that spent their restart budget and became `FAILED`. Served from zero |
 | `agentcapsule_worker_agents_failed` | gauge | — | Live agents of the host that are `FAILED` now: they boot again only when woken or cleared |
 | `agentcapsule_worker_jobs`, `_jobs_due`, `_jobs_failing` | gauge | `kind` | The host's jobs; those due and not held by a worker; those that failed three times or more |
-| `agentcapsule_worker_job_oldest_due_seconds` | gauge | `kind` | How long the oldest due job has waited past its time. A retry's backoff is not delay |
+| `agentcapsule_worker_job_oldest_due_seconds` | gauge | `kind` | How long the oldest due job has waited past its time. A retry's backoff is not delay. An agent's deliveries share one job, its head: a backlog behind it does not show here |
+| `agentcapsule_worker_invocations_waiting` | gauge | — | Invocations accepted for the host's agents and not yet delivered |
+| `agentcapsule_worker_invocation_oldest_waiting_seconds` | gauge | — | How long the oldest of them has waited since it was accepted, or released for a scheduled one |
 | `agentcapsule_worker_vms_running`, `_vm_capacity` | gauge | — | Running VMs, and `max_active` |
 | `agentcapsule_worker_agents_queued` | gauge | — | Agents of the host whose work waits for a VM slot (`QUEUED`, [ADR 017](adr/017-capacity-queue-and-dead-letter-replay.md)) |
 | `agentcapsule_worker_capacity_oldest_wait_seconds` | gauge | — | How long the oldest of them has waited |
 | `agentcapsule_worker_root_disk_used_ratio` | gauge | — | Used share of the runtime root's file system |
-| `agentcapsule_worker_directory_publish_retries_total` | counter | — | Directory publication passes that failed |
+| `agentcapsule_worker_image_disk_used_ratio` | gauge | — | Used share of the file system of the harness images (the registry's cache) |
+| `agentcapsule_worker_storage_pressure` | gauge | `filesystem` (`data`, `images`) | 1 while that file system is past `storage_pressure`: new agents (`data`) or imports (`images`) are refused ([worker.md](worker.md#storage-pressure)) |
+| `agentcapsule_worker_directory_publish_retries_total` | counter | — | Directory publications deferred because the Directory could not be reached or refused them, and publication passes that could not read PostgreSQL |
 | `agentcapsule_worker_harness_import_retries_total` | counter | — | Harness imports to try again |
 | `agentcapsule_worker_volume_archives_total` | counter | `vm`, `outcome` | Volume archive captures ([worker.md](worker.md#nightly-encrypted-archives)), by the VM's state before the capture (`asleep`, `running`): `captured` or `retried` |
 | `agentcapsule_worker_volume_archive_agents` | gauge | — | Live agents of the host whose volume the worker archives |
@@ -206,6 +210,7 @@ Their annotations are fixed text.
 | `AgentCapsuleTargetDown` | A process does not answer its scrape for 2 minutes |
 | `AgentCapsuleAPIServerErrors` | More than 5 % of API requests fail with a 5xx, for 10 minutes |
 | `AgentCapsuleQueueDelayed` | A due job has waited more than 5 minutes past its time |
+| `AgentCapsuleInvocationsDelayed` | An invocation has waited more than 15 minutes to be delivered, for 5 minutes |
 | `AgentCapsuleJobsFailing` | Jobs failed three times or more, for 15 minutes |
 | `AgentCapsuleDeliveryDead` | A reply or status died in the last 15 minutes: it could not be delivered to the agent that sent the request, which keeps its outcome ([ADR 007](adr/007-delivery-closure-and-priority.md)). A reply stays readable by the sender's agent for 7 days. An instruction's death is counted but does not alert: its requester sees it as a dead letter |
 | `AgentCapsuleVMBootFailures` | More than 3 failed boots in 15 minutes |
@@ -213,8 +218,10 @@ Their annotations are fixed text.
 | `AgentCapsuleCapacityExhausted` | The host runs `max_active` VMs for 15 minutes |
 | `AgentCapsuleWorkWaitingForCapacity` | Work has waited more than 10 minutes for a VM slot: every VM of the host is computing ([ADR 017](adr/017-capacity-queue-and-dead-letter-replay.md)) |
 | `AgentCapsuleDiskPressure`, `AgentCapsuleDiskCritical` | The runtime root's file system is over 70 % or 80 % full |
+| `AgentCapsuleImageDiskPressure`, `AgentCapsuleImageDiskCritical` | The harness images' file system is over 70 % or 80 % full |
+| `AgentCapsuleStoragePressure` | A file system is past `storage_pressure` for 5 minutes: new agents or imports are refused (critical) |
 | `AgentCapsuleSLIMUnavailable` | Deliveries keep waiting for the SLIM bridge or node |
-| `AgentCapsuleDirectoryUnavailable` | Directory publication keeps failing |
+| `AgentCapsuleDirectoryUnavailable` | Directory publication keeps failing: the Directory is down or refuses, while there is something to publish |
 | `AgentCapsuleWakeBudgetExhausted` | An organization reached its wake budget (info) |
 | `AgentCapsuleMetricsStale` | A process cannot read its current state for its metrics |
 | `AgentCapsuleHostMemoryLow`, `AgentCapsuleHostCPUSaturated` | Host memory below 10 %, or CPUs over 90 % busy, from node_exporter |
@@ -242,8 +249,9 @@ Their annotations are fixed text.
 | `AgentCapsuleAuthorityReplicationStopped` | Outside degraded mode, attempts to reach the authorities' replica have kept failing for 5 minutes: an authority service restarted without its standby, or a replica that refuses it. Every authority operation waits or fails (critical) |
 
 [alerts_test.yml](../deploy/prometheus/alerts_test.yml) holds promtool unit
-tests for the disk, queue, scrape, SLIM, backup, shipping, standby and
-authority alerts. A single failed attempt to reach the authorities' replica
+tests for the disk, storage pressure, queue, invocation wait, boot, Directory,
+host memory and CPU, scrape, SLIM, backup, shipping, standby and authority
+alerts. A single failed attempt to reach the authorities' replica
 stays silent.
 Each backup, shipping and standby threshold is tested on both sides.
 `scripts/verify-alerts.py` checks that every metric the alerts use is
@@ -264,9 +272,49 @@ request ID of a person's invocation is on the delivery of that invocation and
 on the delivery of the request its agent sent to another agent. It passed on
 2026-11-13.
 
+## Diagnostic export
+
+`agentcapsule-admin diagnostics` writes an archive for a support request
+(API-02, [ADR 014](adr/014-operations-capacity-diagnostics-audit.md)):
+
+```bash
+AGENTCAPSULE_DATABASE_URL=... agentcapsule-admin diagnostics -output /root/diagnostics.tar.gz \
+  -worker-config /etc/agentcapsule/worker.json \
+  -worker-metrics http://127.0.0.1:9465/metrics -api-metrics http://127.0.0.1:9464/metrics \
+  -prometheus http://127.0.0.1:9090
+```
+
+Every option but `-output` is optional; what cannot be reached is named in
+`manifest.json`. The file is created with mode 0600 and never overwritten.
+The archive holds:
+- `versions.json`: the binary's Go version and source revision, the kernel;
+- `worker-config.json`: the configuration's shape, its numbers, durations,
+  digests, `host_id` and `metrics_listen`; every other string, paths
+  included, is `redacted`;
+- `database.json`: PostgreSQL's version, the migrations applied and expected,
+  per host its queue, running VMs, unclean stops, storage reservation and
+  pressure, then counts of agents by phase, deliveries by kind and state (dead
+  letters included), imports by state and error, failed operations of the last
+  7 days by kind and error (boots among them), the audit retention;
+- `metrics/*.prom`: the platform's own series (`agentcapsule_*`) only; a label
+  value that is not a short word or a route is dropped with its sample;
+- `*-authority-replication.json`: the authorities' replication, from the
+  worker's or the replica's metrics;
+- `alerts.json`: each alert's name, state, start and declared labels, no
+  annotation.
+
+It holds no content, token, key, organization, member, agent or request
+identifier: the database part is counts only. A test plants secrets, content
+and personal data in the database, the configuration, a metrics endpoint and
+Prometheus's alerts, and checks that none reaches the archive.
+
 ## Not yet covered
 
 - Distributed traces (spans and timings across processes). Correlation is by
   request ID only.
-- An operator command for diagnostics (API-02).
-- Alert thresholds tuned under load (OPS-03).
+- Alert thresholds tuned on a real host. The load test
+  ([worker.md](worker.md#load-test)) measures the limits on PostgreSQL, without
+  VMs.
+- A SLIM or Directory outage shows only while there is work for it: deliveries
+  waiting for SLIM, records waiting for publication. Neither is probed while
+  idle.

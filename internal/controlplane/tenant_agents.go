@@ -158,6 +158,10 @@ func (c *AgentCatalog) reserveTenant(ctx context.Context, p Principal, key strin
 		if err = lockWorkerHost(ctx, tx, c.host); err != nil {
 			return 0, nil, err
 		}
+		// A new agent needs room for its volume (OPS-03).
+		if err = refuseUnderDataPressure(ctx, tx, c.host); err != nil {
+			return 0, nil, err
+		}
 		var available bool
 		err = tx.QueryRow(ctx, `SELECT storage_limit_mib>0 AND storage_limit_mib >= $2::bigint +
             (SELECT coalesce(sum(x.volume_mib),0) FROM agent_specs x JOIN agents a ON a.id=x.agent_id WHERE x.host_id=$1 AND a.phase<>'DELETED')

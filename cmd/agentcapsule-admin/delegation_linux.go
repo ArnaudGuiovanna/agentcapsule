@@ -29,13 +29,31 @@ func configureDelegation(args []string) int {
 	keyID := f.String("key-id", "", "the key's kid, for add-key and retire-key")
 	publicKey := f.String("public-key", "", "Ed25519 public key in standard base64, for add-key")
 	overlap := f.Duration("overlap", 0, "for retire-key: how long tokens signed with the key stay valid (0: none)")
+	g := newGuard(f, "the issuer (rotate, revoke-trust), the token ID (revoke-token) or the key ID (add-key, retire-key)")
 	if err := f.Parse(args); err != nil {
 		return 1
 	}
 	if f.NArg() != 0 || *operation == "" || *tenant == "" || *issuer == "" {
 		return fail("configuration_required")
 	}
-	in := controlplane.DelegationChange{OperationID: *operation, Actor: operatorName(), Action: *action, TenantID: *tenant, Issuer: *issuer, Audience: *audience, TokenID: *tokenID, KeyID: *keyID, Overlap: *overlap}
+	// Rotating rejects the tokens of earlier generations, revoking ends
+	// sign-ins or a token for good, and adding or retiring a key changes who
+	// may sign in (ADR 014): each names its target again.
+	switch *action {
+	case "rotate", "revoke-trust":
+		if !g.allows(*issuer) {
+			return fail("confirmation_required")
+		}
+	case "revoke-token":
+		if !g.allows(*tokenID) {
+			return fail("confirmation_required")
+		}
+	case "add-key", "retire-key":
+		if !g.allows(*keyID) {
+			return fail("confirmation_required")
+		}
+	}
+	in := controlplane.DelegationChange{OperationID: *operation, Actor: operatorName(), Action: *action, TenantID: *tenant, Issuer: *issuer, Audience: *audience, TokenID: *tokenID, KeyID: *keyID, Overlap: *overlap, DryRun: *g.dryRun}
 	if *publicKey != "" {
 		decoded, err := base64.StdEncoding.Strict().DecodeString(*publicKey)
 		if err != nil || len(decoded) != ed25519.PublicKeySize || base64.StdEncoding.EncodeToString(decoded) != *publicKey {

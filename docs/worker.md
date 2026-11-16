@@ -354,6 +354,69 @@ recorded in `instruction_replays`. An organization's owners and administrators
 have the same replay through the API
 ([agents-assignments.md](api/agents-assignments.md#queues-deadlines-and-dead-letters-evt-02)).
 
+## Storage pressure
+
+The worker watches two file systems ([ADR 014](adr/014-operations-capacity-diagnostics-audit.md)):
+the one of `root`, which holds the volumes, and the one of the harness images,
+the registry's `cache` (`<root>/releases` by default). Past
+`"storage_pressure"` (a used share from 0.5 to 0.95, 0.80 by default):
+- each maintenance pass records it in PostgreSQL (`worker_hosts`);
+- the API then refuses a new agent on this host (its volume) or a harness
+  import (its image) with `503 storage_pressure`, before reserving anything;
+- a provisioning already accepted waits before creating its volume (retry
+  reason `storage_pressure`); an import waits before downloading, and its
+  last attempt rejects it as `storage_pressure`.
+
+Agents that exist keep running: their sparse volumes may still grow into the
+remaining space. A file system that cannot be read counts as past the
+threshold. The disk alerts fire earlier, at 70 % and 80 %
+([observability.md](observability.md)).
+
+## Load test
+
+`scripts/load-test.py` drives the API and the worker against PostgreSQL
+(OPS-03). It sends invocations over HTTP to the real API at each rate in turn,
+and real dispatch passes deliver them to the mock runtime of the PostgreSQL
+tests: one SQLite store per agent, written by each delivery after
+`--service` (20 ms by default). No KVM and no root are needed. It reports,
+per rate, the admission latency, the age of the oldest waiting invocation,
+the delay of the worker's jobs, the backlog at the end of the step, the
+completions and the refusals, then the dead letters, and states the highest
+rate sustained: no refusal, no server error, and a queue that does not keep
+growing.
+
+```bash
+python3 scripts/load-test.py \
+  --pg-bin ~/.local/share/agentcapsule-tools/postgres/usr/lib/postgresql/18/bin \
+  --library-path ~/.local/share/agentcapsule-tools/postgres/usr/lib/x86_64-linux-gnu \
+  --native-tools ~/.local/share/agentcapsule-tools/guest-build \
+  --rates 5,10,20,40 --step 30s --agents 8 --workers 1 \
+  --output quint/results/load-<name>
+```
+
+`--workers` is the number of dispatch loops: one worker process runs one.
+`--fail-every N` fails one delivery in N, to produce dead letters.
+
+On 2026-11-16, on the development machine (WSL2, PostgreSQL 18 with fsync on),
+with 8 agents and 20 ms per delivery, the API admitted every rate up to
+80 per second with a p99 below 130 ms, without a refusal. Delivery was the
+limit. One dispatch loop, as one worker process runs, sustained 8
+invocations per second and fell behind at 16: the oldest waiting invocation
+reached 9 seconds after 20 seconds. Two loops sustained 10 and fell behind at
+20 (4 seconds), then 27 seconds at 80 per second. Each delivery takes several
+transactions in sequence (claim, authorization, acknowledgment, the job's
+completion), whatever the agents' own speed. The queue limits (100 waiting
+per agent, 1,000 per organization) refuse beyond that with `429 queue_full`.
+
+**On a real host.** Run the same script on the host, or on a machine like
+it, with the host's PostgreSQL version. To use an existing server instead
+of a private one, give `--dsn` a role allowed to create a schema in a
+throwaway database: the test creates its own schema and drops it at the end.
+Compare the limit with the expected peak rate of invocations, and set the
+`AgentCapsuleInvocationsDelayed` and queue limits from it. The load test does
+not boot VMs: boots, their memory and their CPU are measured by the KVM
+campaigns.
+
 ## Limits and restart budgets
 
 Each VM's drives have I/O ceilings, enforced by Firecracker's rate limiter

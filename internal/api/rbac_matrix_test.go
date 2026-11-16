@@ -121,6 +121,7 @@ var rbacRoutes = []rbacRoute{
 	{Method: "POST", Path: "/v1/service-accounts/{spare}/tokens/{token}/revoke", Success: 200, Want: rbacIdentity, body: `{}`, fresh: rbacFreshServiceToken, Note: "a disposable token"},
 
 	{Method: "GET", Path: "/v1/audit", Success: 200, Want: "S S 403 S 403 403 403 403 S F 401 401 403", hides: []string{"{agent}"}},
+	{Method: "GET", Path: "/v1/audit/export?from={from}&to={to}", Success: 200, Want: "S S 403 S 403 403 403 403 S F 401 401 403", fresh: rbacAuditRange, hides: []string{"{agent}"}},
 
 	{Method: "GET", Path: "/v1/llm/providers", Success: 200, Want: "S S 403 403 403 403 403 403 403 F 401 401 403", hides: []string{"{provider}"}},
 	{Method: "POST", Path: "/v1/llm/providers", Success: 201, Want: rbacCreateAdmin, body: `{"name":"{name}","kind":"openai_compatible","base_url":"https://llm.example.org/v1","secret":"matrix-credential-0123456789"}`, fresh: rbacName},
@@ -259,6 +260,7 @@ var rbacPlaceholder = regexp.MustCompile(`\{[a-z_]+\}`)
 // rbacPattern reduces a path to its shape, so that /v1/agents/{agent} and the
 // server's /v1/agents/{id} match, and fixed test identifiers match too.
 func rbacPattern(path string) string {
+	path, _, _ = strings.Cut(path, "?")
 	parts := strings.Split(path, "/")
 	for i, p := range parts {
 		if rbacPlaceholder.MatchString(p) || strings.Contains(p, "_matrix") {
@@ -828,6 +830,12 @@ func (f *rbacFixture) resolve(t *testing.T, s, actor string, fresh map[string]st
 		t.Fatal("unknown placeholder", p)
 		return ""
 	})
+}
+
+// rbacAuditRange is an audit export's range: the last and the next hour.
+func rbacAuditRange(*testing.T, *rbacFixture) map[string]string {
+	now := time.Now().UTC()
+	return map[string]string{"from": now.Add(-time.Hour).Format(time.RFC3339), "to": now.Add(time.Hour).Format(time.RFC3339)}
 }
 
 // TestRBACMatrix runs every route against every caller and checks the status.

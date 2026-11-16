@@ -47,6 +47,13 @@ type Placements struct {
 	metrics atomic.Pointer[workerTelemetry]
 	// jobEvents logs each job with its origin; nil without telemetry.
 	jobEvents atomic.Pointer[jobEvents]
+	// pressure watches the host's file systems; nil without (OPS-03).
+	pressure atomic.Pointer[StoragePressure]
+	// auditPurgedAt is when the audit trail was last purged (Unix ns).
+	auditPurgedAt atomic.Int64
+	// deliveries stands for the VMs in the load test: it receives the
+	// deliveries the worker dispatches. Nil in production.
+	deliveries controlplane.InstructionRuntime
 	// Tests inject cancellation/crashes at the durable claim boundary.
 	afterClaim          func()
 	afterConfirm        func(runtime.VMRun)

@@ -233,7 +233,10 @@ func TestCredentialCLIListRevokeAndReplaceWithNewFile(t *testing.T) {
 	if err = json.Unmarshal([]byte(strings.SplitN(listing, "\n", 2)[0]), &credential); err != nil || credential.Kind != "platform" || credential.ID == "" {
 		t.Fatal("listing is not usable by revoke-credential", err)
 	}
-	if out, err := admin("revoke-credential", "-kind", "platform", "-id", credential.ID); err != nil || out != "credential_revoked\n" {
+	if out, err := admin("revoke-credential", "-kind", "platform", "-id", credential.ID); err == nil || out != "confirmation_required\n" {
+		t.Fatalf("revoked without confirmation: %v %q", err, out)
+	}
+	if out, err := admin("revoke-credential", "-kind", "platform", "-id", credential.ID, "-confirm", credential.ID); err != nil || !strings.Contains(out, `"outcome":"done"`) {
 		t.Fatalf("revocation failed: %v %q", err, out)
 	}
 	if _, err = store.Authenticate(t.Context(), string(secret)); err == nil {
@@ -253,7 +256,7 @@ func TestCredentialCLIListRevokeAndReplaceWithNewFile(t *testing.T) {
 	if p, err := store.Authenticate(t.Context(), string(replacement)); err != nil || p.Kind != "platform" {
 		t.Fatal("replacement credential does not authenticate", err)
 	}
-	if out, err := admin("revoke-credential", "-kind", "platform", "-id", "ptok_missing"); err == nil || out != "credential_revocation_rejected_not_found\n" {
+	if out, err := admin("revoke-credential", "-kind", "platform", "-id", "ptok_missing", "-confirm", "ptok_missing"); err == nil || out != "credential_revocation_rejected_not_found\n" {
 		t.Fatalf("unknown credential not reported as definite: %v %q", err, out)
 	}
 }

@@ -591,7 +591,7 @@ func TestVolumeBootPlanRechecksLeaseAfterLockWait(t *testing.T) {
 func TestAbandonProvisioningFreesAnUnstartedReservationOnly(t *testing.T) {
 	s, _, c, _, _, owner := catalogLab(t)
 	e := reserveEnrollment(t, s, c, owner, false)
-	if err := s.AbandonProvisioning(t.Context(), "agent_missing"); !errors.Is(err, ErrNotFound) {
+	if _, err := s.AbandonProvisioning(t.Context(), testOperator, "agent_missing"); !errors.Is(err, ErrNotFound) {
 		t.Fatal("unknown agent not reported", err)
 	}
 	// A live job lease means a worker may be creating a volume right now.
@@ -602,13 +602,13 @@ func TestAbandonProvisioningFreesAnUnstartedReservationOnly(t *testing.T) {
 	if err != nil || job.Kind != "provision" {
 		t.Fatal("expected a provisioning job", job, err)
 	}
-	if err = s.AbandonProvisioning(t.Context(), e.AgentID); !errors.Is(err, ErrTransition) {
+	if _, err = s.AbandonProvisioning(t.Context(), testOperator, e.AgentID); !errors.Is(err, ErrTransition) {
 		t.Fatal("abandoned while a worker holds the job", err)
 	}
 	if _, err = s.pool.Exec(t.Context(), "UPDATE worker_jobs SET lease_until=clock_timestamp()-interval '1 second' WHERE agent_id=$1", e.AgentID); err != nil {
 		t.Fatal(err)
 	}
-	if err = s.AbandonProvisioning(t.Context(), e.AgentID); err != nil {
+	if _, err = s.AbandonProvisioning(t.Context(), testOperator, e.AgentID); err != nil {
 		t.Fatal("stuck reservation could not be abandoned:", err)
 	}
 	if n := agentRows(t, s, e.AgentID); n != 0 {
@@ -625,7 +625,7 @@ func TestAbandonProvisioningRefusesOnceAVolumeIsRecorded(t *testing.T) {
 	s, _, c, _, _, owner := catalogLab(t)
 	e := reserveEnrollment(t, s, c, owner, false)
 	observeTestVolume(t, s, e)
-	if err := s.AbandonProvisioning(t.Context(), e.AgentID); !errors.Is(err, ErrTransition) {
+	if _, err := s.AbandonProvisioning(t.Context(), testOperator, e.AgentID); !errors.Is(err, ErrTransition) {
 		t.Fatal("abandoned a reservation that owns a volume", err)
 	}
 	if n := agentRows(t, s, e.AgentID); n < 4 {
