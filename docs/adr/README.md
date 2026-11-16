@@ -12,7 +12,7 @@ not be confused. When citing a decision, always include its source.
 
 | File | Decision label | Subject |
 |---|---|---|
-| [001-organization-identity.md](001-organization-identity.md) | D-01 | Organization identity foundations and tenant transition |
+| [001-organization-identity.md](001-organization-identity.md) | D-01 | Organization identity foundations and tenant transition. **Tenant transition activated** on November 16, 2026: legacy owner domain closed (no legacy data exists), operator bootstrap from an empty database, delegation keys in PostgreSQL with rotation and overlap; three defaults pending the product owner. |
 | [002-assignment-revocation.md](002-assignment-revocation.md) | D-02 | Assignments, revocation and private results |
 | [003-restore-rpo.md](003-restore-rpo.md) | D-03 | RPO, confirmation and restore. **Option B chosen** on November 8, 2026: an announced loss within the window. The P2 model is revised for a declared loss and implemented; the product owner confirmed its defaults on November 16, 2026. |
 | [004-recovery-objectives.md](004-recovery-objectives.md) | REC-01 | Failure domains and recovery objectives: database RPO 15 min, volume RPO 24 h, RTO 1 h on a standby host, backups to S3 and over SSH. |
