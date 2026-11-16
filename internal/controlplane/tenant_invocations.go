@@ -147,8 +147,9 @@ func scanInvocation(row pgx.Row, administrative bool) (Invocation, error) {
 	return v, nil
 }
 
-// GetInvocation shows metadata to the requester, or to a role allowed to read
-// agent metadata. Neither path exposes content (D-02).
+// GetInvocation shows metadata to the requester while it still sees the agent,
+// or to a role allowed to read agent metadata. Neither path exposes content
+// (D-02).
 func (c *AgentCatalog) GetInvocation(ctx context.Context, p Principal, id string) (Invocation, error) {
 	if p.Kind != "tenant" || !validOrganizationText(id, 100) {
 		return Invocation{}, ErrNotFound
@@ -171,11 +172,17 @@ func (c *AgentCatalog) GetInvocation(ctx context.Context, p Principal, id string
 	if err != nil {
 		return Invocation{}, err
 	}
+	if !administrative {
+		if err = hideUnlessStillSeen(ctx, tx, p, current.Role, v.AgentID); err != nil {
+			return Invocation{}, err
+		}
+	}
 	return v, commit(ctx, tx)
 }
 
-// ListInvocations returns the newest first. A requester sees only their own;
-// an administrative reader sees every invocation of the agent.
+// ListInvocations returns the newest first. A requester sees only their own,
+// and only while it still sees the agent; an administrative reader sees every
+// invocation of the agent. An agent the caller cannot see is not found.
 func (c *AgentCatalog) ListInvocations(ctx context.Context, p Principal, agentID, after, state string, limit int) ([]Invocation, error) {
 	if p.Kind != "tenant" || !validOrganizationText(agentID, 100) || len(after) > 100 || limit < 1 || limit > 200 {
 		return nil, ErrInput
@@ -200,6 +207,11 @@ func (c *AgentCatalog) ListInvocations(ctx context.Context, p Principal, agentID
 	}
 	if !exists {
 		return nil, ErrNotFound
+	}
+	if !administrative {
+		if err = hideUnlessStillSeen(ctx, tx, p, current.Role, agentID); err != nil {
+			return nil, err
+		}
 	}
 	rows, err := tx.Query(ctx, invocationSelect+`WHERE a.tenant_id=$1 AND o.agent_id=$2 AND o.kind='instruction'
         AND ($3 OR o.requested_by_principal_id=$4)

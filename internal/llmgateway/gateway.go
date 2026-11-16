@@ -71,6 +71,9 @@ type Config struct {
 	MaxResponse  int64
 	Now          func() time.Time
 	Sleep        func(context.Context, time.Duration) error
+	// RequireHTTPS refuses a provider whose URL is not https, before any
+	// request (production, docs/adr/010-transport-security-and-preflight.md).
+	RequireHTTPS bool
 }
 
 type Gateway struct {
@@ -210,6 +213,9 @@ func (g *Gateway) Complete(ctx context.Context, route Route, req Request) (Respo
 // breaker of Complete. parse runs on a 2xx body; its failure means the provider
 // did work the gateway cannot account for, hence ErrOutcomeUnknown.
 func (g *Gateway) exchange(ctx context.Context, breakerKey, target string, body []byte, headers map[string]string, parse func([]byte) error) error {
+	if g.cfg.RequireHTTPS && !strings.HasPrefix(target, "https://") {
+		return ErrRejected // the configuration is wrong; nothing is sent
+	}
 	if err := g.admit(breakerKey); err != nil {
 		return err
 	}

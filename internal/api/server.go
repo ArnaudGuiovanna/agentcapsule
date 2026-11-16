@@ -107,6 +107,7 @@ func New(store *controlplane.Store, accounts *controlplane.Accounts) (*Server, e
 	s.handle("/v1/agents/{id}/assignments", s.assignments)
 	s.handle("/v1/agents/{id}/assignments/{assignment_id}/revoke", s.revokeAssignment)
 	s.handle("/v1/agents/{id}/assignments/{assignment_id}/replace", s.replaceAssignment)
+	s.handle("/v1/agents/{id}/assignments/{assignment_id}/reassign", s.reassignAssignment)
 	s.handle("/v1/audit", s.audit)
 	s.handle("/v1/llm/providers", s.llmProviders)
 	s.handle("/v1/llm/providers/{id}/rotate", s.rotateLLMProvider)

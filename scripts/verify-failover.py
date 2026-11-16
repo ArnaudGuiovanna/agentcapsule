@@ -52,6 +52,7 @@ from pathlib import Path
 import secrets
 import shutil
 import signal
+import ssl
 import subprocess
 import sys
 import threading
@@ -71,11 +72,14 @@ DISASTER_AFTER_SWITCH = 1.5  # in archive_timeouts: the disaster comes halfway t
 BINARIES = ("agentcapsule-api", "agentcapsule-admin")
 ISSUER, AUDIENCE = "https://client.example", "agentcapsule:organisation"
 HOST_ID = "local"
+# The API serves HTTPS only (production mode, ADR 010): its certificate is
+# issued by the lab's CA, which the clients trust. Set once the CA exists.
+API_TLS = None
 
 
 def call(port, method, path, token=None, body=None, key=None, timeout=5):
-    """One request to the API on this port. Returns (status, JSON); raises OSError or HTTPException when nothing answers."""
-    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+    """One request to the API on this port, over HTTPS. Returns (status, JSON); raises OSError or HTTPException when nothing answers."""
+    connection = http.client.HTTPSConnection("127.0.0.1", port, timeout=timeout, context=API_TLS)
     try:
         headers = {}
         if token:
@@ -235,16 +239,17 @@ def main():
         return r.stdout
 
     def start_api(name, etc, dsn, port):
-        """agentcapsule-api with the configuration and keys installed in etc, as its service would start it."""
+        """agentcapsule-api with the configuration and keys installed in etc, as its service would start it: production mode, HTTPS."""
         command = [work / "bin/agentcapsule-api", "-listen", f"127.0.0.1:{port}", "-host-id", HOST_ID,
-                   "-receipt-key-file", etc / "receipt.key", "-transit-active-key", "v1", "-transit-key", f"v1={etc / 'transit-v1.key'}"]
+                   "-receipt-key-file", etc / "receipt.key", "-transit-active-key", "v1", "-transit-key", f"v1={etc / 'transit-v1.key'}",
+                   "-tls-cert", etc / "api.crt", "-tls-key", etc / "api.key", "-tls-server-name", "127.0.0.1"]
         if (etc / "delegation.json").exists():
             command += ["-delegated-identity-file", etc / "delegation.json"]
         log = (out / f"api-{name}.log").open("a")
         logs.append(log)
         log.write("$ " + " ".join(str(c) for c in command) + "\n")
         log.flush()
-        apis[name] = subprocess.Popen([str(c) for c in command], env={**go_env, "AGENTCAPSULE_DATABASE_URL": dsn},
+        apis[name] = subprocess.Popen([str(c) for c in command], env={**go_env, "AGENTCAPSULE_DATABASE_URL": dsn, "AGENTCAPSULE_MODE": "production"},
                                       stdout=log, stderr=subprocess.STDOUT)
         return apis[name]
 
@@ -309,6 +314,21 @@ def main():
         primary_etc, client = work / "primary-etc", work / "client"  # the API's /etc/agentcapsule on the primary; the client's own files
         primary_etc.mkdir(mode=0o700)
         client.mkdir(mode=0o700)
+        # The API's certificate for 127.0.0.1, issued by a CA of its own; the
+        # clients trust that CA only, with Python's strict verification.
+        run("setup", ["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-days", "1",
+                      "-subj", "/CN=failover API CA", "-addext", "basicConstraints=critical,CA:TRUE",
+                      "-addext", "keyUsage=critical,keyCertSign,cRLSign", "-keyout", work / "api-ca.key", "-out", work / "api-ca.pem"])
+        run("setup", ["openssl", "req", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-subj", "/CN=agentcapsule-api",
+                      "-keyout", primary_etc / "api.key", "-out", work / "api.csr"])
+        (work / "api.ext").write_text("subjectAltName=IP:127.0.0.1\nkeyUsage=critical,digitalSignature\nextendedKeyUsage=serverAuth\n")
+        run("setup", ["openssl", "x509", "-req", "-in", work / "api.csr", "-CA", work / "api-ca.pem", "-CAkey", work / "api-ca.key",
+                      "-CAcreateserial", "-days", "1", "-extfile", work / "api.ext", "-out", primary_etc / "api.crt"])
+        (primary_etc / "api.key").chmod(0o600)
+        (primary_etc / "api.crt").chmod(0o644)
+        lab.credentials.append("".join((primary_etc / "api.key").read_text().splitlines()[1:-1]))
+        global API_TLS
+        API_TLS = ssl.create_default_context(cafile=str(work / "api-ca.pem"))
         admin("primary-admin", primary_dsn, "bootstrap-platform", "-receipt-key-file", primary_etc / "receipt.key",
               "-token-file", client / "platform.token", "-platform-account", "failover-operator", "-token-lifetime", "2h")
         token = (client / "platform.token").read_text()
@@ -346,7 +366,7 @@ def main():
         # where these keys live and how a standby gets them.
         safe = work / "operator-safe"
         safe.mkdir(mode=0o700)
-        for name in ("receipt.key", "transit-v1.key", "delegation.json"):
+        for name in ("receipt.key", "transit-v1.key", "delegation.json", "api.crt", "api.key"):
             shutil.copy2(primary_etc / name, safe / name)
 
         # Base backups into both repositories, as the installation does.
@@ -431,7 +451,7 @@ def main():
         def install():
             # From the operator's copy: the same files, the same modes.
             standby_etc.mkdir(mode=0o700)
-            for name in ("receipt.key", "transit-v1.key", "delegation.json"):
+            for name in ("receipt.key", "transit-v1.key", "delegation.json", "api.crt", "api.key"):
                 shutil.copy2(safe / name, standby_etc / name)
 
         standby_port = free_port()
