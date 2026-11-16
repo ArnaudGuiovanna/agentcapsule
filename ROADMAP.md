@@ -75,9 +75,9 @@ a production host yet.
 
 | ID | Item | Status | Remaining |
 |---|---|---|---|
-| LLM-01 | Providers, aliases, encrypted credentials kept out of VMs, rotation, audit | In progress | Per-agent/team alias access, dedicated secret store (D-05) |
+| LLM-01 | Providers, aliases, encrypted credentials kept out of VMs, rotation, audit; per-agent and per-team alias access (listed aliases, grants to agents and teams, refused before any reservation, [ADR 011](docs/adr/011-llm-access-and-cost-budgets.md)) | In progress | Dedicated secret store (D-05); the harness's `llm.invoke` capability (CAP-01); ADR 011's defaults pending the product owner |
 | LLM-02 | OpenAI-compatible and Anthropic adapters, bounded retries, breaker, unknown outcomes; native requests forwarded as written (CAP-04) | In progress | Live test against Anthropic's own API, streaming from the provider |
-| LLM-03 | Token budgets (hard/soft), reservations, usage and estimated cost | In progress | Cost budgets, operator reconciliation of unknown outcomes |
+| LLM-03 | Token and cost budgets (hard/soft) per organization, agent, alias and period, reservations, usage and estimated cost in exact micro-units, reconciliation of unknown outcomes by the organization ([ADR 011](docs/adr/011-llm-access-and-cost-budgets.md)) | Done | — (ADR 011's defaults pending the product owner) |
 
 ## Harness registry
 

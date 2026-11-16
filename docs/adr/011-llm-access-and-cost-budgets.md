@@ -138,7 +138,7 @@ identifiers in metrics, and free text in logs. So:
 
 | Item | Where |
 | --- | --- |
-| Migration 0032: alias access and `priced`, `llm_alias_grants`, cost budgets, prices and reserved cost per call, who resolved a call, audit actions | `internal/controlplane/migrations/0031_llm_access_and_cost.sql` |
+| Migration 0032: alias access and `priced`, `llm_alias_grants`, cost budgets, prices and reserved cost per call, who resolved a call, audit actions | `internal/controlplane/migrations/0032_llm_access_and_cost.sql` |
 | Access and grants, prices | `internal/controlplane/llm_access.go` |
 | Cost reservation, settlement at the reservation's prices, exact cost, usage and budget consumption | `internal/controlplane/llm_budgets.go` |
 | Reconciliation | `internal/controlplane/llm_reconcile.go` |
