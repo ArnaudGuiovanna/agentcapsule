@@ -280,6 +280,24 @@ Tests, each failing before its change (new APIs: they did not compile):
 - `cmd/agentcapsule-admin`: `TestReplayDeadLetterCommand`.
 - `deploy/prometheus/alerts_test.yml`: `AgentCapsuleWorkWaitingForCapacity`.
 
+Results, on November 16, 2026:
+
+- The PostgreSQL campaign `scripts/verify-postgres.py`: passed, 1,248 tests
+  in the integration phase (748 top-level, none skipped), every test above
+  among them, then the crash and recovery phases (local evidence
+  `quint/results/verify-postgres-evt02-readmission`).
+- The unit tests of `internal/controlplane`, `internal/api`,
+  `internal/worker`, `internal/runtime` and `cmd/agentcapsule-admin` with
+  `-race`; `go vet` of these packages, with the KVM build tags for the
+  worker; `scripts/check-repo-hygiene.py`.
+- `scripts/verify-alerts.py` with promtool (Prometheus 3.5.0, pinned image):
+  37 rules checked, the rule tests pass.
+- Quint 0.33.1: every model typechecks; the runs of `fair_admission.qnt`
+  (`noOvertakeTest`, `deadOwnerTest`), `barrier_capacity.qnt` (2) and P3 (38)
+  pass; `quint run` finds no `safety` violation in `fairAdmissionExclusive`
+  (20,000 samples of 30 steps), `barrierCapacityOk` (20,000 of 30) or
+  `serviceProgressOk` (200,000 of 40).
+
 KVM tests to run (root): `TestDispatchPreparationAndOneSlotCapacity` (the
 resident sender now waits for an answer, so it is stopped as before),
 `TestBarrierCapacityOneSlotThreeStoresAndReplay`,
