@@ -37,7 +37,9 @@ host and of this configuration, changes nothing, and exits
 ([install.md](install.md#preflight)). In production, the worker reaches
 PostgreSQL over a Unix socket or with `sslmode=verify-full`, refuses a `local`
 registry rule and does not call a model provider on plain HTTP
-([ADR 010](adr/010-transport-security-and-preflight.md)).
+([ADR 010](adr/010-transport-security-and-preflight.md)). In both modes it
+calls a provider at an internal address only if `allowed_internal_providers`,
+in its `llm` section, allows it ([install.md](install.md#model-providers-on-internal-addresses)).
 
 The schema must be migrated. `-migrate` explicitly applies the migration before
 starting; a normal launch does not modify the schema. The `host_id`, the

@@ -16,7 +16,7 @@ Every process (`agentcapsule-api`, `agentcapsule-worker`,
 | Value | Mode | What it allows |
 |---|---|---|
 | unset or `production` | Production | Only the hops of the table below. |
-| `development` | Development | Plain HTTP for the API on a loopback address, a PostgreSQL connection without TLS, a local registry rule, a model provider on plain HTTP. |
+| `development` | Development | Plain HTTP for the API on a loopback address, a PostgreSQL connection without TLS, a local registry rule, a model provider on plain HTTP at an address the operator allows ([below](#model-providers-on-internal-addresses)). |
 
 Any other value stops the process (`mode_invalid`). In development, each
 process writes `development_mode_clear_text_allowed_never_use_in_production`
@@ -34,7 +34,7 @@ the worker runs the same host checks in both modes.
 | Edge → Directory server → schema server | Clear text, inside one host, on an internal Docker network without a route out and without a published port. | [compose.yml](../deploy/interop/compose.yml) |
 | Worker ↔ SLIM bridge | Two Unix sockets. Each side checks the other's user on every connection. | Worker `slim` section |
 | SLIM bridge → SLIM node | Mutual TLS 1.3, with a client certificate from a separate SLIM CA, on loopback. The bridge refuses a node URL that is not `https`. | [slimbridge config](../runtime/slimbridge/config.example.json), [slim.yaml](../deploy/interop/slim.yaml) |
-| Worker → model providers | HTTPS, with the system's CAs. Production refuses a provider URL on plain HTTP before anything is sent (`rejected`). | The organization's providers ([llm.md](api/llm.md)) |
+| Worker → model providers | HTTPS, with the system's CAs, to public addresses only unless the operator allows an internal one. No redirect, no environment proxy. Production refuses a provider URL on plain HTTP before anything is sent (`rejected`). | The organization's providers ([llm.md](api/llm.md)); internal ones in the worker's `llm` section ([below](#model-providers-on-internal-addresses)) |
 | Worker → OCI registries | HTTPS. Credentials are sent only in answer to a challenge. Production refuses a `local` rule, which uses plain HTTP. | Worker `registry` section ([registry.md](registry.md)) |
 | Worker → authority replica | Mutual TLS 1.3 with pinned self-signed certificates bound to this host's authorities. | Worker `authority_replica` section ([worker.md](worker.md#replica-of-the-authorities)) |
 | pgBackRest → S3 | HTTPS, the server verified (pgBackRest's default). The data is encrypted before it leaves the host. | [deploy/backup/pgbackrest.conf](../deploy/backup/pgbackrest.conf) |
@@ -110,6 +110,55 @@ valid for 30 days, with keys readable by the containers' users. On a host:
 - renew before expiry.
 
 See [interop.md](interop.md#running-on-a-host).
+
+## Model providers on internal addresses
+
+Organizations declare their own providers ([llm.md](api/llm.md)). The worker
+calls a provider at a public address only. It checks each address when it
+connects, after DNS resolution, so a public name that resolves to an
+internal address is refused too. A refused call is `rejected`, and nothing is
+sent. This holds in both modes.
+- Refused unless you allow them: loopback, private (RFC 1918, RFC 4193),
+  carrier-grade NAT (`100.64.0.0/10`) and the other reserved ranges.
+- Always refused: unspecified, multicast and link-local addresses,
+  `0.0.0.0/8`, and the cloud metadata addresses (`169.254.169.254` and the
+  rest of `169.254.0.0/16`, `100.100.100.200`, `168.63.129.16`,
+  `fd00:ec2::254`, `fd00:ec2::23`, `fd20:ce::254`).
+
+To let organizations use a model server on your network or on the host, list
+it in the worker's `llm` section:
+
+```json
+"llm": {
+  "receipt_key": "/etc/agentcapsule/receipt.key",
+  "allowed_internal_providers": ["models.corp.example:11434", "10.20.0.0/24"]
+}
+```
+
+Each entry is one of:
+- `name:port`: the provider URLs with this host name and port, whatever
+  internal address the name resolves to;
+- `address:port` (`10.20.0.7:443`, `[fd12::7]:443`): this address and port,
+  whatever name the URL uses;
+- a CIDR prefix inside one internal range, host bits at zero
+  (`10.20.0.0/24`): every address in it, on every port.
+
+There is no default entry. An entry that names a public or always-refused
+address, or a prefix that leaves one internal range (`0.0.0.0/0`,
+`10.0.0.0/7`), stops the worker with `llm_configuration_invalid`.
+
+The organization registers the server by its name, for example
+`https://models.corp.example:11434/v1`. The API refuses an `https` URL that
+writes an internal address out (`provider_address_not_allowed`), and the
+server's certificate must cover the name and chain to a CA of the system's
+store. In production the server needs TLS. In development, plain HTTP to
+`localhost`, `127.0.0.1` or `::1` works once allowed, for example
+`"127.0.0.1:11434"` for a local Ollama.
+
+Every organization of the installation may use an allowed server
+([ADR 010](adr/010-transport-security-and-preflight.md), question 5). The
+worker ignores `HTTP_PROXY` and `HTTPS_PROXY` for provider calls, and never
+follows a redirect (question 6).
 
 ## Preflight
 
