@@ -409,7 +409,9 @@ paths:
         credential is encrypted at rest, bound to the organization and the
         provider, and is never returned, neither in a response, nor in the
         audit trail, nor in a VM. The URL must be https, or http to localhost
-        only.
+        only. An https URL that writes an internal address out (an IP address
+        that is not public, localhost) answers 400 with the code
+        provider_address_not_allowed.
       security: [{delegatedBearer: []}, {serviceBearer: []}]
       parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
       requestBody:

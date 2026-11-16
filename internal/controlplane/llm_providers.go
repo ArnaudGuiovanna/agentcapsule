@@ -7,11 +7,13 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/url"
 	"strings"
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorization"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmgateway"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -65,6 +67,13 @@ type CreateLLMAliasInput struct {
 	Access string `json:"access,omitempty"`
 }
 
+// ErrProviderAddress: an https provider URL names an internal address
+// directly (a loopback, private, link-local or cloud metadata address, or
+// localhost). The worker would refuse to call it. A model server on the
+// operator's network is registered by its name, and the operator must allow it
+// in the worker's configuration (ADR 010).
+var ErrProviderAddress = fmt.Errorf("%w: the provider URL names an internal address", ErrInput)
+
 // LLMRoute is what the gateway needs for one call. It holds a decrypted
 // credential and must stay in the gateway process memory.
 type LLMRoute struct {
@@ -72,20 +81,28 @@ type LLMRoute struct {
 	Secret                       string
 }
 
-func validProviderURL(raw string) bool {
+// checkProviderURL accepts https to a host that is not an internal address
+// written out, and plain HTTP to a model server on the worker's host, for
+// development: production refuses plain HTTP before anything is sent. The
+// worker checks every address again when it connects, after DNS resolution.
+func checkProviderURL(raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil || len(raw) > 300 || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-		return false
+		return ErrInput
 	}
-	switch u.Scheme {
+	switch h := u.Hostname(); u.Scheme {
 	case "https":
-		return true
+		if llmgateway.InternalHost(h) {
+			return ErrProviderAddress
+		}
+		return nil
 	case "http":
 		// Plain HTTP only to a local model server; never across a network.
-		h := u.Hostname()
-		return h == "localhost" || h == "127.0.0.1" || h == "::1"
+		if h == "localhost" || h == "127.0.0.1" || h == "::1" {
+			return nil
+		}
 	}
-	return false
+	return ErrInput
 }
 
 func validProviderSecret(s string) bool {
@@ -135,8 +152,11 @@ func auditLLM(ctx context.Context, tx pgx.Tx, p Principal, provider string, alia
 }
 
 func (a *Accounts) CreateLLMProvider(ctx context.Context, p Principal, key string, in CreateLLMProviderInput) (APIReceipt, error) {
-	if !validOrganizationText(in.Name, 100) || (in.Kind != "openai_compatible" && in.Kind != "anthropic") || !validProviderURL(in.BaseURL) || !validProviderSecret(in.Secret) {
+	if !validOrganizationText(in.Name, 100) || (in.Kind != "openai_compatible" && in.Kind != "anthropic") || !validProviderSecret(in.Secret) {
 		return APIReceipt{}, ErrInput
+	}
+	if err := checkProviderURL(in.BaseURL); err != nil {
+		return APIReceipt{}, err
 	}
 	tx, err := a.store.begin(ctx)
 	if err != nil {
