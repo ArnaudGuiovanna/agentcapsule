@@ -87,7 +87,9 @@ nothing. `-dry-run` checks everything and prints what the command would do,
 without changing or recording anything. Each command that runs prints its
 outcome as JSON (`done`, `unchanged` or `refused` with its reason) and is
 audited with it, refusals included, under the local user ID:
-`agentcapsule-admin list-audit` prints it with the operator's other actions.
+`agentcapsule-admin list-audit` prints it with the operator's other actions,
+the platform's harness imports and deprecations, and the operator's replays
+of dead letters.
 Delegation changes stay audited in the organization's trail
 (`delegation_audit`).
 
@@ -99,9 +101,28 @@ storage_pressure` and `Retry-After`, before any reservation.
 **Tenant audit trail.** `GET /v1/audit` (scope `audit:read`, role `org_owner`,
 `org_admin` or `auditor`) lists the organization's events with an opaque
 cursor: members, teams, agents, assignments, service accounts, queue limits
-(`queue.limits.set`) and organization lifecycle. Each event carries only the actor, the action, the target and a
-reference: never a token, a secret or content. An event is written only in the
-transaction of the mutation it describes.
+(`queue.limits.set`), organization lifecycle, and the replays of dead letters
+(`invocation.replayed`, by an administrator or by `operator`, with the
+invocation as `reference`). Each event carries only the actor, the action, the target, a
+reference and its `outcome`: never a token, a secret or content. An event of
+outcome `done` is written only in the transaction of the mutation it
+describes.
+
+**Refused attempts** (TEN-009, [ADR 014 §10](../adr/014-operations-capacity-diagnostics-audit.md#10-refused-attempts-in-the-organizations-trail)).
+When a route of an audited action refuses a member or a technical account of
+the organization, for want of a right (403, or 404 for what it may not see)
+or for its input (400, 409, 413, 415, 422), the trail gets an event of
+outcome `refused`: the action the route would have recorded, the actor, the
+identifiers its path named, and the problem code as `reason`. The request's
+body is never recorded, and a path value that is not a platform identifier
+(an alias's name, for example) is replaced by the organization's ID. Reads,
+invocations, messages and unauthenticated requests leave no event. The event
+is written after the answer, in its own transaction.
+
+```json
+{"id":"audit_…","created_at":"2026-11-16T10:00:00Z","action":"assignment.created",
+ "actor":"prn_…","target":"agt_…","outcome":"refused","reason":"not_found"}
+```
 
 **Audit export** (TEN-06). `GET /v1/audit/export?from=<RFC 3339>&to=<RFC 3339>`,
 with the same rights as `GET /v1/audit`, returns every event of the
