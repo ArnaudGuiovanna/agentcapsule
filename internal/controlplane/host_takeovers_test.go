@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"encoding/json"
 	"errors"
 	"slices"
 	"testing"
@@ -17,9 +18,23 @@ func TestHostTakeoverIsFinalAndStopsTheLostHost(t *testing.T) {
 	if err := s.DiscoverWork(t.Context(), "local", 10); err != nil {
 		t.Fatal(err)
 	}
-	second := createAccount(t, c.accounts, admin, "second-owner", "Second")
-	secondOwner, err := s.Authenticate(t.Context(), issueAccountToken(t, c.accounts, admin, second, "second-token").Token)
+	owners := []User{}
+	principals := []Principal{}
+	for _, name := range []string{"second", "third"} {
+		u := createAccount(t, c.accounts, admin, name+"-owner", name)
+		p, err := s.Authenticate(t.Context(), issueAccountToken(t, c.accounts, admin, u, name+"-token").Token)
+		if err != nil {
+			t.Fatal(err)
+		}
+		owners, principals = append(owners, u), append(principals, p)
+	}
+	// An agent still provisioning when the host is lost.
+	r, err := c.Reserve(t.Context(), principals[0], "before-the-loss", catalogInput(owners[0].ID))
 	if err != nil {
+		t.Fatal(err)
+	}
+	var provisioning AgentCreation
+	if err = json.Unmarshal(r.Body, &provisioning); err != nil {
 		t.Fatal(err)
 	}
 	for name, hosts := range map[string][2]string{"empty": {"", "standby"}, "same": {"local", "local"}, "invalid": {"local", "a b"}} {
@@ -57,8 +72,18 @@ func TestHostTakeoverIsFinalAndStopsTheLostHost(t *testing.T) {
 	if _, err = s.ClaimWork(t.Context(), "local", time.Minute); !errors.Is(err, ErrHostLost) {
 		t.Fatal("claim on a lost host", err)
 	}
-	if _, err = c.Reserve(t.Context(), secondOwner, "after-the-loss", catalogInput(second.ID)); !errors.Is(err, ErrHostLost) {
+	if _, err = c.Reserve(t.Context(), principals[1], "after-the-loss", catalogInput(owners[1].ID)); !errors.Is(err, ErrHostLost) {
 		t.Fatal("reservation on a lost host", err)
+	}
+	agents, err := s.LostHostAgents(t.Context(), "local")
+	if err != nil || len(agents) != 2 || !slices.ContainsFunc(agents, func(a LostHostAgent) bool {
+		return a.AgentID == provisioning.AgentID && a.Phase == "PROVISIONING" && a.HostID == "local"
+	}) {
+		t.Fatal("agents of the lost host, one still provisioning", agents, err)
+	}
+	// A reservation that obtained nothing on the lost host can be abandoned.
+	if err = s.AbandonProvisioning(t.Context(), provisioning.AgentID); err != nil {
+		t.Fatal("abandon a reservation of the lost host", err)
 	}
 	if err = s.ConfigureHostStorage(t.Context(), "local", 1024); !errors.Is(err, ErrHostLost) {
 		t.Fatal("storage of a lost host configured", err)
@@ -70,7 +95,7 @@ func TestHostTakeoverIsFinalAndStopsTheLostHost(t *testing.T) {
         WHERE p.agent_id=$1`, e.AgentID).Scan(&placement, &spec); err != nil || placement != "local" || spec != "local" {
 		t.Fatal("the takeover moved the agent", placement, spec, err)
 	}
-	agents, err := s.LostHostAgents(t.Context(), "local")
+	agents, err = s.LostHostAgents(t.Context(), "local")
 	if err != nil || len(agents) != 1 || agents[0].AgentID != e.AgentID || agents[0].HostID != "local" || agents[0].Phase != "LIVE" ||
 		agents[0].Stage != "READY" || agents[0].Incarnation != 1 || agents[0].Restore != nil || len(agents[0].Archives) != 0 {
 		t.Fatal("agents of the lost host", agents, err)
