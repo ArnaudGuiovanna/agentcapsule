@@ -92,7 +92,7 @@ integrators building on the API, and contributors.
 ### Invocations, events and attachments
 
 - An invocation is admitted only when identity, current authorization, the durable job and its idempotency receipt commit together; the API returns `202` and an `operation_id`, and the work wakes a stopped agent. A harness may answer `working` and post its result before a deadline; every invocation ends with exactly one outcome.
-- Events are durable external events or simple scheduled events. Queues have TTL, priority and depth limits, bounded retries and dead letters; an idle agent stops after a timeout, never mid-work.
+- Events are durable external events or simple scheduled events. Queues have TTL and depth limits, bounded retries and dead letters; each agent handles its work in arrival order. An idle agent stops after a timeout, never mid-work.
 - Delivery is **at least once** with deduplication; exactly-once is never promised for external effects such as LLM calls, emails or payments. Harnesses checkpoint and deduplicate in their volume.
 - **Attachments** are opaque references with MIME type, size, hash and access control, bound to organization, agent and sender, read over the platform channel and purged on expiry. The platform carries files; interpreting them is the harness's job.
 
@@ -208,7 +208,7 @@ request body.
 | EVT-003 | Idempotency key per client and event | One key, one business operation |
 | EVT-004 | Unique lease and generation per agent | Never two writable copies |
 | EVT-005 | Bounded retries, backoff, dead letter | No unbounded loop |
-| EVT-006 | TTL, priority, queue limits per tenant and agent | Expired tasks never run |
+| EVT-006 | TTL, queue limits per tenant and agent | Expired tasks never run |
 | EVT-007 | Work waits through resource shortage | Resumes, or expires with a clear error |
 | EVT-008 | Event scheduled at a fixed time | Runs no earlier than due |
 | EVT-009 | Results available by polling | `GET /v1/operations/{id}` gives state and result or error |
@@ -264,7 +264,7 @@ forwards a raw Firecracker or shell command to the host.
 
 ## 5. Out of scope for P0
 
-- **P1:** advanced OIDC/SSO; installable signed skills (EXT-004); SSE streaming (EXT-005); outbound webhooks and notifications (EXT-007); calendar connectors; consistent memory snapshots and warm restore; automatic harness migration and canary rollout; LLM routing and fallback; web console and more SDKs.
+- **P1:** advanced OIDC/SSO; installable signed skills (EXT-004); SSE streaming (EXT-005); outbound webhooks and notifications (EXT-007); priority within an agent's queue ([ADR 007](adr/007-delivery-closure-and-priority.md)); calendar connectors; consistent memory snapshots and warm restore; automatic harness migration and canary rollout; LLM routing and fallback; web console and more SDKs.
 - **P1/P2:** large or real-time audio and video (EXT-006).
 - **P2:** multi-node pools and migration; public cross-organization federation; harness marketplace; multi-source event orchestration; advanced cost optimization.
 - **Never in the core:** tutoring or other business logic; a managed SaaS offer; a mandatory graphical client.

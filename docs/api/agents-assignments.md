@@ -146,7 +146,8 @@ answers 409.
   outcome is never presented as "not processed".
   `GET .../invocations?state=failed|expired` lists them.
 - **No priority**: ordering within an agent stays FIFO. The verified delivery
-  model has none and D-04 forbids adding one without revisiting it. Bounded
+  model has none; priority is P1
+  ([ADR 007](../adr/007-delivery-closure-and-priority.md)). Bounded
   retries, delay between attempts and fence closure were already in place
   (`attempt_limit`, `RetryBase`, `RetryMax`, `RetireInstruction`).
 
