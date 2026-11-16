@@ -316,8 +316,8 @@ standby; the others still wait:
 
 A write that waits fails at its deadline with "degraded mode: this
 authority operation waits for the replica", and its job retries. The
-completion of a revocation waits until the product owner answers ADR 005's
-finding 1.
+completion of a revocation waits: ADR 005's finding 1 was decided as option
+(a) on November 15, 2026.
 
 Nothing runs on a write of the second column that the standby lacks. If one
 was in flight when the standby stopped answering, every operation waits

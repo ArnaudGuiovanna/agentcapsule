@@ -64,12 +64,10 @@ const (
 // keys and key destruction (finding 4, restoreWitnessDegradedDestructionBroken).
 // So creating, deleting and restoring an agent wait.
 //
-// Finding 1 is pending with the product owner: whether the completion of a
-// revocation may be confirmed in degraded mode. Until it decides, the
-// completion waits, which is the model's safe configuration. Revocations of
+// Finding 1 was decided on November 15, 2026 (option (a)): the completion of
+// a revocation waits, which is the model's safe configuration. Revocations of
 // access (ADR 005 §5.4) do not exist yet: when they do, they get their own
-// kinds here, a bearer token's and a standing grant's, with the rule the
-// product owner chooses.
+// kinds here. A bearer token's continues; a standing grant's waits.
 var degradedPolicy = map[string]bool{
 	WriteRead:            true,
 	WriteOutcome:         true,
