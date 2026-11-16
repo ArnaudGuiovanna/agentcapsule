@@ -1048,7 +1048,7 @@ The rows are never changed or deleted.
 In the same transaction, each lost invocation runs again or is skipped
 (`invocation_reruns`, migration 0030). The rules are the defaults of
 [ADR 003](adr/003-restore-rpo.md#done-running-the-lost-invocations-again),
-which the product owner has not confirmed yet.
+which the product owner confirmed on November 16, 2026.
 - **A rerun is queued** for an invocation whose delivery PostgreSQL recorded,
   unless its requester canceled it. It goes back to the agent's queue under
   the same mailbox ID, at its place: the lost work runs first. It gets fresh

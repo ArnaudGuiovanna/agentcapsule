@@ -178,8 +178,12 @@ the same identifier:
   state becomes `canceled`, with `lost_at`.
 
 The rerun keeps the invocation's mandate and its remaining budget: with its
-first run, it makes no more agent requests than the requester allowed. These
-rules are defaults that the product owner has not confirmed yet.
+first run, it makes no more agent requests than the requester allowed. The
+product owner confirmed these rules on November 16, 2026
+([ADR 003](../adr/003-restore-rpo.md#defaults-confirmed-by-the-product-owner)).
+An agent whose job acts outside it should pass the invocation's identifier
+to the outside service as an idempotency key
+([adapter.md](../adapter.md#guarantees-and-limits)).
 
 ## Desired and observed state, lifecycle audit (CAP-02)
 

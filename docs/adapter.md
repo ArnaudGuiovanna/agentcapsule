@@ -376,6 +376,14 @@ without Docker.
   after the restart, so the agent's side effects can happen twice. Its model calls are separate calls, each metered. A finished
   run is never repeated; its output is kept until the platform takes the answer.
   Idle shutdown never stops an agent while an invocation is `working`.
+- **Restores.** An agent restored from an archive loses what it did after the
+  archive, its memory included. A finished invocation lost that way runs
+  again, under the same identifier (`AGENTCAPSULE_JOB_ID`), unless its
+  requester cancels it first
+  ([agents-assignments.md](api/agents-assignments.md#lost-in-a-restore-rec-02)).
+  A command that acts outside the agent (an email, a payment) cannot tell from
+  its memory that it already did: pass `AGENTCAPSULE_JOB_ID` to the outside
+  service as its idempotency key.
 - **Model calls.** They are metered like any other: reservation from the
   request's size and output cap (4,096 tokens when the request sets none), then
   settlement at the provider-reported usage. Anthropic's cached input counts as
