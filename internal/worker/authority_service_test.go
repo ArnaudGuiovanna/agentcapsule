@@ -48,7 +48,9 @@ type authorityService struct {
 
 func startAuthorityService(t *testing.T, keys *keyauthority.Files, catalog *restoreauthority.Catalog) *authorityService {
 	t.Helper()
-	dir, err := os.MkdirTemp("", "acw-") // a socket path has at most 107 bytes
+	// A socket path has at most 107 bytes: /tmp, whatever TMPDIR says (the
+	// KVM campaign sets a long one).
+	dir, err := os.MkdirTemp("/tmp", "acw-")
 	if err != nil {
 		t.Fatal(err)
 	}
