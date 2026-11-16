@@ -54,7 +54,7 @@ authorization.
 | Organizations, members and teams | `organizations`, `principals`, `memberships`, `teams`, `team_memberships`, `users` |
 | Assignments | `agent_assignments` |
 | Bearer tokens (hashes; the secrets stay with the clients) | `api_tokens`, `service_tokens`, `platform_credentials` |
-| Delegations | `delegation_trusts` (public key fingerprint, status, `minimum_iat`), `delegation_revocations` (revoked token IDs) ([0004_delegated_identity.sql](../../internal/controlplane/migrations/0004_delegated_identity.sql)) |
+| Delegations | `delegation_trusts` (public key fingerprint, status, `minimum_iat`), `delegation_revocations` (revoked token IDs) ([0004_delegated_identity.sql](../../internal/controlplane/migrations/0004_delegated_identity.sql)); `delegation_keys` (public keys, their end and retirement) ([0033_operator_bootstrap.sql](../../internal/controlplane/migrations/0033_operator_bootstrap.sql)) |
 | Mandates | `mandates.valid` |
 | LLM providers and aliases | `llm_providers` (credential ciphertext, status, generation), `llm_model_aliases` |
 | Revocation subjects, PostgreSQL's copy | `revocation_catalogue` ([schema.sql](../../internal/controlplane/schema.sql)) |
@@ -95,9 +95,10 @@ operator to invalidate or rotate tokens by hand before reopening.
 Notes on the code:
 
 - The platform holds **no delegation signing key**. Trusted clients sign; the
-  platform keeps their public Ed25519 keys
-  (`internal/delegatedidentity/verifier.go`, read from a file by
-  `internal/operatorconfig/delegation_linux.go`).
+  platform keeps their public Ed25519 keys in PostgreSQL (`delegation_keys`,
+  registered by `agentcapsule-admin configure-delegation`; ADR 001, D-01) and
+  verifies with `internal/delegatedidentity/verifier.go`. A retired key is a
+  revocation of access, like a revoked trust.
 - The key authority **does not wrap** the volume keys. They are in clear in
   its directory. The only wrapping is LUKS's key slot in the volume.
 - The model has **one root**. The code has **two authorities**, written

@@ -1,7 +1,9 @@
 # ADR — Foundations of organization identity
 
-Date: November 7, 2026. Status: foundations implemented; tenant transition not
-activated. References: TEN-01/TEN-02/TEN-03 of the
+Date: November 7, 2026. Status: foundations implemented; tenant transition
+activated and operator bootstrap built on November 16, 2026
+([D-01](#tenant-transition-and-operator-bootstrap-d-01)); the legacy owner
+domain's code remains to be removed. References: TEN-01/TEN-02/TEN-03 of the
 [roadmap](../../ROADMAP.md), product spec §2.2, §7.1 and §9
 ([product.md](../product.md)).
 
@@ -89,3 +91,116 @@ control plane transactions.
 No organization route is activated by migration 2. The SQL tests of this slice
 demonstrate the constraints and the resumption of migrations, not yet the
 product's tenant isolation. The existing Quint models remain unchanged.
+
+## Tenant transition and operator bootstrap (D-01)
+
+Date: November 16, 2026. References: D-01, TEN-01, TEN-02, TEN-05 of the
+roadmap; TEN-001 and TEN-008 of the product spec (§4). The steps are in
+[bootstrap.md](../bootstrap.md).
+
+### What the code held
+
+Two domains lived side by side.
+
+- The **legacy owner domain**: the `users` and `api_tokens` tables, `acp_`
+  user and service tokens, one agent per owner (`agents.owner_user_id`), the
+  owner's inbox and requests (`/v1/me/...`, `/v1/agent-requests/...`). An
+  installation entered it with `agentcapsule-admin bootstrap`, which made an
+  `acp_` service token; that token created users (`POST /v1/users`) and their
+  tokens. A legacy service token saw every owner's agents (`Kind ==
+  "service"` in `agent_catalog.go`).
+- The **organization domain**: the platform credential
+  (`bootstrap-platform`), organizations, members, teams, tenant agents and
+  assignments, service accounts, delegated identity.
+
+"Tenant transition not activated" meant that a new installation could still
+enter the legacy domain and that the API accepted its tokens. "Migration of
+legacy data" meant mapping legacy users, agents, receipts and transit
+content to organizations (the list above).
+
+A trust's public keys were in a file that the API read at start; PostgreSQL
+held its fingerprint and generation. Adding an organization or a key meant
+editing that file and restarting the API, and any change of keys raised the
+generation, which refused every token signed before: there was no overlap.
+
+### No legacy data to migrate
+
+No installation can hold legacy owner data: no release was ever made (VAL-03),
+and no production installation exists (the roadmap's known limits). So there
+is no migration command and no mapping; the items of the previous section
+about mapping old data, receipts and transit v1 participants are dropped. A
+development database that holds legacy rows keeps them, unused.
+
+### Decisions
+
+1. **The legacy owner domain is closed, not yet removed.** `agentcapsule-api`
+   refuses every `acp_` token (401) before serving
+   (`Store.CloseLegacyOwnerDomain`). `agentcapsule-admin bootstrap` is gone:
+   it answers `bootstrap_removed_use_bootstrap_platform`. No command creates
+   legacy data, so a running installation serves only organizations, and the
+   global power of a legacy service token is unreachable. The code stays
+   because about 30 test files, among them KVM tests of the worker, still
+   set up their agents through it; removing it means moving them to
+   organizations first.
+2. **A trust's keys are in PostgreSQL** (migration 0033, `delegation_keys`
+   and the trust's scopes and lifetime). The API builds the verifier of the
+   one key a token names, in the transaction that consumes it. The API has no
+   trust file any more (`-delegated-identity-file` is removed), and a change
+   needs no restart. An issuer and audience serve one organization only.
+3. **Keys rotate with an overlap.** `add-key` adds a key; `retire-key` ends
+   one after an overlap (0 by default, 30 days at most). Neither changes the
+   generation or the issuance threshold, so tokens of the other keys keep
+   working. An end is never pushed back, a key ID is bound to its key for
+   good, a retired key never returns, and the last key without an end cannot
+   be retired (`revoke-trust` stops every sign-in). `rotate` retires the keys
+   absent from its file.
+4. **One path from an empty database**: `migrate`, `bootstrap-platform`,
+   `POST /v1/organizations` with the first owner's issuer and subject,
+   `configure-delegation -action install`, then the owner signs in and names
+   administrators (`POST /v1/members`). Each step confirms a repeat or refuses
+   it. A second active organization of the same name is refused (409
+   `organization_name_taken`). No step has a default password: the receipt
+   key and the platform token are random and written to private files.
+5. **The operator's actions are audited.** `platform_audit` records the
+   platform credential's creation and revocation with the local account
+   (`local-uid:<uid>`); a confirmed retry is not a new action.
+   `agentcapsule-admin list-audit` shows it with `organization_audit` and
+   `delegation_audit` (which now records key changes); each organization sees
+   its own in `GET /v1/audit`.
+
+TEN-008 holds: a user is whom a registered key's signature names, and a
+registered member. A name as a bearer token, a header, an unsigned token, a
+token signed by another key or for a non-member is refused
+(`TestOperatorBootstrapFromEmptyDatabase`, `TestFreeFormUserIDsAreRefused`).
+
+### Defaults pending the product owner
+
+- An active organization's name is unique, compared without case.
+- A retired key keeps working for the overlap given, 0 by default and 30 days
+  at most.
+- Only the platform operator, on the host, registers and rotates an
+  organization's keys; there is no API route for an organization's owner.
+
+### The previous section's list, now
+
+| Item | State |
+|---|---|
+| Integrate the Ed25519 signed delegation | Done; keys in PostgreSQL |
+| Explicit mapping of the old data | Dropped: there is none |
+| Tenant authentication; no global power for `Kind == service` | Done; unreachable in a running installation, removed with the legacy code |
+| Receipts' uniqueness, lock and encrypted context | Dropped with the mapping |
+| Historical participants of transit v1 | Dropped with the mapping |
+| Agents and derived resources linked to tenants; assignments | Done (TEN-05) |
+| Adapt `/me`; remove per-owner uniqueness | With the removal of the legacy code |
+| Reassignment and history (D-02) | [ADR 002](002-assignment-revocation.md) |
+
+### What remains
+
+- Remove the legacy owner domain's code and routes, after moving its tests to
+  organizations.
+- OIDC discovery (JWKS) and other algorithms than EdDSA: P1 ("advanced
+  OIDC/SSO", product spec §5).
+- Auditing refused attempts.
+- A retired key, like every revocation held in PostgreSQL, comes back with
+  an older database backup: D-05's revocation records
+  ([ADR 005](005-keys-outside-restored-domain.md)).
