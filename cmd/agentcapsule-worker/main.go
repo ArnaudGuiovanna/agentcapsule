@@ -25,6 +25,8 @@ import (
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/directory"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/operatorconfig"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/preflight"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/restoreauthority"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/slimlink"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/telemetry"
@@ -40,10 +42,23 @@ func run() int {
 	archiveRoot := flag.String("archive-root", "", "absolute private archive directory outside runtime and authorities")
 	restoreAgent := flag.String("restore-agent", "", "restore this agent from -archive-id into a new incarnation, then exit")
 	restoreID := flag.String("restore-id", "", "stable rst_ identifier with 32 lowercase hex digits; reuse to resume the restore")
+	check := flag.Bool("preflight", false, "check this host and configuration, print what to fix, change nothing, then exit")
 	flag.Parse()
 	fail := func(code string) int { fmt.Fprintln(os.Stderr, code); return 1 }
 	if *path == "" || flag.NArg() != 0 {
 		return fail("configuration_required")
+	}
+	// Production unless AGENTCAPSULE_MODE=development, which says so at
+	// every start (docs/adr/010-transport-security-and-preflight.md).
+	mode, err := operatorconfig.ModeFromEnvironment()
+	if err != nil {
+		return fail("mode_invalid")
+	}
+	if mode == operatorconfig.Development {
+		fmt.Fprintln(os.Stderr, operatorconfig.DevelopmentWarning)
+	}
+	if *check {
+		return runPreflight(*path, mode)
 	}
 	restoreRequested := *restoreAgent != "" || *restoreID != ""
 	if restoreRequested && (*restoreAgent == "" || *archiveAgent != "" || !controlplane.ValidRestoreID(*restoreID) ||
@@ -63,6 +78,21 @@ func run() int {
 	if err != nil {
 		return fail("configuration_invalid")
 	}
+	if mode == operatorconfig.Production && c.CheckProductionTransport() != nil {
+		return fail("registry_local_rule_refused_in_production")
+	}
+	// RUN-012: no Firecracker without KVM, a compatible kernel, cgroup v2 and
+	// the pinned artifacts. The failed checks say what to fix.
+	if results := c.MandatoryPreflight(context.Background(), preflight.System()); preflight.Failed(results) {
+		var failed []preflight.Result
+		for _, r := range results {
+			if r.Status == preflight.Fail {
+				failed = append(failed, r)
+			}
+		}
+		_ = preflight.Write(os.Stderr, failed)
+		return 1
+	}
 	if archiveRequested {
 		if c.Provisioning == nil || c.KeyAuthority == nil || c.RestoreAuthority == nil {
 			return fail("archive_requires_product_authorities")
@@ -73,9 +103,9 @@ func run() int {
 			}
 		}
 	}
-	dsn := os.Getenv("AGENTCAPSULE_DATABASE_URL")
-	if dsn == "" {
-		return fail("database_configuration_required")
+	dsn, code := operatorconfig.DatabaseURL(mode)
+	if code != "" {
+		return fail(code)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -122,13 +152,22 @@ func run() int {
 		return fail("runtime_initialization_failed")
 	}
 	defer w.Close() // Listener ownership ends; surviving VMMs remain adoptable.
+	budget, err := c.Restarts()
+	if err != nil || w.SetRestartBudget(budget) != nil {
+		return fail("configuration_invalid")
+	}
 	// Events, one JSON object per line, from a closed vocabulary (OPS-02):
 	// progress on standard output, retries and failures on standard error.
 	vocabulary := map[string][]string{"event": {"maintenance_started", "maintenance_complete", "maintenance_retry", "wake_budget_exhausted",
 		"harness_import_retry", "directory_publish_retry", "slim_callback_stopped", "job_done", "job_retried",
-		"volume_archive_captured", "volume_archive_retry", "delivery_dead"},
-		"reason": append(append(worker.RetryReasons(), worker.ArchiveRetryReasons()...), worker.DeadDeliveryReasons()...),
+		"volume_archive_captured", "volume_archive_retry", "delivery_dead", "agent_failed"},
+		"reason": append(append(append(worker.RetryReasons(), worker.ArchiveRetryReasons()...), worker.DeadDeliveryReasons()...), worker.AgentFailureReasons()...),
 		"kind":   append(worker.JobKinds(), worker.DeadDeliveryKinds()...), "vm": worker.ArchiveVMs()}
+	// The model gateway's events: a soft budget passed, a call refused (ADR 011).
+	vocabulary["event"] = append(vocabulary["event"], worker.LLMEvents()...)
+	for key, values := range worker.LLMEventCodes() {
+		vocabulary[key] = append(vocabulary[key], values...)
+	}
 	events, problems := telemetry.NewLogger(os.Stdout, vocabulary), telemetry.NewLogger(os.Stderr, vocabulary)
 	registry := telemetry.NewRegistry()
 	if err = w.EnableTelemetry(registry, opts.Root, opts.MaxActive); err != nil {
@@ -163,11 +202,12 @@ func run() int {
 			return fail("transit_keys_unavailable")
 		}
 	}
-	llm, err := c.OpenLLM(s)
+	llm, err := c.OpenLLM(s, mode == operatorconfig.Production)
 	if err != nil {
 		return fail("llm_configuration_invalid")
 	}
 	if llm != nil {
+		llm.Observe(worker.NewLLMTelemetry(registry, problems, s.LLMUnresolvedCalls))
 		if err = w.EnableLLM(llm); err != nil {
 			return fail("llm_unavailable")
 		}
@@ -328,6 +368,33 @@ func run() int {
 		return 0
 	}
 	return fail("maintenance_stopped")
+}
+
+// runPreflight prints every check of the configuration and of this host, and
+// exits 1 when one fails. It changes nothing: it creates no runtime root,
+// opens no authority and writes no row.
+func runPreflight(path string, mode operatorconfig.Mode) int {
+	_, modeResult := preflight.Mode()
+	results := []preflight.Result{modeResult}
+	c, err := worker.LoadServiceConfig(path)
+	if err == nil {
+		_, _, _, err = c.Settings()
+	}
+	if err != nil {
+		results = append(results, preflight.Result{Check: "configuration", Status: preflight.Fail,
+			Detail: path + " is not a valid worker configuration",
+			Fix:    "a root-owned regular file, not writable by group or others, with the fields of runtime/worker/config.example.json"})
+		_ = preflight.Write(os.Stdout, results)
+		return 1
+	}
+	results = append(results, preflight.Result{Check: "configuration", Status: preflight.OK, Detail: path})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	results = append(results, c.Preflight(ctx, preflight.System(), mode, os.Getenv(operatorconfig.DatabaseVariable))...)
+	if err = preflight.Write(os.Stdout, results); err != nil || preflight.Failed(results) {
+		return 1
+	}
+	return 0
 }
 
 func main() { os.Exit(run()) }

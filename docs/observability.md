@@ -41,10 +41,13 @@ volume archives and, on the standby host, its replay.
 | `agentcapsule_api_requests_total` | counter | `route`, `method`, `status_class` | API requests, by route pattern (`/v1/agents/{id}`), never by the IDs in the path |
 | `agentcapsule_api_request_duration_seconds` | histogram | `route` | API latency |
 | `agentcapsule_worker_jobs_total` | counter | `kind`, `outcome` | Durable jobs processed: `done` or `retried` |
-| `agentcapsule_worker_job_retries_total` | counter | `kind`, `reason` | Why a job waits: `wake_budget`, `slim_unavailable`, `capacity`, `error` |
-| `agentcapsule_worker_deliveries_dead_total` | counter | `kind`, `reason` | Deliveries that died ([ADR 007](adr/007-delivery-closure-and-priority.md)): `kind` `reply`, `status` or `instruction`; `reason` `attempts_exhausted` or `expired`, the deadline winning when both hold. Every series is served from zero. It says that deliveries died, not whose. A worker that stops between a death's commit and its count loses that count; the dead delivery in PostgreSQL stays the record |
+| `agentcapsule_worker_job_retries_total` | counter | `kind`, `reason` | Why a job waits: `wake_budget`, `agent_failed`, `slim_unavailable`, `capacity`, `error` |
+| `agentcapsule_worker_deliveries_dead_total` | counter | `kind`, `reason` | Deliveries that died ([ADR 007](adr/007-delivery-closure-and-priority.md)): `kind` `reply`, `status` or `instruction`; `reason` `attempts_exhausted` or `expired`, the deadline winning when both hold. A delivery that the deletion of an agent cancels is not counted. Every series is served from zero. It says that deliveries died, not whose. A worker that stops between a death's commit and its count loses that count; the dead delivery in PostgreSQL stays the record |
 | `agentcapsule_worker_vm_starts_total` | counter | `outcome` | VM boots for work: `started` or `failed` |
 | `agentcapsule_worker_vm_start_seconds` | histogram | — | Duration of successful boots |
+| `agentcapsule_worker_guest_failures_total` | counter | `kind` | Guests that failed to boot (`boot`) or went away without a stop (`crash`), counted against restart budgets ([ADR 012](adr/012-limits-restart-budgets-egress.md)). Served from zero |
+| `agentcapsule_worker_agents_failed_total` | counter | — | Agents that spent their restart budget and became `FAILED`. Served from zero |
+| `agentcapsule_worker_agents_failed` | gauge | — | Live agents of the host that are `FAILED` now: they boot again only when woken or cleared |
 | `agentcapsule_worker_jobs`, `_jobs_due`, `_jobs_failing` | gauge | `kind` | The host's jobs; those due and not held by a worker; those that failed three times or more |
 | `agentcapsule_worker_job_oldest_due_seconds` | gauge | `kind` | How long the oldest due job has waited past its time. A retry's backoff is not delay |
 | `agentcapsule_worker_vms_running`, `_vm_capacity` | gauge | — | Running VMs, and `max_active` |
@@ -54,6 +57,12 @@ volume archives and, on the standby host, its replay.
 | `agentcapsule_worker_volume_archives_total` | counter | `vm`, `outcome` | Volume archive captures ([worker.md](worker.md#nightly-encrypted-archives)), by the VM's state before the capture (`asleep`, `running`): `captured` or `retried` |
 | `agentcapsule_worker_volume_archive_agents` | gauge | — | Live agents of the host whose volume the worker archives |
 | `agentcapsule_worker_volume_archive_oldest_seconds` | gauge | — | Age of the oldest among the agents' newest archives. An agent never archived counts from its initialization |
+| `agentcapsule_llm_calls_total` | counter | `provider` (`openai_compatible`, `anthropic`), `outcome` (`settled`, `released`, `unknown`) | Model calls through the worker's bridge ([llm.md](api/llm.md#budgets-and-consumption-llm-03)), once their outcome is recorded. Only with the model bridge on |
+| `agentcapsule_llm_tokens_total` | counter | `provider`, `direction` (`input`, `output`) | Tokens of settled calls, as the provider reported them |
+| `agentcapsule_llm_estimated_cost_micro_total` | counter | `provider` | Estimated cost of settled calls, in micro-units of each organization's own currency: a sum across organizations that price in different currencies has no meaning |
+| `agentcapsule_llm_refusals_total` | counter | `reason` (`budget_tokens`, `budget_cost`, `unpriced`, `alias_access`) | Calls refused before any reservation. Every series is served from zero |
+| `agentcapsule_llm_budget_soft_exceeded_total` | counter | `unit` (`tokens`, `cost`) | Calls that went past a soft budget; a call past two counts twice. Every series is served from zero |
+| `agentcapsule_llm_unresolved_calls` | gauge | — | Calls of unknown outcome, across the installation, that wait for their organization to settle or release them |
 | `agentcapsule_authority_replication_enabled` | gauge | — | 1 when the worker's authorities replicate to the standby; 0 standalone, without disaster protection ([worker.md](worker.md#replica-of-the-authorities)) |
 | `agentcapsule_authority_replication_committed_sequence`, `_acknowledged_sequence` | gauge | — | Last authority record committed by the worker, and last one the replica acknowledged |
 | `agentcapsule_authority_replication_lag_records`, `_lag_seconds` | gauge | — | Authority records committed and not acknowledged, and the age of the oldest |
@@ -149,9 +158,12 @@ Each process writes one JSON object per line, with `time` and `event` first:
 | Worker | `maintenance_retry` | `reason` (as above) |
 | Worker | `wake_budget_exhausted`, `harness_import_retry`, `directory_publish_retry`, `slim_callback_stopped` | — |
 | Worker | `job_done` (standard output), `job_retried` (standard error) | `kind`, `request_id` of the API request that started the work, if any, and `reason` for a retry |
+| Worker | `agent_failed` (standard error) | `reason` (`boot_failed`, `crashed`): an agent spent its restart budget; the event never names it |
 | Worker | `delivery_dead` (standard error) | `kind` (`reply`, `status`, `instruction`), `request_id` of the API request that started the work, if any, `reason` (`attempts_exhausted`, `expired`). The job that retired the delivery still ends with `job_done` |
 | Worker | `volume_archive_captured` (standard output) | `vm` (`asleep`, `running`), `bytes`, `seconds`, `removed` (older archives deleted) |
 | Worker | `volume_archive_retry` (standard error) | `vm`, `reason`: `placement`, `busy`, `disk_full`, `authority`, `timeout`, `retention`, `error` |
+| Worker | `llm_budget_soft_exceeded` (standard error) | `unit` (`tokens`, `cost`), `period` (`day`, `month`), `scope` (`organization`, `agent`, `alias`, `agent_alias`) of the soft budget a model call went past |
+| Worker | `llm_call_refused` (standard error) | `reason` (`budget_tokens`, `budget_cost`, `unpriced`, `alias_access`), and for a budget its `period` and `scope` |
 
 **Correlation.** Every API response carries `X-Request-ID`, a random 128-bit
 value. The ID says nothing about the person or the content. It follows the
@@ -185,6 +197,7 @@ Their annotations are fixed text.
 | `AgentCapsuleJobsFailing` | Jobs failed three times or more, for 15 minutes |
 | `AgentCapsuleDeliveryDead` | A reply or status died in the last 15 minutes: it could not be delivered to the agent that sent the request, which keeps its outcome ([ADR 007](adr/007-delivery-closure-and-priority.md)). A reply stays readable by the sender's agent for 7 days. An instruction's death is counted but does not alert: its requester sees it as a dead letter |
 | `AgentCapsuleVMBootFailures` | More than 3 failed boots in 15 minutes |
+| `AgentCapsuleAgentFailed` | An agent spent its restart budget in the last 15 minutes: its guest kept failing to boot or crashing, and it boots again only when woken or cleared ([ADR 012](adr/012-limits-restart-budgets-egress.md)) |
 | `AgentCapsuleCapacityExhausted` | The host runs `max_active` VMs for 15 minutes |
 | `AgentCapsuleDiskPressure`, `AgentCapsuleDiskCritical` | The runtime root's file system is over 70 % or 80 % full |
 | `AgentCapsuleSLIMUnavailable` | Deliveries keep waiting for the SLIM bridge or node |

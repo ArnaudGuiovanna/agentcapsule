@@ -30,6 +30,15 @@ manager's protected environment, then run:
 /opt/agentcapsule/agentcapsule-worker -config /etc/agentcapsule/worker.json
 ```
 
+At every start the worker checks KVM, the kernel, cgroups, namespaces, the
+runtime root's file system and the pinned artifacts, and does not start when
+one fails, printing what to fix (RUN-012). `-preflight` runs every check of the
+host and of this configuration, changes nothing, and exits
+([install.md](install.md#preflight)). In production, the worker reaches
+PostgreSQL over a Unix socket or with `sslmode=verify-full`, refuses a `local`
+registry rule and does not call a model provider on plain HTTP
+([ADR 010](adr/010-transport-security-and-preflight.md)).
+
 The schema must be migrated. `-migrate` explicitly applies the migration before
 starting; a normal launch does not modify the schema. The `host_id`, the
 registry, the images and the capacity must be consistent across all workers of
@@ -146,11 +155,25 @@ a final failure is possible, and a notification can also exhaust its attempts.
 A reply, status or instruction dies when its three attempts are spent or its
 deadline (7 days for a reply or status, the TTL for an instruction) passes. A
 delivery past its deadline, or out of attempts, to a live agent is retired
-without preparing that agent, so an agent that never boots does not keep it,
-nor its mailbox, alive. One to an agent being deleted is canceled by the
-deletion. Retiring it fences the agent's store only if an attempt may have
-reached it: such a delivery waits, closing, for the agent to boot for that
-barrier. One that no attempt reached dies at once, without the agent. Then:
+without preparing that agent. Retiring it fences the agent's store only if an
+attempt may have reached it. One that no attempt reached dies at once, without
+the agent, even behind other deliveries in its mailbox: it never reached the
+agent, so it leaves the queue out of order. One to an agent being deleted, or a
+reply whose author is being deleted, is canceled by the deletion instead; the
+retirement checks this under the agents' locks. For an agent that never boots,
+what still waits is:
+- a delivery an attempt may have reached: it waits, closing, for the agent to
+  boot for its fence (a restricted boot that accepts barriers only), since a
+  delayed send could otherwise apply it after its death;
+- a request to or from that agent: its closure at its deadline fences the
+  request's two parties, so it stays `DELIVERING` or `PROCESSING` until the
+  agent boots for that barrier. A closure fences no other agent (ADR 007 §7);
+- the delivery of such a request to that agent, which heads its mailbox until
+  then: the deliveries behind it wait, except those that die out of order as
+  above.
+
+`AgentCapsuleJobsFailing` and `AgentCapsuleVMBootFailures` tell the operator.
+When a delivery dies:
 - the request keeps its state: a replied request stays `REPLIED`;
 - the reply stays readable by the sender's agent for 7 days from the death,
   through the request's status read on the platform channel, then is purged;
@@ -247,6 +270,46 @@ lease, the dispatch authorization and the parties that are still active. The
 outgoing channel is used in the background by the harness, after the commit of
 the SQLite intent: no platform call blocks the callback that must first return
 its delivery acknowledgment.
+
+## Limits and restart budgets
+
+Each VM's drives have I/O ceilings, enforced by Firecracker's rate limiter
+([ADR 012](adr/012-limits-restart-budgets-egress.md)): by default 64 MiB/s
+and 2000 operations a second on the agent's volume, 128 MiB/s and 4000 on a
+registry harness image, which a boot may first read whole at full speed. The
+VM has no network device and its VMM no network namespace but its own: the
+guest's only way out is the platform channel.
+
+An agent whose guest fails to boot, or crashes, too often stops being booted.
+A boot counts when its VMM ran and then exited, stopped answering, or
+answered with an incompatible contract before it was ready; a crash is a
+confirmed VM gone without a stop. A full host, a refused lease or an
+authority outage does not count. After 5 such failures within an hour, the
+agent is `FAILED`: no work, barrier or credential replacement boots it, its
+open wake ends `FAILED` (`restart_budget_exhausted`), and its work waits
+until a wake or its deadline. A wake requested for the agent gives it a new
+budget, and so does:
+
+```sh
+agentcapsule-admin clear-agent-failure -agent-id <id>
+```
+
+A restore of its volume still boots it, restricted. To change the defaults,
+add to the configuration (every worker of a host the same):
+
+```json
+"drive_limits": {
+  "volume": { "bandwidth_mib_per_second": 64, "iops": 2000 },
+  "harness": { "bandwidth_mib_per_second": 128, "iops": 4000 }
+},
+"restart_budget": { "failures": 5, "window": "1h" }
+```
+
+A number left out keeps its default. Ceilings go from 1 MiB/s to 4 GiB/s
+and from 10 to 1,000,000 operations a second; a budget from 1 to 100
+failures within 1 minute to 24 hours. The operator sees
+`agentcapsule_worker_agents_failed`, the event `agent_failed` and the alert
+`AgentCapsuleAgentFailed` ([observability.md](observability.md)).
 
 ## Replica of the authorities
 

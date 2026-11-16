@@ -4,6 +4,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 )
@@ -43,6 +44,11 @@ func (w *Placements) lifecycleOperation(ctx context.Context, job controlplane.Wo
 			return err
 		}
 		run, err := w.start(ctx, job.AgentID, false)
+		if errors.Is(err, controlplane.ErrAgentFailed) {
+			// The agent spent its restart budget: the wake ends FAILED
+			// rather than retrying a boot that is refused (ADR 012).
+			return w.store.FailWakeOfFailedAgent(ctx, op)
+		}
 		if err != nil {
 			return err
 		}

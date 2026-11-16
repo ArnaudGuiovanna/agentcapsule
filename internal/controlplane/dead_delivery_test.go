@@ -390,3 +390,357 @@ func TestDeliveryDeathsAreReported(t *testing.T) {
 		t.Fatal("reported", instructions.deaths, "want", want)
 	}
 }
+
+// A reply that died without its retention (before ADR 007, or retired by a
+// dispatcher without the transit) gets one from the next purge pass: the
+// status read does not serve it with no end (docs/api/README.md: a reply has
+// one purge deadline whether its delivery succeeds or dies).
+func TestDeadReplyWithoutRetentionGetsOne(t *testing.T) {
+	l := newDeadReplyLab(t)
+	down := unreachable{l.rt}
+	for range 3 {
+		if err := l.tr.DispatchMailbox(t.Context(), l.reply, time.Minute, down); !errors.Is(err, capsuleprotocol.ErrTransport) {
+			t.Fatal(err)
+		}
+		expireLease(t, l.s, l.reply)
+	}
+	if err := l.s.RetireDelivery(t.Context(), l.reply, down); err != nil {
+		t.Fatal(err)
+	}
+	l.deliveryState(t, "DEAD")
+	if _, err := l.tr.PurgeExpired(t.Context(), 1000); err != nil {
+		t.Fatal(err)
+	}
+	var deadline *time.Time
+	if err := l.s.pool.QueryRow(t.Context(), `SELECT p.purge_after FROM transit_payloads p
+        JOIN agent_requests r ON r.reply_ref=p.id WHERE r.id=$1`, l.request).Scan(&deadline); err != nil {
+		t.Fatal(err)
+	}
+	if deadline == nil || time.Until(*deadline) < 7*24*time.Hour-time.Minute || time.Until(*deadline) > 7*24*time.Hour {
+		t.Fatal("a dead reply without retention keeps none", deadline)
+	}
+	l.purgeLater(t)
+	got, err := l.tr.RequestStateFromVM(t.Context(), l.a, l.request)
+	if err != nil || got.Reply != nil || got.Reason != "content_purged" {
+		t.Fatal("the dead reply outlived its retention", got, err)
+	}
+}
+
+// A reply or an instruction past its deadline that no attempt reached dies
+// even while another delivery heads its agent's mailbox: an agent that never
+// boots keeps neither alive (EVT-005). It never reached the agent, so it
+// dies out of order without breaking the order of what the agent receives.
+// The worker discovers it although it is not the head; a delivery that is
+// not due waits for its turn.
+func TestExpiredDeliveryBehindAStuckHeadDies(t *testing.T) {
+	s, _ := freshStore(t, "auto", 3)
+	tr := peerTransit(t, s)
+	prt := peerRuntimeLab(t)
+	a, b, c := confirmedCaller(t, s, "a"), confirmedCaller(t, s, "b"), confirmedCaller(t, s, "c")
+	r, err := tr.SubmitFromVM(t.Context(), a, "request", peerSubmission("a question"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = tr.DispatchMailbox(t.Context(), mailboxFor(t, s, r.RequestID, "request"), time.Minute, prt); err != nil {
+		t.Fatal(err)
+	}
+	// c asks a something: a request delivery to a, ahead of b's reply.
+	toA := peerSubmission("c asks a")
+	toA.RecipientAgentID, toA.MandateID = "a", "mandate-c"
+	head, err := tr.SubmitFromVM(t.Context(), c, "from-c", toA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	answer := capsuleprotocol.Reply{Outcome: "completed", Payload: &capsuleprotocol.PeerPayload{Content: []capsuleprotocol.TextContent{{Type: "text", Text: "the answer"}}}}
+	if _, err = tr.ReplyFromVM(t.Context(), b, r.RequestID, "reply", answer); err != nil {
+		t.Fatal(err)
+	}
+	reply := mailboxFor(t, s, r.RequestID, "reply")
+	discovered := func() bool {
+		t.Helper()
+		if err := s.DiscoverWork(t.Context(), "host", 100); err != nil {
+			t.Fatal(err)
+		}
+		var found bool
+		if err := s.pool.QueryRow(t.Context(), "SELECT EXISTS(SELECT 1 FROM worker_jobs WHERE kind='delivery' AND object_id=$1)", reply).Scan(&found); err != nil {
+			t.Fatal(err)
+		}
+		return found
+	}
+	if discovered() {
+		t.Fatal("a delivery behind the head was discovered before its deadline")
+	}
+	pastDeadline(t, s, reply)
+	if !discovered() {
+		t.Fatal("an expired delivery behind the head is never discovered")
+	}
+	w := &deathWitness{}
+	if err = tr.DispatchMailbox(t.Context(), reply, time.Minute, struct {
+		unbootable
+		*deathWitness
+	}{unbootable{prt}, w}); err != nil {
+		t.Fatal("an expired reply waits behind a request delivery to an agent that never boots:", err)
+	}
+	var state string
+	if err = s.pool.QueryRow(t.Context(), "SELECT delivery_state FROM agent_mailboxes WHERE id=$1", reply).Scan(&state); err != nil || state != "DEAD" {
+		t.Fatal("expired reply behind the head", state, err)
+	}
+	if want := []DeadDelivery{{reply, "reply", "expired"}}; fmt.Sprint(w.deaths) != fmt.Sprint(want) {
+		t.Fatal("reported", w.deaths, "want", want)
+	}
+	if got, err := s.HeadDelivery(t.Context(), "a"); err != nil || got != mailboxFor(t, s, head.RequestID, "request") {
+		t.Fatal("the head changed", got, err)
+	}
+
+	// An instruction behind an instruction an attempt may have reached.
+	is, ic, itr, _, owner, e := instructionLab(t)
+	first, _ := queueInstruction(t, ic, owner, e.AgentID, "first")
+	second, op := queueInstruction(t, ic, owner, e.AgentID, "second")
+	claimInstruction(t, itr, first)
+	pastDeadline(t, is, second)
+	stuck := unbootableInstructions{instructionRuntimeLab(t, e.AgentID)}
+	if err = itr.DispatchMailbox(t.Context(), second, time.Minute, stuck); err != nil {
+		t.Fatal("an expired instruction waits behind the head:", err)
+	}
+	operation, err := ic.Operation(t.Context(), owner, op)
+	if err != nil || operation.Status != "FAILED" || operation.ErrorCode != "delivery_failed" {
+		t.Fatal("expired instruction behind the head", operation, err)
+	}
+	if got, err := is.HeadDelivery(t.Context(), e.AgentID); err != nil || got != first {
+		t.Fatal("the head changed", got, err)
+	}
+}
+
+// A delivery whose destination, or whose reply's author, is being deleted is
+// canceled by that deletion, which tells the sender of a revoked reply. It
+// does not die, nor count as a dead delivery, though it is past its deadline:
+// the retirement checks the agents under their locks, whatever its caller
+// saw, and again once its fence is done.
+func TestRetirementLeavesADeletionToCancel(t *testing.T) {
+	t.Run("destination deleted after the dispatcher's check", func(t *testing.T) {
+		l := newDeadReplyLab(t)
+		w := &deathWitness{}
+		pastDeadline(t, l.s, l.reply)
+		if due, err := l.s.retirementDue(t.Context(), l.reply); err != nil || !due {
+			t.Fatal(due, err)
+		}
+		if err := l.s.RequestDeletion(t.Context(), l.owners[0].ID, "a"); err != nil {
+			t.Fatal(err)
+		}
+		if err := l.s.retireDelivery(t.Context(), l.reply, witnessedReplies{unreachable{l.rt}, w}, l.tr); !errors.Is(err, ErrUnavailable) {
+			t.Fatal("a delivery to an agent being deleted was retired", err)
+		}
+		l.deliveryState(t, "PENDING")
+		if len(w.deaths) != 0 {
+			t.Fatal("reported", w.deaths)
+		}
+		if err := l.s.ReconcileRevocation(t.Context(), "a", l.rt); err != nil {
+			t.Fatal(err)
+		}
+		l.deliveryState(t, "CANCELED")
+	})
+	t.Run("reply's author being deleted", func(t *testing.T) {
+		l := newDeadReplyLab(t)
+		w := &deathWitness{}
+		if err := l.s.RequestDeletion(t.Context(), l.owners[1].ID, "b"); err != nil {
+			t.Fatal(err)
+		}
+		pastDeadline(t, l.s, l.reply)
+		if err := l.tr.DispatchMailbox(t.Context(), l.reply, time.Minute, struct {
+			unbootable
+			*deathWitness
+		}{unbootable{l.rt}, w}); !errors.Is(err, ErrUnavailable) {
+			t.Fatal("a reply revoked by its author's deletion was retired", err)
+		}
+		l.deliveryState(t, "PENDING")
+		if len(w.deaths) != 0 {
+			t.Fatal("reported", w.deaths)
+		}
+		if err := l.s.ReconcileRevocation(t.Context(), "b", l.rt); err != nil {
+			t.Fatal(err)
+		}
+		l.deliveryState(t, "CANCELED")
+		var reason string
+		if err := l.s.pool.QueryRow(t.Context(), "SELECT status_reason FROM agent_mailboxes WHERE ref_id=$1 AND kind='status'", l.request).Scan(&reason); err != nil || reason != "content_revoked" {
+			t.Fatal("the sender is not told of the revoked reply", reason, err)
+		}
+	})
+	t.Run("destination deleted during the fence", func(t *testing.T) {
+		l := newDeadReplyLab(t)
+		w := &deathWitness{}
+		if err := l.tr.DispatchMailbox(t.Context(), l.reply, time.Minute, unreachable{l.rt}); !errors.Is(err, capsuleprotocol.ErrTransport) {
+			t.Fatal(err)
+		}
+		expireLease(t, l.s, l.reply)
+		pastDeadline(t, l.s, l.reply)
+		l.rt.SetFenceHook(func(stage, target, subject string) error {
+			if stage == "after_commit" && subject == "event/"+l.reply {
+				return l.s.RequestDeletion(t.Context(), l.owners[0].ID, "a")
+			}
+			return nil
+		})
+		if err := l.tr.DispatchMailbox(t.Context(), l.reply, time.Minute, struct {
+			*peerRuntime
+			*deathWitness
+		}{l.rt, w}); !errors.Is(err, ErrUnavailable) {
+			t.Fatal("a delivery to an agent being deleted was retired after its fence", err)
+		}
+		l.rt.SetFenceHook(nil)
+		l.deliveryState(t, "PENDING")
+		if len(w.deaths) != 0 {
+			t.Fatal("reported", w.deaths)
+		}
+		if err := l.s.ReconcileRevocation(t.Context(), "a", l.rt); err != nil {
+			t.Fatal(err)
+		}
+		l.deliveryState(t, "CANCELED")
+	})
+	t.Run("instruction's agent deleted after the dispatcher's check", func(t *testing.T) {
+		s, c, tr, _, owner, e := instructionLab(t)
+		id, op := queueInstruction(t, c, owner, e.AgentID, "deleted")
+		pastDeadline(t, s, id)
+		if due, err := s.retirementDue(t.Context(), id); err != nil || !due {
+			t.Fatal(due, err)
+		}
+		if err := s.RequestDeletion(t.Context(), owner.ID, e.AgentID); err != nil {
+			t.Fatal(err)
+		}
+		rt := instructionRuntimeLab(t, e.AgentID)
+		w := &deathWitness{}
+		if err := tr.RetireInstruction(t.Context(), id, struct {
+			instructionRuntime
+			*deathWitness
+		}{rt, w}); !errors.Is(err, ErrUnavailable) {
+			t.Fatal("an instruction to an agent being deleted was retired", err)
+		}
+		if len(w.deaths) != 0 {
+			t.Fatal("reported", w.deaths)
+		}
+		if err := s.ReconcileRevocation(t.Context(), e.AgentID, rt); err != nil {
+			t.Fatal(err)
+		}
+		if operation, err := c.Operation(t.Context(), owner, op); err != nil || operation.Status != "CANCELED" {
+			t.Fatal("the deletion did not cancel the instruction", operation, err)
+		}
+	})
+}
+
+// Offboarding the person a reply is bound to does not revoke it: the request
+// is work accepted before the revocation, which may complete for the
+// organization (ADR 002). The sender's agent still reads its reply; the
+// person reads nothing (docs/api/agents-assignments.md).
+func TestOffboardingLeavesTheReplyToTheAgent(t *testing.T) {
+	il := newInvocationLab(t)
+	ctx := t.Context()
+	alice := il.invoker(t, "alice")
+	b := activateTenantAgent(t, il.tenantLab, mustCatalog(t, il.tenantLab), il.owner, "peer-b")
+	if _, err := il.s.pool.Exec(ctx, "UPDATE agents SET discoverable=true,inbound_mode='auto' WHERE id=$1", b); err != nil {
+		t.Fatal(err)
+	}
+	vmA := il.vm(t)
+	vmB := il.runAgent(t, b)
+	inv, _, err := il.create(t, alice, "ask-b", "ask b about France")
+	if err != nil {
+		t.Fatal(err)
+	}
+	il.ackWorking(t, inv.ID)
+	var mandate string
+	if err = il.s.pool.QueryRow(ctx, "SELECT mandate_id FROM owner_instructions WHERE operation_id=$1", inv.ID).Scan(&mandate); err != nil {
+		t.Fatal(err)
+	}
+	in := capsuleprotocol.Submission{RecipientAgentID: b, MandateID: mandate, ExpiresAt: time.Now().Add(time.Hour).UTC().Truncate(time.Microsecond),
+		Payload: text("what is the capital of France?")}
+	r, err := il.tr.SubmitFromVM(ctx, vmA, "peer-1", in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := mockStores(t, t.TempDir(), il.agent, b)
+	m.SetHandler(func(ctx context.Context, target string, event harnessstore.Event, tx harnessstore.SQL) ([]byte, error) {
+		_, err := capsuleprotocol.DecodePeerEvent(event, target)
+		return []byte(`{"received":true}`), err
+	})
+	if err = il.tr.DispatchMailbox(ctx, mailboxFor(t, il.s, r.RequestID, "request"), time.Minute, &peerRuntime{MockRuntime: m}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = il.tr.ReplyFromVM(ctx, vmB, r.RequestID, "answer-1", capsuleprotocol.Reply{Outcome: "completed", Payload: text("Paris")}); err != nil {
+		t.Fatal(err)
+	}
+	var principal string
+	if err = il.s.pool.QueryRow(ctx, "SELECT requested_by_principal_id FROM platform_operations WHERE id=$1", inv.ID).Scan(&principal); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = il.a.RevokeMember(ctx, il.owner, principal, "revoke-alice"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := il.tr.RequestStateFromVM(ctx, vmA, r.RequestID)
+	if err != nil || got.State != "REPLIED" || got.Reply == nil || got.Reply.Content[0].Text != "Paris" || got.Reason != "" {
+		t.Fatal("the agent lost its reply when its requester was offboarded", got, err)
+	}
+}
+
+// The status read decides why a reply is gone under the reply's lock: a purge
+// at the end of its retention, committed while the read runs, is reported as
+// such, not as a revocation.
+func TestStatusReadReportsAPurgeUnderWay(t *testing.T) {
+	l := newDeadReplyLab(t)
+	l.killReply(t)
+	purge, err := l.s.pool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer purge.Rollback(context.Background())
+	var pid int
+	if err = purge.QueryRow(t.Context(), "SELECT pg_backend_pid()").Scan(&pid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = purge.Exec(t.Context(), `UPDATE transit_payloads SET ciphertext=NULL,purged_at=clock_timestamp(),
+        purge_after=clock_timestamp()-interval '1 second' WHERE id=(SELECT reply_ref FROM agent_requests WHERE id=$1)`, l.request); err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		state RequestState
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() {
+		got, err := l.tr.RequestStateFromVM(t.Context(), l.a, l.request)
+		done <- result{got, err}
+	}()
+	waitUntil(t, func() bool {
+		var waits bool
+		if err := l.s.pool.QueryRow(t.Context(), "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)))", pid).Scan(&waits); err != nil {
+			t.Fatal(err)
+		}
+		return waits
+	})
+	if err = purge.Commit(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	got := <-done
+	if got.err != nil || got.state.Reply != nil || got.state.Reason != "content_purged" {
+		t.Fatalf("status during a purge %+v %v, want reason content_purged", got.state, got.err)
+	}
+}
+
+// The status read, which capsule-adapter polls, takes no lock on the
+// recipient's agent nor on the request: it waits for neither.
+func TestStatusReadLeavesTheRecipientUnlocked(t *testing.T) {
+	l := newDeadReplyLab(t)
+	busy, err := l.s.pool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer busy.Rollback(context.Background())
+	if _, err = busy.Exec(t.Context(), "SELECT 1 FROM agents WHERE id='b' FOR NO KEY UPDATE"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = busy.Exec(t.Context(), "SELECT 1 FROM agent_requests WHERE id=$1 FOR UPDATE", l.request); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	got, err := l.tr.RequestStateFromVM(ctx, l.a, l.request)
+	if err != nil || got.State != "REPLIED" || got.Reply == nil || got.Reply.Content[0].Text != "the answer" {
+		t.Fatal("the status read waits for the recipient's work", got, err)
+	}
+}

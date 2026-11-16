@@ -111,6 +111,14 @@ func (s *Store) HeadDelivery(ctx context.Context, agentID string) (string, error
 	return id, err
 }
 
+// deliverable reports whether the agents a delivery needs are live: its
+// destination and, for a request or a reply, both parties of the request.
+// Otherwise a deletion is under way, and it cancels the delivery
+// (revocation.go), telling the sender of a revoked reply.
+func deliverable(m mailboxRow, r requestRow, agents map[string]agent) bool {
+	return agents[m.Destination].Phase == "LIVE" && (m.Kind == "status" || agents[r.Sender].Phase == "LIVE" && agents[r.Recipient].Phase == "LIVE")
+}
+
 func isHead(ctx context.Context, tx pgx.Tx, m mailboxRow) error {
 	if m.State != "PENDING" {
 		return ErrNoDelivery
@@ -145,7 +153,7 @@ func (s *Store) ClaimDelivery(ctx context.Context, mailboxID string, lease time.
 	if err := isHead(ctx, tx, m); err != nil {
 		return attempt, err
 	}
-	if agents[m.Destination].Phase != "LIVE" || (m.Kind != "status" && (agents[r.Sender].Phase != "LIVE" || agents[r.Recipient].Phase != "LIVE")) {
+	if !deliverable(m, r, agents) {
 		return attempt, ErrUnavailable
 	}
 	if m.Kind == "request" {
@@ -228,7 +236,7 @@ func (s *Store) AuthorizeDispatch(ctx context.Context, mailboxID, token string) 
 	if err != nil {
 		return err
 	}
-	if agents[m.Destination].Phase != "LIVE" || (m.Kind != "status" && (agents[r.Sender].Phase != "LIVE" || agents[r.Recipient].Phase != "LIVE")) {
+	if !deliverable(m, r, agents) {
 		return ErrUnavailable
 	}
 	tag, err := tx.Exec(ctx, `UPDATE agent_mailboxes SET may_have_reached=true,dispatch_authorized=true
@@ -321,15 +329,12 @@ func (s *Store) retireDelivery(ctx context.Context, mailboxID string, runtime Re
 		return err
 	}
 	defer rollback(tx)
-	m, r, _, err := lockMailbox(ctx, tx, mailboxID)
+	m, r, agents, err := lockMailbox(ctx, tx, mailboxID)
 	if err != nil {
 		return err
 	}
 	if m.State != "PENDING" {
 		return commit(ctx, tx)
-	}
-	if err := isHead(ctx, tx, m); err != nil {
-		return err
 	}
 	var expired, exhausted bool
 	if err := tx.QueryRow(ctx, `SELECT expires_at<=clock_timestamp(),
@@ -338,6 +343,9 @@ func (s *Store) retireDelivery(ctx context.Context, mailboxID string, runtime Re
 		return err
 	}
 	if m.Kind == "request" {
+		if err := isHead(ctx, tx, m); err != nil {
+			return err
+		}
 		var existing bool
 		if err := tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM request_closures WHERE request_id=$1)", r.ID).Scan(&existing); err != nil {
 			return err
@@ -362,6 +370,11 @@ func (s *Store) retireDelivery(ctx context.Context, mailboxID string, runtime Re
 		}
 		return s.ReconcileRequestClosure(ctx, r.ID, runtime)
 	}
+	// Checked here, under the agents' locks, whatever the caller saw: a
+	// delivery that the deletion of an agent will cancel does not die.
+	if !deliverable(m, r, agents) {
+		return ErrUnavailable
+	}
 	if !m.Closing && !expired && !exhausted {
 		return ErrTransition
 	}
@@ -369,7 +382,10 @@ func (s *Store) retireDelivery(ctx context.Context, mailboxID string, runtime Re
 	// now: AuthorizeDispatch needs a current lease on an open delivery before
 	// its deadline, and this transaction holds the row. With no delayed send
 	// to fence, the delivery dies here, without its destination, which may
-	// never boot (ADR 007).
+	// never boot (ADR 007). It need not head the mailbox: what never reached
+	// the agent leaves the queue out of order without changing the order of
+	// what the agent receives, and a delivery ahead of it, to an agent that
+	// never boots, must not keep it alive.
 	if !m.MayHaveReached {
 		dead, err := markDead(ctx, tx, m, r, transit)
 		if err != nil {
@@ -380,6 +396,11 @@ func (s *Store) retireDelivery(ctx context.Context, mailboxID string, runtime Re
 		}
 		reportDeath(ctx, runtime, &dead)
 		return nil
+	}
+	// An attempt may have reached it, so it was claimed as the head, and
+	// stays the head while pending.
+	if err := isHead(ctx, tx, m); err != nil {
+		return err
 	}
 	if _, err := tx.Exec(ctx, "UPDATE agent_mailboxes SET closing=true WHERE id=$1", mailboxID); err != nil {
 		return err
@@ -400,12 +421,16 @@ func (s *Store) retireDelivery(ctx context.Context, mailboxID string, runtime Re
 			return err
 		}
 		defer rollback(finish)
-		current, r, _, err := lockMailbox(ctx, finish, mailboxID)
+		current, r, agents, err := lockMailbox(ctx, finish, mailboxID)
 		if err != nil {
 			return err
 		}
 		if current.State != "PENDING" || !current.Closing {
 			return commit(ctx, finish)
+		}
+		// A deletion that began during the fence cancels the delivery.
+		if !deliverable(current, r, agents) {
+			return ErrUnavailable
 		}
 		dead, err := markDead(ctx, finish, current, r, transit)
 		if err != nil {
@@ -480,7 +505,8 @@ func (s *Store) dispatchMailbox(ctx context.Context, agentID, id string, lease t
 // retirementDue reports whether a pending reply, status or instruction is to
 // be retired, however its destination fares: closing, past its deadline, or
 // out of attempts with no live lease. A request is closed by its own closure;
-// a delivery to an agent being deleted is canceled by the deletion.
+// a delivery to an agent being deleted is canceled by the deletion. It reads
+// without locks: the retirement checks the agents again under theirs.
 func (s *Store) retirementDue(ctx context.Context, id string) (bool, error) {
 	var due bool
 	err := s.pool.QueryRow(ctx, `SELECT m.kind<>'request' AND m.delivery_state='PENDING' AND a.phase='LIVE' AND (m.closing

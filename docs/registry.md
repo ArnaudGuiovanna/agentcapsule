@@ -166,7 +166,8 @@ Releases are immutable: `name:version` maps to one package digest forever; anoth
 package claiming it is rejected (`version_conflict`). Requesting a package that is
 already released answers with that release and downloads nothing.
 `POST /v1/harness-releases/{id}/deprecate` stops new agents from using a release;
-agents already pinned to it keep running. Organization members with `agent:read` can
+agents already pinned to it keep running. Organization members with `agent:read` and
+a role that reads every agent's metadata (owner, administrator, operator, auditor) can
 list releases (`GET /v1/harness-releases`).
 
 ## Running an imported release
@@ -272,7 +273,8 @@ In the worker configuration ([example](../runtime/worker/config.example.json)):
   non-public addresses are refused at dial time, after DNS resolution, so a public
   name cannot be pointed at an internal address. `"local": true` lifts this and
   allows plain HTTP for a registry on the operator's own network; never use it for a
-  public registry.
+  public registry. In production the worker refuses to start with such a rule
+  ([ADR 010](adr/010-transport-security-and-preflight.md)); it is for development.
 - Environment proxy settings are ignored.
 
 ### Publisher signatures

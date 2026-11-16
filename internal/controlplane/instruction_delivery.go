@@ -333,8 +333,10 @@ func (t *Transit) RetireInstruction(ctx context.Context, id string, runtime Revo
 	if i.State != "PENDING" {
 		return commit(ctx, tx)
 	}
-	if err = isHead(ctx, tx, i.mailboxRow); err != nil {
-		return err
+	// Checked under the agent's lock, whatever the caller saw: the deletion
+	// of the agent cancels its instructions; they do not die.
+	if a.Phase != "LIVE" {
+		return ErrUnavailable
 	}
 	var due bool
 	err = tx.QueryRow(ctx, `SELECT closing OR expires_at<=clock_timestamp() OR
@@ -348,8 +350,9 @@ func (t *Transit) RetireInstruction(ctx context.Context, id string, runtime Revo
 	// Never allowed to reach the agent, and unable to now (AuthorizeInstruction
 	// needs a current lease on an open instruction before its deadline): there
 	// is nothing to fence, and the instruction dies without its agent, which
-	// may never boot (ADR 007). A rerun its requester may no longer send is
-	// skipped, as ClaimInstruction would.
+	// may never boot (ADR 007), even behind another delivery to that agent:
+	// what never reached it leaves the queue out of order. A rerun its
+	// requester may no longer send is skipped, as ClaimInstruction would.
 	if !i.MayHaveReached {
 		skipped, err := t.skipRevokedRerun(ctx, tx, i, a)
 		if err != nil {
@@ -371,6 +374,9 @@ func (t *Transit) RetireInstruction(ctx context.Context, id string, runtime Revo
 		}
 		reportDeath(ctx, runtime, died)
 		return nil
+	}
+	if err = isHead(ctx, tx, i.mailboxRow); err != nil {
+		return err
 	}
 	if _, err = tx.Exec(ctx, "UPDATE agent_mailboxes SET closing=true WHERE id=$1", id); err != nil {
 		return err
@@ -394,12 +400,16 @@ func (t *Transit) RetireInstruction(ctx context.Context, id string, runtime Revo
 			return err
 		}
 		defer rollback(finish)
-		i, _, err = lockInstruction(ctx, finish, id)
+		var current agent
+		i, current, err = lockInstruction(ctx, finish, id)
 		if err != nil {
 			return err
 		}
 		if i.State != "PENDING" || !i.Closing {
 			return commit(ctx, finish)
+		}
+		if current.Phase != "LIVE" {
+			return ErrUnavailable
 		}
 		dead, err := t.markInstructionDead(ctx, finish, i)
 		if err != nil {

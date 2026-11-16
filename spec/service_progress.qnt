@@ -115,14 +115,32 @@ module serviceProgress {
       s.jobs.get(i).attempts + 1),
   }
   // The notification's deadline passes (ADR 007). One no attempt was allowed
-  // to reach its store dies at once, without the store or a slot: there is no
-  // delayed send to fence. One an attempt may have reached is retired like an
-  // exhausted one, behind its fence. Not assumed fair: progress never relies
-  // on it. The reliable instance, which promises receipt, has no deadline.
+  // to reach its store dies at once, without the store or a slot, and
+  // wherever it is in the queue: there is no delayed send to fence, and it
+  // leaves the queue without changing the order of what the store receives.
+  // One an attempt may have reached heads the queue, and is retired like an
+  // exhausted one, behind its fence. One to a deleted store is cancelled by
+  // the deletion instead (cancelNotification). Not assumed fair: progress
+  // never relies on it. The reliable instance, which promises receipt, has no
+  // deadline.
+  //
+  // attempts == 0 is P3's "no attempt may have reached the store" (Go:
+  // may_have_reached false). A P3 attempt (notify) is a claim, its
+  // authorization and its send in one step, so each may have reached the
+  // store. Go also counts a claim a crash interrupted before its
+  // authorization: such a delivery has attempts > 0, may_have_reached false,
+  // and dies like one never attempted. P3 retires it behind a fence instead,
+  // needing its store and a slot where Go needs neither: P3 never assumes
+  // less than Go. P1 has the exact rule (sent).
   action expireNotification(i: int): bool = all {
-    not(RELIABLE), online, atHead(s.notificationQueue, i), s.jobs.get(i).delivery == Pending,
-    s' = delivered(s, i, if (s.jobs.get(i).attempts == 0) Dead else RetiringDead, s.jobs.get(i).attempts),
+    not(RELIABLE), online, queued(s.notificationQueue, i), s.jobs.get(i).delivery == Pending,
+    eligible(i), s.jobs.get(i).attempts == 0 or atHead(s.notificationQueue, i),
+    s' = if (s.jobs.get(i).attempts == 0) unattemptedDead(s, i)
+      else delivered(s, i, RetiringDead, s.jobs.get(i).attempts),
   }
+  pure def unattemptedDead(st: State, i: int): State = { ...st,
+    jobs: st.jobs.set(i, { ...st.jobs.get(i), delivery: Dead, notificationQueued: false }),
+    notificationQueue: st.notificationQueue.select(j => j != i) }
   action cancelNotification(i: int): bool = all {
     online, atHead(s.notificationQueue, i), s.jobs.get(i).delivery == Pending, not(eligible(i)),
     s' = delivered(s, i, RetiringCancelled, s.jobs.get(i).attempts),
