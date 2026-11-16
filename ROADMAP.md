@@ -113,7 +113,7 @@ a production host yet.
 |---|---|---|---|
 | VAL-01 | Formal-model conformance: remaining projections, deletion/maintenance/capacity races, guest writer crash | Partial | Remaining projections |
 | VAL-02 | Acceptance scenarios, version matrix, chaos/isolation/load tests, install from scratch, benchmarks | Not started | All |
-| VAL-03 | Release audit: dependencies, SBOM, image scans, reproducible signed release, guides | Not started | All |
+| VAL-03 | Release audit: dependencies, SBOM, image scans, reproducible signed release, guides ([ADR 013](docs/adr/013-release-supply-chain.md), [docs/release.md](docs/release.md)): govulncheck and licenses, SPDX SBOMs, grype scans with an expiring allowlist, reproducible builds checked on every pull request, a tag-only release workflow with cosign keyless signatures and SLSA provenance | Partial | A first release from a tag (the workflow has not run; Go 1.27.4 first), the fixes of the first audit's findings, the guest image reproducible across hosts and published with its sources, the product owner's answers to ADR 013 |
 
 ## Open design decisions
 
