@@ -48,6 +48,7 @@ func (s *Server) EnableTelemetry(registry *telemetry.Registry, events io.Writer)
 		log: telemetry.NewLogger(events, map[string][]string{"event": {"http_request"}, "route": routes, "method": httpMethods,
 			"problem": problemCodes}),
 	}
+	s.observeRevocations(registry)
 }
 
 func (t *apiTelemetry) record(route, method string, w *statusRecorder, requestID string, elapsed time.Duration) {

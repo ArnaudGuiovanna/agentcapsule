@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/authoritylog"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -165,7 +166,8 @@ func (s *Store) RevokeOperatorCredential(ctx context.Context, cmd OperatorComman
 	if !validOrganizationText(id, 100) {
 		return OperatorOutcome{Action: "credential.revoked", DryRun: cmd.DryRun}, ErrInput
 	}
-	return s.operatorCommand(ctx, cmd, "credential.revoked", id, func(tx pgx.Tx) (bool, error) {
+	var list []AccessRevocation
+	out, err := s.operatorCommand(ctx, cmd, "credential.revoked", id, func(tx pgx.Tx) (bool, error) {
 		var table, where string
 		switch kind {
 		case "platform":
@@ -186,7 +188,23 @@ func (s *Store) RevokeOperatorCredential(ctx context.Context, cmd OperatorComman
 		if revoked {
 			return false, nil
 		}
-		_, err = tx.Exec(ctx, "UPDATE "+table+" SET revoked_at=clock_timestamp() WHERE id=$1"+where, id)
-		return err == nil, err
+		if _, err = tx.Exec(ctx, "UPDATE "+table+" SET revoked_at=clock_timestamp() WHERE id=$1"+where, id); err != nil {
+			return false, err
+		}
+		if cmd.DryRun {
+			return true, nil // a dry run commits nothing, and records nothing
+		}
+		access := authoritylog.AccessPlatformCredential
+		if kind == "service" {
+			access = authoritylog.AccessAPIToken
+		}
+		recorded := s.revocations(tx, "")
+		if err = recorded.add(ctx, access, "", [][]string{{id}}); err != nil {
+			return false, err
+		}
+		list = recorded.list
+		return true, nil
 	})
+	out.Revocations = list
+	return out, err
 }

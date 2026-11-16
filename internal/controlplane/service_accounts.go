@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/authoritylog"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorization"
 	"github.com/jackc/pgx/v5"
 )
@@ -137,13 +138,13 @@ func resolveService(ctx context.Context, tx pgx.Tx, b serviceBinding) (CurrentOr
 // leaves (newRole empty) or is demoted to a role that can no longer manage the
 // technical account. It runs inside the member mutation, under the organization
 // lock, so no token can be issued concurrently on stale authority.
-func revokeIssuedServiceTokens(ctx context.Context, tx pgx.Tx, actor Principal, issuer string, newRole authorization.Role) error {
-	_, err := tx.Exec(ctx, `UPDATE service_tokens t SET revoked_at=clock_timestamp(),revoked_by=$4
+func revokeIssuedServiceTokens(ctx context.Context, tx pgx.Tx, actor Principal, issuer string, newRole authorization.Role) ([]string, error) {
+	return collect(tx.Query(ctx, `UPDATE service_tokens t SET revoked_at=clock_timestamp(),revoked_by=$4
         FROM memberships m
         WHERE t.tenant_id=$1 AND t.issued_by=$2 AND t.revoked_at IS NULL
           AND m.tenant_id=t.tenant_id AND m.principal_id=t.principal_id
-          AND NOT ($3='org_owner') AND ($3<>'org_admin' OR m.role='org_admin')`, actor.TenantID, issuer, string(newRole), actor.ID)
-	return err
+          AND NOT ($3='org_owner') AND ($3<>'org_admin' OR m.role='org_admin')
+        RETURNING t.id`, actor.TenantID, issuer, string(newRole), actor.ID))
 }
 
 type ServiceAccount struct {
@@ -368,14 +369,23 @@ func (a *Accounts) DisableServiceAccount(ctx context.Context, p Principal, id, k
 		if _, err := tx.Exec(ctx, `UPDATE memberships SET status='revoked' WHERE tenant_id=$1 AND principal_id=$2`, p.TenantID, id); err != nil {
 			return 0, nil, err
 		}
-		if _, err := tx.Exec(ctx, `UPDATE service_tokens SET revoked_at=clock_timestamp(),revoked_by=$3 WHERE tenant_id=$1 AND principal_id=$2 AND revoked_at IS NULL`, p.TenantID, id, p.ID); err != nil {
+		tokens, err := collect(tx.Query(ctx, `UPDATE service_tokens SET revoked_at=clock_timestamp(),revoked_by=$3 WHERE tenant_id=$1 AND principal_id=$2 AND revoked_at IS NULL RETURNING id`, p.TenantID, id, p.ID))
+		if err != nil {
 			return 0, nil, err
 		}
 		if err := auditService(ctx, tx, p, id, nil, "service_account.disabled"); err != nil {
 			return 0, nil, err
 		}
+		revoked := a.store.revocations(tx, p.TenantID)
+		if err = revoked.add(ctx, authoritylog.AccessPrincipal, p.TenantID, [][]string{{id}}); err != nil {
+			return 0, nil, err
+		}
+		if err = revoked.add(ctx, authoritylog.AccessServiceToken, p.TenantID, objects(tokens)); err != nil {
+			return 0, nil, err
+		}
 		target.Status = "disabled"
-		return 200, target, nil
+		body, err := revoked.body(target)
+		return 200, body, err
 	})
 	if err != nil {
 		return APIReceipt{}, err
@@ -488,7 +498,12 @@ func (a *Accounts) RevokeServiceToken(ctx context.Context, p Principal, id, toke
 		if err = auditService(ctx, tx, p, id, &token.ID, "token.revoked"); err != nil {
 			return 0, nil, err
 		}
-		return 200, token, nil
+		revoked := a.store.revocations(tx, p.TenantID)
+		if err = revoked.add(ctx, authoritylog.AccessServiceToken, p.TenantID, [][]string{{tokenID}}); err != nil {
+			return 0, nil, err
+		}
+		body, err := revoked.body(token)
+		return 200, body, err
 	})
 	if err != nil {
 		return APIReceipt{}, err

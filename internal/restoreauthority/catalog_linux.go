@@ -80,9 +80,14 @@ type Receipt struct {
 }
 
 // Outcome identifies real committed data; the digest is NOT recovery data.
+// Event is the ID of the delivered event whose outcome it is (the mailbox),
+// an opaque ID with no content: the authority keeps it with the outcome, so
+// that a loss declared after a failover names the invocation even when the
+// restored database lost it (ADR 005, item 8). Empty when unknown.
 type Outcome struct {
 	ID     string
 	Digest [32]byte
+	Event  string `json:",omitempty"`
 }
 
 const schema = `
@@ -113,8 +118,11 @@ CREATE INDEX outcomes_by_store ON outcomes(store);
 // did not record it (user_version 0). Initialize upgrades an older catalogue;
 // Open never changes the schema. An unknown version fails closed. Version 3
 // adds the replication stream (replication_linux.go); a version 2 catalogue
-// keeps working in standalone mode.
-const schemaVersion = 3
+// keeps working in standalone mode. Version 4 adds the access revocation
+// records and the event ID of each outcome (access_linux.go): an older
+// catalogue refuses to record an access revocation, and the authority service
+// refuses to start on it (CheckSchema).
+const schemaVersion = 4
 
 // lossSchema is version 2: the declared losses and reruns of D-03 option B
 // (docs/adr/003-restore-rpo.md). Triggers refuse any update or delete, so a
@@ -145,7 +153,7 @@ func version(ctx context.Context, tx *sql.Tx) (int, error) {
 	switch v {
 	case 0:
 		return 1, nil
-	case 2, schemaVersion:
+	case 2, 3, schemaVersion:
 		return v, nil
 	}
 	return 0, ErrUnavailable
@@ -160,6 +168,10 @@ func upgrade(ctx context.Context, tx *sql.Tx) error {
 	}
 	if err == nil && v == 2 {
 		_, err = tx.ExecContext(ctx, replicationSchema)
+		v = 3
+	}
+	if err == nil && v == 3 {
+		_, err = tx.ExecContext(ctx, accessSchema)
 	}
 	return err
 }
@@ -455,38 +467,64 @@ func (c *Catalog) run(ctx context.Context, replicated bool, fn func(*sql.Tx) err
 }
 
 func (c *Catalog) loop(ctx context.Context, replicated bool, kind string, fn func(*sql.Tx) error) error {
+	done, err := c.commitLoop(ctx, replicated, kind, fn)
+	if err != nil || done.record.Seq == 0 {
+		return err
+	}
+	// In degraded mode, a record of kinds it lets through returns now.
+	if err = c.repl.acknowledge(ctx, c, done.epoch, done.record, kind); err != nil {
+		return err
+	}
+	if done.record.HasSecret() {
+		c.prune(ctx, done.record.Seq)
+	}
+	return nil
+}
+
+// commitResult is a transaction that committed: its stream's epoch, and the
+// record it appended, of sequence 0 when none.
+type commitResult struct {
+	epoch  uint64
+	record authoritylog.Record
+}
+
+// commitLoop runs fn in a transaction, after the barrier, until it commits
+// or fails. A committed record is in the log with its effect: the caller
+// then waits for the replica.
+func (c *Catalog) commitLoop(ctx context.Context, replicated bool, kind string, fn func(*sql.Tx) error) (commitResult, error) {
 	for {
-		again, err := c.attempt(ctx, replicated, kind, fn)
+		again, done, err := c.attempt(ctx, replicated, kind, fn)
 		if !again || err != nil {
-			return err
+			return done, err
 		}
 	}
 }
 
-func (c *Catalog) attempt(ctx context.Context, replicated bool, kind string, fn func(*sql.Tx) error) (bool, error) {
+func (c *Catalog) attempt(ctx context.Context, replicated bool, kind string, fn func(*sql.Tx) error) (bool, commitResult, error) {
+	var done commitResult
 	if err := c.checkFile(); err != nil {
-		return false, err
+		return false, done, err
 	}
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
-		return false, errors.Join(ErrUnavailable, err)
+		return false, done, errors.Join(ErrUnavailable, err)
 	}
 	defer tx.Rollback()
 	var identity, keyIdentity string
 	if err = tx.QueryRowContext(ctx, "SELECT identity,key_identity FROM authority WHERE singleton=1").Scan(&identity, &keyIdentity); err != nil {
-		return false, errors.Join(ErrUnavailable, err)
+		return false, done, errors.Join(ErrUnavailable, err)
 	}
 	if identity != c.identity || keyIdentity != c.keyIdentity {
-		return false, ErrUnavailable
+		return false, done, ErrUnavailable
 	}
 	v, err := version(ctx, tx)
 	if err != nil {
-		return false, err
+		return false, done, err
 	}
 	var state *replication
 	if v >= 3 {
 		if state, err = readReplication(ctx, tx); err != nil {
-			return false, err
+			return false, done, err
 		}
 	}
 	if !replicated {
@@ -494,17 +532,17 @@ func (c *Catalog) attempt(ctx context.Context, replicated bool, kind string, fn 
 	}
 	if state.armed() {
 		if c.repl == nil {
-			return false, errors.Join(ErrUnavailable, ErrReplicaRequired)
+			return false, done, errors.Join(ErrUnavailable, ErrReplicaRequired)
 		}
 		// The barrier: never act on a record the replica lacks, outside
 		// what degraded mode lets through.
 		a, err := c.repl.admit(ctx, tx, state, kind)
 		if err != nil {
-			return false, err
+			return false, done, err
 		}
 		if !a.ok {
 			tx.Rollback()
-			return true, c.repl.wait(ctx, c, state.epoch, a, kind)
+			return true, done, c.repl.wait(ctx, c, state.epoch, a, kind)
 		}
 	}
 	rec := &txRecord{state: state, kind: kind}
@@ -517,39 +555,32 @@ func (c *Catalog) attempt(ctx context.Context, replicated bool, kind string, fn 
 		c.recMu.Unlock()
 	}()
 	if err = fn(tx); err != nil {
-		return false, err
+		return false, done, err
 	}
 	var record authoritylog.Record
 	if len(rec.ops) > 0 && state.armed() {
 		if record, err = c.appendRecord(ctx, tx, state, rec.ops); err != nil {
-			return false, err
+			return false, done, err
 		}
 	}
 	if err = c.checkFile(); err != nil {
-		return false, err
+		return false, done, err
 	}
 	if c.hook != nil {
 		c.hook("before_commit")
 	}
 	if err = tx.Commit(); err != nil {
-		return false, err // outcome may be unknown: callers retry the stable operation ID
+		return false, done, err // outcome may be unknown: callers retry the stable operation ID
 	}
 	if c.hook != nil {
 		c.hook("after_commit")
 	}
 	if record.Seq == 0 {
-		return false, nil
+		return false, done, nil
 	}
 	// Committed on the primary: the record is in the log with its effect.
-	// In degraded mode, a record of kinds it lets through returns now.
 	c.repl.metrics.Load().Committed(record.Seq)
-	if err = c.repl.acknowledge(ctx, c, state.epoch, record, kind); err != nil {
-		return false, err
-	}
-	if record.HasSecret() {
-		c.prune(ctx, record.Seq)
-	}
-	return false, nil
+	return false, commitResult{epoch: state.epoch, record: record}, nil
 }
 
 // Register is trusted new-store enrollment, not recovery from missing authority
@@ -915,7 +946,7 @@ func (c *Catalog) WithRevocation(ctx context.Context, subject string, targets []
 // incarnation, this delivery is its rerun and is recorded as one (RecordRerun).
 // The delivery path thus needs no separate call.
 func (c *Catalog) RecordOutcome(ctx context.Context, b Binding, outcome Outcome) error {
-	if !validName(outcome.ID) {
+	if !validName(outcome.ID) || (outcome.Event != "" && !validName(outcome.Event)) {
 		return ErrInput
 	}
 	return c.operate(ctx, authoritylog.WriteOutcome, func(tx *sql.Tx) error {
@@ -945,7 +976,7 @@ func (c *Catalog) RecordOutcome(ctx context.Context, b Binding, outcome Outcome)
 		if len(got) != 1 || got[0].store != b.Store || !hmac.Equal(got[0].Digest[:], outcome.Digest[:]) {
 			return ErrConflict
 		}
-		return nil
+		return c.recordEvent(ctx, tx, outcome)
 	})
 }
 

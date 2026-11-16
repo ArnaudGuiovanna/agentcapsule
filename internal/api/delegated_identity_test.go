@@ -147,7 +147,7 @@ func TestDelegationOperatorCLIAndRealAPI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"agentcapsule-admin", "agentcapsule-api"} {
+	for _, name := range []string{"agentcapsule-admin", "agentcapsule-api", "agentcapsule-authority"} {
 		build := exec.CommandContext(t.Context(), "go", "build", "-o", filepath.Join(dir, name), "./cmd/"+name)
 		build.Dir = root
 		if output, err := build.CombinedOutput(); err != nil {
@@ -167,11 +167,14 @@ func TestDelegationOperatorCLIAndRealAPI(t *testing.T) {
 	if err = os.WriteFile(keyFile, []byte(strings.Repeat("6", 32)), 0600); err != nil {
 		t.Fatal(err)
 	}
+	// The token's revocation appends its record to the authority service
+	// before it commits (ADR 006 wave 5).
+	authority := startAuthorityService(t, dir)
 	admin := func(action, operation string) controlplane.DelegationChangeResult {
 		t.Helper()
 		args := []string{"configure-delegation", "-action", action, "-operation-id", operation, "-tenant-id", l.org.ID, "-issuer", l.trust.Issuer}
 		if action == "revoke-token" {
-			args = append(args, "-token-id", "live", "-confirm", "live")
+			args = append(append(args, "-token-id", "live", "-confirm", "live"), authority.flags()...)
 		} else {
 			args = append(args, "-audience", l.trust.Audience, "-trust-file", configFile)
 		}
@@ -267,7 +270,10 @@ func TestDelegationOperatorCLIAndRealAPI(t *testing.T) {
 		}
 	}
 	request(200)
-	admin("revoke-token", "revoke")
+	if revoked := admin("revoke-token", "revoke"); len(revoked.Revocations) != 1 || revoked.Revocations[0].Kind != "delegated_token" ||
+		revoked.Revocations[0].State != controlplane.RevocationConfirmed {
+		t.Fatal("the token's revocation record", revoked)
+	}
 	request(401)
 	if err = cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)

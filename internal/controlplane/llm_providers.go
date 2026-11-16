@@ -9,9 +9,11 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/authoritylog"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorization"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmgateway"
 	"github.com/jackc/pgx/v5"
@@ -221,7 +223,13 @@ func (a *Accounts) RotateLLMProviderSecret(ctx context.Context, p Principal, id,
 		if err = auditLLM(ctx, tx, p, id, nil, "provider.rotated"); err != nil {
 			return 0, nil, err
 		}
-		return 200, v, nil
+		// The previous credential is revoked: a rollback would bring it back.
+		revoked := a.store.revocations(tx, p.TenantID)
+		if err = revoked.add(ctx, authoritylog.AccessLLMProvider, p.TenantID, [][]string{{id, "generation", strconv.FormatInt(generation, 10)}}); err != nil {
+			return 0, nil, err
+		}
+		body, err := revoked.body(v)
+		return 200, body, err
 	})
 	if err != nil {
 		return APIReceipt{}, err
@@ -271,7 +279,12 @@ func (a *Accounts) DisableLLMProvider(ctx context.Context, p Principal, id, key 
 		if err = auditLLM(ctx, tx, p, id, nil, "provider.disabled"); err != nil {
 			return 0, nil, err
 		}
-		return 200, v, nil
+		revoked := a.store.revocations(tx, p.TenantID)
+		if err = revoked.add(ctx, authoritylog.AccessLLMProvider, p.TenantID, [][]string{{id}}); err != nil {
+			return 0, nil, err
+		}
+		body, err := revoked.body(v)
+		return 200, body, err
 	})
 	if err != nil {
 		return APIReceipt{}, err

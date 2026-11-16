@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/authoritylog"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorization"
 	"github.com/jackc/pgx/v5"
 )
@@ -399,7 +400,12 @@ func (a *Accounts) RevokeAgentAssignment(ctx context.Context, p Principal, agent
 		if err = auditTenantAgent(ctx, tx, p, agentID, &s.ID, "assignment.revoked"); err != nil {
 			return 0, nil, err
 		}
-		return 200, s, nil
+		revoked := a.store.revocations(tx, p.TenantID)
+		if err = revoked.add(ctx, authoritylog.AccessAssignment, p.TenantID, [][]string{{assignmentID}}); err != nil {
+			return 0, nil, err
+		}
+		body, err := revoked.body(s)
+		return 200, body, err
 	})
 	if err != nil {
 		return APIReceipt{}, err
@@ -480,7 +486,13 @@ func (a *Accounts) ReplaceAgentAssignment(ctx context.Context, p Principal, agen
 		if err = auditTenantAgent(ctx, tx, p, agentID, &s.ID, "assignment.created"); err != nil {
 			return 0, nil, err
 		}
-		return 201, s, nil
+		// The replaced assignment is revoked: its record, before the commit.
+		revoked := a.store.revocations(tx, p.TenantID)
+		if err = revoked.add(ctx, authoritylog.AccessAssignment, p.TenantID, [][]string{{assignmentID}}); err != nil {
+			return 0, nil, err
+		}
+		body, err := revoked.body(s)
+		return 201, body, err
 	})
 	if err != nil {
 		return APIReceipt{}, err

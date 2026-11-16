@@ -282,8 +282,9 @@ func TestErrorKindsAreClosed(t *testing.T) {
 }
 
 // Every kind of operation is classified for degraded mode, and the
-// classification is the decided one: outcomes, reruns, fence revisions and
-// the start of a revocation continue; everything else waits.
+// classification is the decided one: outcomes, reruns, fence revisions, the
+// start of a revocation and an access revocation record continue; everything
+// else waits.
 func TestWriteKindsAreClosedAndClassified(t *testing.T) {
 	kinds := WriteKinds()
 	if len(kinds) != len(degradedPolicy) {
@@ -298,7 +299,7 @@ func TestWriteKindsAreClosedAndClassified(t *testing.T) {
 			continues = append(continues, k)
 		}
 	}
-	if !slices.Equal(continues, []string{WriteRead, WriteOutcome, WriteRerun, WriteFence, WriteRevocationStart}) {
+	if !slices.Equal(continues, []string{WriteRead, WriteOutcome, WriteRerun, WriteFence, WriteRevocationStart, WriteAccess}) {
 		t.Fatal("degraded mode lets through", continues)
 	}
 	if ContinuesDegraded("revocation_of_access") || ContinuesDegraded("") {
@@ -342,4 +343,37 @@ func TestDegradedModeMetricsUseTheClosedKinds(t *testing.T) {
 	none.Degraded(since)
 	none.Waiting(WriteSeal, 1)
 	none.GaveUp(WriteSeal)
+}
+
+// The kinds of access revocation records are a closed vocabulary, each a
+// bearer token's or a standing grant's (ADR 005, item 6).
+func TestAccessKindsAreClosedAndClassified(t *testing.T) {
+	kinds := AccessKinds()
+	if len(kinds) != len(accessBearer) {
+		t.Fatal("an access kind is listed without its class, or a class without its kind")
+	}
+	var bearer []string
+	for i, k := range kinds {
+		b, known := AccessBearer(k)
+		if !known || slices.Contains(kinds[:i], k) {
+			t.Fatal("unclassified or repeated access kind", k)
+		}
+		if b {
+			bearer = append(bearer, k)
+		}
+	}
+	if !slices.Equal(bearer, []string{AccessAPIToken, AccessServiceToken, AccessPlatformCredential, AccessDelegatedToken}) {
+		t.Fatal("bearer tokens:", bearer)
+	}
+	if _, known := AccessBearer("role"); known {
+		t.Fatal("an unknown access kind is known")
+	}
+	for _, objects := range [][][]string{nil, {}, {{}}, {{""}}, {{"a\nb"}}, {{"a", "b", "c", "d", "e", "f", "g"}}, {{string([]byte{0xff})}}} {
+		if ValidAccessObjects(objects) {
+			t.Fatal("invalid objects accepted", objects)
+		}
+	}
+	if !ValidAccessObjects([][]string{{"prn_1"}, {"https://issuer.example", "aud ience", "key", "k1"}}) {
+		t.Fatal("valid objects refused")
+	}
 }

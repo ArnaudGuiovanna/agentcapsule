@@ -49,6 +49,9 @@ type Loss struct {
 	Incarnation uint64
 	Rerun       bool
 	RerunDigest [32]byte
+	// Event is the ID of the event whose outcome was lost, when the
+	// authority recorded it with the outcome (ADR 005, item 8).
+	Event string `json:",omitempty"`
 }
 
 // Status is outcomeStatus in restore_authority.qnt: what a caller may learn
@@ -335,7 +338,15 @@ func recordedOutcomes(ctx context.Context, tx *sql.Tx, withLosses bool, where st
 
 // where is a fixed fragment, never built from input.
 func queryLosses(ctx context.Context, tx *sql.Tx, where string, args ...any) ([]Loss, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT l.outcome,l.store,l.incarnation,r.digest FROM losses l
+	v, err := version(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	event := "''"
+	if v >= 4 {
+		event = "coalesce((SELECT e.event FROM outcome_events e WHERE e.outcome=l.outcome),'')"
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT l.outcome,l.store,l.incarnation,r.digest,`+event+` FROM losses l
  LEFT JOIN reruns r ON r.outcome=l.outcome AND r.incarnation=l.incarnation WHERE `+where+` ORDER BY l.incarnation,l.outcome`, args...)
 	if err != nil {
 		return nil, err
@@ -345,7 +356,7 @@ func queryLosses(ctx context.Context, tx *sql.Tx, where string, args ...any) ([]
 	for rows.Next() {
 		var l Loss
 		var digest []byte
-		if err = rows.Scan(&l.ID, &l.Store, &l.Incarnation, &digest); err != nil {
+		if err = rows.Scan(&l.ID, &l.Store, &l.Incarnation, &digest, &l.Event); err != nil {
 			return nil, err
 		}
 		if digest != nil {

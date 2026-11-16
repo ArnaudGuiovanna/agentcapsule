@@ -7,6 +7,7 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -30,6 +31,7 @@ func configureDelegation(args []string) int {
 	publicKey := f.String("public-key", "", "Ed25519 public key in standard base64, for add-key")
 	overlap := f.Duration("overlap", 0, "for retire-key: how long tokens signed with the key stay valid (0: none)")
 	g := newGuard(f, "the issuer (rotate, revoke-trust), the token ID (revoke-token) or the key ID (add-key, retire-key)")
+	access := newAccessFlags(f)
 	if err := f.Parse(args); err != nil {
 		return 1
 	}
@@ -95,10 +97,27 @@ func configureDelegation(args []string) int {
 	if err = s.Migrate(ctx); err != nil {
 		return fail("database_migration_failed")
 	}
+	// A change that revokes access appends its record to the authority
+	// service before it commits (ADR 006 wave 5); a dry run records nothing.
+	switch *action {
+	case "rotate", "revoke-trust", "revoke-token", "retire-key":
+		if !*g.dryRun {
+			authorities, code := access.attach(ctx, s)
+			if code != "" {
+				return fail(code)
+			}
+			if authorities != nil {
+				defer authorities.Close()
+			}
+		}
+	}
 	out, err := s.ChangeDelegationAuthority(ctx, in)
 	if err != nil {
 		if reason, definite := definiteRefusal(err); definite {
 			return fail("delegation_change_rejected_" + reason)
+		}
+		if errors.Is(err, controlplane.ErrAuthorityUnavailable) {
+			return fail("authority_unavailable_try_again")
 		}
 		return fail("delegation_change_unconfirmed_retry_with_same_operation")
 	}

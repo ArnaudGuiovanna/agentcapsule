@@ -73,6 +73,13 @@ The historical owner domain (`/v1/users`, `/v1/me...`, `/v1/agent-requests`)
 answers only its own `acp_` credentials, never an organization's or the
 platform's.
 
+A success of a route that revokes access also carries the `revocations` it
+recorded with the authority service before its commit
+([README](README.md#revocations-pending-and-confirmed)); the test checks
+their kinds route by route. `GET /v1/access-revocations/{id}` reads one of
+the organization's with the rights of `GET /v1/audit`; the platform reads
+only its own.
+
 ## Matrix
 
 <!-- rbac-matrix:begin -->
@@ -108,6 +115,7 @@ platform's.
 | `POST /v1/service-accounts/{id}/tokens/{token_id}/revoke` (a disposable token) | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
 | `GET /v1/audit` | yes | yes | 403 | yes | 403 | 403 | 403 | 403 | yes | filtered | 401 | 401 | 403 |
 | `GET /v1/audit/export` | yes | yes | 403 | yes | 403 | 403 | 403 | 403 | yes | filtered | 401 | 401 | 403 |
+| `GET /v1/access-revocations/{id}` (a revocation of the organization) | yes | yes | 403 | yes | 403 | 403 | 403 | 403 | yes | 404 | 401 | 401 | 404 |
 | `GET /v1/llm/providers` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | filtered | 401 | 401 | 403 |
 | `POST /v1/llm/providers` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | yes | 401 | 401 | 403 |
 | `POST /v1/llm/providers/{id}/rotate` (a disposable provider) | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |

@@ -50,6 +50,8 @@ const (
 	WriteKeyCreate = "key_create"
 	// WriteKeyDestroy destroys a volume key.
 	WriteKeyDestroy = "key_destroy"
+	// WriteAccess records an access revocation (access.go).
+	WriteAccess = "access"
 )
 
 // degradedPolicy is the classification: true when the kind continues in
@@ -65,9 +67,12 @@ const (
 // So creating, deleting and restoring an agent wait.
 //
 // Finding 1 was decided on November 15, 2026 (option (a)): the completion of
-// a revocation waits, which is the model's safe configuration. Revocations of
-// access (ADR 005 §5.4) do not exist yet: when they do, they get their own
-// kinds here. A bearer token's continues; a standing grant's waits.
+// a revocation waits, which is the model's safe configuration. An access
+// revocation record (ADR 005 §5.4, ADR 006 wave 5) continues: the revocation
+// takes effect at once on the primary. The API confirms a standing grant's
+// only once the replica holds its record, and a bearer token's at once in
+// degraded mode: the model's acknowledged access revocation is the confirmed
+// one, so that rule, not the stream, keeps the model's safe configuration.
 var degradedPolicy = map[string]bool{
 	WriteRead:            true,
 	WriteOutcome:         true,
@@ -82,6 +87,7 @@ var degradedPolicy = map[string]bool{
 	WriteSeal:            false,
 	WriteKeyCreate:       false,
 	WriteKeyDestroy:      false,
+	WriteAccess:          true,
 }
 
 // revocationDoneContinues is ADR 005's finding 1, decided as option (a):
@@ -94,7 +100,7 @@ const revocationDoneContinues = false
 // WriteKinds lists every kind.
 func WriteKinds() []string {
 	return []string{WriteRead, WriteOutcome, WriteRerun, WriteFence, WriteRevocationStart, WriteRevocationDone,
-		WriteRegistration, WriteReservation, WriteLoss, WriteActivation, WriteSeal, WriteKeyCreate, WriteKeyDestroy}
+		WriteRegistration, WriteReservation, WriteLoss, WriteActivation, WriteSeal, WriteKeyCreate, WriteKeyDestroy, WriteAccess}
 }
 
 // ContinuesDegraded reports whether an operation of this kind continues in

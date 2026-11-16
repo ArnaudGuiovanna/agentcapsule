@@ -25,8 +25,9 @@ type operation struct {
 }
 
 // operations are those of wave 1 (ADR 006 §10), with wave 3's seal check
-// in destroy_key. Each runs a function of the authority packages; a hold
-// runs it with a callback that waits for the client's release.
+// in destroy_key and wave 5's access revocation records. Each runs a
+// function of the authority packages; a hold runs it with a callback that
+// waits for the client's release.
 var operations = map[string]operation{
 	OpStatus: {api: true, run: func(_ context.Context, s *Server, raw json.RawMessage, _ *hold) (any, error) {
 		_, err := decode[struct{}](raw)
@@ -260,6 +261,27 @@ var operations = map[string]operation{
 		}
 		losses, err := s.local.DeclareLosses(ctx, a.Receipt, inspection(a))
 		return LossesResult{losses}, err
+	}},
+	// append_access commits the record, then waits for the replica up to the
+	// caller's deadline. No hold excludes it, so it never waits the quiet
+	// period. It fails only when the record was not committed.
+	OpAppendAccess: {api: true, run: func(ctx context.Context, s *Server, raw json.RawMessage, _ *hold) (any, error) {
+		a, err := decode[AccessArgs](raw)
+		if err != nil {
+			return nil, err
+		}
+		receipt, err := s.local.AppendAccess(ctx, a.Record)
+		return AccessResult{receipt}, err
+	}},
+	// on_replica answers by the record's ID: a record of an older epoch,
+	// which a promotion brought here, has its own sequence numbers.
+	OpOnReplica: {api: true, run: func(ctx context.Context, s *Server, raw json.RawMessage, _ *hold) (any, error) {
+		a, err := decode[IDArgs](raw)
+		if err != nil {
+			return nil, err
+		}
+		receipt, err := s.local.AccessStatus(ctx, a.ID)
+		return AccessResult{receipt}, err
 	}},
 	OpHoldActivation: {hold: HoldActivation, run: func(ctx context.Context, s *Server, raw json.RawMessage, h *hold) (any, error) {
 		a, err := decode[LossArgs](raw)

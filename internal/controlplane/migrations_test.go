@@ -319,6 +319,8 @@ func TestReadyChecksInstalledMigrationLedger(t *testing.T) {
 func revertTenantAgents(t *testing.T, s *Store) {
 	t.Helper()
 	if _, err := s.pool.Exec(t.Context(), `
+        DROP TABLE IF EXISTS access_revocations;
+        DROP FUNCTION IF EXISTS preserve_access_revocation();
         DROP TABLE IF EXISTS volume_relocations, host_takeovers;
         DROP FUNCTION IF EXISTS preserve_volume_relocation(), preserve_host_takeover();
         DROP TABLE IF EXISTS operator_audit, audit_retention;

@@ -58,7 +58,11 @@ private content.
 
 Revocation retains the historical principal, revokes the membership and all of
 its team memberships, and neither deletes agents nor transfers historical
-content. There is no reactivation route. A future reactivation feature needs a
+content. It is recorded with the authority service before it commits: the
+answer's `revocations` says whether the standby holds the record
+(`confirmed`) or not yet (`pending`), and a 503 `authority_unavailable` means
+that nothing changed: try again ([README](README.md#revocations-pending-and-confirmed)). A role change that
+revokes service tokens records them the same way. There is no reactivation route. A future reactivation feature needs a
 signed/current member or credential generation before enabling access again,
 so previously issued JWTs cannot regain access. Database operators remain
 trusted; direct SQL reactivation bypasses this API contract. Team management,

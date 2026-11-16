@@ -93,7 +93,7 @@ func TestOperatorBootstrapFromEmptyDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"agentcapsule-admin", "agentcapsule-api"} {
+	for _, name := range []string{"agentcapsule-admin", "agentcapsule-api", "agentcapsule-authority"} {
 		build := exec.CommandContext(t.Context(), "go", "build", "-o", filepath.Join(dir, name), "./cmd/"+name)
 		build.Dir = root
 		if output, err := build.CombinedOutput(); err != nil {
@@ -377,7 +377,18 @@ func TestOperatorBootstrapFromEmptyDatabase(t *testing.T) {
 			t.Fatal("a key was refused during the overlap", status)
 		}
 	}
-	keyChange("acme-retire-2026-11", "-action", "retire-key", "-key-id", "2026-11", "-overlap", "0s", "-confirm", "2026-11")
+	// Retiring a key revokes access: its record goes to the authority
+	// service before the commit (ADR 006 wave 5), refused in production
+	// without it.
+	if _, errOut, err := admin("configure-delegation", "-operation-id", "acme-retire-2026-11", "-tenant-id", org.ID, "-issuer", issuer, "-audience", audience,
+		"-action", "retire-key", "-key-id", "2026-11", "-overlap", "0s", "-confirm", "2026-11"); err == nil || errOut != "authority_required_in_production\n" {
+		t.Fatal("a key was retired without the authority service", err, errOut)
+	}
+	authority := startAuthorityService(t, dir)
+	retired := keyChange("acme-retire-2026-11", append([]string{"-action", "retire-key", "-key-id", "2026-11", "-overlap", "0s", "-confirm", "2026-11"}, authority.flags()...)...)
+	if len(retired.Revocations) != 1 || retired.Revocations[0].Kind != "delegation_trust" || retired.Revocations[0].State != controlplane.RevocationConfirmed {
+		t.Fatal("the key's revocation record", retired)
+	}
 	if status, _ := current(sign(key1, "2026-11", "alice", "retired-key")); status != 401 {
 		t.Fatal("a retired key signed in", status)
 	}
@@ -385,7 +396,8 @@ func TestOperatorBootstrapFromEmptyDatabase(t *testing.T) {
 		t.Fatal("the new key was refused", status)
 	}
 	if _, errOut, err := admin("configure-delegation", "-operation-id", "acme-retire-last", "-tenant-id", org.ID, "-issuer", issuer, "-audience", audience,
-		"-action", "retire-key", "-key-id", "2026-12", "-confirm", "2026-12"); err == nil || errOut != "delegation_change_rejected_conflict\n" {
+		"-action", "retire-key", "-key-id", "2026-12", "-confirm", "2026-12", "-authority-socket", authority.socket, "-restore-authority-id", authority.restoreID,
+		"-key-authority-id", authority.keyID); err == nil || errOut != "delegation_change_rejected_conflict\n" {
 		t.Fatal("the last key was retired", err, errOut)
 	}
 

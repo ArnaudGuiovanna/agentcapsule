@@ -40,10 +40,11 @@ func (c *Catalog) Snapshot(ctx context.Context, keys *keyauthority.Files, recipi
 	if err := CheckSeparation(c.root, path); err != nil {
 		return position, err
 	}
-	// Arm nothing on a catalogue that cannot hold the stream.
+	// Arm nothing on a catalogue that cannot hold the stream, nor the
+	// tables of the current schema that the replica holds.
 	if err := c.run(ctx, false, func(tx *sql.Tx) error {
 		v, err := version(ctx, tx)
-		if err == nil && v < 3 {
+		if err == nil && v < schemaVersion {
 			err = ErrUnavailable // upgrade with Initialize first
 		}
 		return err
@@ -115,7 +116,7 @@ func (c *Catalog) snapshot(ctx context.Context, tx *sql.Tx, keys *keyauthority.F
 	if identity != c.identity || keyIdentity != c.keyIdentity || len(secret) != 32 {
 		return position, ErrUnavailable
 	}
-	if v, err := version(ctx, tx); err != nil || v < 3 {
+	if v, err := version(ctx, tx); err != nil || v < schemaVersion {
 		return position, errors.Join(ErrUnavailable, err) // upgrade with Initialize first
 	}
 	state, err := readReplication(ctx, tx)

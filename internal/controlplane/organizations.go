@@ -8,6 +8,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/authoritylog"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -184,7 +185,15 @@ func (a *Accounts) DisableOrganization(ctx context.Context, p Principal, id, key
 		if err = auditOrganization(ctx, tx, p, id, "organization.disabled", changed); err != nil {
 			return 0, nil, err
 		}
-		return 200, o, nil
+		// The platform's own revocation: its operator reads it.
+		revoked := a.store.revocations(tx, "")
+		if changed {
+			if err = revoked.add(ctx, authoritylog.AccessOrganization, id, [][]string{{id}}); err != nil {
+				return 0, nil, err
+			}
+		}
+		body, err := revoked.body(o)
+		return 200, body, err
 	})
 	if err != nil {
 		return APIReceipt{}, err

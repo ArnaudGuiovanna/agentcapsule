@@ -197,12 +197,84 @@ flags: `-authority-socket`, `-restore-authority-id` and `-key-authority-id`.
   without a standby, `degraded` while the standby is away, and `waiting`
   while a restarted service has not reached its standby yet. While the
   service does not answer with the pinned identities, the probe answers 503
-  (`authority_unavailable`). The other routes do not use the service yet.
+  (`authority_unavailable`).
 - `-preflight` asks the service once (the `authority` check).
+- Every route that revokes access records the revocation with the service
+  before it commits ([below](#revocations-pending-and-confirmed)).
 
-The API uses the service for this only today. The access revocation
-records, the daily receipt key and the reconciliation after a failover will
-go through the same socket (ADR 006 §7).
+The daily receipt key and the reconciliation after a failover will go
+through the same socket (ADR 006 §7).
+
+## Revocations: pending and confirmed
+
+A restore never revives an access revoked since the backup
+([product.md](../product.md) §3). So every transaction that revokes access
+appends an **access revocation record** to the authority service before it
+commits in PostgreSQL ([ADR 006](../adr/006-authority-service.md) §7, wave
+5). The service replicates it to the standby, as every authority write.
+
+- **The service did not record it.** The service does not answer, or the
+  standby holds the record back before degraded mode begins (the first 30
+  seconds of a standby's outage). Nothing is committed. The route answers
+  503 `authority_unavailable` with `Retry-After: 5`: try again in a moment.
+  The same `Idempotency-Key` may be used again: no answer was stored.
+- **It recorded it.** The revocation takes effect at once: the next call of
+  the revoked member, token or assignment fails. The answer carries
+  `revocations`, one entry per record:
+
+  ```json
+  {"principal_id":"prn_…","status":"revoked",…,
+   "revocations":[{"id":"arv_…","kind":"member","state":"pending","recorded_at":"…"}]}
+  ```
+
+  `confirmed`: the standby's replica holds the record (or no standby
+  exists). `pending`: it does not yet. A failover before it does could
+  undo the revocation; the announcement after a disaster lists the window
+  in which pending revocations must be made again. A bearer token's
+  revocation (`api_token`, `service_token`, `platform_credential`,
+  `delegated_token`) is confirmed at once while the service runs in
+  degraded mode: a failover after a degraded period revokes every bearer
+  token anyway. A standing grant's (`member`, `principal`, `organization`,
+  `team`, `team_membership`, `assignment`, `mandate`, `delegation_trust`,
+  `llm_provider`) stays pending until the standby holds it.
+- **Later.** The API asks the service about pending revocations every 5
+  seconds, and confirms them once the standby holds their record.
+  `GET /v1/access-revocations/{id}` reads one, with its `state` and
+  `confirmed_at`; reading a pending one asks the service again. An
+  organization's revocations are read with the rights of `GET /v1/audit`;
+  the platform's own (an organization disabled, an operator's credential
+  or delegation change) with the platform credential. A replay of the
+  revoking request gives each revocation's current state.
+- **Metrics.** `agentcapsule_api_access_revocations_pending` and
+  `agentcapsule_api_access_revocation_oldest_pending_seconds`
+  ([observability.md](../observability.md)).
+
+The routes that revoke, and the record each appends:
+
+| Route | Kind | Objects |
+|---|---|---|
+| `POST /v1/members/{id}/revoke` | `member`, and `service_token` for the tokens the member issued | the principal; the tokens |
+| `POST /v1/members/{id}/role` | `service_token`, for the tokens the new role no longer manages | the tokens |
+| `POST /v1/teams/{id}/disable` | `team` | the team (its memberships go with it) |
+| `POST /v1/teams/{id}/members/{principal_id}/revoke` | `team_membership` | the team and the principal |
+| `POST /v1/service-accounts/{id}/disable` | `principal`, and `service_token` for its tokens | the account; the tokens |
+| `POST /v1/service-accounts/{id}/tokens/{token_id}/revoke` | `service_token` | the token |
+| `POST /v1/agents/{id}/assignments/{assignment_id}/revoke`, `/replace`, `/reassign` | `assignment` | the revoked or replaced assignment |
+| `POST /v1/llm/providers/{id}/rotate` | `llm_provider` | the provider, `generation`, the previous credential's generation |
+| `POST /v1/llm/providers/{id}/disable` | `llm_provider` | the provider |
+| `POST /v1/organizations/{id}/disable` (platform) | `organization` | the organization |
+| `agentcapsule-admin revoke-credential` | `platform_credential`, or `api_token` for a legacy service credential | the credential |
+| `agentcapsule-admin configure-delegation` | `delegated_token` (`revoke-token`); `delegation_trust` (`revoke-trust`; `rotate`: `generation` and the new one; `retire-key`: `key`, the key and its end) | the issuer, then the token ID or the audience |
+
+A request that revokes nothing new (an already revoked member, say)
+appends nothing and carries no `revocations`. In development without the
+authority service, nothing is recorded outside PostgreSQL and no answer
+carries `revocations`. `agentcapsule-admin` takes the same three flags as
+the API for `revoke-credential` and the revoking actions of
+`configure-delegation`; in production it refuses them without the flags
+(`authority_required_in_production`), and answers
+`authority_unavailable_try_again` when the service did not record the
+revocation.
 
 ## Private instructions
 

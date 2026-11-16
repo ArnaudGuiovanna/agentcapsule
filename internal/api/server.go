@@ -130,6 +130,7 @@ func New(store *controlplane.Store, accounts *controlplane.Accounts) (*Server, e
 	s.handle("/v1/agents/{id}/assignments/{assignment_id}/reassign", s.reassignAssignment)
 	s.handle("/v1/audit", s.audit)
 	s.handle("/v1/audit/export", s.auditExport)
+	s.handle("/v1/access-revocations/{id}", s.accessRevocation)
 	s.handle("/v1/llm/providers", s.llmProviders)
 	s.handle("/v1/llm/providers/{id}/rotate", s.rotateLLMProvider)
 	s.handle("/v1/llm/providers/{id}/disable", s.disableLLMProvider)
@@ -261,6 +262,11 @@ func failure(w http.ResponseWriter, err error) {
 		problem(w, 422, "harness_unavailable")
 	case errors.Is(err, controlplane.ErrStorageCapacity):
 		problem(w, 503, "storage_capacity_unavailable")
+	case errors.Is(err, controlplane.ErrAuthorityUnavailable):
+		// The authority service did not record a revocation: nothing was
+		// committed. Try again in a moment (ADR 006 §7, answer 2(a)).
+		w.Header().Set("Retry-After", "5")
+		problem(w, 503, "authority_unavailable")
 	case errors.Is(err, controlplane.ErrStoragePressure):
 		w.Header().Set("Retry-After", "300")
 		problem(w, 503, "storage_pressure")
