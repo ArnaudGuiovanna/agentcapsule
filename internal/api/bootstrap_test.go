@@ -335,6 +335,17 @@ func TestOperatorBootstrapFromEmptyDatabase(t *testing.T) {
 	if status, _ := call("GET", "/v1/users", legacy, "", "", nil); status != 401 {
 		t.Fatal("the legacy owner domain is open", status)
 	}
+	// Each route of the legacy domain, PUT /v1/me/messaging-settings among
+	// them, refuses its tokens here; every other credential gets 403 there
+	// (TestRBACMatrix). No credential the API accepts reaches them.
+	for i, route := range rbacRoutes {
+		if route.Want != rbacLegacyOnly {
+			continue
+		}
+		if status, body := call(route.Method, route.Path, legacy, fmt.Sprint("legacy-", i), route.body, nil); status != 401 {
+			t.Fatal("a legacy route answers a legacy token:", route.Method, route.Path, status, string(body))
+		}
+	}
 
 	// Every step is audited: the organization sees its own trail, the
 	// operator sees the platform's.
