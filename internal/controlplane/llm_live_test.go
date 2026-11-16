@@ -60,7 +60,7 @@ func newLiveLab(t *testing.T) *liveLab {
 		t.Fatal("create provider", err)
 	}
 	for _, a := range []CreateLLMAliasInput{
-		{Alias: "local", ProviderID: p.ID, UpstreamModel: model, InputMicroPerMTok: 1_000_000, OutputMicroPerMTok: 3_000_000},
+		{Alias: "local", ProviderID: p.ID, UpstreamModel: model, InputMicroPerMTok: price(1_000_000), OutputMicroPerMTok: price(3_000_000)},
 		{Alias: "ghost", ProviderID: p.ID, UpstreamModel: "agentcapsule-no-such-model"},
 	} {
 		if _, err = l.a.CreateLLMAlias(t.Context(), owner, "alias-"+a.Alias, a); err != nil {

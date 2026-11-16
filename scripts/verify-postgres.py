@@ -156,9 +156,10 @@ def main():
             run("settings", [pg_bin / "psql", "-h", socket_dir, "-U", "agentcapsule_test", "-d", "postgres", "-Atc",
                              "SELECT version(); SHOW fsync; SHOW full_page_writes; SHOW synchronous_commit; SHOW listen_addresses;"])
             # Each store test migrates a fresh schema; the control-plane package
-            # alone takes a few minutes under the race detector.
-            command = ["go", "test", "-race", "-json", "-count=1", "-timeout=600s"]
-            run("integration", [*command, "./..."], timeout=900, go_json=True)
+            # alone takes nearly ten minutes under the race detector on a shared
+            # host (533 s to 600 s in November 2026), so it gets fifteen.
+            command = ["go", "test", "-race", "-json", "-count=1", "-timeout=900s"]
+            run("integration", [*command, "./..."], timeout=1200, go_json=True)
             if args.llm_base_url:
                 run("llm-live", [*command, "-tags=llmlive", "-run=^TestLive", "./internal/llmgateway", "./internal/controlplane"], timeout=300, go_json=True,
                     extra_env={"AGENTCAPSULE_TEST_LLM_BASE_URL": args.llm_base_url, "AGENTCAPSULE_TEST_LLM_MODEL": args.llm_model})
