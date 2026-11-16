@@ -59,6 +59,15 @@ type restoreLab struct {
 	steps                                 []string
 	// paused receives the pauses of l.restore; none is expected when nil.
 	paused func(error)
+	// relocations counts the volumes created for a relocated agent;
+	// installedOn is the volume identity of the last install.
+	relocations int
+	installedOn [2]uint64
+	// What creates more agents (host_restore_test.go).
+	keys     *keyauthority.Files
+	accounts *controlplane.Accounts
+	catalog  *controlplane.AgentCatalog
+	admin    controlplane.Principal
 }
 
 type restoreGuest struct {
@@ -200,7 +209,8 @@ func newRestoreLab(t *testing.T, implementation string) *restoreLab {
 	if err != nil {
 		t.Fatal(err)
 	}
-	l := &restoreLab{t: t, w: w, store: s, db: db, authority: authority, archives: archives, opts: opts, e: e,
+	l := &restoreLab{t: t, w: w, store: s, db: db, authority: authority, archives: archives, opts: opts, e: e, keys: keys,
+		accounts: accounts, catalog: catalog, admin: p,
 		volume: filepath.Join(parent, "volume"), state: filepath.Join(t.TempDir(), "harness.db")}
 	t.Cleanup(l.stopGuest)
 	// The agent's first boot: an empty harness database.
@@ -251,7 +261,7 @@ func (l *restoreLab) unpack(path string) {
 
 func (l *restoreLab) binding() restoreauthority.Binding {
 	l.t.Helper()
-	e, err := l.store.VolumeEnrollment(l.t.Context(), l.e.AgentID, "local")
+	e, err := l.store.VolumeEnrollment(l.t.Context(), l.e.AgentID, l.w.hostID)
 	if err != nil {
 		l.t.Fatal(err)
 	}
@@ -326,10 +336,10 @@ func (l *restoreLab) host() restoreHost {
 			if err != nil || p.State == "STOPPED" {
 				return err
 			}
-			if err = l.store.BeginPlacementStop(ctx, id, "local", p.Generation); err != nil {
+			if err = l.store.BeginPlacementStop(ctx, id, l.w.hostID, p.Generation); err != nil {
 				return err
 			}
-			return l.store.ObservePlacementStopped(ctx, id, "local", p.Generation, true)
+			return l.store.ObservePlacementStopped(ctx, id, l.w.hostID, p.Generation, true)
 		},
 		install: func(_ context.Context, plan controlplane.VolumeRestorePlan, image io.Reader, a restoreauthority.Archive) error {
 			if l.guest != nil || plan.Placement.State != "STOPPED" {
@@ -350,6 +360,7 @@ func (l *restoreLab) host() restoreHost {
 				return runtime.ErrVolumeImage
 			}
 			l.installs++
+			l.installedOn = [2]uint64{plan.Device, plan.Inode}
 			return os.WriteFile(l.volume, data, 0600)
 		},
 		probe: func(context.Context, string) error {
@@ -357,6 +368,12 @@ func (l *restoreLab) host() restoreHost {
 				return capsuleprotocol.ErrUnsupportedProtocol
 			}
 			return nil
+		},
+		// The new host's volume of a relocated agent: an empty container of
+		// the volume's size, under another identity.
+		relocate: func(context.Context, controlplane.VolumeRestorePlan) (uint64, uint64, error) {
+			l.relocations++
+			return 2, 200, os.WriteFile(l.volume, make([]byte, restoreVolumeSize), 0600)
 		},
 		boot: l.boot,
 		after: func(step string) error {
@@ -370,11 +387,11 @@ func (l *restoreLab) host() restoreHost {
 // volume preparation and confirmation, against a real guest server whose
 // harness database comes from the volume.
 func (l *restoreLab) boot(ctx context.Context, id string) (runtime.VMRun, *capsuleprotocol.Client, error) {
-	p, err := l.store.ClaimFencePlacement(ctx, id, "local", l.w.workerID, l.w.lease)
+	p, err := l.store.ClaimFencePlacement(ctx, id, l.w.hostID, l.w.workerID, l.w.lease)
 	if err != nil {
 		return runtime.VMRun{}, nil, err
 	}
-	e, err := l.store.VolumeEnrollment(ctx, id, "local")
+	e, err := l.store.VolumeEnrollment(ctx, id, l.w.hostID)
 	if err != nil {
 		return runtime.VMRun{}, nil, err
 	}
@@ -470,7 +487,7 @@ func (l *restoreLab) heldOutcomes(ids []string) map[string][32]byte {
 
 func (l *restoreLab) enrollment() controlplane.Enrollment {
 	l.t.Helper()
-	e, err := l.store.VolumeEnrollment(l.t.Context(), l.e.AgentID, "local")
+	e, err := l.store.VolumeEnrollment(l.t.Context(), l.e.AgentID, l.w.hostID)
 	if err != nil {
 		l.t.Fatal(err)
 	}

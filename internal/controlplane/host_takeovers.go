@@ -108,6 +108,27 @@ func takenOverBy(ctx context.Context, tx pgx.Tx, agentID, host string) (string, 
 	return lost, err
 }
 
+// TakenOverEnrollment reads the enrollment of an agent that is still on a
+// lost host that host took over, and that lost host: what a restore checks
+// before it begins, and moves the agent (BeginVolumeRestore). Its HostID is
+// the lost host's. ErrPlacement when host did not take the agent's host over.
+func (s *Store) TakenOverEnrollment(ctx context.Context, agentID, host string) (Enrollment, string, error) {
+	tx, err := s.begin(ctx)
+	if err != nil {
+		return Enrollment{}, "", err
+	}
+	defer rollback(tx)
+	if _, err = lockAgents(ctx, tx, agentID); err != nil {
+		return Enrollment{}, "", err
+	}
+	lost, err := takenOverBy(ctx, tx, agentID, host)
+	if err != nil {
+		return Enrollment{}, "", err
+	}
+	e, err := enrollment(ctx, tx, agentID, lost)
+	return e, lost, err
+}
+
 // relocateAgent moves an agent from its lost host to host, in the
 // transaction that begins its restore there. Its VMs went with the lost host:
 // its placement is STOPPED on host, without a renewal or an observed control

@@ -43,11 +43,19 @@ func run() int {
 	archiveRoot := flag.String("archive-root", "", "absolute private archive directory outside runtime and authorities")
 	restoreAgent := flag.String("restore-agent", "", "restore this agent from -archive-id into a new incarnation, then exit")
 	restoreID := flag.String("restore-id", "", "stable rst_ identifier with 32 lowercase hex digits; reuse to resume the restore")
+	restoreHost := flag.String("restore-host", "", "restore every agent of this lost host, which this host took over, from its archives, then exit")
+	archiveFetch := flag.String("archive-fetch", "", "the archive shipper (agentcapsule-archive-ship.py), to fetch an archive missing from -archive-root from the standby's copy or S3")
 	check := flag.Bool("preflight", false, "check this host and configuration, print what to fix, change nothing, then exit")
 	flag.Parse()
 	fail := func(code string) int { fmt.Fprintln(os.Stderr, code); return 1 }
 	if *path == "" || flag.NArg() != 0 {
 		return fail("configuration_required")
+	}
+	if *restoreHost != "" && (*restoreAgent != "" || *restoreID != "" || *archiveAgent != "" || *archiveID != "" || !filepath.IsAbs(*archiveRoot)) {
+		return fail("restore_host_configuration_invalid")
+	}
+	if *archiveFetch != "" && (!filepath.IsAbs(*archiveFetch) || (*restoreHost == "" && *restoreAgent == "")) {
+		return fail("archive_fetch_configuration_invalid")
 	}
 	// Production unless AGENTCAPSULE_MODE=development, which says so at
 	// every start (docs/adr/010-transport-security-and-preflight.md).
@@ -66,9 +74,11 @@ func run() int {
 		!volumearchive.ValidID(*archiveID) || !filepath.IsAbs(*archiveRoot)) {
 		return fail("restore_configuration_invalid")
 	}
-	// A capture or a restore: one agent, then exit; no maintenance.
-	archiveRequested := *archiveAgent != "" || *archiveID != "" || *archiveRoot != "" || restoreRequested
-	if archiveRequested && !restoreRequested && (*archiveAgent == "" || !volumearchive.ValidID(*archiveID) || !filepath.IsAbs(*archiveRoot)) {
+	// A capture or a restore: one agent, or a lost host's, then exit; no
+	// maintenance.
+	hostRestoreRequested := *restoreHost != ""
+	archiveRequested := *archiveAgent != "" || *archiveID != "" || *archiveRoot != "" || restoreRequested || hostRestoreRequested
+	if archiveRequested && !restoreRequested && !hostRestoreRequested && (*archiveAgent == "" || !volumearchive.ValidID(*archiveID) || !filepath.IsAbs(*archiveRoot)) {
 		return fail("archive_configuration_invalid")
 	}
 	c, err := worker.LoadServiceConfig(*path)
@@ -145,6 +155,12 @@ func run() int {
 		}
 	}
 	if _, err = s.PendingCredentialRenewals(startup, c.HostID); err != nil {
+		return fail("database_schema_unavailable")
+	}
+	// A lost host never serves again (ADR 020): its worker gets no work.
+	if _, err = s.HostTakeoverOf(startup, c.HostID); err == nil {
+		return fail("host_taken_over")
+	} else if !errors.Is(err, controlplane.ErrNotFound) {
 		return fail("database_schema_unavailable")
 	}
 	nonce := make([]byte, 16)
@@ -327,44 +343,74 @@ func run() int {
 			maintenance.Archives = archives
 		}
 	}
+	// While the authorities do not answer, a restore pauses, then resumes
+	// from its last durable step (ADR 006 §4).
+	pauses := telemetry.NewLogger(os.Stderr, map[string][]string{"event": {"restore_paused"}, "reason": worker.RestorePauses()})
+	paused := func(err error) { pauses.Event("restore_paused", telemetry.Code("reason", worker.RestorePause(err))) }
+	var fetch worker.ArchiveFetcher
+	if *archiveFetch != "" {
+		fetch = worker.ScriptFetcher([]string{*archiveFetch}, *archiveRoot)
+	}
+	if hostRestoreRequested {
+		archives, err := volumearchive.New(*archiveRoot)
+		if err != nil {
+			return fail("archive_storage_unavailable")
+		}
+		// One line per agent as it goes, then the totals (docs/recovery.md).
+		out := json.NewEncoder(os.Stdout)
+		items, err := w.RestoreHost(ctx, *restoreHost, archives, fetch, paused, func(item worker.HostRestoreItem) { _ = out.Encode(item) })
+		if errors.Is(err, worker.ErrNotTakenOver) {
+			return fail("restore_host_not_taken_over")
+		}
+		if err != nil {
+			return fail("restore_host_interrupted_run_again")
+		}
+		totals := map[string]int{"restored": 0, "skipped": 0, "failed": 0}
+		for _, item := range items {
+			totals[item.Result]++
+		}
+		_ = out.Encode(struct {
+			LostHost string `json:"lost_host"`
+			Host     string `json:"host"`
+			Restored int    `json:"restored"`
+			Skipped  int    `json:"skipped"`
+			Failed   int    `json:"failed"`
+		}{*restoreHost, c.HostID, totals["restored"], totals["skipped"], totals["failed"]})
+		if totals["failed"] > 0 {
+			return fail("restore_host_incomplete_run_again")
+		}
+		return 0
+	}
 	if restoreRequested {
 		archives, err := volumearchive.New(*archiveRoot)
 		if err != nil {
 			return fail("archive_storage_unavailable")
 		}
-		// While the authorities do not answer, the restore pauses, then
-		// resumes from its last durable step (ADR 006 §4).
-		pauses := telemetry.NewLogger(os.Stderr, map[string][]string{"event": {"restore_paused"}, "reason": worker.RestorePauses()})
-		result, err := w.RestoreFromArchive(ctx, *restoreID, *restoreAgent, *archiveID, archives, func(err error) {
-			pauses.Event("restore_paused", telemetry.Code("reason", worker.RestorePause(err)))
-		})
+		// From the archive root, or fetched from a store and verified first.
+		store := "local"
+		if _, err = archives.Manifest(*archiveID); err != nil && fetch != nil {
+			if store, err = w.FetchArchive(ctx, archives, fetch, *archiveID, paused); err != nil {
+				return fail("restore_failed_" + worker.RestoreFailure(err))
+			}
+		}
+		result, err := w.RestoreFromArchive(ctx, *restoreID, *restoreAgent, *archiveID, archives, paused)
 		if err != nil {
 			// Once the restore is recorded, the agent stays out of service
 			// until the same command succeeds (see docs/recovery.md).
 			return fail("restore_failed_" + worker.RestoreFailure(err))
 		}
-		unmatched, queued, skipped := 0, 0, 0
-		for _, l := range result.Losses {
-			if l.MailboxID == "" {
-				unmatched++
-			}
-			switch l.Rerun {
-			case controlplane.RerunQueued:
-				queued++
-			case controlplane.RerunSkipped:
-				skipped++
-			}
-		}
+		unmatched, queued, skipped := worker.RestoreCounts(result.Losses)
 		if err = json.NewEncoder(os.Stdout).Encode(struct {
-			RestoreID   string `json:"restore_id"`
-			AgentID     string `json:"agent_id"`
-			ArchiveID   string `json:"archive_id"`
-			Incarnation uint64 `json:"incarnation"`
-			Losses      int    `json:"losses"`
-			Unmatched   int    `json:"unmatched_losses"`
-			Queued      int    `json:"reruns_queued"`
-			Skipped     int    `json:"reruns_skipped"`
-		}{result.RestoreID, result.AgentID, result.ArchiveID, result.Incarnation, len(result.Losses), unmatched, queued, skipped}); err != nil {
+			RestoreID    string `json:"restore_id"`
+			AgentID      string `json:"agent_id"`
+			ArchiveID    string `json:"archive_id"`
+			ArchiveStore string `json:"archive_store"`
+			Incarnation  uint64 `json:"incarnation"`
+			Losses       int    `json:"losses"`
+			Unmatched    int    `json:"unmatched_losses"`
+			Queued       int    `json:"reruns_queued"`
+			Skipped      int    `json:"reruns_skipped"`
+		}{result.RestoreID, result.AgentID, result.ArchiveID, store, result.Incarnation, len(result.Losses), unmatched, queued, skipped}); err != nil {
 			return fail("restore_receipt_write_failed_retry_same_id")
 		}
 		return 0
