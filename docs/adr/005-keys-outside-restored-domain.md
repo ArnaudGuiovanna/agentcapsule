@@ -598,11 +598,40 @@ again. The installation's receipt key stays: it reads the receipts written
 before, and still derives the LLM credential key, which does not rotate
 (§5 item 10, later).
 
-Later waves: the announcement and token revocation after a degraded period
-(item 14), reconciliation with PostgreSQL (item 15, §5.5), which replays the
-access records.
+ADR 006 wave 7 builds items 14 and 15 (§5.5): the announcement after a
+degraded period and the reconciliation with PostgreSQL.
+- **The last contact.** The replica writes the arrival of each request it
+  answers before answering, at most once a second; the primary reaches it
+  every sixth of the degraded delay while nothing is written. No degraded
+  period begins less than the delay after that contact.
+- **The announcement** (item 14). `agentcapsule-authority promote` compares
+  the replica's last contact with its own time, the failover's, against
+  `-degraded-after` (the old primary's delay, 30 seconds by default).
+  Beyond it, the promoted catalogue gets one access revocation record of a
+  new kind, `blanket`, with the failover's time and the window from the last
+  contact: every bearer token issued before the failover is revoked, and
+  every delegation trust's `minimum_iat` moves past it. The decision is
+  written with the replica's promotion mark: a repeated promotion keeps it.
+  A replica its primary never reached announces nothing: that primary never
+  entered degraded mode. Within the delay nothing is announced either, as
+  the item says; a promotion after a real disaster runs minutes after the
+  last contact, so it assumes a degraded period almost always.
+- **The reconciliation** (item 15). `agentcapsule-admin reconcile`, as the
+  API's account on the API socket, keeps PostgreSQL's own access revocation
+  records and revocation subjects in the authority, replays every record
+  PostgreSQL lacks with its effect (a record PostgreSQL holds committed with
+  its effect, so a later grant is never undone), copies the subjects into
+  `revocation_catalogue`, resumes the deletion of every agent the authority
+  sealed or holds an `agent/` subject of, reports the stores whose
+  registration or incarnation differs, and records the epoch in
+  `authority_reconciliations` (migration 0042; epoch 1 counts as reconciled
+  from the start). The API refuses to start, and its readiness answers 503
+  `authority_not_reconciled`, until the service's epoch is there
+  (`REPLAY_FIRST`).
+See [ADR 006](006-authority-service.md#implementation-status).
 [recovery.md](../recovery.md#the-authorities-replica-d-05) installs the
-service and the replica.
+service and the replica, and
+[reconciles the database](../recovery.md#reconcile-the-database).
 
 ## Model revision (D-05, option (a))
 
@@ -829,11 +858,21 @@ that code was built (November 15, 2026):
 | `restoreWitnessDegradedDestructionGuard` | `TestDegradedModeHoldsKeyDestruction` (same file) | Full. |
 | `subjectRevocationCompletesAfterResyncTest` | `TestSubjectRevocationCompletesAfterResync` (same file) | Full for the restore authority's subjects; access revocations wait for their records. |
 | `resyncEndsDegradedModeTest` | `TestResyncEndsDegradedMode` (same file) | Full. |
-| `degradedOutcomeIsAnnouncedAsWindowTest` | `TestDegradedOutcomeIsLostWithThePrimary` (same file) | In part: the loss is shown; its announcement is the promotion's (item 14), not built. |
+| `degradedOutcomeIsAnnouncedAsWindowTest` | `TestDegradedOutcomeIsAnnouncedAsWindow` (same file) | Full since ADR 006 wave 7: the lost outcome falls in the window the promotion announces. |
 | `grantRevocationWaitsForReplicaTest` | `TestGrantRevocationWaitsForReplica` (`internal/api/revocation_runs_test.go`, ADR 006 wave 5) | Full: a member's revocation in degraded mode takes effect at once and stays pending; the replica lacks its record. |
 | `grantRevocationResumesAfterResyncTest` | `TestGrantRevocationResumesAfterResync` (same file) | Full: after the resync the replica holds the record and the API confirms the revocation. |
 
-The reconciliation runs (`REPLAY_FIRST`) have none yet: item 15 is not built.
+The reconciliation runs (`REPLAY_FIRST`) and the blanket revocation, projected
+once ADR 006 wave 7 built items 14 and 15 (November 16, 2026), on PostgreSQL,
+the authority service, its replica and the promotion:
+
+| Quint run | Go test | Coverage |
+| --- | --- | --- |
+| `reconciliationReplaysRootTest` | `TestReconciliationReplaysRoot`, `TestReconciliationReplaysEveryRevokingRoute` (`internal/api/reconciliation_runs_test.go`, `reconciliation_kinds_test.go`) | Full. The writes the WAL did not ship are taken back from the database by hand. |
+| `shippedDatabaseNeedsNoReportTest` | `TestShippedDatabaseNeedsNoReport` (same file) | Full. |
+| `shippedGrantRevocationSurvivesTest` | `TestShippedGrantRevocationSurvives` (same file) | Full: PostgreSQL's own record reaches the promoted authority. |
+| `tokenRevocationCoveredByBlanketTest` | `TestTokenRevocationCoveredByBlanket` (same file), `TestPromotionAnnouncesADegradedPeriodBeyondTheDelay` (`internal/restoreauthority/announcement_test.go`) | Full. |
+| `restoreWitnessEarlyOpenGuard` | `TestEarlyOpenGuard` (same file), `TestAPIRefusesToOpenBeforeTheReconciliation` (`cmd/agentcapsule-api`) | Full: readiness and start refuse until the epoch is reconciled. |
 
 ### Findings for the product owner
 
@@ -954,7 +993,8 @@ For promotion and reconciliation:
     announces the window from that contact to the failover, revokes every
     bearer token issued before the failover, and moves every delegation
     trust's `minimum_iat` to the failover time. The token revocation is an
-    authority record, so the reconciliation replays it.
+    authority record, so the reconciliation replays it. Built in ADR 006
+    wave 7.
 15. `agentcapsule-admin` reconciles before the API opens, and the API refuses
     to start until it has, for the current epoch (`REPLAY_FIRST`,
     `restoreWitnessEarlyOpenBroken`):
@@ -966,6 +1006,8 @@ For promotion and reconciliation:
     - resume the deletion of every store the authority has sealed;
     - report every store whose registration or incarnation in
       `store_enrollments` differs from the authority's.
+
+    Built in ADR 006 wave 7.
 
 For degraded mode:
 

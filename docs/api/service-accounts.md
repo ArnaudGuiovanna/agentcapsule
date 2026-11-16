@@ -52,9 +52,12 @@ means that nothing changed: try again ([README](README.md#revocations-pending-an
   revoke its service tokens (a separate choice, not decided).
 - Restoring an old SQL backup can lose revocations made since. Each one is
   recorded with the authority service and kept on the standby (ADR 006 wave
-  5); the reconciliation that writes them back into PostgreSQL after a
-  failover is not built yet (wave 7): until then, invalidate or rotate the
-  tokens before reopening (D-03/D-05).
+  5); after a failover, `agentcapsule-admin reconcile` writes them back into
+  PostgreSQL before the API opens (wave 7). When the failover may have ended
+  a degraded period, every token issued before it is revoked too: issue new
+  ones ([recovery.md](../recovery.md#reconcile-the-database)). A database
+  restored in place from a backup needs the same command before the API
+  starts again.
 - The encrypted issuance receipt contains a temporary copy of the secret, kept
   24 hours and protected by the daily receipt key of its day, which the
   authority service destroys once the receipt has expired

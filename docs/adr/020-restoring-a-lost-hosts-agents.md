@@ -1,7 +1,10 @@
 # REC-02, REC-03 — Restoring a lost host's agents on the standby
 
 Date: November 16, 2026. **Proposed.** Two defaults wait for the product
-owner ([below](#questions-for-the-product-owner)). References: the MVP outcome
+owner ([below](#questions-for-the-product-owner)). The reconciliation of
+PostgreSQL and the announcement after a degraded period, which this record
+left to ADR 006 wave 7, are built
+([What stays undone](#what-stays-undone)). References: the MVP outcome
 and §3 of [product.md](../product.md); [ADR 003](003-restore-rpo.md) (declared
 losses), [ADR 004](004-recovery-objectives.md) (RPO, RTO),
 [ADR 005](005-keys-outside-restored-domain.md) and
@@ -178,6 +181,7 @@ standby; the agents come back after it, one by one.
 | Fence the old primary at the provider; remove its SSH keys and S3 credentials | 2 to 5 min | Estimate: provider API; 0.23 s measured for the credentials on one machine |
 | Promote the authorities | under 1 min | The command; tested in Go, not between two hosts |
 | Promote PostgreSQL, its own repository | 1 to 2 min | 0.5 s and 0.7 s measured on one machine; network on real hosts |
+| Reconcile PostgreSQL with the authorities | about 1 min | Under a second measured on one machine (ADR 006 wave 7); typing on real hosts |
 | Install the API's keys, start it, check it | 1 to 2 min | 0.1 s measured on one machine; typing on real hosts |
 | Move the address | 5 min | Estimate: DNS TTL or a floating address |
 | **The service answers** | **about 20 to 25 min** | |
@@ -199,38 +203,38 @@ hosts (REC-03).
 
 ## What stays undone
 
-**Until ADR 006 waves 5 to 7 exist** (not built here):
-- **Access revocation records** (wave 5). A revocation committed in
-  PostgreSQL in the database's loss window (a member removed, a token or a
-  delegation revoked) is lost with the primary: after the failover, that
-  access works again. Until wave 5, the operator re-applies the revocations
-  of the window from what the organizations report, and the announcement
-  says so.
-- **The daily receipt key** (wave 6, built since). New receipts take the
+**ADR 006 waves 5 to 7**, built since this record:
+- **Access revocation records** (wave 5). Every revocation of access is
+  recorded with the authorities before PostgreSQL commits it; the
+  reconciliation (wave 7) replays those the promoted database lost.
+- **The daily receipt key** (wave 6). New receipts take the
   daily key of the authority service, which the promotion carries: a
   receipt sealed before the failover stays readable after it, unless its key
   was created on the old primary alone in degraded mode (409
   `idempotency_receipt_unreadable`). The installation's receipt key is still
   copied by hand to the safe: it reads older receipts and seals the LLM
   credentials.
-- **The reconciliation of PostgreSQL with the authorities** (wave 7). The
-  restored database may be behind the authorities by its loss window:
-  - an agent deleted in the window: the authority sealed its store, so its
-    archive is refused (`failed`, `authority`). It stays out of service; its
-    deletion is not resumed;
-  - an agent restored in the window: the authority's incarnation is ahead, and
-    the reservation is refused (`authority`);
-  - an agent created in the window: PostgreSQL does not know it; nothing
-    restores it;
+- **The reconciliation of PostgreSQL with the authorities** (wave 7,
+  `agentcapsule-admin reconcile`, before the API starts). The restored
+  database may be behind the authorities by its loss window:
+  - an agent deleted in the window: the authority sealed its store, so the
+    reconciliation requests its deletion again. Its archive is refused
+    (`failed`, `authority`), and it stays out of service. Its deletion ends
+    as any other agent's on the lost host: not yet (below);
+  - an agent restored in the window: the authority's incarnation is ahead,
+    and the reservation is refused (`authority`). The reconciliation reports
+    it (`incarnation`): restoring it again from the authority's state is
+    left undone;
+  - an agent created in the window: PostgreSQL does not know it; the
+    reconciliation reports its store (`not_enrolled`); nothing restores it;
   - a revocation subject the authority holds and `revocation_catalogue`
-    lacks: the restored agent is fenced against it (the restricted boot
-    fences with the authority's subjects), but PostgreSQL's own checks do not
-    know it until the reconciliation copies it.
-- **The announcement after a degraded period** (wave 7). When the standby was
-  out of reach before the disaster, the outcomes of that period existed on
-  the primary only, and are lost. The operator announces the window from the
-  standby's last contact to the failover by hand; bearer tokens issued before
-  the failover are not revoked.
+    lacks: the reconciliation copies it.
+- **The announcement after a degraded period** (wave 7). When the standby's
+  last contact with the primary is older than the degraded delay at the
+  promotion, a degraded period may have run: the promotion announces the
+  window from that contact to the failover, and revokes every bearer token
+  issued before the failover; the reconciliation writes that revocation into
+  PostgreSQL.
 
 **Not done here either:**
 - **Imported harness packages on the standby.** The standby's worker boots an

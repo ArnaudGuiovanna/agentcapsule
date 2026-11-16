@@ -1,7 +1,7 @@
 # D-05 — The authority service
 
 Date: November 16, 2026. **Status: accepted by the product owner on November
-16, 2026** (see [Questions](#questions-for-the-product-owner)); waves 1 to 6
+16, 2026** (see [Questions](#questions-for-the-product-owner)); waves 1 to 7
 are built ([Implementation status](#implementation-status)). This record designs
 item 3 of [ADR 005 §5](005-keys-outside-restored-domain.md#5-what-changes-in-code-and-docs)
 and item 5 of its [What the code must do](005-keys-outside-restored-domain.md#what-the-code-must-do).
@@ -133,7 +133,7 @@ and the API reaches the authorities only through its socket's operations.
 | Activation: `recorded_outcomes`, `declare_losses`, `hold_activation` | yes | no | 1 |
 | Access revocation records: `append_access`, `on_replica` | yes | yes | 5 |
 | Daily receipt key: `receipt_key` | no | yes | 6 |
-| Reconciliation and announcement: export of access records, subjects, seals and stores; import of PostgreSQL's own revocations; `announcement` | no | yes | 7 |
+| Reconciliation and announcement: export of access records, subjects, seals and stores; import of PostgreSQL's own revocations; `announcement` | yes | yes | 7 |
 
 The worker socket admits UID 0 only. The API socket admits the configured
 `api_uid` and UID 0. `agentcapsule-admin` uses the API socket when it runs as
@@ -573,7 +573,11 @@ reads them and the access records, subjects, seals and stores through the API
 socket. It writes PostgreSQL's own revocations into the authority, then
 records in PostgreSQL that it reconciled the current epoch. The API compares
 that epoch with `status` before it listens, and in its readiness probe
-(`REPLAY_FIRST`).
+(`REPLAY_FIRST`). As built (wave 7): the window and the blanket revocation
+are one access revocation record of kind `blanket`; the reads are
+`export_access`, `export_subjects` and `export_stores`, page by page; the
+import is `import_subjects` and `append_access`; all are on both sockets,
+since root may run the command too (§2).
 
 None of these needs a hold. They need the API socket, `status`, and writes
 that report whether the replica holds them.
@@ -707,7 +711,8 @@ The next waves of D-05 build on these:
   decrypts; the key's destruction reaches the replica. Built: see the
   [Implementation status](#implementation-status).
 - **Wave 7 — the announcement and the reconciliation** (items 14 and 15),
-  with the runs of [§8](#8-the-model).
+  with the runs of [§8](#8-the-model). Built: see the
+  [Implementation status](#implementation-status).
 
 **Later, optional: holds per store.** In wave 1 a hold keeps the catalogue's
 single write transaction, as today, so one agent's boot or platform call waits
@@ -1149,6 +1154,125 @@ Not done in wave 6:
 - The key authority keeps, per day, an empty lock file, an allocation
   marker and a tombstone, and the replica one row: about 1,100 small files a
   year, as for volume keys.
+
+November 16, 2026. **Wave 7 is built**: the announcement after a degraded
+period and the reconciliation with PostgreSQL (§7; ADR 005, "What the code
+must do", items 14 and 15).
+
+- **The last contact.** The replica writes the arrival of each request it
+  answers, before it answers, as its last contact (`replica_contact`, a
+  table of the replica's own, outside the snapshot's schema), at most once
+  a second; it takes the time before it waits for the replica's lock. Every
+  success the primary sees thus follows a contact on disk, and no degraded
+  period begins less than `degraded_after` after it. A replica its primary
+  never reached holds none. The primary's link (`Link`, the production
+  path) reaches the replica every sixth of `degraded_after` (5 seconds by
+  default) with an exchange that only asks its position, when nothing else
+  runs (`Catalog.KeepContact`): the contact stays recent on an idle primary,
+  which also learns at once that its standby went away, and enters degraded
+  mode after the delay without an operation.
+- **The announcement** (item 14). `promote` takes `-degraded-after`, the old
+  primary's delay (30 seconds by default), and compares the last contact
+  with its own time, the failover's. Beyond the delay, or when the
+  failover precedes the contact (a clock gone back), it assumes a degraded
+  period ran, and writes into the promoted catalogue, with its tables, one
+  access revocation record of kind `blanket`: its objects name the failover
+  (`issued_before`) and the window from the last contact
+  (`authoritylog.Blanket`), its ID is derived from the restore authority and
+  the epoch. The decision is written in the replica in the transaction that
+  marks it promoted (`replica_promotion`), so a repeated promotion
+  announces the same, and checks the promoted catalogue against it. Within
+  the delay, or without a contact, nothing is written: ADR 005 conditions
+  both the window and the blanket on the degraded period. `promote` prints
+  the announcement; the service's `announcement` gives it.
+- **The reconciliation** (item 15), `agentcapsule-admin reconcile`, as the
+  API's account on the API socket, with the API's three flags
+  (`controlplane.Store.Reconcile`, `authorityclient.API` as its
+  authority): it appends to the authority each record PostgreSQL holds and
+  the authority lacks, and begins each revocation subject of
+  `revocation_catalogue` it lacks (`import_subjects`, with the quiet
+  period of `begin_revocation`); it replays every record PostgreSQL lacks,
+  in order, each with its effect and its row in one transaction; it copies
+  the subjects into `revocation_catalogue`; it resumes the deletion
+  (`requestDeletion`, requested by `authority-reconciliation`) of every
+  agent whose store the authority sealed or whose `agent/` subject it
+  holds; it reports the stores whose registration, volume or incarnation
+  differs; and it records the epoch, the window and its report in
+  `authority_reconciliations` (migration 0042). A record PostgreSQL holds
+  is not replayed: its row committed with its effect, and a later grant
+  (a team membership added again, a trust rotated again) must not be
+  undone; a record it lacks was lost with every later commit. Each step can
+  be repeated.
+- **The replay of each kind** follows its route: a member's memberships and
+  team memberships, a technical account and its memberships, service
+  tokens (`revoked_by` names the token's issuer), teams, team memberships,
+  assignments, organizations, API tokens, platform credentials, mandates,
+  delegated token IDs, delegation trusts (revoked; retired keys end), LLM
+  providers. A rotation whose new credential or keys the database lost
+  revokes what the database holds: the provider is disabled, the trust
+  revoked, until its administrator acts again. The blanket revokes every
+  API token, service token and platform credential created before the
+  failover, and moves every trust's `minimum_iat` to the second after it.
+- **The API** refuses to start (`authority_not_reconciled`) until
+  `authority_reconciliations` holds the service's epoch, and its readiness
+  probe answers 503 `authority_not_reconciled` (`api.ReconciledAuthority`).
+  Epoch 1 counts as reconciled from the start: the migration records it,
+  so a new installation and an upgraded one need no step. An installation
+  promoted before this release is at epoch 2 or more: its API refuses until
+  `reconcile` has run once.
+- **`durableTables`**, the list each transaction checks for an UNLOGGED
+  table, lacked eleven tables of later migrations (`peer_redeliveries`,
+  `host_takeovers`, `volume_relocations` and others): now complete, and
+  `TestEveryTableIsDurable` keeps it so.
+- Tests: the projections of §8 (`TestReconciliationReplaysRoot`,
+  `TestShippedDatabaseNeedsNoReport`, `TestShippedGrantRevocationSurvives`,
+  `TestTokenRevocationCoveredByBlanket`, `TestEarlyOpenGuard` in
+  `internal/api`, PostgreSQL with a real service, its replica and the
+  promotion; `TestDegradedOutcomeIsAnnouncedAsWindow` in
+  `internal/restoreauthority`); `TestReconciliationReplaysEveryRevokingRoute`
+  (every kind the routes and the operator's commands record, replayed on a
+  database set back before them); `TestReplicaRecordsItsLastContact`,
+  `TestKeepContactReachesAnIdleReplica`,
+  `TestPromotionAnnouncesADegradedPeriodBeyondTheDelay`,
+  `TestPromotionWithinTheDelayAnnouncesNoWindow`,
+  `TestPromotionWithoutAComparableContact`, `TestReconciliationReadsPageByPage`
+  (`internal/restoreauthority`); `TestReconciliationThroughTheAPISocket`
+  (`internal/authorityclient`); `TestAPIRefusesToOpenBeforeTheReconciliation`
+  (`cmd/agentcapsule-api`); `TestReconcileCommand` (`cmd/agentcapsule-admin`);
+  `TestBlanketRecordReadsBack` (`internal/authoritylog`).
+  `scripts/verify-failover.py` removes a member three seconds before the
+  disaster, in the WAL segment that never ships, shows that the API refuses
+  to start and that the promoted database still holds the membership, then
+  reconciles: the member is revoked, and reads nothing. Each mechanism was
+  disabled in turn, and its test failed.
+
+The model needs no change (§8). The code's degraded period is wider than
+the model's: the promotion assumes one whenever the last contact is older
+than the delay, a superset of the model's `s.degraded`, and the blanket
+then revokes more tokens than the model's `TOKENS`, which keeps every
+invariant. The model's `window` is a set of events; the code's is a time
+window that contains them.
+
+Not done in wave 7:
+- **The window starts at the last contact the replica wrote**, to within a
+  second, and from when the request arrived on the replica. A request
+  delivered to the replica more than the degraded delay after the primary
+  sent it (the replica's whole process stalled with the request in its
+  socket) would record a contact later than the start of degraded mode.
+- **The reconciliation reads PostgreSQL's own revocations from
+  `access_revocations` only.** A revocation of an older release (before
+  wave 5) or of the development mode without the service has no record:
+  the authority does not learn it, and a later failover to an older copy
+  can revive it.
+- **The resumed deletions of a lost host's agents** do not end: the
+  deletion of an agent on the lost host needs the worker there (ADR 020,
+  What stays undone).
+- **A divergent store** is reported, not repaired: an agent restored in
+  the window is refused by the restore of the lost host (`authority`).
+- **A database restored in place**, at the same epoch, is not detected: the
+  operator runs `reconcile` before starting the API (recovery.md).
+- **The API's preflight** does not check the reconciliation.
+- **The KVM product tests** have not run with the heartbeat.
 
 ## 11. Options considered
 
