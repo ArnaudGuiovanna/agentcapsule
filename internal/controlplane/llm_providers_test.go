@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -62,6 +63,30 @@ func TestLLMProviderSecretsStayWriteOnlyAndEncrypted(t *testing.T) {
 	}
 	if _, err = l.a.CreateLLMProvider(t.Context(), owner, "local", CreateLLMProviderInput{Name: "ollama", Kind: "openai_compatible", BaseURL: "http://127.0.0.1:11434/v1", Secret: providerSecret}); err != nil {
 		t.Fatal("loopback http refused", err)
+	}
+}
+
+// An https URL that names an internal address directly is refused at
+// registration with its own error: the worker would refuse to call it. A
+// model server on the operator's network is registered by its name.
+func TestLLMProviderURLNamingAnInternalAddressIsRefused(t *testing.T) {
+	l, _, owner := agentLab(t)
+	for _, base := range []string{"https://127.0.0.1:11434/v1", "https://[::1]/v1", "https://10.0.0.7/v1", "https://172.16.4.4", "https://192.168.1.20:8443",
+		"https://[fd12::7]/v1", "https://100.64.0.9", "https://169.254.169.254/latest", "https://[fd00:ec2::254]", "https://168.63.129.16",
+		"https://0.0.0.0", "https://[::ffff:10.0.0.7]", "https://localhost:11434/v1", "https://models.localhost", "https://127.1", "https://2130706433"} {
+		_, err := l.a.CreateLLMProvider(t.Context(), owner, newID("k"), CreateLLMProviderInput{Name: newID("internal"), Kind: "openai_compatible", BaseURL: base, Secret: providerSecret})
+		if !errors.Is(err, ErrProviderAddress) || !errors.Is(err, ErrInput) {
+			t.Error(base, "accepted or mistyped:", err)
+		}
+	}
+	for i, base := range []string{"https://models.corp.example:11434/v1", "https://1.1.1.1/v1", "https://api.anthropic.com"} {
+		if _, err := l.a.CreateLLMProvider(t.Context(), owner, newID("k"), CreateLLMProviderInput{Name: "public-" + strconv.Itoa(i), Kind: "anthropic", BaseURL: base, Secret: providerSecret}); err != nil {
+			t.Error(base, "refused:", err)
+		}
+	}
+	items, err := l.a.ListLLMProviders(t.Context(), owner, "", 50)
+	if err != nil || len(items) != 3 {
+		t.Fatal("a refused provider was stored", err, len(items))
 	}
 }
 

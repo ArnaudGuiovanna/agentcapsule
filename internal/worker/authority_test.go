@@ -3,31 +3,33 @@
 package worker
 
 import (
+	"context"
 	"errors"
-	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/keyauthority"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/restoreauthority"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/runtime"
 )
 
-func (b *bootLab) withAuthority(t *testing.T, register bool) *restoreauthority.Catalog {
+// withAuthority gives the boot lab's worker both authorities, through
+// implementation; register enrolls the lab's store. The keys it holds are
+// counted in b.keys.
+func (b *bootLab) withAuthority(t *testing.T, implementation string, register bool) *testAuthority {
 	t.Helper()
 	keys := b.keys.Provider.(*keyauthority.Files)
-	a, err := restoreauthority.Initialize(t.Context(), filepath.Join(t.TempDir(), "authority"), keys.Identity())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { a.Close() })
+	a := openAuthority(t, implementation, keys, filepath.Join(t.TempDir(), "authority"))
+	a.observed = b.keys
 	if register {
-		if _, err = a.Register(t.Context(), b.e.AgentID, b.e.VolumeID); err != nil {
+		if _, err := a.Register(t.Context(), b.e.AgentID, b.e.VolumeID); err != nil {
 			t.Fatal(err)
 		}
 	}
 	b.w.authority = a
+	var err error
 	b.opts, err = b.w.runtimeOptions(runtime.FirecrackerOptions{AuthenticatedControl: true}, b.keys)
 	if err != nil {
 		t.Fatal(err)
@@ -36,10 +38,14 @@ func (b *bootLab) withAuthority(t *testing.T, register bool) *restoreauthority.C
 }
 
 func TestBootAuthorityRefusesBeforeKeyDelivery(t *testing.T) {
+	forEachAuthority(t, testBootAuthorityRefusesBeforeKeyDelivery)
+}
+
+func testBootAuthorityRefusesBeforeKeyDelivery(t *testing.T, implementation string) {
 	for _, failure := range []string{"missing", "reserved", "sealed", "unavailable", "wrong-boot"} {
 		t.Run(failure, func(t *testing.T) {
 			b := newBootLab(t)
-			a := b.withAuthority(t, failure != "missing")
+			a := b.withAuthority(t, implementation, failure != "missing")
 			run := b.claim(t)
 			client := bootClient(t, b.e.AgentID, run, func(capsuleprotocol.VolumeBoot, []byte) error {
 				t.Error("obsolete boot received the volume key")
@@ -82,8 +88,12 @@ func TestBootAuthorityRefusesBeforeKeyDelivery(t *testing.T) {
 }
 
 func TestBootAuthorityRechecksAfterAuthenticatedACK(t *testing.T) {
+	forEachAuthority(t, testBootAuthorityRechecksAfterAuthenticatedACK)
+}
+
+func testBootAuthorityRechecksAfterAuthenticatedACK(t *testing.T, implementation string) {
 	b := newBootLab(t)
-	a := b.withAuthority(t, true)
+	a := b.withAuthority(t, implementation, true)
 	run := b.claim(t)
 	client := bootClient(t, b.e.AgentID, run, func(v capsuleprotocol.VolumeBoot, _ []byte) error {
 		if v.Incarnation != run.Incarnation {
@@ -110,10 +120,14 @@ func TestBootAuthorityRechecksAfterAuthenticatedACK(t *testing.T) {
 }
 
 func TestBootAuthorityAdoptionDistinguishesStaleFromOutage(t *testing.T) {
+	forEachAuthority(t, testBootAuthorityAdoptionDistinguishesStaleFromOutage)
+}
+
+func testBootAuthorityAdoptionDistinguishesStaleFromOutage(t *testing.T, implementation string) {
 	for _, failure := range []string{"reserved", "unavailable"} {
 		t.Run(failure, func(t *testing.T) {
 			b := newBootLab(t)
-			a := b.withAuthority(t, true)
+			a := b.withAuthority(t, implementation, true)
 			run := b.claim(t)
 			client := bootClient(t, b.e.AgentID, run, func(capsuleprotocol.VolumeBoot, []byte) error { return nil }, false)
 			if err := b.opts.PrepareGuest(t.Context(), b.e.AgentID, run, client); err != nil {
@@ -140,57 +154,43 @@ func TestBootAuthorityAdoptionDistinguishesStaleFromOutage(t *testing.T) {
 	}
 }
 
-func TestRestoreAuthorityConfigurationRequiresExistingPinnedCatalogue(t *testing.T) {
-	root := t.TempDir()
-	keys, err := keyauthority.Initialize(t.Context(), filepath.Join(root, "keys"))
-	if err != nil {
+// While the authority service is down, the worker keeps its VMs: adoption
+// treats the outage as an outage, never as a stale binding, and a platform
+// call fails with an error the guest can retry. Once the service is back,
+// the same VM is adopted again (ADR 006 §4).
+func TestWorkerKeepsItsVMsWhileTheServiceIsDown(t *testing.T) {
+	b := newBootLab(t)
+	a := b.withAuthority(t, throughService, true)
+	run := b.claim(t)
+	client := bootClient(t, b.e.AgentID, run, func(capsuleprotocol.VolumeBoot, []byte) error { return nil }, false)
+	if err := b.opts.PrepareGuest(t.Context(), b.e.AgentID, run, client); err != nil {
 		t.Fatal(err)
 	}
-	a, err := restoreauthority.Initialize(t.Context(), filepath.Join(root, "authority"), keys.Identity())
-	if err != nil {
+	if err := b.opts.Confirm(t.Context(), b.e.AgentID, run); err != nil {
 		t.Fatal(err)
 	}
-	defer a.Close()
-	c := ServiceConfig{Root: filepath.Join(root, "runtime"), RestoreAuthority: &ServiceKeyAuthority{Root: filepath.Join(root, "authority"), Identity: a.Identity()}}
-	opened, err := c.OpenRestoreAuthority(t.Context(), keys)
-	if err != nil {
-		t.Fatal(err)
+	if err := b.opts.Adopt(t.Context(), b.e.AgentID, run); err != nil {
+		t.Fatal("current boot not adoptable", err)
 	}
-	opened.Close()
-	c.Root = root
-	if _, err = c.OpenRestoreAuthority(t.Context(), keys); err == nil {
-		t.Fatal("authority inside restored root")
+	api := platformAPI{store: b.w.store, caller: controlplane.VMCaller{AgentID: b.e.AgentID, HostID: b.e.HostID}, authority: b.w.authority, incarnation: 1}
+	a.service.stop(t)
+	err := b.opts.Adopt(t.Context(), b.e.AgentID, run)
+	if err == nil || errors.Is(err, runtime.ErrGeneration) || !errors.Is(err, restoreauthority.ErrUnavailable) {
+		t.Fatal("an outage of the service retired the VM", err)
 	}
-	c.Root = filepath.Join(root, "runtime")
-	c.RestoreAuthority.Identity = "restoreauth_ffffffffffffffffffffffffffffffff"
-	if _, err = c.OpenRestoreAuthority(t.Context(), keys); err == nil {
-		t.Fatal("foreign identity accepted")
+	if _, err = b.opts.ResolveIncarnation(t.Context(), b.e.AgentID); !errors.Is(err, restoreauthority.ErrUnavailable) {
+		t.Fatal("an incarnation resolved without the service", err)
 	}
-	c.RestoreAuthority.Identity = a.Identity()
-	c.RestoreAuthority.Root = filepath.Join(root, "missing")
-	if _, err = c.OpenRestoreAuthority(t.Context(), keys); err == nil {
-		t.Fatal("missing authority initialized")
+	err = api.withIdentity(t.Context(), func(context.Context) error { t.Error("a platform call without the service"); return nil })
+	if !errors.Is(err, restoreauthority.ErrUnavailable) || platformError(err) == nil {
+		t.Fatal("a platform call ran without the service", err)
 	}
-	if _, err = os.Stat(c.RestoreAuthority.Root); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("startup created missing authority", err)
+	var e *capsuleprotocol.PlatformError
+	if !errors.As(platformError(err), &e) || e.Code != "unavailable" {
+		t.Fatal("a platform call failed without a retryable error", platformError(err))
 	}
-}
-
-func TestProductConfigurationRequiresBothAuthorities(t *testing.T) {
-	c := ServiceConfig{Version: 1, HostID: "host", BootTimeout: "30s", BootLease: "2m", PollInterval: "1s", AttemptTimeout: "45s"}
-	if _, _, _, err := c.Settings(); err != nil {
-		t.Fatal("explicit legacy probe configuration", err)
-	}
-	c.KeyAuthority = &ServiceKeyAuthority{}
-	if _, _, _, err := c.Settings(); err == nil {
-		t.Fatal("encrypted service without independent authority")
-	}
-	c.RestoreAuthority = &ServiceKeyAuthority{}
-	if _, _, _, err := c.Settings(); err != nil {
-		t.Fatal("paired configuration", err)
-	}
-	c.KeyAuthority = nil
-	if _, _, _, err := c.Settings(); err == nil {
-		t.Fatal("independent catalogue without key authority")
+	a.service.restart(t)
+	if err = b.opts.Adopt(t.Context(), b.e.AgentID, run); err != nil {
+		t.Fatal("the VM was not adopted once the service was back", err)
 	}
 }

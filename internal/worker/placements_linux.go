@@ -21,7 +21,10 @@ import (
 )
 
 type Placements struct {
-	authority        *restoreauthority.Catalog
+	// authority is both authorities: in production the authority service's
+	// client, in tests restoreauthority.Local too. nil on a laboratory host
+	// without authorities.
+	authority        restoreauthority.Authority
 	store            *controlplane.Store
 	host             *runtime.FirecrackerHost
 	hostID, workerID string
@@ -85,7 +88,7 @@ func NewPlacementsWithVolumeKeys(store *controlplane.Store, hostID, workerID str
 	return newPlacements(store, hostID, workerID, lease, opts, keys, nil)
 }
 
-func newPlacements(store *controlplane.Store, hostID, workerID string, lease time.Duration, opts runtime.FirecrackerOptions, keys keyauthority.Provider, authority *restoreauthority.Catalog) (*Placements, error) {
+func newPlacements(store *controlplane.Store, hostID, workerID string, lease time.Duration, opts runtime.FirecrackerOptions, keys keyauthority.Provider, authority restoreauthority.Authority) (*Placements, error) {
 	if store == nil || hostID == "" || workerID == "" || lease < time.Microsecond || lease > 24*time.Hour {
 		return nil, controlplane.ErrPlacement
 	}
@@ -138,7 +141,7 @@ func (w *Placements) runtimeOptions(opts runtime.FirecrackerOptions, keys keyaut
 			if err != nil {
 				return 0, err
 			}
-			err = w.authority.WithBinding(ctx, enrollmentBinding(e), func() error { return nil })
+			err = w.authority.CheckBinding(ctx, enrollmentBinding(e))
 			return e.Incarnation, err
 		}
 		adopt := opts.Adopt
@@ -148,7 +151,7 @@ func (w *Placements) runtimeOptions(opts runtime.FirecrackerOptions, keys keyaut
 				err = restoreauthority.ErrStale
 			}
 			if err == nil {
-				err = w.authority.WithBinding(ctx, enrollmentBinding(e), func() error { return adopt(ctx, id, run) })
+				err = w.authority.HoldBinding(ctx, enrollmentBinding(e), func(ctx context.Context) error { return adopt(ctx, id, run) })
 			}
 			if errors.Is(err, restoreauthority.ErrStale) || errors.Is(err, restoreauthority.ErrSealed) || errors.Is(err, controlplane.ErrStoreEnrollment) {
 				return errors.Join(runtime.ErrGeneration, err)

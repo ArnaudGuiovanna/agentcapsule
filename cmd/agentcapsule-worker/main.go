@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -75,6 +76,9 @@ func run() int {
 		return fail("configuration_invalid")
 	}
 	opts, lease, maintenance, err := c.Settings()
+	if errors.Is(err, worker.ErrAuthorityServiceRequired) {
+		return fail(worker.AuthorityFailure(err))
+	}
 	if err != nil {
 		return fail("configuration_invalid")
 	}
@@ -94,13 +98,11 @@ func run() int {
 		return 1
 	}
 	if archiveRequested {
-		if c.Provisioning == nil || c.KeyAuthority == nil || c.RestoreAuthority == nil {
+		if c.Provisioning == nil || c.Authority == nil {
 			return fail("archive_requires_product_authorities")
 		}
-		for _, root := range []string{opts.Root, c.KeyAuthority.Root, c.RestoreAuthority.Root} {
-			if err = restoreauthority.CheckSeparation(root, *archiveRoot); err != nil {
-				return fail("archive_domain_overlap")
-			}
+		if err = restoreauthority.CheckSeparation(opts.Root, *archiveRoot); err != nil {
+			return fail("archive_domain_overlap")
 		}
 	}
 	dsn, code := operatorconfig.DatabaseURL(mode)
@@ -109,6 +111,27 @@ func run() int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	// The authorities belong to the authority service (ADR 006): the worker
+	// reaches them through its socket and never opens their directories. A
+	// service that does not answer yet is waited for; one that holds other
+	// authorities is refused.
+	authority, err := c.OpenAuthority()
+	if err != nil {
+		return fail("configuration_invalid")
+	}
+	if authority != nil {
+		defer authority.Close()
+		waiting := telemetry.NewLogger(os.Stderr, map[string][]string{"event": {"authority_service_waiting"}})
+		var once sync.Once
+		if err = worker.WaitForAuthority(ctx, authority, opts.Root, func(error) {
+			once.Do(func() { waiting.Event("authority_service_waiting") })
+		}); err != nil {
+			return fail(worker.AuthorityFailure(err))
+		}
+		if archiveRequested && authority.SeparateFrom(*archiveRoot) != nil {
+			return fail("archive_domain_overlap")
+		}
+	}
 	startup, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	s, err := controlplane.Open(startup, dsn)
@@ -130,20 +153,13 @@ func run() int {
 	}
 	workerID := "maintenance-" + hex.EncodeToString(nonce)
 	var w *worker.Placements
-	if c.KeyAuthority != nil {
-		keys, e := c.OpenVolumeKeys()
-		if e != nil {
-			return fail("key_authority_unavailable")
-		}
-		authority, e := c.OpenRestoreAuthority(startup, keys)
-		if e != nil {
-			return fail(worker.AuthorityFailure(e))
-		}
-		defer authority.Close()
+	if authority != nil {
+		// The client is both authorities: keys are created and destroyed
+		// through it, and a key in use is held under its binding.
 		if c.Provisioning != nil {
-			w, err = worker.NewProvisioningPlacements(s, c.HostID, workerID, lease, opts, keys, authority, *c.Provisioning)
+			w, err = worker.NewProvisioningPlacements(s, c.HostID, workerID, lease, opts, authority, authority, *c.Provisioning)
 		} else {
-			w, err = worker.NewPlacementsWithAuthority(s, c.HostID, workerID, lease, opts, keys, authority)
+			w, err = worker.NewPlacementsWithAuthority(s, c.HostID, workerID, lease, opts, authority, authority)
 		}
 	} else {
 		w, err = worker.NewPlacements(s, c.HostID, workerID, lease, opts)
@@ -313,7 +329,12 @@ func run() int {
 		if err != nil {
 			return fail("archive_storage_unavailable")
 		}
-		result, err := w.RestoreFromArchive(ctx, *restoreID, *restoreAgent, *archiveID, archives)
+		// While the authorities do not answer, the restore pauses, then
+		// resumes from its last durable step (ADR 006 §4).
+		pauses := telemetry.NewLogger(os.Stderr, map[string][]string{"event": {"restore_paused"}, "reason": worker.RestorePauses()})
+		result, err := w.RestoreFromArchive(ctx, *restoreID, *restoreAgent, *archiveID, archives, func(err error) {
+			pauses.Event("restore_paused", telemetry.Code("reason", worker.RestorePause(err)))
+		})
 		if err != nil {
 			// Once the restore is recorded, the agent stays out of service
 			// until the same command succeeds (see docs/recovery.md).

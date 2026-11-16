@@ -32,7 +32,7 @@ func (g guard) allows(target string) bool {
 }
 
 func (g guard) command() controlplane.OperatorCommand {
-	return controlplane.OperatorCommand{Actor: fmt.Sprintf("local-uid:%d", os.Geteuid()), DryRun: *g.dryRun}
+	return controlplane.OperatorCommand{Actor: operatorName(), DryRun: *g.dryRun}
 }
 
 // report prints the outcome as one JSON object on standard output.

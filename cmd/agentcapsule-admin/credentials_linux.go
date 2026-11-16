@@ -79,7 +79,7 @@ func revokeCredential(args []string) int {
 		return code
 	}
 	defer s.Close()
-	out, err := s.RevokeOperatorCredential(ctx, g.command(), *kind, *id)
+	out, err := s.RevokeOperatorCredential(operator(ctx), g.command(), *kind, *id)
 	if err != nil {
 		if reason, definite := definiteRefusal(err); definite {
 			return fail("credential_revocation_rejected_" + reason)

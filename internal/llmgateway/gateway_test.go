@@ -12,9 +12,13 @@ import (
 	"time"
 )
 
-func fast(c Config) *Gateway {
+// fast is a gateway without backoff delays that may reach the mock providers
+// tests run on loopback.
+func fast(c Config) *Gateway { return fastWith(c, TestOptions{Loopback: true}) }
+
+func fastWith(c Config, t TestOptions) *Gateway {
 	c.Sleep = func(context.Context, time.Duration) error { return nil }
-	return New(c)
+	return NewForTests(c, t)
 }
 
 var ask = Request{Messages: []Message{{Role: "system", Content: "be brief"}, {Role: "user", Content: "hi"}}, MaxTokens: 50}
@@ -179,12 +183,13 @@ func TestRequireHTTPSRefusesPlainHTTPBeforeSending(t *testing.T) {
 	}
 	secure := httptest.NewTLSServer(http.HandlerFunc(reply))
 	defer secure.Close()
-	g = fast(Config{RequireHTTPS: true, HTTP: secure.Client()})
+	g = fastWith(Config{RequireHTTPS: true}, TestOptions{Loopback: true, RootCAs: trust(secure)})
 	route.BaseURL = secure.URL
 	if out, err := g.Complete(t.Context(), route, ask); err != nil || out.Text != "hello" {
 		t.Fatal("HTTPS refused:", err)
 	}
-	// Without the rule (development, tests), plain HTTP to a local server works.
+	// Without the rule (development, tests), plain HTTP to an allowed local
+	// server works.
 	route.BaseURL = plain.URL
 	if out, err := fast(Config{}).Complete(t.Context(), route, ask); err != nil || out.Text != "hello" {
 		t.Fatal(err)

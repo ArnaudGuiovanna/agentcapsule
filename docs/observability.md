@@ -25,7 +25,7 @@ host ([deploy/prometheus/prometheus.yml](../deploy/prometheus/prometheus.yml)).
 | --- | --- | --- |
 | API | `agentcapsule-api -metrics-listen <addr>` | `127.0.0.1:9464` |
 | Worker | `"metrics_listen"` in its configuration ([worker.md](worker.md)) | `127.0.0.1:9465` |
-| Authorities' replica (standby) | `"metrics_listen"` in `agentcapsule-authority serve`'s configuration ([recovery.md](recovery.md#install-the-replica)) | `127.0.0.1:9466` |
+| Authority service: the primary's service, or the replica on the standby | `"metrics_listen"` in `agentcapsule-authority serve`'s configuration ([recovery.md](recovery.md#install-the-authority-service)), the same port on both hosts | `127.0.0.1:9466` |
 
 A non-loopback address is refused at start (`metrics_listen_must_be_loopback`).
 
@@ -67,13 +67,16 @@ volume archives and, on the standby host, its replay.
 | `agentcapsule_llm_refusals_total` | counter | `reason` (`budget_tokens`, `budget_cost`, `unpriced`, `alias_access`) | Calls refused before any reservation. Every series is served from zero |
 | `agentcapsule_llm_budget_soft_exceeded_total` | counter | `unit` (`tokens`, `cost`) | Calls that went past a soft budget; a call past two counts twice. Every series is served from zero |
 | `agentcapsule_llm_unresolved_calls` | gauge | — | Calls of unknown outcome, across the installation, that wait for their organization to settle or release them |
-| `agentcapsule_authority_replication_enabled` | gauge | — | 1 when the worker's authorities replicate to the standby; 0 standalone, without disaster protection ([worker.md](worker.md#replica-of-the-authorities)) |
-| `agentcapsule_authority_replication_committed_sequence`, `_acknowledged_sequence` | gauge | — | Last authority record committed by the worker, and last one the replica acknowledged |
+| `agentcapsule_authority_service_holds` | gauge | `kind` | Holds the authority service grants now: `binding`, `key`, `fences`, `revocation`, `activation` ([ADR 006](adr/006-authority-service.md#the-hold)) |
+| `agentcapsule_authority_service_hold_expired_total` | counter | `kind` | Holds the service ended at their cap (30 seconds for a publish, `max_key_hold` for a key), closing their connection |
+| `agentcapsule_authority_service_refused_peers_total` | counter | `socket` | Connections the service closed at accept because of their peer's account: `worker`, `api` |
+| `agentcapsule_authority_replication_enabled` | gauge | — | 1 when the authority service's authorities replicate to the standby; 0 standalone, without disaster protection ([worker.md](worker.md#the-authority-service)) |
+| `agentcapsule_authority_replication_committed_sequence`, `_acknowledged_sequence` | gauge | — | Last authority record committed by the authority service, and last one the replica acknowledged |
 | `agentcapsule_authority_replication_lag_records`, `_lag_seconds` | gauge | — | Authority records committed and not acknowledged, and the age of the oldest |
 | `agentcapsule_authority_replication_last_error` | gauge | `kind` | 1 for the kind of the last replication attempt's error; `none` after a success |
 | `agentcapsule_authority_replication_errors_total` | counter | `kind` | Failed replication attempts |
 | `agentcapsule_authority_replication_write_seconds` | histogram | — | Time from an authority record's local commit to the replica's acknowledgment |
-| `agentcapsule_authority_replication_degraded_since_timestamp_seconds` | gauge | — | When the worker's authorities entered degraded mode, without the standby, as a Unix time; 0 outside it ([worker.md](worker.md#degraded-mode)) |
+| `agentcapsule_authority_replication_degraded_since_timestamp_seconds` | gauge | — | When the authority service entered degraded mode, without the standby, as a Unix time; 0 outside it ([recovery.md](recovery.md#degraded-mode)) |
 | `agentcapsule_authority_replication_degraded_waiting` | gauge | `kind` | Authority operations waiting for the standby in degraded mode: `registration`, `reservation`, `loss`, `activation`, `seal`, `key_create`, `key_destroy`, `revocation_done`; `outcome`, `rerun`, `fence`, `revocation_start` and `read` only behind a waiting write the standby lacks |
 | `agentcapsule_authority_replication_degraded_refused_total` | counter | `kind` | Authority operations that waited for the standby in degraded mode until their deadline |
 | `agentcapsule_authority_replica_applied_sequence`, `_epoch`, `_last_apply_timestamp_seconds` | gauge | — | The replica's position, epoch and last apply (`agentcapsule-authority serve`, standby host) |
@@ -168,6 +171,10 @@ Each process writes one JSON object per line, with `time` and `event` first:
 | Worker | `volume_archive_retry` (standard error) | `vm`, `reason`: `placement`, `busy`, `disk_full`, `authority`, `timeout`, `retention`, `error` |
 | Worker | `llm_budget_soft_exceeded` (standard error) | `unit` (`tokens`, `cost`), `period` (`day`, `month`), `scope` (`organization`, `agent`, `alias`, `agent_alias`) of the soft budget a model call went past |
 | Worker | `llm_call_refused` (standard error) | `reason` (`budget_tokens`, `budget_cost`, `unpriced`, `alias_access`), and for a budget its `period` and `scope` |
+| Worker | `authority_service_waiting` (standard error, once) | — : the worker waits for the authority service at start |
+| Worker, restore command | `restore_paused` (standard error) | `reason`: `authority_unavailable`, `waits_for_replica` |
+| Authority service | `service_started` (standard output) | `epoch`, `mode` (`standalone`, `synchronous`, `degraded`, `waiting`) |
+| Authority service | `service_stopped` (standard output); `peer_refused`, `hold_expired` (standard error) | `socket` for a refused peer, `kind` for an expired hold |
 
 **Correlation.** Every API response carries `X-Request-ID`, a random 128-bit
 value. The ID says nothing about the person or the content. It follows the
@@ -229,9 +236,10 @@ Their annotations are fixed text.
 | `AgentCapsuleStandbyNotInRecovery` | The standby is not in recovery for 5 minutes: promoted, or started as a primary (critical) |
 | `AgentCapsuleStandbyDown` | The standby's PostgreSQL does not answer for 5 minutes |
 | `AgentCapsuleStandbyMetricsStale` | The standby's replay has not been collected for 10 minutes, or never was |
-| `AgentCapsuleAuthorityDegraded` | The worker's authorities have run in degraded mode, without the standby, for a minute: creating, deleting and restoring agents wait, and losing the host loses the outcomes recorded since (critical) |
+| `AgentCapsuleAuthorityServiceDown` | The authority service does not answer its scrape for 2 minutes: no agent boots, platform calls fail, deliveries wait, a restore pauses (critical) |
+| `AgentCapsuleAuthorityDegraded` | The authority service has run in degraded mode, without the standby, for a minute: creating, deleting and restoring agents wait, and losing the host loses the outcomes recorded since (critical) |
 | `AgentCapsuleAuthorityOperationsRefused` | An authority operation gave up waiting for the standby in degraded mode in the last 15 minutes |
-| `AgentCapsuleAuthorityReplicationStopped` | Outside degraded mode, attempts to reach the authorities' replica have kept failing for 5 minutes: a worker restarted without its standby, or a replica that refuses it. Every authority operation waits or fails (critical) |
+| `AgentCapsuleAuthorityReplicationStopped` | Outside degraded mode, attempts to reach the authorities' replica have kept failing for 5 minutes: an authority service restarted without its standby, or a replica that refuses it. Every authority operation waits or fails (critical) |
 
 [alerts_test.yml](../deploy/prometheus/alerts_test.yml) holds promtool unit
 tests for the disk, storage pressure, queue, invocation wait, boot, Directory,

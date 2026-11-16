@@ -1,0 +1,6 @@
+# Install as /usr/lib/tmpfiles.d/agentcapsule-authority.conf (systemd-tmpfiles).
+# The authority service's sockets, created at boot, before the service, the
+# worker or the API starts. The set-group-ID bit gives the sockets the group
+# agentcapsule-authority-clients: worker.sock is mode 0600 (root only),
+# api.sock 0660 (the API's account, a member of that group).
+d /run/agentcapsule-authority 2750 agentcapsule-authority agentcapsule-authority-clients -

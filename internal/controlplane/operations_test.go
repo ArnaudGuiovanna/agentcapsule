@@ -10,6 +10,23 @@ import (
 
 var testOperator = OperatorCommand{Actor: "local-uid:1000"}
 
+// guardedTrail is the guarded commands' part of the operator's audit, oldest
+// first.
+func guardedTrail(t *testing.T, s *Store) []OperatorAuditEvent {
+	t.Helper()
+	events, err := s.ListOperatorAudit(t.Context(), 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var trail []OperatorAuditEvent
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Outcome != "" {
+			trail = append(trail, events[i])
+		}
+	}
+	return trail
+}
+
 // A host past its storage pressure threshold (OPS-03): new agents, which need
 // a volume, are refused while its data file system is; imports, which need an
 // image, while an image file system is. Nothing is reserved, and both work
@@ -97,21 +114,19 @@ func TestOperatorCommandsAreDryRunAndAudited(t *testing.T) {
 	if _, err = s.AbandonProvisioning(t.Context(), testOperator, "agent_missing"); !errors.Is(err, ErrNotFound) {
 		t.Fatal(err)
 	}
-	trail, err := s.ListOperatorAudit(t.Context(), "", 100)
-	if err != nil || len(trail) != 4 {
-		t.Fatal("operator audit", trail, err)
+	trail := guardedTrail(t, s)
+	if len(trail) != 4 {
+		t.Fatal("operator audit", trail)
 	}
 	want := []struct{ action, target, outcome, reason string }{
 		{"credential.revoked", p.TokenID, "done", ""}, {"credential.revoked", p.TokenID, "unchanged", ""},
 		{"credential.revoked", "ptok_missing", "refused", "not_found"}, {"provisioning.abandoned", "agent_missing", "refused", "not_found"}}
 	for i, w := range want {
 		e := trail[i]
-		if e.Actor != testOperator.Actor || e.Action != w.action || e.Target != w.target || e.Outcome != w.outcome || e.Reason != w.reason || e.CreatedAt == "" {
+		if e.Actor != testOperator.Actor || e.Action != w.action || e.Target != w.target || e.Outcome != w.outcome || e.Reference != w.reason ||
+			e.Changed != (w.outcome == "done") || e.CreatedAt.IsZero() {
 			t.Fatal("operator audit event", i, e)
 		}
-	}
-	if next, err := s.ListOperatorAudit(t.Context(), trail[1].ID, 100); err != nil || len(next) != 2 || next[0].ID != trail[2].ID {
-		t.Fatal("operator audit cursor", next, err)
 	}
 }
 
@@ -173,9 +188,9 @@ func TestAuditRetentionPurgesOnlyOlderEvents(t *testing.T) {
 			t.Fatal("an event older than the retention remains", e)
 		}
 	}
-	trail, err := l.s.ListOperatorAudit(t.Context(), "", 100)
-	if err != nil || len(trail) != 4 || trail[3].Action != "audit.purged" || trail[3].Actor != "worker" || trail[3].Target != "2_events" {
-		t.Fatal("purge not audited", trail, err)
+	trail := guardedTrail(t, l.s)
+	if len(trail) != 4 || trail[3].Action != "audit.purged" || trail[3].Actor != "worker" || trail[3].Target != "2_events" {
+		t.Fatal("purge not audited", trail)
 	}
 	if out, err = l.s.SetAuditRetention(t.Context(), testOperator, nil); err != nil || out.Outcome != "done" || out.Target != "keep_all" {
 		t.Fatal("keep all", out, err)

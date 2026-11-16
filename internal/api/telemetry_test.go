@@ -57,7 +57,7 @@ func TestHTTPTelemetry(t *testing.T) {
 	ok := call(t, l.server, "GET", "/v1/agents/"+id, owner, "", "")
 	missing := call(t, l.server, "GET", "/v1/agents/agt_does_not_exist", owner, "", "")
 	stranger := l.sign(t, at, "nobody-jti", "nobody", allAgentScopes)
-	refused := call(t, l.server, "PUT", "/v1/agents/"+id+"/inbound", stranger, "k", `{"mode":"auto","secret":"my vault code is 4417"}`)
+	refused := call(t, l.server, "PUT", "/v1/agents/"+id+"/inbound", stranger, "k", `{"mode":"auto","secret":"my vault code is QZXW-PKVM"}`)
 	unclean := call(t, l.server, "GET", "/v1/agents/../queue", owner, "", "")
 	if ok.Code != 200 || missing.Code != 404 || refused.Code/100 != 4 || unclean.Code != 400 {
 		t.Fatal(ok.Code, missing.Code, refused.Code, unclean.Code)
@@ -107,7 +107,7 @@ func TestHTTPTelemetry(t *testing.T) {
 		}
 	}
 	out := metrics + events.String()
-	for _, secret := range []string{owner, stranger, id, "agt_does_not_exist", "4417", "nobody"} {
+	for _, secret := range []string{owner, stranger, id, "agt_does_not_exist", "QZXW-PKVM", "nobody"} {
 		if strings.Contains(out, secret) {
 			t.Fatalf("%.12s… reached the telemetry", secret)
 		}

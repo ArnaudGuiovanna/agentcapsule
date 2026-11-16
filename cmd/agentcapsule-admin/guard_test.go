@@ -36,12 +36,19 @@ func TestDestructiveCommandsAreConfirmedDryRunAndAudited(t *testing.T) {
 		_, err := s.Authenticate(t.Context(), platformSecret)
 		return err == nil
 	}
+	// The guarded commands' part of the operator's audit, oldest first.
 	audit := func() []controlplane.OperatorAuditEvent {
-		events, err := s.ListOperatorAudit(t.Context(), "", 100)
+		events, err := s.ListOperatorAudit(t.Context(), 100)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return events
+		var trail []controlplane.OperatorAuditEvent
+		for i := len(events) - 1; i >= 0; i-- {
+			if events[i].Outcome != "" {
+				trail = append(trail, events[i])
+			}
+		}
+		return trail
 	}
 	for _, args := range [][]string{
 		{"revoke-credential", "-kind", "platform", "-id", id},
@@ -101,8 +108,8 @@ func TestDestructiveCommandsAreConfirmedDryRunAndAudited(t *testing.T) {
 			t.Fatal("operator audit event", i, events[i])
 		}
 	}
-	out, code = trimmed(t, "list-operator-audit")
-	if code != 0 || strings.Count(out, "\n")+1 != len(want) || strings.Contains(out, platformSecret) {
-		t.Fatal("list-operator-audit", out, code)
+	out, code = trimmed(t, "list-audit")
+	if code != 0 || strings.Count(out, `"outcome":`) != len(want) || strings.Contains(out, platformSecret) {
+		t.Fatal("list-audit", out, code)
 	}
 }

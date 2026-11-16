@@ -57,7 +57,7 @@ func life(t *testing.T, a implementation) {
 	must(a.Ensure(ctx, agent, volume))
 	var key []byte
 	must(a.HoldKey(ctx, b, func(_ context.Context, k []byte) error { key = bytes.Clone(k); return nil }))
-	must(a.WithKey(ctx, agent, volume, func(k []byte) error {
+	must(a.HoldKey(ctx, b, func(_ context.Context, k []byte) error {
 		if !bytes.Equal(k, key) || len(k) != 32 {
 			t.Error("another key")
 		}
@@ -167,9 +167,6 @@ func life(t *testing.T, a implementation) {
 		t.Fatal(err)
 	}
 	must(a.Revoke(ctx, agent, volume))
-	if err = a.WithKey(ctx, agent, volume, func([]byte) error { t.Error("a destroyed key held"); return nil }); !errors.Is(err, keyauthority.ErrRevoked) {
-		t.Fatal(err)
-	}
 	if err = a.Ensure(ctx, agent, volume); !errors.Is(err, keyauthority.ErrRevoked) {
 		t.Fatal("a destroyed key came back", err)
 	}

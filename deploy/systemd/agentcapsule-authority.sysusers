@@ -1,0 +1,8 @@
+# Install as /usr/lib/sysusers.d/agentcapsule-authority.conf (systemd-sysusers).
+# The authority service's own user: it owns both authority directories (or the
+# replica's on the standby) and the link's private key. The group
+# agentcapsule-authority-clients may reach the API socket; the worker reaches
+# its socket as root. From wave 4 of ADR 006, add the API's account:
+#   m <the API's account> agentcapsule-authority-clients
+u agentcapsule-authority - "Agent Capsule authority service" - -
+g agentcapsule-authority-clients -

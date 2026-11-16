@@ -40,13 +40,9 @@ func TestProductWorkerProvisioningAndEncryptedWake(t *testing.T) {
 	options.Ready = nil
 	options.BootTimeout = time.Minute
 	keys := b.keys.Provider.(*keyauthority.Files)
-	authorityRoot := filepath.Join(t.TempDir(), "restore-authority")
-	authority, err := restoreauthority.Initialize(t.Context(), authorityRoot, keys.Identity())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { authority.Close() })
-	w, err := NewProvisioningPlacements(b.w.store, b.e.HostID, "product-installer", 2*time.Minute, options, keys, authority, ProvisioningConfig{FirstUID: 62200, LastUID: 62209})
+	// The worker reaches the authorities through the authority service.
+	authority := openAuthority(t, throughService, keys, filepath.Join(t.TempDir(), "restore-authority"))
+	w, err := NewProvisioningPlacements(b.w.store, b.e.HostID, "product-installer", 2*time.Minute, options, authority.provider(), authority, ProvisioningConfig{FirstUID: 62200, LastUID: 62209})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +223,7 @@ func TestProductWorkerProvisioningAndEncryptedWake(t *testing.T) {
 	command("sleep", 3)
 	var deletion controlplane.AgentCreation
 	request("DELETE", "/v1/agents/"+e.AgentID, "delete", 202, &deletion)
-	// Actual host seal succeeds, but the independent catalogue goes offline
+	// Actual host seal succeeds, but the authority service goes offline
 	// before it can acknowledge retirement. SQL must not publish its receipt.
 	w.afterSeal = func() {
 		if err := authority.Close(); err != nil {
@@ -241,11 +237,8 @@ func TestProductWorkerProvisioningAndEncryptedWake(t *testing.T) {
 	if err = b.db.QueryRow(t.Context(), "SELECT count(*) FROM store_seals WHERE agent_id=$1", e.AgentID).Scan(&sealRows); err != nil || sealRows != 0 {
 		t.Fatal("SQL sealed without independent record", sealRows, err)
 	}
-	authority, err = restoreauthority.Open(t.Context(), authorityRoot, authority.Identity(), keys.Identity())
-	if err != nil {
-		t.Fatal(err)
-	}
-	w.authority, w.afterSeal = authority, nil
+	authority.restart(t)
+	w.afterSeal = nil
 	lost := errors.New("injected loss after physical cleanup before SQL receipt")
 	w.afterRemoval = func() error { return lost }
 	if err = w.RemoveDeletedStore(t.Context(), e.AgentID); !errors.Is(err, lost) {

@@ -30,11 +30,17 @@ func liveRoute(t *testing.T) Route {
 	return Route{Kind: "openai_compatible", BaseURL: base, UpstreamModel: model, Secret: secret, Key: "live/" + model}
 }
 
-type countingTransport struct{ n atomic.Int32 }
+// live is a gateway that may reach a model server on loopback, a local Ollama.
+func live(c Config) *Gateway { return NewForTests(c, TestOptions{Loopback: true}) }
+
+type countingTransport struct {
+	n    atomic.Int32
+	next http.RoundTripper
+}
 
 func (c *countingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	c.n.Add(1)
-	return http.DefaultTransport.RoundTrip(r)
+	return c.next.RoundTrip(r)
 }
 
 func zero() *float64 { v := 0.0; return &v }
@@ -45,7 +51,7 @@ func short() Request {
 }
 
 func TestLiveProviderCompletesAndReportsUsage(t *testing.T) {
-	g := New(Config{Timeout: 2 * time.Minute, MaxAttempts: 1})
+	g := live(Config{Timeout: 2 * time.Minute, MaxAttempts: 1})
 	out, err := g.Complete(t.Context(), liveRoute(t), short())
 	if err != nil {
 		t.Fatal("live call failed", err)
@@ -63,7 +69,7 @@ func TestLiveProviderCompletesAndReportsUsage(t *testing.T) {
 }
 
 func TestLiveUnknownModelIsRejectedWithoutOpeningTheBreaker(t *testing.T) {
-	g := New(Config{Timeout: time.Minute, MaxAttempts: 3, FailureLimit: 1})
+	g := live(Config{Timeout: time.Minute, MaxAttempts: 3, FailureLimit: 1})
 	good := liveRoute(t)
 	bad := good
 	bad.UpstreamModel = "agentcapsule-no-such-model"
@@ -79,11 +85,12 @@ func TestLiveUnknownModelIsRejectedWithoutOpeningTheBreaker(t *testing.T) {
 func TestLiveTimeoutAfterSendIsOutcomeUnknownAndNotRetried(t *testing.T) {
 	route := liveRoute(t)
 	// Load the model first so the slow call below is slow because it generates.
-	if _, err := New(Config{Timeout: 2 * time.Minute, MaxAttempts: 1}).Complete(t.Context(), route, short()); err != nil {
+	if _, err := live(Config{Timeout: 2 * time.Minute, MaxAttempts: 1}).Complete(t.Context(), route, short()); err != nil {
 		t.Fatal("warm-up failed", err)
 	}
 	transport := &countingTransport{}
-	g := New(Config{HTTP: &http.Client{Transport: transport}, Timeout: 50 * time.Millisecond, MaxAttempts: 3})
+	g := NewForTests(Config{Timeout: 50 * time.Millisecond, MaxAttempts: 3}, TestOptions{Loopback: true,
+		Transport: func(next http.RoundTripper) http.RoundTripper { transport.next = next; return transport }})
 	long := Request{Messages: []Message{{Role: "user", Content: "Count from 1 to 400, separated by commas."}}, MaxTokens: 1024, Temperature: zero()}
 	if _, err := g.Complete(t.Context(), route, long); !errors.Is(err, ErrOutcomeUnknown) {
 		t.Fatal("a call cut after sending was not reported as uncertain", err)

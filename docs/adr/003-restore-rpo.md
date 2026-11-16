@@ -474,11 +474,10 @@ under the same mailbox ID, or is skipped with a reason. Code:
   too. Both become `canceled` and keep `lost_at`. A rerun being delivered is
   not interrupted (409). A rerun acknowledged "working" is canceled like any
   working invocation.
-- **Agent-to-agent requests, replies and statuses** are not run again. Their
-  losses stay recorded, with their mailbox and no invocation. Running them
-  again is neither cheap nor safe: it reopens requests whose final states are
-  immutable, their payloads may be purged, and the other agent's side was not
-  lost. See "What remains".
+- **Agent-to-agent requests, replies and statuses** were not run again at
+  first: their losses stayed recorded, with their mailbox and no invocation.
+  [ADR 008](008-redelivering-lost-agent-requests.md) now delivers them again
+  to the restored agent, without reopening a request in a final state.
 
 #### Done: the API
 
@@ -520,10 +519,12 @@ November 15, 2026, with the other 13 worker tests (guest v20).
 
 #### What remains
 
-1. **Agent-to-agent losses.** A lost request, reply or status is recorded but
-   not delivered again. It needs its own design: which side runs again, how a
-   request in a final state reopens, and what happens when its payload is
-   purged.
+1. **Agent-to-agent losses.** Designed and built in
+   [ADR 008](008-redelivering-lost-agent-requests.md) on November 16, 2026:
+   the restored agent gets its lost request, reply or status again under the
+   same mailbox ID; a request in a final state never reopens; purged content,
+   a revoked requester and a party being deleted are skipped with a reason.
+   Its defaults wait for the product owner, and its KVM test for a run.
 2. **Restores before migration 0030.** A restore that completed earlier made
    no decision: its invocations keep their state. No deployment has one.
 3. **Another host.** A restore onto another host needs D-05: the keys,

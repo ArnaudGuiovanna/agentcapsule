@@ -56,13 +56,24 @@ func (s *Store) BootstrapPlatformToken(ctx context.Context, account, secret stri
 	if sameEver || anyActive {
 		return ErrConflict
 	}
+	id := newID("ptok")
 	_, err = tx.Exec(ctx, `INSERT INTO platform_credentials(id,account,token_hash,scopes,expires_at)
         VALUES($1,$2,$3,$4,clock_timestamp()+$5::bigint*interval '1 microsecond')`,
-		newID("ptok"), account, hash[:], []string{"platform:admin"}, lifetime.Microseconds())
+		id, account, hash[:], []string{"platform:admin"}, lifetime.Microseconds())
 	if err != nil {
 		return err
 	}
+	// A confirmation of the same credential above adds no audit, like a replay.
+	if err = auditPlatform(ctx, tx, "platform_credential.created", id, true); err != nil {
+		return err
+	}
 	return commit(ctx, tx)
+}
+
+func auditPlatform(ctx context.Context, tx pgx.Tx, action, credential string, changed bool) error {
+	_, err := tx.Exec(ctx, `INSERT INTO platform_audit(id,action,actor,credential_id,changed) VALUES($1,$2,$3,$4,$5)`,
+		newID("audit"), action, operatorFrom(ctx), credential, changed)
+	return err
 }
 
 func (s *Store) authenticatePlatform(ctx context.Context, secret string) (Principal, error) {
@@ -148,7 +159,8 @@ func (s *Store) ListOperatorCredentials(ctx context.Context) ([]OperatorCredenti
 // RevokeOperatorCredential is a trusted local operation. It permanently revokes
 // a platform or service credential and is idempotent. Revocation takes effect at
 // the next request because authentication reads the row each time. It is an
-// audited operator command (ADR 014); a dry run revokes nothing.
+// audited operator command (ADR 014): operator_audit records it with its
+// outcome, refusals included; a dry run revokes nothing.
 func (s *Store) RevokeOperatorCredential(ctx context.Context, cmd OperatorCommand, kind, id string) (OperatorOutcome, error) {
 	if !validOrganizationText(id, 100) {
 		return OperatorOutcome{Action: "credential.revoked", DryRun: cmd.DryRun}, ErrInput
@@ -168,8 +180,11 @@ func (s *Store) RevokeOperatorCredential(ctx context.Context, cmd OperatorComman
 		if errors.Is(err, pgx.ErrNoRows) {
 			return false, ErrNotFound
 		}
-		if err != nil || revoked {
+		if err != nil {
 			return false, err
+		}
+		if revoked {
+			return false, nil
 		}
 		_, err = tx.Exec(ctx, "UPDATE "+table+" SET revoked_at=clock_timestamp() WHERE id=$1"+where, id)
 		return err == nil, err

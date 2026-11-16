@@ -38,7 +38,7 @@ a new threshold makes them fail.
 The worker watches the file system of its volumes (the runtime root) and the
 one of its harness images (the registry's cache). Past `storage_pressure`, a
 used share from 0.5 to 0.95, **0.80 by default pending the product owner**:
-- Each maintenance pass records it in `worker_hosts` (migration 0033).
+- Each maintenance pass records it in `worker_hosts` (migration 0035).
 - The API refuses a new agent on that host and a harness import with `503
   storage_pressure` and `Retry-After`, before any reservation, as the quotas
   do (TEN-007). The API cannot read the host's disks: the worker's record is
@@ -128,15 +128,17 @@ checks that none reaches the archive; weakening the filters makes it fail.
 | `set-audit-retention -days N` (new) | N | `operator_audit` |
 | `configure-delegation -action rotate` or `revoke-trust` | the issuer | `delegation_audit` (the organization's trail) |
 | `configure-delegation -action revoke-token` | the token ID | `delegation_audit` |
+| `configure-delegation -action add-key` or `retire-key` | the key ID | `delegation_audit` |
 
 Without `-confirm`, or with another value, a command prints
 `confirmation_required` and opens no connection. `-dry-run` checks everything
 in a transaction that is rolled back and records nothing. A command that runs
-prints its outcome as JSON. `operator_audit` (migration 0033) records who (the
+prints its outcome as JSON. `operator_audit` (migration 0035) records who (the
 local user ID), when, the action, the target and the outcome: `done`,
 `unchanged` or `refused` with its reason. A refusal is recorded in its own
 transaction, since the refused change rolls back.
-`agentcapsule-admin list-operator-audit` prints it. The other admin commands
+`agentcapsule-admin list-audit` prints it with the operator's other actions
+(the platform credential, organizations, trusts). The other admin commands
 create or configure and destroy nothing. The worker's `-restore-agent` and
 `agentcapsule-authority promote` are not admin commands and are unchanged.
 

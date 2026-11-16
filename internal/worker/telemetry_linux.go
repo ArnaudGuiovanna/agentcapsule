@@ -10,7 +10,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/authoritylog"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/runtime"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/slimlink"
@@ -151,12 +150,9 @@ func (w *Placements) EnableTelemetry(registry *telemetry.Registry, root string, 
 		}
 		return nil
 	})
+	// The authorities' replication metrics are the authority service's
+	// (ADR 006): it owns the link to the standby.
 	w.enableArchivingTelemetry(registry)
-	if w.authority != nil {
-		// The authorities' replication to the standby (ADR 005): its mode,
-		// lag, last acknowledged record and last error.
-		w.authority.ObserveReplication(authoritylog.NewMetrics(registry))
-	}
 	if !w.metrics.CompareAndSwap(nil, m) {
 		return controlplane.ErrConflict
 	}

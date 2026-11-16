@@ -16,7 +16,6 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/keyauthority"
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/restoreauthority"
 )
 
 // A real product VMM remains alive while its host control transport is hidden.
@@ -31,12 +30,9 @@ func TestProductWorkerContractOutagePreservesCensusAndMaintenance(t *testing.T) 
 	options := opts(t, root)
 	options.AuthenticatedControl, options.Ready, options.BootTimeout = true, nil, time.Minute
 	keys := b.keys.Provider.(*keyauthority.Files)
-	authority, err := restoreauthority.Initialize(t.Context(), filepath.Join(t.TempDir(), "authority"), keys.Identity())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { authority.Close() })
-	w, err := NewProvisioningPlacements(b.w.store, b.e.HostID, "contract-installer", 2*time.Minute, options, keys, authority, ProvisioningConfig{FirstUID: 62400, LastUID: 62409})
+	// The worker reaches the authorities through the authority service.
+	authority := openAuthority(t, throughService, keys, filepath.Join(t.TempDir(), "authority"))
+	w, err := NewProvisioningPlacements(b.w.store, b.e.HostID, "contract-installer", 2*time.Minute, options, authority.provider(), authority, ProvisioningConfig{FirstUID: 62400, LastUID: 62409})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,9 +64,11 @@ func TestProductWorkerContractOutagePreservesCensusAndMaintenance(t *testing.T) 
 		}
 	}
 	view("READY")
-	// Simulate a worker restart: physical adoption must work with no RPC.
+	// Simulate a worker restart: physical adoption must work with no RPC. The
+	// new worker process has its own client of the same service.
 	w.Close()
-	next, err := NewProvisioningPlacements(b.w.store, b.e.HostID, "contract-adopter", 2*time.Minute, options, keys, authority, ProvisioningConfig{FirstUID: 62400, LastUID: 62409})
+	restarted := authority.newClient(t)
+	next, err := NewProvisioningPlacements(b.w.store, b.e.HostID, "contract-adopter", 2*time.Minute, options, restarted.provider(), restarted, ProvisioningConfig{FirstUID: 62400, LastUID: 62409})
 	if err != nil {
 		t.Fatal(err)
 	}

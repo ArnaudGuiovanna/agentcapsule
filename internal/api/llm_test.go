@@ -42,6 +42,11 @@ func TestLLMProviderEndpointsNeverReturnTheCredential(t *testing.T) {
 	if r = call(t, l.server, "POST", "/v1/llm/providers", owner, "p2", `{"name":"x","kind":"openai_compatible","base_url":"http://evil.example.org","secret":"`+secret+`"}`); r.Code != 400 {
 		t.Fatal("plain http accepted", r.Code)
 	}
+	// An internal address written in the URL has its own code.
+	if r = call(t, l.server, "POST", "/v1/llm/providers", owner, "p3", `{"name":"x","kind":"openai_compatible","base_url":"https://10.0.0.7/v1","secret":"`+secret+`"}`); r.Code != 400 ||
+		!strings.Contains(r.Body.String(), `"code":"provider_address_not_allowed"`) {
+		t.Fatal("internal address", r.Code, r.Body.String())
+	}
 }
 
 // The routes of ADR 011: an alias's access, prices and grants; cost budgets;

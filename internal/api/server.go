@@ -194,6 +194,8 @@ func failure(w http.ResponseWriter, err error) {
 		problem(w, 403, "forbidden")
 	case errors.Is(err, controlplane.ErrNotFound):
 		problem(w, 404, "not_found")
+	case errors.Is(err, controlplane.ErrProviderAddress):
+		problem(w, 400, "provider_address_not_allowed")
 	case errors.Is(err, controlplane.ErrInput):
 		problem(w, 400, "invalid_request")
 	case errors.Is(err, controlplane.ErrConflict):
@@ -219,6 +221,8 @@ func failure(w http.ResponseWriter, err error) {
 		problem(w, 409, "closure_pending")
 	case errors.Is(err, controlplane.ErrAgentExists):
 		problem(w, 409, "agent_already_exists")
+	case errors.Is(err, controlplane.ErrOrganizationNameTaken):
+		problem(w, 409, "organization_name_taken")
 	case errors.Is(err, controlplane.ErrRelease):
 		problem(w, 422, "harness_unavailable")
 	case errors.Is(err, controlplane.ErrStorageCapacity):

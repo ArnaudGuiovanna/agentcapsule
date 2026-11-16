@@ -141,47 +141,10 @@ func (s *Store) operatorCommand(ctx context.Context, cmd OperatorCommand, action
 	return out, commit(ctx, tx)
 }
 
-// OperatorAuditEvent is one operator command or audit purge: who, when, what,
-// on which target, and with which outcome.
-type OperatorAuditEvent struct {
-	ID        string `json:"id"`
-	CreatedAt string `json:"created_at"`
-	Actor     string `json:"actor"`
-	Action    string `json:"action"`
-	Target    string `json:"target"`
-	Outcome   string `json:"outcome"`
-	Reason    string `json:"reason,omitempty"`
-}
-
-// ListOperatorAudit returns the operator's audit in order, from after (an
-// event ID, or "" from the start), at most limit events.
-func (s *Store) ListOperatorAudit(ctx context.Context, after string, limit int) ([]OperatorAuditEvent, error) {
-	if limit < 1 || limit > 1000 || len(after) > 100 {
-		return nil, ErrInput
-	}
-	rows, err := s.pool.Query(ctx, `SELECT id,to_char(created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),actor,action,target,outcome,reason
-        FROM operator_audit
-        WHERE $1='' OR (created_at,id) > (SELECT created_at,id FROM operator_audit WHERE id=$1)
-        ORDER BY created_at,id LIMIT $2`, after, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []OperatorAuditEvent{}
-	for rows.Next() {
-		var e OperatorAuditEvent
-		if err = rows.Scan(&e.ID, &e.CreatedAt, &e.Actor, &e.Action, &e.Target, &e.Outcome, &e.Reason); err != nil {
-			return nil, err
-		}
-		out = append(out, e)
-	}
-	return out, rows.Err()
-}
-
 // auditTables hold the audit trail: the tenants' events, the platform's, and
 // the operator's. The retention applies to all of them.
 var auditTables = []string{"organization_audit", "delegation_audit", "tenant_member_audit", "tenant_team_audit", "tenant_agent_audit",
-	"tenant_service_audit", "llm_audit", "queue_audit", "harness_audit", "operator_audit"}
+	"tenant_service_audit", "llm_audit", "queue_audit", "harness_audit", "platform_audit", "operator_audit"}
 
 // AuditRetention returns the audit retention in days, or nil when every event
 // is kept (the default, ADR 014).

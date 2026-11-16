@@ -325,6 +325,13 @@ func revertTenantAgents(t *testing.T, s *Store) {
         DROP INDEX IF EXISTS organization_audit_created, delegation_audit_created, tenant_member_audit_created,
           tenant_team_audit_created, tenant_agent_audit_created, tenant_service_audit_created, llm_audit_created,
           queue_audit_created, harness_audit_created;
+        DROP TABLE IF EXISTS platform_audit, delegation_keys;
+        DROP INDEX IF EXISTS organizations_active_name, delegation_trusts_issuer_audience;
+        ALTER TABLE IF EXISTS delegation_audit DROP COLUMN IF EXISTS key_id, DROP CONSTRAINT IF EXISTS delegation_audit_action_check;
+        ALTER TABLE IF EXISTS delegation_audit ADD CONSTRAINT delegation_audit_action_check CHECK (action IN ('install','rotate','revoke-trust','revoke-token'));
+        ALTER TABLE IF EXISTS delegation_trusts DROP COLUMN IF EXISTS allowed_scopes, DROP COLUMN IF EXISTS max_ttl_nanoseconds;
+        DROP TABLE IF EXISTS peer_redeliveries;
+        DROP FUNCTION IF EXISTS preserve_peer_redelivery();
         DROP TABLE IF EXISTS failed_agents, guest_failures;
         DROP TABLE IF EXISTS llm_alias_grants;
         DROP TABLE IF EXISTS invocation_reruns;

@@ -2,7 +2,8 @@
 
 Date: November 16, 2026. **Status: built on November 16, 2026, with four
 defaults pending the product owner** (see
-[Questions](#questions-for-the-product-owner)). This record closes the
+[Questions](#questions-for-the-product-owner)). Amended on November 16,
+2026: a provider's address (§5). This record closes the
 remaining work of LLM-01 other than the dedicated secret store (D-05,
 [ADR 005](005-keys-outside-restored-domain.md)), and of LLM-03. References:
 product spec §4, LLM-001, LLM-004 to LLM-008 and TEN-007
@@ -133,6 +134,19 @@ identifiers in metrics, and free text in logs. So:
   names the model), per day or month, from `GET /v1/llm/usage`: settled,
   in-flight and unknown-outcome tokens and cost, with totals. A budget list
   gives each active budget's consumption.
+
+### 5. A provider's address (amended on November 16, 2026)
+
+A provider is reached only at a public address, or at an internal one the
+operator allows ([ADR 010 §4](010-transport-security-and-preflight.md#4-providers-and-registries-over-https)).
+For accounting:
+- A call to a refused address is a refusal: nothing was sent, the
+  reservation is released, and the guest gets `rejected`.
+- A redirect (3xx) is a refusal too. It used to be an unknown outcome, which
+  the organization had to release by hand, though a redirect is never an
+  answer and is never followed.
+- At registration, an `https` URL that writes an internal address out is
+  refused (`provider_address_not_allowed`).
 
 ## What was built
 

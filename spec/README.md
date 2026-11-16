@@ -11,7 +11,11 @@ The models are design documentation, not a proof of the Go code. The link to
 the code is made by conformance tests: traces generated from some models are
 replayed against the real implementation and PostgreSQL in
 `internal/controlplane/*_itf_test.go`, with the traces checked in under
-`internal/controlplane/testdata/`. Section numbers (`§6.3`, …) in model headers
+`internal/controlplane/testdata/`, and Go tests named after a run
+(`TestFooBar` for `fooBarTest`) drive the code through that run's steps.
+[projections.md](projections.md) lists every run and witness with the Go
+tests that project it, or why none does; `scripts/check-model-projections.py`
+fails when a run or witness is missing from it. Section numbers (`§6.3`, …) in model headers
 refer to the original design specification, which is not published.
 
 ## Running
@@ -29,7 +33,8 @@ npx quint verify --main=invocationCompletion --init=init --step=step \
   --invariant=safety --max-steps=10 invocation_completion.qnt
 ```
 
-`npm run typecheck` checks every model; CI runs it on each change.
+`npm run typecheck` checks every model; CI runs it on each change, and
+`scripts/check-repo-hygiene.py` checks [projections.md](projections.md).
 
 The concurrent protocol (P1) and service progress (P3) models are checked by
 their runs and by simulation of `safety`:
@@ -74,11 +79,11 @@ npx quint run --main=restoreAuthorityFailover --step=focusedStep \
 | `fair_admission.qnt` | Fairness of the host admission queue |
 | `barrier_capacity.qnt` | Store barriers competing for VM capacity |
 | `composition.qnt`, `protocol_composition.qnt` | Deletion, requests and delivery composed over shared state |
-| `concurrent_protocol.qnt` (+ `_bounded`, `_focused`, `_loaded`, `_witness`, `_test`) | Concurrent SQL coordination with delayed RPCs; bounded and witness variants for TLC. A request's closure fences its two parties only: no other store receives an event carrying its subject (`closureScope`, `closedSafe`, [ADR 007 §7](../docs/adr/007-delivery-closure-and-priority.md#71-a-requests-closure-fences-its-two-parties-only)). A reply or status no RPC carried dies at its deadline without a fence, anywhere in its queue (`retireUnsent`) |
+| `concurrent_protocol.qnt` (+ `_bounded`, `_focused`, `_loaded`, `_witness`, `_test`) | Concurrent SQL coordination with delayed RPCs; bounded and witness variants for TLC. A request's closure fences its two parties only: no other store receives an event carrying its subject (`closureScope`, `closedSafe`, [ADR 007 §7](../docs/adr/007-delivery-closure-and-priority.md#71-a-requests-closure-fences-its-two-parties-only)). A reply or status no RPC carried dies at its deadline without a fence, anywhere in its queue (`retireUnsent`). An event a restore lost goes back to its queue under the same ID; a final request never reopens (`loseOutcome`, `redeliver`, [ADR 008](../docs/adr/008-redelivering-lost-agent-requests.md)) |
 | `revocation.qnt` (+ `_test`) | Deletion barrier for one subject across several stores |
 | `store_seal.qnt`, `store_enrollment.qnt` | Permanent store seal; restoration blocking new work before retiring a store |
 | `restore_authority.qnt` (+ `_test`, `_witness`) | External restore authority, outcome records and declared losses within the RPO window (D-03 option B). Its synchronous replica on the standby, promotion under a new epoch, degraded mode, and PostgreSQL reconciled with the authority after a failover (D-05 option (a), [ADR 005](../docs/adr/005-keys-outside-restored-domain.md#model-revision-d-05-option-a)) |
 | `credential_renewal.qnt` | Credential replacement of a live boot |
-| `service_progress.qnt` (+ `_controls`, `_test`) | Progress of observation and notification slots |
+| `service_progress.qnt` (+ `_controls`, `_test`) | Progress of observation and notification slots. A restore may deliver a request or a notification again before the run stabilizes (ADR 008) |
 | `invocation_completion.qnt` | Deferred results: an agent acknowledges "working" and posts one outcome; expiry, cancellation and deletion race to exactly one outcome |
 | `bounded.qnt`, `induction.qnt`, `protocol_induction.qnt`, `liveness.qnt` | Depth-bounded wrappers, inductive invariants and temporal checks over the original relations |
