@@ -1224,6 +1224,13 @@ must do", items 14 and 15).
   table, lacked eleven tables of later migrations (`peer_redeliveries`,
   `host_takeovers`, `volume_relocations` and others): now complete, and
   `TestEveryTableIsDurable` keeps it so.
+- **A fix to wave 6.** `receipt_key` wrote the key from its operation,
+  before its request ended: a client's next request on the same connection
+  could arrive first, be taken for a broken protocol, and end the
+  connection (EOF, once, under the PostgreSQL campaign's load). The request
+  now writes the key once the operation has ended, as every other answer
+  (`TestReceiptKeysBackToBack`, through a test seam,
+  `Config.AfterOperation`).
 - Tests: the projections of §8 (`TestReconciliationReplaysRoot`,
   `TestShippedDatabaseNeedsNoReport`, `TestShippedGrantRevocationSurvives`,
   `TestTokenRevocationCoveredByBlanket`, `TestEarlyOpenGuard` in
