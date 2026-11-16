@@ -146,11 +146,25 @@ a final failure is possible, and a notification can also exhaust its attempts.
 A reply, status or instruction dies when its three attempts are spent or its
 deadline (7 days for a reply or status, the TTL for an instruction) passes. A
 delivery past its deadline, or out of attempts, to a live agent is retired
-without preparing that agent, so an agent that never boots does not keep it,
-nor its mailbox, alive. One to an agent being deleted is canceled by the
-deletion. Retiring it fences the agent's store only if an attempt may have
-reached it: such a delivery waits, closing, for the agent to boot for that
-barrier. One that no attempt reached dies at once, without the agent. Then:
+without preparing that agent. Retiring it fences the agent's store only if an
+attempt may have reached it. One that no attempt reached dies at once, without
+the agent, even behind other deliveries in its mailbox: it never reached the
+agent, so it leaves the queue out of order. One to an agent being deleted, or a
+reply whose author is being deleted, is canceled by the deletion instead; the
+retirement checks this under the agents' locks. For an agent that never boots,
+what still waits is:
+- a delivery an attempt may have reached: it waits, closing, for the agent to
+  boot for its fence (a restricted boot that accepts barriers only), since a
+  delayed send could otherwise apply it after its death;
+- a request to or from that agent: its closure at its deadline fences the
+  request's two parties, so it stays `DELIVERING` or `PROCESSING` until the
+  agent boots for that barrier. A closure fences no other agent (ADR 007 §7);
+- the delivery of such a request to that agent, which heads its mailbox until
+  then: the deliveries behind it wait, except those that die out of order as
+  above.
+
+`AgentCapsuleJobsFailing` and `AgentCapsuleVMBootFailures` tell the operator.
+When a delivery dies:
 - the request keeps its state: a replied request stays `REPLIED`;
 - the reply stays readable by the sender's agent for 7 days from the death,
   through the request's status read on the platform channel, then is purged;
