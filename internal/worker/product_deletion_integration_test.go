@@ -133,10 +133,9 @@ func TestProductWorkerDeletionRemovesTheVolumeTheKeyAndTheDirectoryRecord(t *tes
 
 	t.Log("stage: the deletion completes: no VM, no volume, no key")
 	l.awaitOperation(l.owner, deletion.OperationID)
-	var op controlplane.PlatformOperation
-	l.request(l.owner(), "GET", "/v1/operations/"+deletion.OperationID, "", nil, 200, &op)
-	if op.DeletionPhase != "COMPLETE" {
-		t.Fatal("the deletion did not include the physical cleanup", op.DeletionPhase)
+	var phase string
+	if err = l.db.QueryRow(t.Context(), "SELECT phase FROM agents WHERE id=$1", agent).Scan(&phase); err != nil || phase != "DELETED" {
+		t.Fatal("the deletion did not include the physical cleanup", phase, err)
 	}
 	l.runs(0)
 	if sameProcess(run.PID, run.StartTicks) {
