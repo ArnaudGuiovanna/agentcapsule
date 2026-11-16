@@ -243,7 +243,8 @@ func enqueueTerminal(ctx context.Context, tx pgx.Tx, id, sender, recipient, kind
 		}
 	}
 	for _, peer := range []string{sender, recipient} {
-		if agents[peer].Phase == "LIVE" {
+		// An organization's agent has no owner, so no inbox to write to.
+		if agents[peer].Phase == "LIVE" && agents[peer].Owner != "" {
 			if _, err := tx.Exec(ctx, "INSERT INTO inbox_items(id,user_id,kind,ref_id) VALUES ($1,$2,'request_update',$3)", newID("inb"), agents[peer].Owner, id); err != nil {
 				return err
 			}

@@ -114,6 +114,11 @@ func TestTenantAgentsExchangePrivateContentForTheirRequester(t *testing.T) {
 	if status, err := il.tr.RequestStateFromVM(ctx, vmA, r.RequestID); err != nil || status.Reply == nil || status.Reply.Content[0].Text != "Paris" {
 		t.Fatal("a cannot read b's answer from the status", status, err)
 	}
+	// An organization's agents have no owner: nobody's inbox is written.
+	var ownerless int
+	if err = il.s.pool.QueryRow(ctx, "SELECT count(*) FROM inbox_items WHERE user_id=''").Scan(&ownerless); err != nil || ownerless != 0 {
+		t.Fatal("inbox items for nobody", ownerless, err)
+	}
 
 	// A mandate no invocation granted names nobody: content cannot be bound,
 	// and the request is refused without spending it.
