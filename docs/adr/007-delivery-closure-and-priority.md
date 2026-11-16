@@ -324,10 +324,11 @@ notifications are P1 (EXT-005, EXT-007). Four forms were considered.
 - A worker that stops between the commit and the count loses one count. The
   dead delivery in PostgreSQL stays the record.
 
-This reads "the administrator" as the installation's operator, the one person
-with a channel for platform events in the MVP. If the product owner meant the
-organization's administrators, (b) is the MVP form; it needs a platform actor
-in the audit and migration 0031.
+"The administrator" is the installation's operator, the one person with a
+channel for platform events in the MVP: the product owner confirmed this on
+November 16, 2026, so (a) is the MVP form. Telling the organization's
+administrators, (b), would need a platform actor in the audit and a
+migration; it can come with (d).
 
 ## 5. Docs changed with this record
 
