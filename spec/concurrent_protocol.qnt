@@ -334,6 +334,37 @@ module concurrentProtocol {
     not(WAIT_ALL) or s.acks.contains({ store: dest(e), subject: EventSubject(e) }), retirable(s,e),
     s' = { ...s, events: s.events.set(e,{ ...s.events.get(e), phase: DeadEvent, leased: false }) },
   }
+  // ADR 008: a restore of an event's destination from an archive older than
+  // its delivery loses its effect. The old incarnation is retired first: no
+  // RPC carries the event any more, and the restored store lacks it. The
+  // event stays delivered; P2 declares its loss (restore_authority.qnt).
+  action loseOutcome(e: EventId): bool = all {
+    s.up, s.events.get(e).phase == DeliveredEvent, s.seen.contains(e),
+    not(s.agents.get(dest(e)).alive), s.agents.get(dest(e)).retired,
+    WORKERS.forall(w => s.rpc.get(w).phase == IdleRPC or s.rpc.get(w).event != e),
+    s' = { ...s, seen: s.seen.exclude(Set(e)), effects: s.effects.set(e,0) },
+  }
+  // ADR 008: the restore's last step puts a lost event back in its queue,
+  // under the same ID and at its place in the order. A request's event goes
+  // back only while its request is processing and not closing, and the
+  // request goes back to Delivering; a final request never reopens
+  // (terminalStable). A reply or status goes back to the sender, whose
+  // request keeps its final state, and the sender no longer counts as
+  // notified. The agents its delivery needs are active (retirable).
+  pure def lost(x: State, e: EventId): bool = x.events.get(e).phase == DeliveredEvent and not(x.seen.contains(e))
+  pure def redeliverable(x: State, e: EventId): bool = {
+    val q = x.requests.get(e._1)
+    lost(x,e) and retirable(x,e) and
+      (if (e._2 == 0) q.phase == Processing and q.closure == NoClosure else terminal(q.phase))
+  }
+  pure def redelivered(x: State, e: EventId): State = {
+    val q = x.requests.get(e._1)
+    { ...x, events: x.events.set(e,{ ...emptyEvent, phase: PendingEvent }),
+      requests: x.requests.set(e._1,if (e._2 == 0) { ...q, phase: Delivering } else { ...q, notified: false }) }
+  }
+  action redeliver(e: EventId): bool = all {
+    s.up, freeAgents(s,peers(e._1)), redeliverable(s,e), s' = redelivered(s,e),
+  }
   pure def abortLocal(x: State, a: AgentId): State = { ...x,
     rpc: WORKERS.mapBy(w => if (x.rpc.get(w).phase == ExecutingRPC and dest(x.rpc.get(w).event) == a) idleRPC else x.rpc.get(w)),
     receipts: x.receipts.filter(r => r.store != a) }
@@ -450,7 +481,7 @@ module concurrentProtocol {
     { nondet r = REQUESTS.oneOf(); commitClose(r) },
     { nondet a = AGENTS.oneOf(); any { requestDelete(a), commitDelete(a) } },
     { nondet a = AGENTS.oneOf(); nondet p = SUBJECTS.oneOf(); any { fenceStore(a,p), recordFence(a,p) } },
-    { nondet e = EVENTS.oneOf(); any { beginRetire(e), retire(e), expireEvent(e), retireUnsent(e) } },
+    { nondet e = EVENTS.oneOf(); any { beginRetire(e), retire(e), expireEvent(e), retireUnsent(e), loseOutcome(e), redeliver(e) } },
     { nondet a = AGENTS.oneOf(); any { stopVM(a), beginStop(a), retireBoot(a), observeStopped(a),
       launchBoot(a), confirmBoot(a), publishBoot(a), expireBootLease(a), abandonBoot(a), sealStore(a) } },
     { nondet a = AGENTS.oneOf(); nondet restricted = Set(true,false).oneOf(); bootVM(a,restricted) },
