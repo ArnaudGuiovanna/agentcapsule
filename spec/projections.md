@@ -99,6 +99,13 @@ in the ordinary unit tests.
 | `concurrentProtocolTests.expiredSentReplyWaitsForFenceTest` | partial | `TestExpiredDeliveryThatMayHaveReachedWaitsForItsFence` | As above. |
 | `concurrentProtocolTests.unfencedRetireAllowsLateEffectTest` | model-only | — | Defines a broken action to show why `retireUnsent` needs `not(sent)`; Go has no such path. |
 | `concurrentProtocolTests.expiredSentReplyRetiredAfterFenceTest` | partial | `TestExpiredDeliveryThatMayHaveReachedWaitsForItsFence` | As above. |
+| `concurrentProtocolTests.unsentReplyDiesBehindHeadTest` | partial | `TestExpiredDeliveryBehindAStuckHeadDies` | Written from ADR 007 §7, not step by step. |
+| `concurrentProtocolTests.retirementLeavesDeletionTest` | partial | `TestRetirementLeavesADeletionToCancel` | As above. |
+| `concurrentProtocolTests.deletionCancelsExpiredReplyTest` | partial | `TestRetirementLeavesADeletionToCancel` | As above. |
+| `concurrentProtocolTests.closureFencesOnlyItsPartiesTest` | full | `TestClosureFencesOnlyItsParties`, `TestRequestClosureFencesOnlyItsParties` |  |
+| `concurrentProtocolTests.closureCommitsWithoutOtherStoresTest` | full | `TestClosureCommitsWithoutOtherStores`, `TestRequestClosureFencesOnlyItsParties` |  |
+| `concurrentProtocolTests.closureScopeTest` | model-only | — | Checks the model's own closure scope (`closureScope`) in its initial state. |
+| `concurrentProtocolTests.closureWithoutRecipientAllowsStaleEffectTest` | model-only | — | Defines a broken action (`commitCloseWithout`) to show why the recipient's fence is needed; Go has no such path. |
 | `concurrentProtocolTests.retiredNotificationTest` | partial | `TestExhaustedDeliveryFencesLateWorkerAndNotifiesSender` | The fixture `notification-exhaustion-is-not-reception` is not replayed: CANCELED/DEAD projection discrepancy (fixture README). |
 | `concurrentProtocolTests.sealAndFutureBarrierTest` | partial | `TestPreimplementationP1HostSealITF` | Privileged host test (KVM build tags); not in the PostgreSQL campaign. |
 | `concurrentProtocolTests.workerCrashRollsBackAdmissionTest` | full | `TestPreimplementationP1ITF/worker-crash-before-business-commit` |  |
@@ -362,6 +369,9 @@ in the ordinary unit tests.
 | `serviceProgressTests.scenario21Test` | partial | `TestExpiredDeliveryThatMayHaveReachedWaitsForItsFence` | ADR 007; the P3 fixture pins the model before ADR 007. |
 | `serviceProgressTests.refusal21x0Test` | partial | `TestExpiredDeliveryThatMayHaveReachedWaitsForItsFence` | ADR 007; the P3 fixture pins the model before ADR 007. |
 | `serviceProgressTests.scenario21x1Test` | partial | `TestExpiredDeliveryThatMayHaveReachedWaitsForItsFence` | ADR 007; the P3 fixture pins the model before ADR 007. |
+| `serviceProgressTests.scenario22Test` | partial | `TestExpiredDeliveryBehindAStuckHeadDies` | ADR 007 §7; the P3 fixture pins the model before ADR 007. |
+| `serviceProgressTests.refusal22x0Test` | partial | `TestRetirementLeavesADeletionToCancel` | ADR 007 §7; the P3 fixture pins the model before ADR 007. |
+| `serviceProgressTests.scenario22x1Test` | partial | `TestRetirementLeavesADeletionToCancel` | ADR 007 §7; the P3 fixture pins the model before ADR 007. |
 | `serviceProgressTests.scenario19Test` | full | `TestPreimplementationP3ITF/deleted-destination-rejects-new-work` |  |
 | `serviceProgressTests.refusal19x0Test` | full | `TestPreimplementationP3ITF/deleted-destination-rejects-new-work` |  |
 
