@@ -66,7 +66,8 @@ func TestSealedStoreAllowsLaterRevocationAndClosure(t *testing.T) {
 		t.Fatal("sealed volume restarted:", err)
 	}
 	lockedVolume(t, options.Root, false)
-	// A closure unrelated to A must still acknowledge A's registered store.
+	// A closure unrelated to A does not target A's sealed store: only its
+	// parties are fenced (ADR 007 §7).
 	if _, err = db.Exec(t.Context(), "UPDATE "+pgx.Identifier{schema, "agents"}.Sanitize()+" SET inbound_mode='auto',discoverable=true WHERE id IN ('b','c')"); err != nil {
 		t.Fatal(err)
 	}
@@ -84,9 +85,9 @@ func TestSealedStoreAllowsLaterRevocationAndClosure(t *testing.T) {
 	if err = w.store.ReconcileRequestClosure(t.Context(), r.RequestID, w); err != nil {
 		t.Fatal(err)
 	}
-	var closureAck bool
-	if err = db.QueryRow(t.Context(), "SELECT acknowledged FROM "+pgx.Identifier{schema, "request_closure_targets"}.Sanitize()+" WHERE request_id=$1 AND store_agent_id='a'", r.RequestID).Scan(&closureAck); err != nil || !closureAck {
-		t.Fatal(closureAck, err)
+	var targets, acked int
+	if err = db.QueryRow(t.Context(), "SELECT count(*) FILTER (WHERE store_agent_id='a'),count(*) FILTER (WHERE acknowledged AND store_agent_id IN ('b','c')) FROM "+pgx.Identifier{schema, "request_closure_targets"}.Sanitize()+" WHERE request_id=$1", r.RequestID).Scan(&targets, &acked); err != nil || targets != 0 || acked != 2 {
+		t.Fatal(targets, acked, err)
 	}
 	// A remembered SQL receipt must never turn absence/unavailability into ACK.
 	if err = w.store.RequestDeletion(t.Context(), "user-b", "b"); err != nil {

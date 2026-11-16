@@ -63,9 +63,12 @@ func beginClosure(ctx context.Context, tx pgx.Tx, r requestRow, final, reason st
 	if err := publishRevocation(ctx, tx, "request/"+r.ID); err != nil {
 		return err
 	}
-	// Stores in creation catch up before activation; existing stores remain in
-	// the manifest even when stopped or permanently sealed.
-	_, err = tx.Exec(ctx, "INSERT INTO request_closure_targets(request_id,store_agent_id) SELECT $1,id FROM agents WHERE phase<>'PROVISIONING'", r.ID)
+	// The fence targets are the request's two parties, stopped or sealed
+	// alike: an event carrying request/<id> goes only to them, the request to
+	// its recipient and the reply to its sender, so no other store can hold an
+	// effect of it (P1 closedSafe, ADR 007 §7). An agent that is not a party
+	// cannot hold this closure.
+	_, err = tx.Exec(ctx, "INSERT INTO request_closure_targets(request_id,store_agent_id) VALUES ($1,$2),($1,$3)", r.ID, r.Sender, r.Recipient)
 	return err
 }
 

@@ -564,7 +564,7 @@ func TestDurableDatabaseRestart(t *testing.T) {
 	if phaseAfterCrash != "FENCING" || targets != 3 {
 		t.Fatalf("deletion intent lost: phase=%s targets=%d", phaseAfterCrash, targets)
 	}
-	if count(t, s, "request_closures") != 1 || count(t, s, "request_closure_targets") != 3 {
+	if count(t, s, "request_closures") != 1 || count(t, s, "request_closure_targets") != 2 {
 		t.Fatal("request cancellation manifest lost during recovery")
 	}
 }
