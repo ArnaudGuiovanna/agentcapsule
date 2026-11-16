@@ -230,6 +230,8 @@ func TestWorkRejectsUnloggedQueue(t *testing.T) {
 				// setup before our durability check can be exercised.
 				if _, err := s.pool.Exec(t.Context(), `ALTER TABLE agent_specs DROP CONSTRAINT agent_specs_host_id_fkey;
                     ALTER TABLE platform_operations DROP CONSTRAINT platform_operations_host_id_fkey;
+                    ALTER TABLE host_takeovers DROP CONSTRAINT host_takeovers_lost_host_id_fkey,
+                      DROP CONSTRAINT host_takeovers_host_id_fkey;
                     ALTER TABLE worker_hosts SET UNLOGGED;
                     ALTER TABLE worker_jobs DROP CONSTRAINT worker_jobs_host_id_fkey;
                     ALTER TABLE worker_jobs SET LOGGED`); err != nil {
