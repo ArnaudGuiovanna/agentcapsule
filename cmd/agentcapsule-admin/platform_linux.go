@@ -62,7 +62,7 @@ func bootstrapPlatform(args []string) int {
 	if err != nil {
 		return fail("token_file_invalid")
 	}
-	if err = s.BootstrapPlatformToken(ctx, *account, string(secret), *lifetime); err != nil {
+	if err = s.BootstrapPlatformToken(operator(ctx), *account, string(secret), *lifetime); err != nil {
 		if reason, definite := definiteRefusal(err); definite {
 			return fail("platform_bootstrap_rejected_" + reason)
 		}
