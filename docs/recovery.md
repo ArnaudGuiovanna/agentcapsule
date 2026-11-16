@@ -607,7 +607,9 @@ the standby, as root. Follow this order.
    - `old_primary_still_replicating`: a record reached the replica during
      the promotion. The old primary still runs: go back to step 1;
    - `promoted_authority_conflict`: a target directory holds other
-     authorities.
+     authorities;
+   - `authority_in_use`: another process holds a directory: the replica's
+     listener still runs (step 2), or another command. Nothing was written.
 
    Then delete the key file: `shred -u /root/agentcapsule-unlock.key`.
 6. **Start the worker**, once the database runs here

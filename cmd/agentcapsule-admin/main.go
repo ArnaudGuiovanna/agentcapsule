@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -17,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorityservice"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/keyauthority"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/operatorconfig"
@@ -165,6 +167,20 @@ func configureCatalog(command string, args []string) int {
 	return 0
 }
 
+// ownAuthorities takes the lock of the authority directories an init
+// command opens: it refuses with authority_in_use while the authority
+// service, or another command, runs on one (docs/adr/006-authority-service.md §1).
+func ownAuthorities(dirs ...string) (*authorityservice.Owner, string) {
+	owner, err := authorityservice.Own(dirs...)
+	switch {
+	case errors.Is(err, authorityservice.ErrInUse):
+		return nil, "authority_in_use"
+	case err != nil:
+		return nil, "authority_directory_unavailable"
+	}
+	return owner, ""
+}
+
 func initializeKeyAuthority(args []string) int {
 	fail := func(code string) int { fmt.Fprintln(os.Stderr, code); return 1 }
 	f := flag.NewFlagSet("init-key-authority", flag.ContinueOnError)
@@ -175,6 +191,11 @@ func initializeKeyAuthority(args []string) int {
 	if f.NArg() != 0 || *root == "" {
 		return fail("configuration_required")
 	}
+	owner, code := ownAuthorities(*root)
+	if code != "" {
+		return fail(code)
+	}
+	defer owner.Release()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	s, err := keyauthority.Initialize(ctx, *root)
@@ -204,6 +225,11 @@ func initializeRestoreAuthority(args []string) int {
 	if f.NArg() != 0 || *root == "" || *data == "" || *keyRoot == "" || *keyID == "" {
 		return fail("configuration_required")
 	}
+	owner, code := ownAuthorities(*root, *keyRoot)
+	if code != "" {
+		return fail(code)
+	}
+	defer owner.Release()
 	keys, err := keyauthority.Open(*keyRoot, *keyID)
 	if err != nil {
 		return fail("key_authority_unavailable")
