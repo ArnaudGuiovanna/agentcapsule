@@ -128,6 +128,14 @@ var rbacRoutes = []rbacRoute{
 	{Method: "GET", Path: "/v1/llm/aliases", Success: 200, Want: "S S 403 403 403 403 403 403 403 F 401 401 403", hides: []string{"{alias}"}},
 	{Method: "POST", Path: "/v1/llm/aliases", Success: 201, Want: rbacManage, body: `{"alias":"{name}","provider_id":"{provider}","upstream_model":"model-x"}`, fresh: rbacName},
 	{Method: "POST", Path: "/v1/llm/aliases/{fresh}/disable", Success: 200, Want: rbacManage, body: `{}`, fresh: rbacFreshAlias, Note: "a disposable alias"},
+	{Method: "POST", Path: "/v1/llm/aliases/{fresh}/access", Success: 200, Want: rbacManage, body: `{"access":"listed"}`, fresh: rbacFreshAlias, Note: "a disposable alias"},
+	{Method: "POST", Path: "/v1/llm/aliases/{fresh}/prices", Success: 200, Want: rbacManage, body: `{"input_micro_per_mtok":1,"output_micro_per_mtok":2}`, fresh: rbacFreshAlias, Note: "a disposable alias"},
+	{Method: "GET", Path: "/v1/llm/aliases/{alias}/grants", Success: 200, Want: rbacManage},
+	{Method: "POST", Path: "/v1/llm/aliases/{fresh}/grants", Success: 201, Want: rbacManage, body: `{"agent_id":"{agent}"}`, fresh: rbacFreshAlias, Note: "a disposable alias, to the agent"},
+	{Method: "POST", Path: "/v1/llm/aliases/{fresh}/grants/{grant}/revoke", Success: 200, Want: rbacManage, body: `{}`, fresh: rbacFreshGrant, Note: "a disposable grant"},
+	{Method: "GET", Path: "/v1/llm/calls/unresolved", Success: 200, Want: "S S 403 S 403 403 403 403 403 F 401 401 403", hides: []string{"{call}"}},
+	{Method: "POST", Path: "/v1/llm/calls/{fresh}/settle", Success: 200, Want: rbacManage, body: `{"input_tokens":10,"output_tokens":5}`, fresh: rbacFreshCall, Note: "a disposable call of unknown outcome"},
+	{Method: "POST", Path: "/v1/llm/calls/{fresh}/release", Success: 200, Want: rbacManage, body: `{}`, fresh: rbacFreshCall, Note: "a disposable call of unknown outcome"},
 	{Method: "GET", Path: "/v1/llm/budgets", Success: 200, Want: "S S 403 403 403 403 403 403 403 F 401 401 403", hides: []string{"{budget}"}},
 	{Method: "POST", Path: "/v1/llm/budgets", Success: 201, Want: rbacManage, body: `{"alias":"{fresh}","period":"day","limit_tokens":1000,"mode":"soft"}`, fresh: rbacFreshAlias, Note: "for a disposable alias"},
 	{Method: "POST", Path: "/v1/llm/budgets/{fresh}/disable", Success: 200, Want: rbacManage, body: `{}`, fresh: rbacFreshBudget, Note: "a disposable budget"},
@@ -540,6 +548,27 @@ func rbacFreshBudget(t *testing.T, f *rbacFixture) map[string]string {
 	return map[string]string{"fresh": b.ID}
 }
 
+func rbacFreshGrant(t *testing.T, f *rbacFixture) map[string]string {
+	v := rbacFreshAlias(t, f)
+	var g controlplane.LLMAliasGrant
+	f.must(t, "owner", "POST", "/v1/llm/aliases/"+v["fresh"]+"/grants", `{"agent_id":"`+f.ids["agent"]+`"}`, 201, &g)
+	v["grant"] = g.ID
+	return v
+}
+
+// rbacFreshCall plays the gateway: the agent reserves a model call whose
+// outcome stays unknown, which only the organization can resolve.
+func rbacFreshCall(t *testing.T, f *rbacFixture) map[string]string {
+	res, err := f.server.accounts.ReserveLLM(t.Context(), f.l.org.ID, f.ids["agent"], f.ids["alias"], f.next(), 100, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = f.server.accounts.MarkLLMUnknown(t.Context(), f.l.org.ID, res.ID); err != nil {
+		t.Fatal(err)
+	}
+	return map[string]string{"fresh": res.ID}
+}
+
 func rbacFreshAgent(t *testing.T, f *rbacFixture) map[string]string {
 	return map[string]string{"fresh": f.activeAgent(t, f.next())}
 }
@@ -738,6 +767,7 @@ func newRBACFixture(t *testing.T) *rbacFixture {
 	f.ids["provider"] = provider.ID
 	f.ids["alias"] = rbacFreshAlias(t, f)["fresh"]
 	f.ids["budget"] = rbacFreshBudget(t, f)["fresh"]
+	f.ids["call"] = rbacFreshCall(t, f)["fresh"]
 
 	var imported controlplane.HarnessImport
 	f.must(t, "platform", "POST", "/v1/harness-imports", `{"reference":"ghcr.io/acme/matrix@sha256:`+strings.Repeat("a", 64)+`"}`, 202, &imported)

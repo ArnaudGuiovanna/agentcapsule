@@ -155,7 +155,11 @@ def main():
         options = shlex.join(["-c", "listen_addresses=", "-k", socket_dir,
                              "-c", "unix_socket_permissions=0700", "-c", "fsync=on",
                              "-c", "full_page_writes=on", "-c", "synchronous_commit=on",
-                             "-c", "shared_buffers=32MB", "-c", "max_connections=40"])
+                             "-c", "shared_buffers=32MB", "-c", "max_connections=40",
+                             # Crash recovery syncs the whole data directory first; syncfs
+                             # does it per filesystem instead of per file, with the same
+                             # durability, so that phase stays short on a busy host.
+                             "-c", "recovery_init_sync_method=syncfs"])
         env["AGENTCAPSULE_TEST_POSTGRES"] = f"host={socket_dir} user=agentcapsule_test dbname=postgres application_name=agentcapsule-tests"
         try:
             run("initdb", [pg_bin / "initdb", "-D", data, "--username=agentcapsule_test", "--no-locale", "--encoding=UTF8", "--auth-local=trust", "--auth-host=reject"])
@@ -165,9 +169,10 @@ def main():
                              "SELECT version(); SHOW fsync; SHOW full_page_writes; SHOW synchronous_commit; SHOW listen_addresses;"])
             # Each store test migrates a fresh schema; the control-plane package
             # alone takes nearly ten minutes under the race detector on a shared
-            # host (533 s to 600 s in November 2026), so it gets fifteen.
-            command = ["go", "test", "-race", "-json", "-count=1", "-timeout=900s"]
-            run("integration", [*command, "./..."], timeout=1200, go_json=True)
+            # host (533 s to 600 s in November 2026, 865 s for the whole phase on
+            # the integrated tree under load), so it gets twenty.
+            command = ["go", "test", "-race", "-json", "-count=1", "-timeout=1200s"]
+            run("integration", [*command, "./..."], timeout=1800, go_json=True)
             if args.llm_base_url:
                 run("llm-live", [*command, "-tags=llmlive", "-run=^TestLive", "./internal/llmgateway", "./internal/controlplane"], timeout=300, go_json=True,
                     extra_env={"AGENTCAPSULE_TEST_LLM_BASE_URL": args.llm_base_url, "AGENTCAPSULE_TEST_LLM_MODEL": args.llm_model})
@@ -176,9 +181,10 @@ def main():
             run("database-crash", [pg_bin / "pg_ctl", "-D", data, "-m", "immediate", "-w", "stop"])
             started = False
             # Crash recovery first syncs the data directory, then replays WAL; on a
-            # slow or busy disk this alone can exceed a minute. Correctness, not
-            # speed, is what this phase checks.
-            run("restart", [pg_bin / "pg_ctl", "-D", data, "-l", out / "server.log", "-o", options, "-t", "300", "-w", "start"], timeout=330)
+            # slow or busy disk this alone can exceed a minute (over five on the
+            # integrated tree under load, before syncfs). Correctness, not speed,
+            # is what this phase checks.
+            run("restart", [pg_bin / "pg_ctl", "-D", data, "-l", out / "server.log", "-o", options, "-t", "900", "-w", "start"], timeout=930)
             started = True
             run("recovery-verify", [*command, "./internal/controlplane", "-run=^Test(DurableDatabaseRestart|StoreSealDatabaseRecovery|RenewalDatabaseRecovery|WorkDatabaseRecovery)$"],
                 extra_env={"AGENTCAPSULE_PG_RECOVERY": "verify"}, timeout=120, go_json=True)
