@@ -8,6 +8,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -90,6 +91,24 @@ func TestWorkerRefusesTheOldAuthoritySections(t *testing.T) {
 	}
 	if client, err := c.OpenAuthority(); client != nil || err != nil {
 		t.Fatal("an authority client without the section", err)
+	}
+}
+
+// The shipped example reaches the authority service: it decodes, and its
+// settings hold once the identities are filled in.
+func TestWorkerConfigurationExampleReachesTheService(t *testing.T) {
+	text, err := os.ReadFile("../../runtime/worker/config.example.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	filled := strings.NewReplacer("<restoreauth_PUBLIC_IDENTITY>", "restoreauth_"+strings.Repeat("a", 32),
+		"<keyauth_PUBLIC_IDENTITY>", "keyauth_"+strings.Repeat("b", 32)).Replace(string(text))
+	c, err := decodeServiceConfig(strings.NewReader(filled))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err = c.Settings(); err != nil || c.Authority == nil || c.Authority.Socket != "/run/agentcapsule-authority/worker.sock" {
+		t.Fatal("the example", c.Authority, err)
 	}
 }
 
