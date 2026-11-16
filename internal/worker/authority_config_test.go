@@ -18,8 +18,10 @@ import (
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authoritylog"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorityservice"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/keyauthority"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/restoreauthority"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/runtime"
 )
 
 const workerBase = `{"version":1,"host_id":"host","boot_timeout":"30s","boot_lease":"2m","poll_interval":"1s","attempt_timeout":"45s"`
@@ -63,13 +65,13 @@ func TestWorkerRefusesTheOldAuthoritySections(t *testing.T) {
 		t.Fatal("authority client", err)
 	}
 	for name, section := range map[string]string{
-		"relative socket":     authoritySection("run/worker.sock", restoreID, keyID),
-		"unclean socket":      authoritySection("/run/agentcapsule-authority/../worker.sock", restoreID, keyID),
+		"relative socket":      authoritySection("run/worker.sock", restoreID, keyID),
+		"unclean socket":       authoritySection("/run/agentcapsule-authority/../worker.sock", restoreID, keyID),
 		"socket path too long": authoritySection("/run/"+strings.Repeat("a", 100)+"/worker.sock", restoreID, keyID),
-		"restore identity":    authoritySection("/run/agentcapsule-authority/worker.sock", "restoreauth_short", keyID),
-		"key identity":        authoritySection("/run/agentcapsule-authority/worker.sock", restoreID, restoreID),
-		"identities missing":  `"authority":{"socket":"/run/agentcapsule-authority/worker.sock"}`,
-		"provisioning alone":  `"provisioning":{"first_uid":62000,"last_uid":62009}`,
+		"restore identity":     authoritySection("/run/agentcapsule-authority/worker.sock", "restoreauth_short", keyID),
+		"key identity":         authoritySection("/run/agentcapsule-authority/worker.sock", restoreID, restoreID),
+		"identities missing":   `"authority":{"socket":"/run/agentcapsule-authority/worker.sock"}`,
+		"provisioning alone":   `"provisioning":{"first_uid":62000,"last_uid":62009}`,
 	} {
 		c, err := decodeServiceConfig(strings.NewReader(workerBase + "," + section + "}"))
 		if err != nil {
@@ -188,6 +190,14 @@ func TestWorkerChecksItsRootsAgainstTheService(t *testing.T) {
 	}
 	if client.SeparateFrom(filepath.Join(dir, "archives")) != nil || client.SeparateFrom(filepath.Join(dir, "restore", "archives")) == nil {
 		t.Fatal("archive root separation")
+	}
+	// The worker's constructor checks its runtime root the same way, before
+	// anything else (here, the missing database).
+	if _, err = NewPlacementsWithAuthority(nil, "host", "worker", time.Minute, runtime.FirecrackerOptions{Root: filepath.Join(dir, "keys", "runtime")}, client, client); !errors.Is(err, restoreauthority.ErrInput) {
+		t.Fatal("a runtime root inside the key authority", err)
+	}
+	if _, err = NewPlacementsWithAuthority(nil, "host", "worker", time.Minute, runtime.FirecrackerOptions{Root: runtimeRoot}, client, client); !errors.Is(err, controlplane.ErrPlacement) {
+		t.Fatal("a separated runtime root", err)
 	}
 	// Another installation's authorities: refused at once, never waited for.
 	other, err := open("restoreauth_"+strings.Repeat("0", 32), keys.Identity()).OpenAuthority()

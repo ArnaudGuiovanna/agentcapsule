@@ -113,7 +113,9 @@ func (s *authorityService) restart(t *testing.T) {
 	s.start(t)
 }
 
-// client is a worker's client of the service.
+// client is a worker's client of the service, once it has reached it, as
+// the worker's start does (WaitForAuthority): its status gives the
+// directories that SeparateFrom checks.
 func (s *authorityService) client(t *testing.T) *authorityclient.Client {
 	t.Helper()
 	c, err := authorityclient.New(s.socket, authorityservice.RoleWorker, s.catalog.Identity(), s.keys.Identity())
@@ -121,6 +123,9 @@ func (s *authorityService) client(t *testing.T) *authorityclient.Client {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { c.Close() })
+	if _, err = c.Status(t.Context()); err != nil {
+		t.Fatal(err)
+	}
 	return c
 }
 
