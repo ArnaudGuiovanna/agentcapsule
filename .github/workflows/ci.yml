@@ -55,6 +55,9 @@ jobs:
           go vet -tags=kvm_integration,kvm_control_integration,kvm_product_integration ./internal/worker ./internal/runtime
           go vet -tags=llmlive ./internal/llmgateway ./internal/controlplane
 
+      - name: Authorization matrix (every route has a row, docs/api/rbac.md matches it)
+        run: go test -count=1 -run '^TestRBACMatrix(IsWellFormed|CoversEveryRoute|IsDocumented)$' ./internal/api
+
       - name: Script unit tests (the check runner, the textfile scripts, the archive shipper, the backup tools' fetch)
         run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
 
