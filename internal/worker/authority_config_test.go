@@ -20,6 +20,7 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorityservice"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/keyauthority"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/preflight"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/restoreauthority"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/runtime"
 )
@@ -223,6 +224,52 @@ func TestWorkerChecksItsRootsAgainstTheService(t *testing.T) {
 		t.Fatal("the worker did not reach its restarted service", err)
 	}
 	restarted.Wait()
+}
+
+// The worker's preflight checks the authorities through the service: it
+// answers with the pinned identities, and the runtime root and the archives
+// lie outside the directories it gives. The directories are no longer the
+// worker's to inspect.
+func TestPreflightReachesTheAuthorityService(t *testing.T) {
+	dir := t.TempDir()
+	keys, err := keyauthority.Initialize(t.Context(), filepath.Join(dir, "keys"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := restoreauthority.Initialize(t.Context(), filepath.Join(dir, "restore"), keys.Identity())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { catalog.Close() })
+	service := startAuthorityService(t, keys, catalog)
+	config := func(restoreID, runtimeRoot, archives string) ServiceConfig {
+		c, err := decodeServiceConfig(strings.NewReader(workerBase + "," + authoritySection(service.socket, restoreID, keys.Identity()) + "}"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.Root = runtimeRoot
+		if archives != "" {
+			c.Archives = &ServiceArchives{Root: archives}
+		}
+		return c
+	}
+	check := func(c ServiceConfig, status preflight.Status, detail string) {
+		t.Helper()
+		results := c.authorityChecks(t.Context())
+		if len(results) != 1 || results[0].Check != "authority" || results[0].Status != status || !strings.Contains(results[0].Detail, detail) {
+			t.Fatalf("%+v, want %s %q", results, status, detail)
+		}
+	}
+	runtimeRoot, archives := filepath.Join(dir, "runtime"), filepath.Join(dir, "archives")
+	check(config(catalog.Identity(), runtimeRoot, archives), preflight.OK, "standalone")
+	check(config(catalog.Identity(), filepath.Join(dir, "keys", "runtime"), archives), preflight.Fail, "runtime root")
+	check(config(catalog.Identity(), runtimeRoot, filepath.Join(dir, "restore", "archives")), preflight.Fail, "archives")
+	check(config("restoreauth_"+strings.Repeat("0", 32), runtimeRoot, archives), preflight.Fail, "other authorities")
+	service.stop(t)
+	check(config(catalog.Identity(), runtimeRoot, archives), preflight.Fail, "does not answer")
+	if results := (ServiceConfig{}).authorityChecks(t.Context()); len(results) != 0 {
+		t.Fatal("a laboratory host's preflight checked authorities", results)
+	}
 }
 
 func within(t *testing.T, d time.Duration) context.Context {
