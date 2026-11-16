@@ -222,10 +222,24 @@ receipt key file, the clock and PostgreSQL.
    `make-certs.sh` for a lab.
 5. **Private services.** Install [deploy/interop](../deploy/interop) and its
    unit ([interop.md](interop.md#running-on-a-host)).
-6. **Preflight.** Run `agentcapsule-worker -preflight` and
+6. **Schema and platform credential.** `agentcapsule-admin migrate`, then
+   `agentcapsule-admin bootstrap-platform` ([bootstrap.md](bootstrap.md)): the
+   API's preflight reads the receipt key it writes.
+7. **Authority service.** Initialize both authorities, start
+   `agentcapsule-authority serve`, and give the worker its `authority` section
+   ([recovery.md](recovery.md#install-the-authority-service)). The worker's
+   preflight checks that the service answers.
+8. **Preflight.** Run `agentcapsule-worker -preflight` and
    `agentcapsule-api -preflight`, and fix every `fail`.
-7. **Start** the worker, then the API, without `AGENTCAPSULE_MODE`. Run the
+9. **Start** the worker, then the API, without `AGENTCAPSULE_MODE`. Run the
    preflights again after each change of host, certificate or configuration.
+   Then create the organizations ([bootstrap.md](bootstrap.md#4-create-the-organization-and-its-first-owner)).
+
+`scripts/verify-install.py` runs steps 3, 4 (the API's certificate) and 6 to
+8 from an empty directory, without root, then creates an organization and
+ends with a call by its owner. On a host without the artifacts or without
+access to `/dev/kvm`, the worker's preflight reports them as failed and the
+worker refuses to start.
 
 ## Pinned versions
 
@@ -266,9 +280,12 @@ Not pinned yet:
 ## What a real host still has to show
 
 The checks are tested on a fake host root, and the KVM probe on this
-development machine's `/dev/kvm`. A KVM host run must still show the worker
-starting with the mandatory checks passing, and refusing to start on a host
-that fails one. `scripts/verify-runtime.py` with a control guest starts the
+development machine's `/dev/kvm`. On this machine, `scripts/verify-install.py`
+runs the worker's preflight with every check passing when it is given the
+artifacts, and shows the worker refusing to start when they are missing. It
+runs them in a user namespace where its account is root, not as root. A KVM
+host run as root must still show the worker starting with the mandatory
+checks passing. `scripts/verify-runtime.py` with a control guest starts the
 worker binary in `TestMaintenanceServiceRecoversRenewalCrashesWithoutIncomingWork`,
 which covers the first part.
 No campaign yet runs the preflight on a production server, with PostgreSQL

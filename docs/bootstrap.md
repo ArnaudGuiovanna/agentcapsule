@@ -15,7 +15,9 @@ described in [docs/worker.md](worker.md).
 
 ## Before you start
 
-- Build the binaries: `go build -trimpath -o bin/ ./cmd/...`.
+- Build the binaries: `go build -trimpath -o bin/ ./cmd/...`. The build needs
+  Go 1.27.3, a C compiler and the headers of libcryptsetup
+  (`libcryptsetup-dev`): the worker links it.
 - Create a PostgreSQL database and a role that owns it. The admin commands and
   the API read the connection from `AGENTCAPSULE_DATABASE_URL`, in their
   protected environment, never from a flag.
@@ -67,8 +69,9 @@ It prints `platform_bootstrap_complete`. It creates two private files (mode
 Running the command again with the same files confirms the same credential,
 without extending it. With another token file it is refused
 (`platform_bootstrap_rejected_conflict`) while a platform credential is
-active. To replace the credential, revoke it, then run the command with a new
-token file:
+active. The refused command still writes the new token file (mode 0600):
+delete it, or use it for the replacement. To replace the credential, revoke it, then run the command
+with a new token file:
 
 ```sh
 agentcapsule-admin list-credentials
@@ -83,6 +86,9 @@ AGENTCAPSULE_DATABASE_URL=... agentcapsule-api \
   -listen 0.0.0.0:8443 -tls-cert /etc/agentcapsule/api.crt -tls-key /etc/agentcapsule/api.key \
   -tls-server-name api.example.net
 ```
+
+`-host-id` names the worker's host: give the `host_id` of the worker's
+configuration ([worker.md](worker.md)). Agents are created on that host.
 
 In production the API serves HTTPS only. Its certificate, its preflight
 (`-preflight`) and the development mode are described in
@@ -186,6 +192,23 @@ token, a header such as `X-User-ID`, an unsigned token, a token signed by
 another key, or a token for a subject that is not a member.
 
 For each later organization, repeat steps 4 to 6.
+
+## Before the first agent
+
+An organization runs agents once the host has, in this order:
+- the authority service and the worker, with its preflight passing
+  ([install.md](install.md#operator-steps), [worker.md](worker.md));
+- the host's capacity: `agentcapsule-admin configure-host -host-id local
+  -storage-mib ...`, with the API's `-host-id`;
+- a harness release, imported by the platform ([registry.md](registry.md)) or
+  a local image approved with `agentcapsule-admin approve-local-harness`;
+- the transit keys: `agentcapsule-admin activate-transit-keys`, then the API's
+  `-transit-active-key` and `-transit-key`. The API admits no message without
+  them ([docs/api](api/README.md#private-instructions)).
+
+`scripts/verify-install.py` follows this page and
+[install.md](install.md) from an empty directory, without root, up to the
+worker's preflight and a call by the organization's owner.
 
 ## What is audited
 

@@ -527,3 +527,68 @@ jobs:
           on one machine, with archive_timeout scaled to 30 seconds; no failover between
           real hosts is run, and the agents are not part of it (D-05, KVM).
           EOF
+
+  install:
+    name: Install from scratch (bootstrap.md and install.md, without root)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up pinned Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: false
+          cache-dependency-path: go.sum
+
+      - name: Install native and database dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential libcryptsetup-dev postgresql-16 postgresql-client-16
+          postgres_executable="$(dpkg-query -L postgresql-16 | awk '/\/bin\/postgres$/ {print; exit}')"
+          test -x "$postgres_executable"
+          echo "PG_BIN=$(dirname "$postgres_executable")" >> "$GITHUB_ENV"
+
+      - name: Allow unprivileged user namespaces
+        run: |
+          # Ubuntu 24.04 restricts them with AppArmor. The run starts the
+          # worker's preflight and the authority service in a user namespace
+          # where its account is root (unshare -r); see verify-install.py.
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
+      - name: Install from scratch, then sign in as the organization's owner
+        run: |
+          python3 scripts/verify-install.py --go "$(command -v go)" --pg-bin "$PG_BIN" \
+            --output "$RUNNER_TEMP/ci/install"
+
+      - name: Preserve the install's evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: install-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 7
+          if-no-files-found: warn
+          path: ${{ runner.temp }}/ci/install/
+
+      - name: State what this job does not validate
+        if: always()
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          This job builds every binary and installs a host from an empty directory as
+          docs/bootstrap.md and docs/install.md say, without root: PostgreSQL, the
+          migration, the platform credential, the API over HTTPS, an organization with
+          its trust, the authority service (standalone) and the worker's preflight. It
+          starts no VM: the runner gives no KVM device to this account, and no
+          Firecracker, guest kernel or guest image is built, so the preflight reports
+          those checks as failed and the worker refuses to start. The Directory and
+          the SLIM node (Docker) and the authorities' replica are not installed.
+          EOF
