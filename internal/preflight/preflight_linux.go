@@ -84,6 +84,8 @@ func Write(w io.Writer, results []Result) error {
 // from the operator's configuration are used as they are.
 type Host struct {
 	Root string
+	// Stat describes a system path, following symlinks (os.Stat).
+	Stat func(path string) (os.FileInfo, error)
 	// Release returns the running kernel's release (uname -r).
 	Release func() (string, error)
 	// KVM opens the KVM device read-write and returns its API version and
@@ -100,7 +102,7 @@ type Host struct {
 
 // System is the real host.
 func System() Host {
-	return Host{Root: "/", Release: release, KVM: probeKVM, Statfs: statfs, ClockSynchronized: clockSynchronized,
+	return Host{Root: "/", Stat: os.Stat, Release: release, KVM: probeKVM, Statfs: statfs, ClockSynchronized: clockSynchronized,
 		Version: version, Now: time.Now}
 }
 
@@ -199,7 +201,7 @@ func KVM(h Host) Result {
 	const check = "kvm"
 	path := h.path("/dev/kvm")
 	fix := "run on a host with hardware virtualization (VT-x or AMD-V enabled in the firmware, or nested virtualization), with kvm_intel or kvm_amd loaded"
-	st, err := os.Stat(path)
+	st, err := h.Stat(path)
 	if err != nil {
 		return fail(check, "/dev/kvm is missing", fix)
 	}

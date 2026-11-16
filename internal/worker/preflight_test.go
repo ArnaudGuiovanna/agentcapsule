@@ -153,7 +153,7 @@ func TestPreflightOfAConfiguration(t *testing.T) {
 		t.Setenv(name, "")
 	}
 	dir := t.TempDir()
-	h := preflight.Host{Root: dir, Release: func() (string, error) { return "6.1.0", nil },
+	h := preflight.Host{Root: dir, Stat: os.Stat, Release: func() (string, error) { return "6.1.0", nil },
 		KVM: func(string, []preflight.KVMCapability) (int, []preflight.KVMCapability, error) { return 12, nil, nil },
 		Statfs: func(string) (syscall.Statfs_t, error) {
 			return syscall.Statfs_t{Type: 0xEF53, Blocks: 100, Bfree: 90, Bavail: 90, Bsize: 4096}, nil

@@ -36,6 +36,7 @@ func fakeHost(t *testing.T) (Host, string) {
 	root := t.TempDir()
 	return Host{
 		Root:    root,
+		Stat:    os.Stat,
 		Release: func() (string, error) { return "6.1.0-28-amd64", nil },
 		KVM: func(string, []KVMCapability) (int, []KVMCapability, error) {
 			return kvmAPIVersion, nil, nil
@@ -81,13 +82,7 @@ func TestKVMDevice(t *testing.T) {
 		t.Fatal(err)
 	}
 	expect(t, KVM(h), Fail, "device 1:3, not KVM")
-	if _, err := os.Stat("/dev/kvm"); err != nil {
-		t.Skip("no /dev/kvm on this machine: the device's answers are not checked")
-	}
-	os.Remove(filepath.Join(root, "dev/kvm"))
-	if err := os.Symlink("/dev/kvm", filepath.Join(root, "dev/kvm")); err != nil {
-		t.Fatal(err)
-	}
+	h.Stat = kvmDevice(h.Stat)
 	expect(t, KVM(h), OK, "KVM API 12")
 	h.KVM = func(string, []KVMCapability) (int, []KVMCapability, error) { return 0, nil, os.ErrPermission }
 	expect(t, KVM(h), Fail, "cannot be opened read-write")
@@ -97,11 +92,39 @@ func TestKVMDevice(t *testing.T) {
 	expect(t, KVM(h), Fail, "KVM lacks KVM_CAP_IOEVENTFD, KVM_CAP_IRQFD")
 }
 
-// On a machine whose user may open /dev/kvm, the real device answers.
-func TestKVMProbeOfTheRealDevice(t *testing.T) {
+// kvmDevice makes stat describe <root>/dev/kvm as the KVM character device
+// (10:232), which a test cannot create without root.
+func kvmDevice(stat func(string) (os.FileInfo, error)) func(string) (os.FileInfo, error) {
+	return func(path string) (os.FileInfo, error) {
+		if strings.HasSuffix(path, "/dev/kvm") {
+			return fakeDevice{}, nil
+		}
+		return stat(path)
+	}
+}
+
+type fakeDevice struct{}
+
+func (fakeDevice) Name() string       { return "kvm" }
+func (fakeDevice) Size() int64        { return 0 }
+func (fakeDevice) Mode() os.FileMode  { return os.ModeDevice | os.ModeCharDevice | 0o660 }
+func (fakeDevice) ModTime() time.Time { return time.Time{} }
+func (fakeDevice) IsDir() bool        { return false }
+func (fakeDevice) Sys() any           { return &syscall.Stat_t{Rdev: 10<<8 | 232} }
+
+// The real probe: a device that is not KVM answers no KVM ioctl; where this
+// machine's user may open /dev/kvm, the real device answers too.
+func TestKVMProbe(t *testing.T) {
+	if _, _, err := probeKVM("/dev/null", FirecrackerCapabilities); err == nil {
+		t.Fatal("/dev/null answered the KVM ioctl")
+	}
+	if _, _, err := probeKVM(filepath.Join(t.TempDir(), "kvm"), FirecrackerCapabilities); err == nil {
+		t.Fatal("a missing device opened")
+	}
 	f, err := os.OpenFile("/dev/kvm", os.O_RDWR, 0)
 	if err != nil {
-		t.Skip("/dev/kvm cannot be opened here")
+		t.Log("/dev/kvm cannot be opened here: only the refusals were checked")
+		return
 	}
 	f.Close()
 	api, missing, err := probeKVM("/dev/kvm", FirecrackerCapabilities)
@@ -262,15 +285,7 @@ func TestRuntimeFileSystemAndDisk(t *testing.T) {
 
 func TestMandatoryOnAGoodFakeHost(t *testing.T) {
 	h, root := fakeHost(t)
-	if _, err := os.Stat("/dev/kvm"); err != nil {
-		t.Skip("no /dev/kvm to stand for the device")
-	}
-	if err := os.MkdirAll(filepath.Join(root, "dev"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink("/dev/kvm", filepath.Join(root, "dev/kvm")); err != nil {
-		t.Fatal(err)
-	}
+	h.Stat = kvmDevice(h.Stat)
 	write(t, filepath.Join(root, "sys/fs/cgroup/cgroup.controllers"), "cpu memory pids\n")
 	write(t, filepath.Join(root, "sys/fs/cgroup/cgroup.subtree_control"), "cpu memory pids\n")
 	for _, ns := range []string{"mnt", "pid", "net"} {
@@ -458,7 +473,10 @@ func TestDatabaseRefusesBeforeConnecting(t *testing.T) {
 func TestDatabaseOverAUnixSocket(t *testing.T) {
 	dsn := os.Getenv("AGENTCAPSULE_TEST_POSTGRES")
 	if dsn == "" {
-		t.Skip("AGENTCAPSULE_TEST_POSTGRES not set")
+		if os.Getenv("AGENTCAPSULE_REQUIRE_POSTGRES") == "1" {
+			t.Fatal("required PostgreSQL missing")
+		}
+		t.Skip("run scripts/verify-postgres.py")
 	}
 	expect(t, Database(t.Context(), operatorconfig.Production, dsn), OK, "over a Unix socket")
 }
