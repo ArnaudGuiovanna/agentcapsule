@@ -199,13 +199,17 @@ func TestAPIBinariesBootstrapServeAndShutdown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"agentcapsule-admin", "agentcapsule-api"} {
+	for _, name := range []string{"agentcapsule-admin", "agentcapsule-api", "agentcapsule-authority"} {
 		build := exec.CommandContext(t.Context(), "go", "build", "-o", filepath.Join(dir, name), "./cmd/"+name)
 		build.Dir = root
 		if output, err := build.CombinedOutput(); err != nil {
 			t.Fatalf("build %s: %v %s", name, err, output)
 		}
 	}
+	// Production requires the authority service (ADR 006): both
+	// authorities, standalone, and the service as this account, which is
+	// also the API's.
+	authority := startAuthorityService(t, dir)
 	tokenFile, keyFile := filepath.Join(dir, "platform.token"), filepath.Join(dir, "receipt.key")
 	if err = os.WriteFile(keyFile, bytes.Repeat([]byte{0x36}, 32), 0600); err != nil {
 		t.Fatal(err)
@@ -278,7 +282,8 @@ func TestAPIBinariesBootstrapServeAndShutdown(t *testing.T) {
 	defer log.Close()
 	cmd := exec.CommandContext(t.Context(), filepath.Join(dir, "agentcapsule-api"), "-listen", address, "-receipt-key-file", keyFile, "-host-id", "local",
 		"-transit-active-key", "v1", "-transit-key", "v1="+transitKey, "-metrics-listen", metricsAddress,
-		"-tls-cert", certFile, "-tls-key", certKeyFile, "-tls-server-name", "127.0.0.1")
+		"-tls-cert", certFile, "-tls-key", certKeyFile, "-tls-server-name", "127.0.0.1",
+		"-authority-socket", authority.socket, "-restore-authority-id", authority.restoreID, "-key-authority-id", authority.keyID)
 	cmd.Env = append(env, "AGENTCAPSULE_MODE=")
 	cmd.Stdout = log
 	cmd.Stderr = log
@@ -315,6 +320,38 @@ func TestAPIBinariesBootstrapServeAndShutdown(t *testing.T) {
 			t.Fatal("API did not become ready")
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+	// The readiness probe reports the authority service: its mode while it
+	// answers, 503 while it does not; the API reaches it again once it
+	// restarts.
+	readiness := func() (int, map[string]any) {
+		t.Helper()
+		r, err := client.Get("https://" + address + "/v1/health/ready")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer r.Body.Close()
+		var body map[string]any
+		if err = json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		return r.StatusCode, body
+	}
+	if code, body := readiness(); code != 200 || body["status"] != "ready" || body["authority"] != "standalone" {
+		t.Fatal("readiness with the authority service", code, body)
+	}
+	authority.stop(t)
+	if code, body := readiness(); code != 503 || body["code"] != "authority_unavailable" {
+		t.Fatal("readiness without the authority service", code, body)
+	}
+	authority.start(t)
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+		if code, body := readiness(); code == 200 && body["authority"] == "standalone" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the API did not reach its restarted authority service")
+		}
 	}
 	req, err := http.NewRequestWithContext(t.Context(), "POST", "https://"+address+"/v1/organizations", strings.NewReader(`{"name":"Process organization","initial_owner":{"issuer":"https://issuer.example","subject":"process-owner","display_name":"Process owner"}}`))
 	if err != nil {
@@ -391,6 +428,87 @@ func TestAPIBinariesBootstrapServeAndShutdown(t *testing.T) {
 	if !strings.Contains(string(output), `"event":"http_request","request_id":"`+created+`","route":"/v1/organizations","method":"POST","status":201`) {
 		t.Fatal("no event for the request", string(output))
 	}
+}
+
+// authorityService is agentcapsule-authority serve, standalone, as the API's
+// account: the API socket admits it.
+type authorityService struct {
+	dir, config, socket, restoreID, keyID string
+	process                               *exec.Cmd
+	done                                  chan error
+}
+
+// startAuthorityService initializes both authorities with agentcapsule-admin
+// and starts the service built in dir, its sockets in a short directory.
+func startAuthorityService(t *testing.T, dir string) *authorityService {
+	t.Helper()
+	admin := func(args ...string) map[string]string {
+		t.Helper()
+		c := exec.CommandContext(t.Context(), filepath.Join(dir, "agentcapsule-admin"), args...)
+		output, err := c.Output()
+		var ids map[string]string
+		if err != nil || json.Unmarshal(output, &ids) != nil {
+			t.Fatalf("agentcapsule-admin %s: %v %s", args[0], err, output)
+		}
+		return ids
+	}
+	keyRoot, restoreRoot := filepath.Join(dir, "key-authority"), filepath.Join(dir, "restore-authority")
+	for _, root := range []string{keyRoot, restoreRoot} {
+		if err := os.Mkdir(root, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	keyID := admin("init-key-authority", "-root", keyRoot)["authority_id"]
+	restoreID := admin("init-restore-authority", "-root", restoreRoot, "-data-root", filepath.Join(dir, "host"),
+		"-key-authority-root", keyRoot, "-key-authority-id", keyID)["authority_id"]
+	sockets, err := os.MkdirTemp("", "acapi-") // a socket path has at most 107 bytes
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(sockets) })
+	a := &authorityService{dir: dir, config: filepath.Join(dir, "authority.json"), socket: filepath.Join(sockets, "api.sock"),
+		restoreID: restoreID, keyID: keyID}
+	config := fmt.Sprintf(`{"version":2,"role":"primary","key_authority":{"root":%q,"identity":%q},`+
+		`"restore_authority":{"root":%q,"identity":%q},"worker_socket":%q,"api_socket":%q,"api_uid":%d}`,
+		keyRoot, keyID, restoreRoot, restoreID, filepath.Join(sockets, "worker.sock"), a.socket, os.Getuid())
+	if err = os.WriteFile(a.config, []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a.start(t)
+	t.Cleanup(func() {
+		if a.process != nil {
+			_ = a.process.Process.Kill()
+			<-a.done
+		}
+	})
+	return a
+}
+
+func (a *authorityService) start(t *testing.T) {
+	t.Helper()
+	a.process = exec.Command(filepath.Join(a.dir, "agentcapsule-authority"), "serve", "-config", a.config)
+	if err := a.process.Start(); err != nil {
+		t.Fatal(err)
+	}
+	a.done = make(chan error, 1)
+	go func(p *exec.Cmd, done chan error) { done <- p.Wait() }(a.process, a.done)
+}
+
+// stop ends the service with SIGTERM, as systemd stops it.
+func (a *authorityService) stop(t *testing.T) {
+	t.Helper()
+	if err := a.process.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-a.done:
+		if err != nil {
+			t.Fatal("the authority service did not stop cleanly", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the authority service did not stop")
+	}
+	a.process = nil
 }
 
 // writeServerCertificate replaces the API's certificate files with a new

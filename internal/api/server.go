@@ -31,7 +31,23 @@ type Server struct {
 	// routes are the registered patterns, the vocabulary of telemetry.
 	routes    []string
 	telemetry *apiTelemetry
+	// authority reports the authority service to the readiness probe; nil
+	// without the service (development mode only).
+	authority AuthorityStatus
 }
+
+// AuthorityStatus gives the authority service's mode: standalone,
+// synchronous, degraded or waiting. It fails when the service does not
+// answer with the identities the API pins (ADR 006, wave 4).
+type AuthorityStatus func(context.Context) (string, error)
+
+// authorityProbe bounds the readiness probe's question to the authority
+// service, well within the request's own deadline.
+const authorityProbe = 2 * time.Second
+
+// ReportAuthority makes the readiness probe report the authority service.
+// Call it before serving.
+func (s *Server) ReportAuthority(status AuthorityStatus) { s.authority = status }
 
 func (s *Server) handle(pattern string, h func(http.ResponseWriter, *http.Request)) {
 	s.routes = append(s.routes, pattern)
@@ -337,7 +353,21 @@ func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 		failure(w, err)
 		return
 	}
-	jsonResponse(w, 200, map[string]string{"status": "ready"})
+	body := map[string]string{"status": "ready"}
+	if s.authority != nil {
+		// Its mode is reported: degraded mode and the wait for the replica
+		// do not stop the API. A service that does not answer with the
+		// pinned identities does.
+		probe, cancel := context.WithTimeout(r.Context(), authorityProbe)
+		mode, err := s.authority(probe)
+		cancel()
+		if err != nil {
+			problem(w, 503, "authority_unavailable")
+			return
+		}
+		body["authority"] = mode
+	}
+	jsonResponse(w, 200, body)
 }
 func (s *Server) users(w http.ResponseWriter, r *http.Request) {
 	if !method(w, r, "GET", "POST") {
