@@ -193,6 +193,8 @@ func failure(w http.ResponseWriter, err error) {
 		problem(w, 403, "forbidden")
 	case errors.Is(err, controlplane.ErrNotFound):
 		problem(w, 404, "not_found")
+	case errors.Is(err, controlplane.ErrProviderAddress):
+		problem(w, 400, "provider_address_not_allowed")
 	case errors.Is(err, controlplane.ErrInput):
 		problem(w, 400, "invalid_request")
 	case errors.Is(err, controlplane.ErrConflict):

@@ -1,7 +1,9 @@
 # OPS-01 — Transport security and preflight
 
-Date: November 16, 2026. **Status: built; four defaults pending the product
-owner** (see [Questions](#questions-for-the-product-owner)). References:
+Date: November 16, 2026. **Status: built; six defaults pending the product
+owner** (see [Questions](#questions-for-the-product-owner)). Amended on
+November 16, 2026: the addresses the worker may call a model provider at
+(§4, questions 5 and 6). References:
 [docs/product.md](../product.md) §2 (MVP outcome, KVM required), §4 (API
 conventions, RUN-012), §6 (secure by default), OPS-01 of the
 [roadmap](../../ROADMAP.md). The operator's side is in
@@ -26,7 +28,7 @@ An inventory of every hop of a production install, before this change:
 | Edge → Directory server → schema server | Clear text on an internal Docker network without a route out. | Accepted (below). |
 | Worker ↔ SLIM bridge | Unix sockets with peer user checks. | None. |
 | Bridge → SLIM node | Mutual TLS 1.3 on loopback, its own CA; the bridge refuses a node that is not `https`. | None. |
-| Worker → model providers | HTTPS, or plain HTTP to `localhost`, `127.0.0.1` or `::1`. | A provider key could cross clear text. An organization administrator could point the worker at any loopback port of the host. |
+| Worker → model providers | HTTPS, or plain HTTP to `localhost`, `127.0.0.1` or `::1`. | A provider key could cross clear text. An organization administrator could point the worker at any loopback port of the host and, over HTTPS, at any address: the host, the operator's network, a cloud metadata service (found after this record; §4). |
 | Worker → registries | HTTPS, or plain HTTP for a `local` rule, which may carry Basic credentials. | Credentials and packages in clear on the operator's network. |
 | Worker → authority replica | Mutual TLS 1.3, pinned certificates. | None. |
 | Backups | pgBackRest and rclone: HTTPS to S3 with verification, SFTP with a pinned host key, data encrypted before it leaves. | None. |
@@ -43,9 +45,10 @@ checksums file of its own release, which pins nothing.
 
 `AGENTCAPSULE_MODE` is unset or `production`, or `development`. Any other
 value stops the process. Development allows clear text on loopback and to
-PostgreSQL, a `local` registry rule and a model provider on plain HTTP, and
-every process says so on standard error at each start. It never relaxes the
-host checks: VM isolation is never simulated.
+PostgreSQL, a `local` registry rule and a model provider on plain HTTP (at
+an address the operator allows, §4), and every process says so on standard
+error at each start. It never relaxes the host checks: VM isolation is never
+simulated.
 
 An environment variable, not a flag: the three binaries read the database URL
 from the environment already, and `agentcapsule-admin` has a flag set per
@@ -75,6 +78,42 @@ In production the gateway refuses a model provider whose URL is not `https`,
 before anything is sent (`rejected`). The worker refuses to start with a
 `local` registry rule. The API still accepts the registration of a
 `http://localhost` provider: the refusal happens where the hop would be.
+
+**Provider addresses** (amended on November 16, 2026). HTTPS alone let an
+organization administrator register a provider at an internal address: the
+worker then sent its requests, with the provider key, to a service of the
+host or of the operator's network. The gateway now applies the registry
+client's approach:
+- It connects only to public addresses. It checks each address when it
+  connects, after DNS resolution, so a public name that resolves to an
+  internal address is refused like the address. This holds in both modes.
+- Refused unless the operator allows them: loopback, private (RFC 1918,
+  RFC 4193), shared (carrier-grade NAT, RFC 6598) and the other reserved
+  ranges. IPv4-mapped and NAT64 (`64:ff9b::/96`) addresses count as the IPv4
+  address they carry.
+- Always refused, even inside an allowed range: unspecified, multicast and
+  link-local addresses (`169.254.0.0/16` and `fe80::/10`, where most clouds
+  serve instance metadata), `0.0.0.0/8`, and the metadata addresses outside
+  these ranges: `100.100.100.200` (Alibaba), `168.63.129.16` (Azure),
+  `fd00:ec2::254` and `fd00:ec2::23` (AWS), `fd20:ce::254` (Google).
+- The operator, not an organization, allows internal providers:
+  `allowed_internal_providers` in the worker's `llm` section, as `host:port`
+  or CIDR prefixes ([install.md](../install.md#model-providers-on-internal-addresses)).
+  There is no default entry, so question 2's default still holds.
+- No redirect is followed. A 3xx answer is a refusal (`rejected`): the key
+  never reaches another address. Environment proxies are ignored, as for
+  registries: the check would see the proxy, not the provider.
+- A refused address is `rejected` for the call: nothing was sent, the
+  reservation is released and the provider's breaker stays closed.
+- The API refuses an `https` URL that writes an internal address out (an IP
+  address, `localhost`, or a numeric form such as `127.1`), with the code
+  `provider_address_not_allowed`. A model server on the operator's network is
+  registered by its name, which its certificate covers. The check at
+  connection is the real guard: the API does not know the worker's allowlist.
+
+Tests run mock providers on loopback. They reach them through a constructor
+that takes test options and panics outside a test binary (`testing.Testing`),
+so no configuration can reach those options.
 
 ### 5. Two clear-text hops stay, inside the host
 
@@ -130,6 +169,14 @@ packages, and the platform's binaries, which are not signed yet.
 - `internal/preflight` and `ServiceConfig.Preflight` in `internal/worker`.
 - The API, the worker and `agentcapsule-admin` apply the mode.
 - The gateway's HTTPS rule.
+- The gateway's address policy and the operator's allowlist
+  (`internal/llmgateway/egress.go`, `ServiceLLM` in `internal/worker`), and
+  the API's refusal of an internal address at registration. Tests: each
+  class of address refused before anything is sent, a public name resolving
+  to `127.0.0.1` through a test resolver, the allowlist by name, address and
+  prefix, metadata addresses refused inside an allowed prefix, five redirect
+  statuses never followed, the worker's configuration, and the registration
+  refusal and its API code.
 - Tests: every check on a fake host root, and the KVM probe on a real
   `/dev/kvm` when the user may open it; TLS 1.1 and clear text refused; a
   reload served, a bad reload kept out; each production refusal of the three
@@ -166,7 +213,9 @@ Each default below is in the code; the product owner can change it.
    recommendation: (a).** With (b), any organization administrator can make
    the worker send requests, with the provider key, to any plain HTTP service
    on the host's loopback (the metrics endpoints, a local model server of
-   another organization).
+   another organization). **Amended:** with TLS in front of it, the operator
+   may now allow such a server in the worker's configuration (§4); plain
+   HTTP stays refused in production.
 3. **A private registry on the operator's network.** A registry at
    `10.0.0.5:5000` needs a `local` rule, which uses plain HTTP and is refused
    in production. Options: (a) refuse: use a registry with HTTPS and a public
@@ -177,3 +226,18 @@ Each default below is in the code; the product owner can change it.
    warning in the preflight. **Default and recommendation: (b).** The
    kernel has what the worker needs, and 6.1 and 6.18 are not what most
    distributions ship.
+5. **A model server the operator allows.** The operator runs a model server
+   at `models.corp.example:11434` on their network and allows it in the
+   worker's configuration. Options: (a) every organization of the
+   installation may register it as a provider; (b) the operator also names
+   the organizations that may. **Default: (a). Recommendation: (a) for the
+   MVP, (b) when a server is dedicated to one customer.** Each organization
+   sends its own key; what (a) shares is the server's capacity.
+6. **A host that reaches the internet through a proxy.** The operator's
+   servers reach the internet only through a corporate proxy
+   (`HTTPS_PROXY`). Options: (a) the worker ignores the proxy, for model
+   providers as for registries: providers are unreachable from such a host;
+   (b) a proxy setting in the worker's configuration, and the proxy, not the
+   worker, decides which addresses are reachable. **Default and
+   recommendation: (a) until a customer needs (b).** Through a proxy, the
+   worker's address check sees only the proxy.

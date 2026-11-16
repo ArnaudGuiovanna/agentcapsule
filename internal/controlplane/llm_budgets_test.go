@@ -208,7 +208,7 @@ func TestMeteredCallSettlesReleasesAndMarksUnknown(t *testing.T) {
 	if _, err := b.s.pool.Exec(t.Context(), `UPDATE llm_providers SET base_url=$1`, srv.URL); err != nil {
 		t.Fatal(err)
 	}
-	svc, err := NewLLMService(b.a, llmgateway.New(llmgateway.Config{Timeout: 200 * time.Millisecond, MaxAttempts: 1}))
+	svc, err := NewLLMService(b.a, llmgateway.NewForTests(llmgateway.Config{Timeout: 200 * time.Millisecond, MaxAttempts: 1}, llmgateway.TestOptions{Loopback: true}))
 	if err != nil {
 		t.Fatal(err)
 	}

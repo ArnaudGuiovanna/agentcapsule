@@ -78,7 +78,7 @@ func TestProductWorkerTenantRunsAnAdaptedAgent(t *testing.T) {
 		}
 	}))
 	t.Cleanup(provider.Close)
-	svc, err := controlplane.NewLLMService(l.accounts, llmgateway.New(llmgateway.Config{Timeout: 30 * time.Second, MaxAttempts: 1}))
+	svc, err := controlplane.NewLLMService(l.accounts, llmgateway.NewForTests(llmgateway.Config{Timeout: 30 * time.Second, MaxAttempts: 1}, llmgateway.TestOptions{Loopback: true}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +155,7 @@ func TestProductWorkerTenantRunsPiOnARealModel(t *testing.T) {
 		secret = "a-local-server-needs-no-key"
 	}
 	l := newRegistryLab(t)
-	svc, err := controlplane.NewLLMService(l.accounts, llmgateway.New(llmgateway.Config{Timeout: 3 * time.Minute, MaxAttempts: 1}))
+	svc, err := controlplane.NewLLMService(l.accounts, llmgateway.NewForTests(llmgateway.Config{Timeout: 3 * time.Minute, MaxAttempts: 1}, llmgateway.TestOptions{Loopback: true}))
 	if err != nil {
 		t.Fatal(err)
 	}

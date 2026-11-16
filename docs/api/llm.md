@@ -7,7 +7,7 @@ carry this scope.
 
 | Route | Effect |
 |---|---|
-| `POST /v1/llm/providers` | declares a provider (`openai_compatible` or `anthropic`), https URL (or http to localhost, which the worker refuses to call in production, [ADR 010](../adr/010-transport-security-and-preflight.md)), write-only credential |
+| `POST /v1/llm/providers` | declares a provider (`openai_compatible` or `anthropic`), https URL (or http to localhost, which the worker refuses to call in production, [ADR 010](../adr/010-transport-security-and-preflight.md)), write-only credential. An https URL that writes an internal address out (an IP address that is not public, `localhost`, a numeric form such as `127.1`) is refused with `provider_address_not_allowed` (below) |
 | `GET /v1/llm/providers` | metadata, never the credential |
 | `POST /v1/llm/providers/{id}/rotate` | new credential generation, effective on the next call |
 | `POST /v1/llm/providers/{id}/disable` | permanent: erases the ciphertext, disables the aliases |
@@ -68,9 +68,32 @@ to all. The defaults are those of
   `ErrOutcomeUnknown` and is never replayed; the cost must then be treated as
   uncertain (LLM-03). A 4xx other than 429 is a permanent refusal.
 - Per-provider circuit breaker: opens after N consecutive failures, a single
-  probe in half-open state. Redirects are not followed.
+  probe in half-open state.
+- Redirects are not followed: a 3xx answer is a permanent refusal, so the
+  credential never goes to another address. Environment proxies are ignored.
 - Nothing of the content or the credential is logged; there is no promise of
   exactly-once effect for an external call.
+
+### Provider addresses
+
+The worker calls a provider at a public address only, unless the platform
+operator allows an internal one. It checks each address when it connects,
+after DNS resolution: a public name that resolves to `127.0.0.1` is refused
+like `127.0.0.1`.
+- Refused unless the operator allows them: loopback, private (RFC 1918,
+  RFC 4193), carrier-grade NAT and the other reserved ranges.
+- Always refused: unspecified, multicast and link-local addresses, and the
+  cloud metadata addresses.
+- A refused call is a permanent refusal (`rejected` on the VM channel):
+  nothing is sent, the reservation is released, the breaker stays closed.
+
+The operator allows a model server on their network or on the host in the
+worker's configuration, `"llm": {"allowed_internal_providers": [...]}`, as
+`host:port` or CIDR prefixes; there is no default entry
+([install.md](../install.md#model-providers-on-internal-addresses)). An
+organization cannot widen it. Register such a server by its name, which its
+certificate covers: `https://models.corp.example:11434/v1`, not
+`https://10.20.0.7:11434/v1`.
 
 ### Tests against a real provider
 
@@ -226,7 +249,9 @@ ledger's request key.
 - **Activation**: the worker offers the bridge only if its configuration contains
   `"llm": {"receipt_key": "/absolute/path/key"}`, the same private 32-byte key as
   the API (provider credentials are encrypted under a key derived from it).
-  Without it, the bridge answers `unavailable`.
+  Without it, the bridge answers `unavailable`. The same section's
+  `allowed_internal_providers` lists the internal provider addresses the
+  operator allows ([provider addresses](#provider-addresses)).
 
 ## Native requests from the model endpoint
 
