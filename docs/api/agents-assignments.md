@@ -21,7 +21,7 @@ deletes a tenant agent. A tenant principal never reaches the legacy lists.
 |---|---|---|
 | `POST /v1/agents` | `agent:create` | `org_owner`, `org_admin`, `agent_operator` |
 | `GET /v1/agents`, `GET /v1/agents/{id}` | `agent:read` | see below |
-| `GET /v1/operations/{id}` | `agent:read` | requester of the operation, or a role that can read metadata |
+| `GET /v1/operations/{id}` | `agent:read` | requester of the operation while it still sees the agent, or a role that can read metadata |
 | `POST /v1/agents/{id}/wake`, `POST /v1/agents/{id}/sleep` | `agent:operate` | `org_owner`, `org_admin`, `agent_operator` |
 | `DELETE /v1/agents/{id}` | `agent:delete` | `org_owner`, `org_admin` |
 | `POST /v1/agents/{id}/messages` | `agent:invoke` | none: `invoke` permission of an assignment |
@@ -30,10 +30,14 @@ deletes a tenant agent. A tenant principal never reaches the legacy lists.
 | `GET /v1/agents/{id}/assignments` | `agent:assign` | `org_owner`, `org_admin` |
 | `POST /v1/agents/{id}/assignments/{assignment_id}/revoke` | `agent:assign` | `org_owner`, `org_admin` |
 | `POST /v1/agents/{id}/assignments/{assignment_id}/replace` | `agent:assign` | `org_owner`, `org_admin` |
+| `POST /v1/agents/{id}/assignments/{assignment_id}/reassign` | `agent:assign` | `org_owner`, `org_admin` |
 | `PUT /v1/agents/{id}/directory` | `agent:manage` | `org_owner`, `org_admin`, `agent_operator` |
 | `GET /v1/agents/{id}/directory` | `agent:read` | a role that can read metadata, or a `read_metadata` assignment |
 | `PUT /v1/agents/{id}/inbound` | `agent:manage` | `org_owner`, `org_admin`, `agent_operator` |
 | `GET /v1/agents/{id}/inbound` | `agent:read` | a role that can read metadata, or a `read_metadata` assignment |
+
+The matrix of every route against every role and kind of caller, checked by
+a test, is in [rbac.md](rbac.md).
 
 Creation reuses the worker's existing provisioning (reservation, volume,
 activation, automatic wake). The operations of a tenant agent have no owner
@@ -66,7 +70,8 @@ Mutation, audit (`tenant_agent_audit`) and receipt are atomic.
 - Covered: creation, metadata reading, wake, sleep, deletion, assignment
   management, invocation and reading the result.
 - Widening a target's rights requires revoking its assignment and creating a new
-  one; see "Atomic replacement" below for the single-transaction alternative.
+  one; see "Atomic replacement" below for the single-transaction alternative,
+  and "Reassignment" to move an assignment to another target.
 - Messaging settings, the inbox and instructions of the legacy domain remain
   separate and do not concern tenant agents. Requests between the agents of one
   organization follow the organization's inbound policy (below).
@@ -82,7 +87,9 @@ The encrypted (transit) content is bound to the **requesting principal**, not to
 the agent's administrator. Its result is readable only by that principal, and
 only while they still hold `read_content` on the agent: neither an
 administrator, nor another member, nor a new assignee opens it (D-02), and
-revoking the assignment or the member closes it again. Work accepted before a
+revoking the assignment or the member closes it again. The requester sees the
+metadata of its invocations, operations and files only while it still sees the
+agent through an assignment. Work accepted before a
 revocation may complete for the organization without making its result readable
 to the former member.
 
@@ -100,6 +107,51 @@ audit records `assignment.revoked` then `assignment.created`. As with any
 authority decision, content already produced is not transferred: only the
 original requester re-reads it, while they hold `read_content`.
 
+## Reassignment
+
+`reassign` moves an active assignment to another target. The body names
+exactly one target, `{"principal_id": "prn_..."}` or `{"team_id": "team_..."}`,
+and may give `"permissions"`; without them the new target receives the moved
+assignment's permissions. In one transaction the assignment is revoked and the
+new one created; the answer is the new assignment (201). The audit records
+`assignment.revoked` then `assignment.created`.
+
+| Case | Answer |
+|---|---|
+| Assignment already revoked | 409 |
+| Same target as now (use `replace` to change its permissions) | 409 |
+| The target already holds an active assignment on the agent | 409 |
+| Target unknown, revoked or disabled, or of another organization | 404; nothing changes |
+| Agent being deleted | 409 |
+
+What happens to work and results ([ADR 002](../adr/002-assignment-revocation.md#reading-and-reassignment)):
+
+- **Admitted work is not canceled.** An invocation the old target had admitted
+  before the reassignment committed is delivered and completes for the
+  organization. Its operation keeps the old target as requester. This
+  includes a scheduled invocation (`run_at`) not yet due: it runs when due.
+  The rerun of an invocation lost in a restore does not run, as for any
+  requester that can no longer invoke (`requester_revoked`).
+- **Results stay with their requester.** The old target loses its view of the
+  agent: it no longer invokes, replays an old idempotency key, reads its
+  results or sees its invocations, operations and files. The new target reads
+  only the results of what it asks itself. Administrators keep the redacted
+  metadata, never the content. Reassigning back to the old target makes its
+  own retained results readable again.
+- **The harness's memory is not separated.** The agent's volume may keep what
+  the old target said, and a harness may reuse it in an answer to the new
+  target. When that must not happen, give the new target a new agent.
+
+**Races.** The reassignment takes the organization's row exclusively, like
+every change of authority. An admission, a replay or a result read holds that
+row shared from its authorization to its commit. So each one happens wholly
+before or wholly after the reassignment: an admission authorized first keeps
+its job and the reassignment waits for its commit; one that arrived earlier
+but is authorized after the reassignment is judged against the new target.
+A target revoked just before the reassignment makes it fail with 404, and the
+old assignment stays. These orders are tested against PostgreSQL
+(`internal/controlplane/assignment_reassignment_test.go`).
+
 ## Structured invocations
 
 `POST /v1/agents/{id}/invocations` admits a request exactly like `/messages`
@@ -109,7 +161,7 @@ an `Invocation` resource that is then tracked:
 | Route | Scope | Who |
 |---|---|---|
 | `POST /v1/agents/{id}/invocations` | `agent:invoke` | `invoke` assignment |
-| `GET /v1/agents/{id}/invocations` | `agent:read` | the requester (their own); a role reading metadata (all) |
+| `GET /v1/agents/{id}/invocations` | `agent:read` | the requester (their own) while it still sees the agent; a role reading metadata (all) |
 | `GET /v1/invocations/{id}` | `agent:read` | same |
 | `GET /v1/invocations/{id}/result` | `agent:content:read` | requester AND current `read_content` |
 
@@ -279,7 +331,7 @@ most 8).
 | Route | Scope | Condition |
 |---|---|---|
 | `POST /v1/agents/{id}/attachments` | `agent:invoke` | `invoke` assignment (like the invocation) |
-| `GET /v1/attachments/{id}` | `agent:read` | the sender; a role reading metadata |
+| `GET /v1/attachments/{id}` | `agent:read` | the sender while it still sees the agent; a role reading metadata |
 | `DELETE /v1/attachments/{id}` | `agent:invoke` | the sender, file still `pending` |
 
 - **Storage**: at most 8 MiB per file. The body is split into 256 KiB segments,

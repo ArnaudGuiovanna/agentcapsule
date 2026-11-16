@@ -115,7 +115,7 @@ Notes on the scenarios:
 
 ## What changes in the code
 
-- **Migration 0032**: `peer_redeliveries` (restore, outcome, mailbox, request,
+- **Migration 0033**: `peer_redeliveries` (restore, outcome, mailbox, request,
   kind, `queued` or `skipped`, reason), never changed or deleted.
 - **The restore's last transaction** (`CompleteVolumeRestore`) locks the
   restored agent and the other party of each lost event, in the order of every

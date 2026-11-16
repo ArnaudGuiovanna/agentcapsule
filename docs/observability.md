@@ -57,6 +57,12 @@ volume archives and, on the standby host, its replay.
 | `agentcapsule_worker_volume_archives_total` | counter | `vm`, `outcome` | Volume archive captures ([worker.md](worker.md#nightly-encrypted-archives)), by the VM's state before the capture (`asleep`, `running`): `captured` or `retried` |
 | `agentcapsule_worker_volume_archive_agents` | gauge | — | Live agents of the host whose volume the worker archives |
 | `agentcapsule_worker_volume_archive_oldest_seconds` | gauge | — | Age of the oldest among the agents' newest archives. An agent never archived counts from its initialization |
+| `agentcapsule_llm_calls_total` | counter | `provider` (`openai_compatible`, `anthropic`), `outcome` (`settled`, `released`, `unknown`) | Model calls through the worker's bridge ([llm.md](api/llm.md#budgets-and-consumption-llm-03)), once their outcome is recorded. Only with the model bridge on |
+| `agentcapsule_llm_tokens_total` | counter | `provider`, `direction` (`input`, `output`) | Tokens of settled calls, as the provider reported them |
+| `agentcapsule_llm_estimated_cost_micro_total` | counter | `provider` | Estimated cost of settled calls, in micro-units of each organization's own currency: a sum across organizations that price in different currencies has no meaning |
+| `agentcapsule_llm_refusals_total` | counter | `reason` (`budget_tokens`, `budget_cost`, `unpriced`, `alias_access`) | Calls refused before any reservation. Every series is served from zero |
+| `agentcapsule_llm_budget_soft_exceeded_total` | counter | `unit` (`tokens`, `cost`) | Calls that went past a soft budget; a call past two counts twice. Every series is served from zero |
+| `agentcapsule_llm_unresolved_calls` | gauge | — | Calls of unknown outcome, across the installation, that wait for their organization to settle or release them |
 | `agentcapsule_authority_replication_enabled` | gauge | — | 1 when the worker's authorities replicate to the standby; 0 standalone, without disaster protection ([worker.md](worker.md#replica-of-the-authorities)) |
 | `agentcapsule_authority_replication_committed_sequence`, `_acknowledged_sequence` | gauge | — | Last authority record committed by the worker, and last one the replica acknowledged |
 | `agentcapsule_authority_replication_lag_records`, `_lag_seconds` | gauge | — | Authority records committed and not acknowledged, and the age of the oldest |
@@ -156,6 +162,8 @@ Each process writes one JSON object per line, with `time` and `event` first:
 | Worker | `delivery_dead` (standard error) | `kind` (`reply`, `status`, `instruction`), `request_id` of the API request that started the work, if any, `reason` (`attempts_exhausted`, `expired`). The job that retired the delivery still ends with `job_done` |
 | Worker | `volume_archive_captured` (standard output) | `vm` (`asleep`, `running`), `bytes`, `seconds`, `removed` (older archives deleted) |
 | Worker | `volume_archive_retry` (standard error) | `vm`, `reason`: `placement`, `busy`, `disk_full`, `authority`, `timeout`, `retention`, `error` |
+| Worker | `llm_budget_soft_exceeded` (standard error) | `unit` (`tokens`, `cost`), `period` (`day`, `month`), `scope` (`organization`, `agent`, `alias`, `agent_alias`) of the soft budget a model call went past |
+| Worker | `llm_call_refused` (standard error) | `reason` (`budget_tokens`, `budget_cost`, `unpriced`, `alias_access`), and for a budget its `period` and `scope` |
 
 **Correlation.** Every API response carries `X-Request-ID`, a random 128-bit
 value. The ID says nothing about the person or the content. It follows the

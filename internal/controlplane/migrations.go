@@ -112,7 +112,10 @@ var invocationRerunsSQL string
 //go:embed migrations/0031_restart_budgets.sql
 var restartBudgetsSQL string
 
-//go:embed migrations/0032_peer_redeliveries.sql
+//go:embed migrations/0032_llm_access_and_cost.sql
+var llmAccessAndCostSQL string
+
+//go:embed migrations/0033_peer_redeliveries.sql
 var peerRedeliveriesSQL string
 
 // Append migrations; never edit an installed migration. The original schema
@@ -150,7 +153,8 @@ var controlPlaneMigrations = []schemaMigration{
 	{version: 29, name: "volume-restores", sql: volumeRestoresSQL},
 	{version: 30, name: "invocation-reruns", sql: invocationRerunsSQL},
 	{version: 31, name: "restart-budgets", sql: restartBudgetsSQL},
-	{version: 32, name: "peer-redeliveries", sql: peerRedeliveriesSQL},
+	{version: 32, name: "llm-access-and-cost", sql: llmAccessAndCostSQL},
+	{version: 33, name: "peer-redeliveries", sql: peerRedeliveriesSQL},
 }
 
 func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error {

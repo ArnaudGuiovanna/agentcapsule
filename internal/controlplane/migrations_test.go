@@ -322,6 +322,7 @@ func revertTenantAgents(t *testing.T, s *Store) {
         DROP TABLE IF EXISTS peer_redeliveries;
         DROP FUNCTION IF EXISTS preserve_peer_redelivery();
         DROP TABLE IF EXISTS failed_agents, guest_failures;
+        DROP TABLE IF EXISTS llm_alias_grants;
         DROP TABLE IF EXISTS invocation_reruns;
         DROP FUNCTION IF EXISTS preserve_invocation_rerun();
         DROP TABLE IF EXISTS volume_restore_losses, volume_restores;

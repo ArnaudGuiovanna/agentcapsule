@@ -37,7 +37,7 @@ a production host yet.
 | BASE-01 | Pinned Go toolchain, CI on current packages, repository hygiene | Done | — |
 | API-01 | Shared API conventions, canonical OpenAPI 3.1 document | Partial | Remaining endpoint families (events, registry, interop) |
 | API-02 | Admin CLI, HTTP examples, redacted diagnostics | Partial | Diagnostic export, guarded destructive commands |
-| OPS-01 | Validated configuration, separate secrets, preflight, mock vs production install | Partial | TLS everywhere, private Directory/SLIM, pinned versions, preflight on a target host |
+| OPS-01 | Validated configuration, separate secrets, preflight, mock vs production install: production mode by default (`AGENTCAPSULE_MODE`), the API on HTTPS only with checked certificates reloaded on SIGHUP, PostgreSQL over a Unix socket or `verify-full`, model providers and registries over HTTPS, the Directory and SLIM node private behind mutual TLS, a host preflight run by the worker at every start (RUN-012) and on demand (`-preflight`), pinned versions listed ([docs/install.md](docs/install.md), [ADR 010](docs/adr/010-transport-security-and-preflight.md)) | In progress | KVM run of the worker's mandatory checks, preflight on a production server, API certificate expiry alert, systemd units for the API and the worker, signed releases and the items not yet pinned |
 | OPS-02 | Metrics (Prometheus/OpenTelemetry), correlation IDs, redacted logs, alerts: `/metrics` on loopback for the API (route, status, latency) and the worker (jobs, retry reasons, boots, queue delay, capacity, disk), JSON events from closed vocabularies, `X-Request-ID` in each request's event, in the operations it creates and in the worker's events for every job it causes (agent-to-agent requests included), alert rules checked and unit-tested by promtool in CI ([docs/observability.md](docs/observability.md)) ; validated on KVM (worker metrics and job events in the A2A journey) | Done | — (distributed traces with spans: later) |
 | OPS-03 | Host capacity, sparse disks, retention/GC, pressure thresholds, scheduler under load | Partial | Thresholds and alerts, load tests |
 
@@ -47,8 +47,8 @@ a production host yet.
 |---|---|---|---|
 | TEN-01 | Versioned migrations; organizations, principals, memberships, teams, assignments | In progress | — (follows new features) |
 | TEN-02 | Delegated identity (JWT from the customer's IdP) bound to the database authority | In progress | Operator tooling for trust rotation |
-| TEN-03 | RBAC for five roles; administration separate from invoke/read-content rights | Partial | Remaining routes and result/inbox filters |
-| TEN-04 | Members, teams, assignments, revocation, organization disable | In progress | Reassignment to another target; admission/reassignment races |
+| TEN-03 | RBAC for five roles; administration separate from invoke/read-content rights; every route tested against each role and kind of caller ([docs/api/rbac.md](docs/api/rbac.md)) | Done | — (defaults pending the product owner: ADR 002) |
+| TEN-04 | Members, teams, assignments, revocation, organization disable; reassignment to another member or team, ordered against admissions on PostgreSQL | Done | — (defaults pending the product owner: ADR 002) |
 | TEN-05 | Tenant agents and the per-organization data model; peer requests and agent search confined to one organization; two organizations validated side by side on KVM | Done | — |
 | TEN-06 | Service accounts and audit | Partial | Audit export and retention |
 | TEN-07 | Quotas and reservations (agents, VMs, CPU/RAM, disk, queues, LLM, storage) | Partial | Organization quotas on CPU, RAM and disk throughput (per-agent ceilings, ADR 012 P1) and load behavior (OPS-03) |
@@ -75,9 +75,9 @@ a production host yet.
 
 | ID | Item | Status | Remaining |
 |---|---|---|---|
-| LLM-01 | Providers, aliases, encrypted credentials kept out of VMs, rotation, audit | In progress | Per-agent/team alias access, dedicated secret store (D-05) |
+| LLM-01 | Providers, aliases, encrypted credentials kept out of VMs, rotation, audit; per-agent and per-team alias access (listed aliases, grants to agents and teams, refused before any reservation, [ADR 011](docs/adr/011-llm-access-and-cost-budgets.md)) | In progress | Dedicated secret store (D-05); the harness's `llm.invoke` capability (CAP-01); ADR 011's defaults pending the product owner |
 | LLM-02 | OpenAI-compatible and Anthropic adapters, bounded retries, breaker, unknown outcomes; native requests forwarded as written (CAP-04) | In progress | Live test against Anthropic's own API, streaming from the provider |
-| LLM-03 | Token budgets (hard/soft), reservations, usage and estimated cost | In progress | Cost budgets, operator reconciliation of unknown outcomes |
+| LLM-03 | Token and cost budgets (hard/soft) per organization, agent, alias and period, reservations, usage and estimated cost in exact micro-units, reconciliation of unknown outcomes by the organization ([ADR 011](docs/adr/011-llm-access-and-cost-budgets.md)) | Done | — (ADR 011's defaults pending the product owner) |
 
 ## Harness registry
 

@@ -2,8 +2,10 @@
 
 Date: November 7, 2026, reviewed November 8. **Contract and structure
 validated by the user**; targeted model and transactional mapping integrated.
-The conformance of the Go product to this contract remains to be built and
-tested. The existing models are not modified. References: product spec §2.2,
+The conformance of the Go product to this contract is built and tested for
+the HTTP routes, reassignment and its races: see
+[Conformance of the Go product](#conformance-of-the-go-product). The existing
+models are not modified. References: product spec §2.2,
 TEN-005/TEN-006, SC-06 ([product.md](../product.md)) and TEN-04/TEN-05 of the
 [roadmap](../../ROADMAP.md).
 
@@ -103,3 +105,51 @@ unchanged. The transactional mapping includes the product spec's idempotency
 namespace tenant/principal/operation type/key. These checks are neither an
 exhaustive proof nor a proof of the Go code; the PostgreSQL tests and the tenant
 path tests are the next obligations.
+
+## Conformance of the Go product
+
+November 16, 2026. What the Go product does and how it is checked:
+
+- **Every route, every caller.** `internal/api/rbac_matrix_test.go` runs
+  every route of the API as each of the five roles, a member assigned
+  directly and one through a team, a former assignee, an unassigned member, a
+  technical account with a narrow token, the owner of another organization
+  using this one's identifiers, a revoked member, a revoked token and the
+  platform operator, against PostgreSQL. The expected matrix is
+  [docs/api/rbac.md](../api/rbac.md), generated from the test. No role opens
+  an invocation or a result; another organization's identifiers answer 404.
+- **Historical recipient filter.** A result is read only by its requester
+  holding `read_content` now. Since this date the requester also sees the
+  metadata of its invocations, operations and files only while it still sees
+  the agent through an assignment; before, a former assignee kept reading
+  them. An agent the caller cannot see answers 404 on its invocation list,
+  which answered an empty list before.
+- **Reassignment.** `POST /v1/agents/{id}/assignments/{assignment_id}/reassign`
+  moves an assignment to another member or team in one transaction
+  ([agents-assignments.md](../api/agents-assignments.md#reassignment)). It
+  rewrites no requester and opens no result to the new target.
+- **Admission, replay and read against revocation and reassignment.** Every
+  authority change (member, team membership, assignment, reassignment) takes
+  the organization's row exclusively; every admission, replay and result read
+  holds it shared from its authorization to its commit. The PostgreSQL tests
+  in `internal/controlplane/assignment_reassignment_test.go` and
+  `members_test.go` hold that row to order the transactions: an admission
+  authorized first commits and the change waits; one that arrived earlier but
+  is authorized later is refused, replay and result read included. Taking the
+  row shared in the reassignment makes these tests fail.
+- **Not modelled here.** The targeted Quint model this record describes is not
+  among the models of [spec/](../../spec/README.md); `revocation.qnt` is the
+  deletion barrier across stores. The tests above check the orders the model
+  names on the real code; they are not an exhaustive exploration.
+
+Defaults pending the product owner:
+
+- Work admitted before a revocation or a reassignment runs, including a
+  scheduled invocation not yet due, which runs when due on behalf of a
+  requester who can no longer read its result or cancel it.
+- Only the requester cancels an invocation, and only while it may still
+  invoke: after a reassignment, nobody can cancel the old target's pending
+  work.
+- A sender who lost its assignment may still delete its own file not yet sent.
+- Roles that read agent metadata see the metadata of every member's files,
+  their names included.

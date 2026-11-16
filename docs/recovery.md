@@ -697,7 +697,8 @@ This must be ready before any disaster, so that the failover takes minutes:
   - the transit keys (`-transit-key`): every one still needed;
   - the delegated-identity trust file (`-delegated-identity-file`). It
     holds public keys only;
-  - the TLS certificate and key, when the API listens beyond loopback;
+  - the TLS certificate and key (`-tls-cert`, `-tls-key`): the API serves
+    HTTPS only;
   - the API's flags and environment, except the database's address.
 
   They must be the same bytes. The API refuses another receipt key
@@ -751,7 +752,8 @@ On the standby host, as root unless said otherwise. Follow this order.
    listens.
 8. **Check it** on the standby:
    ```sh
-   curl -fsS http://127.0.0.1:8080/v1/health/ready
+   curl -fsS --cacert <the CA of the API's certificate> \
+     --resolve api.example.net:8443:127.0.0.1 https://api.example.net:8443/v1/health/ready
    ```
    Then make an authenticated read and an authenticated write with the
    platform operator's token. List the organizations
@@ -823,8 +825,9 @@ the callers ([ADR 003](adr/003-restore-rpo.md), option B).
 on one machine. Containers and local processes stand for the hosts. The
 stores, the primary and the standby are those of `verify-backups.py`, with
 `archive_timeout` and `checkpoint_timeout` scaled down to 30 seconds. It
-builds the API and the admin tool from the sources (`--go`), needs no root,
-and runs in about 2.5 minutes:
+builds the API and the admin tool from the sources (`--go`), starts both APIs
+in production mode over HTTPS with a certificate from a CA of its own, needs no
+root, and runs in about 2.5 minutes:
 
 ```sh
 python3 scripts/verify-failover.py --pg-bin <postgres-bin-dir> --pgbackrest <pgbackrest> \
@@ -1079,7 +1082,7 @@ which the product owner confirmed on November 16, 2026.
 
 In the same transaction, each lost request, reply or status that PostgreSQL
 recorded as delivered is delivered again to the restored agent, or is skipped
-(`peer_redeliveries`, migration 0032). The rules are
+(`peer_redeliveries`, migration 0033). The rules are
 [ADR 008](adr/008-redelivering-lost-agent-requests.md)'s, with defaults
 pending the product owner.
 - **Only the restored agent runs again.** The event goes back to its queue

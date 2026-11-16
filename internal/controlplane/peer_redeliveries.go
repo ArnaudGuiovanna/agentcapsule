@@ -9,7 +9,7 @@ import (
 )
 
 // Redeliveries of the agent-to-agent events that a restore lost (REC-02, ADR
-// 008, migration 0032). The restore's last transaction decides, for each lost
+// 008, migration 0033). The restore's last transaction decides, for each lost
 // request, reply or status that PostgreSQL recorded as delivered, whether it
 // is delivered again to the restored agent under the same mailbox ID, or
 // skipped with a reason. The request itself never reopens: a request in a

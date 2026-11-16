@@ -205,7 +205,9 @@ func TestDelegationOperatorCLIAndRealAPI(t *testing.T) {
 	}
 	defer log.Close()
 	cmd := exec.CommandContext(t.Context(), filepath.Join(dir, "agentcapsule-api"), "-listen", address, "-receipt-key-file", keyFile, "-host-id", "local", "-delegated-identity-file", configFile)
-	cmd.Env = append(os.Environ(), "AGENTCAPSULE_DATABASE_URL="+l.dsn)
+	// Development mode: plain HTTP on loopback (TLS is tested in
+	// TestAPIBinariesBootstrapServeAndShutdown).
+	cmd.Env = append(os.Environ(), "AGENTCAPSULE_DATABASE_URL="+l.dsn, "AGENTCAPSULE_MODE=development")
 	cmd.Stdout = log
 	cmd.Stderr = log
 	if err = cmd.Start(); err != nil {

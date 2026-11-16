@@ -83,7 +83,9 @@ func platformError(err error) error {
 		code = "transition"
 	case errors.Is(err, controlplane.ErrCommitUnknown):
 		code = "commit_unknown"
-	case errors.Is(err, controlplane.ErrForbidden):
+	case errors.Is(err, controlplane.ErrForbidden), errors.Is(err, controlplane.ErrLLMAliasDenied):
+		// An alias the organization did not grant to this agent (ADR 011):
+		// the guest's existing code, so that no guest change is needed.
 		code = "unauthorized"
 	case errors.Is(err, controlplane.ErrBudgetExceeded):
 		code = "quota_exceeded"
