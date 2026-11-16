@@ -639,14 +639,12 @@ func (c *Client) Ensure(ctx context.Context, agent, volume string) error {
 	return c.call(ctx, svc.OpEnsureKey, svc.KeyArgs{Agent: agent, Volume: volume}, nil)
 }
 
-// WithKey holds the volume key alone, without a binding: its destruction
-// waits. The worker holds a key under its binding, with HoldKey.
-func (c *Client) WithKey(ctx context.Context, agent, volume string, use func([]byte) error) error {
-	if use == nil {
-		return keyauthority.ErrInput
-	}
-	_, err := c.hold(ctx, svc.OpHoldKey, svc.KeyArgs{Agent: agent, Volume: volume}, true, func(_ context.Context, key []byte) error { return use(key) })
-	return err
+// WithKey refuses: across the socket a key is held under its binding only,
+// with HoldKey. The service refuses a bare key hold too. Held alone, the
+// key's lock would make its destruction wait inside the catalogue's
+// transaction, and every catalogue operation behind it.
+func (c *Client) WithKey(context.Context, string, string, func([]byte) error) error {
+	return keyauthority.ErrInput
 }
 
 // Revoke destroys the volume key.

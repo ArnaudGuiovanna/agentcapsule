@@ -23,6 +23,9 @@ import (
 type Authority interface {
 	Identity() string
 	KeyAuthorityIdentity() string
+	// SeparateFrom checks that dataRoot lies outside both authorities'
+	// directories: the worker's runtime and archive roots.
+	SeparateFrom(dataRoot string) error
 	Lookup(ctx context.Context, store string) (Binding, error)
 	Register(ctx context.Context, store, volume string) (Binding, error)
 	// CheckBinding is WithBinding with an empty callback: nothing is held
@@ -77,6 +80,18 @@ var (
 	_ Authority             = Local{}
 	_ keyauthority.Provider = Local{}
 )
+
+// SeparateFrom checks dataRoot against the catalogue's directory, and the
+// key authority's when Keys can say where it is.
+func (l Local) SeparateFrom(dataRoot string) error {
+	if err := l.Catalog.SeparateFrom(dataRoot); err != nil {
+		return err
+	}
+	if keys, ok := l.Keys.(interface{ SeparateFrom(string) error }); ok {
+		return keys.SeparateFrom(dataRoot)
+	}
+	return nil
+}
 
 func (l Local) CheckBinding(ctx context.Context, b Binding) error {
 	return l.WithBinding(ctx, b, func() error { return nil })

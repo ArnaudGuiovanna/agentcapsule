@@ -6,15 +6,11 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/pem"
 	"errors"
-	"fmt"
-	"os"
 	"path/filepath"
-	"syscall"
 	"time"
 
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/authoritylog"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorityservice"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/operatorconfig"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/preflight"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/restoreauthority"
@@ -75,15 +71,12 @@ func (c ServiceConfig) Preflight(ctx context.Context, h preflight.Host, mode ope
 	if c.Archives != nil {
 		out = append(out, preflight.Disk(h, "archives", c.Archives.Root))
 	}
-	out = append(out, c.authorityChecks()...)
+	out = append(out, c.authorityChecks(ctx)...)
 	if c.MetricsListen != "" {
 		out = append(out, preflight.Listen("metrics_listen", c.MetricsListen, true))
 	}
 	if c.Directory != nil {
 		out = append(out, c.directoryChecks(ctx, h)...)
-	}
-	if c.AuthorityReplica != nil {
-		out = append(out, c.replicaChecks(ctx, h)...)
 	}
 	if c.Registry != nil {
 		switch err := c.CheckProductionTransport(); {
@@ -100,55 +93,58 @@ func (c ServiceConfig) Preflight(ctx context.Context, h preflight.Host, mode ope
 	return append(out, preflight.Database(ctx, mode, dsn))
 }
 
-// authorityChecks: each authority directory exists, is this user's with mode
-// 0700, and lies outside the runtime root, the archives and the other
-// authority, so that a restore of the data never brings back its keys.
-func (c ServiceConfig) authorityChecks() []preflight.Result {
-	type dir struct{ name, path string }
-	var authorities, all []dir
-	if c.KeyAuthority != nil {
-		authorities = append(authorities, dir{"key_authority", c.KeyAuthority.Root})
+// authorityChecks: the authority service answers on the worker socket with
+// the pinned identities, and the runtime root and the archives lie outside
+// both authorities' directories, which it gives, so that a restore of the
+// data never brings back their keys. Its status reads no database. The
+// directories and the link to the standby are the service's (ADR 006).
+func (c ServiceConfig) authorityChecks(ctx context.Context) []preflight.Result {
+	if c.Authority == nil {
+		return nil
 	}
-	if c.RestoreAuthority != nil {
-		authorities = append(authorities, dir{"restore_authority", c.RestoreAuthority.Root})
+	const check = "authority"
+	client, err := c.OpenAuthority()
+	if err != nil {
+		return []preflight.Result{{Check: check, Status: preflight.Fail, Detail: "the authority section is invalid",
+			Fix: "an absolute socket path and both identities, as in runtime/worker/config.example.json"}}
 	}
-	all = append(all, authorities...)
-	all = append(all, dir{"runtime root", c.Root})
+	defer client.Close()
+	probe, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	status, err := client.Status(probe)
+	switch {
+	case errors.Is(err, authorityservice.ErrIdentity):
+		return []preflight.Result{{Check: check, Status: preflight.Fail, Detail: "the service on " + c.Authority.Socket + " holds other authorities than the pinned ones",
+			Fix: "pin the identities of /etc/agentcapsule/authority.json in the authority section"}}
+	case errors.Is(err, authorityservice.ErrRole):
+		return []preflight.Result{{Check: check, Status: preflight.Fail, Detail: c.Authority.Socket + " is not the service's worker socket",
+			Fix: "use the service's worker_socket"}}
+	case err != nil:
+		return []preflight.Result{{Check: check, Status: preflight.Fail, Detail: "the authority service does not answer on " + c.Authority.Socket,
+			Fix: "start agentcapsule-authority (docs/recovery.md, Install the authority service)"}}
+	}
+	roots := []struct{ name, path string }{{"runtime root", c.Root}}
 	if c.Archives != nil {
-		all = append(all, dir{"archives", c.Archives.Root})
+		roots = append(roots, struct{ name, path string }{"archives", c.Archives.Root})
 	}
-	var out []preflight.Result
-	for _, a := range authorities {
-		check := a.name
-		init := map[string]string{"key_authority": "agentcapsule-admin init-key-authority", "restore_authority": "agentcapsule-admin init-restore-authority"}[a.name]
-		st, err := os.Lstat(a.path)
-		if err != nil {
-			out = append(out, preflight.Result{Check: check, Status: preflight.Fail, Detail: a.path + " does not exist", Fix: "initialize it with " + init})
-			continue
+	for _, r := range roots {
+		if client.SeparateFrom(r.path) != nil {
+			return []preflight.Result{{Check: check, Status: preflight.Fail, Detail: "the " + r.name + " (" + r.path + ") overlaps an authority directory",
+				Fix: "keep the runtime root and the archives outside both authorities (ADR 005)"}}
 		}
-		if !st.IsDir() || st.Mode().Perm() != 0o700 || st.Sys().(*syscall.Stat_t).Uid != uint32(os.Geteuid()) {
-			out = append(out, preflight.Result{Check: check, Status: preflight.Fail, Detail: a.path + " is not a directory of this user with mode 0700",
-				Fix: "chown it to the worker's user and chmod 0700"})
-			continue
-		}
-		overlap := ""
-		for _, other := range all {
-			if other.path == a.path && other.name == a.name {
-				continue
-			}
-			if restoreauthority.CheckSeparation(a.path, other.path) != nil {
-				overlap = other.name + " (" + other.path + ")"
-				break
-			}
-		}
-		if overlap != "" {
-			out = append(out, preflight.Result{Check: check, Status: preflight.Fail, Detail: a.path + " overlaps the " + overlap,
-				Fix: "keep each authority in its own directory, outside the runtime root, the archives and the other authority (ADR 005)"})
-			continue
-		}
-		out = append(out, preflight.Result{Check: check, Status: preflight.OK, Detail: a.path + " is private and separate from the data and the other authority"})
 	}
-	return out
+	switch status.Mode {
+	case restoreauthority.ModeDegraded:
+		return []preflight.Result{{Check: check, Status: preflight.Warn, Detail: "the authority service runs in degraded mode, without its standby",
+			Fix: "bring the standby back (docs/recovery.md, Degraded mode)"}}
+	case restoreauthority.ModeWaiting:
+		return []preflight.Result{{Check: check, Status: preflight.Warn, Detail: "the authority service waits for its standby and runs nothing",
+			Fix: "start agentcapsule-authority serve on the standby, or check the address and the firewall"}}
+	case restoreauthority.ModeStandalone:
+		return []preflight.Result{{Check: check, Status: preflight.OK,
+			Detail: "the authority service answers with the pinned identities; standalone: no replica, no protection against the host's loss"}}
+	}
+	return []preflight.Result{{Check: check, Status: preflight.OK, Detail: "the authority service answers with the pinned identities, synchronous with its standby"}}
 }
 
 func (c ServiceConfig) directoryChecks(ctx context.Context, h preflight.Host) []preflight.Result {
@@ -170,39 +166,4 @@ func (c ServiceConfig) directoryChecks(ctx context.Context, h preflight.Host) []
 	// The client of internal/directory: the edge's name is the address's host.
 	config := &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: pool, Certificates: []tls.Certificate{pair}, NextProtos: []string{"h2"}}
 	return append(out, preflight.MutualTLS(ctx, "directory_edge", d.Address, config))
-}
-
-func (c ServiceConfig) replicaChecks(ctx context.Context, h preflight.Host) []preflight.Result {
-	r := c.AuthorityReplica
-	const check = "authority_replica_tls"
-	if c.KeyAuthority == nil || c.RestoreAuthority == nil || !r.valid() {
-		return []preflight.Result{{Check: check, Status: preflight.Fail, Detail: "authority_replica is incomplete", Fix: "see docs/worker.md, Replica of the authorities"}}
-	}
-	files := authoritylog.TLSFiles{Certificate: r.Certificate, Key: r.Key, PeerCertificate: r.ReplicaCertificate,
-		RestoreAuthority: c.RestoreAuthority.Identity, KeyAuthority: c.KeyAuthority.Identity}
-	if _, err := files.ClientTLS(); err != nil {
-		return []preflight.Result{{Check: check, Status: preflight.Fail,
-			Detail: "the link's certificates do not match this host's authorities, or a file is unreadable",
-			Fix:    "regenerate them with agentcapsule-authority certificate (the key 0600, owned by the worker's user), and pin the standby's"}}
-	}
-	result := preflight.Result{Check: check, Status: preflight.OK, Detail: "certificates of both sides pinned to this host's authorities"}
-	for _, path := range []string{r.Certificate, r.ReplicaCertificate} {
-		b, _ := os.ReadFile(path)
-		block, _ := pem.Decode(b)
-		if block == nil {
-			continue
-		}
-		cert, err := x509.ParseCertificate(block.Bytes)
-		if err != nil {
-			continue
-		}
-		if left := cert.NotAfter.Sub(h.Now()); left < 30*24*time.Hour {
-			result = preflight.Result{Check: check, Status: preflight.Warn, Detail: fmt.Sprintf("%s expires on %s", path, cert.NotAfter.UTC().Format(time.DateOnly)),
-				Fix: "generate new link certificates (docs/recovery.md)"}
-			if left <= 0 {
-				result.Status = preflight.Fail
-			}
-		}
-	}
-	return []preflight.Result{result, preflight.Reachable(ctx, "authority_replica", r.Address, "start agentcapsule-authority serve on the standby, or check the address and the firewall")}
 }

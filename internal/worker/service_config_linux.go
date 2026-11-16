@@ -8,15 +8,15 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"net"
 	"os"
 	"path/filepath"
 	"syscall"
 	"time"
 
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorityclient"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authoritylog"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorityservice"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/keyauthority"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/restoreauthority"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/runtime"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/volumearchive"
@@ -27,82 +27,61 @@ type ServiceImage struct {
 	SHA256 string `json:"sha256"`
 }
 
-type ServiceKeyAuthority struct {
-	Root     string `json:"root"`
-	Identity string `json:"identity"`
+// ServiceAuthority reaches the authority service, which owns both
+// authorities (docs/adr/006-authority-service.md): its worker socket, and
+// the identities of the two authorities it must hold. The worker never opens
+// their directories.
+type ServiceAuthority struct {
+	Socket             string `json:"socket"`
+	RestoreAuthorityID string `json:"restore_authority_id"`
+	KeyAuthorityID     string `json:"key_authority_id"`
 }
 
-// ServiceAuthorityReplica links both authorities to their replica on the
-// standby (ADR 005, option a): each of their writes returns only once the
-// replica holds it. Certificate and Key are this host's side of the mutual
-// TLS link; ReplicaCertificate pins the standby's. Without this section the
-// authorities are standalone and give no protection against the host's loss;
-// once a snapshot armed them, the worker refuses to start without it.
-// DegradedAfter is how long the standby may stay unreachable before degraded
-// mode (ADR 005, question 2): 30s when empty, from 5s to 10m.
-type ServiceAuthorityReplica struct {
-	Address            string `json:"address"`
-	Certificate        string `json:"certificate"`
-	Key                string `json:"key"`
-	ReplicaCertificate string `json:"replica_certificate"`
-	DegradedAfter      string `json:"degraded_after,omitempty"`
+func (a *ServiceAuthority) valid() bool {
+	return a != nil && filepath.IsAbs(a.Socket) && filepath.Clean(a.Socket) == a.Socket && len(a.Socket) <= 100 &&
+		authoritylog.ValidID(a.RestoreAuthorityID, "restoreauth_") && authoritylog.ValidID(a.KeyAuthorityID, "keyauth_")
 }
 
-func (r *ServiceAuthorityReplica) valid() bool {
-	if r == nil {
-		return true
-	}
-	if _, port, err := net.SplitHostPort(r.Address); err != nil || port == "" {
-		return false
-	}
-	for _, path := range []string{r.Certificate, r.Key, r.ReplicaCertificate} {
-		if !filepath.IsAbs(path) || filepath.Clean(path) != path {
-			return false
-		}
-	}
-	_, ok := r.degradedAfter()
-	return ok
-}
-
-// degradedAfter parses DegradedAfter; 0, the default, when empty.
-func (r *ServiceAuthorityReplica) degradedAfter() (time.Duration, bool) {
-	if r.DegradedAfter == "" {
-		return 0, true
-	}
-	d, err := time.ParseDuration(r.DegradedAfter)
-	return d, err == nil && d >= authoritylog.MinDegradedAfter && d <= authoritylog.MaxDegradedAfter
-}
+// ErrAuthorityServiceRequired refuses a configuration that still names the
+// authorities' directories or their replica: they belong to the authority
+// service, and a worker that opened them would write behind it.
+var ErrAuthorityServiceRequired = errors.New("key_authority, restore_authority and authority_replica moved to the authority service: use the authority section")
 
 // ServiceConfig is trusted operator input; the DSN is provided separately through
 // AGENTCAPSULE_DATABASE_URL. Provisioning requires an explicit key authority and
 // a dedicated UID range; without them it maintains preprovisioned placements.
 type ServiceConfig struct {
-	Version          int                      `json:"version"`
-	HostID           string                   `json:"host_id"`
-	Root             string                   `json:"root"`
-	Firecracker      ServiceImage             `json:"firecracker"`
-	Jailer           ServiceImage             `json:"jailer"`
-	Kernel           ServiceImage             `json:"kernel"`
-	Initrd           ServiceImage             `json:"initrd"`
-	MaxActive        int                      `json:"max_active"`
-	BootTimeout      string                   `json:"boot_timeout"`
-	BootLease        string                   `json:"boot_lease"`
-	PollInterval     string                   `json:"poll_interval"`
-	AttemptTimeout   string                   `json:"attempt_timeout"`
-	DispatchBatch    int                      `json:"dispatch_batch"`
-	WorkLease        string                   `json:"work_lease"`
-	DeliveryLease    string                   `json:"delivery_lease"`
-	RetryBase        string                   `json:"retry_base"`
-	RetryMax         string                   `json:"retry_max"`
-	RestoreAuthority *ServiceKeyAuthority     `json:"restore_authority,omitempty"`
-	KeyAuthority     *ServiceKeyAuthority     `json:"key_authority,omitempty"`
-	AuthorityReplica *ServiceAuthorityReplica `json:"authority_replica,omitempty"`
-	Provisioning     *ProvisioningConfig      `json:"provisioning,omitempty"`
-	Transit          *ServiceTransit          `json:"transit,omitempty"`
-	LLM              *ServiceLLM              `json:"llm,omitempty"`
-	Registry         *ServiceRegistry         `json:"registry,omitempty"`
-	Directory        *ServiceDirectory        `json:"directory,omitempty"`
-	SLIM             *ServiceSLIM             `json:"slim,omitempty"`
+	Version        int          `json:"version"`
+	HostID         string       `json:"host_id"`
+	Root           string       `json:"root"`
+	Firecracker    ServiceImage `json:"firecracker"`
+	Jailer         ServiceImage `json:"jailer"`
+	Kernel         ServiceImage `json:"kernel"`
+	Initrd         ServiceImage `json:"initrd"`
+	MaxActive      int          `json:"max_active"`
+	BootTimeout    string       `json:"boot_timeout"`
+	BootLease      string       `json:"boot_lease"`
+	PollInterval   string       `json:"poll_interval"`
+	AttemptTimeout string       `json:"attempt_timeout"`
+	DispatchBatch  int          `json:"dispatch_batch"`
+	WorkLease      string       `json:"work_lease"`
+	DeliveryLease  string       `json:"delivery_lease"`
+	RetryBase      string       `json:"retry_base"`
+	RetryMax       string       `json:"retry_max"`
+	// Authority reaches the authority service; none on a laboratory host
+	// without authorities.
+	Authority *ServiceAuthority `json:"authority,omitempty"`
+	// The sections of a worker that opened the authorities itself, before
+	// the authority service: refused (ErrAuthorityServiceRequired).
+	OldRestoreAuthority json.RawMessage     `json:"restore_authority,omitempty"`
+	OldKeyAuthority     json.RawMessage     `json:"key_authority,omitempty"`
+	OldAuthorityReplica json.RawMessage     `json:"authority_replica,omitempty"`
+	Provisioning        *ProvisioningConfig `json:"provisioning,omitempty"`
+	Transit             *ServiceTransit     `json:"transit,omitempty"`
+	LLM                 *ServiceLLM         `json:"llm,omitempty"`
+	Registry            *ServiceRegistry    `json:"registry,omitempty"`
+	Directory           *ServiceDirectory   `json:"directory,omitempty"`
+	SLIM                *ServiceSLIM        `json:"slim,omitempty"`
 	// MetricsListen serves Prometheus metrics at /metrics on a loopback
 	// address (OPS-02); none when empty.
 	MetricsListen string `json:"metrics_listen,omitempty"`
@@ -176,21 +155,21 @@ type ServiceArchives struct {
 }
 
 // archives validates the archives section without touching its root; nil
-// without the section. Capturing needs provisioning and both authorities.
+// without the section. Capturing needs provisioning and the authorities.
+// The root is checked against the runtime here, and against the
+// authorities' directories once the service gives them, at each capture.
 func (c ServiceConfig) archives() (*Archives, error) {
 	s := c.Archives
 	if s == nil {
 		return nil, nil
 	}
 	invalid := errors.New("invalid archive configuration")
-	if c.Provisioning == nil || c.KeyAuthority == nil || c.RestoreAuthority == nil ||
+	if c.Provisioning == nil || c.Authority == nil ||
 		!filepath.IsAbs(s.Root) || filepath.Clean(s.Root) != s.Root || c.Root == "" {
 		return nil, invalid
 	}
-	for _, root := range []string{c.Root, c.KeyAuthority.Root, c.RestoreAuthority.Root} {
-		if restoreauthority.CheckSeparation(root, s.Root) != nil {
-			return nil, invalid
-		}
+	if restoreauthority.CheckSeparation(c.Root, s.Root) != nil {
+		return nil, invalid
 	}
 	duration := func(text string, fallback, low, high time.Duration) (time.Duration, bool) {
 		if text == "" {
@@ -223,103 +202,65 @@ func (c ServiceConfig) OpenArchives() (*Archives, error) {
 	return a, nil
 }
 
-// OpenVolumeKeys never initializes an authority. Its public identity must have
-// been pinned after explicit administrative setup, outside the runtime root.
-func (c ServiceConfig) OpenVolumeKeys() (*keyauthority.Files, error) {
-	if c.KeyAuthority == nil || !filepath.IsAbs(c.KeyAuthority.Root) {
-		return nil, keyauthority.ErrInput
+// OpenAuthority returns the client of the authority service's worker
+// socket, pinning both identities; nil without the authority section. It
+// does not connect: WaitForAuthority does.
+func (c ServiceConfig) OpenAuthority() (*authorityclient.Client, error) {
+	if c.Authority == nil {
+		return nil, nil
 	}
-	keys, err := keyauthority.Open(c.KeyAuthority.Root, c.KeyAuthority.Identity)
-	if err != nil {
-		return nil, err
-	}
-	if err = keys.SeparateFrom(c.Root); err != nil {
-		return nil, err
-	}
-	return keys, nil
-}
-
-// OpenRestoreAuthority opens only explicitly initialized, pinned state outside
-// the restored data root. Startup never creates a replacement catalogue.
-// With authority_replica, it links both authorities to the replica: keys
-// becomes journaled through the catalogue, one stream for both. Without it,
-// both stay standalone, unless a snapshot armed them: then it refuses
-// (ErrReplicaRequired). It does not contact the replica: the first
-// operation does. Authorities promoted on a standby are standalone, with no
-// standby to wait for, until a snapshot arms them for a new one: the section
-// is refused until then (ErrNotArmed).
-func (c ServiceConfig) OpenRestoreAuthority(ctx context.Context, keys *keyauthority.Files) (*restoreauthority.Catalog, error) {
-	if c.RestoreAuthority == nil || keys == nil || !filepath.IsAbs(c.RestoreAuthority.Root) || !c.AuthorityReplica.valid() {
+	if !c.Authority.valid() {
 		return nil, restoreauthority.ErrInput
 	}
-	root, err := restoreauthority.Open(ctx, c.RestoreAuthority.Root, c.RestoreAuthority.Identity, keys.Identity())
-	if err != nil {
-		return nil, err
-	}
-	if err = root.SeparateFrom(c.Root); err == nil {
-		err = c.replicate(ctx, root, keys)
-	}
-	if err != nil {
-		root.Close()
-		return nil, err
-	}
-	return root, nil
+	return authorityclient.New(c.Authority.Socket, authorityservice.RoleWorker, c.Authority.RestoreAuthorityID, c.Authority.KeyAuthorityID)
 }
 
-func (c ServiceConfig) replicate(ctx context.Context, root *restoreauthority.Catalog, keys *keyauthority.Files) error {
-	state, err := root.Replication(ctx)
-	if err != nil {
-		return err
-	}
-	keysArmed, err := keys.Replicated()
-	if err != nil {
-		return err
-	}
-	if keysArmed != state.Armed {
-		return restoreauthority.ErrUnavailable // armed by halves: take the snapshot again
-	}
-	r := c.AuthorityReplica
-	if r == nil {
-		if state.Armed {
-			return restoreauthority.ErrReplicaRequired
+// WaitForAuthority waits until the authority service answers, then checks
+// that root lies outside both authorities' directories. A service that does
+// not answer yet is waited for while ctx lasts, and waiting receives each
+// failed attempt; a service that holds another installation's authorities,
+// or speaks an older protocol, is refused at once.
+func WaitForAuthority(ctx context.Context, a *authorityclient.Client, root string, waiting func(error)) error {
+	delay := 100 * time.Millisecond
+	for {
+		_, err := a.Status(ctx)
+		if err == nil {
+			return a.SeparateFrom(root)
 		}
-		return nil // standalone: no protection against the host's loss
+		if errors.Is(err, authorityservice.ErrIdentity) || errors.Is(err, authorityservice.ErrProtocol) ||
+			errors.Is(err, authorityservice.ErrRole) || ctx.Err() != nil {
+			return err
+		}
+		if waiting != nil {
+			waiting(err)
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return errors.Join(err, ctx.Err())
+		case <-timer.C:
+		}
+		delay = min(2*delay, 5*time.Second)
 	}
-	if !state.Armed {
-		return restoreauthority.ErrNotArmed
-	}
-	config, err := authoritylog.TLSFiles{Certificate: r.Certificate, Key: r.Key, PeerCertificate: r.ReplicaCertificate,
-		RestoreAuthority: root.Identity(), KeyAuthority: keys.Identity()}.ClientTLS()
-	if err != nil {
-		return errors.Join(ErrAuthorityReplicaConfiguration, err)
-	}
-	client, err := authoritylog.NewClient(r.Address, config)
-	if err != nil {
-		return errors.Join(ErrAuthorityReplicaConfiguration, err)
-	}
-	after, _ := r.degradedAfter() // checked by OpenRestoreAuthority
-	if err = root.ReplicateWith(ctx, client, restoreauthority.ReplicationOptions{DegradedAfter: after}); err != nil {
-		return err
-	}
-	keys.SetJournal(root)
-	return nil
 }
 
-// ErrAuthorityReplicaConfiguration marks unusable TLS files for the replica.
-var ErrAuthorityReplicaConfiguration = errors.New("invalid authority replica configuration")
-
-// AuthorityFailure names why the authorities did not open, for the worker's
-// exit code.
+// AuthorityFailure names why the worker did not reach the authorities, for
+// its exit code.
 func AuthorityFailure(err error) string {
 	switch {
-	case errors.Is(err, restoreauthority.ErrReplicaRequired):
-		return "authority_replica_required"
-	case errors.Is(err, restoreauthority.ErrNotArmed):
-		return "authority_replica_not_armed"
-	case errors.Is(err, ErrAuthorityReplicaConfiguration):
-		return "authority_replica_configuration_invalid"
+	case errors.Is(err, ErrAuthorityServiceRequired):
+		return "authority_service_required"
+	case errors.Is(err, authorityservice.ErrIdentity):
+		return "authority_identity_mismatch"
+	case errors.Is(err, authorityservice.ErrRole):
+		return "authority_socket_role_mismatch"
+	case errors.Is(err, authorityservice.ErrProtocol):
+		return "authority_protocol_unsupported"
+	case errors.Is(err, restoreauthority.ErrInput):
+		return "authority_domain_overlap"
 	}
-	return "restore_authority_unavailable"
+	return "authority_service_unavailable"
 }
 
 func LoadServiceConfig(path string) (ServiceConfig, error) {
@@ -336,13 +277,20 @@ func LoadServiceConfig(path string) (ServiceConfig, error) {
 	if !s.Mode().IsRegular() || s.Mode().Perm()&0022 != 0 || s.Sys().(*syscall.Stat_t).Uid != 0 || s.Size() > 65536 {
 		return c, errors.New("worker configuration must be a bounded root-owned regular file without group/other write access")
 	}
-	d := json.NewDecoder(io.LimitReader(f, 65537))
+	return decodeServiceConfig(io.LimitReader(f, 65537))
+}
+
+// decodeServiceConfig reads one configuration object, refusing unknown
+// fields and trailing data.
+func decodeServiceConfig(r io.Reader) (ServiceConfig, error) {
+	var c ServiceConfig
+	d := json.NewDecoder(r)
 	d.DisallowUnknownFields()
-	if err = d.Decode(&c); err != nil {
+	if err := d.Decode(&c); err != nil {
 		return c, err
 	}
 	var extra any
-	if err = d.Decode(&extra); err != io.EOF {
+	if err := d.Decode(&extra); err != io.EOF {
 		return c, errors.New("trailing worker configuration data")
 	}
 	return c, nil
@@ -355,10 +303,10 @@ func (c ServiceConfig) Settings() (runtime.FirecrackerOptions, time.Duration, Ma
 	if c.Version != 1 || c.HostID == "" {
 		return r, 0, m, invalid
 	}
-	if (c.KeyAuthority != nil) != (c.RestoreAuthority != nil) || (c.Provisioning != nil && (c.KeyAuthority == nil || !c.Provisioning.valid())) {
-		return r, 0, m, invalid
+	if c.OldKeyAuthority != nil || c.OldRestoreAuthority != nil || c.OldAuthorityReplica != nil {
+		return r, 0, m, ErrAuthorityServiceRequired
 	}
-	if c.AuthorityReplica != nil && (c.KeyAuthority == nil || !c.AuthorityReplica.valid()) {
+	if (c.Authority != nil && !c.Authority.valid()) || (c.Provisioning != nil && (c.Authority == nil || !c.Provisioning.valid())) {
 		return r, 0, m, invalid
 	}
 	if _, err := c.archives(); err != nil {

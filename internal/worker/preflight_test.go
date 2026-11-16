@@ -15,7 +15,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -66,54 +65,6 @@ func result(t *testing.T, results []preflight.Result, check string) preflight.Re
 	}
 	t.Fatalf("no %s check in %+v", check, results)
 	return preflight.Result{}
-}
-
-// The authorities must exist, be private and lie outside the runtime root,
-// the archives and each other (ADR 005).
-func TestPreflightAuthoritySeparation(t *testing.T) {
-	base := t.TempDir()
-	mk := func(p string, mode os.FileMode) string {
-		if err := os.MkdirAll(p, mode); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Chmod(p, mode); err != nil {
-			t.Fatal(err)
-		}
-		return p
-	}
-	runtimeRoot := mk(filepath.Join(base, "runtime"), 0o700)
-	keys := mk(filepath.Join(base, "keys"), 0o700)
-	catalog := mk(filepath.Join(base, "catalog"), 0o700)
-	c := ServiceConfig{Root: runtimeRoot, KeyAuthority: &ServiceKeyAuthority{Root: keys}, RestoreAuthority: &ServiceKeyAuthority{Root: catalog},
-		Archives: &ServiceArchives{Root: filepath.Join(base, "archives")}}
-	checks := c.authorityChecks()
-	if r := result(t, checks, "key_authority"); r.Status != preflight.OK {
-		t.Fatal(r)
-	}
-	if r := result(t, checks, "restore_authority"); r.Status != preflight.OK {
-		t.Fatal(r)
-	}
-	c.KeyAuthority.Root = filepath.Join(base, "missing")
-	if r := result(t, c.authorityChecks(), "key_authority"); r.Status != preflight.Fail || !strings.Contains(r.Fix, "init-key-authority") {
-		t.Fatal(r)
-	}
-	c.KeyAuthority.Root = mk(filepath.Join(base, "open"), 0o755)
-	if r := result(t, c.authorityChecks(), "key_authority"); r.Status != preflight.Fail || !strings.Contains(r.Detail, "mode 0700") {
-		t.Fatal(r)
-	}
-	c.KeyAuthority.Root = mk(filepath.Join(runtimeRoot, "keys"), 0o700)
-	if r := result(t, c.authorityChecks(), "key_authority"); r.Status != preflight.Fail || !strings.Contains(r.Detail, "overlaps the runtime root") {
-		t.Fatal(r)
-	}
-	c.KeyAuthority.Root = mk(filepath.Join(catalog, "keys"), 0o700)
-	if r := result(t, c.authorityChecks(), "key_authority"); r.Status != preflight.Fail || !strings.Contains(r.Detail, "overlaps the restore_authority") {
-		t.Fatal(r)
-	}
-	c.KeyAuthority.Root = keys
-	c.Archives.Root = filepath.Join(catalog, "archives")
-	if r := result(t, c.authorityChecks(), "restore_authority"); r.Status != preflight.Fail || !strings.Contains(r.Detail, "overlaps the archives") {
-		t.Fatal(r)
-	}
 }
 
 func clientCertificate(t *testing.T, dir, cn string) (string, string, string) {

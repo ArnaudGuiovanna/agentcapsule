@@ -69,12 +69,17 @@ var operations = map[string]operation{
 		if err != nil {
 			return nil, err
 		}
-		use := func(key []byte) error { return s.wait(ctx, h, key) }
+		// A key is held under its binding only. A bare key hold would keep
+		// the key's shared lock without the catalogue's transaction: a
+		// destruction would then wait for the key inside that transaction,
+		// and every catalogue operation behind it, up to max_key_hold.
 		if a.Incarnation == 0 {
-			return nil, s.local.WithKey(ctx, a.Agent, a.Volume, use)
+			return nil, restoreauthority.ErrInput
 		}
 		// One hold for both: the binding's transaction, then the shared
-		// lock on the key; the key's destruction waits for both.
+		// lock on the key; the key's destruction waits for both, outside
+		// the transaction.
+		use := func(key []byte) error { return s.wait(ctx, h, key) }
 		b := restoreauthority.Binding{Store: a.Agent, Volume: a.Volume, Incarnation: a.Incarnation}
 		return nil, s.local.WithBinding(ctx, b, func() error { return s.local.WithKey(ctx, a.Agent, a.Volume, use) })
 	}},
