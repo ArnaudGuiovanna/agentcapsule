@@ -414,7 +414,7 @@ func TestModelErrorsReachTheGuestAndLeaveItsVMRunning(t *testing.T) {
 	}
 	var events bytes.Buffer
 	svc, err := controlplane.NewLLMService(l.accounts, llmgateway.NewForTests(llmgateway.Config{Timeout: 5 * time.Second, MaxAttempts: 1,
-		FailureLimit: 3, OpenFor: 500 * time.Millisecond}, llmgateway.TestOptions{Loopback: true}))
+		FailureLimit: 3, OpenFor: 2 * time.Second}, llmgateway.TestOptions{Loopback: true}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -480,7 +480,7 @@ func TestModelErrorsReachTheGuestAndLeaveItsVMRunning(t *testing.T) {
 	if err = host.control.Health(ctx); err != nil {
 		t.Fatal("the guest's control session no longer answers", err)
 	}
-	time.Sleep(600 * time.Millisecond)
+	time.Sleep(2200 * time.Millisecond)
 	if out, err := complete("fast"); err != nil || out.Text != "from the model" {
 		t.Fatal("the boot cannot call its model after the errors", out, err)
 	}
