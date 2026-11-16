@@ -372,6 +372,67 @@ func TestAuthorityLock(t *testing.T) {
 	a.run(t, p1Act(t, "commitCall", `[0]`), p1Act(t, "observeStopped", `[0]`))
 }
 
+// receivedCallCanEnterSQLAfterPhysicalCrashTest (protocol_composition.qnt):
+// A's call reached the platform before A's VM died; SQL has not retired A,
+// so the call is admitted and commits.
+func TestReceivedCallCanEnterSQLAfterPhysicalCrash(t *testing.T) {
+	a := newP1Replay(t, false)
+	a.run(t, p1Act(t, "receive", `[0,0,{"variant":"SubmitCall"},0]`), p1Act(t, "stopVM", `[0]`),
+		p1Act(t, "admit", `[0]`), p1Act(t, "commitCall", `[0]`))
+	assertRequestState(t, a.s, a.requests[0], "DELIVERING")
+}
+
+// sqlRetirementRejectsReceivedCallTest (protocol_composition.qnt), and the
+// guard of concurrentWitnessStaleCallerGuard: once SQL begins to stop A, a
+// call A sent before is refused, though A's VM still runs.
+func TestSqlRetirementRejectsReceivedCall(t *testing.T) {
+	a := newP1Replay(t, false)
+	a.run(t, p1Act(t, "receive", `[0,0,{"variant":"SubmitCall"},0]`), p1Act(t, "beginStop", `[0]`))
+	if err := a.boots[0].client.Health(t.Context()); err != nil {
+		t.Fatal("A's boot stopped with the SQL stop:", err)
+	}
+	a.refuseP1(t, p1Act(t, "admit", `[0]`), "ErrPlacement; no business mutation")
+	if n := count(t, a.s, "agent_requests"); n != 0 {
+		t.Fatal("the stale caller's request was made:", n)
+	}
+}
+
+// concurrentWitnessRacyFenceGuard.guardTest: request 0 expires while B's
+// writer applies it; A's store fences the request, B's store cannot until
+// the writer ends.
+func TestConcurrentWitnessRacyFenceGuard(t *testing.T) {
+	a := newP1Replay(t, false)
+	a.submit(t, 0)
+	a.run(t, p1Act(t, "claim", `[0,{"tuple":[0,0]}]`), p1Act(t, "authorize", `[0]`), p1Act(t, "beginEffect", `[0]`),
+		p1Act(t, "closeRequest", `[0,{"variant":"ExpireRequest"}]`),
+		p1Act(t, "fenceStore", `[0,{"variant":"RequestSubject","value":0}]`),
+		p1Act(t, "recordFence", `[0,{"variant":"RequestSubject","value":0}]`))
+	a.refuseP1(t, p1Act(t, "fenceStore", `[1,{"variant":"RequestSubject","value":0}]`), "")
+}
+
+// concurrentWitnessWrongRequestFenceGuard.guardTest: request 1 is closed and
+// fenced everywhere while an RPC carrying it is authorized; that RPC applies
+// nothing in B's store.
+func TestConcurrentWitnessWrongRequestFenceGuard(t *testing.T) {
+	a := newP1Replay(t, false)
+	a.submit(t, 1)
+	a.run(t, p1Act(t, "claim", `[0,{"tuple":[1,0]}]`), p1Act(t, "authorize", `[0]`),
+		p1Act(t, "closeRequest", `[1,{"variant":"ExpireRequest"}]`))
+	for store := range 3 {
+		subject := `[` + fmt.Sprint(store) + `,{"variant":"RequestSubject","value":1}]`
+		a.run(t, p1Act(t, "fenceStore", subject), p1Act(t, "recordFence", subject))
+	}
+	a.run(t, p1Act(t, "commitClose", `[1]`))
+	assertRequestState(t, a.s, a.requests[1], "EXPIRED")
+	event := a.rpc[0].attempt.Envelope.ID
+	if err := a.step(t, p1Act(t, "beginEffect", `[0]`)); !errors.Is(err, harnessstore.ErrFenced) {
+		t.Fatal("the authorized RPC of a fenced request was applied:", err)
+	}
+	if n := localEffects(t, a.root, "b", event); n != 0 {
+		t.Fatal("effects of the fenced request in B's store:", n)
+	}
+}
+
 // fencedDuplicateRefusedTest: B's reply reached A and its ACK was lost; B is
 // deleted while a second claim of the reply is authorized. That claim's RPC
 // cannot apply anything: A's store is fenced for B.
