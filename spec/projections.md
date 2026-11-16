@@ -258,7 +258,7 @@ in the ordinary unit tests.
 | `restoreAuthorityTests.physicalRetirementAbortsOldWriterTest` | partial | `TestInstallVolumeRequiresRetiredRegisteredInodeAndExactImage` | Install is refused while a VMM is registered or holds the volume (ADR 003). |
 | `restoreAuthorityTests.revokedSubjectCannotAcquireNewKeyTest` | full | `TestSubjectKeyGateUsesIndependentIntent` |  |
 | `restoreAuthorityTests.destructionWaitsForAllCachedCopiesTest` | partial | `TestDestructionWaitsForAllCachedCopies`, `TestKeyHoldDelaysDestructionAndClearsTheKey` | A guest's copy after the callback is the worker's obligation (ADR 005). |
-| `restoreAuthorityTests.destructionRequiresPermanentSealTest` | partial | `TestDestructionRequiresPermanentSeal` | The refusal is the worker's; it moves into the authority service in ADR 006 wave 3. |
+| `restoreAuthorityTests.destructionRequiresPermanentSealTest` | full | `TestDestructionRequiresPermanentSeal`, `TestServiceRefusesADestructionWithoutASealedBinding` | The authorities refuse it (ADR 006 wave 3): in process, standalone and armed (`internal/restoreauthority`; armed, the catalogue refuses the key authority's own `Revoke` in the transaction that would record it), and through the authority service (`internal/authorityclient`). |
 | `restoreAuthorityTests.destroyedKeyCannotDecryptOldBackupTest` | full | `TestDestroyedKeyCannotDecryptOldBackup`, `TestAcknowledgedWritesSurviveTheFailover` |  |
 | `restoreAuthorityTests.liveKeyDecryptsBackupTest` | full | `TestLiveKeyDecryptsBackup` |  |
 | `restoreAuthorityTests.sealedStoreCannotBeRestoredTest` | full | `TestReceiptRevisionAndForgeryCannotPublish` |  |
