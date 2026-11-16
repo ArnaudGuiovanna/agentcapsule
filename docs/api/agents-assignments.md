@@ -8,7 +8,9 @@ see the [roadmap](../../ROADMAP.md) for what remains.
 
 An agent belongs to **exactly one** domain (constraint `agents_one_domain`):
 
-- **legacy**: `owner_user_id`, one agent per owner, `acp_` tokens;
+- **legacy**: `owner_user_id`, one agent per owner, `acp_` tokens. This domain
+  is closed: `agentcapsule-api` refuses its tokens, and no command creates
+  them ([ADR 001](../adr/001-organization-identity.md#tenant-transition-and-operator-bootstrap-d-01));
 - **tenant**: `tenant_id`, any number of agents, delegated JWT.
 
 The legacy paths (`/v1/agents` with an `acp_` token, wake, sleep, deletion,

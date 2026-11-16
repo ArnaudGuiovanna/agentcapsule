@@ -21,7 +21,7 @@ type platformAPI struct {
 	transit     func() *controlplane.Transit
 	llm         func() *controlplane.LLMService
 	directory   func() *directory.Client
-	authority   *restoreauthority.Catalog
+	authority   restoreauthority.Authority
 	incarnation uint64
 }
 
@@ -57,7 +57,7 @@ func (a platformAPI) withIdentity(ctx context.Context, fn func(context.Context) 
 	if e.Incarnation != a.incarnation {
 		return restoreauthority.ErrStale
 	}
-	return a.authority.WithBinding(ctx, enrollmentBinding(e), func() error { return fn(ctx) })
+	return a.authority.HoldBinding(ctx, enrollmentBinding(e), fn)
 }
 
 func platformError(err error) error {

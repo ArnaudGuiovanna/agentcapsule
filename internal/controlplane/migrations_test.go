@@ -321,6 +321,11 @@ func revertTenantAgents(t *testing.T, s *Store) {
 	if _, err := s.pool.Exec(t.Context(), `
         DROP TABLE IF EXISTS capability_audit, agent_capability_policies, organization_capability_policies;
         ALTER TABLE harness_releases DROP COLUMN IF EXISTS capabilities;
+        DROP TABLE IF EXISTS platform_audit, delegation_keys;
+        DROP INDEX IF EXISTS organizations_active_name, delegation_trusts_issuer_audience;
+        ALTER TABLE IF EXISTS delegation_audit DROP COLUMN IF EXISTS key_id, DROP CONSTRAINT IF EXISTS delegation_audit_action_check;
+        ALTER TABLE IF EXISTS delegation_audit ADD CONSTRAINT delegation_audit_action_check CHECK (action IN ('install','rotate','revoke-trust','revoke-token'));
+        ALTER TABLE IF EXISTS delegation_trusts DROP COLUMN IF EXISTS allowed_scopes, DROP COLUMN IF EXISTS max_ttl_nanoseconds;
         DROP TABLE IF EXISTS peer_redeliveries;
         DROP FUNCTION IF EXISTS preserve_peer_redelivery();
         DROP TABLE IF EXISTS failed_agents, guest_failures;

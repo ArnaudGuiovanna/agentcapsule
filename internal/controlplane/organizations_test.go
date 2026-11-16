@@ -30,9 +30,13 @@ func organizationInput() CreateOrganizationInput {
 		Issuer: "https://issuer.example", Subject: "initial-owner", DisplayName: "Initial Owner"}}
 }
 
+// createTestOrganization names each organization after its key: two active
+// organizations cannot share a name.
 func createTestOrganization(t *testing.T, a *Accounts, p Principal, key string) CreateOrganizationResponse {
 	t.Helper()
-	r, err := a.CreateOrganization(t.Context(), p, key, organizationInput())
+	in := organizationInput()
+	in.Name += " " + key
+	r, err := a.CreateOrganization(t.Context(), p, key, in)
 	if err != nil || r.Status != 201 {
 		t.Fatal("create organization", err)
 	}

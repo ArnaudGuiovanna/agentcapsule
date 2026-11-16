@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,7 +17,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/authoritylog"
 	svc "github.com/ArnaudGuiovanna/agentcapsule/internal/authorityservice"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/keyauthority"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/restoreauthority"
 )
 
@@ -112,8 +115,9 @@ func TestFencesHoldSerializesRevocation(t *testing.T) {
 }
 
 // destructionWaitsForAllCachedCopiesTest across the socket: the key's
-// destruction waits while any hold has it, and the client clears its
-// buffer when the hold ends.
+// destruction waits while a hold has it, and the client clears its buffer
+// when the hold ends. The worker's hold names the binding: the boot's
+// transaction, then the key.
 func TestKeyHoldDelaysDestructionAndClearsTheKey(t *testing.T) {
 	dir := t.TempDir()
 	keys, catalog := authorities(t, dir)
@@ -132,55 +136,97 @@ func TestKeyHoldDelaysDestructionAndClearsTheKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	tombstone := filepath.Join(dir, "keys", "revoked", volume)
-	type holder struct {
-		entered, release chan struct{}
-		done             chan error
-		seen             []byte // the client's own buffer, kept to check it is cleared
-		copy             []byte
-	}
-	holders := []*holder{{}, {}}
-	for i, h := range holders {
-		h.entered, h.release, h.done = make(chan struct{}), make(chan struct{}), make(chan error, 1)
-		use := func(key []byte) error {
-			h.seen, h.copy = key, bytes.Clone(key)
-			close(h.entered)
-			<-h.release
+	entered, release, done := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	var seen, copied []byte // the client's own buffer, kept to check it is cleared
+	holder := l.client(t)
+	go func() {
+		done <- holder.HoldKey(ctx, b, func(_ context.Context, key []byte) error {
+			seen, copied = key, bytes.Clone(key)
+			close(entered)
+			<-release
 			return nil
-		}
-		own := l.client(t)
-		go func() {
-			if i == 0 {
-				// A boot: the binding and the key, in one hold.
-				h.done <- own.HoldKey(ctx, b, func(_ context.Context, key []byte) error { return use(key) })
-			} else {
-				h.done <- own.WithKey(ctx, agent, volume, use)
-			}
-		}()
-		<-h.entered
-		if !bytes.Equal(h.copy, want) {
-			t.Fatal("the hold did not carry the volume key")
-		}
+		})
+	}()
+	<-entered
+	if !bytes.Equal(copied, want) {
+		t.Fatal("the hold did not carry the volume key")
 	}
-	for i, h := range holders {
-		if err = c.Revoke(within(t, 200*time.Millisecond), agent, volume); !errors.Is(err, restoreauthority.ErrUnavailable) {
-			t.Fatalf("destruction with %d holder(s) left: %v", len(holders)-i, err)
-		}
-		if _, err = os.Lstat(tombstone); !errors.Is(err, os.ErrNotExist) {
-			t.Fatal("a refused destruction published a tombstone", err)
-		}
-		close(h.release)
-		if err = <-h.done; err != nil {
-			t.Fatal(err)
-		}
-		if !bytes.Equal(h.seen, make([]byte, 32)) {
-			t.Fatal("the client kept the key after its hold")
-		}
+	if err = c.Revoke(within(t, 200*time.Millisecond), agent, volume); !errors.Is(err, restoreauthority.ErrUnavailable) {
+		t.Fatal("destruction during the hold", err)
+	}
+	if _, err = os.Lstat(tombstone); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("a refused destruction published a tombstone", err)
+	}
+	close(release)
+	if err = <-done; err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(seen, make([]byte, 32)) {
+		t.Fatal("the client kept the key after its hold")
 	}
 	if err = c.Revoke(ctx, agent, volume); err != nil {
-		t.Fatal("destruction after the last holder", err)
+		t.Fatal("destruction after the hold", err)
 	}
 	if err = c.HoldKey(ctx, b, func(context.Context, []byte) error { t.Error("a destroyed key held"); return nil }); err == nil {
 		t.Fatal("a destroyed key was held")
+	}
+}
+
+// A key is held under its binding only. A bare hold would keep the key's
+// lock without the catalogue's transaction: an armed destruction would then
+// wait for the key inside that transaction, and every catalogue operation
+// behind it, up to max_key_hold. The service refuses it, and the client
+// does not send it.
+func TestServiceRefusesABareKeyHold(t *testing.T) {
+	keys, catalog := authorities(t, t.TempDir())
+	l := serve(t, keys, catalog)
+	c := l.client(t)
+	ctx := t.Context()
+	b, err := c.Register(ctx, agent, volume)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = c.Ensure(ctx, agent, volume); err != nil {
+		t.Fatal(err)
+	}
+	if err = c.WithKey(ctx, agent, volume, func([]byte) error { t.Error("a bare key hold"); return nil }); !errors.Is(err, keyauthority.ErrInput) {
+		t.Fatal("the client held a key without its binding", err)
+	}
+	conn, err := net.Dial("unix", l.worker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(10 * time.Second))
+	var r svc.Response
+	if err = authoritylog.WriteFrame(conn, svc.Hello{Protocol: svc.Protocol, Role: svc.RoleWorker, RestoreAuthority: catalog.Identity(), KeyAuthority: keys.Identity()}); err != nil {
+		t.Fatal(err)
+	}
+	if err = authoritylog.ReadFrame(conn, &r, svc.MaxResponse); err != nil || r.Error != "" {
+		t.Fatal("hello", r, err)
+	}
+	args, _ := json.Marshal(svc.KeyArgs{Agent: agent, Volume: volume})
+	if err = authoritylog.WriteFrame(conn, svc.Request{Op: svc.OpHoldKey, TimeoutMS: 5000, Args: args}); err != nil {
+		t.Fatal(err)
+	}
+	r = svc.Response{}
+	if err = authoritylog.ReadFrame(conn, &r, svc.MaxResponse); err != nil || r.Held != nil || r.Error != svc.CodeInput {
+		t.Fatal("the service granted a bare key hold", r, err)
+	}
+	// The connection goes on, and nothing holds the key: its destruction runs.
+	args, _ = json.Marshal(svc.BindingArgs{Binding: b})
+	if err = authoritylog.WriteFrame(conn, svc.Request{Op: svc.OpCheckBinding, TimeoutMS: 5000, Args: args}); err != nil {
+		t.Fatal(err)
+	}
+	r = svc.Response{}
+	if err = authoritylog.ReadFrame(conn, &r, svc.MaxResponse); err != nil || r.Error != "" {
+		t.Fatal("the connection after the refusal", r, err)
+	}
+	if err = c.RecordRetiredSeal(ctx, b); err != nil {
+		t.Fatal(err)
+	}
+	if err = c.Revoke(within(t, 5*time.Second), agent, volume); err != nil {
+		t.Fatal("destruction", err)
 	}
 }
 

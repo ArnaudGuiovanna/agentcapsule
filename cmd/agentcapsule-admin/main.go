@@ -6,9 +6,7 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -57,58 +55,18 @@ func run() int {
 	if len(os.Args) > 1 && (os.Args[1] == "configure-host" || os.Args[1] == "approve-local-harness") {
 		return configureCatalog(os.Args[1], os.Args[2:])
 	}
-	if len(os.Args) < 2 || os.Args[1] != "bootstrap" {
-		return fail("usage: agentcapsule-admin bootstrap | bootstrap-platform | list-credentials | revoke-credential | abandon-provisioning | clear-agent-failure | configure-delegation | init-key-authority | init-restore-authority | configure-host | approve-local-harness | activate-transit-keys")
+	if len(os.Args) > 1 && os.Args[1] == "migrate" {
+		return migrate(os.Args[2:])
 	}
-	f := flag.NewFlagSet("bootstrap", flag.ContinueOnError)
-	keyPath := f.String("receipt-key-file", "", "private 32-byte receipt encryption key")
-	tokenPath := f.String("token-file", "", "private bootstrap service token file")
-	account := f.String("service-account", "installation-admin", "bootstrap service account")
-	lifetime := f.Duration("token-lifetime", 30*24*time.Hour, "bootstrap token lifetime")
-	if err := f.Parse(os.Args[2:]); err != nil {
-		return 1
+	if len(os.Args) > 1 && os.Args[1] == "list-audit" {
+		return listAudit(os.Args[2:])
 	}
-	if f.NArg() != 0 || *keyPath == "" || *tokenPath == "" || *keyPath == *tokenPath {
-		return fail("configuration_required")
+	if len(os.Args) > 1 && os.Args[1] == "bootstrap" {
+		// The legacy owner domain's service credential (D-01, ADR 001): an
+		// installation starts with bootstrap-platform (docs/bootstrap.md).
+		return fail("bootstrap_removed_use_bootstrap_platform")
 	}
-	dsn, code := databaseURL()
-	if code != "" {
-		return fail(code)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	s, err := controlplane.Open(ctx, dsn)
-	if err != nil {
-		return fail("database_initialization_failed")
-	}
-	defer s.Close()
-	if err = s.Migrate(ctx); err != nil {
-		return fail("database_migration_failed")
-	}
-	key, err := operatorconfig.EnsurePrivate(*keyPath, 32, func() []byte { b := make([]byte, 32); _, _ = rand.Read(b); return b })
-	if err != nil {
-		return fail("receipt_key_file_invalid")
-	}
-	accounts, err := controlplane.NewAccounts(s, key)
-	if err != nil || accounts.InitializeReceiptKey(ctx) != nil {
-		return fail("receipt_key_does_not_match_installation")
-	}
-	token, err := operatorconfig.EnsurePrivate(*tokenPath, 47, func() []byte {
-		b := make([]byte, 32)
-		_, _ = rand.Read(b)
-		return []byte("acp_" + base64.RawURLEncoding.EncodeToString(b))
-	})
-	if err != nil {
-		return fail("token_file_invalid")
-	}
-	if err = s.BootstrapServiceToken(ctx, *account, string(token), *lifetime); err != nil {
-		if reason, definite := definiteRefusal(err); definite {
-			return fail("bootstrap_rejected_" + reason)
-		}
-		return fail("bootstrap_unconfirmed_retry_with_same_files")
-	}
-	fmt.Fprintln(os.Stdout, "bootstrap_complete")
-	return 0
+	return fail("usage: agentcapsule-admin migrate | bootstrap-platform | list-credentials | revoke-credential | configure-delegation | list-audit | abandon-provisioning | clear-agent-failure | init-key-authority | init-restore-authority | configure-host | approve-local-harness | activate-transit-keys")
 }
 
 func configureCatalog(command string, args []string) int {

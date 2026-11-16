@@ -180,24 +180,64 @@ func (w *Placements) placement(ctx context.Context, id string) (controlplane.Pla
 // ordinary work. Calling it again with the same restoreID resumes from the
 // last durable step; a new restoreID replaces an unfinished restore that has
 // not activated. The agent wakes on its next delivery.
-func (w *Placements) RestoreFromArchive(ctx context.Context, restoreID, agentID, archiveID string, archives *volumearchive.Store) (VolumeRestoreResult, error) {
+//
+// While the authorities are unavailable (the authority service is away, or
+// in degraded mode waits for the standby), the restore pauses: paused, when
+// not nil, receives the error, then the restore resumes from its last
+// durable step once they answer, until ctx ends (ADR 006 §4). A refusal
+// ends it.
+func (w *Placements) RestoreFromArchive(ctx context.Context, restoreID, agentID, archiveID string, archives *volumearchive.Store, paused func(error)) (VolumeRestoreResult, error) {
 	if w.provisioning == nil || w.authority == nil || archives == nil {
-		return VolumeRestoreResult{}, controlplane.ErrInput
-	}
-	keys, ok := w.provisioning.keys.(interface{ SeparateFrom(string) error })
-	if !ok {
 		return VolumeRestoreResult{}, controlplane.ErrInput
 	}
 	for _, check := range []func() error{
 		func() error { return restoreauthority.CheckSeparation(w.provisioning.runtimeRoot, archives.Root()) },
 		func() error { return w.authority.SeparateFrom(archives.Root()) },
-		func() error { return keys.SeparateFrom(archives.Root()) },
 	} {
 		if err := check(); err != nil {
 			return VolumeRestoreResult{}, err
 		}
 	}
-	return w.restore(ctx, w.productRestoreHost(), restoreID, agentID, archiveID, archives)
+	return w.restorePausing(ctx, w.productRestoreHost(), restoreID, agentID, archiveID, archives, paused)
+}
+
+// restorePause bounds the wait between two attempts of a paused restore.
+var restorePause = struct{ first, max time.Duration }{time.Second, 30 * time.Second}
+
+// restorePausing runs the restore, and runs it again with the same ID
+// whenever it stopped on unavailable authorities: every step can be
+// repeated, and each attempt resumes from the last durable one.
+func (w *Placements) restorePausing(ctx context.Context, h restoreHost, restoreID, agentID, archiveID string, archives *volumearchive.Store, paused func(error)) (VolumeRestoreResult, error) {
+	wait := restorePause.first
+	for {
+		result, err := w.restore(ctx, h, restoreID, agentID, archiveID, archives)
+		if err == nil || !errors.Is(err, restoreauthority.ErrUnavailable) || ctx.Err() != nil {
+			return result, err
+		}
+		if paused != nil {
+			paused(err)
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return result, errors.Join(err, ctx.Err())
+		case <-timer.C:
+		}
+		wait = min(2*wait, restorePause.max)
+	}
+}
+
+// RestorePauses is the vocabulary of RestorePause.
+func RestorePauses() []string { return []string{"waits_for_replica", "authority_unavailable"} }
+
+// RestorePause says why a restore paused: the authority service waits for
+// the standby in degraded mode, or the authorities do not answer.
+func RestorePause(err error) string {
+	if errors.Is(err, restoreauthority.ErrWaitsForReplica) {
+		return "waits_for_replica"
+	}
+	return "authority_unavailable"
 }
 
 func (w *Placements) restore(ctx context.Context, h restoreHost, restoreID, agentID, archiveID string, archives *volumearchive.Store) (VolumeRestoreResult, error) {
@@ -294,7 +334,7 @@ func (w *Placements) beginRestore(ctx context.Context, h restoreHost, restoreID,
 
 // checkRestoreArchive authenticates the archive and hashes its bytes, then
 // checks that it is of this agent's volume and of its size.
-func checkRestoreArchive(ctx context.Context, archives *volumearchive.Store, archiveID string, e controlplane.Enrollment, authority *restoreauthority.Catalog) error {
+func checkRestoreArchive(ctx context.Context, archives *volumearchive.Store, archiveID string, e controlplane.Enrollment, authority volumearchive.Authority) error {
 	f, a, err := archives.Open(ctx, archiveID, authority)
 	if err != nil {
 		return err
@@ -424,12 +464,12 @@ func (w *Placements) activateRestore(ctx context.Context, h restoreHost, plan co
 		}
 		return missing, nil
 	}
-	_, err = w.authority.Activate(ctx, receipt, restoreauthority.Restoration{
+	_, err = w.authority.ActivateRestored(ctx, receipt, restoreauthority.Activation{
 		Inspect: inspect,
 		Repair: func([]restoreauthority.Outcome) error {
 			return w.newerArchive(ctx, r.AgentID, r.ArchiveID, archives)
 		},
-		Publish: func() error {
+		Publish: func(ctx context.Context) error {
 			return w.store.ActivateVolumeRestore(ctx, r.ID, w.hostID, run.Generation, run.ID)
 		},
 	})

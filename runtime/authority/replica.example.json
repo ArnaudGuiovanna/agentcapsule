@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "role": "replica",
+  "root": "/var/lib/agentcapsule-authority-replica/replica",
+  "restore_authority_id": "<restoreauth_PUBLIC_IDENTITY>",
+  "key_authority_id": "<keyauth_PUBLIC_IDENTITY>",
+  "listen": "0.0.0.0:7443",
+  "certificate": "/etc/agentcapsule/authority-replica.crt",
+  "key": "/etc/agentcapsule/authority-replica.key",
+  "primary_certificate": "/etc/agentcapsule/authority-primary.crt",
+  "metrics_listen": "127.0.0.1:9466"
+}

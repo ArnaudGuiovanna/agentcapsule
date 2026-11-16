@@ -278,6 +278,29 @@ func (v *Verifier) Verify(raw string) (VerifiedIdentity, error) {
 	}, nil
 }
 
+// Select returns the unverified issuer, single audience and key ID of a compact
+// token of at most DefaultMaxTokenBytes, so that the caller can find the one
+// trust and key that may verify it. It authenticates nothing: the caller builds
+// a Verifier from what it found and calls Verify. A token that cannot match the
+// delegation profile's header and selection claims returns ErrInvalidToken.
+func Select(raw string) (issuer, audience, keyID string, err error) {
+	if len(raw) == 0 || len(raw) > DefaultMaxTokenBytes {
+		return "", "", "", ErrInvalidToken
+	}
+	claims := jwt.MapClaims{}
+	unverified, _, err := jwt.NewParser(jwt.WithJSONNumber(), jwt.WithStrictDecoding()).ParseUnverified(raw, claims)
+	if err != nil || !validHeader(unverified) {
+		return "", "", "", ErrInvalidToken
+	}
+	issuer, ok := claims["iss"].(string)
+	audiences, audienceErr := claims.GetAudience()
+	if !ok || !validIdentifier(issuer) || audienceErr != nil || len(audiences) != 1 || !validIdentifier(audiences[0]) {
+		return "", "", "", ErrInvalidToken
+	}
+	keyID, _ = unverified.Header["kid"].(string)
+	return issuer, audiences[0], keyID, nil
+}
+
 func validHeader(token *jwt.Token) bool {
 	if token == nil || token.Method != jwt.SigningMethodEdDSA || token.Header["alg"] != "EdDSA" {
 		return false

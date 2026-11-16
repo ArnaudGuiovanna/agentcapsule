@@ -105,7 +105,7 @@ Files as results and external object storage stay P1.
   none.
 - **Requested** in `harness.yaml` (`capabilities: [...]`), checked at import
   (unknown or repeated names reject the package) and recorded on the release
-  (migration `0034_capabilities.sql`). A manifest without the field predates it
+  (migration `0036_capabilities.sql`). A manifest without the field predates it
   and is treated as requesting everything; an empty list requests nothing.
 - **Allowed** by the organization (`PUT /v1/organizations/current/capabilities`,
   `quota:manage`) and by the agent (`PUT /v1/agents/{id}/capabilities`,

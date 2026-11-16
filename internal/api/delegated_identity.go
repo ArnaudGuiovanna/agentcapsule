@@ -6,9 +6,11 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/delegatedidentity"
 )
 
-// SetDelegatedIdentityVerifier swaps local verification config. This does not
-// activate its fingerprints in PostgreSQL; only an explicit operator change
-// can do that. Nil disables JWT authentication. The pointer is concurrency-safe.
+// SetDelegatedIdentityVerifier sets a fixed verification config, for tests.
+// This does not activate its fingerprints in PostgreSQL; only an explicit
+// operator change can do that. Nil, the default and agentcapsule-api's choice,
+// verifies tokens with the keys registered in PostgreSQL (ADR 001, D-01). The
+// pointer is concurrency-safe.
 func (s *Server) SetDelegatedIdentityVerifier(v *delegatedidentity.Verifier) {
 	s.delegations.Store(v)
 }
