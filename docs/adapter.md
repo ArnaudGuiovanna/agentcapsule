@@ -261,7 +261,10 @@ task, _ := client.GetTask(ctx, &a2a.GetTaskRequest{ID: result.(*a2a.Task).ID})
   `returnImmediately: true` and call `GetTask` to follow the task instead.
   `GetTask` asks the platform where the request stands. The reply arrives as an
   event: the task is `COMPLETED` once it is there, with the reply as the
-  artifact `reply`.
+  artifact `reply`. If the event never comes (its delivery died, ADR 007),
+  `GetTask` reads the reply from the platform and completes the task the same
+  way. A reply no longer kept completes the task without an artifact; the
+  metadata's `reason` says why (`content_purged`, `content_revoked`).
 - **Tasks outlive the run.** Tasks are kept in the agent's encrypted home.
   `GetTask` answers in a later invocation, and after sleep and wake. A reply
   that arrives after the run ended is kept for the next one.

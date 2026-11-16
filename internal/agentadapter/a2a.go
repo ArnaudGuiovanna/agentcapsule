@@ -419,19 +419,40 @@ func (e *A2AEndpoint) load(ctx context.Context, requestID string) (taskRow, erro
 }
 
 // refresh asks the platform where a request without an outcome stands. A
-// refusal leaves the last known state: the platform's notifications remain
-// the outcome's source.
+// refusal leaves the last known state. A REPLIED request's status carries its
+// reply, or why it has none (ADR 007): the reply event remains the way a reply
+// arrives, and this read catches up on one whose event never came.
 func (e *A2AEndpoint) refresh(ctx context.Context, requestID string, t *taskRow) {
 	ask, cancel := context.WithTimeout(ctx, 5*time.Second)
 	s, err := e.platform.RequestStatus(ask, requestID)
 	cancel()
-	if err != nil || s.RequestID != requestID || s.State == t.state {
+	if err != nil || s.RequestID != requestID {
 		return
 	}
 	now := time.Now().UnixNano()
+	if s.State == "REPLIED" && (s.Reply != nil || s.Reason != "") {
+		var reply []byte
+		if s.Reply != nil {
+			if reply, err = json.Marshal(s.Reply.Content); err != nil {
+				return
+			}
+			t.reply = s.Reply.Content
+		}
+		t.result, t.reason, t.updated = "REPLIED", truncate(s.Reason, 100), now
+		_ = e.engine.store.Local(ctx, []string{"agent/" + e.engine.agent}, func(tx harnessstore.SQL) error {
+			_, err := tx.ExecContext(ctx, `INSERT INTO adapter_a2a_results(request_id,state,reply,reason,received_ns) VALUES(?,'REPLIED',?,?,?)
+                ON CONFLICT(request_id) DO NOTHING`, requestID, reply, t.reason, now)
+			return err
+		})
+		return
+	}
+	if s.State == t.state {
+		return
+	}
 	switch s.State {
 	case "PENDING_APPROVAL", "DELIVERING", "PROCESSING", "REPLIED":
-		// The reply itself arrives as an event; until then the task is working.
+		// A host that does not carry the reply here: until its event arrives,
+		// the task is working.
 		t.state, t.updated = s.State, now
 		_ = e.engine.store.Local(ctx, []string{"agent/" + e.engine.agent}, func(tx harnessstore.SQL) error {
 			_, err := tx.ExecContext(ctx, `UPDATE adapter_a2a_tasks SET state=?,updated_ns=? WHERE request_id=?`, s.State, now, requestID)
@@ -514,7 +535,9 @@ func taskView(requestID string, t taskRow) *a2a.Task {
 		view.Status.Message = &a2a.Message{ID: "status-" + requestID, ContextID: t.contextID, TaskID: id, Role: a2a.MessageRoleAgent,
 			Parts: a2a.ContentParts{a2a.NewTextPart(note)}}
 	}
-	if t.result == "REPLIED" {
+	// A reply no longer kept ends the task without an artifact; its reason
+	// (content_purged, content_revoked) is in the metadata.
+	if t.result == "REPLIED" && len(t.reply) > 0 {
 		view.Artifacts = []*a2a.Artifact{{ID: "reply", Name: "reply", Parts: parts(t.reply)}}
 	}
 	return view

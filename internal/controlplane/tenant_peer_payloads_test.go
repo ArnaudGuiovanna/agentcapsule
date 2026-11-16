@@ -110,6 +110,10 @@ func TestTenantAgentsExchangePrivateContentForTheirRequester(t *testing.T) {
 	if err != nil || answer.Kind != "reply" || answer.Payload.Content[0].Text != "Paris" {
 		t.Fatal("a did not receive b's answer", err)
 	}
+	// a's agent also reads the answer from the request's status (ADR 007).
+	if status, err := il.tr.RequestStateFromVM(ctx, vmA, r.RequestID); err != nil || status.Reply == nil || status.Reply.Content[0].Text != "Paris" {
+		t.Fatal("a cannot read b's answer from the status", status, err)
+	}
 
 	// A mandate no invocation granted names nobody: content cannot be bound,
 	// and the request is refused without spending it.

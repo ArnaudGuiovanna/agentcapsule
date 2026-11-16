@@ -440,7 +440,13 @@ channel serve the A2A endpoint of [capsule-adapter](../adapter.md#other-agents-a
   skills come from PostgreSQL, empty for an agent never described.
 - `/v1/agent-requests/{id}/status` returns the state, recipient and deadline
   of a request the caller sent; any other request is `not_found`. The reply
-  itself only arrives as an event.
+  arrives as an event; a `REPLIED` request also carries it here (`reply`)
+  while it is kept, whether its delivery is pending, delivered or dead, so
+  that the sender catches up on a reply whose event never came
+  ([ADR 007](../adr/007-delivery-closure-and-priority.md)). It is read with
+  the checks of the owners' read. A reply no longer kept comes with `reason`:
+  `content_purged` at the end of its retention, `content_revoked` once its
+  author is deleted or the person it is bound to has lost access.
 
 Both pass the placement check of every VM call and decide nothing.
 

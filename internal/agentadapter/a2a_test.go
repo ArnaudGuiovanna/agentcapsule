@@ -33,13 +33,17 @@ type peers struct {
 	keys        []string
 	byKey       map[string]string
 	states      map[string]string
-	code        string          // a refusal of every submission
-	statusDown  bool            // RequestStatus answers "unavailable"
-	onSubmit    func(id string) // called once per new request, outside the lock
+	replies     map[string]*capsuleprotocol.PeerPayload // what RequestStatus carries of a REPLIED request
+	reasons     map[string]string                       // why it carries no reply
+	code        string                                  // a refusal of every submission
+	statusDown  bool                                    // RequestStatus answers "unavailable"
+	onSubmit    func(id string)                         // called once per new request, outside the lock
 	searches    []capsuleprotocol.DirectoryQuery
 }
 
-func newPeers() *peers { return &peers{byKey: map[string]string{}, states: map[string]string{}} }
+func newPeers() *peers {
+	return &peers{byKey: map[string]string{}, states: map[string]string{}, replies: map[string]*capsuleprotocol.PeerPayload{}, reasons: map[string]string{}}
+}
 
 func (p *peers) Submit(_ context.Context, key string, in capsuleprotocol.Submission) (capsuleprotocol.PlatformReceipt, error) {
 	p.mu.Lock()
@@ -74,6 +78,18 @@ func (p *peers) set(id, state string) {
 	p.states[id] = state
 }
 
+// replied makes the platform's status carry a request's reply, or the reason
+// it has none, as a host with ADR 007 does.
+func (p *peers) replied(id, answer, reason string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.states[id] = "REPLIED"
+	if answer != "" {
+		p.replies[id] = &capsuleprotocol.PeerPayload{Content: []capsuleprotocol.TextContent{{Type: "text", Text: answer}}}
+	}
+	p.reasons[id] = reason
+}
+
 func (p *peers) FindAgents(_ context.Context, q capsuleprotocol.DirectoryQuery) ([]capsuleprotocol.DirectoryAgent, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -101,7 +117,8 @@ func (p *peers) RequestStatus(_ context.Context, id string) (capsuleprotocol.Req
 	if !ok {
 		return capsuleprotocol.RequestStatus{}, &capsuleprotocol.PlatformError{Code: "not_found"}
 	}
-	return capsuleprotocol.RequestStatus{RequestID: id, RecipientAgentID: "b", State: state, ExpiresAt: time.Now().Add(time.Hour)}, nil
+	return capsuleprotocol.RequestStatus{RequestID: id, RecipientAgentID: "b", State: state, ExpiresAt: time.Now().Add(time.Hour),
+		Reply: p.replies[id], Reason: p.reasons[id]}, nil
 }
 
 type a2aLab struct {
@@ -326,6 +343,61 @@ func TestRequestsThatEndWithoutAReply(t *testing.T) {
 	l.drain()
 	if len(l.p.completions) != 1 || l.p.completions[0].Content[0].Text != "TASK_STATE_REJECTED/DECLINED TASK_STATE_FAILED/EXPIRED" {
 		t.Fatal(l.p.completions)
+	}
+}
+
+// summary is a task's state, its artifact's text and its reason.
+func summary(t *a2a.Task) string {
+	artifact := "-"
+	if len(t.Artifacts) == 1 && len(t.Artifacts[0].Parts) == 1 {
+		artifact = fmt.Sprint(t.Artifacts[0].Parts[0].Content)
+	} else if len(t.Artifacts) != 0 {
+		artifact = "?"
+	}
+	reason, _ := t.Metadata["agentcapsule"].(map[string]any)["reason"].(string)
+	return state(t) + "/" + artifact + "/" + reason
+}
+
+// A reply whose event never came, its delivery dead (ADR 007): the platform's
+// status carries it, and the task completes with it as its artifact. A reply
+// no longer kept completes the task without an artifact, and says why.
+func TestA2AGetTaskCompletesAfterDeadReply(t *testing.T) {
+	l := newA2ALab(t, func(ctx context.Context, l *a2aLab, j Job) string {
+		client, _, err := l.client(ctx, "b")
+		if err != nil {
+			t.Error(err)
+			return ""
+		}
+		kept, _ := client.SendMessage(ctx, &a2a.SendMessageRequest{Message: text("first"), Config: &a2a.SendMessageConfig{ReturnImmediately: true}})
+		purged, _ := client.SendMessage(ctx, &a2a.SendMessageRequest{Message: text("second"), Config: &a2a.SendMessageConfig{ReturnImmediately: true}})
+		if kept == nil || purged == nil {
+			t.Error("not sent")
+			return ""
+		}
+		k, p := kept.(*a2a.Task).ID, purged.(*a2a.Task).ID
+		l.peers.replied(string(k), "the answer", "")
+		l.peers.replied(string(p), "", "content_purged")
+		var out []string
+		for _, id := range []a2a.TaskID{k, p} {
+			task, err := client.GetTask(ctx, &a2a.GetTaskRequest{ID: id})
+			if err != nil {
+				t.Error(err)
+				return ""
+			}
+			out = append(out, summary(task))
+		}
+		// The outcome is the task's from now on, whatever the platform says.
+		l.peers.statusDown = true
+		if task, err := client.GetTask(ctx, &a2a.GetTaskRequest{ID: k}); err != nil || summary(task) != out[0] {
+			t.Error("known reply lost", task, err)
+		}
+		return strings.Join(out, " ")
+	})
+	l.deliver(invocation(t, "e1", "go"))
+	l.drain()
+	want := "TASK_STATE_COMPLETED/REPLIED/the answer/ TASK_STATE_COMPLETED/REPLIED/-/content_purged"
+	if len(l.p.completions) != 1 || l.p.completions[0].Content[0].Text != want {
+		t.Fatalf("got %v\nwant %s", l.p.completions, want)
 	}
 }
 

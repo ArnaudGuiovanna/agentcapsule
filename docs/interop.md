@@ -111,7 +111,7 @@ metadata of its own.
 | `PENDING_APPROVAL` | `TASK_STATE_SUBMITTED` | Waiting for the recipient side's consent; nothing delivered |
 | `DELIVERING` | `TASK_STATE_SUBMITTED` | Stored; waking or delivering. Delivery is not success |
 | `PROCESSING` | `TASK_STATE_WORKING` | Delivered to the recipient's harness |
-| `REPLIED` | `TASK_STATE_COMPLETED` | The reply is the task's artifact; until the reply event reaches the sender, the task stays `WORKING` |
+| `REPLIED` | `TASK_STATE_COMPLETED` | The reply is the task's artifact, from its event or, if that never comes, from the request's status read ([ADR 007](adr/007-delivery-closure-and-priority.md)). A reply no longer kept ends the task without an artifact, with `reason` in the metadata. Until either, the task stays `WORKING` |
 | `DECLINED` | `TASK_STATE_REJECTED` | Refused by the recipient side |
 | `CANCELED` | `TASK_STATE_CANCELED` | Canceled before an outcome |
 | `EXPIRED`, `FAILED` | `TASK_STATE_FAILED` | A2A has no expired state; the metadata says which |

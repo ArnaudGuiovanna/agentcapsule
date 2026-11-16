@@ -143,3 +143,40 @@ func TestDeadReplyStartsRetention(t *testing.T) {
 		}
 	}
 }
+
+// The sender's agent reads its reply through the request's status, whether
+// the reply's delivery is pending or dead; nobody else does. Once the reply
+// is purged, or revoked by the deletion of its author, the read says why.
+func TestSenderReadsReplyAfterDeadDelivery(t *testing.T) {
+	l := newDeadReplyLab(t)
+	read := func(want, reason string) {
+		t.Helper()
+		got, err := l.tr.RequestStateFromVM(t.Context(), l.a, l.request)
+		if err != nil || got.State != "REPLIED" || got.Reason != reason {
+			t.Fatalf("status %+v %v, want reason %q", got, err, reason)
+		}
+		if want == "" && got.Reply != nil || want != "" && (got.Reply == nil || got.Reply.Content[0].Text != want) {
+			t.Fatalf("reply %+v, want %q", got.Reply, want)
+		}
+	}
+	read("the answer", "")
+	l.killReply(t)
+	read("the answer", "")
+	for _, vm := range []VMCaller{l.b, l.c} {
+		if _, err := l.tr.RequestStateFromVM(t.Context(), vm, l.request); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("%s read another agent's reply: %v", vm.AgentID, err)
+		}
+	}
+	l.purgeLater(t)
+	read("", "content_purged")
+
+	revoked := newDeadReplyLab(t)
+	revoked.killReply(t)
+	if err := revoked.s.RequestDeletion(t.Context(), revoked.owners[1].ID, "b"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := revoked.tr.RequestStateFromVM(t.Context(), revoked.a, revoked.request)
+	if err != nil || got.State != "REPLIED" || got.Reply != nil || got.Reason != "content_revoked" {
+		t.Fatalf("status after the replier's deletion %+v %v", got, err)
+	}
+}

@@ -274,17 +274,25 @@ func (a platformAPI) DescribeAgent(ctx context.Context, agentID string) (capsule
 	return capsuleprotocol.DirectoryAgent{AgentID: d.AgentID, Description: d.Description, Skills: d.Skills, Domains: d.Domains}, nil
 }
 
+// RequestStatus carries a replied request's reply when the worker holds the
+// transit: the sender's agent catches up on a reply whose event never came,
+// even after its delivery died (ADR 007).
 func (a platformAPI) RequestStatus(ctx context.Context, requestID string) (capsuleprotocol.RequestStatus, error) {
 	var r controlplane.RequestState
 	err := a.withApplication(ctx, func(ctx context.Context) error {
 		var err error
-		r, err = a.store.RequestStateFromVM(ctx, a.caller, requestID)
+		if t := a.transit(); t != nil {
+			r, err = t.RequestStateFromVM(ctx, a.caller, requestID)
+		} else {
+			r, err = a.store.RequestStateFromVM(ctx, a.caller, requestID)
+		}
 		return err
 	})
 	if err != nil {
 		return capsuleprotocol.RequestStatus{}, platformError(err)
 	}
-	return capsuleprotocol.RequestStatus{RequestID: r.RequestID, RecipientAgentID: r.RecipientAgentID, State: r.State, ExpiresAt: r.ExpiresAt}, nil
+	return capsuleprotocol.RequestStatus{RequestID: r.RequestID, RecipientAgentID: r.RecipientAgentID, State: r.State, ExpiresAt: r.ExpiresAt,
+		Reply: r.Reply, Reason: r.Reason}, nil
 }
 
 var _ capsuleprotocol.PeerAPI = platformAPI{}
