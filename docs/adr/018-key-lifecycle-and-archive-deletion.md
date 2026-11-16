@@ -53,9 +53,10 @@ base of this work.
   replica, the replica deletes its wrapped copy in the same record, and
   destruction waits for the replica in degraded mode.
 
-So the key is destroyed **at deletion**, minutes after the request: as soon
-as every agent's store has fenced the deletion and the host has stopped the
-VM for good. The worker's order is the only thing that puts the seal before
+So the key is destroyed **at deletion**, usually minutes after the request:
+as soon as every agent's store has fenced the deletion and the host has
+stopped the VM for good. Nothing measured how long a deletion stayed
+unfinished. The worker's order is the only thing that puts the seal before
 the destruction: `Revoke` takes no seal.
 
 ### A seal
@@ -234,10 +235,10 @@ under the new key would shorten the first part only (question 5).
 
 | Key | Rotates | How often (default) | Overlap | Command |
 | --- | --- | --- | --- | --- |
-| Volume key | No. It lives as long as the volume, and the LUKS volume key under it never changes: a new unlock key would leave every archive openable with the old one | — | — | — |
+| Volume key | No. It lives as long as the volume. The LUKS volume key that its key slot protects never changes, so a new 32-byte key for the slot would leave every archive openable with the old one | — | — | — |
 | Transit keys | Yes | Once a year, and at once on a suspected leak (question 5) | Until the old key seals nothing live, then 4 weeks in the safe | `activate-transit-keys`, `transit-key-usage` |
 | Receipt key | Not before ADR 006 wave 6. Then a daily key, destroyed after 24 hours | Daily | Today's and yesterday's | Automatic |
-| LLM credential key | Not yet (follow-up 6). On a suspected leak of the receipt key, rotate every provider credential at its provider | — | — | — |
+| LLM credential key | Not yet (follow-up 7). On a suspected leak of the receipt key, rotate every provider credential at its provider | — | — | — |
 | Catalogue secret | No | — | — | — |
 | Unlock key | At each failover; otherwise follow-up 5 | — | — | — |
 | Replica link certificates | Before their 10 years end, or when a host is rebuilt | — | None: the replication pauses while one side waits for its new pin, and degraded mode starts after 30 seconds | `agentcapsule-authority certificate` |
@@ -315,6 +316,13 @@ The KVM product test of a deletion with archives is not written: a real
 deletion needs the host's seal (`RemoveDeletedStore`). The PostgreSQL tests
 play the deletion's records up to `RecordStoreRemoval`, and the authorities'
 own tests cover the key's destruction.
+
+**The model** ([restore_authority.qnt](../../spec/restore_authority.qnt))
+does not change. It already destroys a key only after a permanent seal
+(`destroyKey`), and an archive of a destroyed key never opens again
+(`destroyedKeyCannotDecryptOldBackupTest`): deleting that archive later
+changes no invariant. The transit keys and the deletion metrics are outside
+the model.
 
 ## 4. Follow-ups
 

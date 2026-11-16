@@ -47,9 +47,10 @@ validation of an external HSM or KMS.
 - **Used** to format the volume on the host, and at each boot to open it in
   the guest (`WithKey`). A restore installs an archive into the same volume:
   the key stays the same.
-- **Never rotated.** It lives as long as the volume. The LUKS volume key it
-  unlocks never changes either, so a new unlock key would still leave every
-  archive openable with the old one.
+- **Never rotated.** It lives as long as the volume. It opens the volume's
+  only LUKS key slot, and the LUKS volume key under that slot never changes:
+  a new key for the slot would still leave every archive openable with the
+  old one.
 - **Destroyed** when the agent is deleted, right after the restore authority
   seals its store, and before the volume file is removed
   (`internal/worker/removals_linux.go`). From then on no archive of the agent
