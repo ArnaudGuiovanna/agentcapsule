@@ -49,7 +49,7 @@ server has no row.
 | service | A technical account with role `org_admin`, a token limited to `org:read member:read team:read agent:read agent:operate agent:invoke agent:content:read audit:read`, and a `read_metadata` + `invoke` assignment |
 | foreign | The owner of another organization, with every scope, using the first organization's identifiers |
 | revoked | A member who was assigned to the agent, then revoked |
-| revoked token | A revoked token of the technical account |
+| revoked-token | A revoked token of the technical account |
 | platform | The platform operator |
 
 The agent is the same for every caller. Routes marked "the caller's own,
