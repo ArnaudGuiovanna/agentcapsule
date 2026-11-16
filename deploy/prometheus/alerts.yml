@@ -74,7 +74,17 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: The host runs as many VMs as max_active allows; waking an agent stops another.
+          summary: The host runs as many VMs as max_active allows; new work stops an idle VM or waits.
+
+      # Work waits for a VM slot (ADR 017): every VM of the host is computing.
+      # It boots in arrival order as slots free, or expires with
+      # capacity_unavailable.
+      - alert: AgentCapsuleWorkWaitingForCapacity
+        expr: agentcapsule_worker_capacity_oldest_wait_seconds > 600
+        labels:
+          severity: warning
+        annotations:
+          summary: Work has waited more than 10 minutes for a VM slot; raise max_active or add a host.
 
       - alert: AgentCapsuleDiskPressure
         expr: agentcapsule_worker_root_disk_used_ratio > 0.70

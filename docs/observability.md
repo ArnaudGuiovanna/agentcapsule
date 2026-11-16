@@ -51,6 +51,8 @@ volume archives and, on the standby host, its replay.
 | `agentcapsule_worker_jobs`, `_jobs_due`, `_jobs_failing` | gauge | `kind` | The host's jobs; those due and not held by a worker; those that failed three times or more |
 | `agentcapsule_worker_job_oldest_due_seconds` | gauge | `kind` | How long the oldest due job has waited past its time. A retry's backoff is not delay |
 | `agentcapsule_worker_vms_running`, `_vm_capacity` | gauge | — | Running VMs, and `max_active` |
+| `agentcapsule_worker_agents_queued` | gauge | — | Agents of the host whose work waits for a VM slot (`QUEUED`, [ADR 017](adr/017-capacity-queue-and-dead-letter-replay.md)) |
+| `agentcapsule_worker_capacity_oldest_wait_seconds` | gauge | — | How long the oldest of them has waited |
 | `agentcapsule_worker_root_disk_used_ratio` | gauge | — | Used share of the runtime root's file system |
 | `agentcapsule_worker_directory_publish_retries_total` | counter | — | Directory publication passes that failed |
 | `agentcapsule_worker_harness_import_retries_total` | counter | — | Harness imports to try again |
@@ -199,6 +201,7 @@ Their annotations are fixed text.
 | `AgentCapsuleVMBootFailures` | More than 3 failed boots in 15 minutes |
 | `AgentCapsuleAgentFailed` | An agent spent its restart budget in the last 15 minutes: its guest kept failing to boot or crashing, and it boots again only when woken or cleared ([ADR 012](adr/012-limits-restart-budgets-egress.md)) |
 | `AgentCapsuleCapacityExhausted` | The host runs `max_active` VMs for 15 minutes |
+| `AgentCapsuleWorkWaitingForCapacity` | Work has waited more than 10 minutes for a VM slot: every VM of the host is computing ([ADR 017](adr/017-capacity-queue-and-dead-letter-replay.md)) |
 | `AgentCapsuleDiskPressure`, `AgentCapsuleDiskCritical` | The runtime root's file system is over 70 % or 80 % full |
 | `AgentCapsuleSLIMUnavailable` | Deliveries keep waiting for the SLIM bridge or node |
 | `AgentCapsuleDirectoryUnavailable` | Directory publication keeps failing |
