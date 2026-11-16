@@ -55,6 +55,12 @@ def main():
         shutil.copytree(ROOT / name, sources / name, ignore=shutil.ignore_patterns("__pycache__"))
     # The pinned Firecracker release, whose version internal/preflight checks.
     shutil.copytree(ROOT / "runtime/firecracker", sources / "runtime/firecracker")
+    # The configuration examples that the worker's and the authority
+    # service's tests read as their programs do.
+    for example in ["runtime/worker/config.example.json", *sorted((ROOT / "runtime/authority").glob("*.example.json"))]:
+        example = ROOT / example
+        (sources / example.relative_to(ROOT)).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(example, sources / example.relative_to(ROOT))
     (sources / "scripts").mkdir()
     for script in (ROOT / "scripts").glob("*.py"):
         shutil.copy2(script, sources / "scripts" / script.name)
