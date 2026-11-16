@@ -111,6 +111,111 @@ jobs:
           "$RUNNER_TEMP/gitleaks" git --config .gitleaks.toml --redact --no-banner \
             --log-opts="--all" --exit-code 1 .
 
+  release-audit:
+    name: Release audit (dependencies, reproducible build, SBOMs, scans)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up pinned Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: false
+          cache-dependency-path: |
+            go.sum
+            runtime/slimbridge/go.sum
+            scripts/tools/go.sum
+
+      - name: Install native headers and the guest image's tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential libcryptsetup-dev cryptsetup-bin e2fsprogs
+
+      - name: Lint the workflows (actionlint and shellcheck, pinned)
+        run: |
+          set -euo pipefail
+          actionlint="$(python3 scripts/release_tools.py actionlint | awk '{print $3}')"
+          # The workflows' scripts are checked by ShellCheck v0.11.0, pinned by
+          # digest; the runner's own ShellCheck and pyflakes are not pinned.
+          printf '#!/bin/sh\nexec docker run --rm -i --network none %s "$@"\n' \
+            koalaman/shellcheck@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d \
+            > "$RUNNER_TEMP/shellcheck"
+          chmod +x "$RUNNER_TEMP/shellcheck"
+          "$actionlint" -shellcheck="$RUNNER_TEMP/shellcheck" -pyflakes= -color
+
+      - name: Dependency audit (govulncheck on every Go module, licenses)
+        run: |
+          # Fails on a vulnerability the code calls, or a license outside
+          # scripts/license-policy.json; see docs/release.md.
+          python3 scripts/audit-dependencies.py --go "$(command -v go)" \
+            --output "$RUNNER_TEMP/ci/audit"
+
+      - name: Build the release binaries and the guest image twice, and compare
+        run: |
+          python3 scripts/build-release.py --go "$(command -v go)" --twice \
+            --guest-cryptsetup /usr/sbin/cryptsetup --output "$RUNNER_TEMP/ci/release"
+
+      - name: Build the a2a-agent harness package (no Docker)
+        run: |
+          python3 scripts/build-a2a-harness.py --go "$(command -v go)" \
+            --output "$RUNNER_TEMP/ci/a2a-harness"
+
+      - name: SBOMs of the binaries, the guest image and the a2a-agent package
+        run: |
+          set -euo pipefail
+          dist="$RUNNER_TEMP/ci/release/dist"
+          binaries=()
+          for name in agentcapsule-api agentcapsule-worker agentcapsule-admin agentcapsule-authority \
+              agentcapsule-harness capsule-adapter agentcapsule-slim-bridge; do
+            binaries+=(--binary "$dist/$name")
+          done
+          python3 scripts/release-sbom.py --go "$(command -v go)" --output "$RUNNER_TEMP/ci/sbom" \
+            "${binaries[@]}" --guest-build "$dist" \
+            --harness-package "$RUNNER_TEMP/ci/a2a-harness/package"
+
+      - name: Vulnerability scan (SBOMs, deploy images, Python and npm lock files)
+        run: |
+          set -euo pipefail
+          sboms=("$RUNNER_TEMP"/ci/sbom/*.spdx.json)
+          python3 scripts/scan-artifacts.py --output "$RUNNER_TEMP/ci/scan" \
+            "${sboms[@]/#/--sbom=}" --deploy-images \
+            --manifest examples/adapted-agent/requirements.txt \
+            --dev-manifest spec/package-lock.json \
+            --dev-manifest scripts/openapi-requirements.txt \
+            --dev-manifest scripts/adapter-sdk-requirements.txt
+
+      - name: Preserve the audit reports and SBOMs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-audit-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/ci/audit/summary.json
+            ${{ runner.temp }}/ci/audit/licenses.json
+            ${{ runner.temp }}/ci/release/build.json
+            ${{ runner.temp }}/ci/sbom/
+            ${{ runner.temp }}/ci/scan/summary.json
+
+      - name: State what this job does not validate
+        if: always()
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          This job audits the dependencies (govulncheck, licenses), builds the release
+          binaries and the guest image twice in clean clones and compares their digests,
+          writes their SBOMs and scans them and the deploy images. Both builds run on this
+          runner: the digests are reproducible with the same Go and the same Ubuntu
+          packages, not across hosts. It signs nothing and publishes nothing: the release
+          workflow (.github/workflows/release.yml) does, on a version tag only.
+          EOF
+
   harness-supply-chain:
     name: Harness packages (Dagger), signing and verification
     runs-on: ubuntu-24.04
@@ -142,6 +247,35 @@ jobs:
           # throwaway registry, checks that an unsigned package is refused,
           # signs both and verifies them as the platform importer would.
           "$RUNNER_TEMP/dagger" call check
+
+      - name: SBOMs and vulnerability scan of the reference harness packages
+        run: |
+          # The packages the check just built (Dagger's cache), unpacked with
+          # debugfs and cataloged by the pinned syft, then scanned by the
+          # pinned grype: High and Critical findings fail unless allowlisted
+          # (scripts/vulnerability-allowlist.json). See docs/release.md.
+          set -euo pipefail
+          for name in python-echo go-echo adapted-agent; do
+            "$RUNNER_TEMP/dagger" call "$name" export --path "$RUNNER_TEMP/packages/$name"
+          done
+          python3 scripts/release-sbom.py --output "$RUNNER_TEMP/ci/harness-sbom" \
+            --harness-package "$RUNNER_TEMP/packages/python-echo" \
+            --harness-package "$RUNNER_TEMP/packages/go-echo" \
+            --harness-package "$RUNNER_TEMP/packages/adapted-agent"
+          sboms=("$RUNNER_TEMP"/ci/harness-sbom/*.spdx.json)
+          python3 scripts/scan-artifacts.py --output "$RUNNER_TEMP/ci/harness-scan" \
+            "${sboms[@]/#/--sbom=}"
+
+      - name: Preserve the harness SBOMs and scan reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: harness-audit-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/ci/harness-sbom/
+            ${{ runner.temp }}/ci/harness-scan/summary.json
 
   interop:
     name: Interoperability services (OASF, Directory, SLIM, A2A)
