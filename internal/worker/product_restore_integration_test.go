@@ -318,7 +318,7 @@ func TestProductWorkerRestoresAgentToAgentExchange(t *testing.T) {
 	replyMailbox, replyOutcome := l.deliveryOutcome(a, request, "reply")
 
 	t.Log("stage: b is restored; the answered request is not delivered again")
-	result, err := l.worker.RestoreFromArchive(t.Context(), "rst_"+strings.Repeat("7", 32), b, archiveB, archives)
+	result, err := l.worker.RestoreFromArchive(t.Context(), "rst_"+strings.Repeat("7", 32), b, archiveB, archives, func(err error) { t.Error("the restore of b paused", err) })
 	if err != nil {
 		t.Fatal("restore b", err)
 	}
@@ -336,7 +336,7 @@ func TestProductWorkerRestoresAgentToAgentExchange(t *testing.T) {
 	}
 
 	t.Log("stage: a is restored; its invocation runs again and its reply is delivered again")
-	if result, err = l.worker.RestoreFromArchive(t.Context(), "rst_"+strings.Repeat("8", 32), a, archiveA, archives); err != nil {
+	if result, err = l.worker.RestoreFromArchive(t.Context(), "rst_"+strings.Repeat("8", 32), a, archiveA, archives, func(err error) { t.Error("the restore of a paused", err) }); err != nil {
 		t.Fatal("restore a", err)
 	}
 	decided := map[string]controlplane.RestoreLoss{}
