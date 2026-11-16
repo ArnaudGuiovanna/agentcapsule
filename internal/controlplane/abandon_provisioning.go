@@ -21,15 +21,19 @@ import (
 // ErrTransition and must use the regular deletion path. If a worker created a
 // volume file but crashed before recording it, that file is not tracked here and
 // has to be removed by the operator.
-func (s *Store) AbandonProvisioning(ctx context.Context, agentID string) error {
+//
+// It is an audited operator command (ADR 014): a dry run checks all of this
+// and removes nothing.
+func (s *Store) AbandonProvisioning(ctx context.Context, cmd OperatorCommand, agentID string) (OperatorOutcome, error) {
 	if !validOrganizationText(agentID, 100) {
-		return ErrInput
+		return OperatorOutcome{Action: "provisioning.abandoned", DryRun: cmd.DryRun}, ErrInput
 	}
-	tx, err := s.begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer rollback(tx)
+	return s.operatorCommand(ctx, cmd, "provisioning.abandoned", agentID, func(tx pgx.Tx) (bool, error) {
+		return true, abandonProvisioning(ctx, tx, agentID)
+	})
+}
+
+func abandonProvisioning(ctx context.Context, tx pgx.Tx, agentID string) error {
 	agents, err := lockAgents(ctx, tx, agentID)
 	if err != nil {
 		return err
@@ -86,5 +90,5 @@ func (s *Store) AbandonProvisioning(ctx context.Context, agentID string) error {
 			return fmt.Errorf("abandon provisioning: %w", ErrTransition)
 		}
 	}
-	return commit(ctx, tx)
+	return nil
 }

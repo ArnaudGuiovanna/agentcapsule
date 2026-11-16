@@ -147,37 +147,31 @@ func (s *Store) ListOperatorCredentials(ctx context.Context) ([]OperatorCredenti
 
 // RevokeOperatorCredential is a trusted local operation. It permanently revokes
 // a platform or service credential and is idempotent. Revocation takes effect at
-// the next request because authentication reads the row each time.
-func (s *Store) RevokeOperatorCredential(ctx context.Context, kind, id string) error {
-	var table, where string
-	switch kind {
-	case "platform":
-		table, where = "platform_credentials", ""
-	case "service":
-		table, where = "api_tokens", " AND kind='service'"
-	default:
-		return ErrInput
-	}
+// the next request because authentication reads the row each time. It is an
+// audited operator command (ADR 014); a dry run revokes nothing.
+func (s *Store) RevokeOperatorCredential(ctx context.Context, cmd OperatorCommand, kind, id string) (OperatorOutcome, error) {
 	if !validOrganizationText(id, 100) {
-		return ErrInput
+		return OperatorOutcome{Action: "credential.revoked", DryRun: cmd.DryRun}, ErrInput
 	}
-	tx, err := s.begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer rollback(tx)
-	var revoked bool
-	err = tx.QueryRow(ctx, "SELECT revoked_at IS NOT NULL FROM "+table+" WHERE id=$1"+where+" FOR UPDATE", id).Scan(&revoked)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return ErrNotFound
-	}
-	if err != nil {
-		return err
-	}
-	if !revoked {
-		if _, err = tx.Exec(ctx, "UPDATE "+table+" SET revoked_at=clock_timestamp() WHERE id=$1"+where, id); err != nil {
-			return err
+	return s.operatorCommand(ctx, cmd, "credential.revoked", id, func(tx pgx.Tx) (bool, error) {
+		var table, where string
+		switch kind {
+		case "platform":
+			table, where = "platform_credentials", ""
+		case "service":
+			table, where = "api_tokens", " AND kind='service'"
+		default:
+			return false, ErrInput
 		}
-	}
-	return commit(ctx, tx)
+		var revoked bool
+		err := tx.QueryRow(ctx, "SELECT revoked_at IS NOT NULL FROM "+table+" WHERE id=$1"+where+" FOR UPDATE", id).Scan(&revoked)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, ErrNotFound
+		}
+		if err != nil || revoked {
+			return false, err
+		}
+		_, err = tx.Exec(ctx, "UPDATE "+table+" SET revoked_at=clock_timestamp() WHERE id=$1"+where, id)
+		return err == nil, err
+	})
 }

@@ -116,6 +116,10 @@ func (a *Accounts) RequestHarnessImport(ctx context.Context, p Principal, key st
 		if !errors.Is(err, ErrNotFound) {
 			return 0, nil, err
 		}
+		// A new import needs room for its image (OPS-03).
+		if err = refuseUnderImagePressure(ctx, tx); err != nil {
+			return 0, nil, err
+		}
 		id := newID("imp")
 		v, err = scanImport(tx.QueryRow(ctx, `INSERT INTO harness_imports(id,reference,manifest_digest,requested_by) VALUES($1,$2,$3,$4)
             RETURNING `+importColumns, id, ref.String(), ref.Digest, p.ID))
@@ -307,7 +311,7 @@ func (s *Store) CompleteHarnessImport(ctx context.Context, job ImportJob, r Impo
 // import; a transient one schedules a retry, and the last attempt rejects it.
 func (s *Store) FailHarnessImport(ctx context.Context, job ImportJob, code string, transient bool, retryAfter time.Duration) (HarnessImport, error) {
 	switch code {
-	case "policy", "not_found", "access_denied", "signature", "integrity", "unavailable":
+	case "policy", "not_found", "access_denied", "signature", "integrity", "unavailable", "storage_pressure":
 	default:
 		return HarnessImport{}, ErrInput
 	}

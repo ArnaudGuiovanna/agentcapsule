@@ -109,6 +109,9 @@ var volumeRestoresSQL string
 //go:embed migrations/0030_invocation_reruns.sql
 var invocationRerunsSQL string
 
+//go:embed migrations/0031_operations.sql
+var operationsSQL string
+
 // Append migrations; never edit an installed migration. The original schema
 // also upgrades pre-ledger installations, preserving its historical backfills.
 // Later calls validate its checksum without replaying DDL or those backfills.
@@ -143,6 +146,7 @@ var controlPlaneMigrations = []schemaMigration{
 	{version: 28, name: "volume-archives", sql: volumeArchivesSQL},
 	{version: 29, name: "volume-restores", sql: volumeRestoresSQL},
 	{version: 30, name: "invocation-reruns", sql: invocationRerunsSQL},
+	{version: 31, name: "operations", sql: operationsSQL},
 }
 
 func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error {

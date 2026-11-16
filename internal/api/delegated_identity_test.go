@@ -171,7 +171,7 @@ func TestDelegationOperatorCLIAndRealAPI(t *testing.T) {
 		t.Helper()
 		args := []string{"configure-delegation", "-action", action, "-operation-id", operation, "-tenant-id", l.org.ID, "-issuer", l.trust.Issuer}
 		if action == "revoke-token" {
-			args = append(args, "-token-id", "live")
+			args = append(args, "-token-id", "live", "-confirm", "live")
 		} else {
 			args = append(args, "-audience", l.trust.Audience, "-trust-file", configFile)
 		}

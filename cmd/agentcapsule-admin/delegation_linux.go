@@ -24,13 +24,26 @@ func configureDelegation(args []string) int {
 	audience := f.String("audience", "", "configured audience (except token revocation)")
 	tokenID := f.String("token-id", "", "JTI to revoke permanently within tenant and issuer")
 	file := f.String("trust-file", "", "local public trust JSON, required for install/rotate")
+	g := newGuard(f, "the issuer (rotate, revoke-trust) or the token ID (revoke-token)")
 	if err := f.Parse(args); err != nil {
 		return 1
 	}
 	if f.NArg() != 0 || *operation == "" || *tenant == "" || *issuer == "" {
 		return fail("configuration_required")
 	}
-	in := controlplane.DelegationChange{OperationID: *operation, Actor: fmt.Sprintf("local-uid:%d", os.Geteuid()), Action: *action, TenantID: *tenant, Issuer: *issuer, Audience: *audience, TokenID: *tokenID}
+	// Rotating rejects the tokens of earlier generations; revoking ends
+	// sign-ins or a token for good (ADR 014): each names its target again.
+	switch *action {
+	case "rotate", "revoke-trust":
+		if !g.allows(*issuer) {
+			return fail("confirmation_required")
+		}
+	case "revoke-token":
+		if !g.allows(*tokenID) {
+			return fail("confirmation_required")
+		}
+	}
+	in := controlplane.DelegationChange{OperationID: *operation, Actor: fmt.Sprintf("local-uid:%d", os.Geteuid()), Action: *action, TenantID: *tenant, Issuer: *issuer, Audience: *audience, TokenID: *tokenID, DryRun: *g.dryRun}
 	if *action == "install" || *action == "rotate" {
 		if *file == "" {
 			return fail("trust_file_required")

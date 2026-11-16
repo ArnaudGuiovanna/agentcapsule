@@ -26,6 +26,9 @@ type DelegationChange struct {
 	Audience    string
 	TokenID     string
 	Trust       *delegatedidentity.Trust // install/rotate only, from operator config
+	// DryRun checks the change and returns its result without recording it:
+	// no change, no receipt, no audit (ADR 014).
+	DryRun bool
 }
 
 type DelegationChangeResult struct {
@@ -183,6 +186,9 @@ func (s *Store) ChangeDelegationAuthority(ctx context.Context, in DelegationChan
 			}
 		}
 		out.Fingerprint = hex.EncodeToString(current)
+	}
+	if in.DryRun {
+		return out, nil
 	}
 	response, err = json.Marshal(out)
 	if err != nil {

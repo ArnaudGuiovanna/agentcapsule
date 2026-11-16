@@ -107,6 +107,7 @@ func New(store *controlplane.Store, accounts *controlplane.Accounts) (*Server, e
 	s.handle("/v1/agents/{id}/assignments/{assignment_id}/revoke", s.revokeAssignment)
 	s.handle("/v1/agents/{id}/assignments/{assignment_id}/replace", s.replaceAssignment)
 	s.handle("/v1/audit", s.audit)
+	s.handle("/v1/audit/export", s.auditExport)
 	s.handle("/v1/llm/providers", s.llmProviders)
 	s.handle("/v1/llm/providers/{id}/rotate", s.rotateLLMProvider)
 	s.handle("/v1/llm/providers/{id}/disable", s.disableLLMProvider)
@@ -214,6 +215,11 @@ func failure(w http.ResponseWriter, err error) {
 		problem(w, 422, "harness_unavailable")
 	case errors.Is(err, controlplane.ErrStorageCapacity):
 		problem(w, 503, "storage_capacity_unavailable")
+	case errors.Is(err, controlplane.ErrStoragePressure):
+		w.Header().Set("Retry-After", "300")
+		problem(w, 503, "storage_pressure")
+	case errors.Is(err, controlplane.ErrAuditExportTooLarge):
+		problem(w, 413, "audit_export_too_large")
 	default:
 		problem(w, 503, "temporarily_unavailable")
 	}

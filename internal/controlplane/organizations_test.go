@@ -403,10 +403,10 @@ func TestPlatformCredentialCanBeReplacedAfterRevocationOrExpiry(t *testing.T) {
 	if err := s.BootstrapPlatformToken(t.Context(), "platform-test", fresh(), time.Hour); !errors.Is(err, ErrConflict) {
 		t.Fatal("second active platform credential accepted", err)
 	}
-	if err := s.RevokeOperatorCredential(t.Context(), "platform", p.TokenID); err != nil {
+	if _, err := s.RevokeOperatorCredential(t.Context(), testOperator, "platform", p.TokenID); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RevokeOperatorCredential(t.Context(), "platform", p.TokenID); err != nil {
+	if _, err := s.RevokeOperatorCredential(t.Context(), testOperator, "platform", p.TokenID); err != nil {
 		t.Fatal("revocation is not idempotent", err)
 	}
 	if _, err := s.Authenticate(t.Context(), old); !errors.Is(err, ErrAuthentication) {
@@ -429,10 +429,10 @@ func TestPlatformCredentialCanBeReplacedAfterRevocationOrExpiry(t *testing.T) {
 	if err := s.BootstrapPlatformToken(t.Context(), "platform-test", fresh(), time.Hour); err != nil {
 		t.Fatal("operator locked out after expiry:", err)
 	}
-	if err := s.RevokeOperatorCredential(t.Context(), "platform", "ptok_missing"); !errors.Is(err, ErrNotFound) {
+	if _, err := s.RevokeOperatorCredential(t.Context(), testOperator, "platform", "ptok_missing"); !errors.Is(err, ErrNotFound) {
 		t.Fatal("unknown credential reported as revoked", err)
 	}
-	if err := s.RevokeOperatorCredential(t.Context(), "other", "x"); !errors.Is(err, ErrInput) {
+	if _, err := s.RevokeOperatorCredential(t.Context(), testOperator, "other", "x"); !errors.Is(err, ErrInput) {
 		t.Fatal("unknown kind accepted", err)
 	}
 	list, err := s.ListOperatorCredentials(t.Context())
