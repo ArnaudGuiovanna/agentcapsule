@@ -118,6 +118,10 @@ const (
 	stmtSeal
 	stmtLoss
 	stmtRerun
+	// Schema version 4 (ADR 006 wave 5): a replica of an older release does
+	// not know them, and refuses the first record that carries one.
+	stmtAccess
+	stmtOutcomeEvent
 )
 
 var statements = map[statement]string{
@@ -131,6 +135,8 @@ var statements = map[statement]string{
 	stmtSeal:          "UPDATE stores SET sealed=1 WHERE id=?",
 	stmtLoss:          "INSERT INTO losses VALUES(?,?,?) ON CONFLICT DO NOTHING",
 	stmtRerun:         "INSERT INTO reruns VALUES(?,?,?) ON CONFLICT DO NOTHING",
+	stmtAccess:        "INSERT INTO access_revocations VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING",
+	stmtOutcomeEvent:  "INSERT INTO outcome_events VALUES(?,?) ON CONFLICT(outcome) DO NOTHING",
 }
 
 // statementKinds classifies every statement for degraded mode
@@ -148,6 +154,8 @@ var statementKinds = map[statement]string{
 	stmtSeal:          authoritylog.WriteSeal,
 	stmtLoss:          authoritylog.WriteLoss,
 	stmtRerun:         authoritylog.WriteRerun,
+	stmtAccess:        authoritylog.WriteAccess,
+	stmtOutcomeEvent:  authoritylog.WriteOutcome,
 }
 
 // allows reports whether an operation of kind may run statement s: one of its

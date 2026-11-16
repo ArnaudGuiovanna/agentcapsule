@@ -697,3 +697,17 @@ func (c *Client) DestroyKey(ctx context.Context, b restoreauthority.Binding) err
 	}
 	return c.call(ctx, svc.OpDestroyKey, svc.KeyArgs{Agent: b.Store, Volume: b.Volume, Incarnation: b.Incarnation}, nil)
 }
+
+// AppendAccess is append_access, on either socket.
+func (c *Client) AppendAccess(ctx context.Context, r restoreauthority.AccessRecord) (restoreauthority.AccessReceipt, error) {
+	var res svc.AccessResult
+	err := c.call(ctx, svc.OpAppendAccess, svc.AccessArgs{Record: r}, &res)
+	return res.Receipt, err
+}
+
+// AccessStatus is on_replica, on either socket.
+func (c *Client) AccessStatus(ctx context.Context, id string) (restoreauthority.AccessReceipt, error) {
+	var res svc.AccessResult
+	err := c.call(ctx, svc.OpOnReplica, svc.IDArgs{ID: id}, &res)
+	return res.Receipt, err
+}

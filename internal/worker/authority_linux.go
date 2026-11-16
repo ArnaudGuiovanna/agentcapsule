@@ -54,7 +54,10 @@ func (w *Placements) deliverToGuest(ctx context.Context, target string, client *
 		result, err = client.Send(ctx, event)
 	}
 	if err == nil && w.authority != nil {
-		var outcome restoreauthority.Outcome
+		// The outcome keeps the event's ID (ADR 005 item 8): a loss declared
+		// after a failover names the delivery even when the restored
+		// database lost it.
+		outcome := restoreauthority.Outcome{Event: event.ID}
 		outcome.ID, outcome.Digest, err = harnessstore.OutcomeFingerprint(target, event, result.Result)
 		if err == nil {
 			err = w.authority.RecordOutcome(ctx, binding, outcome)

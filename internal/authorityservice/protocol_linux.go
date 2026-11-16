@@ -66,6 +66,10 @@ const (
 	OpRecordedOutcomes   = "recorded_outcomes"
 	OpDeclareLosses      = "declare_losses"
 	OpHoldActivation     = "hold_activation"
+	// OpAppendAccess and OpOnReplica are the access revocation records
+	// (wave 5), on both sockets.
+	OpAppendAccess = "append_access"
+	OpOnReplica    = "on_replica"
 	// OpRelease ends a hold; it is valid only after a held frame.
 	OpRelease = "release"
 )
@@ -332,6 +336,11 @@ type (
 		Receipt restoreauthority.Receipt `json:"receipt"`
 		After   string                   `json:"after,omitempty"`
 	}
+	// AccessArgs is an access revocation record to append: the authority
+	// sets its time, epoch and sequence number.
+	AccessArgs struct {
+		Record restoreauthority.AccessRecord `json:"record"`
+	}
 	// LossArgs carries the worker's inspection: the IDs the image lacks,
 	// against the recorded list whose digest it names.
 	LossArgs struct {
@@ -362,6 +371,10 @@ type (
 	}
 	ArchiveResult struct {
 		Archive restoreauthority.Archive `json:"archive"`
+	}
+	// AccessResult answers append_access and on_replica.
+	AccessResult struct {
+		Receipt restoreauthority.AccessReceipt `json:"receipt"`
 	}
 	// RecordedResult is one page of the recorded outcomes, in ID order.
 	// Digest is that of the whole list; Next, when not empty, is the After

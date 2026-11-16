@@ -82,6 +82,21 @@ func outcomeClient(t *testing.T, agent string, afterCommit func()) (*capsuleprot
 	return client, local
 }
 
+// readOutcomeEvent reads the event ID the catalogue keeps with an outcome.
+func readOutcomeEvent(t *testing.T, root, outcome string) string {
+	t.Helper()
+	db, err := sql.Open("sqlite3", "file:"+filepath.Join(root, "catalog.sqlite")+"?mode=ro")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var event string
+	if err = db.QueryRowContext(t.Context(), "SELECT event FROM outcome_events WHERE outcome=?", outcome).Scan(&event); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		t.Fatal(err)
+	}
+	return event
+}
+
 func readOutcomeJournal(t *testing.T, root, store string) map[string][]byte {
 	t.Helper()
 	db, err := sql.Open("sqlite3", "file:"+filepath.Join(root, "catalog.sqlite")+"?mode=ro")
@@ -229,6 +244,10 @@ func testBusinessOutcomeRequiresIndependentCommit(t *testing.T, implementation s
 					journal = readOutcomeJournal(t, root, b.e.AgentID)
 					if len(journal) != 1 || !bytes.Equal(journal[id], digest[:]) {
 						t.Fatal("missing/mismatched durable outcome")
+					}
+					// The outcome keeps the event's ID (ADR 005 item 8).
+					if event := readOutcomeEvent(t, root, id); event != e.ID {
+						t.Fatal("the outcome's event", event)
 					}
 				}
 			})

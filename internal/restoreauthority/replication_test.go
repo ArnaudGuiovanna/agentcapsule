@@ -165,6 +165,8 @@ func dump(t *testing.T, db *sql.DB) []string {
 		"SELECT id||'|'||store||'|'||hex(digest) FROM outcomes ORDER BY id",
 		"SELECT outcome||'|'||store||'|'||incarnation FROM losses ORDER BY outcome,incarnation",
 		"SELECT outcome||'|'||incarnation||'|'||hex(digest) FROM reruns ORDER BY outcome,incarnation",
+		"SELECT id||'|'||kind||'|'||organization||'|'||objects||'|'||recorded_at||'|'||epoch||'|'||seq FROM access_revocations ORDER BY id",
+		"SELECT outcome||'|'||event FROM outcome_events ORDER BY outcome",
 	} {
 		rows, err := db.Query(query)
 		if err != nil {
@@ -241,7 +243,10 @@ func everyWrite(t *testing.T, keys *keyauthority.Files, c *Catalog) Binding {
 	if err = c.RecordVerifiedFence(ctx, r); err != nil {
 		t.Fatal(err)
 	}
-	if err = c.RecordOutcome(ctx, b, Outcome{ID: "event-1", Digest: sha256.Sum256([]byte("one"))}); err != nil {
+	if err = c.RecordOutcome(ctx, b, Outcome{ID: "event-1", Digest: sha256.Sum256([]byte("one")), Event: "mbx-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = c.AppendAccess(ctx, AccessRecord{ID: "arv_" + strings.Repeat("1", 32), Kind: authoritylog.AccessMember, Organization: "org_1", Objects: [][]string{{"prn_1"}}}); err != nil {
 		t.Fatal(err)
 	}
 	next, err := c.ReserveIncarnation(ctx, b, "restore-1")
@@ -638,7 +643,7 @@ func TestReplicaCreatedFromASnapshotCatchesUp(t *testing.T) {
 func TestSnapshotNeedsVersionThreeBeforeArming(t *testing.T) {
 	dir := t.TempDir()
 	keys, c := primary(t, dir)
-	if _, err := c.db.Exec("DROP TABLE replication_log; DROP TABLE replication; PRAGMA user_version=2"); err != nil {
+	if _, err := c.db.Exec("DROP TABLE outcome_events; DROP TABLE access_revocations; DROP TABLE replication_log; DROP TABLE replication; PRAGMA user_version=2"); err != nil {
 		t.Fatal(err)
 	}
 	_, recipient := newUnlockKey(t)

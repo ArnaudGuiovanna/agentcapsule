@@ -564,6 +564,16 @@ func openPrimary(ctx context.Context, c config) (*keyauthority.Files, *restoreau
 	if err != nil {
 		return nil, nil, "restore_authority_unavailable"
 	}
+	// A catalogue of an older schema would refuse the access revocation
+	// records: agentcapsule-admin init-restore-authority upgrades it, with
+	// the service stopped.
+	if err = catalog.CheckSchema(ctx); err != nil {
+		catalog.Close()
+		if errors.Is(err, restoreauthority.ErrUpgradeRequired) {
+			return nil, nil, "restore_authority_upgrade_required"
+		}
+		return nil, nil, "restore_authority_unavailable"
+	}
 	code := ""
 	switch err = authorityservice.Link(ctx, catalog, keys, c.link); {
 	case err == nil:

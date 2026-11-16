@@ -30,7 +30,7 @@ func TestEveryStatementAndKeyWriteIsClassified(t *testing.T) {
 	want := map[string]bool{
 		authoritylog.WriteOutcome: true, authoritylog.WriteRerun: true, authoritylog.WriteFence: true,
 		authoritylog.WriteRevocationStart: true, authoritylog.WriteRegistration: false,
-		authoritylog.WriteReservation: false, authoritylog.WriteLoss: false, authoritylog.WriteSeal: false,
+		authoritylog.WriteReservation: false, authoritylog.WriteLoss: false, authoritylog.WriteSeal: false, authoritylog.WriteAccess: true,
 	}
 	if fmt.Sprint(continuing) != fmt.Sprint(want) {
 		t.Fatal("statements continue in degraded mode:", continuing)
