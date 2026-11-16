@@ -433,6 +433,53 @@ func TestConcurrentWitnessWrongRequestFenceGuard(t *testing.T) {
 	}
 }
 
+// closingWithStoppedBystander: request 0 (A to B) is authorized for B while
+// C, no party to it, is stopped; then the request expires.
+func closingWithStoppedBystander(t *testing.T) *p1Replay {
+	t.Helper()
+	a := newP1Replay(t, false)
+	a.submit(t, 0)
+	a.run(t, p1Act(t, "claim", `[0,{"tuple":[0,0]}]`), p1Act(t, "authorize", `[0]`),
+		p1Act(t, "stopVM", `[2]`), p1Act(t, "retireBoot", `[2]`), p1Act(t, "observeStopped", `[2]`),
+		p1Act(t, "closeRequest", `[0,{"variant":"ExpireRequest"}]`))
+	return a
+}
+
+// closureFencesOnlyItsPartiesTest (ADR 007 §7): C's store, stopped, gives no
+// fence for the request.
+func TestClosureFencesOnlyItsParties(t *testing.T) {
+	a := closingWithStoppedBystander(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	if err := a.boots[2].client.Fence(ctx, a.subject(p1Act(t, "fenceStore", `[2,{"variant":"RequestSubject","value":0}]`).Args[1])); err == nil {
+		t.Fatal("a stopped bystander's store gave a fence")
+	}
+}
+
+// closureCommitsWithoutOtherStoresTest (ADR 007 §7): the closure commits on
+// its two parties' fences, without C's; the authorized send to B then
+// applies nothing.
+func TestClosureCommitsWithoutOtherStores(t *testing.T) {
+	a := closingWithStoppedBystander(t)
+	for store := range 2 {
+		subject := `[` + fmt.Sprint(store) + `,{"variant":"RequestSubject","value":0}]`
+		a.run(t, p1Act(t, "fenceStore", subject), p1Act(t, "recordFence", subject))
+	}
+	a.run(t, p1Act(t, "commitClose", `[0]`))
+	assertRequestState(t, a.s, a.requests[0], "EXPIRED")
+	var receipts int
+	if err := a.s.pool.QueryRow(t.Context(), "SELECT count(*) FROM request_closure_targets WHERE request_id=$1 AND store_agent_id='c'", a.requests[0]).Scan(&receipts); err != nil || receipts != 0 {
+		t.Fatal("the closure involved C's store:", receipts, err)
+	}
+	event := a.rpc[0].attempt.Envelope.ID
+	if err := a.step(t, p1Act(t, "beginEffect", `[0]`)); !errors.Is(err, harnessstore.ErrFenced) {
+		t.Fatal("the authorized send applied the expired request:", err)
+	}
+	if n := localEffects(t, a.root, "b", event); n != 0 {
+		t.Fatal("effects of the expired request in B's store:", n)
+	}
+}
+
 // fencedDuplicateRefusedTest: B's reply reached A and its ACK was lost; B is
 // deleted while a second claim of the reply is authorized. That claim's RPC
 // cannot apply anything: A's store is fenced for B.
