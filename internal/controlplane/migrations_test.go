@@ -319,6 +319,12 @@ func TestReadyChecksInstalledMigrationLedger(t *testing.T) {
 func revertTenantAgents(t *testing.T, s *Store) {
 	t.Helper()
 	if _, err := s.pool.Exec(t.Context(), `
+        DROP TABLE IF EXISTS operator_audit, audit_retention;
+        ALTER TABLE worker_hosts DROP COLUMN IF EXISTS data_pressure, DROP COLUMN IF EXISTS image_pressure,
+          DROP COLUMN IF EXISTS pressure_observed_at;
+        DROP INDEX IF EXISTS organization_audit_created, delegation_audit_created, tenant_member_audit_created,
+          tenant_team_audit_created, tenant_agent_audit_created, tenant_service_audit_created, llm_audit_created,
+          queue_audit_created, harness_audit_created;
         DROP TABLE IF EXISTS failed_agents, guest_failures;
         DROP TABLE IF EXISTS llm_alias_grants;
         DROP TABLE IF EXISTS invocation_reruns;

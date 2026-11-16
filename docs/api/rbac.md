@@ -107,6 +107,7 @@ platform's.
 | `POST /v1/service-accounts/{id}/tokens` (an agent_user account) | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 400 |
 | `POST /v1/service-accounts/{id}/tokens/{token_id}/revoke` (a disposable token) | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
 | `GET /v1/audit` | yes | yes | 403 | yes | 403 | 403 | 403 | 403 | yes | filtered | 401 | 401 | 403 |
+| `GET /v1/audit/export` | yes | yes | 403 | yes | 403 | 403 | 403 | 403 | yes | filtered | 401 | 401 | 403 |
 | `GET /v1/llm/providers` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | filtered | 401 | 401 | 403 |
 | `POST /v1/llm/providers` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | yes | 401 | 401 | 403 |
 | `POST /v1/llm/providers/{id}/rotate` (a disposable provider) | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
