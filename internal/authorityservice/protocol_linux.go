@@ -108,6 +108,7 @@ const (
 	CodeSealed          = "sealed"
 	CodeHistory         = "history"
 	CodeNotDeclared     = "not_declared"
+	CodeNotSealed       = "not_sealed"
 	CodeWaitsForReplica = "waits_for_replica"
 	CodeReplicaRequired = "replica_required"
 	CodeNotArmed        = "not_armed"
@@ -125,7 +126,7 @@ const (
 // Codes lists every error code.
 func Codes() []string {
 	return []string{CodeInput, CodeUnavailable, CodeConflict, CodeStale, CodeRevoked, CodeSealed, CodeHistory, CodeNotDeclared,
-		CodeWaitsForReplica, CodeReplicaRequired, CodeNotArmed, CodeDiverged, CodeKeyUnavailable, CodeKeyRevoked, CodeKeyConflict,
+		CodeNotSealed, CodeWaitsForReplica, CodeReplicaRequired, CodeNotArmed, CodeDiverged, CodeKeyUnavailable, CodeKeyRevoked, CodeKeyConflict,
 		CodeKeyInput, CodeHoldExpired, CodeRole, CodeProtocol, CodeIdentity}
 }
 
@@ -158,6 +159,7 @@ var codeErrors = map[string][]error{
 	CodeSealed:          {restoreauthority.ErrSealed},
 	CodeHistory:         {restoreauthority.ErrHistory},
 	CodeNotDeclared:     {restoreauthority.ErrNotDeclared},
+	CodeNotSealed:       {restoreauthority.ErrNotSealed},
 	CodeWaitsForReplica: {restoreauthority.ErrUnavailable, restoreauthority.ErrWaitsForReplica},
 	CodeReplicaRequired: {restoreauthority.ErrUnavailable, restoreauthority.ErrReplicaRequired},
 	CodeNotArmed:        {restoreauthority.ErrNotArmed},
@@ -195,6 +197,7 @@ func Code(err error) string {
 		{restoreauthority.ErrRevoked, CodeRevoked},
 		{restoreauthority.ErrHistory, CodeHistory},
 		{restoreauthority.ErrNotDeclared, CodeNotDeclared},
+		{restoreauthority.ErrNotSealed, CodeNotSealed},
 		{restoreauthority.ErrConflict, CodeConflict},
 		{keyauthority.ErrRevoked, CodeKeyRevoked},
 		{keyauthority.ErrConflict, CodeKeyConflict},
@@ -315,9 +318,11 @@ type (
 	ArchiveArgs struct {
 		Archive restoreauthority.Archive `json:"archive"`
 	}
-	// KeyArgs names a volume key. hold_key needs the incarnation: it holds
-	// the binding {agent, volume, incarnation} around the key, in one hold,
-	// and refuses a key without its binding (input).
+	// KeyArgs names a volume key. hold_key and destroy_key need the
+	// incarnation: hold_key holds the binding {agent, volume, incarnation}
+	// around the key, in one hold; destroy_key destroys the key of that
+	// binding once it is sealed. Both refuse a key without its binding
+	// (input); ensure_key takes none.
 	KeyArgs struct {
 		Agent       string `json:"agent"`
 		Volume      string `json:"volume"`

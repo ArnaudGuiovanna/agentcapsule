@@ -120,7 +120,15 @@ func TestPrimarySIGKILLBetweenCommitAndAcknowledgment(t *testing.T) {
 					t.Fatal(err)
 				}
 				if operation == "revoke" {
+					// The key's store is sealed first: the destruction checks it.
+					gone := Binding{Store: streamAgent, Volume: streamVolume, Incarnation: 1}
+					if _, err := p.catalog.Register(t.Context(), gone.Store, gone.Volume); err != nil {
+						t.Fatal(err)
+					}
 					if err := p.keys.Ensure(t.Context(), streamAgent, streamVolume); err != nil {
+						t.Fatal(err)
+					}
+					if err := p.catalog.RecordRetiredSeal(t.Context(), gone); err != nil {
 						t.Fatal(err)
 					}
 				}

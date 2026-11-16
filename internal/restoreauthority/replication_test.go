@@ -261,17 +261,18 @@ func everyWrite(t *testing.T, keys *keyauthority.Files, c *Catalog) Binding {
 	if err = c.RecordOutcome(ctx, next, Outcome{ID: "event-1", Digest: sha256.Sum256([]byte("rerun"))}); err != nil {
 		t.Fatal(err)
 	}
+	// A deleted agent: its store sealed, then its key destroyed.
 	other := "vol_" + strings.Repeat("c", 32)
+	if _, err = c.Register(ctx, streamAgent, other); err != nil {
+		t.Fatal(err)
+	}
 	if err = keys.Ensure(ctx, streamAgent, other); err != nil {
 		t.Fatal(err)
 	}
+	if err = c.RecordRetiredSeal(ctx, Binding{Store: streamAgent, Volume: other, Incarnation: 1}); err != nil {
+		t.Fatal(err)
+	}
 	if err = keys.Revoke(ctx, streamAgent, other); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = c.Register(ctx, "store-z", "volume-z"); err != nil {
-		t.Fatal(err)
-	}
-	if err = c.RecordRetiredSeal(ctx, Binding{Store: "store-z", Volume: "volume-z", Incarnation: 1}); err != nil {
 		t.Fatal(err)
 	}
 	return next
@@ -373,7 +374,15 @@ func TestWrappedKeysLeaveNoCopyBehind(t *testing.T) {
 	if contains(t, filepath.Join(p.dir, "restore", "catalog.sqlite"), wrapped) {
 		t.Fatal("the primary's log kept the wrapped key")
 	}
-	// Destroying the key removes the replica's copy in the same write.
+	// Destroying the key, once its store is sealed, removes the replica's
+	// copy in the same write.
+	gone := Binding{Store: streamAgent, Volume: streamVolume, Incarnation: 1}
+	if _, err = p.catalog.Register(t.Context(), gone.Store, gone.Volume); err != nil {
+		t.Fatal(err)
+	}
+	if err = p.catalog.RecordRetiredSeal(t.Context(), gone); err != nil {
+		t.Fatal(err)
+	}
 	if err = p.keys.Revoke(t.Context(), streamAgent, streamVolume); err != nil {
 		t.Fatal(err)
 	}
@@ -559,6 +568,15 @@ func TestReplicaCreatedFromASnapshotCatchesUp(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err = keys.Ensure(t.Context(), streamAgent, streamVolume); err != nil {
+		t.Fatal(err)
+	}
+	// A store sealed before the snapshot: the replica receives the seal with
+	// it, and its key's destruction runs once armed.
+	gone := Binding{Store: streamAgent, Volume: streamVolume, Incarnation: 1}
+	if _, err = c.Register(t.Context(), gone.Store, gone.Volume); err != nil {
+		t.Fatal(err)
+	}
+	if err = c.RecordRetiredSeal(t.Context(), gone); err != nil {
 		t.Fatal(err)
 	}
 	unlock, recipient := newUnlockKey(t)

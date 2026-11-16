@@ -24,9 +24,9 @@ type operation struct {
 	run  func(ctx context.Context, s *Server, args json.RawMessage, h *hold) (any, error)
 }
 
-// operations are those of wave 1 (ADR 006 §10). Each runs today's function
-// of the authority packages, unchanged; a hold runs it with a callback that
-// waits for the client's release.
+// operations are those of wave 1 (ADR 006 §10), with wave 3's seal check
+// in destroy_key. Each runs a function of the authority packages; a hold
+// runs it with a callback that waits for the client's release.
 var operations = map[string]operation{
 	OpStatus: {api: true, run: func(_ context.Context, s *Server, raw json.RawMessage, _ *hold) (any, error) {
 		_, err := decode[struct{}](raw)
@@ -85,13 +85,20 @@ var operations = map[string]operation{
 	}},
 	OpDestroyKey: {run: func(ctx context.Context, s *Server, raw json.RawMessage, _ *hold) (any, error) {
 		a, err := decode[KeyArgs](raw)
-		if err != nil || a.Incarnation != 0 {
-			return nil, errors.Join(ErrProtocol, err)
+		if err != nil {
+			return nil, err
+		}
+		// A key is destroyed under its sealed binding only (ADR 006 §3):
+		// the catalogue must hold the store sealed with that volume. The
+		// service checks it, and no longer relies on the worker sealing
+		// first.
+		if a.Incarnation == 0 {
+			return nil, restoreauthority.ErrInput
 		}
 		if err = s.quiet(ctx, s.writesAfter); err != nil {
 			return nil, err
 		}
-		return nil, s.local.Revoke(ctx, a.Agent, a.Volume)
+		return nil, s.local.DestroyKey(ctx, restoreauthority.Binding{Store: a.Agent, Volume: a.Volume, Incarnation: a.Incarnation})
 	}},
 	OpRegister: {run: func(ctx context.Context, s *Server, raw json.RawMessage, _ *hold) (any, error) {
 		a, err := decode[RegisterArgs](raw)
