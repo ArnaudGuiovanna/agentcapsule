@@ -283,8 +283,9 @@ func TestErrorKindsAreClosed(t *testing.T) {
 
 // Every kind of operation is classified for degraded mode, and the
 // classification is the decided one: outcomes, reruns, fence revisions, the
-// start of a revocation and an access revocation record continue; everything
-// else waits.
+// start of a revocation, an access revocation record and the creation of a
+// daily receipt key continue; everything else waits, the destruction of a
+// receipt key included (ADR 006, answer 4(b)).
 func TestWriteKindsAreClosedAndClassified(t *testing.T) {
 	kinds := WriteKinds()
 	if len(kinds) != len(degradedPolicy) {
@@ -299,11 +300,14 @@ func TestWriteKindsAreClosedAndClassified(t *testing.T) {
 			continues = append(continues, k)
 		}
 	}
-	if !slices.Equal(continues, []string{WriteRead, WriteOutcome, WriteRerun, WriteFence, WriteRevocationStart, WriteAccess}) {
+	if !slices.Equal(continues, []string{WriteRead, WriteOutcome, WriteRerun, WriteFence, WriteRevocationStart, WriteAccess, WriteReceiptKeyCreate}) {
 		t.Fatal("degraded mode lets through", continues)
 	}
 	if ContinuesDegraded("revocation_of_access") || ContinuesDegraded("") {
 		t.Fatal("an unknown kind continues")
+	}
+	if !slices.Contains(kinds, WriteReceiptKeyDestroy) || ContinuesDegraded(WriteReceiptKeyDestroy) {
+		t.Fatal("the destruction of a receipt key does not wait for the standby")
 	}
 	if DefaultDegradedAfter < MinDegradedAfter || DefaultDegradedAfter > MaxDegradedAfter {
 		t.Fatal("default delay out of its bounds")

@@ -170,12 +170,28 @@ func opKind(op authoritylog.Op) string {
 	switch op.Kind {
 	case authoritylog.OpStatement:
 		return statementKinds[statement(op.Statement)]
-	case authoritylog.OpKeyCreate:
-		return authoritylog.WriteKeyCreate
-	case authoritylog.OpKeyRevoke:
-		return authoritylog.WriteKeyDestroy
+	case authoritylog.OpKeyCreate, authoritylog.OpKeyRevoke:
+		return keyKind(op.Kind == authoritylog.OpKeyRevoke, op.Agent, op.Volume)
 	}
 	return ""
+}
+
+// keyKind is the kind of a key write: a volume key's, or a daily receipt
+// key's, whose creation continues in degraded mode (ADR 006, answer 4(b)).
+// The receipt keys' agent with a volume that names no day has no kind.
+func keyKind(revoke bool, agent, volume string) string {
+	_, receipt := keyauthority.ReceiptKeyDay(agent, volume)
+	switch {
+	case receipt && revoke:
+		return authoritylog.WriteReceiptKeyDestroy
+	case receipt:
+		return authoritylog.WriteReceiptKeyCreate
+	case agent == keyauthority.ReceiptKeyAgent:
+		return ""
+	case revoke:
+		return authoritylog.WriteKeyDestroy
+	}
+	return authoritylog.WriteKeyCreate
 }
 
 // continues reports whether degraded mode lets every operation of r through.
@@ -673,28 +689,32 @@ var _ keyauthority.Journal = (*Catalog)(nil)
 
 // Append runs write in a catalogue transaction, after the barrier, and
 // records the key change it returns, wrapped to the unlock key's recipient.
-// Both kinds of key write wait for the replica in degraded mode, before
-// write runs.
+// Both kinds of volume key write wait for the replica in degraded mode,
+// before write runs. A daily receipt key's have their own kinds (ADR 006
+// §7): its creation continues in degraded mode, its destruction waits.
 //
-// A destruction is refused before write runs unless this catalogue holds
-// the store (the agent's ID) sealed with that volume (ErrNotSealed, ADR 006
-// §3). The check runs in the transaction that records the destruction, so
-// that the seal is in the stream before it: a replica that holds the
-// destruction holds the seal.
+// A volume key's destruction is refused before write runs unless this
+// catalogue holds the store (the agent's ID) sealed with that volume
+// (ErrNotSealed, ADR 006 §3). The check runs in the transaction that records
+// the destruction, so that the seal is in the stream before it: a replica
+// that holds the destruction holds the seal. A receipt key has no store, so
+// no seal: the authority service destroys it once its day's receipts have
+// expired.
 func (c *Catalog) Append(ctx context.Context, intent keyauthority.Change, write func() (*keyauthority.Change, error)) error {
 	if write == nil || intent.Key != nil {
 		return ErrInput
 	}
-	kind := authoritylog.WriteKeyCreate
-	if intent.Revoke {
-		kind = authoritylog.WriteKeyDestroy
+	kind := keyKind(intent.Revoke, intent.Agent, intent.Volume)
+	if kind == "" {
+		return ErrInput // the receipt keys' agent names days only
 	}
+	receipt := kind == authoritylog.WriteReceiptKeyCreate || kind == authoritylog.WriteReceiptKeyDestroy
 	return c.operate(ctx, kind, func(tx *sql.Tx) error {
 		rec := c.recordingOf(tx)
 		if rec == nil || !rec.state.armed() || c.repl == nil {
 			return ErrUnavailable
 		}
-		if intent.Revoke {
+		if intent.Revoke && !receipt {
 			if err := sealedWith(ctx, tx, intent.Agent, intent.Volume, 0); err != nil {
 				return err
 			}
