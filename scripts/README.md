@@ -62,6 +62,13 @@ Do not run `go test ./...` at the repository root with sources outside
 | `build-adapted-harness.py` | Packs an ordinary agent image (examples/adapted-agent by default) with `capsule-adapter`, using plain Docker; the reference build is `dagger call adapted-agent` (any image: `dagger call adapt`). Its `package/` directory is required by `verify-product-guest.py --adapted-harness` |
 | `build-a2a-harness.py` | Packs examples/a2a-agent (an A2A server agent written with the official A2A Go SDK) with `capsule-adapter`, without Docker: two static binaries and the adapter's configuration. Its `package/` directory is required by `verify-product-guest.py --a2a-harness` |
 | `build-pi-harness.py` | Packs an installed Pi release and the Node.js it runs on as examples/pi-agent (Debian base, then `build-adapted-harness.py`); a test build that depends on the local installation. Its `adapted/package` directory feeds `verify-product-guest.py --pi-harness` |
+| `audit-dependencies.py` | Release audit: govulncheck on every Go module (fails on a vulnerability the code calls), the licenses of every shipped dependency against `license-policy.json`, and `third-party-licenses.txt`; see [docs/release.md](../docs/release.md) |
+| `build-release.py` | The release binaries (and with `--guest-cryptsetup` the guest image) of one commit, from a clean clone, reproducibly; `--twice` builds again in a second clean environment and compares every digest |
+| `release-sbom.py` | One SPDX SBOM per binary, guest image or harness package (syft, pinned); the guest's native files attributed to their Debian packages |
+| `scan-artifacts.py` | grype (pinned) on SBOMs, the deploy images (by digest) and lock files: fails on High or Critical unless `vulnerability-allowlist.json` covers it |
+| `release_tools.py`, `release-tools.json`, `tools/` | The audit's tools, pinned by SHA-256 (syft, grype, cosign, actionlint) or `go.sum` (govulncheck), fetched into `~/.cache/agentcapsule-release-tools` |
+| `vulnerability-allowlist.json`, `license-policy.json` | Reviewed exceptions of the vulnerability gates (each expires within 90 days), and the allowed licenses |
+| `test_release_audit.py` | Unit tests of the release audit's rules, without network or tools |
 | `openapi-requirements.txt` | Python requirements for validating the OpenAPI specification |
 | `adapter-sdk-requirements.txt` | Model SDKs for `verify-adapter.py`, pinned by hash |
 
@@ -240,6 +247,14 @@ volumes/keys.
 The `backups` job runs `verify-backups.py`, `verify-archive-shipping.py` and
 `verify-failover.py`, with the tools of `fetch-backup-tools.py` and PostgreSQL
 16 from Ubuntu 24.04.
+
+The `release-audit` job lints the workflows (actionlint), runs
+`audit-dependencies.py`, `build-release.py --twice` with the guest image,
+`build-a2a-harness.py`, `release-sbom.py` and `scan-artifacts.py`; the
+harness job writes the SBOMs of the Dagger-built packages and scans them.
+[`.github/workflows/release.yml`](../.github/workflows/release.yml) runs the
+same on a version tag, then signs and publishes a draft release; see
+[docs/release.md](../docs/release.md).
 Ubuntu 26.04's PostgreSQL 18 needs glibc 2.43, newer than the runner's 2.39,
 so it does not run there. The job keeps a run's evidence for seven days only
 when the run's own search found no secret in it and no file holds a private
