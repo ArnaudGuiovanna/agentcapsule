@@ -121,6 +121,28 @@ func (s *Server) cancelInvocation(w http.ResponseWriter, r *http.Request) {
 	receipt(w, out, err)
 }
 
+// replayInvocation puts a dead letter back in its agent's queue, under the
+// same identifier and event ID (ADR 017). Owners and administrators only.
+func (s *Server) replayInvocation(w http.ResponseWriter, r *http.Request) {
+	if !method(w, r, "POST") {
+		return
+	}
+	p, ok := s.principal(w, r)
+	if !ok {
+		return
+	}
+	key, ok := idempotency(w, r)
+	if !ok {
+		return
+	}
+	var in controlplane.ReplayInput
+	if !decode(w, r, &in) {
+		return
+	}
+	out, err := s.catalog.ReplayInvocation(r.Context(), p, r.PathValue("id"), key, in)
+	receipt(w, out, err)
+}
+
 // idlePolicy sets or clears the idle-closure timeout of one agent.
 func (s *Server) idlePolicy(w http.ResponseWriter, r *http.Request) {
 	if !method(w, r, "POST") {
