@@ -45,8 +45,13 @@ See [scripts/README.md](scripts/README.md) for every runner.
 - Keep each pull request focused, with a description of the behavior change and how
   it was tested.
 - CI must pass: formatting and vet, unit and race tests, the PostgreSQL integration
-  runner, the OpenAPI validation, the Quint typecheck, repository hygiene and the
-  secret scan.
+  runner, the OpenAPI validation, the Quint typecheck, repository hygiene, the
+  secret scan and the release audit (vulnerabilities, licenses, reproducible build,
+  SBOMs, scans; see [docs/release.md](docs/release.md)).
+- **New dependencies and images.** A new Go module, Python package or container
+  image must carry an allowed license (`scripts/license-policy.json`) and an image
+  must be pinned by digest. Accept a vulnerability only with a reviewed entry of
+  `scripts/vulnerability-allowlist.json`.
 - Never commit credentials, keys, tokens, personal paths or generated evidence
   (`_evidence/` is ignored). Fake secrets in tests must be obviously fake and marked
   `gitleaks:allow`.

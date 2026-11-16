@@ -1,0 +1,238 @@
+name: Release
+
+# Cuts a release from a version tag, and only from one: see docs/release.md.
+# The build job builds every binary and the guest image twice and compares
+# them, audits the dependencies, writes the SBOMs and scans them; it holds no
+# token that can sign or write. It publishes the host binaries only. The sign job signs the checksums with cosign
+# (keyless, GitHub's OIDC identity) and attests their SLSA provenance. The
+# publish job creates a draft release, which a maintainer reviews and publishes.
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GO_VERSION: '1.27.3'
+  GOTOOLCHAIN: local
+  GOENV: 'off'
+  GOWORK: 'off'
+  GOFLAGS: -mod=readonly
+  CGO_ENABLED: '1'
+
+jobs:
+  build:
+    name: Build twice, audit, SBOMs and scans
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the tagged commit with its history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up pinned Go, without any cache
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: false
+          cache: false
+
+      - name: Check the tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_TYPE" = tag
+          python3 -c 'import re, sys; sys.exit(not re.fullmatch(r"v\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?", sys.argv[1]))' "$TAG"
+          test "$(git rev-parse "$TAG^{commit}")" = "$(git rev-parse HEAD)"
+          # Only a commit of main is released.
+          git merge-base --is-ancestor HEAD origin/main
+
+      - name: Install native headers and the guest image's tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential libcryptsetup-dev cryptsetup-bin e2fsprogs
+
+      - name: Dependency audit (govulncheck on every Go module, licenses)
+        run: |
+          # --release: a vulnerability the code calls blocks the release even
+          # when allowlisted (ADR 013).
+          python3 scripts/audit-dependencies.py --go "$(command -v go)" --release \
+            --output "$RUNNER_TEMP/release/audit"
+
+      - name: Build the binaries and the guest image twice, and compare
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          python3 scripts/build-release.py --go "$(command -v go)" --version "$TAG" \
+            --twice --fresh-module-cache --guest-cryptsetup /usr/sbin/cryptsetup \
+            --output "$RUNNER_TEMP/release/build"
+
+      - name: SBOMs
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          dist="$RUNNER_TEMP/release/build/dist"
+          binaries=()
+          for name in agentcapsule-api agentcapsule-worker agentcapsule-admin agentcapsule-authority \
+              agentcapsule-harness capsule-adapter agentcapsule-slim-bridge; do
+            binaries+=(--binary "$dist/$name")
+          done
+          python3 scripts/release-sbom.py --go "$(command -v go)" --version "$TAG" \
+            --output "$RUNNER_TEMP/release/sbom" "${binaries[@]}" --guest-build "$dist"
+
+      - name: Vulnerability scan (SBOMs and deploy images)
+        run: |
+          set -euo pipefail
+          sboms=("$RUNNER_TEMP"/release/sbom/*.spdx.json)
+          python3 scripts/scan-artifacts.py --output "$RUNNER_TEMP/release/scan" \
+            "${sboms[@]/#/--sbom=}" --deploy-images
+
+      - name: Assemble the release files and their checksums
+        run: |
+          # The guest image and capsule-adapter are built, described and
+          # scanned above but not published: they carry GPL and LGPL code
+          # whose source a release would have to offer (ADR 013, question 4).
+          set -euo pipefail
+          release="$RUNNER_TEMP/release"
+          assets="$release/assets"
+          mkdir "$assets"
+          for name in agentcapsule-api agentcapsule-worker agentcapsule-admin agentcapsule-authority \
+              agentcapsule-harness agentcapsule-slim-bridge; do
+            cp "$release/build/dist/$name" "$release/sbom/$name.spdx.json" "$assets"/
+          done
+          cp "$release/build/build.json" "$assets/build.json"
+          cp "$release/audit/third-party-licenses.txt" "$release/audit/licenses.json" "$assets"/
+          cp "$release/audit/summary.json" "$assets/dependency-audit.json"
+          cp "$release/scan/summary.json" "$assets/vulnerability-scan.json"
+          cd "$assets"
+          LC_ALL=C sha256sum -- * > "$release/SHA256SUMS"
+          mv "$release/SHA256SUMS" SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Keep the release files for the signing job
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-files
+          retention-days: 7
+          if-no-files-found: error
+          path: ${{ runner.temp }}/release/assets/
+
+  sign:
+    name: Sign the checksums and attest the provenance
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Check out sources (the pinned tool list)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Fetch the release files
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-files
+          path: ${{ runner.temp }}/assets
+
+      - name: Check every file against SHA256SUMS
+        working-directory: ${{ runner.temp }}/assets
+        run: |
+          set -euo pipefail
+          sha256sum --strict -c SHA256SUMS
+          # Nothing that the checksums do not cover.
+          present="$(for f in *; do [ "$f" = SHA256SUMS ] || printf '%s\n' "$f"; done | sort)"
+          test "$present" = "$(awk '{print $2}' SHA256SUMS | sort)"
+
+      - name: Sign SHA256SUMS with cosign (keyless) and verify the signature
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          cosign="$(python3 scripts/release_tools.py cosign | awk '{print $3}')"
+          cd "$RUNNER_TEMP/assets"
+          "$cosign" sign-blob --yes --bundle SHA256SUMS.sigstore.json SHA256SUMS
+          "$cosign" verify-blob --bundle SHA256SUMS.sigstore.json \
+            --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@${REF}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS
+
+      - name: Attest the SLSA build provenance of every file
+        id: provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: ${{ runner.temp }}/assets/SHA256SUMS
+
+      - name: Keep the signature and the provenance
+        env:
+          BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/signatures"
+          cp "$RUNNER_TEMP/assets/SHA256SUMS.sigstore.json" "$RUNNER_TEMP/signatures/"
+          cp "$BUNDLE" "$RUNNER_TEMP/signatures/provenance.sigstore.json"
+
+      - name: Upload the signature and the provenance
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-signatures
+          retention-days: 7
+          if-no-files-found: error
+          path: ${{ runner.temp }}/signatures/
+
+  publish:
+    name: Create the draft release
+    needs: [build, sign]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Fetch the release files
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-files
+          path: ${{ runner.temp }}/assets
+
+      - name: Fetch the signature and the provenance
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-signatures
+          path: ${{ runner.temp }}/assets
+
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/assets"
+          sha256sum --strict -c SHA256SUMS
+          prerelease=()
+          case "$TAG" in *-*) prerelease=(--prerelease) ;; esac
+          cat > "$RUNNER_TEMP/notes.md" <<EOF
+          Agent Capsule $TAG, built from $GITHUB_SHA.
+
+          Verify the files before use: docs/release.md, "Verify a release". The
+          dependency audit and the vulnerability scan of this release are
+          dependency-audit.json and vulnerability-scan.json; findings accepted by
+          scripts/vulnerability-allowlist.json are listed there with their reason.
+          EOF
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
+            "${prerelease[@]}" --title "Agent Capsule $TAG" --notes-file "$RUNNER_TEMP/notes.md" -- ./*

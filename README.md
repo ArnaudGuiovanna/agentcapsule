@@ -139,6 +139,7 @@ Installation is not packaged yet. The building blocks are documented:
 | Architecture decisions | [docs/adr/](docs/adr/) |
 | Formal models | [spec/](spec/) |
 | Build, test and verification scripts | [scripts/README.md](scripts/README.md) |
+| Releases: audit, signing, SBOMs, verification | [docs/release.md](docs/release.md) |
 
 ## Repository layout
 
