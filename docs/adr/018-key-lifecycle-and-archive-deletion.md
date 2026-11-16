@@ -347,7 +347,8 @@ For ADR 006 wave 3 (the service owns both authorities):
    then the old one is deleted. Today a snapshot with another recipient is
    refused.
 6. **Pinning two link certificates** during a rotation, so that the
-   replication does not pause.
+   replication does not pause, and a warning 30 days before they expire,
+   which the worker's preflight gave until wave 2.
 
 Elsewhere:
 
