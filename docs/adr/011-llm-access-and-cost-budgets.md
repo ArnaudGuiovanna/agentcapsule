@@ -154,7 +154,8 @@ and soft cost caps per organization and per agent; the unpriced alias; prices
 fixed at reservation; the exact cost at the bounds; 30 concurrent
 reservations against a hard cost cap; settlements racing reservations; three
 outcomes racing for one call; reconciliation, its rights, and its race with
-a late settlement.
+a late settlement; the migration on an installation that already has
+aliases, budgets and calls.
 
 ## Not changed
 
