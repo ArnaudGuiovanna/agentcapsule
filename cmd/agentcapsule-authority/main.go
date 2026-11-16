@@ -634,8 +634,10 @@ func promote(args []string) int {
 	restoreRoot := f.String("restore-authority-root", "", "new directory: the service's restore_authority.root on this host")
 	restoreID := f.String("restore-authority-id", "", "the restore authority's identity, as the worker pins it")
 	unlockPath := f.String("unlock-key-file", "", "private file holding the unlock key, from the safe")
+	degradedAfter := f.Duration("degraded-after", authoritylog.DefaultDegradedAfter,
+		"the old primary's authority_replica.degraded_after: a last contact older than this before the failover assumes a degraded period ran")
 	if !parse(f, args) || *replicaRoot == "" || *keyRoot == "" || *keyID == "" || *restoreRoot == "" || *restoreID == "" ||
-		!filepath.IsAbs(*unlockPath) {
+		!filepath.IsAbs(*unlockPath) || *degradedAfter < authoritylog.MinDegradedAfter || *degradedAfter > authoritylog.MaxDegradedAfter {
 		return fail("configuration_required")
 	}
 	// The replica's listener and any service on the target directories must
@@ -663,7 +665,8 @@ func promote(args []string) int {
 	if status.RestoreAuthority != *restoreID || status.KeyAuthority != *keyID {
 		return fail("replica_identity_mismatch")
 	}
-	result, err := restoreauthority.Promote(ctx, *replicaRoot, *restoreRoot, *keyRoot, unlock)
+	result, err := restoreauthority.PromoteWith(ctx, *replicaRoot, *restoreRoot, *keyRoot, unlock,
+		restoreauthority.PromoteOptions{DegradedAfter: *degradedAfter})
 	switch {
 	case errors.Is(err, authoritylog.ErrWrap):
 		return fail("unlock_key_does_not_open_replica")
@@ -675,12 +678,52 @@ func promote(args []string) int {
 		return fail("promotion_failed")
 	}
 	return output(struct {
-		RestoreAuthority string `json:"restore_authority_id"`
-		KeyAuthority     string `json:"key_authority_id"`
-		Epoch            uint64 `json:"epoch"`
-		PreviousEpoch    uint64 `json:"previous_epoch"`
-		Sequence         uint64 `json:"sequence"`
-	}{result.RestoreAuthority, result.KeyAuthority, result.Epoch, result.Position.Epoch, result.Position.Seq})
+		RestoreAuthority string       `json:"restore_authority_id"`
+		KeyAuthority     string       `json:"key_authority_id"`
+		Epoch            uint64       `json:"epoch"`
+		PreviousEpoch    uint64       `json:"previous_epoch"`
+		Sequence         uint64       `json:"sequence"`
+		Announcement     announcement `json:"announcement"`
+	}{result.RestoreAuthority, result.KeyAuthority, result.Epoch, result.Position.Epoch, result.Position.Seq, announced(result.Announcement)})
+}
+
+// announcement is what the failover announces (ADR 005, item 14): whether
+// a degraded period may have run, its window, and the blanket revocation of
+// bearer tokens. A promotion by a release before ADR 006 wave 7, repeated,
+// knows none of it.
+type announcement struct {
+	Failover    *time.Time `json:"failover,omitempty"`
+	LastContact *time.Time `json:"last_contact,omitempty"`
+	Degraded    bool       `json:"degraded"`
+	Window      *struct {
+		From time.Time `json:"from"`
+		To   time.Time `json:"to"`
+	} `json:"window,omitempty"`
+	Blanket string `json:"blanket_revocation_id,omitempty"`
+}
+
+func announced(a restoreauthority.Announcement) announcement {
+	var out announcement
+	if !a.Failover.IsZero() {
+		failover := a.Failover.UTC()
+		out.Failover = &failover
+	}
+	if !a.LastContact.IsZero() {
+		contact := a.LastContact.UTC()
+		out.LastContact = &contact
+	}
+	out.Degraded, out.Blanket = a.Degraded, a.Blanket
+	if a.Degraded {
+		from := a.LastContact
+		if from.After(a.Failover) {
+			from = a.Failover
+		}
+		out.Window = &struct {
+			From time.Time `json:"from"`
+			To   time.Time `json:"to"`
+		}{from.UTC(), a.Failover.UTC()}
+	}
+	return out
 }
 
 func run() int {

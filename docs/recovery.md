@@ -700,12 +700,25 @@ away: nothing runs behind such a write until the standby holds it (ADR 006,
 wave 5, Not done).
 
 **If the primary is lost during degraded mode**, the outcomes recorded since
-its start exist nowhere else. The failover must announce that period as a
-time window, from the standby's last contact to the failover, and revoke
-every bearer token issued before it (ADR 005, item 14). A revocation started
-in that period was never confirmed, since its completion waited. An access
-revocation still pending then must be made again: the announcement lists
-that window.
+its start exist nowhere else. The standby cannot know whether degraded mode
+ran: by definition it did not hear from the primary. It knows its **last
+contact**, the last request of the primary it answered: the replica writes
+that time on disk before it answers, and the primary reaches it every sixth
+of `degraded_after` (5 seconds by default) even when nothing is written. No
+degraded period can begin less than `degraded_after` after the last
+contact. So the promotion compares the two
+([Promote the replica](#promote-the-replica), step 5): when the last contact
+is older than `degraded_after` at the failover, it assumes a degraded period
+ran (ADR 005, item 14). It then revokes every bearer token issued before the
+failover, moves every delegation trust's `minimum_iat` to the failover, and
+the failover announces the window from the last contact to the failover. A
+revocation started in that period was never confirmed, since its completion
+waited. An access revocation still pending then must be made again: the
+announcement lists that window.
+
+An idle primary also learns at once, at its next heartbeat, that its standby
+went away: it enters degraded mode after `degraded_after` without an
+operation, and `AgentCapsuleAuthorityDegraded` fires.
 
 #### Pending revocations
 
@@ -758,8 +771,10 @@ standby: the key then lives longer than its two days on the primary,
 primary is lost before the standby holds a key created alone, a replay of a
 request of that day answers 409 `idempotency_receipt_unreadable` after the
 failover: the request took effect, and does not run again. The bearer tokens
-issued in that period stay valid until the blanket revocation at a failover
-is built (ADR 005, item 14).
+issued in that period are revoked at the failover: a key is created on the
+primary alone only after `degraded_after` without the standby, so the
+promotion finds a last contact older than that, and revokes every bearer
+token issued before the failover ([Degraded mode](#degraded-mode)).
 
 `AgentCapsuleReceiptKeyMissing` (critical) fires when the service has held
 no usable key of the day for 5 minutes: the API then refuses every request
@@ -806,16 +821,34 @@ the standby, as root. Follow this order.
      -restore-authority-root /var/lib/agentcapsule-restore-authority -restore-authority-id <restoreauth_…> \
      -unlock-key-file /var/lib/agentcapsule-authority-replica/unlock.key
    ```
+   Add `-degraded-after <duration>` if the old primary's
+   `authority_replica.degraded_after` was not the default 30 seconds.
    It checks both identities against the replica and that every wrapped
    secret opens, before it writes anything. Then it marks the replica
    promoted: from then on the replica refuses every record. It writes both
    authorities, with the next epoch on disk before their first write, and
    deletes the replica's wrapped copies. It prints:
    ```json
-   {"restore_authority_id":"restoreauth_…","key_authority_id":"keyauth_…","epoch":2,"previous_epoch":1,"sequence":4182}
+   {"restore_authority_id":"restoreauth_…","key_authority_id":"keyauth_…","epoch":2,"previous_epoch":1,"sequence":4182,
+    "announcement":{"failover":"2026-11-16T10:12:40.512Z","last_contact":"2026-11-16T10:02:03.120Z","degraded":true,
+    "window":{"from":"2026-11-16T10:02:03.120Z","to":"2026-11-16T10:12:40.512Z"},"blanket_revocation_id":"arv_…"}}
    ```
    `epoch` is the new primary's. `sequence` is the last record the replica
    applied: every write the old primary acknowledged is at or before it.
+   `announcement` is what the failover announces
+   ([Degraded mode](#degraded-mode)). `last_contact` is the replica's last
+   contact with the old primary; absent when the old primary never reached
+   it. When it is older than `degraded_after` at the failover, `degraded` is
+   true: a degraded period may have run. The promoted authorities then hold
+   the **blanket revocation** (`blanket_revocation_id`): every bearer token
+   issued before `failover` (API tokens, service tokens, platform
+   credentials) is revoked, and every delegated token too, by moving each
+   delegation trust's `minimum_iat` past `failover`. The reconciliation
+   writes it into the database ([the procedure](#the-procedure), step 7).
+   `window` is the period to announce. After a disaster the promotion runs
+   minutes after the last contact: expect `degraded` to be true, unless the
+   standby heard from the primary less than `degraded_after` before you
+   promote.
    Run the command again after any failure, **before starting the
    service in the primary role**:
    it completes an interrupted promotion, or prints the same result. Until it
@@ -854,9 +887,10 @@ the standby, as root. Follow this order.
    receipt the promoted database holds is replayed as before, except one
    whose key the old primary created alone in degraded mode
    ([The daily receipt keys](#the-daily-receipt-keys)). The service goes on
-   creating and destroying them. Start the API, with the same identities, once the
-   database runs here; then restore the lost host's agents and start the
-   worker ([the procedure](#the-procedure), steps 7 and 11 to 13).
+   creating and destroying them. Once the database runs here, reconcile it
+   with the promoted authorities, then start the API with the same
+   identities; then restore the lost host's agents and start the worker
+   ([the procedure](#the-procedure), steps 7, 8, 13 and 14).
 7. **Seed a new standby** as soon as possible: a new host, or the old one
    once **wiped**. The old host's authority directories hold the old epoch,
    and keys destroyed since the failover: delete them before the host serves
@@ -874,17 +908,92 @@ the standby, as root. Follow this order.
    The snapshot keeps the new epoch. The new standby refuses the old
    primary's records (`older_epoch`), and the pins refuse its certificate.
 
-### What is not built yet
+### Reconcile the database
 
-- **The promotion after a degraded period** (ADR 005, item 14): announcing
-  the window and revoking the bearer tokens issued before the failover. Until
-  it is built, the operator announces that window by hand
-  ([Degraded mode](#degraded-mode)), and the bearer tokens issued before the
-  failover are not revoked.
-- **The replay of the access revocation records** into PostgreSQL after a
-  promotion (ADR 006, wave 7). The records are on the standby (wave 5), but
-  the promoted database does not learn them yet: after a failover, make
-  again by hand the revocations of the database window.
+The promoted database is older than the promoted authorities by its loss
+window: a member removed, a token revoked, an agent deleted or restored in
+the last minutes before the disaster is in the authorities and not in the
+database. `agentcapsule-admin reconcile` brings the database up to the
+authorities ([ADR 006](adr/006-authority-service.md), wave 7). The API
+refuses to start until it has run for the authorities' epoch
+(`authority_not_reconciled`), and its readiness probe answers 503
+`authority_not_reconciled`. Run it as the API's account, with the API's
+database and its three authority flags:
+
+```sh
+runuser -u <the API's account> -- env AGENTCAPSULE_DATABASE_URL=<the API's> agentcapsule-admin reconcile \
+  -authority-socket /run/agentcapsule-authority/api.sock \
+  -restore-authority-id <restoreauth_…> -key-authority-id <keyauth_…>
+```
+
+It:
+1. writes into the authorities each access revocation the database holds
+   and they lack, and each revocation subject (`agent/…`, `request/…`,
+   `event/…`): the WAL shipped them, the old primary's authorities lost
+   them;
+2. replays into the database each access revocation record it lacks, with
+   its effect, in the order they were recorded. A record the database holds
+   is not replayed: its row committed with the revocation, so a grant made
+   after it is never undone. A rotated LLM provider whose new credential the
+   database lost is disabled: its administrator creates it again. A
+   rotated delegation trust whose new keys it lost is revoked: run
+   `configure-delegation -action rotate` again;
+3. copies the authorities' revocation subjects into
+   `revocation_catalogue`;
+4. resumes the deletion of each agent whose store the authorities sealed,
+   or whose `agent/` subject they hold: the deletion was requested before
+   the disaster;
+5. reports each store whose registration or incarnation differs;
+6. records that it reconciled the epoch.
+
+It prints one JSON object:
+
+```json
+{"epoch":2,"restore_authority_id":"restoreauth_…",
+ "announcement":{"from":"2026-11-16T10:02:03.12Z","to":"2026-11-16T10:12:40.512Z","blanket_revocation_id":"arv_…"},
+ "records_replayed":3,"records_kept":0,"subjects_kept":0,"subjects_copied":1,
+ "deletions_resumed":["agt_…"],"deletions_not_resumed":[],
+ "divergent_stores":[{"store":"agt_…","reason":"incarnation","authority_incarnation":2,"database_incarnation":1}],
+ "reconciled_at":"…"}
+```
+
+- `announcement` is there when the promotion assumed a degraded period:
+  announce its window, and issue new bearer tokens (below).
+- `deletions_not_resumed`: an agent the database does not know
+  (`unknown_agent`: created and deleted in the window), or in a phase no
+  deletion starts from (`phase`). Nothing serves it.
+- `divergent_stores`: `incarnation`, the agent was restored in the window,
+  and its restore on this host starts again from the authorities' state;
+  `not_enrolled`, the agent was created in the window and the database
+  lost it; `not_registered`, the database enrolled a store the authorities
+  never registered; `volume`, their volumes differ. A restore of the lost
+  host's agents ([the procedure](#the-procedure), step 13) refuses such an
+  agent (`authority`): it stays out of service. The report is kept in
+  `authority_reconciliations`.
+
+Every step can be run again: a later run replays nothing more, and prints
+the same report. Run it again after any failure: `authority_unavailable_try_again`
+and `reconcile_failed_try_again` mean exactly that; `reconcile_conflict_try_again`
+that the authorities changed epoch during the run; `reconcile_record_invalid`
+that an authority holds a record this release cannot replay. Errors of the
+authority flags are those of the API (`authority_identity_mismatch`, …).
+
+**After a degraded period** (the promotion printed `"degraded": true`),
+every bearer token issued before the failover is revoked, the platform
+operator's credential included:
+- issue a new platform credential: `agentcapsule-admin bootstrap-platform`
+  with the same receipt key file and a new token file
+  ([bootstrap.md](bootstrap.md#2-create-the-platform-operators-credential));
+- organizations issue new service tokens, and their identity providers new
+  delegated tokens: those issued before the failover are refused;
+- announce the window: outcomes confirmed in it may be lost, and the
+  revocations still pending in it must be made again
+  ([Pending revocations](#pending-revocations)).
+
+A database restored in place, on the same host, from an older backup is
+behind the authorities in the same way, with the same epoch: run
+`reconcile` before starting the API again. The API cannot tell such a
+restore apart, and does not refuse to start.
 
 ## Failover (REC-03)
 
@@ -961,8 +1070,8 @@ these files by hand, out of band.
 On the standby host, as root unless said otherwise. Follow this order. Each
 step gives its time: measured on one machine where it says so, estimated
 otherwise ([ADR 020](adr/020-restoring-a-lost-hosts-agents.md#the-procedure-and-its-time)).
-Steps 1 to 9 are the RTO: about 20 to 25 minutes. The agents come back after,
-one by one (step 12).
+Steps 1 to 10 are the RTO: about 20 to 25 minutes. The agents come back after,
+one by one (step 13).
 
 1. **Decide**, and write down the time. Fetch the unlock key and the API's
    keys from the safe. *About 10 minutes, estimated.*
@@ -993,20 +1102,28 @@ one by one (step 12).
    there ([below](#announce-the-databases-loss)).
 5. **Give it a repository of its own**: [Promote](#promote), step 3, up to
    `pgbackrest check`. The checkpoint and the full backup are not needed to
-   serve: take them right after step 8. Disable
+   serve: take them right after step 9. Disable
    `agentcapsule-standby-metrics.timer`.
 6. **Install the API's configuration and keys** from the safe, with the modes
    the API requires: the directory and the key files readable by the API's
    account only (0700 and 0600). The organizations' identity trusts are in
    PostgreSQL: the promoted database brings them.
    Set `AGENTCAPSULE_DATABASE_URL` to the standby's own PostgreSQL.
-7. **Start the API** with the same flags as on the primary
+7. **Reconcile the database** with the promoted authorities:
+   [Reconcile the database](#reconcile-the-database). It replays the access
+   revocations the database lost, the blanket revocation of bearer tokens
+   when the promotion assumed a degraded period, the revocation subjects
+   and the deletions, and reports the stores that differ. Until it has run,
+   the API refuses to start (`authority_not_reconciled`). *Under a second
+   measured; a minute typed.*
+8. **Start the API** with the same flags as on the primary
    ([docs/api](api/README.md)): the same authority socket and identities,
    except `-host-id`: the standby's worker `host_id`, where new agents go. On
    the lost host's, reservations fail with 503. Before it listens, it checks
-   that the authority service holds those identities, then the schema and
-   the keys. *Steps 6 to 8: 0.1 s measured; 1 to 2 minutes typed.*
-8. **Check it** on the standby:
+   that the authority service holds those identities, then the schema, the
+   keys, and that step 7 reconciled the authorities' epoch. *Steps 6 to 9:
+   0.1 s measured; 1 to 2 minutes typed.*
+9. **Check it** on the standby:
    ```sh
    curl -fsS --cacert <the CA of the API's certificate> \
      --resolve api.example.net:8443:127.0.0.1 https://api.example.net:8443/v1/health/ready
@@ -1019,13 +1136,18 @@ one by one (step 12).
    (`POST /v1/organizations`, with an `Idempotency-Key`). An organization
    cannot be deleted, so disable it after
    (`POST /v1/organizations/{id}/disable`). If tenants sign in with a
-   delegated identity, have one read `GET /v1/organizations/current`.
-9. **Move the address** that clients use to the standby: DNS, a floating
+   delegated identity, have one read `GET /v1/organizations/current`. After a
+   degraded period the platform operator's token was revoked with every
+   bearer token issued before the failover: make these checks with the new
+   one ([Reconcile the database](#reconcile-the-database)), and tenants with
+   tokens issued after the failover.
+10. **Move the address** that clients use to the standby: DNS, a floating
    address or the load balancer. The RTO ends when clients reach the API
    there. *About 5 minutes, estimated.*
-10. **Announce** the database's loss window
-    ([below](#announce-the-databases-loss)).
-11. **Take the lost host over** (*seconds*), with the `host_id` of each
+11. **Announce** the database's loss window
+    ([below](#announce-the-databases-loss)), and the window of a degraded
+    period when step 7 printed one.
+12. **Take the lost host over** (*seconds*), with the `host_id` of each
     worker's configuration:
     ```sh
     agentcapsule-admin take-over-host -lost-host <the lost host's host_id> -host <this host's host_id> \
@@ -1037,7 +1159,7 @@ one by one (step 12).
     records nothing. It prints its outcome and the number of agents to
     restore. The second command gives this host the storage that new agents
     may reserve.
-12. **Restore the agents**, the maintenance worker stopped:
+13. **Restore the agents**, the maintenance worker stopped:
     ```sh
     /opt/agentcapsule/agentcapsule-worker -config /etc/agentcapsule/worker.json \
       -restore-host <the lost host's host_id> \
@@ -1061,19 +1183,18 @@ one by one (step 12).
       -confirm <id>` ends its reservation if it obtained no volume;
       `deleting`: its deletion does not end yet. Each stays out of service
       on the lost host.
-13. **Start the maintenance worker** on the promoted authorities, through
+14. **Start the maintenance worker** on the promoted authorities, through
     the authority service started at step 3: `systemctl enable --now
-    agentcapsule-worker`. The reruns start at once. *Seconds.*
-14. **Protect the new primary**: the checkpoint and the full backup of
+    agentcapsule-worker`. The reruns start at once, and so do the deletions
+    the reconciliation resumed. *Seconds.*
+15. **Protect the new primary**: the checkpoint and the full backup of
     [Promote](#promote), step 3, then its freshness timer, and the archive
     shipper to stores of its own ([Promote](#promote), step 5). Build a new
     standby as soon as possible: its PostgreSQL ([the standby](#the-standby-rec-03))
     and the authorities' replica
     ([Promote the replica](#promote-the-replica), step 7).
 
-What ADR 006's waves 5 to 7 will add, and the operator does by hand until
-then (the revocations of the database's loss window, the window of a
-degraded period), is in
+What the failover still leaves undone is in
 [ADR 020](adr/020-restoring-a-lost-hosts-agents.md#what-stays-undone).
 
 ### Announce the database's loss
@@ -1142,7 +1263,7 @@ The run:
    (`bootstrap-platform`), a transit key, the authority service with its
    replica on the standby ([Install the replica](#install-the-replica): both
    authorities, the unlock key, the link's certificates, the snapshot), a
-   tenant whose member signs in with a delegated identity, base backups, and
+   tenant whose members sign in with a delegated identity, base backups, and
    the API on the authority service. The API's readiness reports the service
    `synchronous`. A directory stands for the operator's safe, where the
    unlock key and the API's keys are kept. The identity trust is in
@@ -1152,26 +1273,32 @@ The run:
    when.
 3. **The standby** is built from its own disk, and replays.
 4. **The disaster** comes one and a half `archive_timeout` after a segment
-   switch: halfway through a segment. The primary's PostgreSQL, authority
-   service and API are killed with SIGKILL, with any push in progress. Its
-   data directory, its authorities and the WAL that pgBackRest had not pushed
-   are deleted.
-5. **The failover**, steps 2 to 8 above, timed from the decision. The old
+   switch: halfway through a segment. Three seconds before it, in the
+   segment that never ships, the tenant's owner removes its second member:
+   the standby's replica holds the revocation's record before PostgreSQL
+   commits it. The primary's PostgreSQL, authority service and API are
+   killed with SIGKILL, with any push in progress. Its data directory, its
+   authorities and the WAL that pgBackRest had not pushed are deleted.
+5. **The failover**, steps 2 to 9 above, timed from the decision. The old
    primary's S3 credential is revoked in the store's configuration (SeaweedFS
    reloads it on SIGHUP), and its key is removed from the SFTP account. Then
-   the authorities' promotion, with the unlock key from the safe, at epoch 2,
-   and the standby's authority service in the primary role; the database's
-   promotion, the new repository, the keys installed from the safe, the API
-   started on the promoted authorities with the same identities and the
+   the authorities' promotion, with the unlock key from the safe, at epoch 2:
+   the standby heard from the primary seconds before, so it announces no
+   degraded period; the standby's authority service in the primary role; the
+   database's promotion, the new repository, the keys installed from the
+   safe. The API, started then, refuses (`authority_not_reconciled`), and the
+   promoted database still holds the removed member's membership.
+   `agentcapsule-admin reconcile` replays the revocation; then the API
+   starts on the promoted authorities with the same identities and the
    standby's host ID, readiness (`"authority": "standalone"`), and the first
    authenticated read and write. The read is made twice: with the platform
    token, and with a delegated identity (a JWT signed by the client's Ed25519
-   key).
-6. **The takeover**, step 11 above: `take-over-host` on the promoted
+   key). The removed member's JWT gets 401.
+6. **The takeover**, step 12 above: `take-over-host` on the promoted
    database, a dry run first, then `configure-host` for the standby. Without
    `-confirm` it is refused. Repeated, it prints the same record,
    `unchanged`; another successor is refused (`conflict`), and so is the
-   lost host as a successor (`host_lost`). The agents' restore (step 12)
+   lost host as a successor (`host_lost`). The agents' restore (step 13)
    needs KVM: it is not run here.
 7. **The checks.**
    - Every write acknowledged before the window is on the standby, and every
@@ -1189,18 +1316,25 @@ The run:
    unlock key, the link's private keys, the client's private key and its
    JWTs.
 
-Results of two runs on 2026-11-16, PostgreSQL 18.6 and pgBackRest 2.58:
+Results of two runs on 2026-11-16, PostgreSQL 18.6 and pgBackRest 2.58,
+with the reconciliation (ADR 006 wave 7):
 
 | | Run 1 | Run 2 |
 | --- | --- | --- |
-| **RTO**: from the decision to the first authenticated write | 2.12 s | 1.74 s |
-| fence, promote the authorities, start their service | 0.33, 0.02 and 0.05 s | 0.28, 0.02 and 0.05 s |
-| promote the database, own repository | 0.63 and 0.88 s | 0.53 and 0.74 s |
-| install the keys, start the API, ready, read, write | 0.00, 0.00, 0.11, 0.03 and 0.01 s | 0.00, 0.00, 0.06, 0.03 and 0.01 s |
-| Acknowledged writes lost, of those made | 74 of 398 | 77 of 373 |
-| **RPO**: age of the oldest lost write at the disaster | 14.81 s | 15.28 s |
-| Window to announce: last replayed commit to the disaster | 15.01 s | 15.48 s |
-| Full backup into the new repository, after the RTO | 5.59 s | 4.84 s |
+| **RTO**: from the decision to the first authenticated write | 1.90 s | 1.74 s |
+| fence, promote the authorities, start their service | 0.28, 0.01 and 0.05 s | 0.23, 0.01 and 0.05 s |
+| promote the database, own repository | 0.53 and 0.74 s | 0.52 and 0.74 s |
+| install the keys; the API refused before the reconciliation; reconcile | 0.00, 0.07 and 0.06 s | 0.00, 0.03 and 0.03 s |
+| start the API, ready, read, write | 0.00, 0.06, 0.04 and 0.02 s | 0.00, 0.06, 0.02 and 0.01 s |
+| The member removed 3 s before the disaster: in the promoted database, after the reconciliation, its JWT | active, revoked, 401 | active, revoked, 401 |
+| The standby's last contact before the failover; degraded period announced | 3.3 s; no | 3.3 s; no |
+| Acknowledged writes lost, of those made | 79 of 393 | 77 of 393 |
+| **RPO**: age of the oldest lost write at the disaster | 15.77 s | 15.33 s |
+| Window to announce: last replayed commit to the disaster | 15.97 s | 15.53 s |
+| Full backup into the new repository, after the RTO | 4.49 s | 3.89 s |
+
+The runs before the reconciliation, on the same day, measured an RTO of
+2.12 and 1.74 s.
 
 No worker runs, so the authorities hold no agent: their promotion opens no
 volume key here, only the daily receipt keys. On a host with agents it unwraps each one, and takes
@@ -1228,7 +1362,7 @@ CI runs this qualification in the `backups` job, with PostgreSQL 16.
 > replica, they are lost with the primary, and so is every agent's memory, not
 > just its last 24 hours. The standby restores the lost host's agents from
 > the stores' copies ([ADR 020](adr/020-restoring-a-lost-hosts-agents.md),
-> [the procedure](#the-procedure), step 12).
+> [the procedure](#the-procedure), step 13).
 
 The maintenance worker archives each agent's encrypted volume about once a day,
 without being stopped. The volume RPO is 24 hours. Configure the `archives`
@@ -1272,7 +1406,7 @@ outcome the archive lacks is **declared lost**, as
 building block of a disaster restore: on the host that takes a lost host over,
 the same restore moves the agent there first
 ([ADR 020](adr/020-restoring-a-lost-hosts-agents.md),
-[the procedure](#the-procedure), step 12).
+[the procedure](#the-procedure), step 13).
 
 ### Run it
 

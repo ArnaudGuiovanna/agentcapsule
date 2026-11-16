@@ -243,7 +243,10 @@ its standby, is a warning.
 8. **Preflight.** Run `agentcapsule-worker -preflight` and
    `agentcapsule-api -preflight`, and fix every `fail`.
 9. **Start** the authority service, the worker, then the API, without
-   `AGENTCAPSULE_MODE`. Run the
+   `AGENTCAPSULE_MODE`. The migrations of step 6 record the authorities'
+   first epoch as reconciled: the API starts. After a failover it refuses
+   (`authority_not_reconciled`) until `agentcapsule-admin reconcile` has run
+   ([recovery.md](recovery.md#reconcile-the-database)). Run the
    preflights again after each change of host, certificate or configuration.
    Then create the organizations ([bootstrap.md](bootstrap.md#4-create-the-organization-and-its-first-owner)).
 

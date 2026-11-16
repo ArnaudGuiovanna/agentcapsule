@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authoritylog"
 	"github.com/mattn/go-sqlite3"
@@ -178,6 +179,10 @@ type Replica struct {
 	// set it to stand for the replica of an older release, which refuses a
 	// statement it does not know (docs/adr/006-authority-service.md §4).
 	knows statement
+	// The standby's last contact with the primary (contact_linux.go): the
+	// clock, which tests replace, and the last contact written, under lock.
+	now       func() time.Time
+	contacted time.Time
 }
 
 var _ authoritylog.Link = (*Replica)(nil)
@@ -416,6 +421,9 @@ func refuse(kind string, s replicaState) error {
 // Sync applies the request's records in order, then returns the replica's
 // position. A refusal leaves every record before the refused one applied.
 func (r *Replica) Sync(ctx context.Context, req authoritylog.Request) (authoritylog.Position, error) {
+	// Before the lock: a request that waits behind another counts from its
+	// arrival.
+	received := r.clock()
 	select {
 	case r.lock <- struct{}{}:
 	case <-ctx.Done():
@@ -450,6 +458,11 @@ func (r *Replica) Sync(ctx context.Context, req authoritylog.Request) (authority
 		}
 		applied = applied || next.seq != s.seq
 		s = next
+	}
+	// The primary has reached the replica at its epoch: the last contact,
+	// on disk before the answer.
+	if err = r.contact(ctx, received); err != nil {
+		return s.position(), r.refused(refuse(authoritylog.RefusedUnavailable, s))
 	}
 	r.metrics.Load().Position(s.position(), applied)
 	return s.position(), nil

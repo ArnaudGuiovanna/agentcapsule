@@ -76,12 +76,15 @@ func run() int {
 	if len(os.Args) > 1 && os.Args[1] == "take-over-host" {
 		return takeOverHost(os.Args[2:])
 	}
+	if len(os.Args) > 1 && os.Args[1] == "reconcile" {
+		return reconcile(os.Args[2:])
+	}
 	if len(os.Args) > 1 && os.Args[1] == "bootstrap" {
 		// The legacy owner domain's service credential (D-01, ADR 001): an
 		// installation starts with bootstrap-platform (docs/bootstrap.md).
 		return fail("bootstrap_removed_use_bootstrap_platform")
 	}
-	return fail("usage: agentcapsule-admin migrate | bootstrap-platform | list-credentials | revoke-credential | configure-delegation | list-audit | abandon-provisioning | clear-agent-failure | replay-dead-letter | init-key-authority | init-restore-authority | configure-host | approve-local-harness | activate-transit-keys | transit-key-usage | set-audit-retention | diagnostics | take-over-host")
+	return fail("usage: agentcapsule-admin migrate | bootstrap-platform | list-credentials | revoke-credential | configure-delegation | list-audit | abandon-provisioning | clear-agent-failure | replay-dead-letter | init-key-authority | init-restore-authority | configure-host | approve-local-harness | activate-transit-keys | transit-key-usage | set-audit-retention | diagnostics | take-over-host | reconcile")
 }
 
 func configureCatalog(command string, args []string) int {

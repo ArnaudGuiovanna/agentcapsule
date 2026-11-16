@@ -64,9 +64,15 @@ type (
 	}
 )
 
-// answered is the result of an operation that wrote its own answer; ok is
-// false when the connection failed meanwhile, and ends.
-type answered struct{ ok bool }
+// keyAnswer is the result of an operation that answers with a key: the
+// request writes its frame, then the key's bytes, once the operation has
+// ended, and clears the key. The operation must not write it itself: the
+// client's next request may arrive before the operation ends, and would
+// then be taken for a broken protocol.
+type keyAnswer struct {
+	result any
+	key    []byte
+}
 
 func init() {
 	operations[OpReceiptKey] = operation{api: true, apiOnly: true, run: func(ctx context.Context, s *Server, raw json.RawMessage, h *hold) (any, error) {
@@ -82,8 +88,7 @@ func init() {
 		if err != nil {
 			return nil, err
 		}
-		defer clear(key)
-		return answered{sendKey(h.conn, ReceiptKeyResult{Day: a.Day}, key)}, nil
+		return keyAnswer{ReceiptKeyResult{Day: a.Day}, key}, nil
 	}}
 }
 

@@ -65,7 +65,18 @@ func Link(ctx context.Context, catalog *restoreauthority.Catalog, keys *keyautho
 	if err != nil {
 		return errors.Join(ErrReplicaConfiguration, err)
 	}
-	return LinkTo(ctx, catalog, keys, client, r.DegradedAfter)
+	if err = LinkTo(ctx, catalog, keys, client, r.DegradedAfter); err != nil {
+		return err
+	}
+	// The heartbeat keeps the standby's last contact recent while nothing
+	// is written: a promotion compares it with the degraded delay, and
+	// announces the window from it (ADR 006 wave 7).
+	after := r.DegradedAfter
+	if after == 0 {
+		after = authoritylog.DefaultDegradedAfter
+	}
+	catalog.KeepContact(restoreauthority.HeartbeatEvery(after))
+	return nil
 }
 
 // LinkTo links both armed authorities to the replica behind link, and

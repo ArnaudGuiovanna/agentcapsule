@@ -127,12 +127,13 @@ func run(args []string) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+	var service authorityservice.Status
 	if authorities != nil {
 		// A service that does not answer yet is waited for, and said once;
 		// one that holds another installation's authorities is refused.
 		waiting := telemetry.NewLogger(os.Stderr, map[string][]string{"event": {"authority_service_waiting"}})
 		var once sync.Once
-		if _, err = authorities.Wait(ctx, func(error) {
+		if service, err = authorities.Wait(ctx, func(error) {
 			once.Do(func() { waiting.Event("authority_service_waiting") })
 		}); err != nil {
 			return fail(authorityFailure(err))
@@ -170,6 +171,20 @@ func run(args []string) int {
 	if authorities != nil && accounts.UseDailyReceiptKeys(authorities.ReceiptKeys()) != nil {
 		return fail("api_initialization_failed")
 	}
+	if authorities != nil {
+		// After a failover the database may lack what the authorities
+		// hold: the API opens only once agentcapsule-admin reconcile has
+		// run for the service's epoch (ADR 006 §7, REPLAY_FIRST).
+		check, checkCancel := context.WithTimeout(ctx, 10*time.Second)
+		err = s.CheckReconciled(check, service.Epoch)
+		checkCancel()
+		if errors.Is(err, controlplane.ErrNotReconciled) {
+			return fail("authority_not_reconciled")
+		}
+		if err != nil {
+			return fail("database_schema_unavailable")
+		}
+	}
 	handler, err := api.NewForHost(s, accounts, *hostID)
 	if err == nil && (len(transitFiles) != 0 || *activeTransit != "") {
 		keys, e := transitFiles.Read()
@@ -193,10 +208,10 @@ func run(args []string) int {
 		return fail("api_initialization_failed")
 	}
 	if authorities != nil {
-		handler.ReportAuthority(func(ctx context.Context) (string, error) {
+		handler.ReportAuthority(api.ReconciledAuthority(s, func(ctx context.Context) (string, uint64, error) {
 			status, err := authorities.Status(ctx)
-			return status.Mode, err
-		})
+			return status.Mode, status.Epoch, err
+		}))
 		// Every revoking transaction appends its record to the service
 		// before it commits, and the pending ones are confirmed once the
 		// standby holds them (docs/adr/006-authority-service.md §7).

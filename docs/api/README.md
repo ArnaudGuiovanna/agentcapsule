@@ -231,13 +231,21 @@ flags: `-authority-socket`, `-restore-authority-id` and `-key-authority-id`.
   while a restarted service has not reached its standby yet. While the
   service does not answer with the pinned identities, the probe answers 503
   (`authority_unavailable`).
+- **After a failover**, the API refuses to start (`authority_not_reconciled`)
+  until `agentcapsule-admin reconcile` has brought the database up to the
+  promoted authorities, for their epoch, and the probe answers 503
+  `authority_not_reconciled` meanwhile ([recovery.md](../recovery.md#reconcile-the-database)).
+  `reconcile` runs as the API's account, with the API's database and its
+  three flags. The authorities of an installation never promoted are at
+  their first epoch, which the migrations record as reconciled.
 - `-preflight` asks the service once (the `authority` check).
 - Every route that revokes access records the revocation with the service
   before it commits ([below](#revocations-pending-and-confirmed)).
 
 The API takes the daily receipt keys from the same socket
-([above](#the-daily-receipt-keys)). The reconciliation after a failover
-will go through it too (ADR 006 §7).
+([above](#the-daily-receipt-keys)), and `reconcile` reads the access
+revocation records, the revocation subjects and the stores there (ADR 006
+§7).
 
 ## Revocations: pending and confirmed
 
@@ -271,6 +279,13 @@ commits in PostgreSQL ([ADR 006](../adr/006-authority-service.md) §7, wave
   token anyway. A standing grant's (`member`, `principal`, `organization`,
   `team`, `team_membership`, `assignment`, `mandate`, `delegation_trust`,
   `llm_provider`) stays pending until the standby holds it.
+- **After a failover**, `agentcapsule-admin reconcile` replays into the
+  promoted database each record it lacks, with its row. When the promotion
+  assumed a degraded period, it also replays the **blanket** revocation
+  (kind `blanket`, recorded by the promotion, read by the platform
+  operator): every API token, service token and platform credential issued
+  before the failover is revoked, and every delegated token issued before
+  it is refused.
 - **Later.** The API asks the service about pending revocations every 5
   seconds, and confirms them once the standby holds their record.
   `GET /v1/access-revocations/{id}` reads one, with its `state` and

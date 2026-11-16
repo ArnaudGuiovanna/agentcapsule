@@ -21,6 +21,10 @@ const (
 	AccessServiceToken       = "service_token"
 	AccessPlatformCredential = "platform_credential"
 	AccessDelegatedToken     = "delegated_token"
+	// AccessBlanket revokes every bearer token issued before a failover that
+	// may have ended a degraded period (blanket.go). The promotion writes it;
+	// nothing else does.
+	AccessBlanket = "blanket"
 	// Standing grants.
 	AccessMember          = "member"
 	AccessPrincipal       = "principal"
@@ -35,14 +39,14 @@ const (
 
 // accessBearer classifies every kind: true for a bearer token.
 var accessBearer = map[string]bool{
-	AccessAPIToken: true, AccessServiceToken: true, AccessPlatformCredential: true, AccessDelegatedToken: true,
+	AccessAPIToken: true, AccessServiceToken: true, AccessPlatformCredential: true, AccessDelegatedToken: true, AccessBlanket: true,
 	AccessMember: false, AccessPrincipal: false, AccessOrganization: false, AccessTeam: false, AccessTeamMembership: false,
 	AccessAssignment: false, AccessMandate: false, AccessDelegationTrust: false, AccessLLMProvider: false,
 }
 
 // AccessKinds lists every kind of access revocation record.
 func AccessKinds() []string {
-	return []string{AccessAPIToken, AccessServiceToken, AccessPlatformCredential, AccessDelegatedToken,
+	return []string{AccessAPIToken, AccessServiceToken, AccessPlatformCredential, AccessDelegatedToken, AccessBlanket,
 		AccessMember, AccessPrincipal, AccessOrganization, AccessTeam, AccessTeamMembership, AccessAssignment,
 		AccessMandate, AccessDelegationTrust, AccessLLMProvider}
 }

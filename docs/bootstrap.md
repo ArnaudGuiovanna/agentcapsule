@@ -55,6 +55,12 @@ checked. A database whose history differs from this binary is refused
 (`database_migration_failed`): see
 [ADR 001](adr/001-organization-identity.md#decisions-of-this-slice).
 
+The migrations record that this database is reconciled with the authorities'
+first epoch: the authorities were never promoted, so nothing set it behind
+them. After a failover the API waits for `agentcapsule-admin reconcile`
+([recovery.md](recovery.md#reconcile-the-database)); a new installation
+needs no such step.
+
 ## 2. Create the platform operator's credential
 
 ```sh
@@ -110,7 +116,10 @@ configuration ([worker.md](worker.md)). Agents are created on that host.
 The last three flags reach the authority service with the identities it
 must hold ([docs/api](api/README.md#the-authority-service)). In production
 the API refuses to start without them, or with another installation's
-identities; it waits for a service that does not answer yet.
+identities; it waits for a service that does not answer yet. It also refuses
+a database not reconciled with the service's epoch
+(`authority_not_reconciled`): only after a failover
+([recovery.md](recovery.md#reconcile-the-database)).
 
 In production the API serves HTTPS only. Its certificate, its preflight
 (`-preflight`) and the development mode are described in
