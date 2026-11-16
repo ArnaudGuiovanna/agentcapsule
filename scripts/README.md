@@ -38,6 +38,7 @@ Do not run `go test ./...` at the repository root with sources outside
 | `test_check_go.py` | Unit tests of `check-go.py` |
 | `check-repo-hygiene.py` | Rejects new tracked files with a personal absolute path or Go sources committed under `_evidence/` (baseline: `hygiene-baseline.json`) |
 | `verify-postgres.py` | Go/race tests against a private, owned PostgreSQL cluster, with crash/WAL recovery; optional live LLM phase |
+| `load-test.py` | Load test of the API and the worker against a private PostgreSQL (or `--dsn`), without KVM or root: invocations at each rate in turn, delivered by real worker passes to the mock runtime; admission latency, queue age, backlog, dead letters, refusals and the limit observed; see [docs/worker.md](../docs/worker.md#load-test) |
 | `fetch-backup-tools.py` | Fetches pgBackRest 2.58 and rclone 1.60.1, Ubuntu 26.04's packages, from a fixed snapshot of the Ubuntu archive; checks each SHA-256, extracts them without root or apt and runs each once; see [below](#backup-qualifications) |
 | `test_fetch_backup_tools.py` | Unit tests of `fetch-backup-tools.py`, with small packages built on the spot and no network |
 | `verify-backups.py` | Continuous WAL archiving with pgBackRest to S3 and SFTP (Docker, pinned images): loss bound, restore from each store, no clear text, and the base-backup freshness written for node_exporter; then the standby: replay from the SFTP directory and from S3, a disaster and a promotion (rows lost, promotion time), the new primary's own repository |

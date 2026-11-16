@@ -51,11 +51,29 @@ readiness probe also checks this binding.
 **Stuck provisioning.** A reservation whose worker can never finish creation
 (for example an unserved release) used to leave the agent in `PROVISIONING`,
 undeletable, and the owner could not reserve another one.
-`agentcapsule-admin abandon-provisioning -agent-id <id>` removes it, but only
+`agentcapsule-admin abandon-provisioning -agent-id <id> -confirm <id>` removes it, but only
 while no physical resource exists: step `INSTALLING`, no registered volume, no
 placement, no seal and no active work lease. Beyond that point the command
 refuses and regular deletion applies. A volume file that was created and then
 lost before being registered is not tracked: the operator removes it.
+
+**Destructive operator commands** ([ADR 014](../adr/014-operations-capacity-diagnostics-audit.md)).
+`revoke-credential`, `abandon-provisioning`, `set-audit-retention` and
+`configure-delegation` with `rotate`, `revoke-trust` or `revoke-token` run only
+when `-confirm` repeats their target: the credential ID, the agent ID, the
+number of days, the issuer (`rotate`, `revoke-trust`) or the token ID
+(`revoke-token`). Without it they print `confirmation_required` and touch
+nothing. `-dry-run` checks everything and prints what the command would do,
+without changing or recording anything. Each command that runs prints its
+outcome as JSON (`done`, `unchanged` or `refused` with its reason) and is
+audited with it, refusals included, under the local user ID:
+`agentcapsule-admin list-operator-audit` prints that trail. Delegation changes
+stay audited in the organization's trail (`delegation_audit`).
+
+**Storage pressure.** While a file system of the host is past the worker's
+`storage_pressure` ([worker.md](../worker.md#storage-pressure)), creating an
+agent and requesting a harness import are refused with `503
+storage_pressure` and `Retry-After`, before any reservation.
 
 **Tenant audit trail.** `GET /v1/audit` (scope `audit:read`, role `org_owner`,
 `org_admin` or `auditor`) lists the organization's events with an opaque
@@ -63,6 +81,27 @@ cursor: members, teams, agents, assignments, service accounts and organization
 lifecycle. Each event carries only the actor, the action, the target and a
 reference: never a token, a secret or content. An event is written only in the
 transaction of the mutation it describes.
+
+**Audit export** (TEN-06). `GET /v1/audit/export?from=<RFC 3339>&to=<RFC 3339>`,
+with the same rights as `GET /v1/audit`, returns every event of the
+organization created in `[from, to)`, at most 366 days, as one JSON document
+to download (`Content-Disposition: attachment`). A range of more than 100,000
+events is refused with `413 audit_export_too_large`: export shorter ranges.
+
+```bash
+curl -fsS -H "Authorization: Bearer $AUDITOR_TOKEN" -o audit-2026-q3.json \
+  "https://capsule.example/v1/audit/export?from=2026-07-01T00:00:00Z&to=2026-10-01T00:00:00Z"
+```
+
+**Audit retention.** Every audit event is kept until the operator sets a
+retention (product §7: audit follows the legal context; default pending the
+product owner, [ADR 014](../adr/014-operations-capacity-diagnostics-audit.md)).
+`agentcapsule-admin set-audit-retention -days 400 -confirm 400` keeps events
+400 days (30 to 36500); `-dry-run` prints how many events that would delete
+now; `-keep-all` goes back to keeping everything. The worker then deletes older
+events of every audit table, tenant and operator alike, in batches, and
+records each purge in the operator's audit. An export carries
+`retention_days` when a retention is set.
 
 **Tenant service accounts.** See [service-accounts.md](service-accounts.md).
 
@@ -78,7 +117,7 @@ one, whether its delivery succeeds or dies.
 **Credential rotation and revocation.** `agentcapsule-admin list-credentials`
 prints, without secrets or fingerprints, the platform and service credentials
 (type, identifier, account, expiry, state). `agentcapsule-admin revoke-credential
--kind platform|service -id <id>` permanently and idempotently revokes one. To
+-kind platform|service -id <id> -confirm <id>` permanently and idempotently revokes one. To
 replace it, rerun `bootstrap-platform` or `bootstrap` with a **new** token file:
 a secret that was already stored is never accepted again, and a second active
 credential is refused. An expired credential is replaced the same way. Permanent

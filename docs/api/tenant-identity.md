@@ -56,6 +56,12 @@ identifies the local account by UID; it does not claim to identify an OIDC user.
 Installation does not create members: `issuer` and `subject` must already match
 a `user` principal and an active membership of the existing tenant.
 
+`rotate` and `revoke-trust` reject existing tokens, and `revoke-token` ends one
+for good: they also need `-confirm`, repeating the issuer (`rotate`,
+`revoke-trust`) or the token ID (`revoke-token`). `-dry-run` checks the change
+and records nothing: no change, no receipt, no audit; the same
+`-operation-id` then runs for real.
+
 ## Tokens and authorization
 
 The client signs an EdDSA JWT with `kid`, `iss`, a single `aud`, `sub`, `jti`,

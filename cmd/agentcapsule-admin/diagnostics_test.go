@@ -135,7 +135,7 @@ func TestDiagnosticsLeakNoSecretContentOrPersonalData(t *testing.T) {
 
 	dir := t.TempDir()
 	config := filepath.Join(dir, "worker.json")
-	if err = os.WriteFile(config, []byte(`{"version":1,"host_id":"kvm-01","root":"/home/plantedperson/agentcapsule","max_active":4,
+	if err = os.WriteFile(config, []byte(`{"version":1,"host_id":"kvm-01","root":"/srv/plantedperson/agentcapsule","max_active":4,
 		"boot_timeout":"30s","initrd":{"path":"/srv/planted/initrd","sha256":"`+strings.Repeat("a", 64)+`"},
 		"llm":{"api_key":"sk-planted-provider-key"},"database_url":"postgres://ops:planted-db-pass@db.example/agentcapsule",
 		"registry":{"rules":[{"host":"ghcr.io","repositories":["plantedperson/"],"password":"planted-registry-password"}]},
