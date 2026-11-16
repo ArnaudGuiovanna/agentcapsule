@@ -27,7 +27,7 @@ const serveEnv = "AGENTCAPSULE_TEST_SERVE_CONFIG"
 func TestServeChild(t *testing.T) {
 	path := os.Getenv(serveEnv)
 	if path == "" {
-		t.Skip("child process of TestServiceOwnsTheAuthoritiesAlone")
+		return // only the child process of TestServiceOwnsTheAuthoritiesAlone runs
 	}
 	os.Args = []string{"agentcapsule-authority", "serve", "-config", path}
 	os.Exit(run())
