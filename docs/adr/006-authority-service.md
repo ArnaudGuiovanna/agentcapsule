@@ -1,7 +1,7 @@
 # D-05 — The authority service
 
 Date: November 16, 2026. **Status: accepted by the product owner on November
-16, 2026** (see [Questions](#questions-for-the-product-owner)); waves 1 and 2
+16, 2026** (see [Questions](#questions-for-the-product-owner)); waves 1 to 3
 are built ([Implementation status](#implementation-status)). This record designs
 item 3 of [ADR 005 §5](005-keys-outside-restored-domain.md#5-what-changes-in-code-and-docs)
 and item 5 of its [What the code must do](005-keys-outside-restored-domain.md#what-the-code-must-do).
@@ -171,7 +171,7 @@ closed and counted.
   The client waits one second past its deadline for the service's answer,
   which says why the operation ended.
 - **Errors** are a closed vocabulary: `input`, `unavailable`, `conflict`,
-  `stale`, `revoked`, `sealed`, `history`, `not_declared`,
+  `stale`, `revoked`, `sealed`, `history`, `not_declared`, `not_sealed`,
   `waits_for_replica`, `replica_required`, `not_armed`, `diverged`, the key
   authority's `key_unavailable`, `key_revoked`, `key_conflict`,
   `key_input`, and `hold_expired`, `role`, `protocol`, `identity`. The
@@ -361,6 +361,26 @@ because `keyauthority.Revoke` takes no seal (`TestDestructionRequiresPermanentSe
 `internal/restoreauthority/key_runs_test.go`). The worker's order (seal, then
 destruction, `internal/worker/removals_linux.go`) stays; the service no
 longer relies on it.
+
+As built (wave 3):
+
+- `destroy_key` names the binding {agent, volume, incarnation}, as
+  `hold_key` does. Without the incarnation it is refused (`input`). A store
+  the catalogue holds with that binding, but not sealed, is refused with
+  `not_sealed`; another binding is `stale`. Both are refusals, not
+  outages: the worker's deletion job retries.
+- The interface's `DestroyKey(binding)` replaces the key authority's
+  `Revoke(agent, volume)` for the worker. `Revoke` names no binding, so both
+  implementations refuse it (`key_input`), as they refuse a bare key hold.
+- `restoreauthority.Local` checks the seal in a catalogue transaction, then
+  destroys the key: the rule for a standalone authority, and the same in the
+  test double and in the service. Armed, the key authority's journal names
+  the change's agent and volume before it runs the write
+  (`keyauthority.Journal`), and `Catalog.Append` checks the seal there,
+  before the tombstone. So the key authority's own `Revoke` cannot destroy
+  an unsealed store's key either, and the seal's record precedes the
+  destruction's in the stream: a replica that holds the destruction holds
+  the seal.
 
 ## 4. Restarts and upgrades
 
@@ -572,7 +592,7 @@ Two places differ from an atomic step, both argued above:
   restored image in `Reconciling` has no writer, and the service checks the
   recorded list's digest.
 
-**Go projections.** `TestDestructionRequiresPermanentSeal` becomes full in
+**Go projections.** `TestDestructionRequiresPermanentSeal` is full since
 wave 3. The runs of the reconciliation (`reconciliationReplaysRootTest`,
 `shippedGrantRevocationSurvivesTest`, `shippedDatabaseNeedsNoReportTest`,
 `restoreWitnessEarlyOpenGuard`) and `tokenRevocationCoveredByBlanketTest` get
@@ -670,7 +690,7 @@ and alerts, the migration and the docs.
 
 **Wave 3 — destruction checks the seal** (item 5).
 `TestDestructionRequiresPermanentSeal` refuses the destruction of an unsealed
-store's key: today `keyauthority.Revoke` takes no seal.
+store's key: before wave 3, `keyauthority.Revoke` took no seal.
 
 The next waves of D-05 build on these:
 
@@ -795,6 +815,51 @@ Not done in wave 2:
   has no preflight.
 - `scripts/verify-interop.py --systemd` does not check the service's unit;
   the same checks were run by hand.
+
+November 16, 2026. **Wave 3 is built**: key destruction checks the seal
+(§3, item 5 of ADR 005's [What the code must do](005-keys-outside-restored-domain.md#what-the-code-must-do)).
+
+- `destroy_key` names the binding and refuses without its incarnation
+  (`input`), before the seal (`not_sealed`, `restoreauthority.ErrNotSealed`)
+  and under another binding (`stale`). The client's `DestroyKey` sends it;
+  its `Revoke`, without a binding, refuses without sending, and so does
+  `Local`'s.
+- `Local.DestroyKey` checks the seal, then destroys the key. Armed,
+  `Catalog.Append` checks it again in the transaction that records the
+  destruction: `keyauthority.Journal.Append` now receives the change's
+  agent and volume before the write, and a refusal there publishes no
+  tombstone.
+- The worker's removal records the seal, then calls `DestroyKey` with the
+  same binding (`internal/worker/removals_linux.go`).
+- Tests: `TestDestructionRequiresPermanentSeal`, now a full projection, in
+  `internal/restoreauthority` (in process, standalone and armed; armed, the
+  key authority's own `Revoke` is refused and nothing reaches the stream)
+  and in `internal/authorityclient` (in process and through the service);
+  `TestServiceRefusesADestructionWithoutASealedBinding` (the worker socket,
+  frame by frame); `TestJournalRefusesADestructionBeforeItsTombstone`
+  (`internal/keyauthority`). `TestBothImplementationsAgree` refuses the
+  destruction before the seal in both implementations. Before the change,
+  the service and `Local` destroyed an unsealed store's key, and so did an
+  armed key authority. With the check removed from `Catalog.Append`, the
+  armed projection fails; with it removed from `Local.DestroyKey`, the
+  standalone one and both of `internal/authorityclient` fail.
+- The authorities' tests that destroyed a key without a seal now seal the
+  key's store first, as a deletion does.
+
+Building it changed this record in one place: `not_sealed` joins the
+error codes (§2). The protocol's version stays 1: no release carries waves
+1 and 2. The model needs no change: `destroyKey` already requires the seal.
+
+Not done in wave 3, and left to the key rotation and sealing policy
+(ADR 018, being written):
+
+- the model's `destroyKey` also requires the store's agent to be revoked
+  (`root.revoked`); the code checks the seal only, which the worker records
+  after the deletion's barrier;
+- the daily receipt key of wave 6 has no store: its destruction will need
+  its own operation, bound to its day;
+- a key registered but never sealed (an abandoned provisioning) cannot be
+  destroyed until something seals its store.
 
 ## 11. Options considered
 

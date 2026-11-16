@@ -566,8 +566,9 @@ process per host, `agentcapsule-authority serve` as the account
 `agentcapsule-authority`, owns both directories, the link to the standby,
 degraded mode and its metrics. The worker reaches it through a local socket
 and no longer opens the directories; a worker restart no longer forces a
-wait for the standby. The seal check before a key's destruction is its wave
-3.
+wait for the standby. Wave 3 completes item 5: the service refuses to
+destroy the key of a store the restore authority has not sealed, and armed,
+the check runs in the catalogue transaction that records the destruction.
 
 Later waves: the announcement and token revocation after a degraded period
 (item 14), revocation records for access (§5.4, finding 1 decided: option (a)),
@@ -784,7 +785,7 @@ files only.
 | `liveKeyDecryptsBackupTest` | `TestLiveKeyDecryptsBackup` (`internal/keyauthority/model_runs_test.go`) | Full. A backup is symbolic: the master key sealed under the volume key, as in a LUKS header. |
 | `destructionWaitsForAllCachedCopiesTest` | `TestDestructionWaitsForAllCachedCopies` (same file) | In part. `Revoke` waits for every active `WithKey` holder and publishes no tombstone meanwhile. A guest's copy after the callback is the worker's obligation (physical retirement before `Revoke`). |
 | `destroyedKeyCannotDecryptOldBackupTest` | `TestDestroyedKeyCannotDecryptOldBackup` (same file) | Full on the primary: the backup no longer opens, no second key is made, and no file of the authority still holds the key. The same check on the replica waits for the replica. |
-| `destructionRequiresPermanentSealTest` | `TestDestructionRequiresPermanentSeal` (`internal/restoreauthority/key_runs_test.go`) | In part. The catalogue gives the evidence (acknowledged, not sealed; sealed for good after `RecordRetiredSeal`). The refusal is not in these packages: `keyauthority.Revoke` takes no seal, and only the worker orders the seal first. It needs the authority service, which owns both directories. |
+| `destructionRequiresPermanentSealTest` | `TestDestructionRequiresPermanentSeal` (`internal/restoreauthority/key_runs_test.go`, in process, standalone and armed; `internal/authorityclient/key_runs_test.go`, in process and through the authority service) | Full since ADR 006 wave 3. The revoked, unsealed store's key is refused (`ErrNotSealed`), and so is a destruction without the store's binding; armed, the key authority's own `Revoke` is refused in the catalogue transaction that would record it, and nothing reaches the stream. After `RecordRetiredSeal` the destruction runs, and the seal outlives the key. |
 | `oldImageDoesNotReviveDestroyedKeyTest` | `TestOldImageDoesNotReviveDestroyedKey` (same file) | Full, on both authorities: the old image declares its loss and activates; the revocation, the seal and the key stay. |
 
 The runs of the replica, the promotion and degraded mode, projected once
@@ -887,8 +888,8 @@ For the replication core (being built):
    replica needs the check of `TestDestroyedKeyCannotDecryptOldBackup`: no
    file still holds the key.
 5. One authority service owns both directories and checks the seal in the
-   write that destroys a key (`destructionRequiresPermanentSealTest`, now
-   only in the worker).
+   write that destroys a key (`destructionRequiresPermanentSealTest`; built
+   in ADR 006 wave 3).
 
 For revocation records:
 

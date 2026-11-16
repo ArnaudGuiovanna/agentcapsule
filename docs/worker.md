@@ -421,7 +421,8 @@ The metrics and alerts of the replica are the service's, on its
 After all distributed barriers, the worker seals execution on the host: no new
 boot, no remaining VMM and the file identity verified. With product
 provisioning configured, it then records the seal and destroys the key through
-the authority service, then removes the single provisioned inode. A permanent journal keeps the
+the authority service, which refuses to destroy the key of a store it has not
+sealed, then removes the single provisioned inode. A permanent journal keeps the
 `REMOVING/REMOVED` steps; it forbids reformatting or recreating this identity
 after an interruption. A replaced file, an extra link or a busy lock makes the
 operation fail. The registries, tombstones and reserved UIDs are kept.
