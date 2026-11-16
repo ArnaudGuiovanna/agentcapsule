@@ -1438,7 +1438,9 @@ What goes, and when:
 From the destruction of its key, **none of its archives opens anywhere**: an
 archive is the LUKS container, and its only key slot opens with that key. The
 copies that wait for their age on the stores are ciphertext that nothing can
-read.
+read. Until then they still open: `AgentCapsuleDeletionUnfinished` fires when
+a deletion has not finished 6 hours after its request
+([observability.md](observability.md#alerts)).
 
 A destroyed key comes back only from a copy kept outside the platform. Keep
 none:

@@ -296,6 +296,14 @@ build it):
   `TestArchivePassPurgesDeletedAgentsHourly`, `TestListNamesOnlyPublishedArchives`;
   each failed before (the functions did not exist), and the first fails
   when the guard on `store_removals` is removed from `PurgedVolumeArchive`.
+- **Unfinished deletions are measured.** Until a deletion finishes, the key
+  exists and the archives open. `agentcapsule_worker_deletions_unfinished`
+  and `agentcapsule_worker_deletion_oldest_seconds`, read from PostgreSQL at
+  each scrape, count this host's deletions requested and not `DELETED` (on a
+  host without a key authority, not sealed). `AgentCapsuleDeletionUnfinished`
+  fires after 6 hours. Tests: `TestUnfinishedDeletionsAreMeasured`, which
+  failed before (the functions did not exist), and the alert's unit test in
+  `alerts_test.yml`, which fails with another threshold.
 - **Docs.** [recovery.md](../recovery.md#deleting-an-agent-its-keys-and-its-archives-adr-018)
   (what goes and when, the copies to never keep, the snapshot deleted on the
   standby too, retired transit keys in the safe);
@@ -313,10 +321,9 @@ own tests cover the key's destruction.
 For ADR 006 wave 3 (the service owns both authorities):
 
 1. The seal check of §2.
-2. **Sealed stores whose key is not destroyed**: a gauge in the service, and
-   an alert after 6 hours. A deletion stuck between its seal and the
-   destruction of its key (a failing volume removal, a long degraded period)
-   leaves every archive readable; today only the job's retries show it.
+2. **Sealed stores whose key is not destroyed**, counted by the service from
+   the authorities themselves. The worker's gauge of §3 reads PostgreSQL,
+   which a failover may set behind the authorities.
 3. **Orphan keys of abandoned provisioning**: a command that seals a
    registered store PostgreSQL no longer knows, then destroys its key, so
    that wave 3's check does not keep such a key for ever.

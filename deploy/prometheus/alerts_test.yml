@@ -268,6 +268,26 @@ tests:
             exp_annotations:
               summary: An agent of this host has no volume archive from the last 26 hours.
 
+  # ADR 018: host-1's oldest unfinished deletion passes 6 hours at 11m and
+  # stays; host-2's passes them too, then finishes at 15m, before the
+  # alert's 15 minutes.
+  - interval: 1m
+    input_series:
+      - series: 'agentcapsule_worker_deletion_oldest_seconds{job="agentcapsule-worker",instance="host-1"}'
+        values: '21000+60x40'
+      - series: 'agentcapsule_worker_deletion_oldest_seconds{job="agentcapsule-worker",instance="host-2"}'
+        values: '21000+60x14 0x25'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: AgentCapsuleDeletionUnfinished
+        exp_alerts: []
+      - eval_time: 27m
+        alertname: AgentCapsuleDeletionUnfinished
+        exp_alerts:
+          - exp_labels: {severity: warning, job: agentcapsule-worker, instance: host-1}
+            exp_annotations:
+              summary: An agent's deletion on this host has not finished for 6 hours; its volume key still exists.
+
   # Volume archives off the host. host-1: the S3 store last received every
   # archive at 01:00, the standby every hour; the shipper writes hourly until
   # 03:00, then stops. host-2: the standby's store cannot be listed from

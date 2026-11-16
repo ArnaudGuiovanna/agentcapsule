@@ -173,6 +173,9 @@ func run() int {
 	if err = w.EnableTelemetry(registry, opts.Root, opts.MaxActive); err != nil {
 		return fail("telemetry_unavailable")
 	}
+	if err = w.EnableDeletionTelemetry(registry); err != nil {
+		return fail("telemetry_unavailable")
+	}
 	if err = w.EnableJobEvents(events, problems); err != nil {
 		return fail("telemetry_unavailable")
 	}

@@ -2,7 +2,29 @@ package controlplane
 
 import (
 	"context"
+	"time"
 )
+
+// UnfinishedDeletions counts the deletions of host's agents that are
+// requested and not finished, and gives the age of the oldest. A deletion
+// finishes once the agent's volume key and volume are destroyed (DELETED); on
+// a host without a key authority (sealOnly), once its execution is sealed.
+// Until then the key exists, and the agent's archives still open (ADR 018).
+func (s *Store) UnfinishedDeletions(ctx context.Context, host string, sealOnly bool) (int, time.Duration, error) {
+	if host == "" {
+		return 0, 0, ErrInput
+	}
+	var n int
+	var oldest float64
+	err := s.pool.QueryRow(ctx, `SELECT count(*),coalesce(extract(epoch FROM max(clock_timestamp()-d.requested_at)),0)::float8
+        FROM deletion_operations d JOIN agents a ON a.id=d.agent_id JOIN agent_placements p ON p.agent_id=d.agent_id
+        WHERE p.host_id=$1 AND a.phase<>'DELETED'
+          AND NOT ($2::boolean AND EXISTS(SELECT 1 FROM store_seals s WHERE s.agent_id=d.agent_id))`, host, sealOnly).Scan(&n, &oldest)
+	if err != nil {
+		return 0, 0, err
+	}
+	return n, time.Duration(max(oldest, 0) * float64(time.Second)), nil
+}
 
 // ArchiveBinding names an archive and the volume it holds: the agent and the
 // volume of its manifest, or of its record.

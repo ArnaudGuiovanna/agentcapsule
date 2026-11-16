@@ -208,6 +208,17 @@ groups:
         annotations:
           summary: An agent of this host has no volume archive from the last 26 hours.
 
+      # ADR 018: deleting an agent destroys its volume key within minutes;
+      # until then its archives still open. Six hours leaves room for a store
+      # that is slow to fence the deletion, or a short degraded period.
+      - alert: AgentCapsuleDeletionUnfinished
+        expr: agentcapsule_worker_deletion_oldest_seconds > 6 * 3600
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: An agent's deletion on this host has not finished for 6 hours; its volume key still exists.
+
       # The volume archives off the host (REC-02): every hour,
       # deploy/backup/agentcapsule-archive-ship.py ships them to the stores s3
       # and standby, then writes these for node_exporter's textfile collector.

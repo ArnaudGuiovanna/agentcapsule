@@ -26,6 +26,16 @@ func (fencedAtOnce) Fence(context.Context, string, string) error { return nil }
 // seals it, then its volume and key are gone. No VM runs.
 func (l *archiveLab) deleteAgent(t *testing.T, e controlplane.Enrollment) {
 	t.Helper()
+	seal := l.sealDeletedAgent(t, e)
+	if err := l.store.RecordStoreRemoval(t.Context(), seal, e.VolumeID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// sealDeletedAgent plays a deletion up to the host's seal: the volume and its
+// key are still there.
+func (l *archiveLab) sealDeletedAgent(t *testing.T, e controlplane.Enrollment) controlplane.StoreSeal {
+	t.Helper()
 	var owner, device, inode string
 	if err := l.db.QueryRow(t.Context(), "SELECT owner_user_id FROM agents WHERE id=$1", e.AgentID).Scan(&owner); err != nil {
 		t.Fatal(err)
@@ -53,9 +63,7 @@ func (l *archiveLab) deleteAgent(t *testing.T, e controlplane.Enrollment) {
 	if err = l.store.RecordStoreSeal(t.Context(), seal); err != nil {
 		t.Fatal(err)
 	}
-	if err = l.store.RecordStoreRemoval(t.Context(), seal, e.VolumeID); err != nil {
-		t.Fatal(err)
-	}
+	return seal
 }
 
 func (l *archiveLab) onDisk(t *testing.T) []string {
