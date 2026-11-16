@@ -64,6 +64,10 @@ type Config struct {
 	// replace it.
 	Events *telemetry.Logger
 	Now    func() time.Time
+	// AfterOperation runs once an operation's work is done, before its
+	// request ends. Tests delay it to show that nothing reaches the client
+	// before the request ends.
+	AfterOperation func(op string)
 }
 
 // Vocabulary is the vocabulary of the service's log events.
@@ -371,6 +375,9 @@ func (s *Server) handle(ctx context.Context, conn *net.UnixConn, role string, re
 	done := make(chan outcome, 1)
 	go func() {
 		result, err := op.run(ctx, s, req.Args, h)
+		if s.c.AfterOperation != nil {
+			s.c.AfterOperation(req.Op)
+		}
 		done <- outcome{result, err}
 	}()
 	released := false
@@ -384,9 +391,10 @@ func (s *Server) handle(ctx context.Context, conn *net.UnixConn, role string, re
 				lost := h.held.Load() && !released
 				return !lost && code != CodeProtocol && code != CodeRole && code != CodeHoldExpired
 			}
-			// The operation wrote its answer itself: a key after its frame.
-			if a, ok := out.result.(answered); ok {
-				return a.ok
+			// A key goes after its frame, once the operation has ended.
+			if a, ok := out.result.(keyAnswer); ok {
+				defer clear(a.key)
+				return sendKey(conn, a.result, a.key)
 			}
 			if out.result == nil {
 				out.result = struct{}{}
