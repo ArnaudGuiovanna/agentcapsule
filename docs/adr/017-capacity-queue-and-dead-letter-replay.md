@@ -127,8 +127,11 @@ and shows `QUEUED`. Its job spends no attempt. An agent boots only when fewer
 older waiters remain than the slots it could use (free, then stoppable):
 new work never overtakes older work that waits, whatever its organization.
 This is the `fifo` policy of `fair_admission.qnt`, with exclusive clients, one
-per slot. A waiter whose work is no longer due (delivered, expired, canceled,
-its agent `FAILED`, running or deleted) leaves the queue at the next decision.
+per slot. A waiter whose work is no longer due (delivered, canceled, dead,
+its agent `FAILED`, running or deleted) leaves the queue at the next decision;
+one whose delivery just expired stays until that delivery dies, so that the
+death can say why. An agent with nothing that needs a slot never waits: the
+wake of a `FAILED` agent still ends with `restart_budget_exhausted`.
 When an agent boots, the next waiter's jobs are tried at once; each pass does
 the same for a slot freed by a sleep, a deletion or a crash. Fairness is
 first-come first-served across organizations, not a share per organization:
@@ -267,11 +270,13 @@ Tests, each failing before its change (new APIs: they did not compile):
   (failed on `capacity_unavailable`), `TestInterruptedWorkIsResumed` (failed:
   no resume job), `TestWorkStopsOnlyVMsThatAreNotComputing` and
   `TestAnAgentWaitingForAnotherDoesNotHoldItsSlotAgainstIt` (failed against
-  an idle-only rule), `TestCapacityQueueProjectsFairAdmissionDeadOwner`,
+  an idle-only rule), `TestAFailedAgentDoesNotWaitForCapacity` (failed: the
+  wake waited), `TestCapacityQueueProjectsFairAdmissionDeadOwner`,
   `TestAnAdministratorReplaysADeadLetter`,
   `TestAReplayAfterTheDeadlineNeedsANewWindow`, `TestWhatCannotBeReplayed`,
   `TestTheOperatorReplaysADeadLetter`.
-- `internal/api`: `TestHTTPReplayOfADeadLetter`.
+- `internal/api`: `TestHTTPReplayOfADeadLetter`, and the replay route's row of
+  the authorization matrix (`TestRBACMatrix`, [rbac.md](../api/rbac.md)).
 - `cmd/agentcapsule-admin`: `TestReplayDeadLetterCommand`.
 - `deploy/prometheus/alerts_test.yml`: `AgentCapsuleWorkWaitingForCapacity`.
 

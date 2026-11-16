@@ -187,8 +187,8 @@ func (w *Placements) fence(ctx context.Context, target, subject string) (result 
 // bootForWork boots target for work (a delivery, a wake, a resume) in the
 // order of its host's capacity queue (ADR 017). The caller holds the host's
 // exclusive admission turn and stopped any fence-only VM of target. A full
-// host stops an idle VM for it, never one that owes work; with none, target
-// waits in the queue and ErrCapacity makes its job try again later.
+// host stops a VM that is not computing for it, an idle one first; with none,
+// target waits in the queue and ErrCapacity makes its job try again later.
 func (w *Placements) bootForWork(ctx context.Context, target string) (runtime.VMRun, error) {
 	runs, err := w.Reconcile(ctx)
 	if err != nil {
