@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -94,7 +95,7 @@ func TestServerRunnerSendsEachJobAsAMessage(t *testing.T) {
 		{"fail now", Output{}},
 		{"input please", Output{}},
 	} {
-		if got := run(t.Context(), Job{ID: "op-" + strings.Fields(c.text)[0], Text: c.text}); got != c.want {
+		if got := run(t.Context(), Job{ID: "op-" + strings.Fields(c.text)[0], Text: c.text}); !reflect.DeepEqual(got, c.want) {
 			t.Errorf("%q: %+v", c.text, got)
 		}
 	}
@@ -176,7 +177,7 @@ func TestSupervisorKeepsTheServerRunning(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- s.Run(ctx) }()
 	run := ServerRunner(cfg, s)
-	if got := run(t.Context(), Job{ID: "op-1", Text: "hello"}); got != (Output{Completed: true, Text: "echo: hello"}) {
+	if got := run(t.Context(), Job{ID: "op-1", Text: "hello"}); !reflect.DeepEqual(got, Output{Completed: true, Text: "echo: hello"}) {
 		t.Fatal(got)
 	}
 	if got := run(t.Context(), Job{ID: "op-2", Text: "crash"}); got.Completed {
@@ -190,7 +191,7 @@ func TestSupervisorKeepsTheServerRunning(t *testing.T) {
 			t.Fatal("the server was not started again")
 		}
 	}
-	if got := run(t.Context(), Job{ID: "op-3", Text: "again"}); got != (Output{Completed: true, Text: "echo: again"}) {
+	if got := run(t.Context(), Job{ID: "op-3", Text: "again"}); !reflect.DeepEqual(got, Output{Completed: true, Text: "echo: again"}) {
 		t.Fatal(got)
 	}
 	if s.Starts() != 2 {

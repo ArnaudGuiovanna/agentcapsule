@@ -463,8 +463,9 @@ func TestTheA2AEndpointRefusals(t *testing.T) {
 			check("from a peer request", send(text("onward"), nil), a2a.ErrUnauthorized)
 			return "no"
 		}
-		data := a2a.NewMessage(a2a.MessageRoleUser, a2a.NewDataPart(map[string]any{"k": 1}))
-		check("data part", send(data, nil), a2a.ErrUnsupportedContentType)
+		file := a2a.NewMessage(a2a.MessageRoleUser, a2a.NewRawPart([]byte{1, 2}))
+		check("file part", send(file, nil), a2a.ErrUnsupportedContentType)
+		check("null data", send(a2a.NewMessage(a2a.MessageRoleUser, &a2a.Part{Content: a2a.Data{Value: nil}}), nil), a2a.ErrInvalidParams)
 		followUp := text("more")
 		followUp.TaskID = "arq_1"
 		check("follow-up", send(followUp, nil), a2a.ErrInvalidParams)
