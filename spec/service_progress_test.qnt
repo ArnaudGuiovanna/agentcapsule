@@ -47,6 +47,13 @@ module serviceProgressTests {
   // fifo-admission-cannot-overtake
   run scenario18Test = init.then(arrive(1,true)).expect(safety).then(arrive(0,true)).expect(safety).then(arrive(2,true)).expect(safety).expect(s.admissionQueue == List(1,0,2))
   run refusal18x0Test = init.then(arrive(1,true)).expect(safety).then(arrive(0,true)).expect(safety).then(arrive(2,true)).expect(safety).then(admit(0).fail())
+  // expired-unattempted-notification-dies-without-store (ADR 007)
+  run scenario20Test = init.then(arrive(0,true)).expect(safety).then(admit(0)).expect(safety).then(complete(0)).expect(safety).then(loseStore(0)).expect(safety).then(expireNotification(0)).expect(safety).then(observe(0)).expect(safety).expect(s.jobs.get(0).delivery == Dead and s.jobs.get(0).attempts == 0 and s.notificationQueue == List() and s.taggedObserved)
+  run refusal20x0Test = init.then(arrive(0,true)).expect(safety).then(admit(0)).expect(safety).then(complete(0)).expect(safety).then(loseStore(0)).expect(safety).then(notify(0,false).fail())
+  // expired-attempted-notification-waits-for-its-fence (ADR 007)
+  run scenario21Test = init.then(arrive(0,true)).expect(safety).then(admit(0)).expect(safety).then(complete(0)).expect(safety).then(notify(0,false)).expect(safety).then(loseStore(0)).expect(safety).then(expireNotification(0)).expect(safety).expect(s.jobs.get(0).delivery == RetiringDead and barriersPending)
+  run refusal21x0Test = init.then(arrive(0,true)).expect(safety).then(admit(0)).expect(safety).then(complete(0)).expect(safety).then(notify(0,false)).expect(safety).then(loseStore(0)).expect(safety).then(expireNotification(0)).expect(safety).then(retireNotification(0).fail())
+  run scenario21x1Test = init.then(arrive(0,true)).expect(safety).then(admit(0)).expect(safety).then(complete(0)).expect(safety).then(notify(0,false)).expect(safety).then(loseStore(0)).expect(safety).then(expireNotification(0)).expect(safety).then(recoverStore(0)).expect(safety).then(retireNotification(0)).expect(safety).expect(s.jobs.get(0).delivery == Dead and s.notificationQueue == List())
   // deleted-destination-rejects-new-work
   run scenario19Test = init.then(requestDelete).expect(safety).then(finishDelete).expect(safety).expect(s.deleted)
   run refusal19x0Test = init.then(requestDelete).expect(safety).then(finishDelete).expect(safety).then(arrive(0,true).fail())

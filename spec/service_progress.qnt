@@ -114,6 +114,15 @@ module serviceProgress {
     s' = delivered(s, i, if (success) Acked else if (s.jobs.get(i).attempts + 1 >= MAX_ATTEMPTS) RetiringDead else Pending,
       s.jobs.get(i).attempts + 1),
   }
+  // The notification's deadline passes (ADR 007). One no attempt was allowed
+  // to reach its store dies at once, without the store or a slot: there is no
+  // delayed send to fence. One an attempt may have reached is retired like an
+  // exhausted one, behind its fence. Not assumed fair: progress never relies
+  // on it. The reliable instance, which promises receipt, has no deadline.
+  action expireNotification(i: int): bool = all {
+    not(RELIABLE), online, atHead(s.notificationQueue, i), s.jobs.get(i).delivery == Pending,
+    s' = delivered(s, i, if (s.jobs.get(i).attempts == 0) Dead else RetiringDead, s.jobs.get(i).attempts),
+  }
   action cancelNotification(i: int): bool = all {
     online, atHead(s.notificationQueue, i), s.jobs.get(i).delivery == Pending, not(eligible(i)),
     s' = delivered(s, i, RetiringCancelled, s.jobs.get(i).attempts),
@@ -150,7 +159,7 @@ module serviceProgress {
     nondet a = STORES.oneOf()
     nondet cooperative = Set(false, true).oneOf()
     any { arrive(i, cooperative), admit(i), complete(i), deadline(i), closeDeleted(i),
-      releaseExecution(i), fence(i, a), commitClose(i), attempt(i), cancelNotification(i), retireNotification(i), observe(i), recycle(i) },
+      releaseExecution(i), fence(i, a), commitClose(i), attempt(i), expireNotification(i), cancelNotification(i), retireNotification(i), observe(i), recycle(i) },
     nondet a = STORES.oneOf()
     any { loseStore(a), recoverStore(a) },
     requestDelete, finishDelete, crashWorker, recoverWorker, loseAuthority, recoverAuthority, stabilize, s' = s,

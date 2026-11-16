@@ -84,6 +84,37 @@ module concurrentProtocolTests {
     .then(requestDelete(1)).then(barrierEverywhere(AgentSubject(1))).then(commitDelete(1))
     .then(deliver(0,(0,2))).expect(safety and s.requests.get(0).phase == Replied and s.requests.get(0).notified)
 
+  // ADR 007: a reply past its deadline that no RPC was allowed to carry dies
+  // while its destination is stopped, without a fence; the request stays
+  // replied and its sender is not notified. One an RPC may have carried waits
+  // for its destination's fence.
+  run expiredUnsentReplyTest = init.then(submit(0)).then(deliver(0,(0,0)))
+    .then(receive(0,0,ReplyCall,1)).then(admit(0)).then(commitCall(0))
+    .then(stopVM(0)).then(retireStopped(0))
+    .then(expireEvent((0,1))).then(retireUnsent((0,1)))
+    .expect(safety and s.events.get((0,1)).phase == DeadEvent and s.requests.get(0).phase == Replied
+      and not(s.requests.get(0).notified) and s.receipts == Set() and s.acks == Set())
+  run expiredSentReplyWaitsForFenceTest = init.then(submit(0)).then(deliver(0,(0,0)))
+    .then(receive(0,0,ReplyCall,1)).then(admit(0)).then(commitCall(0))
+    .then(claim(0,(0,1))).then(authorize(0)).then(loseRPC(0)).then(expireLease((0,1)))
+    .then(stopVM(0)).then(retireStopped(0))
+    .then(expireEvent((0,1))).expect(safety).then(retireUnsent((0,1)).fail())
+  // Why retireUnsent needs not(sent): retired without its fence, an event an
+  // RPC may carry is applied after its death (noLateEffect).
+  action retireUnfenced(e: EventId): bool = all {
+    s.events.get(e).closing, s.events.get(e).phase == PendingEvent,
+    s' = { ...s, events: s.events.set(e,{ ...s.events.get(e), phase: DeadEvent, leased: false }) },
+  }
+  run unfencedRetireAllowsLateEffectTest = init.then(submit(0)).then(deliver(0,(0,0)))
+    .then(receive(0,0,ReplyCall,1)).then(admit(0)).then(commitCall(0))
+    .then(claim(0,(0,1))).then(authorize(0)).then(expireEvent((0,1)))
+    .then(retireUnfenced((0,1))).then(beginEffect(0)).then(commitEffect(0))
+    .expect(s.lateEffect and not(safety))
+  run expiredSentReplyRetiredAfterFenceTest = init.then(submit(0)).then(deliver(0,(0,0)))
+    .then(receive(0,0,ReplyCall,1)).then(admit(0)).then(commitCall(0))
+    .then(claim(0,(0,1))).then(authorize(0)).then(loseRPC(0)).then(expireLease((0,1)))
+    .then(expireEvent((0,1))).then(fenceStore(0,EventSubject((0,1)))).then(recordFence(0,EventSubject((0,1))))
+    .then(retire((0,1))).expect(safety and s.events.get((0,1)).phase == DeadEvent and s.requests.get(0).phase == Replied)
   run retiredNotificationTest = init.then(submit(0)).then(closeRequest(0,FailRequest))
     .then(barrierEverywhere(RequestSubject(0))).then(commitClose(0))
     .then(claim(0,(0,2))).then(authorize(0)).then(loseRPC(0)).then(expireLease((0,2)))
