@@ -565,7 +565,7 @@ Later waves: the announcement and token revocation after a degraded period
 reconciliation with PostgreSQL (item 15, §5.5), the daily receipt key, and
 the authority service on a local socket (§5.3).
 [ADR 006](006-authority-service.md) designs the authority service
-(proposed). [recovery.md](../recovery.md#the-authorities-replica-d-05)
+(accepted November 16, 2026). [recovery.md](../recovery.md#the-authorities-replica-d-05)
 installs the replica.
 
 ## Model revision (D-05, option (a))

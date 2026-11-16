@@ -1,12 +1,13 @@
 # D-05 — The authority service
 
-Date: November 16, 2026. **Status: proposed, for review.** This record designs
+Date: November 16, 2026. **Status: accepted by the product owner on November
+16, 2026** (see [Questions](#questions-for-the-product-owner)). This record designs
 item 3 of [ADR 005 §5](005-keys-outside-restored-domain.md#5-what-changes-in-code-and-docs)
 and item 5 of its [What the code must do](005-keys-outside-restored-domain.md#what-the-code-must-do).
 It changes no decision of ADR 005. It is a record of its own, not a section
 of ADR 005: that one holds the decision and the model, this one designs one
-component, with its own options and questions. It lists what it leaves to the
-product owner at the [end](#questions-for-the-product-owner). References: ADR 005,
+component, with its own options and questions. The product owner's answers
+are at the [end](#questions-for-the-product-owner). References: ADR 005,
 [ADR 004](004-recovery-objectives.md), the model
 [restore_authority.qnt](../../spec/restore_authority.qnt), D-05 of the
 [roadmap](../../ROADMAP.md).
@@ -39,7 +40,7 @@ This has three limits.
    for any reason throws away what the authorities knew about the replica.
    Then nothing runs until the standby answers (finding 2).
 
-## Decision (proposed)
+## Decision
 
 - **One process per host owns both authorities**: `agentcapsule-authority
   serve`. On the primary it is the writer, on the standby the replica. Its
@@ -59,8 +60,15 @@ This has three limits.
 - Volume keys reach the worker as 32 raw bytes on the worker socket, never
   inside JSON.
 - The service checks the seal before it destroys a key (item 5).
-- The worker's in-process authorities leave production. They stay as the
-  test double. Standalone mode, without a standby, stays the default.
+- The worker's in-process authorities leave production, small installs
+  without a standby included. They stay as the test double. Standalone mode,
+  without a standby, stays the default.
+- An upgrade or a crash of the service pauses the host's authority
+  operations for a few seconds; there is no hitless handover.
+- An access revocation fails while the service is down: nothing is committed
+  in PostgreSQL before its record.
+- If the standby is unreachable when a day's receipt key is due, the service
+  creates it on the primary alone.
 
 ## 1. The process
 
@@ -353,7 +361,8 @@ the service.
 - A schema upgrade of the catalogue (`agentcapsule-admin
   init-restore-authority`) runs with the service stopped, as the service's
   account.
-- Each upgrade restarts the service: see question 1.
+- Each upgrade restarts the service, with the pause of question 1, which
+  the product owner accepted.
 
 ## 5. Modes
 
@@ -479,9 +488,10 @@ once. The API commits in PostgreSQL once the record is committed, and
 confirms it if `on_replica`, or if it is a bearer token's and `degraded`.
 Otherwise it reports the revocation as pending, and learns later with
 `on_replica(seq)`. A record that the service did not commit fails the
-request, and nothing is committed in PostgreSQL. The model's acknowledged
-access revocation is the confirmed one: a pending one is like any
-unacknowledged write. The projection must show that the API never confirms a
+request, and nothing is committed in PostgreSQL. So does a service that does
+not answer: the API answers "try again in a moment" (question 2). The
+model's acknowledged access revocation is the confirmed one: a pending one is
+like any unacknowledged write. The projection must show that the API never confirms a
 standing grant's revocation before the replica holds it
 (`grantRevocationWaitsForReplicaTest`, `grantRevocationResumesAfterResyncTest`).
 
@@ -489,7 +499,10 @@ standing grant's revocation before the replica holds it
 of a volume, wrapped and replicated like a volume key, destroyed after 24
 hours like one. The service creates the next day's key a day ahead.
 `receipt_key(day)` gives the API today's and yesterday's keys; the API keeps
-them in memory. Question 4 settles degraded mode.
+them in memory. If the standby does not hold the next day's key when it is
+due, the service creates it on the primary alone (question 4, option (b)): the
+creation of a receipt key continues in degraded mode, and the destruction of
+the old key waits for the standby.
 
 **The announcement and the reconciliation** (items 14 and 15). `promote`
 writes the announced window and the blanket revocation of bearer tokens into
@@ -655,6 +668,9 @@ and its own tests. It is not needed for D-05.
 | Holds per store now | Changes the exclusions; a later, separate step |
 
 ## Questions for the product owner
+
+Answered on November 16, 2026: **1 (a), 2 (a), 3 (a), 4 (b)**, the
+recommended options.
 
 1. **The authority service restarts** (an upgrade, or a crash that systemd
    restarts). For a few seconds, more if the standby does not answer at that
