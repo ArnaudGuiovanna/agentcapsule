@@ -81,6 +81,13 @@ func (w *Placements) provision(ctx context.Context, job controlplane.WorkerJob) 
 		if err = p.keys.Ensure(ctx, e.AgentID, e.VolumeID); err != nil {
 			return err
 		}
+		// No new volume past the storage pressure threshold (OPS-03): the
+		// job waits until space returns.
+		if pressure := w.pressure.Load(); pressure != nil {
+			if err = pressure.Refuse(pressure.Data); err != nil {
+				return err
+			}
+		}
 		var volume volumestore.Container
 		err = w.authority.WithBinding(ctx, enrollmentBinding(e), func() error {
 			return p.keys.WithKey(ctx, e.AgentID, e.VolumeID, func(key []byte) error {

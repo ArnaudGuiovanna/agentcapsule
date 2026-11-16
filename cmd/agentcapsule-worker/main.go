@@ -137,6 +137,10 @@ func run() int {
 	if err = w.EnableJobEvents(events, problems); err != nil {
 		return fail("telemetry_unavailable")
 	}
+	pressure := c.Pressure()
+	if err = w.EnableStoragePressure(pressure, registry); err != nil {
+		return fail("configuration_invalid")
+	}
 	importRetries := registry.Counter("agentcapsule_worker_harness_import_retries_total", "Harness imports that failed and will be tried again.")
 	publishRetries := registry.Counter("agentcapsule_worker_directory_publish_retries_total", "Directory publication passes that failed (the Directory unreachable or refusing).")
 	if c.MetricsListen != "" && !archiveRequested {
@@ -180,6 +184,7 @@ func run() int {
 		if err = w.EnableRegistry(importer); err != nil {
 			return fail("registry_unavailable")
 		}
+		importer.Pressure = pressure.Refuse
 	}
 	if importer != nil && !archiveRequested {
 		// Imports run beside maintenance: a large download never delays delivery.
@@ -205,12 +210,16 @@ func run() int {
 			// Brings the Directory to the organizations' descriptions; an outage
 			// only delays publication, every step is recorded in PostgreSQL.
 			publisher := &directory.Publisher{Store: s, Directory: dir}
-			go publisher.Run(ctx, publishEvery, func(error) {
+			retry := func(error) {
 				if ctx.Err() == nil {
 					publishRetries.Inc()
 					problems.Event("directory_publish_retry")
 				}
-			})
+			}
+			// A Directory that cannot be reached defers the publication: it
+			// counts as a failed pass, so that the outage alerts.
+			publisher.Deferred = retry
+			go publisher.Run(ctx, publishEvery, retry)
 		}
 	}
 	link, linkListener, err := c.OpenSLIM()

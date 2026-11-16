@@ -19,7 +19,7 @@ import (
 
 var (
 	jobKinds     = []string{"provision", "lifecycle", "delivery", "closure", "deletion", "expiration"}
-	retryReasons = []string{"wake_budget", "slim_unavailable", "capacity", "error"}
+	retryReasons = []string{"wake_budget", "slim_unavailable", "capacity", "storage_pressure", "error"}
 	// A delivery dies when its attempts are spent or its deadline passes,
 	// the deadline winning when both hold (ADR 007).
 	deadKinds   = []string{"reply", "status", "instruction"}
@@ -28,7 +28,7 @@ var (
 
 // RetryReason classifies why work waits for its next attempt, for metrics
 // and events: the organization's wake budget, an absent SLIM bridge or node,
-// the host's VM capacity, or any other error.
+// the host's VM capacity, its storage pressure, or any other error.
 func RetryReason(err error) string {
 	var bridge *slimlink.BridgeError
 	var socket *net.OpError
@@ -39,6 +39,8 @@ func RetryReason(err error) string {
 		return "slim_unavailable"
 	case errors.Is(err, runtime.ErrCapacity):
 		return "capacity"
+	case errors.Is(err, controlplane.ErrStoragePressure):
+		return "storage_pressure"
 	}
 	return "error"
 }
