@@ -1316,18 +1316,25 @@ The run:
    unlock key, the link's private keys, the client's private key and its
    JWTs.
 
-Results of two runs on 2026-11-16, PostgreSQL 18.6 and pgBackRest 2.58:
+Results of two runs on 2026-11-16, PostgreSQL 18.6 and pgBackRest 2.58,
+with the reconciliation (ADR 006 wave 7):
 
 | | Run 1 | Run 2 |
 | --- | --- | --- |
-| **RTO**: from the decision to the first authenticated write | 2.12 s | 1.74 s |
-| fence, promote the authorities, start their service | 0.33, 0.02 and 0.05 s | 0.28, 0.02 and 0.05 s |
-| promote the database, own repository | 0.63 and 0.88 s | 0.53 and 0.74 s |
-| install the keys, start the API, ready, read, write | 0.00, 0.00, 0.11, 0.03 and 0.01 s | 0.00, 0.00, 0.06, 0.03 and 0.01 s |
-| Acknowledged writes lost, of those made | 74 of 398 | 77 of 373 |
-| **RPO**: age of the oldest lost write at the disaster | 14.81 s | 15.28 s |
-| Window to announce: last replayed commit to the disaster | 15.01 s | 15.48 s |
-| Full backup into the new repository, after the RTO | 5.59 s | 4.84 s |
+| **RTO**: from the decision to the first authenticated write | 1.90 s | 1.74 s |
+| fence, promote the authorities, start their service | 0.28, 0.01 and 0.05 s | 0.23, 0.01 and 0.05 s |
+| promote the database, own repository | 0.53 and 0.74 s | 0.52 and 0.74 s |
+| install the keys; the API refused before the reconciliation; reconcile | 0.00, 0.07 and 0.06 s | 0.00, 0.03 and 0.03 s |
+| start the API, ready, read, write | 0.00, 0.06, 0.04 and 0.02 s | 0.00, 0.06, 0.02 and 0.01 s |
+| The member removed 3 s before the disaster: in the promoted database, after the reconciliation, its JWT | active, revoked, 401 | active, revoked, 401 |
+| The standby's last contact before the failover; degraded period announced | 3.3 s; no | 3.3 s; no |
+| Acknowledged writes lost, of those made | 79 of 393 | 77 of 393 |
+| **RPO**: age of the oldest lost write at the disaster | 15.77 s | 15.33 s |
+| Window to announce: last replayed commit to the disaster | 15.97 s | 15.53 s |
+| Full backup into the new repository, after the RTO | 4.49 s | 3.89 s |
+
+The runs before the reconciliation, on the same day, measured an RTO of
+2.12 and 1.74 s.
 
 No worker runs, so the authorities hold no agent: their promotion opens no
 volume key here, only the daily receipt keys. On a host with agents it unwraps each one, and takes
