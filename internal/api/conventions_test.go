@@ -147,6 +147,9 @@ func TestIdempotencyTablesNameRealRoutes(t *testing.T) {
 func TestEveryMutationNeedsAnIdempotencyKey(t *testing.T) {
 	f := newRBACFixture(t)
 	routes, actors := mutationRoutes(t)
+	if len(routes) < 50 {
+		t.Fatal("too few mutations:", len(routes))
+	}
 	for i, route := range routes {
 		key, actor := route.Method+" "+route.Path, actors[i]
 		var fresh map[string]string
@@ -231,16 +234,23 @@ func TestAsynchronousRoutesAreListed(t *testing.T) {
 	}
 }
 
-// CONV-4: every asynchronous route answers 202 with the identifier of the
-// work, and that identifier can be followed until the work ends.
+// CONV-4: every asynchronous route answers 202 with the identifier of its
+// work, and the route that follows that work finds it.
 func TestAsynchronousRoutesAnswer202WithWorkToFollow(t *testing.T) {
 	f := newRBACFixture(t)
+	tried := 0
+	defer func() {
+		if tried != len(asyncRoutes) {
+			t.Error("tried", tried, "of the", len(asyncRoutes), "asynchronous routes")
+		}
+	}()
 	for i, route := range rbacRoutes {
 		key := route.Method + " " + route.Path
 		shape, ok := asyncRoutes[key]
 		if !ok {
 			continue
 		}
+		tried++
 		actor, _ := conventionActor(route)
 		var fresh map[string]string
 		if route.fresh != nil {
@@ -346,8 +356,8 @@ func TestIdentifiersAndCursorsAreOpaque(t *testing.T) {
 		}
 	}
 
-	// Pages: the audit's cursor tells nothing in clear; one that is not a
-	// cursor is refused.
+	// Pages: the audit's cursor shows none of its page's fields; one that is
+	// not a cursor is refused.
 	var page struct {
 		Items []map[string]any `json:"items"`
 		Next  string           `json:"next"`

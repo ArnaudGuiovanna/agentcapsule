@@ -36,7 +36,13 @@ type exampleBlock struct {
 	kind, text string
 }
 
-var workerNote = regexp.MustCompile(`^<!-- worker: (.+) -->$`)
+var (
+	workerNote      = regexp.MustCompile(`^<!-- worker: (.+) -->$`)
+	shellVariable   = regexp.MustCompile(`^(\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)`)
+	shellAssignment = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
+	curlQuietFlags  = regexp.MustCompile(`^-[fsS]+$`)
+	jqStep          = regexp.MustCompile(`\.[A-Za-z_][A-Za-z0-9_]*|\[[0-9]+\]|\.`)
+)
 
 func readExamples(t *testing.T) []exampleBlock {
 	t.Helper()
@@ -154,7 +160,7 @@ func splitCommands(src string) ([]string, error) {
 
 // variable reads $NAME or ${NAME} at the start of s and returns its length.
 func (sh *exampleShell) variable(s string) (string, int, error) {
-	name := regexp.MustCompile(`^(\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)`).FindString(s)
+	name := shellVariable.FindString(s)
 	if name == "" {
 		return "", 0, fmt.Errorf("%w: a lone $", errShell)
 	}
@@ -246,7 +252,7 @@ func (sh *exampleShell) stages(cmd string) ([][]string, error) {
 			i, in = i+1, true
 		case c == '$' && strings.HasPrefix(cmd[i:], "$("):
 			// Only a whole assignment, NAME=$(...): no word splitting.
-			if !regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=$`).MatchString(word.String()) || len(words) > 0 {
+			if w := word.String(); shellAssignment.FindString(w) != w || w == "" || len(words) > 0 {
 				return nil, fmt.Errorf("%w: $( ) outside NAME=$(...)", errShell)
 			}
 			j, err := closing(cmd, i+2)
@@ -302,7 +308,7 @@ func (sh *exampleShell) run(cmd string) (string, error) {
 				}
 				sh.vars[name] = value
 			}
-		case i == 0 && len(stages) == 1 && len(words) == 1 && regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`).MatchString(words[0]):
+		case i == 0 && len(stages) == 1 && len(words) == 1 && shellAssignment.MatchString(words[0]):
 			name, value, _ := strings.Cut(words[0], "=")
 			if value == "" || value == "null" {
 				return "", fmt.Errorf("%s is empty: the command gave nothing", name)
@@ -358,7 +364,7 @@ func (sh *exampleShell) curl(args []string) (string, error) {
 			}
 		case a == "--fail" || a == "--silent" || a == "--show-error":
 			fail = fail || a == "--fail"
-		case regexp.MustCompile(`^-[fsS]+$`).MatchString(a):
+		case curlQuietFlags.MatchString(a):
 			fail = fail || strings.Contains(a, "f")
 		case strings.HasPrefix(a, "-"):
 			return "", fmt.Errorf("%w: curl %s", errShell, a)
@@ -432,7 +438,7 @@ func jq(args []string, input string) (string, error) {
 	if err := json.Unmarshal([]byte(input), &v); err != nil {
 		return "", fmt.Errorf("jq: the input is not JSON: %q", input)
 	}
-	steps := regexp.MustCompile(`\.[A-Za-z_][A-Za-z0-9_]*|\[[0-9]+\]|\.`).FindAllString(filter, -1)
+	steps := jqStep.FindAllString(filter, -1)
 	if !strings.HasPrefix(filter, ".") || strings.Join(steps, "") != filter {
 		return "", fmt.Errorf("%w: jq %s", errShell, filter)
 	}
