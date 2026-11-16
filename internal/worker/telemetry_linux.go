@@ -20,6 +20,10 @@ import (
 var (
 	jobKinds     = []string{"provision", "lifecycle", "delivery", "closure", "deletion", "expiration"}
 	retryReasons = []string{"wake_budget", "slim_unavailable", "capacity", "error"}
+	// A delivery dies when its attempts are spent or its deadline passes,
+	// the deadline winning when both hold (ADR 007).
+	deadKinds   = []string{"reply", "status", "instruction"}
+	deadReasons = []string{"attempts_exhausted", "expired"}
 )
 
 // RetryReason classifies why work waits for its next attempt, for metrics
@@ -42,6 +46,7 @@ func RetryReason(err error) string {
 type workerTelemetry struct {
 	jobs         *telemetry.Counter
 	waits        *telemetry.Counter
+	dead         *telemetry.Counter
 	starts       *telemetry.Counter
 	startSeconds *telemetry.Histogram
 }
@@ -58,10 +63,18 @@ func (w *Placements) EnableTelemetry(registry *telemetry.Registry, root string, 
 			kind, telemetry.Label{Name: "outcome", Values: []string{"done", "retried"}}),
 		waits: registry.Counter("agentcapsule_worker_job_retries_total", "Jobs put back to wait, by kind and reason.",
 			kind, telemetry.Label{Name: "reason", Values: retryReasons}),
+		dead: registry.Counter("agentcapsule_worker_deliveries_dead_total", "Deliveries that died, by kind (reply, status, instruction) and reason (attempts_exhausted, expired).",
+			telemetry.Label{Name: "kind", Values: deadKinds}, telemetry.Label{Name: "reason", Values: deadReasons}),
 		starts: registry.Counter("agentcapsule_worker_vm_starts_total", "VM boots for work, by outcome (started, failed).",
 			telemetry.Label{Name: "outcome", Values: []string{"started", "failed"}}),
 		startSeconds: registry.Histogram("agentcapsule_worker_vm_start_seconds", "Duration of successful VM boots.",
 			[]float64{0.5, 1, 2, 5, 10, 20, 30, 60, 120}),
+	}
+	// Served at zero from the start, so that increase() sees the first death.
+	for _, k := range deadKinds {
+		for _, r := range deadReasons {
+			m.dead.Add(0, k, r)
+		}
 	}
 	jobs := registry.Gauge("agentcapsule_worker_jobs", "Jobs of this host, by kind.", kind)
 	due := registry.Gauge("agentcapsule_worker_jobs_due", "Jobs due and not held by a worker, by kind.", kind)
@@ -160,6 +173,29 @@ func (w *Placements) countJob(kind string, err error) {
 	m.waits.Inc(kind, RetryReason(err))
 }
 
+// DeliveryDead counts and logs a delivery that died (ADR 007 §4): the
+// operator learns that deliveries died, by kind and reason, not whose. The
+// event delivery_dead carries the request ID of the API request that started
+// the work, if any, as job_retried does.
+func (w *Placements) DeliveryDead(ctx context.Context, d controlplane.DeadDelivery) {
+	if m := w.metrics.Load(); m != nil {
+		m.dead.Inc(d.Kind, d.Reason)
+	}
+	e := w.jobEvents.Load()
+	if e == nil {
+		return
+	}
+	lookup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	fields := []telemetry.Field{telemetry.Code("kind", d.Kind)}
+	if origin, err := w.store.JobOrigin(lookup, controlplane.WorkerJob{Kind: "delivery", ID: d.ID}); err == nil && origin != "" {
+		fields = append(fields, telemetry.RequestID(origin))
+	}
+	e.problems.Event("delivery_dead", append(fields, telemetry.Code("reason", d.Reason))...)
+}
+
+var _ controlplane.DeathObserver = (*Placements)(nil)
+
 func (w *Placements) countStart(started time.Time, err error) {
 	m := w.metrics.Load()
 	if m == nil {
@@ -173,9 +209,12 @@ func (w *Placements) countStart(started time.Time, err error) {
 	m.startSeconds.Since(started)
 }
 
-// JobKinds and RetryReasons are the vocabularies of the worker's job events.
-func JobKinds() []string     { return slices.Clone(jobKinds) }
-func RetryReasons() []string { return slices.Clone(retryReasons) }
+// JobKinds and RetryReasons are the vocabularies of the worker's job events,
+// DeadDeliveryKinds and DeadDeliveryReasons those of delivery_dead.
+func JobKinds() []string            { return slices.Clone(jobKinds) }
+func RetryReasons() []string        { return slices.Clone(retryReasons) }
+func DeadDeliveryKinds() []string   { return slices.Clone(deadKinds) }
+func DeadDeliveryReasons() []string { return slices.Clone(deadReasons) }
 
 type jobEvents struct{ progress, problems *telemetry.Logger }
 

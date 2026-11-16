@@ -41,6 +41,24 @@ type PreparedDeliveryAdmission interface {
 	WithPreparedDelivery(context.Context, string, func(context.Context) error) error
 }
 
+// DeadDelivery is a delivery that died (ADR 007): its kind (reply, status or
+// instruction) and why (attempts_exhausted or expired; the deadline wins
+// when both hold). Its request, if any, keeps its state.
+type DeadDelivery struct{ ID, Kind, Reason string }
+
+// A DeathObserver runtime is told of each delivery that dies, once its death
+// has committed. A dispatcher that stops in between loses that report; the
+// dead delivery in PostgreSQL stays the record.
+type DeathObserver interface {
+	DeliveryDead(context.Context, DeadDelivery)
+}
+
+func reportDeath(ctx context.Context, runtime RevocationRuntime, d *DeadDelivery) {
+	if o, ok := runtime.(DeathObserver); ok && d != nil {
+		o.DeliveryDead(ctx, *d)
+	}
+}
+
 type DeliveryAttempt struct {
 	ID, RequestID, Destination, Token string
 	Sequence                          int64
@@ -353,10 +371,15 @@ func (s *Store) retireDelivery(ctx context.Context, mailboxID string, runtime Re
 	// to fence, the delivery dies here, without its destination, which may
 	// never boot (ADR 007).
 	if !m.MayHaveReached {
-		if err = markDead(ctx, tx, m, r, transit); err != nil {
+		dead, err := markDead(ctx, tx, m, r, transit)
+		if err != nil {
 			return err
 		}
-		return commit(ctx, tx)
+		if err = commit(ctx, tx); err != nil {
+			return err
+		}
+		reportDeath(ctx, runtime, &dead)
+		return nil
 	}
 	if _, err := tx.Exec(ctx, "UPDATE agent_mailboxes SET closing=true WHERE id=$1", mailboxID); err != nil {
 		return err
@@ -370,7 +393,8 @@ func (s *Store) retireDelivery(ctx context.Context, mailboxID string, runtime Re
 	if err := runtime.Fence(ctx, m.Destination, "event/"+m.ID); err != nil {
 		return err
 	}
-	return commitBarrier(ctx, runtime, "event/"+m.ID, []string{m.Destination}, func() error {
+	var died *DeadDelivery
+	err = commitBarrier(ctx, runtime, "event/"+m.ID, []string{m.Destination}, func() error {
 		finish, err := s.begin(ctx)
 		if err != nil {
 			return err
@@ -380,29 +404,40 @@ func (s *Store) retireDelivery(ctx context.Context, mailboxID string, runtime Re
 		if err != nil {
 			return err
 		}
-		if current.State == "PENDING" && current.Closing {
-			if err = markDead(ctx, finish, current, r, transit); err != nil {
-				return err
-			}
+		if current.State != "PENDING" || !current.Closing {
+			return commit(ctx, finish)
 		}
-		return commit(ctx, finish)
+		dead, err := markDead(ctx, finish, current, r, transit)
+		if err != nil {
+			return err
+		}
+		if err = commit(ctx, finish); err != nil {
+			return err
+		}
+		died = &dead
+		return nil
 	})
+	reportDeath(ctx, runtime, died)
+	return err
 }
 
 // markDead ends a delivery that will not reach its destination. The request
 // keeps its state. A dead reply is kept for the transit retention from now, as
 // a delivered reply is from its delivery, and its sender may read it until then.
-func markDead(ctx context.Context, tx pgx.Tx, m mailboxRow, r requestRow, transit *Transit) error {
-	if _, err := tx.Exec(ctx, "UPDATE agent_mailboxes SET delivery_state='DEAD',lease_token='',lease_until=NULL WHERE id=$1", m.ID); err != nil {
-		return err
+func markDead(ctx context.Context, tx pgx.Tx, m mailboxRow, r requestRow, transit *Transit) (DeadDelivery, error) {
+	d := DeadDelivery{ID: m.ID, Kind: m.Kind}
+	// Expiry wins when both hold, as for an instruction.
+	if err := tx.QueryRow(ctx, `UPDATE agent_mailboxes SET delivery_state='DEAD',lease_token='',lease_until=NULL WHERE id=$1
+        RETURNING CASE WHEN expires_at<=clock_timestamp() THEN 'expired' ELSE 'attempts_exhausted' END`, m.ID).Scan(&d.Reason); err != nil {
+		return d, err
 	}
 	if _, err := tx.Exec(ctx, "DELETE FROM outbox WHERE mailbox_id=$1", m.ID); err != nil {
-		return err
+		return d, err
 	}
 	if transit != nil && m.Kind == "reply" {
-		return transit.delivered(ctx, tx, r.ReplyPayload)
+		return d, transit.delivered(ctx, tx, r.ReplyPayload)
 	}
-	return nil
+	return d, nil
 }
 
 // DispatchOne performs at most one RPC attempt or one head retirement. Scheduling,

@@ -126,8 +126,9 @@ func run() int {
 	// progress on standard output, retries and failures on standard error.
 	vocabulary := map[string][]string{"event": {"maintenance_started", "maintenance_complete", "maintenance_retry", "wake_budget_exhausted",
 		"harness_import_retry", "directory_publish_retry", "slim_callback_stopped", "job_done", "job_retried",
-		"volume_archive_captured", "volume_archive_retry"},
-		"reason": append(worker.RetryReasons(), worker.ArchiveRetryReasons()...), "kind": worker.JobKinds(), "vm": worker.ArchiveVMs()}
+		"volume_archive_captured", "volume_archive_retry", "delivery_dead"},
+		"reason": append(append(worker.RetryReasons(), worker.ArchiveRetryReasons()...), worker.DeadDeliveryReasons()...),
+		"kind":   append(worker.JobKinds(), worker.DeadDeliveryKinds()...), "vm": worker.ArchiveVMs()}
 	events, problems := telemetry.NewLogger(os.Stdout, vocabulary), telemetry.NewLogger(os.Stderr, vocabulary)
 	registry := telemetry.NewRegistry()
 	if err = w.EnableTelemetry(registry, opts.Root, opts.MaxActive); err != nil {

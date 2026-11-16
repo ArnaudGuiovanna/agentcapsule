@@ -42,6 +42,7 @@ volume archives and, on the standby host, its replay.
 | `agentcapsule_api_request_duration_seconds` | histogram | `route` | API latency |
 | `agentcapsule_worker_jobs_total` | counter | `kind`, `outcome` | Durable jobs processed: `done` or `retried` |
 | `agentcapsule_worker_job_retries_total` | counter | `kind`, `reason` | Why a job waits: `wake_budget`, `slim_unavailable`, `capacity`, `error` |
+| `agentcapsule_worker_deliveries_dead_total` | counter | `kind`, `reason` | Deliveries that died ([ADR 007](adr/007-delivery-closure-and-priority.md)): `kind` `reply`, `status` or `instruction`; `reason` `attempts_exhausted` or `expired`, the deadline winning when both hold. Every series is served from zero. It says that deliveries died, not whose. A worker that stops between a death's commit and its count loses that count; the dead delivery in PostgreSQL stays the record |
 | `agentcapsule_worker_vm_starts_total` | counter | `outcome` | VM boots for work: `started` or `failed` |
 | `agentcapsule_worker_vm_start_seconds` | histogram | — | Duration of successful boots |
 | `agentcapsule_worker_jobs`, `_jobs_due`, `_jobs_failing` | gauge | `kind` | The host's jobs; those due and not held by a worker; those that failed three times or more |
@@ -148,6 +149,7 @@ Each process writes one JSON object per line, with `time` and `event` first:
 | Worker | `maintenance_retry` | `reason` (as above) |
 | Worker | `wake_budget_exhausted`, `harness_import_retry`, `directory_publish_retry`, `slim_callback_stopped` | — |
 | Worker | `job_done` (standard output), `job_retried` (standard error) | `kind`, `request_id` of the API request that started the work, if any, and `reason` for a retry |
+| Worker | `delivery_dead` (standard error) | `kind` (`reply`, `status`, `instruction`), `request_id` of the API request that started the work, if any, `reason` (`attempts_exhausted`, `expired`). The job that retired the delivery still ends with `job_done` |
 | Worker | `volume_archive_captured` (standard output) | `vm` (`asleep`, `running`), `bytes`, `seconds`, `removed` (older archives deleted) |
 | Worker | `volume_archive_retry` (standard error) | `vm`, `reason`: `placement`, `busy`, `disk_full`, `authority`, `timeout`, `retention`, `error` |
 
@@ -158,8 +160,8 @@ work:
 2. The operation the request creates (an invocation, an agent, a wake or sleep)
    records it. The API sets it for its database transaction, and the
    operation's column takes it as default (migration 0027).
-3. The worker's `job_done` and `job_retried` events carry it for every job that
-   work causes:
+3. The worker's `job_done`, `job_retried` and `delivery_dead` events carry it
+   for every job that work causes:
    - the invocation's delivery;
    - the provisioning or lifecycle operation;
    - the requests, replies and statuses its agent then exchanges with other
@@ -181,6 +183,7 @@ Their annotations are fixed text.
 | `AgentCapsuleAPIServerErrors` | More than 5 % of API requests fail with a 5xx, for 10 minutes |
 | `AgentCapsuleQueueDelayed` | A due job has waited more than 5 minutes past its time |
 | `AgentCapsuleJobsFailing` | Jobs failed three times or more, for 15 minutes |
+| `AgentCapsuleDeliveryDead` | A reply or status died in the last 15 minutes: it could not be delivered to the agent that sent the request, which keeps its outcome ([ADR 007](adr/007-delivery-closure-and-priority.md)). A reply stays readable by the sender's agent for 7 days. An instruction's death is counted but does not alert: its requester sees it as a dead letter |
 | `AgentCapsuleVMBootFailures` | More than 3 failed boots in 15 minutes |
 | `AgentCapsuleCapacityExhausted` | The host runs `max_active` VMs for 15 minutes |
 | `AgentCapsuleDiskPressure`, `AgentCapsuleDiskCritical` | The runtime root's file system is over 70 % or 80 % full |

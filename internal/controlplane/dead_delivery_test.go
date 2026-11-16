@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -320,4 +321,54 @@ func TestExpiredDeliveryThatMayHaveReachedWaitsForItsFence(t *testing.T) {
 		t.Fatal(err)
 	}
 	l.deliveryState(t, "DEAD")
+}
+
+// deathWitness records the deaths its dispatcher reports.
+type deathWitness struct{ deaths []DeadDelivery }
+
+func (w *deathWitness) DeliveryDead(_ context.Context, d DeadDelivery) {
+	w.deaths = append(w.deaths, d)
+}
+
+type witnessedReplies struct {
+	unreachable
+	*deathWitness
+}
+
+type witnessedInstructions struct {
+	unbootableInstructions
+	*deathWitness
+}
+
+// Each death is reported once it has committed, with its kind and reason, to
+// a runtime that observes them (ADR 007 §4): through the fence, and without.
+func TestDeliveryDeathsAreReported(t *testing.T) {
+	l := newDeadReplyLab(t)
+	replies := witnessedReplies{unreachable{l.rt}, &deathWitness{}}
+	for range 3 {
+		if err := l.tr.DispatchMailbox(t.Context(), l.reply, time.Minute, replies); !errors.Is(err, capsuleprotocol.ErrTransport) {
+			t.Fatal(err)
+		}
+		expireLease(t, l.s, l.reply)
+	}
+	if err := l.tr.DispatchMailbox(t.Context(), l.reply, time.Minute, replies); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.s.RetireDelivery(t.Context(), l.reply, replies); err != nil {
+		t.Fatal(err)
+	}
+	if want := []DeadDelivery{{l.reply, "reply", "attempts_exhausted"}}; fmt.Sprint(replies.deaths) != fmt.Sprint(want) {
+		t.Fatal("reported", replies.deaths, "want", want)
+	}
+
+	s, c, tr, _, owner, e := instructionLab(t)
+	id, _ := queueInstruction(t, c, owner, e.AgentID, "witnessed")
+	instructions := witnessedInstructions{unbootableInstructions{instructionRuntimeLab(t, e.AgentID)}, &deathWitness{}}
+	pastDeadline(t, s, id)
+	if err := tr.DispatchMailbox(t.Context(), id, time.Minute, instructions); err != nil {
+		t.Fatal(err)
+	}
+	if want := []DeadDelivery{{id, "instruction", "expired"}}; fmt.Sprint(instructions.deaths) != fmt.Sprint(want) {
+		t.Fatal("reported", instructions.deaths, "want", want)
+	}
 }

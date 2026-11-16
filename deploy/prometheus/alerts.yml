@@ -41,6 +41,17 @@ groups:
         annotations:
           summary: Worker jobs keep failing (three attempts or more).
 
+      # A reply or status that dies (ADR 007): the request keeps its outcome
+      # and the sender's agent can still read a reply, but the operator is
+      # told. An instruction's death is its requester's dead letter
+      # (?state=failed|expired), so it is counted but does not alert.
+      - alert: AgentCapsuleDeliveryDead
+        expr: increase(agentcapsule_worker_deliveries_dead_total{kind=~"reply|status"}[15m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: A reply or status could not be delivered to the agent that sent the request; the request keeps its outcome.
+
       - alert: AgentCapsuleVMBootFailures
         expr: increase(agentcapsule_worker_vm_starts_total{outcome="failed"}[15m]) > 3
         labels:
