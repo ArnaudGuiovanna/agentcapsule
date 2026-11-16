@@ -59,7 +59,7 @@ def main():
     src.mkdir()
     for name in ["go.mod", "go.sum"]:
         shutil.copy2(ROOT / name, src / name)
-    for name in ["internal/capsuleprotocol", "internal/harnessstore", "internal/guestinit", "internal/referenceharness", "cmd/capsule-init", "cmd/capsule-echo"]:
+    for name in ["internal/capability", "internal/capsuleprotocol", "internal/harnessstore", "internal/guestinit", "internal/referenceharness", "cmd/capsule-init", "cmd/capsule-echo"]:
         shutil.copytree(ROOT / name, src / name)
     (src / "scripts").mkdir()
     shutil.copy2(Path(__file__), src / "scripts" / Path(__file__).name)
