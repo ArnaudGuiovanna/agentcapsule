@@ -589,3 +589,123 @@ func TestRetirementLeavesADeletionToCancel(t *testing.T) {
 		}
 	})
 }
+
+// Offboarding the person a reply is bound to does not revoke it: the request
+// is work accepted before the revocation, which may complete for the
+// organization (ADR 002). The sender's agent still reads its reply; the
+// person reads nothing (docs/api/agents-assignments.md).
+func TestOffboardingLeavesTheReplyToTheAgent(t *testing.T) {
+	il := newInvocationLab(t)
+	ctx := t.Context()
+	alice := il.invoker(t, "alice")
+	b := activateTenantAgent(t, il.tenantLab, mustCatalog(t, il.tenantLab), il.owner, "peer-b")
+	if _, err := il.s.pool.Exec(ctx, "UPDATE agents SET discoverable=true,inbound_mode='auto' WHERE id=$1", b); err != nil {
+		t.Fatal(err)
+	}
+	vmA := il.vm(t)
+	vmB := il.runAgent(t, b)
+	inv, _, err := il.create(t, alice, "ask-b", "ask b about France")
+	if err != nil {
+		t.Fatal(err)
+	}
+	il.ackWorking(t, inv.ID)
+	var mandate string
+	if err = il.s.pool.QueryRow(ctx, "SELECT mandate_id FROM owner_instructions WHERE operation_id=$1", inv.ID).Scan(&mandate); err != nil {
+		t.Fatal(err)
+	}
+	in := capsuleprotocol.Submission{RecipientAgentID: b, MandateID: mandate, ExpiresAt: time.Now().Add(time.Hour).UTC().Truncate(time.Microsecond),
+		Payload: text("what is the capital of France?")}
+	r, err := il.tr.SubmitFromVM(ctx, vmA, "peer-1", in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := mockStores(t, t.TempDir(), il.agent, b)
+	m.SetHandler(func(ctx context.Context, target string, event harnessstore.Event, tx harnessstore.SQL) ([]byte, error) {
+		_, err := capsuleprotocol.DecodePeerEvent(event, target)
+		return []byte(`{"received":true}`), err
+	})
+	if err = il.tr.DispatchMailbox(ctx, mailboxFor(t, il.s, r.RequestID, "request"), time.Minute, &peerRuntime{MockRuntime: m}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = il.tr.ReplyFromVM(ctx, vmB, r.RequestID, "answer-1", capsuleprotocol.Reply{Outcome: "completed", Payload: text("Paris")}); err != nil {
+		t.Fatal(err)
+	}
+	var principal string
+	if err = il.s.pool.QueryRow(ctx, "SELECT requested_by_principal_id FROM platform_operations WHERE id=$1", inv.ID).Scan(&principal); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = il.a.RevokeMember(ctx, il.owner, principal, "revoke-alice"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := il.tr.RequestStateFromVM(ctx, vmA, r.RequestID)
+	if err != nil || got.State != "REPLIED" || got.Reply == nil || got.Reply.Content[0].Text != "Paris" || got.Reason != "" {
+		t.Fatal("the agent lost its reply when its requester was offboarded", got, err)
+	}
+}
+
+// The status read decides why a reply is gone under the reply's lock: a purge
+// at the end of its retention, committed while the read runs, is reported as
+// such, not as a revocation.
+func TestStatusReadReportsAPurgeUnderWay(t *testing.T) {
+	l := newDeadReplyLab(t)
+	l.killReply(t)
+	purge, err := l.s.pool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer purge.Rollback(context.Background())
+	var pid int
+	if err = purge.QueryRow(t.Context(), "SELECT pg_backend_pid()").Scan(&pid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = purge.Exec(t.Context(), `UPDATE transit_payloads SET ciphertext=NULL,purged_at=clock_timestamp(),
+        purge_after=clock_timestamp()-interval '1 second' WHERE id=(SELECT reply_ref FROM agent_requests WHERE id=$1)`, l.request); err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		state RequestState
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() {
+		got, err := l.tr.RequestStateFromVM(t.Context(), l.a, l.request)
+		done <- result{got, err}
+	}()
+	waitUntil(t, func() bool {
+		var waits bool
+		if err := l.s.pool.QueryRow(t.Context(), "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)))", pid).Scan(&waits); err != nil {
+			t.Fatal(err)
+		}
+		return waits
+	})
+	if err = purge.Commit(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	got := <-done
+	if got.err != nil || got.state.Reply != nil || got.state.Reason != "content_purged" {
+		t.Fatalf("status during a purge %+v %v, want reason content_purged", got.state, got.err)
+	}
+}
+
+// The status read, which capsule-adapter polls, takes no lock on the
+// recipient's agent nor on the request: it waits for neither.
+func TestStatusReadLeavesTheRecipientUnlocked(t *testing.T) {
+	l := newDeadReplyLab(t)
+	busy, err := l.s.pool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer busy.Rollback(context.Background())
+	if _, err = busy.Exec(t.Context(), "SELECT 1 FROM agents WHERE id='b' FOR NO KEY UPDATE"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = busy.Exec(t.Context(), "SELECT 1 FROM agent_requests WHERE id=$1 FOR UPDATE", l.request); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	got, err := l.tr.RequestStateFromVM(ctx, l.a, l.request)
+	if err != nil || got.State != "REPLIED" || got.Reply == nil || got.Reply.Content[0].Text != "the answer" {
+		t.Fatal("the status read waits for the recipient's work", got, err)
+	}
+}
