@@ -1,7 +1,9 @@
 // Package llmgateway calls tenant-configured LLM providers on behalf of agents.
 // It never logs prompts, completions or credentials, never promises an external
 // call happened exactly once, and reports provider failures as typed errors so a
-// caller can decide without restarting a VM.
+// caller can decide without restarting a VM. It connects only to public
+// addresses, checked after DNS resolution, unless the operator allows an
+// internal one, and never follows a redirect.
 package llmgateway
 
 import (
@@ -62,7 +64,6 @@ var (
 )
 
 type Config struct {
-	HTTP         *http.Client
 	Timeout      time.Duration // per attempt
 	MaxAttempts  int           // total, >= 1
 	Backoff      time.Duration // base, doubled per retry
@@ -74,10 +75,15 @@ type Config struct {
 	// RequireHTTPS refuses a provider whose URL is not https, before any
 	// request (production, docs/adr/010-transport-security-and-preflight.md).
 	RequireHTTPS bool
+	// AllowInternal lists the internal provider addresses the operator
+	// allows. Empty, the default: the gateway connects to public addresses
+	// only, checked after DNS resolution (ADR 010).
+	AllowInternal Allowlist
 }
 
 type Gateway struct {
 	cfg      Config
+	http     *http.Client
 	mu       sync.Mutex
 	breakers map[string]*breaker
 }
@@ -88,10 +94,9 @@ type breaker struct {
 	probing   bool
 }
 
-func New(c Config) *Gateway {
-	if c.HTTP == nil {
-		c.HTTP = &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	}
+func New(c Config) *Gateway { return newGateway(c, TestOptions{}) }
+
+func newGateway(c Config, t TestOptions) *Gateway {
 	if c.Timeout <= 0 {
 		c.Timeout = 60 * time.Second
 	}
@@ -125,7 +130,7 @@ func New(c Config) *Gateway {
 			}
 		}
 	}
-	return &Gateway{cfg: c, breakers: map[string]*breaker{}}
+	return &Gateway{cfg: c, http: newClient(c.AllowInternal, t), breakers: map[string]*breaker{}}
 }
 
 func (g *Gateway) admit(key string) error {
@@ -256,8 +261,11 @@ func (g *Gateway) once(ctx context.Context, target string, body []byte, headers 
 	for k, v := range headers {
 		hr.Header.Set(k, v)
 	}
-	resp, err := g.cfg.HTTP.Do(hr)
+	resp, err := g.http.Do(hr)
 	if err != nil {
+		if errors.Is(err, ErrAddressRefused) {
+			return false, ErrAddressRefused // nothing was sent
+		}
 		if ctx.Err() != nil || isTimeout(err) {
 			// Sent, answer never seen: do not retry, do not claim zero cost.
 			return false, ErrOutcomeUnknown
@@ -274,7 +282,9 @@ func (g *Gateway) once(ctx context.Context, target string, body []byte, headers 
 		return true, ErrRateLimited
 	case resp.StatusCode >= 500:
 		return true, ErrUnavailable
-	case resp.StatusCode >= 400:
+	case resp.StatusCode >= 300:
+		// A redirect is never followed: the provider's key would go to
+		// another address. It is not an answer either, so the URL is wrong.
 		return false, fmt.Errorf("%w: status %d", ErrRejected, resp.StatusCode)
 	}
 	if err = parse(raw); err != nil {

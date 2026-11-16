@@ -84,7 +84,7 @@ func newLiveLab(t *testing.T) *liveLab {
 
 func (l *liveLab) service(t *testing.T, timeout time.Duration) *LLMService {
 	t.Helper()
-	svc, err := NewLLMService(l.a, llmgateway.New(llmgateway.Config{Timeout: timeout, MaxAttempts: 1}))
+	svc, err := NewLLMService(l.a, llmgateway.NewForTests(llmgateway.Config{Timeout: timeout, MaxAttempts: 1}, llmgateway.TestOptions{Loopback: true}))
 	if err != nil {
 		t.Fatal(err)
 	}
