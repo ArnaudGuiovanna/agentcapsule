@@ -179,17 +179,29 @@ func TestAFullHostAdmitsWaitingWorkInArrivalOrder(t *testing.T) {
 	}
 }
 
-// Work evicts an idle VM, the least recently active first, never one that
-// holds work in progress. With nothing idle, it waits.
-func TestWorkEvictsOnlyIdleVMs(t *testing.T) {
+// computing gives agent a model call in flight: its VM is computing.
+func (il *invocationLab) computing(t *testing.T, agent string) {
+	t.Helper()
+	if _, err := il.s.pool.Exec(t.Context(), `INSERT INTO llm_usage(id,tenant_id,agent_id,alias,request_key,reserved_tokens)
+        SELECT $1,tenant_id,id,'model',$1,10 FROM agents WHERE id=$2`, newID("llm"), agent); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Work stops a VM that is not computing: an idle one first, then one that only
+// waits, the least recently active first. It never stops a computing VM; with
+// only those running, it waits.
+func TestWorkStopsOnlyVMsThatAreNotComputing(t *testing.T) {
 	il := newInvocationLab(t)
 	il.busy(t)
 	i1 := activateTenantAgent(t, il.tenantLab, il.c, il.owner, "i1")
 	i2 := activateTenantAgent(t, il.tenantLab, il.c, il.owner, "i2")
 	w := activateTenantAgent(t, il.tenantLab, il.c, il.owner, "w")
+	c := activateTenantAgent(t, il.tenantLab, il.c, il.owner, "c")
+	il.computing(t, c)
 	il.wake(t, w, "wake-w")
 
-	if d := il.admit(t, w, []string{il.agent, i2, i1}, 0); !d.Admit || d.Evict != i1 {
+	if d := il.admit(t, w, []string{il.agent, c, i2, i1}, 0); !d.Admit || d.Evict != i1 {
 		t.Fatal("not the least recently active idle VM", d)
 	}
 	// i1 was just active: i2 is now the least recently active.
@@ -197,21 +209,53 @@ func TestWorkEvictsOnlyIdleVMs(t *testing.T) {
         VALUES($1,'someone',$2,'local',99,'wake','SUCCEEDED',clock_timestamp())`, newID("op"), i1); err != nil {
 		t.Fatal(err)
 	}
-	if d := il.admit(t, w, []string{il.agent, i1, i2}, 0); !d.Admit || d.Evict != i2 {
+	if d := il.admit(t, w, []string{il.agent, c, i1, i2}, 0); !d.Admit || d.Evict != i2 {
 		t.Fatal("eviction ignored recent activity", d)
 	}
-	// An agent with an open command owes work: it is not idle either.
+	// An agent that owes work but only waits (here, an open wake) goes after
+	// every idle one.
 	il.wake(t, i2, "wake-i2")
-	if d := il.admit(t, w, []string{il.agent, i2}, 0); d.Admit {
-		t.Fatal("work evicted a VM that owes work", d)
+	if d := il.admit(t, w, []string{il.agent, c, i2, i1}, 0); !d.Admit || d.Evict != i1 {
+		t.Fatal("a waiting VM stopped before an idle one", d)
+	}
+	if d := il.admit(t, w, []string{il.agent, c, i2}, 0); !d.Admit || d.Evict != i2 {
+		t.Fatal("a VM that only waits was not stopped", d)
+	}
+	// Only computing VMs run: the work waits.
+	if d := il.admit(t, w, []string{il.agent, c}, 0); d.Admit {
+		t.Fatal("work stopped a computing VM", d)
 	}
 	if got := il.waiters(t); !sameOrder(got, []string{w}) {
 		t.Fatal("the refused agent does not wait", got)
 	}
-	// A barrier may evict any VM, idle ones first.
-	order, err := il.s.EvictionOrder(t.Context(), "local", []string{il.agent, i1, i2})
-	if err != nil || !sameOrder(order, []string{i1, il.agent, i2}) && !sameOrder(order, []string{i1, i2, il.agent}) {
+	// A barrier may stop any VM, computing ones last.
+	order, err := il.s.EvictionOrder(t.Context(), "local", []string{il.agent, c, i1, i2})
+	if err != nil || len(order) != 4 || order[0] != i1 || order[1] != i2 {
 		t.Fatal("barrier eviction order", order, err)
+	}
+}
+
+// An agent that waits for another agent's answer holds no slot against it,
+// even with an invocation in progress: otherwise, on a full host, the answer
+// could never be computed until a deadline.
+func TestAnAgentWaitingForAnotherDoesNotHoldItsSlotAgainstIt(t *testing.T) {
+	il := newInvocationLab(t)
+	op := il.busy(t)
+	b := activateTenantAgent(t, il.tenantLab, il.c, il.owner, "b")
+	il.wake(t, b, "wake-b")
+	if d := il.admit(t, b, []string{il.agent}, 0); d.Admit {
+		t.Fatal("a computing VM was stopped", d)
+	}
+	var mandate string
+	if err := il.s.pool.QueryRow(t.Context(), "SELECT mandate_id FROM owner_instructions WHERE operation_id=$1", op).Scan(&mandate); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := il.s.pool.Exec(t.Context(), `INSERT INTO agent_requests(id,sender_agent_id,recipient_agent_id,mandate_id,state,via_auto,payload_ref,expires_at)
+        VALUES($1,$2,$3,$4,'DELIVERING',true,'opaque',clock_timestamp()+interval '1 hour')`, newID("req"), il.agent, b, mandate); err != nil {
+		t.Fatal(err)
+	}
+	if d := il.admit(t, b, []string{il.agent}, 0); !d.Admit || d.Evict != il.agent {
+		t.Fatal("an agent waiting for another kept its slot against it", d)
 	}
 }
 
@@ -232,7 +276,7 @@ func TestWorkWaitingPastItsTTLNeverRunsAndLeavesTheQueue(t *testing.T) {
 	other := activateTenantAgent(t, il.tenantLab, il.c, il.owner, "other")
 	il.wake(t, other, "wake-other")
 	busy := activateTenantAgent(t, il.tenantLab, il.c, il.owner, "busy")
-	il.wake(t, busy, "wake-busy")
+	il.computing(t, busy)
 	for _, a := range []string{il.agent, other} {
 		if d := il.admit(t, a, []string{busy}, 0); d.Admit {
 			t.Fatal("full host admitted", a)
@@ -371,7 +415,7 @@ func TestInterruptedWorkIsResumed(t *testing.T) {
 func TestCapacityQueueProjectsFairAdmissionDeadOwner(t *testing.T) {
 	il := newInvocationLab(t)
 	holder := activateTenantAgent(t, il.tenantLab, il.c, il.owner, "holder")
-	il.wake(t, holder, "wake-holder")
+	il.computing(t, holder)
 	c1 := activateTenantAgent(t, il.tenantLab, il.c, il.owner, "c1")
 	c2 := activateTenantAgent(t, il.tenantLab, il.c, il.owner, "c2")
 	il.wake(t, c1, "wake-c1")
@@ -402,6 +446,7 @@ func TestCapacityQueueProjectsFairAdmissionDeadOwner(t *testing.T) {
 		t.Fatal("admit(1)", d)
 	}
 	il.taken(t, c1)
+	il.computing(t, c1) // active: it holds its slot
 	if d := il.admit(t, c2, []string{holder, c1}, 0); d.Admit {
 		t.Fatal("admit(2) while 1 holds the slot", d)
 	}

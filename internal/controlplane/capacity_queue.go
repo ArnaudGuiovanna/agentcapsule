@@ -3,6 +3,7 @@ package controlplane
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -12,17 +13,19 @@ import (
 // A host runs at most max_active VMs. Work that needs a VM for an agent whose
 // VM is stopped (a delivery, a wake, the resume of interrupted work) asks for
 // a slot under the host's exclusive admission turn. It may take a free slot, or
-// stop an idle VM (owesWork), the least recently active first. It never stops a
-// VM that owes work. When neither is possible, the agent waits in its host's
-// capacity queue, in arrival order, and shows QUEUED. An agent boots only when
-// every older waiter of its host can boot too: new work never overtakes older
-// work that waits for capacity, whatever its organization. This is the fifo
-// policy of fair_admission.qnt with exclusive clients, one per slot. Barriers
-// are not queued here: a fence boot reserves its slot ahead of new work
-// (barrier_capacity.qnt) and may stop any VM.
+// stop a VM that is not computing: an idle one first (owesWork), then one that
+// only waits (for its next delivery, a wake, or another agent's answer), the
+// least recently active first. It never stops a VM that is computing. When
+// neither is possible, the agent waits in its host's capacity queue, in
+// arrival order, and shows QUEUED. An agent boots only when every older waiter
+// of its host can boot too: new work never overtakes older work that waits for
+// capacity, whatever its organization. This is the fifo policy of
+// fair_admission.qnt with exclusive clients, one per slot. Barriers are not
+// queued here: a fence boot reserves its slot ahead of new work
+// (barrier_capacity.qnt) and may stop any VM, a computing one last.
 
 // SlotDecision says whether an agent may boot now and, when the host is full,
-// which idle VM to stop for it first.
+// which VM to stop for it first.
 type SlotDecision struct {
 	Admit bool
 	Evict string
@@ -53,6 +56,17 @@ const slotDue = `a.phase='LIVE' AND NOT EXISTS(SELECT 1 FROM failed_agents f WHE
       OR EXISTS(SELECT 1 FROM platform_operations so WHERE so.agent_id=a.id AND so.kind='wake' AND so.status IN ('PENDING','RUNNING'))
       OR ` + workInProgress + `)`
 
+// computing holds while agent a works on something only its running VM can
+// carry on: work in progress, unless it waits for another agent's answer, or
+// a model call in flight. Work never stops such a VM. An agent that waits for
+// another agent may be stopped: the answer's delivery boots it again, and its
+// harness resumes. Holding its slot could instead keep the other agent from
+// booting until a deadline.
+const computing = `((` + workInProgress + `
+        AND NOT EXISTS(SELECT 1 FROM agent_requests pr WHERE pr.sender_agent_id=a.id
+          AND pr.state IN ('PENDING_APPROVAL','DELIVERING','PROCESSING') AND pr.expires_at>clock_timestamp()))
+    OR EXISTS(SELECT 1 FROM llm_usage cu WHERE cu.agent_id=a.id AND cu.state='reserved'))`
+
 // lastActivity is the latest time agent a did or received something the
 // platform tracks; the least recently active idle VM is stopped first.
 const lastActivity = `greatest(coalesce(x.created_at,'-infinity'::timestamptz),
@@ -64,9 +78,10 @@ const lastActivity = `greatest(coalesce(x.created_at,'-infinity'::timestamptz),
 // AdmitToSlot decides whether agent may boot now on host. The caller holds the
 // host's exclusive admission turn and passes its census: the other agents
 // whose VMs run there, and how many slots are free. An agent is admitted when
-// fewer older waiters remain than slots it could use: free ones, then idle
-// VMs, which it stops first (Evict). Otherwise it waits in the queue, keeping
-// its first place; asking again never moves it back.
+// fewer older waiters remain than slots it could use: free ones, then the
+// slots of VMs that are not computing, which it stops first (Evict).
+// Otherwise it waits in the queue, keeping its first place; asking again
+// never moves it back.
 func (s *Store) AdmitToSlot(ctx context.Context, host, agent string, running []string, free int) (SlotDecision, error) {
 	if host == "" || agent == "" || free < 0 {
 		return SlotDecision{}, ErrInput
@@ -102,12 +117,12 @@ func (s *Store) AdmitToSlot(ctx context.Context, host, agent string, running []s
 				others = append(others, id)
 			}
 		}
-		idle, err := evictionOrder(ctx, tx, others, true)
+		stoppable, err := evictionOrder(ctx, tx, others, true)
 		if err != nil {
 			return SlotDecision{}, err
 		}
-		if older < free+len(idle) {
-			d = SlotDecision{Admit: true, Evict: idle[0]}
+		if older < free+len(stoppable) {
+			d = SlotDecision{Admit: true, Evict: stoppable[0]}
 		}
 	}
 	if !d.Admit && ticket == nil {
@@ -165,7 +180,8 @@ func (s *Store) PromoteCapacityHead(ctx context.Context, host string) error {
 }
 
 // EvictionOrder orders the running agents a barrier may stop to boot a
-// store: idle ones first, the least recently active first, then the others.
+// store: idle ones first, then those that only wait, then those computing,
+// each the least recently active first.
 func (s *Store) EvictionOrder(ctx context.Context, host string, running []string) ([]string, error) {
 	if host == "" {
 		return nil, ErrInput
@@ -191,6 +207,16 @@ func (s *Store) EvictionOrder(ctx context.Context, host string, running []string
 	return order, commit(ctx, tx)
 }
 
+// CapacityQueue counts the agents of host that wait for a VM slot and how long
+// the oldest has waited, for the operator's metrics.
+func (s *Store) CapacityQueue(ctx context.Context, host string) (int, time.Duration, error) {
+	var n int
+	var oldest float64
+	err := s.pool.QueryRow(ctx, `SELECT count(*),coalesce(extract(epoch FROM clock_timestamp()-min(since)),0)::float8
+        FROM capacity_waits WHERE host_id=$1`, host).Scan(&n, &oldest)
+	return n, time.Duration(oldest * float64(time.Second)), err
+}
+
 // ResumeDue reports whether agent, whose VM is not running, holds work in
 // progress that its harness resumes once it boots again (the resume job).
 func (s *Store) ResumeDue(ctx context.Context, agent string) (bool, error) {
@@ -200,13 +226,15 @@ func (s *Store) ResumeDue(ctx context.Context, agent string) (bool, error) {
 	return due, err
 }
 
-func evictionOrder(ctx context.Context, tx pgx.Tx, running []string, idleOnly bool) ([]string, error) {
+// evictionOrder orders running agents for stopping: idle first, then those
+// that only wait, then those computing, unless forWork leaves those out.
+func evictionOrder(ctx context.Context, tx pgx.Tx, running []string, forWork bool) ([]string, error) {
 	if len(running) == 0 {
 		return nil, nil
 	}
 	rows, err := tx.Query(ctx, `SELECT a.id FROM agents a LEFT JOIN agent_specs x ON x.agent_id=a.id
-        WHERE a.id=ANY($1) AND (NOT $2 OR NOT `+owesWork("clock_timestamp()")+`)
-        ORDER BY `+owesWork("clock_timestamp()")+`,`+lastActivity+`,a.id`, running, idleOnly)
+        WHERE a.id=ANY($1) AND (NOT $2 OR NOT `+computing+`)
+        ORDER BY `+computing+`,`+owesWork("clock_timestamp()")+`,`+lastActivity+`,a.id`, running, forWork)
 	if err != nil {
 		return nil, err
 	}
