@@ -31,6 +31,9 @@ type TenantAgent struct {
 	Converged    bool   `json:"converged"`
 	// IdleTimeoutSeconds is the idle-closure policy, absent when disabled.
 	IdleTimeoutSeconds *int `json:"idle_timeout_seconds,omitempty"`
+	// FailureReason says why a FAILED agent spent its restart budget:
+	// boot_failed or crashed, the kind of its last failure (ADR 012).
+	FailureReason *string `json:"failure_reason,omitempty"`
 }
 
 // AgentAssignment grants permissions on one agent to one principal or to every
@@ -54,12 +57,14 @@ type CreateAssignmentInput struct {
 
 const tenantAgentColumns = `a.id,x.name,
         CASE WHEN a.phase<>'LIVE' THEN a.phase
+          WHEN coalesce(p.state,'STOPPED')='STOPPED' AND f.agent_id IS NOT NULL THEN 'FAILED'
           WHEN p.state='RUNNING' AND NOT p.fence_only AND pc.agent_id IS NOT NULL THEN 'READY'
           WHEN p.state='RUNNING' THEN 'STARTING' ELSE coalesce(p.state,'STOPPED') END,
         r.artifact_digest,r.name,r.version,x.vcpus,x.memory_mib,x.volume_mib,x.created_at,
         CASE WHEN a.phase IN ('QUIESCING','DELETING','DELETED') THEN 'deleted' ELSE coalesce((SELECT CASE o.kind WHEN 'wake' THEN 'running' ELSE 'stopped' END
           FROM platform_operations o WHERE o.agent_id=a.id AND o.kind IN ('wake','sleep') AND o.status IN ('PENDING','RUNNING','SUCCEEDED')
-          ORDER BY o.seq DESC LIMIT 1), CASE WHEN x.auto_start THEN 'running' ELSE 'stopped' END) END,x.idle_timeout_seconds`
+          ORDER BY o.seq DESC LIMIT 1), CASE WHEN x.auto_start THEN 'running' ELSE 'stopped' END) END,x.idle_timeout_seconds,
+        CASE WHEN a.phase='LIVE' AND coalesce(p.state,'STOPPED')='STOPPED' THEN f.reason END`
 
 // effectivePermissions are the permissions the principal holds on the agent
 // right now: direct assignments plus those of teams it actively belongs to.
@@ -74,7 +79,7 @@ func scanTenantAgent(row pgx.Row, perms *[]string) (TenantAgent, error) {
 	if perms == nil {
 		perms = &sink
 	}
-	err := row.Scan(&v.ID, &v.Name, &v.State, &v.HarnessDigest, &v.Harness.Name, &v.Harness.Version, &v.Resources.VCPUs, &v.Resources.MemoryMiB, &v.Resources.DataVolumeMiB, &v.CreatedAt, &v.DesiredState, &v.IdleTimeoutSeconds, perms)
+	err := row.Scan(&v.ID, &v.Name, &v.State, &v.HarnessDigest, &v.Harness.Name, &v.Harness.Version, &v.Resources.VCPUs, &v.Resources.MemoryMiB, &v.Resources.DataVolumeMiB, &v.CreatedAt, &v.DesiredState, &v.IdleTimeoutSeconds, &v.FailureReason, perms)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = ErrNotFound
 	}
@@ -594,6 +599,12 @@ func (c *AgentCatalog) requestLifecycleTenant(ctx context.Context, p Principal, 
 		op, err := insertTenantOperation(ctx, tx, p, id, host, kind)
 		if err != nil {
 			return 0, nil, err
+		}
+		if kind == "wake" {
+			// An explicit wake gives a FAILED agent a new restart budget (ADR 012).
+			if _, err = clearAgentFailure(ctx, tx, id); err != nil {
+				return 0, nil, err
+			}
 		}
 		if err = auditTenantAgent(ctx, tx, p, id, nil, "agent."+kind+"_requested"); err != nil {
 			return 0, nil, err

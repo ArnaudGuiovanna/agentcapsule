@@ -185,6 +185,10 @@ func (s *Store) claimPlacement(ctx context.Context, id, host, worker string, lea
 		p.LeaseValid = true
 		return p, nil
 	}
+	// A FAILED agent is not booted again (ADR 012); a running VM is reused above.
+	if err = bootAllowed(ctx, tx, a); err != nil {
+		return p, err
+	}
 	if p.Generation >= math.MaxInt64 {
 		return p, fmt.Errorf("placement generation exhausted")
 	}
