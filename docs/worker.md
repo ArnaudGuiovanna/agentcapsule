@@ -546,12 +546,19 @@ deletes the staging directories that a crash left, once they are an hour old.
 **Retention.** After each capture, the worker deletes the agent's archives
 beyond the `keep` newest ones. An archive is first renamed out of its ID, then
 deleted: it is either whole or gone. The newest archive, just captured, is
-always kept, so an agent never loses its only archive. The worker does not
-remove the archives of a deleted agent. Their key is revoked, so they cannot be
-read; the operator deletes them.
+always kept, so an agent never loses its only archive.
 
-**Events and metrics.** `volume_archive_captured` and `volume_archive_retry`,
-with a reason, and the `agentcapsule_worker_volume_archive*` metrics: see
+**A deleted agent's archives.** Deleting an agent destroys its volume key
+([Deleting a product volume](#deleting-a-product-volume)): from then on, none
+of its archives opens, here or on a store. The worker then deletes them from
+this host, at its first pass and then once an hour: the recorded ones and those
+taken on demand, found by their manifest. It waits for the key's destruction,
+recorded in PostgreSQL (`store_removals`), and leaves an archive whose manifest
+it cannot read for the operator. The copies on the stores expire by age
+([recovery.md](recovery.md#deleting-an-agent-its-keys-and-its-archives-adr-018)).
+
+**Events and metrics.** `volume_archive_captured`, `volume_archive_purged` and
+`volume_archive_retry`, with a reason, and the `agentcapsule_worker_volume_archive*` metrics: see
 [observability.md](observability.md). The worker keeps its archives on this
 host. A separate service ships them off the host every hour, to the S3 store
 and the standby ([recovery.md](recovery.md#volume-archives-off-the-host-rec-02)).
@@ -580,7 +587,8 @@ already published archive is verified and returned, never replaced by a more
 recent state. The identifier above is an example. A failure after quiescence has
 started can leave the agent stopped. An archive taken by hand is not recorded
 in PostgreSQL: it does not count for the nightly schedule, and retention never
-removes it.
+removes it. Once the agent is deleted, the maintenance worker deletes it like
+the others, if it is in the root of its `archives` section.
 
 Both ways capture the same way. The worker waits for the authenticated
 quiescence of a running agent, physically removes the VMM and checks the SQL

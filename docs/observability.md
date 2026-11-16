@@ -161,7 +161,8 @@ Each process writes one JSON object per line, with `time` and `event` first:
 | Worker | `agent_failed` (standard error) | `reason` (`boot_failed`, `crashed`): an agent spent its restart budget; the event never names it |
 | Worker | `delivery_dead` (standard error) | `kind` (`reply`, `status`, `instruction`), `request_id` of the API request that started the work, if any, `reason` (`attempts_exhausted`, `expired`). The job that retired the delivery still ends with `job_done` |
 | Worker | `volume_archive_captured` (standard output) | `vm` (`asleep`, `running`), `bytes`, `seconds`, `removed` (older archives deleted) |
-| Worker | `volume_archive_retry` (standard error) | `vm`, `reason`: `placement`, `busy`, `disk_full`, `authority`, `timeout`, `retention`, `error` |
+| Worker | `volume_archive_retry` (standard error) | `vm`, `reason`: `placement`, `busy`, `disk_full`, `authority`, `timeout`, `retention`, `error`; or, without `vm`, `reason` `purge`: the purge of deleted agents' archives stopped, and runs again an hour later |
+| Worker | `volume_archive_purged` (standard output) | `removed`: archives of deleted agents, whose key is destroyed, deleted from the host ([worker.md](worker.md#nightly-encrypted-archives)) |
 | Worker | `llm_budget_soft_exceeded` (standard error) | `unit` (`tokens`, `cost`), `period` (`day`, `month`), `scope` (`organization`, `agent`, `alias`, `agent_alias`) of the soft budget a model call went past |
 | Worker | `llm_call_refused` (standard error) | `reason` (`budget_tokens`, `budget_cost`, `unpriced`, `alias_access`), and for a budget its `period` and `scope` |
 
