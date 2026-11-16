@@ -143,10 +143,15 @@ func (s *Store) operatorCommand(ctx context.Context, cmd OperatorCommand, action
 	return out, commit(ctx, tx)
 }
 
-// auditTables hold the audit trail: the tenants' events, the platform's, and
-// the operator's. The retention applies to all of them.
-var auditTables = []string{"organization_audit", "delegation_audit", "tenant_member_audit", "tenant_team_audit", "tenant_agent_audit",
-	"tenant_service_audit", "llm_audit", "queue_audit", "harness_audit", "platform_audit", "operator_audit"}
+// auditTables hold the audit trail: the tenants' events, the platform's, the
+// operator's, and the replays of dead letters (ADR 017). The retention
+// applies to all of them, by the time each recorded its event (at), which an
+// index of the table starts with.
+var auditTables = []struct{ table, at string }{{"organization_audit", "created_at"}, {"delegation_audit", "created_at"},
+	{"tenant_member_audit", "created_at"}, {"tenant_team_audit", "created_at"}, {"tenant_agent_audit", "created_at"},
+	{"tenant_service_audit", "created_at"}, {"llm_audit", "created_at"}, {"queue_audit", "created_at"}, {"harness_audit", "created_at"},
+	{"platform_audit", "created_at"}, {"operator_audit", "created_at"}, {"capability_audit", "created_at"},
+	{"instruction_replays", "replayed_at"}}
 
 // AuditRetention returns the audit retention in days, or nil when every event
 // is kept (the default, ADR 014).
@@ -179,9 +184,9 @@ func (s *Store) SetAuditRetention(ctx context.Context, cmd OperatorCommand, days
 			return false, err
 		}
 		if days != nil {
-			for _, table := range auditTables {
+			for _, a := range auditTables {
 				var n int64
-				if err = tx.QueryRow(ctx, "SELECT count(*) FROM "+table+" WHERE created_at < clock_timestamp()-make_interval(days => $1)", *days).Scan(&n); err != nil {
+				if err = tx.QueryRow(ctx, "SELECT count(*) FROM "+a.table+" WHERE "+a.at+" < clock_timestamp()-make_interval(days => $1)", *days).Scan(&n); err != nil {
 					return false, err
 				}
 				events += n
@@ -221,9 +226,9 @@ func (s *Store) PurgeAudit(ctx context.Context, batch int) (int64, error) {
 		return 0, err
 	}
 	var total int64
-	for _, table := range auditTables {
-		tag, err := tx.Exec(ctx, "DELETE FROM "+table+" WHERE ctid = ANY(ARRAY(SELECT ctid FROM "+table+
-			" WHERE created_at < clock_timestamp()-make_interval(days => $1) LIMIT $2))", *days, batch)
+	for _, a := range auditTables {
+		tag, err := tx.Exec(ctx, "DELETE FROM "+a.table+" WHERE ctid = ANY(ARRAY(SELECT ctid FROM "+a.table+
+			" WHERE "+a.at+" < clock_timestamp()-make_interval(days => $1) LIMIT $2))", *days, batch)
 		if err != nil {
 			return 0, err
 		}

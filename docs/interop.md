@@ -30,8 +30,10 @@ published build metadata has an empty commit field.
 ## Decisions
 
 **The platform stays the authority.** An OASF record, a Directory search
-result, an Agent Card or a SLIM name grants no right. Every search result is
-filtered again in PostgreSQL by organization, assignment and caller, and every
+result, an Agent Card or a SLIM name grants no right. A search needs the
+`agents.discover` capability, and every result is filtered again in
+PostgreSQL: agents of the caller's organization that are visible and live,
+never the caller itself. Every
 request goes through the existing consent, mandate, quota and cross-organization
 checks. Records hold only what the organization chose to publish: a
 description and skill and domain IDs, under an opaque name (A2A-011).

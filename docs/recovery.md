@@ -1157,8 +1157,8 @@ The selection, the records and retention are tested on PostgreSQL. The KVM test
 archived by the running maintenance loop while it delivers to another agent,
 then an overdue running agent stopped for its archive and woken by its next
 invocation. Each archive is opened with the restore authority (manifest, size,
-digest). This test is compiled and remains to be run under KVM. Restoring an
-agent from one of these archives is the next section.
+digest). It passed on KVM on 2026-11-13 (13 of 13 worker tests, guest v19).
+Restoring an agent from one of these archives is the next section.
 
 ## Restoring an agent from an archive
 
@@ -1711,10 +1711,11 @@ rules are about copies, not about forensic erasure.
 
 ## Still to do (ADR 004)
 
-1. **Lost requests between agents.** A restore queues the lost invocations
-   again and shows them as `lost` (above). The requests and messages between
-   agents that it lost stay recorded, without a rerun
-   ([ADR 003](adr/003-restore-rpo.md#what-remains)).
+1. **Lost requests between agents, on KVM.** A restore delivers again the
+   agent-to-agent events it lost
+   ([above](#the-lost-agent-to-agent-events), ADR 008).
+   `TestProductWorkerRestoresAgentToAgentExchange` is written and not yet
+   run.
 2. **Restoring onto the standby.** Built: the takeover, the fetch from the
    stores, the move and the restore of each agent
    ([ADR 020](adr/020-restoring-a-lost-hosts-agents.md)). Not yet: its KVM

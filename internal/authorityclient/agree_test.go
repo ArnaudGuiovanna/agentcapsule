@@ -63,6 +63,10 @@ func life(t *testing.T, a implementation) {
 		}
 		return nil
 	}))
+	// Neither implementation lends a key without its binding.
+	if err = a.WithKey(ctx, agent, volume, func([]byte) error { t.Error("a key held without its binding"); return nil }); !errors.Is(err, keyauthority.ErrInput) {
+		t.Fatal("a bare key hold was not refused", err)
+	}
 	r, err := a.Scan(ctx, b)
 	must(err)
 	if err = a.HoldFences(ctx, r, func(context.Context) error { t.Error("published before the fence"); return nil }); !errors.Is(err, restoreauthority.ErrStale) {

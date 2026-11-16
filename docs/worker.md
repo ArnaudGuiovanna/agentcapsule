@@ -558,8 +558,11 @@ provisioner/key authority attest only the execution seal.
 These operations apply to the volume and key managed by this installation. They
 do not destroy external copies, backups or the raw blocks of the medium.
 Rollback-resistant restore remains the D5 workstream. The local journal/crash
-and SQL publication tests run; the deletion scenario in a real VM is compiled
-and remains to be run under KVM.
+and SQL publication tests run; the deletion scenario in a real VM
+(`TestProductWorkerTwoOwnersPrivateExchange`) passed on KVM on 2026-11-15
+(14 of 14 worker tests, guest v20), before the worker reached its
+authorities through the authority service, whose seal check has not run on
+KVM yet.
 
 ## Nightly encrypted archives
 
