@@ -114,6 +114,14 @@ platform's.
 | `GET /v1/llm/aliases` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | filtered | 401 | 401 | 403 |
 | `POST /v1/llm/aliases` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
 | `POST /v1/llm/aliases/{alias}/disable` (a disposable alias) | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `POST /v1/llm/aliases/{alias}/access` (a disposable alias) | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `POST /v1/llm/aliases/{alias}/prices` (a disposable alias) | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `GET /v1/llm/aliases/{alias}/grants` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `POST /v1/llm/aliases/{alias}/grants` (a disposable alias, to the agent) | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `POST /v1/llm/aliases/{alias}/grants/{id}/revoke` (a disposable grant) | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `GET /v1/llm/calls/unresolved` | yes | yes | 403 | yes | 403 | 403 | 403 | 403 | 403 | filtered | 401 | 401 | 403 |
+| `POST /v1/llm/calls/{id}/settle` (a disposable call of unknown outcome) | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `POST /v1/llm/calls/{id}/release` (a disposable call of unknown outcome) | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
 | `GET /v1/llm/budgets` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | filtered | 401 | 401 | 403 |
 | `POST /v1/llm/budgets` (for a disposable alias) | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
 | `POST /v1/llm/budgets/{id}/disable` (a disposable budget) | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
