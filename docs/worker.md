@@ -624,7 +624,8 @@ command succeeds, the agent stays out of service. Run the same command again,
 with the same identifier, to resume it after a crash or an error. A new
 identifier replaces an unfinished restore that has not activated. The worker
 prints a receipt with the new incarnation, the number of declared losses and
-the number of lost invocations that run again, or `restore_failed_<reason>`.
+the number of lost invocations and agent-to-agent events that run again, or
+`restore_failed_<reason>`.
 See
 [Restoring an agent from an archive](recovery.md#restoring-an-agent-from-an-archive)
 for the steps, the losses, their reruns and the crashes.

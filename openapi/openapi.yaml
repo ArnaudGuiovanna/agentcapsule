@@ -2949,6 +2949,7 @@ components:
         correlation_id: {type: string}
         payload: {$ref: '#/components/schemas/PeerPayload'}
         reply: {$ref: '#/components/schemas/PeerPayload'}
+        lost_at: {type: string, format: date-time, description: "When a restore last lost one of the request's events (ADR 008). The event may have been delivered again since; a request its recipient lost while working on it shows DELIVERING again."}
     OwnerMessageView:
       type: object
       required: [id, agent_id, content, created_at]

@@ -321,6 +321,8 @@ func revertTenantAgents(t *testing.T, s *Store) {
 	if _, err := s.pool.Exec(t.Context(), `
         DROP TABLE IF EXISTS capability_audit, agent_capability_policies, organization_capability_policies;
         ALTER TABLE harness_releases DROP COLUMN IF EXISTS capabilities;
+        DROP TABLE IF EXISTS peer_redeliveries;
+        DROP FUNCTION IF EXISTS preserve_peer_redelivery();
         DROP TABLE IF EXISTS failed_agents, guest_failures;
         DROP TABLE IF EXISTS llm_alias_grants;
         DROP TABLE IF EXISTS invocation_reruns;
