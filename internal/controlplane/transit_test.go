@@ -153,3 +153,40 @@ func TestTransitRotationWaitsForOldWriterBeforeCoverageCheck(t *testing.T) {
 		t.Fatal("failed rotation changed active key", err)
 	}
 }
+
+// An attachment is sealed with a transit key too. A rotation cannot drop the
+// key of a live attachment, and a process configured without that key does
+// not start, as for a request or a result. Once the attachment is purged, the
+// key is no longer needed.
+func TestTransitRotationKeepsTheKeyOfALiveAttachment(t *testing.T) {
+	il := newInvocationLab(t)
+	alice := il.invoker(t, "alice")
+	if _, _, err := il.upload(t, alice, "u1", "notes.txt", []byte("a file sealed with v1"), 60); err != nil {
+		t.Fatal(err)
+	}
+	v1, v2 := bytes.Repeat([]byte{0x73}, 32), bytes.Repeat([]byte{0x29}, 32)
+	without, err := NewTransit(il.s, "v2", map[string][]byte{"v2": v2}, 7*24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = without.ActivateKeys(t.Context()); !errors.Is(err, ErrTransitKey) {
+		t.Fatal("a rotation dropped the key of a live attachment", err)
+	}
+	with, err := NewTransit(il.s, "v2", map[string][]byte{"v1": v1, "v2": v2}, 7*24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = with.ActivateKeys(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err = without.CheckKeys(t.Context()); !errors.Is(err, ErrTransitKey) {
+		t.Fatal("a process without the key of a live attachment starts", err)
+	}
+	later := time.Now().Add(time.Hour)
+	if n, err := il.s.PurgeAttachments(t.Context(), &later, 10); err != nil || n != 1 {
+		t.Fatal("expired attachment not purged", n, err)
+	}
+	if err = without.CheckKeys(t.Context()); err != nil {
+		t.Fatal("a purged attachment still needs its key", err)
+	}
+}

@@ -76,8 +76,11 @@ func (t *Transit) checkKey(ctx context.Context, tx pgx.Tx, id string) (transitKe
 	return k, err
 }
 
+// checkCoverage requires the key of every live content: a payload not purged,
+// and an attachment not purged, which is sealed with a transit key too.
 func (t *Transit) checkCoverage(ctx context.Context, tx pgx.Tx) error {
-	rows, err := tx.Query(ctx, "SELECT DISTINCT key_id FROM transit_payloads WHERE purged_at IS NULL ORDER BY key_id")
+	rows, err := tx.Query(ctx, `SELECT key_id FROM transit_payloads WHERE purged_at IS NULL
+        UNION SELECT key_id FROM attachments WHERE status<>'purged' ORDER BY key_id`)
 	if err != nil {
 		return err
 	}
