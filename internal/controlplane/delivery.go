@@ -289,6 +289,12 @@ func (s *Store) acknowledgeDelivery(ctx context.Context, mailboxID, token string
 // RetireDelivery revokes uncertain old work before removing the queue head. Merely
 // expiring a lease is insufficient: a delayed RPC can outlive that lease.
 func (s *Store) RetireDelivery(ctx context.Context, mailboxID string, runtime RevocationRuntime) error {
+	return s.retireDelivery(ctx, mailboxID, runtime, nil)
+}
+
+// retireDelivery also starts a dead reply's retention when the dispatcher
+// holds the transit (ADR 007).
+func (s *Store) retireDelivery(ctx context.Context, mailboxID string, runtime RevocationRuntime, transit *Transit) error {
 	if runtime == nil {
 		return errors.New("revocation runtime is required")
 	}
@@ -359,20 +365,33 @@ func (s *Store) RetireDelivery(ctx context.Context, mailboxID string, runtime Re
 			return err
 		}
 		defer rollback(finish)
-		current, _, _, err := lockMailbox(ctx, finish, mailboxID)
+		current, r, _, err := lockMailbox(ctx, finish, mailboxID)
 		if err != nil {
 			return err
 		}
 		if current.State == "PENDING" && current.Closing {
-			if _, err := finish.Exec(ctx, "UPDATE agent_mailboxes SET delivery_state='DEAD',lease_token='',lease_until=NULL WHERE id=$1", mailboxID); err != nil {
-				return err
-			}
-			if _, err := finish.Exec(ctx, "DELETE FROM outbox WHERE mailbox_id=$1", mailboxID); err != nil {
+			if err = markDead(ctx, finish, current, r, transit); err != nil {
 				return err
 			}
 		}
 		return commit(ctx, finish)
 	})
+}
+
+// markDead ends a delivery that will not reach its destination. The request
+// keeps its state. A dead reply is kept for the transit retention from now, as
+// a delivered reply is from its delivery, and its sender may read it until then.
+func markDead(ctx context.Context, tx pgx.Tx, m mailboxRow, r requestRow, transit *Transit) error {
+	if _, err := tx.Exec(ctx, "UPDATE agent_mailboxes SET delivery_state='DEAD',lease_token='',lease_until=NULL WHERE id=$1", m.ID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, "DELETE FROM outbox WHERE mailbox_id=$1", m.ID); err != nil {
+		return err
+	}
+	if transit != nil && m.Kind == "reply" {
+		return transit.delivered(ctx, tx, r.ReplyPayload)
+	}
+	return nil
 }
 
 // DispatchOne performs at most one RPC attempt or one head retirement. Scheduling,
@@ -450,7 +469,7 @@ func (s *Store) dispatchMailboxWithTransit(ctx context.Context, agentID, id stri
 		return err
 	}
 	if retire {
-		return s.RetireDelivery(ctx, id, runtime)
+		return s.retireDelivery(ctx, id, runtime, transit)
 	}
 	return nil
 }

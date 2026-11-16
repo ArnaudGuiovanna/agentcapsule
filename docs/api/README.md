@@ -72,7 +72,8 @@ transaction of the mutation it describes.
 expired idempotency receipts (24 h) of both the legacy and tenant domains
 (`Store.PurgeExpiredReceipts`). The private transit content of requests that
 were refused or expired without delivery has no purge deadline yet: this
-depends on the future of the legacy owner messaging and on EVT-04.
+depends on the future of the legacy owner messaging and on EVT-04. A reply has
+one, whether its delivery succeeds or dies.
 
 **Credential rotation and revocation.** `agentcapsule-admin list-credentials`
 prints, without secrets or fingerprints, the platform and service credentials
@@ -146,8 +147,10 @@ Bodies are encrypted with AES-GCM and bound to their business reference and
 their parties. Deleting an agent immediately removes the current ciphertexts
 that concern it; its business finality still waits for the revocation barriers.
 Retention after delivery is seven days in the API binary; a read does not push
-back the deadline. Each pass of a worker configured for transit purges a bounded
-batch of expired content.
+back the deadline. A reply whose delivery dies is kept seven days from its death,
+as a delivered reply is from its delivery
+([ADR 007](../adr/007-delivery-closure-and-priority.md)). Each pass of a worker
+configured for transit purges a bounded batch of expired content.
 This SQL purge does not delete copies held in backups and is not a
 rollback-resistant authority: that remains the D5 workstream.
 This installation key is not a key for erasing an agent's data.
