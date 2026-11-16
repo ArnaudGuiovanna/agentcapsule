@@ -18,6 +18,9 @@ type WorkerJob struct {
 	LeaseUntil                       time.Time
 }
 
+// lockWorkerHost serializes with the host's work queue and its reservations.
+// A lost host (ADR 020) gets no work and no agent: ErrHostLost, with the lock
+// held all the same, so that a caller with nothing to schedule may go on.
 func lockWorkerHost(ctx context.Context, tx pgx.Tx, host string) error {
 	if host == "" {
 		return ErrPlacement
@@ -26,7 +29,18 @@ func lockWorkerHost(ctx context.Context, tx pgx.Tx, host string) error {
 		return err
 	}
 	var ignored int64
-	return tx.QueryRow(ctx, "SELECT next_ticket FROM worker_hosts WHERE host_id=$1 FOR NO KEY UPDATE", host).Scan(&ignored)
+	if err := tx.QueryRow(ctx, "SELECT next_ticket FROM worker_hosts WHERE host_id=$1 FOR NO KEY UPDATE", host).Scan(&ignored); err != nil {
+		return err
+	}
+	// A new statement, after the lock: TakeOverHost commits under it.
+	var lost bool
+	if err := tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM host_takeovers WHERE lost_host_id=$1)", host).Scan(&lost); err != nil {
+		return err
+	}
+	if lost {
+		return ErrHostLost
+	}
+	return nil
 }
 func nextWorkTicket(ctx context.Context, tx pgx.Tx, host string) (int64, error) {
 	var n int64
