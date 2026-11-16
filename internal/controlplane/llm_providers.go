@@ -34,9 +34,15 @@ type LLMAlias struct {
 	UpstreamModel string    `json:"upstream_model"`
 	Status        string    `json:"status"`
 	CreatedAt     time.Time `json:"created_at"`
-	// Estimation prices; zero when not set.
+	// Estimation prices, in micro-units of the organization's currency per
+	// million tokens. Priced is false until the organization sets them; zero
+	// prices are then a free model.
 	InputMicroPerMTok  int64 `json:"input_micro_per_mtok"`
 	OutputMicroPerMTok int64 `json:"output_micro_per_mtok"`
+	Priced             bool  `json:"priced"`
+	// Access is "organization" (every agent of the organization) or "listed"
+	// (only the agents the alias's grants name, directly or through a team).
+	Access string `json:"access"`
 }
 
 type CreateLLMProviderInput struct {
@@ -50,10 +56,13 @@ type CreateLLMAliasInput struct {
 	Alias         string `json:"alias"`
 	ProviderID    string `json:"provider_id"`
 	UpstreamModel string `json:"upstream_model"`
-	// Optional price used only to ESTIMATE cost, in micro-units of the tenant's
-	// currency per million tokens. Zero means "no estimate".
-	InputMicroPerMTok  int64 `json:"input_micro_per_mtok,omitempty"`
-	OutputMicroPerMTok int64 `json:"output_micro_per_mtok,omitempty"`
+	// Optional prices used only to ESTIMATE cost, in micro-units of the
+	// tenant's currency per million tokens. Either one makes the alias priced;
+	// the other is then zero. Neither leaves the alias unpriced.
+	InputMicroPerMTok  *int64 `json:"input_micro_per_mtok,omitempty"`
+	OutputMicroPerMTok *int64 `json:"output_micro_per_mtok,omitempty"`
+	// Access is "organization" (default) or "listed".
+	Access string `json:"access,omitempty"`
 }
 
 // LLMRoute is what the gateway needs for one call. It holds a decrypted
@@ -250,10 +259,30 @@ func (a *Accounts) DisableLLMProvider(ctx context.Context, p Principal, id, key 
 	return r, commit(ctx, tx)
 }
 
+// maxPriceMicroPerMTok bounds a price: a million currency units per million
+// tokens. Costs stay exact far beyond it (see costMicro).
+const maxPriceMicroPerMTok = 1e12
+
+func validPrice(v *int64) bool { return v == nil || (*v >= 0 && *v <= maxPriceMicroPerMTok) }
+
+func validAliasAccess(access string) bool { return access == "organization" || access == "listed" }
+
 func (a *Accounts) CreateLLMAlias(ctx context.Context, p Principal, key string, in CreateLLMAliasInput) (APIReceipt, error) {
 	if !validOrganizationText(in.Alias, 100) || !validOrganizationText(in.ProviderID, 100) || !validOrganizationText(in.UpstreamModel, 200) ||
-		in.InputMicroPerMTok < 0 || in.OutputMicroPerMTok < 0 || in.InputMicroPerMTok > 1e12 || in.OutputMicroPerMTok > 1e12 {
+		!validPrice(in.InputMicroPerMTok) || !validPrice(in.OutputMicroPerMTok) || (in.Access != "" && !validAliasAccess(in.Access)) {
 		return APIReceipt{}, ErrInput
+	}
+	access := in.Access
+	if access == "" {
+		access = "organization"
+	}
+	priced := in.InputMicroPerMTok != nil || in.OutputMicroPerMTok != nil
+	var inputPrice, outputPrice int64
+	if in.InputMicroPerMTok != nil {
+		inputPrice = *in.InputMicroPerMTok
+	}
+	if in.OutputMicroPerMTok != nil {
+		outputPrice = *in.OutputMicroPerMTok
 	}
 	tx, err := a.store.begin(ctx)
 	if err != nil {
@@ -280,8 +309,8 @@ func (a *Accounts) CreateLLMAlias(ctx context.Context, p Principal, key string, 
 		if taken {
 			return 0, nil, ErrConflict
 		}
-		v, err := scanAlias(tx.QueryRow(ctx, `INSERT INTO llm_model_aliases(tenant_id,alias,provider_id,upstream_model,created_by,input_micro_per_mtok,output_micro_per_mtok) VALUES($1,$2,$3,$4,$5,$6,$7)
-            RETURNING `+aliasColumns, p.TenantID, in.Alias, in.ProviderID, in.UpstreamModel, p.ID, in.InputMicroPerMTok, in.OutputMicroPerMTok))
+		v, err := scanAlias(tx.QueryRow(ctx, `INSERT INTO llm_model_aliases(tenant_id,alias,provider_id,upstream_model,created_by,input_micro_per_mtok,output_micro_per_mtok,priced,access)
+            VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING `+aliasColumns, p.TenantID, in.Alias, in.ProviderID, in.UpstreamModel, p.ID, inputPrice, outputPrice, priced, access))
 		if err != nil {
 			return 0, nil, err
 		}
@@ -296,11 +325,11 @@ func (a *Accounts) CreateLLMAlias(ctx context.Context, p Principal, key string, 
 	return r, commit(ctx, tx)
 }
 
-const aliasColumns = `alias,provider_id,upstream_model,status,created_at,input_micro_per_mtok,output_micro_per_mtok`
+const aliasColumns = `alias,provider_id,upstream_model,status,created_at,input_micro_per_mtok,output_micro_per_mtok,priced,access`
 
 func scanAlias(row pgx.Row) (LLMAlias, error) {
 	var v LLMAlias
-	err := row.Scan(&v.Alias, &v.ProviderID, &v.UpstreamModel, &v.Status, &v.CreatedAt, &v.InputMicroPerMTok, &v.OutputMicroPerMTok)
+	err := row.Scan(&v.Alias, &v.ProviderID, &v.UpstreamModel, &v.Status, &v.CreatedAt, &v.InputMicroPerMTok, &v.OutputMicroPerMTok, &v.Priced, &v.Access)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = ErrNotFound
 	}

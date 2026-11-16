@@ -26,7 +26,7 @@ func newBudgetLab(t *testing.T) *budgetLab {
 	t.Helper()
 	l, c, owner := agentLab(t)
 	p := createProvider(t, l, owner, "bp")
-	if _, err := l.a.CreateLLMAlias(t.Context(), owner, "al1", CreateLLMAliasInput{Alias: "fast", ProviderID: p.ID, UpstreamModel: "m", InputMicroPerMTok: 1_000_000, OutputMicroPerMTok: 3_000_000}); err != nil {
+	if _, err := l.a.CreateLLMAlias(t.Context(), owner, "al1", CreateLLMAliasInput{Alias: "fast", ProviderID: p.ID, UpstreamModel: "m", InputMicroPerMTok: price(1_000_000), OutputMicroPerMTok: price(3_000_000)}); err != nil {
 		t.Fatal(err)
 	}
 	return &budgetLab{tenantLab: l, owner: owner, agent: createTenantAgent(t, c, owner, "a1"), other: createTenantAgent(t, c, owner, "a2")}
@@ -43,7 +43,7 @@ func (b *budgetLab) budget(t *testing.T, key string, in CreateLLMBudgetInput) LL
 }
 
 func (b *budgetLab) reserve(agent, key string, n int64) (LLMReservation, error) {
-	return b.a.ReserveLLM(context.Background(), b.owner.TenantID, agent, "fast", key, n)
+	return b.a.ReserveLLM(context.Background(), b.owner.TenantID, agent, "fast", key, n, 0)
 }
 
 func TestHardBudgetRefusesBeforeTheCallAndReleaseGivesCapacityBack(t *testing.T) {
@@ -162,10 +162,10 @@ func TestScopedAndSoftBudgets(t *testing.T) {
 	if err != nil || !r.SoftExceeded {
 		t.Fatal("soft budget blocked or silent", err, r.SoftExceeded)
 	}
-	if _, err = b.a.ReserveLLM(t.Context(), "org-else", b.other, "fast", "x", 1); !errors.Is(err, ErrNotFound) {
+	if _, err = b.a.ReserveLLM(t.Context(), "org-else", b.other, "fast", "x", 1, 0); !errors.Is(err, ErrNotFound) {
 		t.Fatal("cross-tenant reservation", err)
 	}
-	if _, err = b.a.ReserveLLM(t.Context(), b.owner.TenantID, b.other, "nope", "x", 1); !errors.Is(err, ErrNotFound) {
+	if _, err = b.a.ReserveLLM(t.Context(), b.owner.TenantID, b.other, "nope", "x", 1, 0); !errors.Is(err, ErrNotFound) {
 		t.Fatal("unlisted model reserved", err)
 	}
 	// Disabling a budget lifts its limit at once.
@@ -243,7 +243,7 @@ func TestMeteredCallSettlesReleasesAndMarksUnknown(t *testing.T) {
 		t.Fatal("rejected call not released", released, err)
 	}
 	// A crash between reserve and call leaves 'reserved'; the retry must not call again.
-	if _, err = b.a.ReserveLLM(t.Context(), tenant, b.agent, "fast", "m4", 10); err != nil {
+	if _, err = b.a.ReserveLLM(t.Context(), tenant, b.agent, "fast", "m4", 10, 0); err != nil {
 		t.Fatal(err)
 	}
 	mode.Store(0)
