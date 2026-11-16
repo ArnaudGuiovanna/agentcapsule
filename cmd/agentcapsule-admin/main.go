@@ -52,6 +52,9 @@ func run() int {
 	if len(os.Args) > 1 && os.Args[1] == "activate-transit-keys" {
 		return activateTransitKeys(os.Args[2:])
 	}
+	if len(os.Args) > 1 && os.Args[1] == "transit-key-usage" {
+		return transitKeyUsage(os.Args[2:])
+	}
 	if len(os.Args) > 1 && (os.Args[1] == "configure-host" || os.Args[1] == "approve-local-harness") {
 		return configureCatalog(os.Args[1], os.Args[2:])
 	}
@@ -66,7 +69,7 @@ func run() int {
 		// installation starts with bootstrap-platform (docs/bootstrap.md).
 		return fail("bootstrap_removed_use_bootstrap_platform")
 	}
-	return fail("usage: agentcapsule-admin migrate | bootstrap-platform | list-credentials | revoke-credential | configure-delegation | list-audit | abandon-provisioning | clear-agent-failure | init-key-authority | init-restore-authority | configure-host | approve-local-harness | activate-transit-keys")
+	return fail("usage: agentcapsule-admin migrate | bootstrap-platform | list-credentials | revoke-credential | configure-delegation | list-audit | abandon-provisioning | clear-agent-failure | init-key-authority | init-restore-authority | configure-host | approve-local-harness | activate-transit-keys | transit-key-usage")
 }
 
 func configureCatalog(command string, args []string) int {

@@ -553,6 +553,10 @@ upgrade with the service stopped. `AgentCapsuleAuthorityServiceDown`
    runuser -u agentcapsule-authority -- agentcapsule-authority init-replica \
      -root /var/lib/agentcapsule-authority-replica/replica -snapshot /tmp/authority-snapshot.sqlite
    ```
+   Then delete the snapshot on both hosts: `shred -u /tmp/authority-snapshot.sqlite`.
+   It keeps a wrapped copy of every key it holds, so a key destroyed later
+   would come back from it with the unlock key
+   ([Deleting an agent](#deleting-an-agent-its-keys-and-its-archives-adr-018)).
 7. **Configure and start the replica.** `/etc/agentcapsule/authority.json`,
    owned by root, not writable by others
    ([replica.example.json](../runtime/authority/replica.example.json)):
@@ -599,7 +603,9 @@ failover needs each of them, and no host can give them back:
   not open, and every agent's memory is lost with the primary. With it and a
   copy of the replica, anyone can open them: keep it like the backup
   passphrases;
-- the API's receipt key and transit keys ([Prepare](#prepare));
+- the API's receipt key and transit keys ([Prepare](#prepare)). Keep a
+  retired transit key 4 weeks after it sealed its last content: an older
+  database backup still needs it ([rotation](api/README.md#private-instructions));
 - pgBackRest's cipher passphrases and the archive shipper's
   ([Volume archives off the host](#volume-archives-off-the-host-rec-02)).
 
@@ -1526,6 +1532,50 @@ It checks:
 
 The run takes about 7 minutes. It searches its evidence for every secret it
 generated, and finds none. Passed on 2026-11-13.
+
+## Deleting an agent: its keys and its archives (ADR 018)
+
+Deleting an agent is final. There is no undo
+([ADR 018](adr/018-key-lifecycle-and-archive-deletion.md)). Stopping an agent
+is the reversible action.
+
+What goes, and when:
+
+| What | When |
+| --- | --- |
+| New work; its messages, results and files in the database | In the commit of the deletion request |
+| Its VM and boot credentials | Once every agent's store has fenced the deletion: the host stops the VM for good |
+| The seal of its store (restore authority) | Then. It never lifts: no restore, no archive and no boot of this store from then on |
+| Its volume key | Right after the seal, on the primary and the standby's replica in one write. In degraded mode the deletion waits for the standby |
+| Its volume | Right after the key |
+| Its archives on this host | Within an hour after the key ([worker.md](worker.md#nightly-encrypted-archives)) |
+| Its archives on S3 | 30 days after their upload, by age; a locked version up to a day more |
+| Its archives on the standby | 7 days after their upload, by age |
+| Its content in the database backups | Their retention: 4 weeks on S3, 2 on the standby |
+
+From the destruction of its key, **none of its archives opens anywhere**: an
+archive is the LUKS container, and its only key slot opens with that key. The
+copies that wait for their age on the stores are ciphertext that nothing can
+read. Until then they still open: `AgentCapsuleDeletionUnfinished` fires when
+a deletion has not finished 6 hours after its request
+([observability.md](observability.md#alerts)).
+
+A destroyed key comes back only from a copy kept outside the platform. Keep
+none:
+- **Turn off the provider's disk snapshots and backups** of both hosts. The
+  primary keeps the volume keys in clear on its disk, the standby wrapped to
+  the unlock key. A provider's copy of either disk would bring back every key
+  destroyed since, for the copy's retention.
+- **Never back up the authority directories** or the replica's, by any tool.
+  The backups of this page never include them.
+- **Delete the authority snapshot** on both hosts once the replica is created
+  ([Install the replica](#install-the-replica), step 6).
+- **Wipe the old primary** after a failover before it serves again
+  ([Promote the replica](#promote-the-replica), step 7).
+- **Keep the unlock key off both hosts**: with it, a copy of the replica opens.
+
+The platform does not scrub freed disk blocks, nor a guest's memory: these
+rules are about copies, not about forensic erasure.
 
 ## Still to do (ADR 004)
 

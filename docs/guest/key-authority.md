@@ -54,6 +54,35 @@ The tests cover process interruptions and a key restore that keeps the
 independent tombstones. They are not yet the complete P2 restore path, nor a
 validation of an external HSM or KMS.
 
+## Lifecycle of a volume key
+
+[ADR 018](../adr/018-key-lifecycle-and-archive-deletion.md) states the policy.
+
+- **Created** when the agent is provisioned, after its store is registered in
+  the restore authority (`ensure_key`, from
+  `internal/worker/provisioning_linux.go`).
+- **Used** to format the volume on the host, and at each boot to open it in
+  the guest, through a key hold. A restore installs an archive into the same
+  volume: the key stays the same.
+- **Never rotated.** It lives as long as the volume. It opens the volume's
+  only LUKS key slot, and the LUKS volume key under that slot never changes:
+  a new key for the slot would still leave every archive openable with the
+  old one.
+- **Destroyed** when the agent is deleted, right after the restore authority
+  seals its store, and before the volume file is removed (`destroy_key`, from
+  `internal/worker/removals_linux.go`). From then on no archive of the agent
+  opens anywhere; the worker deletes those of its host within an hour, and
+  the stores' copies expire by age
+  ([recovery.md](../recovery.md#deleting-an-agent-its-keys-and-its-archives-adr-018)).
+
+Only the worker's order puts the seal before the destruction today:
+`Revoke` checks no seal. The authority service will refuse to destroy the key
+of a store that is not sealed ([ADR 006](../adr/006-authority-service.md),
+wave 3).
+
+"Kept out of data backups" includes the provider's snapshots of the host's
+disk: such a copy holds every key in clear, and brings back a destroyed one.
+
 ## The replica on the standby
 
 D-05 ([ADR 005](../adr/005-keys-outside-restored-domain.md)) adds a replica of

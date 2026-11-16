@@ -76,8 +76,11 @@ func (t *Transit) checkKey(ctx context.Context, tx pgx.Tx, id string) (transitKe
 	return k, err
 }
 
+// checkCoverage requires the key of every live content: a payload not purged,
+// and an attachment not purged, which is sealed with a transit key too.
 func (t *Transit) checkCoverage(ctx context.Context, tx pgx.Tx) error {
-	rows, err := tx.Query(ctx, "SELECT DISTINCT key_id FROM transit_payloads WHERE purged_at IS NULL ORDER BY key_id")
+	rows, err := tx.Query(ctx, `SELECT key_id FROM transit_payloads WHERE purged_at IS NULL
+        UNION SELECT key_id FROM attachments WHERE status<>'purged' ORDER BY key_id`)
 	if err != nil {
 		return err
 	}
@@ -169,6 +172,49 @@ func (t *Transit) CheckKeys(ctx context.Context) error {
 		return err
 	}
 	return commit(ctx, tx)
+}
+
+// TransitKeyUse is what still needs one transit key: content not purged yet
+// that it sealed. A key that seals nothing live can leave the configuration of
+// the API and the worker; activation and startup refuse to drop any other.
+type TransitKeyUse struct {
+	ID     string `json:"id"`
+	Active bool   `json:"active"`
+	// Payloads and Attachments count the live content sealed with the key.
+	Payloads    int64 `json:"payloads"`
+	Attachments int64 `json:"attachments"`
+	// Undated counts the live content whose purge has no date yet: a payload
+	// not delivered, an attachment of an invocation still running.
+	Undated int64 `json:"undated"`
+	// PurgeBy is the latest purge date of the dated content; nil when none.
+	// The worker's purge passes remove the content shortly after.
+	PurgeBy *time.Time `json:"purge_by"`
+}
+
+// TransitKeyUsage lists every activated transit key, in ID order, with what
+// still needs it. It reads metadata only, never a key or a ciphertext.
+func (s *Store) TransitKeyUsage(ctx context.Context) ([]TransitKeyUse, error) {
+	rows, err := s.pool.Query(ctx, `SELECT k.id, coalesce(c.active_key_id=k.id,false),
+          (SELECT count(*) FROM transit_payloads p WHERE p.key_id=k.id AND p.purged_at IS NULL),
+          (SELECT count(*) FROM attachments a WHERE a.key_id=k.id AND a.status<>'purged'),
+          (SELECT count(*) FROM transit_payloads p WHERE p.key_id=k.id AND p.purged_at IS NULL AND p.purge_after IS NULL)
+            + (SELECT count(*) FROM attachments a WHERE a.key_id=k.id AND a.status='attached'),
+          greatest((SELECT max(p.purge_after) FROM transit_payloads p WHERE p.key_id=k.id AND p.purged_at IS NULL),
+            (SELECT max(a.expires_at) FROM attachments a WHERE a.key_id=k.id AND a.status='pending'))
+        FROM transit_keys k LEFT JOIN transit_configuration c ON c.singleton ORDER BY k.id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	keys := make([]TransitKeyUse, 0)
+	for rows.Next() {
+		var k TransitKeyUse
+		if err = rows.Scan(&k.ID, &k.Active, &k.Payloads, &k.Attachments, &k.Undated, &k.PurgeBy); err != nil {
+			return nil, err
+		}
+		keys = append(keys, k)
+	}
+	return keys, rows.Err()
 }
 
 type transitParty struct{ Agent, Owner string }

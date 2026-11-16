@@ -161,10 +161,36 @@ bin/agentcapsule-api \
 ```
 
 Rotation explicitly activates a new identifier together with all the keys still
-needed for unpurged content. Activation never replaces the secret associated
-with an existing identifier. An old process can no longer write with the
-previously active identifier. Ordinary opening initializes nothing. Transit keys
-are distinct from volume keys and from API receipt keys.
+needed for unpurged content: payloads and attachments. Activation never
+replaces the secret associated with an existing identifier. An old process can
+no longer write with the previously active identifier. Ordinary opening
+initializes nothing; the API and the worker refuse to start without the key of
+any unpurged content. Transit keys are distinct from volume keys and from API
+receipt keys.
+
+**Rotating the transit keys** ([ADR 018](../adr/018-key-lifecycle-and-archive-deletion.md)):
+once a year by default, and at once if a key file may have leaked.
+
+1. Create the new key, a private 32-byte file, and copy it to the safe off the
+   hosts ([recovery.md](../recovery.md#prepare)):
+   `head -c 32 /dev/urandom > transit-v2.key` under `umask 077`.
+2. Activate it with every key still needed:
+   `agentcapsule-admin activate-transit-keys -active-key v2 -key v1=… -key v2=…`.
+   From then on the running API and worker can no longer write content: their
+   active key is no longer the installation's.
+3. Restart the API (`-transit-active-key v2`, both `-transit-key`) and the
+   worker (`transit.active_key` and both `keys`) at once. A request that
+   stores content fails in between, and commits nothing: its client retries
+   it.
+4. Old content stays readable with its own key. Watch
+   `agentcapsule-admin transit-key-usage`: for each key, the unpurged payloads
+   and attachments it seals, how many have no purge date yet (not delivered,
+   or attached to a running invocation), and the latest purge date of the
+   others. Delivered content is purged 7 days after its delivery.
+5. Once `v1` seals nothing (`payloads` and `attachments` at 0), remove it from
+   both configurations and restart them. Delete the file on the hosts. Keep the
+   safe's copy for 4 weeks more: a database restored from an older backup still
+   holds content sealed with it, and the API refuses to start without it.
 
 Bodies are encrypted with AES-GCM and bound to their business reference and
 their parties. Deleting an agent immediately removes the current ciphertexts

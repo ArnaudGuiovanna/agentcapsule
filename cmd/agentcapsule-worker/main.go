@@ -176,7 +176,7 @@ func run() int {
 	// progress on standard output, retries and failures on standard error.
 	vocabulary := map[string][]string{"event": {"maintenance_started", "maintenance_complete", "maintenance_retry", "wake_budget_exhausted",
 		"harness_import_retry", "directory_publish_retry", "slim_callback_stopped", "job_done", "job_retried",
-		"volume_archive_captured", "volume_archive_retry", "delivery_dead", "agent_failed"},
+		"volume_archive_captured", "volume_archive_retry", "volume_archive_purged", "delivery_dead", "agent_failed"},
 		"reason": append(append(append(worker.RetryReasons(), worker.ArchiveRetryReasons()...), worker.DeadDeliveryReasons()...), worker.AgentFailureReasons()...),
 		"kind":   append(worker.JobKinds(), worker.DeadDeliveryKinds()...), "vm": worker.ArchiveVMs()}
 	// The model gateway's events: a soft budget passed, a call refused (ADR 011).
@@ -187,6 +187,9 @@ func run() int {
 	events, problems := telemetry.NewLogger(os.Stdout, vocabulary), telemetry.NewLogger(os.Stderr, vocabulary)
 	registry := telemetry.NewRegistry()
 	if err = w.EnableTelemetry(registry, opts.Root, opts.MaxActive); err != nil {
+		return fail("telemetry_unavailable")
+	}
+	if err = w.EnableDeletionTelemetry(registry); err != nil {
 		return fail("telemetry_unavailable")
 	}
 	if err = w.EnableJobEvents(events, problems); err != nil {
@@ -310,6 +313,15 @@ func run() int {
 				}
 				if r.RetentionErr != nil && ctx.Err() == nil {
 					problems.Event("volume_archive_retry", vm, telemetry.Code("reason", "retention"))
+				}
+			}
+			// The archives of deleted agents, whose key is destroyed (ADR 018).
+			archives.Purged = func(removed int, err error) {
+				if removed > 0 {
+					events.Event("volume_archive_purged", telemetry.Int("removed", int64(removed)))
+				}
+				if err != nil {
+					problems.Event("volume_archive_retry", telemetry.Code("reason", "purge"))
 				}
 			}
 			maintenance.Archives = archives

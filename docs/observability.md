@@ -57,6 +57,8 @@ volume archives and, on the standby host, its replay.
 | `agentcapsule_worker_volume_archives_total` | counter | `vm`, `outcome` | Volume archive captures ([worker.md](worker.md#nightly-encrypted-archives)), by the VM's state before the capture (`asleep`, `running`): `captured` or `retried` |
 | `agentcapsule_worker_volume_archive_agents` | gauge | — | Live agents of the host whose volume the worker archives |
 | `agentcapsule_worker_volume_archive_oldest_seconds` | gauge | — | Age of the oldest among the agents' newest archives. An agent never archived counts from its initialization |
+| `agentcapsule_worker_deletions_unfinished` | gauge | — | Agents of the host whose deletion is requested and not finished: their volume key still exists, so their archives still open ([ADR 018](adr/018-key-lifecycle-and-archive-deletion.md)). On a host without a key authority, a deletion finishes at its seal. Read from PostgreSQL at each scrape |
+| `agentcapsule_worker_deletion_oldest_seconds` | gauge | — | Age of the oldest of these deletions, from its request; 0 when none |
 | `agentcapsule_llm_calls_total` | counter | `provider` (`openai_compatible`, `anthropic`), `outcome` (`settled`, `released`, `unknown`) | Model calls through the worker's bridge ([llm.md](api/llm.md#budgets-and-consumption-llm-03)), once their outcome is recorded. Only with the model bridge on |
 | `agentcapsule_llm_tokens_total` | counter | `provider`, `direction` (`input`, `output`) | Tokens of settled calls, as the provider reported them |
 | `agentcapsule_llm_estimated_cost_micro_total` | counter | `provider` | Estimated cost of settled calls, in micro-units of each organization's own currency: a sum across organizations that price in different currencies has no meaning |
@@ -164,7 +166,8 @@ Each process writes one JSON object per line, with `time` and `event` first:
 | Worker | `agent_failed` (standard error) | `reason` (`boot_failed`, `crashed`): an agent spent its restart budget; the event never names it |
 | Worker | `delivery_dead` (standard error) | `kind` (`reply`, `status`, `instruction`), `request_id` of the API request that started the work, if any, `reason` (`attempts_exhausted`, `expired`). The job that retired the delivery still ends with `job_done` |
 | Worker | `volume_archive_captured` (standard output) | `vm` (`asleep`, `running`), `bytes`, `seconds`, `removed` (older archives deleted) |
-| Worker | `volume_archive_retry` (standard error) | `vm`, `reason`: `placement`, `busy`, `disk_full`, `authority`, `timeout`, `retention`, `error` |
+| Worker | `volume_archive_retry` (standard error) | `vm`, `reason`: `placement`, `busy`, `disk_full`, `authority`, `timeout`, `retention`, `error`; or, without `vm`, `reason` `purge`: the purge of deleted agents' archives stopped, and runs again an hour later |
+| Worker | `volume_archive_purged` (standard output) | `removed`: archives of deleted agents, whose key is destroyed, deleted from the host ([worker.md](worker.md#nightly-encrypted-archives)) |
 | Worker | `llm_budget_soft_exceeded` (standard error) | `unit` (`tokens`, `cost`), `period` (`day`, `month`), `scope` (`organization`, `agent`, `alias`, `agent_alias`) of the soft budget a model call went past |
 | Worker | `llm_call_refused` (standard error) | `reason` (`budget_tokens`, `budget_cost`, `unpriced`, `alias_access`), and for a budget its `period` and `scope` |
 | Worker | `authority_service_waiting` (standard error, once) | — : the worker waits for the authority service at start |
@@ -221,6 +224,7 @@ Their annotations are fixed text.
 | `AgentCapsuleBackupRepositoryUnreadable` | pgBackRest cannot read a repository, for 30 minutes |
 | `AgentCapsuleBackupMetricsStale` | The backup times have not been collected for an hour, or never were |
 | `AgentCapsuleVolumeArchiveStale` | An agent of the host has no volume archive from the last 26 hours, for 15 minutes (volume RPO 24 h). It covers the archives on the host only |
+| `AgentCapsuleDeletionUnfinished` | An agent's deletion was requested 6 hours ago and has not finished, for 15 minutes: its volume key still exists, so its archives still open (ADR 018). A store that never fences the deletion, a failing removal, or degraded mode hold it; the worker's `job_retried` events with kind `deletion` give the reason |
 | `AgentCapsuleArchiveShipBehind` | A store has lacked some of the host's volume archives for 2 hours, for 15 minutes: two missed hourly runs |
 | `AgentCapsuleArchiveStoreUnreadable` | The shipper could not list a store for 90 minutes: two runs in a row |
 | `AgentCapsuleArchiveChanged` | A volume archive changed on the host after its upload; the store keeps its copy (critical) |

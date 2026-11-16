@@ -41,7 +41,7 @@ func TestAdminRefusesAClearTextDatabaseInProduction(t *testing.T) {
 	if out, code := command(t, args...); code != 1 || out != "database_tls_required_in_production\n" {
 		t.Fatalf("%d %q", code, out)
 	}
-	for _, sub := range []string{"list-credentials", "activate-transit-keys"} {
+	for _, sub := range []string{"list-credentials", "activate-transit-keys", "transit-key-usage"} {
 		if out, _ := command(t, sub); out != "database_tls_required_in_production\n" && out != "configuration_required\n" {
 			t.Errorf("%s: %q", sub, out)
 		}
