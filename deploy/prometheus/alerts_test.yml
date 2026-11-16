@@ -78,7 +78,8 @@ tests:
   # Capacity (OPS-03). The images' file system fills as the runtime root's
   # does above; the images pass the storage pressure threshold at minute 11.
   # Boots fail ten times from minute 6 to 16. The Directory fails from minute
-  # 6. Memory runs low from minute 6; the CPUs turn busy at minute 11.
+  # 6. Memory runs low from minute 6; the CPUs turn busy at minute 11. The
+  # oldest waiting invocation passes 15 minutes at minute 16.
   - interval: 1m
     input_series:
       - series: 'agentcapsule_worker_image_disk_used_ratio{job="agentcapsule-worker",instance="host-1"}'
@@ -97,7 +98,18 @@ tests:
         values: '500x5 50x40'
       - series: 'node_cpu_seconds_total{job="node",instance="host-1",cpu="0",mode="idle"}'
         values: '0+60x10 600+3x40'
+      - series: 'agentcapsule_worker_invocation_oldest_waiting_seconds{job="agentcapsule-worker",instance="host-1"}'
+        values: '0+60x40'
     alert_rule_test:
+      - eval_time: 18m
+        alertname: AgentCapsuleInvocationsDelayed
+        exp_alerts: []
+      - eval_time: 22m
+        alertname: AgentCapsuleInvocationsDelayed
+        exp_alerts:
+          - exp_labels: {severity: warning, job: agentcapsule-worker, instance: host-1}
+            exp_annotations:
+              summary: An invocation has waited more than 15 minutes to be delivered to its agent.
       - eval_time: 5m
         alertname: AgentCapsuleImageDiskPressure
         exp_alerts: []

@@ -85,6 +85,8 @@ func (w *Placements) EnableTelemetry(registry *telemetry.Registry, root string, 
 	running := registry.Gauge("agentcapsule_worker_vms_running", "VMs of this host published as running.")
 	registry.Gauge("agentcapsule_worker_vm_capacity", "VMs this host may run at once (max_active).").Set(float64(maxActive))
 	disk := registry.Gauge("agentcapsule_worker_root_disk_used_ratio", "Used share of the file system holding the runtime root (0 to 1).")
+	waiting := registry.Gauge("agentcapsule_worker_invocations_waiting", "Invocations accepted for this host's agents and not yet delivered.")
+	waited := registry.Gauge("agentcapsule_worker_invocation_oldest_waiting_seconds", "How long the oldest invocation not yet delivered has waited since it was accepted.")
 	registry.Collect(func(ctx context.Context) error {
 		stats, err := w.store.WorkQueue(ctx, w.hostID)
 		if err != nil {
@@ -110,6 +112,12 @@ func (w *Placements) EnableTelemetry(registry *telemetry.Registry, root string, 
 			return err
 		}
 		running.Set(float64(n))
+		backlog, oldestInvocation, err := w.store.InvocationBacklog(ctx, w.hostID)
+		if err != nil {
+			return err
+		}
+		waiting.Set(float64(backlog))
+		waited.Set(oldestInvocation.Seconds())
 		var fs syscall.Statfs_t
 		if err = syscall.Statfs(root, &fs); err != nil {
 			return err

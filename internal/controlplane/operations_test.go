@@ -185,6 +185,37 @@ func TestAuditRetentionPurgesOnlyOlderEvents(t *testing.T) {
 	}
 }
 
+// The invocation backlog (OPS-03): invocations accepted and not delivered,
+// and the age of the oldest since its acceptance. One agent's three waiting
+// invocations share a single worker job, which says nothing of their wait.
+func TestInvocationBacklogCountsWaitingInvocations(t *testing.T) {
+	s, c, _, _, owner, e := instructionLab(t)
+	if n, age, err := s.InvocationBacklog(t.Context(), "local"); err != nil || n != 0 || age != 0 {
+		t.Fatal("empty backlog", n, age, err)
+	}
+	for _, key := range []string{"one", "two", "three"} {
+		if _, err := c.Instruct(t.Context(), owner, e.AgentID, key, privateInstruction(key)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.pool.Exec(t.Context(), "UPDATE platform_operations SET created_at=created_at-interval '10 minutes' WHERE kind='instruction' AND id=(SELECT min(id) FROM platform_operations WHERE kind='instruction')"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DiscoverWork(t.Context(), "local", 10); err != nil {
+		t.Fatal(err)
+	}
+	n, age, err := s.InvocationBacklog(t.Context(), "local")
+	if err != nil || n != 3 || age < 10*time.Minute || age > 11*time.Minute {
+		t.Fatal("backlog", n, age, err)
+	}
+	if stats, err := s.WorkQueue(t.Context(), "local"); err != nil || len(stats) != 1 || stats[0].Jobs != 1 {
+		t.Fatal("one job for the agent's head", stats, err)
+	}
+	if n, _, err = s.InvocationBacklog(t.Context(), "other"); err != nil || n != 0 {
+		t.Fatal("another host's backlog", n, err)
+	}
+}
+
 // A dry run of a delegation change (ADR 014) checks it and records nothing:
 // no revocation, no receipt, no audit. The same operation ID then runs for
 // real, not as a replay.

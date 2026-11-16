@@ -33,6 +33,16 @@ groups:
         annotations:
           summary: A due worker job has waited more than 5 minutes past its time.
 
+      # The invocations' own wait (OPS-03): an agent's deliveries share one
+      # job, so a growing backlog does not show in the jobs' delay above.
+      - alert: AgentCapsuleInvocationsDelayed
+        expr: agentcapsule_worker_invocation_oldest_waiting_seconds > 900
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: An invocation has waited more than 15 minutes to be delivered to its agent.
+
       - alert: AgentCapsuleJobsFailing
         expr: agentcapsule_worker_jobs_failing > 0
         for: 15m
