@@ -789,6 +789,10 @@ Not done in wave 2:
   lost hold can do). Passing the hold's context needs a change to
   `controlplane.BarrierCommitter` and its four callers.
 - The KVM product tests have not run through the service yet.
+- The worker's preflight (ADR 010) checks the authorities through the
+  service; the checks of the link to the standby (`authority_replica_tls`,
+  `authority_replica`) left with the link and have no home yet: the service
+  has no preflight.
 - `scripts/verify-interop.py --systemd` does not check the service's unit;
   the same checks were run by hand.
 
