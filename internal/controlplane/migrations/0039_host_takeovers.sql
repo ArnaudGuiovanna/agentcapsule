@@ -17,6 +17,14 @@ END
 $$;
 CREATE TRIGGER host_takeover_guard BEFORE UPDATE OR DELETE ON host_takeovers
 FOR EACH ROW EXECUTE FUNCTION preserve_host_takeover();
+-- The takeover is an audited operator command (ADR 014), refused for a host
+-- that is itself lost.
+ALTER TABLE operator_audit DROP CONSTRAINT operator_audit_action_check,
+  ADD CONSTRAINT operator_audit_action_check
+  CHECK (action IN ('credential.revoked','provisioning.abandoned','audit.retention_set','audit.purged','host.taken_over'));
+ALTER TABLE operator_audit DROP CONSTRAINT operator_audit_reason_check,
+  ADD CONSTRAINT operator_audit_reason_check
+  CHECK (reason IN ('','invalid_input','not_found','conflict','forbidden','host_lost'));
 
 -- The restores that moved an agent off a lost host: the host it was on, and
 -- the identity of the volume file it had there. The new host creates a new

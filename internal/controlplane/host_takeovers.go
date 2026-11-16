@@ -32,43 +32,41 @@ type HostTakeover struct {
 // there (BeginVolumeRestore). Nothing else moves here. Repeating it returns
 // the record. Refused when lost is unknown (ErrNotFound), already taken over
 // by another host (ErrConflict), or when host is itself lost (ErrHostLost).
-func (s *Store) TakeOverHost(ctx context.Context, lost, host string) (HostTakeover, error) {
+// It is an audited operator command (ADR 014), whose target is the lost
+// host: a dry run checks it and records nothing.
+func (s *Store) TakeOverHost(ctx context.Context, cmd OperatorCommand, lost, host string) (HostTakeover, OperatorOutcome, error) {
 	var t HostTakeover
 	if !catalogName(lost) || !catalogName(host) || lost == host {
-		return t, ErrInput
+		return t, OperatorOutcome{Action: "host.taken_over", Target: lost, DryRun: cmd.DryRun}, ErrInput
 	}
-	tx, err := s.begin(ctx)
-	if err != nil {
-		return t, err
-	}
-	defer rollback(tx)
-	// FOR UPDATE waits for every transaction that holds the lost host's queue
-	// (lockWorkerHost): a job claimed before the takeover commits first.
-	var known int
-	if err = tx.QueryRow(ctx, "SELECT count(*) FROM (SELECT 1 FROM worker_hosts WHERE host_id=$1 FOR UPDATE) h", lost).Scan(&known); err != nil {
-		return t, err
-	}
-	if known != 1 {
-		return t, ErrNotFound
-	}
-	if err = lockWorkerHost(ctx, tx, host); err != nil {
-		return t, err
-	}
-	err = tx.QueryRow(ctx, "SELECT lost_host_id,host_id,taken_over_at FROM host_takeovers WHERE lost_host_id=$1", lost).Scan(&t.LostHostID, &t.HostID, &t.TakenOverAt)
-	if err == nil {
-		if t.HostID != host {
-			return t, ErrConflict
+	out, err := s.operatorCommand(ctx, cmd, "host.taken_over", lost, func(tx pgx.Tx) (bool, error) {
+		// FOR UPDATE waits for every transaction that holds the lost host's
+		// queue (lockWorkerHost): a job claimed before the takeover commits
+		// first.
+		var known int
+		if err := tx.QueryRow(ctx, "SELECT count(*) FROM (SELECT 1 FROM worker_hosts WHERE host_id=$1 FOR UPDATE) h", lost).Scan(&known); err != nil {
+			return false, err
 		}
-		return t, nil
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return t, err
-	}
-	if err = tx.QueryRow(ctx, `INSERT INTO host_takeovers(lost_host_id,host_id) VALUES($1,$2)
-        RETURNING lost_host_id,host_id,taken_over_at`, lost, host).Scan(&t.LostHostID, &t.HostID, &t.TakenOverAt); err != nil {
-		return t, err
-	}
-	return t, commit(ctx, tx)
+		if known != 1 {
+			return false, ErrNotFound
+		}
+		if err := lockWorkerHost(ctx, tx, host); err != nil {
+			return false, err
+		}
+		err := tx.QueryRow(ctx, "SELECT lost_host_id,host_id,taken_over_at FROM host_takeovers WHERE lost_host_id=$1", lost).Scan(&t.LostHostID, &t.HostID, &t.TakenOverAt)
+		if err == nil {
+			if t.HostID != host {
+				return false, ErrConflict
+			}
+			return false, nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return false, err
+		}
+		return true, tx.QueryRow(ctx, `INSERT INTO host_takeovers(lost_host_id,host_id) VALUES($1,$2)
+            RETURNING lost_host_id,host_id,taken_over_at`, lost, host).Scan(&t.LostHostID, &t.HostID, &t.TakenOverAt)
+	})
+	return t, out, err
 }
 
 // HostTakeoverOf returns the takeover of a lost host, with HostID the live

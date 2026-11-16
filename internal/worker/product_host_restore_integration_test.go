@@ -147,7 +147,7 @@ func TestProductWorkerRestoresAgentFromShippedArchiveOnAnotherHost(t *testing.T)
 	if err = os.RemoveAll(archives.Root()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = l.store.TakeOverHost(t.Context(), "local", "standby"); err != nil {
+	if _, _, err = l.store.TakeOverHost(t.Context(), controlplane.OperatorCommand{Actor: "local-uid:0"}, "local", "standby"); err != nil {
 		t.Fatal(err)
 	}
 	if err = l.store.DiscoverWork(t.Context(), "local", 10); !errors.Is(err, controlplane.ErrHostLost) {

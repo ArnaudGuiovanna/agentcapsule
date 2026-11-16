@@ -200,7 +200,7 @@ func testRestoreHostMovesTheLostHostsAgentsHere(t *testing.T, implementation str
 	if _, err = l.w.RestoreHost(t.Context(), "local", archives, fetch, nil, report); !errors.Is(err, ErrNotTakenOver) {
 		t.Fatal("a restore of a host that was not taken over", err)
 	}
-	if _, err = l.store.TakeOverHost(t.Context(), "local", "standby"); err != nil {
+	if _, _, err = l.store.TakeOverHost(t.Context(), controlplane.OperatorCommand{Actor: "local-uid:0"}, "local", "standby"); err != nil {
 		t.Fatal(err)
 	}
 

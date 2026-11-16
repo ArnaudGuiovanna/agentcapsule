@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/runtime"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/volumearchive"
 )
@@ -98,7 +99,7 @@ func TestRestoreFromShippedCopies(t *testing.T) {
 	if l.opts, err = l.w.runtimeOptions(runtime.FirecrackerOptions{AuthenticatedControl: true}, l.keys); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = l.store.TakeOverHost(t.Context(), "local", "standby"); err != nil {
+	if _, _, err = l.store.TakeOverHost(t.Context(), controlplane.OperatorCommand{Actor: "local-uid:0"}, "local", "standby"); err != nil {
 		t.Fatal(err)
 	}
 	l.w.hostRestore = func(ctx context.Context, restoreID, agentID, archiveID string, archives *volumearchive.Store, paused func(error)) (VolumeRestoreResult, error) {

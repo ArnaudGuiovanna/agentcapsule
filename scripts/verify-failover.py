@@ -495,17 +495,24 @@ def main():
                 log.write("$ agentcapsule-admin " + " ".join(args) + "\n" + r.stdout + r.stderr)
             return r.returncode != 0, r.stderr.strip()
 
+        record = ("lost_host", "host", "taken_over_at")
+        dry = json.loads(admin("takeover", standby_dsn, "take-over-host", "-lost-host", HOST_ID, "-host", STANDBY_HOST_ID, "-dry-run"))
+        unconfirmed = admin_refused("take-over-host", "-lost-host", HOST_ID, "-host", STANDBY_HOST_ID)
         started = time.monotonic()
-        taken = json.loads(admin("takeover", standby_dsn, "take-over-host", "-lost-host", HOST_ID, "-host", STANDBY_HOST_ID))
+        taken = json.loads(admin("takeover", standby_dsn, "take-over-host", "-lost-host", HOST_ID, "-host", STANDBY_HOST_ID, "-confirm", HOST_ID))
         takeover_seconds = round(time.monotonic() - started, 2)
         admin("takeover", standby_dsn, "configure-host", "-host-id", STANDBY_HOST_ID, "-storage-mib", "4096")
-        again = json.loads(admin("takeover", standby_dsn, "take-over-host", "-lost-host", HOST_ID, "-host", STANDBY_HOST_ID))
-        other = admin_refused("take-over-host", "-lost-host", HOST_ID, "-host", "another-host")
-        back = admin_refused("take-over-host", "-lost-host", STANDBY_HOST_ID, "-host", HOST_ID)
+        again = json.loads(admin("takeover", standby_dsn, "take-over-host", "-lost-host", HOST_ID, "-host", STANDBY_HOST_ID, "-confirm", HOST_ID))
+        other = admin_refused("take-over-host", "-lost-host", HOST_ID, "-host", "another-host", "-confirm", HOST_ID)
+        back = admin_refused("take-over-host", "-lost-host", STANDBY_HOST_ID, "-host", HOST_ID, "-confirm", STANDBY_HOST_ID)
         report["takeover"] = {"seconds": takeover_seconds, "lost_host": taken["lost_host"], "host": taken["host"],
-                              "agents_to_restore": taken["agents_to_restore"], "repeated_is_the_same": again == taken,
+                              "agents_to_restore": taken["agents_to_restore"], "dry_run": {"outcome": dry["outcome"], "dry_run": dry["dry_run"]},
+                              "without_confirmation": unconfirmed, "outcome": taken["outcome"], "repeated": again["outcome"],
+                              "repeated_is_the_same": all(again[k] == taken[k] for k in record),
                               "another_successor_refused": other, "the_lost_host_takes_nothing_over": back}
-        expect(taken["lost_host"] == HOST_ID and taken["host"] == STANDBY_HOST_ID and again == taken
+        expect(dry["outcome"] == "done" and dry["dry_run"] and unconfirmed == (True, "confirmation_required")
+               and taken["lost_host"] == HOST_ID and taken["host"] == STANDBY_HOST_ID and taken["outcome"] == "done"
+               and again["outcome"] == "unchanged" and all(again[k] == taken[k] for k in record)
                and other == (True, "take_over_host_rejected_conflict") and back == (True, "take_over_host_rejected_host_lost"),
                "the takeover is not as expected; see takeover.log")
 

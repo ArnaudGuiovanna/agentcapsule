@@ -90,6 +90,8 @@ func RefusalReason(err error) (string, bool) {
 		return "not_found", true
 	case errors.Is(err, ErrConflict), errors.Is(err, ErrTransition):
 		return "conflict", true
+	case errors.Is(err, ErrHostLost):
+		return "host_lost", true
 	}
 	return "", false
 }

@@ -45,8 +45,10 @@ in several places, and the worker serves only its own:
 ### 1. A takeover is a record, and it is final
 
 The operator records that host B takes over the lost host A, once A is
-fenced: `agentcapsule-admin take-over-host -lost-host A -host B`
-(`host_takeovers`, migration 0039). From its commit:
+fenced: `agentcapsule-admin take-over-host -lost-host A -host B -confirm A`
+(`host_takeovers`, migration 0039). It is an audited operator command, as
+those of ADR 014: `-dry-run` checks it, and the audit keeps who took which
+host over, and every refusal. From its commit:
 - **A gets no work.** `DiscoverWork` and `ClaimWork` on A fail
   (`ErrHostLost`), and a worker whose `host_id` is A refuses to start
   (`host_taken_over`). A worker of A that reached the promoted database by

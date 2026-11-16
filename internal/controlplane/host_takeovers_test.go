@@ -38,25 +38,50 @@ func TestHostTakeoverIsFinalAndStopsTheLostHost(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, hosts := range map[string][2]string{"empty": {"", "standby"}, "same": {"local", "local"}, "invalid": {"local", "a b"}} {
-		if _, err := s.TakeOverHost(t.Context(), hosts[0], hosts[1]); !errors.Is(err, ErrInput) {
+		if _, _, err := s.TakeOverHost(t.Context(), testOperator, hosts[0], hosts[1]); !errors.Is(err, ErrInput) {
 			t.Fatal("takeover input", name, err)
 		}
 	}
-	if _, err = s.TakeOverHost(t.Context(), "never-seen", "standby"); !errors.Is(err, ErrNotFound) {
+	if _, _, err = s.TakeOverHost(t.Context(), testOperator, "never-seen", "standby"); !errors.Is(err, ErrNotFound) {
 		t.Fatal("takeover of an unknown host", err)
 	}
-	taken, err := s.TakeOverHost(t.Context(), "local", "standby")
-	if err != nil || taken.LostHostID != "local" || taken.HostID != "standby" || taken.TakenOverAt.IsZero() {
-		t.Fatal("takeover", taken, err)
+	// A dry run checks it and records nothing.
+	dry := OperatorCommand{Actor: testOperator.Actor, DryRun: true}
+	if _, out, err := s.TakeOverHost(t.Context(), dry, "local", "standby"); err != nil || out.Outcome != "done" || !out.DryRun {
+		t.Fatal("a dry run", out, err)
 	}
-	if again, err := s.TakeOverHost(t.Context(), "local", "standby"); err != nil || again != taken {
-		t.Fatal("a repeated takeover is not the same record", again, err)
+	if _, err = s.HostTakeoverOf(t.Context(), "local"); !errors.Is(err, ErrNotFound) {
+		t.Fatal("a dry run took the host over", err)
 	}
-	if _, err = s.TakeOverHost(t.Context(), "local", "other"); !errors.Is(err, ErrConflict) {
-		t.Fatal("a second successor", err)
+	taken, out, err := s.TakeOverHost(t.Context(), testOperator, "local", "standby")
+	if err != nil || taken.LostHostID != "local" || taken.HostID != "standby" || taken.TakenOverAt.IsZero() ||
+		out.Action != "host.taken_over" || out.Target != "local" || out.Outcome != "done" {
+		t.Fatal("takeover", taken, out, err)
 	}
-	if _, err = s.TakeOverHost(t.Context(), "standby", "local"); !errors.Is(err, ErrHostLost) {
-		t.Fatal("a lost host took another over", err)
+	if again, out, err := s.TakeOverHost(t.Context(), testOperator, "local", "standby"); err != nil || again != taken || out.Outcome != "unchanged" {
+		t.Fatal("a repeated takeover is not the same record", again, out, err)
+	}
+	if _, out, err = s.TakeOverHost(t.Context(), testOperator, "local", "other"); !errors.Is(err, ErrConflict) || out.Outcome != "refused" {
+		t.Fatal("a second successor", out, err)
+	}
+	if _, out, err = s.TakeOverHost(t.Context(), testOperator, "standby", "local"); !errors.Is(err, ErrHostLost) || out.Reason != "host_lost" {
+		t.Fatal("a lost host took another over", out, err)
+	}
+	var audited []string
+	rows, err := s.pool.Query(t.Context(), "SELECT outcome||':'||coalesce(reason,'') FROM operator_audit WHERE action='host.taken_over' ORDER BY created_at,id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var a string
+		if err = rows.Scan(&a); err != nil {
+			t.Fatal(err)
+		}
+		audited = append(audited, a)
+	}
+	rows.Close()
+	if !slices.Equal(audited, []string{"refused:not_found", "done:", "unchanged:", "refused:conflict", "refused:host_lost"}) {
+		t.Fatal("the takeovers' audit", audited)
 	}
 	for _, q := range []string{"UPDATE host_takeovers SET host_id='other'", "DELETE FROM host_takeovers"} {
 		if _, err = s.pool.Exec(t.Context(), q); err == nil {
@@ -102,7 +127,7 @@ func TestHostTakeoverIsFinalAndStopsTheLostHost(t *testing.T) {
 	}
 
 	// The standby is lost in turn: the chain ends at the third host.
-	if _, err = s.TakeOverHost(t.Context(), "standby", "third"); err != nil {
+	if _, _, err = s.TakeOverHost(t.Context(), testOperator, "standby", "third"); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := s.HostTakeoverOf(t.Context(), "local"); err != nil || got.LostHostID != "local" || got.HostID != "third" || !got.TakenOverAt.Equal(taken.TakenOverAt) {
@@ -162,7 +187,7 @@ func TestRestoreRelocatesAnAgentOfALostHost(t *testing.T) {
 	if _, err := s.BeginVolumeRestore(t.Context(), restoreID(1), e.AgentID, "standby", archiveID(1)); !errors.Is(err, ErrPlacement) {
 		t.Fatal("a restore on a host that took nothing over", err)
 	}
-	if _, err := s.TakeOverHost(t.Context(), "local", "standby"); err != nil {
+	if _, _, err := s.TakeOverHost(t.Context(), testOperator, "local", "standby"); err != nil {
 		t.Fatal(err)
 	}
 	plan, err := s.BeginVolumeRestore(t.Context(), restoreID(1), e.AgentID, "standby", archiveID(1))
@@ -266,7 +291,7 @@ func TestRestoreRelocatesAnAgentOfALostHost(t *testing.T) {
 // installed nothing yet, the rule follows the agent, not the restore.
 func TestRelocatedVolumeIsRecordedBeforeTheInstall(t *testing.T) {
 	s, _, _, _, _, e := instructionLab(t)
-	if _, err := s.TakeOverHost(t.Context(), "local", "standby"); err != nil {
+	if _, _, err := s.TakeOverHost(t.Context(), testOperator, "local", "standby"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.BeginVolumeRestore(t.Context(), restoreID(1), e.AgentID, "standby", archiveID(1)); err != nil {

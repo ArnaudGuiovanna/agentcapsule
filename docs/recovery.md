@@ -907,12 +907,15 @@ one by one (step 13).
 11. **Take the lost host over** (*seconds*), with the `host_id` of each
     worker's configuration:
     ```sh
-    agentcapsule-admin take-over-host -lost-host <the lost host's host_id> -host <this host's host_id>
+    agentcapsule-admin take-over-host -lost-host <the lost host's host_id> -host <this host's host_id> \
+      -confirm <the lost host's host_id>
     agentcapsule-admin configure-host -host-id <this host's host_id> -storage-mib <the lost host's limit>
     ```
     It is final: the lost host's worker gets no work again, and refuses to
-    start. It prints the number of agents to restore. The second command
-    gives this host the storage that new agents may reserve.
+    start. It is an audited operator command: `-dry-run` checks it and
+    records nothing. It prints its outcome and the number of agents to
+    restore. The second command gives this host the storage that new agents
+    may reserve.
 12. **Start the authority service** in the primary role:
     [Promote the replica](#promote-the-replica), step 6. *Seconds.*
 13. **Restore the agents**, the maintenance worker stopped:
@@ -935,7 +938,8 @@ one by one (step 13).
       with an imported harness: copy its package into the cache
       ([Prepare](#prepare)), then run again.
     - `skipped`: nothing here can restore it. `no_archive`: never archived;
-      `provisioning`: run `agentcapsule-admin abandon-provisioning` for it;
+      `provisioning`: `agentcapsule-admin abandon-provisioning -agent-id <id>
+      -confirm <id>` ends its reservation if it obtained no volume;
       `deleting`: its deletion does not end yet. Each stays out of service
       on the lost host.
 14. **Start the maintenance worker**: `systemctl enable --now
@@ -1034,8 +1038,9 @@ The run:
    token, and with a delegated identity (a JWT signed by the client's Ed25519
    key).
 6. **The takeover**, step 11 above: `take-over-host` on the promoted
-   database, then `configure-host` for the standby. Repeated, it prints the
-   same record; another successor is refused (`conflict`), and so is the
+   database, a dry run first, then `configure-host` for the standby. Without
+   `-confirm` it is refused. Repeated, it prints the same record,
+   `unchanged`; another successor is refused (`conflict`), and so is the
    lost host as a successor (`host_lost`). The agents' restore (step 13)
    needs KVM: it is not run here.
 7. **The checks.**
