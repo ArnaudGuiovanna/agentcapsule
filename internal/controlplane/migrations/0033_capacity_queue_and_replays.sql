@@ -8,7 +8,7 @@
 -- running or deleted) is removed by the next decision on its host.
 CREATE TABLE capacity_waits (
   agent_id text PRIMARY KEY REFERENCES agents(id),
-  host_id text NOT NULL REFERENCES worker_hosts(host_id),
+  host_id text NOT NULL CHECK (host_id <> ''),
   ticket bigint NOT NULL CHECK (ticket > 0),
   since timestamptz NOT NULL DEFAULT clock_timestamp(),
   UNIQUE (host_id, ticket)
