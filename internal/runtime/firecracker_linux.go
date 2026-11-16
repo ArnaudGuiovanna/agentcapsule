@@ -649,6 +649,9 @@ func (h *FirecrackerHost) Start(ctx context.Context, id string, generation uint6
 	return h.start(ctx, id, generation, false)
 }
 
+// MaxActive is how many VMs this host may run at once.
+func (h *FirecrackerHost) MaxActive() int { return h.opts.MaxActive }
+
 // StartForFence boots a guest whose authenticated control identity permits only
 // durable barriers and health checks. It cannot accept application work.
 func (h *FirecrackerHost) StartForFence(ctx context.Context, id string, generation uint64) (VMRun, error) {
