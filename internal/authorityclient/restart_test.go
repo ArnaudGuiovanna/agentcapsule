@@ -163,6 +163,11 @@ func TestRestartedServiceRunsNothingUntilItReachesTheReplica(t *testing.T) {
 	if status, err := c.Status(ctx); err != nil || status.Mode != restoreauthority.ModeWaiting {
 		t.Fatal("a restarted service reports", status, err)
 	}
+	// The API reaches it, and sees it wait for its replica (ADR 006, wave
+	// 4): status answers, though nothing else runs.
+	if status, err := second.apiClient(t).Wait(within(t, 5*time.Second), nil); err != nil || status.Mode != restoreauthority.ModeWaiting {
+		t.Fatal("the API's view of a restarted service", status, err)
+	}
 	for name, run := range map[string]func(context.Context) error{
 		"read":  func(ctx context.Context) error { _, err := c.Lookup(ctx, "store-a"); return err },
 		"check": func(ctx context.Context) error { return c.CheckBinding(ctx, b) },

@@ -38,12 +38,16 @@ bin/agentcapsule-api \
   -host-id local \
   -listen 127.0.0.1:8443 \
   -tls-cert /etc/agentcapsule/api.crt -tls-key /etc/agentcapsule/api.key \
-  -tls-server-name api.example.net
+  -tls-server-name api.example.net \
+  -authority-socket /run/agentcapsule-authority/api.sock \
+  -restore-authority-id restoreauth_… -key-authority-id keyauth_…
 ```
 
-On a development machine, `AGENTCAPSULE_MODE=development` lets the API listen
-in plain HTTP on a loopback address instead, without the TLS flags
-([install.md](../install.md#modes)).
+The last three flags reach the authority service
+([below](#the-authority-service)). On a development machine,
+`AGENTCAPSULE_MODE=development` lets the API listen in plain HTTP on a
+loopback address instead, without the TLS flags
+([install.md](../install.md#modes)), and without the authority service.
 
 Add `-metrics-listen 127.0.0.1:9464` to serve Prometheus metrics on loopback
 ([observability.md](../observability.md)). Each request writes one JSON event,
@@ -165,6 +169,40 @@ response for 24 hours; a different body gives `422`, and a concurrent call
 already in a transaction gives `409`. A revocation is checked before an old
 receipt is read again. Personal tokens are stored as hashes; their replayable
 issuance responses are encrypted with the receipt key.
+
+## The authority service
+
+The API reaches the authority service
+([ADR 006](../adr/006-authority-service.md)) on its API socket, with three
+flags: `-authority-socket`, `-restore-authority-id` and `-key-authority-id`.
+
+- The identities are the ones `agentcapsule-admin init-restore-authority`
+  and `init-key-authority` printed: those of the service's `authority.json`
+  and of the worker's `authority` section.
+- The API's account must be the service's `api_uid`, and a member of the
+  group `agentcapsule-authority-clients`, which may open the socket
+  ([recovery.md](../recovery.md#install-the-authority-service)). The service
+  checks the account on every connection.
+- In production the API refuses to start without the three flags
+  (`authority_required_in_production`). In development it may run without
+  them, and writes
+  `development_mode_without_authority_service_never_use_in_production` on
+  standard error at each start.
+- At start, the API waits for a service that does not answer yet, and logs
+  `authority_service_waiting` once. Before it opens the database, it refuses
+  a service that holds other authorities (`authority_identity_mismatch`) and
+  a socket of another role (`authority_socket_role_mismatch`).
+- The readiness probe, `GET /v1/health/ready`, reports the service's mode:
+  `{"status":"ready","authority":"synchronous"}`. The mode is `standalone`
+  without a standby, `degraded` while the standby is away, and `waiting`
+  while a restarted service has not reached its standby yet. While the
+  service does not answer with the pinned identities, the probe answers 503
+  (`authority_unavailable`). The other routes do not use the service yet.
+- `-preflight` asks the service once (the `authority` check).
+
+The API uses the service for this only today. The access revocation
+records, the daily receipt key and the reconciliation after a failover will
+go through the same socket (ADR 006 §7).
 
 ## Private instructions
 

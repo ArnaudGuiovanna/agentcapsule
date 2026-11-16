@@ -632,6 +632,22 @@ func (c *Catalog) ReplicateWith(ctx context.Context, link authoritylog.Link, o R
 	return nil
 }
 
+// ReachReplica starts the monitor now, without waiting for an operation: it
+// reaches the replica in the background, and keeps trying while the replica
+// does not answer. Until it does, this process runs nothing, reports
+// waiting, and may not enter degraded mode (finding 2), as before. The
+// authority service calls it at start: an idle service then reports its
+// mode, and its failed attempts reach the metrics and the alerts. Without a
+// link to a replica it does nothing.
+func (c *Catalog) ReachReplica() {
+	if c.repl == nil {
+		return
+	}
+	c.repl.mu.Lock()
+	defer c.repl.mu.Unlock()
+	c.repl.watch()
+}
+
 // ObserveReplication sends the stream's metrics to m. Without a link it
 // records the standalone mode.
 func (c *Catalog) ObserveReplication(m *authoritylog.Metrics) {

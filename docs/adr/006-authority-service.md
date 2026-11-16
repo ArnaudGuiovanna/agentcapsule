@@ -1,7 +1,7 @@
 # D-05 — The authority service
 
 Date: November 16, 2026. **Status: accepted by the product owner on November
-16, 2026** (see [Questions](#questions-for-the-product-owner)); waves 1 to 3
+16, 2026** (see [Questions](#questions-for-the-product-owner)); waves 1 to 4
 are built ([Implementation status](#implementation-status)). This record designs
 item 3 of [ADR 005 §5](005-keys-outside-restored-domain.md#5-what-changes-in-code-and-docs)
 and item 5 of its [What the code must do](005-keys-outside-restored-domain.md#what-the-code-must-do).
@@ -863,6 +863,79 @@ Not done in wave 3, and left to the key rotation and sealing policy
 - a key registered but never sealed (an abandoned provisioning) cannot be
   destroyed until something seals its store.
 
+November 16, 2026. **Wave 4 is built**: the API reaches the service.
+
+- `agentcapsule-api` takes `-authority-socket`, `-restore-authority-id` and
+  `-key-authority-id` (§6), all three or none (`configuration_required`).
+  Production requires them (`authority_required_in_production`, answer
+  3(a)). Development may run without them, and writes
+  `development_mode_without_authority_service_never_use_in_production` on
+  standard error at each start, after ADR 010's own warning.
+- At start, before it opens the database, the API waits for a service that
+  does not answer, logging `authority_service_waiting` once. It refuses
+  another installation's authorities (`authority_identity_mismatch`), the
+  worker's socket (`authority_socket_role_mismatch`) and an older protocol
+  (`authority_protocol_unsupported`) at once.
+- The readiness probe reports the service's mode:
+  `{"status":"ready","authority":"synchronous"}`, or `standalone`,
+  `degraded`, `waiting`. While the service does not answer with the pinned
+  identities, it answers 503 `authority_unavailable`; it asks the service
+  for at most 2 seconds. Degraded mode and the wait for the standby leave
+  the API ready. Default pending the product owner (question 5).
+- `-preflight` gains an `authority` check: the flags, the identities, the
+  socket's role, a socket this account may not open (the group
+  `agentcapsule-authority-clients`), and the mode.
+- `internal/authorityclient.API` is the API socket's client. It offers
+  `Status` and `Wait` only; waves 5 to 7 add their operations there. `Wait`
+  is the worker's former loop, now shared (`worker.WaitForAuthority` uses
+  it). A socket path must be clean and at most 100 bytes, as in the
+  service's configuration.
+- **The service reaches its standby at start.** Before, a service reached
+  the replica only at its first operation. An idle primary then reported
+  `waiting` with its standby up, and the API's readiness and the worker's
+  preflight said so. With the standby down, it made no attempt, so
+  `AgentCapsuleAuthorityReplicationStopped` did not fire. `LinkTo` now
+  starts the catalogue's monitor (`Catalog.ReachReplica`). Until the replica
+  answers, nothing runs and degraded mode cannot begin, as before (finding
+  2). The model needs no change: it has no `waiting` state, and the
+  monitor's exchange is the one an operation runs, earlier.
+- `deploy/systemd`: the drop-in already ordered the API's unit after the
+  service (`Wants=`, `After=`); the sysusers file now asks to add the API's
+  account to `agentcapsule-authority-clients`.
+- `scripts/verify-install.py` starts the service before the API, and shows
+  the API's refusals and its readiness. `scripts/verify-failover.py` runs the
+  authorities' replica on the standby, promotes it at the failover and
+  starts the API on the promoted service, with the same identities.
+- Docs: [api/README.md](../api/README.md#the-authority-service),
+  [install.md](../install.md), [bootstrap.md](../bootstrap.md),
+  [recovery.md](../recovery.md) (the failover starts the service before the
+  API), [observability.md](../observability.md), `openapi/openapi.yaml`.
+- Tests: `TestAPIRefusesAnotherInstallationsAuthority`,
+  `TestAPIRequiresTheAuthorityServiceInProduction`,
+  `TestAPIWaitsForTheAuthorityService`,
+  `TestPreflightReachesTheAuthorityService` (`cmd/agentcapsule-api`);
+  `TestReadinessReportsTheAuthorityService` and the authority service in
+  `TestAPIBinariesBootstrapServeAndShutdown` (`internal/api`, PostgreSQL);
+  `TestAPIClientReachesTheAPISocketOnly`, `TestAPIClientWaitsForTheService`,
+  `TestServiceReachesItsReplicaWithoutAnOperation`, and the API's view of
+  degraded and waiting modes in `TestServiceRunsDegradedMode` and
+  `TestRestartedServiceRunsNothingUntilItReachesTheReplica`
+  (`internal/authorityclient`). Each failed before its change.
+
+Building it changed one behaviour of wave 1, for the safer variant: the
+service reaches its standby at start (above), not at its first operation.
+§1's monitor now also runs from the start.
+
+Not done in wave 4:
+- The API's own unit does not exist in the repository yet: the drop-in
+  stands for its ordering, as in wave 2.
+- In `verify-install.py` the service runs in a user namespace where the
+  run's account is root, so it sees the API as root, which the API socket
+  admits too: that run does not show the admission of `api_uid`. The Go
+  tests do (`TestSocketRoleFollowsPeerCredentials`).
+- The API builds with cgo now: `internal/authorityclient` needs it, as the
+  worker does. The release already builds the API with cgo.
+
 ## 11. Options considered
 
 | Option | Why not |
@@ -880,7 +953,8 @@ Not done in wave 3, and left to the key rotation and sealing policy
 ## Questions for the product owner
 
 Answered on November 16, 2026: **1 (a), 2 (a), 3 (a), 4 (b)**, the
-recommended options.
+recommended options. Question 5, from wave 4, is open; its recommended
+option is built as the default.
 
 1. **The authority service restarts** (an upgrade, or a crash that systemd
    restarts). For a few seconds, more if the standby does not answer at that
@@ -928,3 +1002,19 @@ recommended options.
 
    Recommended: (b). The service creates each key a day ahead, so this
    happens only when the standby stays away for a day.
+5. **The authority service stops answering for good** (it crashed and does
+   not come back), while the database is fine. No agent boots and platform
+   calls fail anyway; what should the API's readiness probe say?
+   - (a) Not ready (503 `authority_unavailable`). A load balancer that
+     watches it stops sending requests to this API, so every caller gets an
+     error until the service is back. The alert
+     `AgentCapsuleAuthorityServiceDown` fires as well.
+   - (b) Ready, with `"authority": "unavailable"`. Calls that do not need
+     the authority keep working; from wave 5, removing someone's access
+     answers "try again in a moment".
+
+   Recommended: (a), built as the default. Most of the product stops without
+   the service, the API does not start without it either, and from wave 7
+   the API needs the service to know whether it may serve after a failover.
+   Degraded mode and the wait for the standby keep the API ready in both
+   options.
