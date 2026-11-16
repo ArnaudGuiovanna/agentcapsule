@@ -560,13 +560,21 @@ November 15, 2026. Two more waves are built: items 9 to 13 and 16 to 18 of
   journal's deletion, which is the commit. A power loss could then undo a
   record that the replica had already acknowledged.
 
+November 16, 2026. **The authority service** (§5.3, item 5 in part):
+[ADR 006](006-authority-service.md), accepted that day, waves 1 and 2. One
+process per host, `agentcapsule-authority serve` as the account
+`agentcapsule-authority`, owns both directories, the link to the standby,
+degraded mode and its metrics. The worker reaches it through a local socket
+and no longer opens the directories; a worker restart no longer forces a
+wait for the standby. The seal check before a key's destruction is its wave
+3.
+
 Later waves: the announcement and token revocation after a degraded period
 (item 14), revocation records for access (§5.4, finding 1 decided: option (a)),
 reconciliation with PostgreSQL (item 15, §5.5), the daily receipt key, and
-the authority service on a local socket (§5.3).
-[ADR 006](006-authority-service.md) designs the authority service
-(accepted November 16, 2026). [recovery.md](../recovery.md#the-authorities-replica-d-05)
-installs the replica.
+the API on the authority service.
+[recovery.md](../recovery.md#the-authorities-replica-d-05) installs the
+service and the replica.
 
 ## Model revision (D-05, option (a))
 

@@ -1,8 +1,8 @@
 # D-05 — The authority service
 
 Date: November 16, 2026. **Status: accepted by the product owner on November
-16, 2026** (see [Questions](#questions-for-the-product-owner)); wave 1 is built
-([Implementation status](#implementation-status)). This record designs
+16, 2026** (see [Questions](#questions-for-the-product-owner)); waves 1 and 2
+are built ([Implementation status](#implementation-status)). This record designs
 item 3 of [ADR 005 §5](005-keys-outside-restored-domain.md#5-what-changes-in-code-and-docs)
 and item 5 of its [What the code must do](005-keys-outside-restored-domain.md#what-the-code-must-do).
 It changes no decision of ADR 005. It is a record of its own, not a section
@@ -730,6 +730,66 @@ carries a refusal (§2); the hold context's margin for short holds, and a
 lost hold is an outage even when its callback succeeded (§3); the replica
 role holds the lock of its directory (§1); `status` reads no database (§2).
 The model needs no change (§8).
+
+November 16, 2026. **Wave 2 is built**: the worker on the service.
+
+- The worker depends on `restoreauthority.Authority` and
+  `keyauthority.Provider` only; `Authority` gains `SeparateFrom`, which
+  checks a root against both directories (the client takes them from
+  `status`). Its `authority` section (§6) gives the socket and the pinned
+  identities. A worker configuration with `key_authority`,
+  `restore_authority` or `authority_replica` is refused
+  (`authority_service_required`). The worker waits for a service that does
+  not answer, logging `authority_service_waiting` once, and refuses another
+  installation's (`authority_identity_mismatch`). The worker's
+  `OpenVolumeKeys`, `OpenRestoreAuthority` and its copy of the link
+  (`replicate`) are gone; `TestWorkerNeverOpensTheAuthorities` checks that no
+  worker code opens or initializes an authority directory.
+- **A key is held under its binding only.** A bare key hold
+  (`Provider.WithKey` across the socket) kept the key's lock without the
+  catalogue's transaction: an armed destruction then waited for the key
+  inside that transaction, and every catalogue operation behind it, up to
+  `max_key_hold`. The service refuses `hold_key` without an incarnation
+  (`input`), and the client's `WithKey` refuses without sending it
+  (`TestServiceRefusesABareKeyHold`). The worker formats and unlocks volumes
+  with `HoldKey`. §3's table still describes a bare hold; it no longer
+  exists across the socket.
+- The restore command pauses while the authorities are unavailable, logs
+  `restore_paused` (`authority_unavailable`, `waits_for_replica`), and
+  resumes from its last durable step; a refusal ends it (§4,
+  `TestRestorePausesWhileTheServiceIsDown`). The archive command goes through
+  the service too.
+- `deploy/systemd`: the service's unit (exposure 1.1 under
+  `systemd-analyze security`), its sysusers and tmpfiles files, and a drop-in
+  for the worker's and the API's units (`Wants=`, `After=`). No unit of the
+  worker or the API exists in the repository yet, so the `Before=` of the
+  service's unit and the drop-in stand for §6's change to their units.
+  `deploy/prometheus`: the `agentcapsule-authority` job on 9466 and
+  `AgentCapsuleAuthorityServiceDown`, with its promtool test. Examples:
+  `runtime/authority/primary.example.json` and `replica.example.json`.
+- Docs (§9): worker.md, recovery.md (the install and the migration, the
+  snapshot and the promotion as `agentcapsule-authority`, degraded mode),
+  key-authority.md, observability.md, ADR 005's status.
+- Tests: the worker's authority tests (`authority_test.go`,
+  `authority_barriers_test.go`, `authority_outcomes_test.go`,
+  `volume_boot_test.go`, `restore_test.go`) run against both
+  implementations; `TestWorkerRefusesTheOldAuthoritySections`,
+  `TestWorkerKeepsItsVMsWhileTheServiceIsDown`,
+  `TestWorkerRestartKeepsDegradedMode`, `TestWorkerChecksItsRootsAgainstTheService`;
+  `TestAuthorityReplicaConfiguration` and `TestWorkerRunsOnPromotedAuthorities`
+  moved to `cmd/agentcapsule-authority`, on `openPrimary`. The KVM product
+  tests reach the authorities through a service run in the test process,
+  as root.
+
+Not done in wave 2:
+- The revocation's publish (`CommitBarrier`'s callback, from
+  `internal/controlplane`) takes no context: a lost hold does not cancel it.
+  The quiet period still keeps the excluded reservations away (§3, What a
+  lost hold can do). Passing the hold's context needs a change to
+  `controlplane.BarrierCommitter` and its four callers.
+- The KVM product tests have not run through the service yet.
+- `scripts/verify-interop.py --systemd` does not check the service's unit;
+  the same checks were run by hand.
 
 ## 11. Options considered
 
