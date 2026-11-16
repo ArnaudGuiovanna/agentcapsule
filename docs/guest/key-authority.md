@@ -59,17 +59,18 @@ validation of an external HSM or KMS.
 [ADR 018](../adr/018-key-lifecycle-and-archive-deletion.md) states the policy.
 
 - **Created** when the agent is provisioned, after its store is registered in
-  the restore authority (`Ensure`, `internal/worker/provisioning_linux.go`).
+  the restore authority (`ensure_key`, from
+  `internal/worker/provisioning_linux.go`).
 - **Used** to format the volume on the host, and at each boot to open it in
-  the guest (`WithKey`). A restore installs an archive into the same volume:
-  the key stays the same.
+  the guest, through a key hold. A restore installs an archive into the same
+  volume: the key stays the same.
 - **Never rotated.** It lives as long as the volume. It opens the volume's
   only LUKS key slot, and the LUKS volume key under that slot never changes:
   a new key for the slot would still leave every archive openable with the
   old one.
 - **Destroyed** when the agent is deleted, right after the restore authority
-  seals its store, and before the volume file is removed
-  (`internal/worker/removals_linux.go`). From then on no archive of the agent
+  seals its store, and before the volume file is removed (`destroy_key`, from
+  `internal/worker/removals_linux.go`). From then on no archive of the agent
   opens anywhere; the worker deletes those of its host within an hour, and
   the stores' copies expire by age
   ([recovery.md](../recovery.md#deleting-an-agent-its-keys-and-its-archives-adr-018)).

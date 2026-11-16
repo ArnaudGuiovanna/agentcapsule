@@ -26,27 +26,32 @@ The product spec asks:
 
 ## 1. The lifecycle before this record
 
-File and line references are those of `mvp-integration` at `8fd5354`, the
-base of this work.
+File and line references are those of `mvp-integration` at `d6da2c3`, with
+ADR 006 waves 1 and 2 built: the worker reaches both authorities through the
+authority service (`internal/authorityclient`, `internal/authorityservice`).
 
 ### A volume key
 
 - **Created** at provisioning, while the volume is `INSTALLING`: the restore
-  authority registers the store (`internal/worker/provisioning_linux.go:74`),
-  then the key authority creates the key (`:81`, `keyauthority.Files.Ensure`,
+  authority registers the store (`internal/worker/provisioning_linux.go:73`),
+  then the key authority creates the key (`:80`, the service's `ensure_key`,
+  which runs `keyauthority.Files.Ensure`,
   `internal/keyauthority/files_linux.go:318`; journaled to the replica by
   `ensureJournaled`, `internal/keyauthority/journal_linux.go:96`).
 - **Used** to format the LUKS container on the host
-  (`provisioning_linux.go:86`), and at each boot to open it in the guest
-  (`internal/worker/volume_boot_linux.go:66`). Both go through `WithKey`
+  (`provisioning_linux.go:84`), and at each boot to open it in the guest
+  (`internal/worker/volume_boot_linux.go:94`). Both take a key hold
+  (`HoldKey`): the service holds the store's binding and runs `WithKey`
   (`files_linux.go:360`), which holds a shared lock and clears its buffer. A
   restore writes an archive into the same volume file: the key stays.
 - **Never rotated.** Nothing re-keys a volume.
 - **Destroyed** by the deletion job (`internal/worker/dispatch_linux.go:131`),
   inside the host's removal of the sealed volume: the restore authority
   records the seal (`internal/worker/removals_linux.go:48`), the key
-  authority destroys the key (`:52`, `Revoke`, `files_linux.go:386`;
-  `revokeJournaled`, `journal_linux.go:158`), the volume file goes (`:55`),
+  authority destroys the key (`:52`, the service's `destroy_key`,
+  `internal/authorityservice/operations_linux.go:86`, which runs `Revoke`,
+  `files_linux.go:386`; `revokeJournaled`, `journal_linux.go:158`), the
+  volume file goes (`:55`),
   then PostgreSQL records the removal and the agent becomes `DELETED` (`:65`,
   `internal/controlplane/store_removals.go:80`). `Revoke` writes a permanent
   tombstone first, so a restored copy of the key file is refused. With the
@@ -57,7 +62,7 @@ So the key is destroyed **at deletion**, usually minutes after the request:
 as soon as every agent's store has fenced the deletion and the host has
 stopped the VM for good. Nothing measured how long a deletion stayed
 unfinished. The worker's order is the only thing that puts the seal before
-the destruction: `Revoke` takes no seal.
+the destruction: neither `destroy_key` nor `Revoke` checks a seal.
 
 ### A seal
 
@@ -123,12 +128,12 @@ survives only in copies outside the platform:
 
 | Key | Where | Rotation before this record |
 | --- | --- | --- |
-| **Transit keys**: invocations, results, messages between agents, **and attachments** | Files given to the API (`-transit-key`, `cmd/agentcapsule-api/main.go:43`) and the worker (`transit.keys`); PostgreSQL keeps each one's SHA-256 and the active ID | **Yes, with an overlap.** `agentcapsule-admin activate-transit-keys` (`cmd/agentcapsule-admin/transit.go:15`) activates a new ID with every key still needed; each content keeps its key ID. **Bug:** the coverage check looked at payloads only (`internal/controlplane/transit.go:79`), not at attachments, which are sealed with a transit key too (`internal/controlplane/attachments.go:143`). A rotation could drop the key of a live attachment, and the API would start without it. Nothing said when an old key could go. |
+| **Transit keys**: invocations, results, messages between agents, **and attachments** | Files given to the API (`-transit-key`, `cmd/agentcapsule-api/main.go:41`) and the worker (`transit.keys`); PostgreSQL keeps each one's SHA-256 and the active ID | **Yes, with an overlap.** `agentcapsule-admin activate-transit-keys` (`cmd/agentcapsule-admin/transit.go:15`) activates a new ID with every key still needed; each content keeps its key ID. **Bug:** the coverage check looked at payloads only (`internal/controlplane/transit.go:79`), not at attachments, which are sealed with a transit key too (`internal/controlplane/attachments.go:143`). A rotation could drop the key of a live attachment, and the API would start without it. Nothing said when an old key could go. |
 | **Receipt key**: idempotency receipts, including token secrets for 24 hours | A file (`-receipt-key-file`); PostgreSQL keeps its SHA-256 (`internal/controlplane/users.go:61`) | **No.** The installation is bound to it. ADR 005 replaces it with a daily key in the authorities, destroyed after 24 hours (ADR 006, wave 6). |
 | **LLM credential key** | Derived from the receipt key (`users.go:45`) | **No.** The provider credentials it seals rotate through the API (LLM-007); the key that seals them does not ([llm.md](../api/llm.md#known-limits)). |
 | **Catalogue secret**: fence receipts and archive manifests (HMAC) | The restore authority's catalogue, replicated wrapped | No. Old manifests must keep verifying. |
-| **Unlock key** | Off both hosts; the catalogue keeps its recipient | Only through a failover: the new standby gets a new one. A snapshot with another recipient is refused (`internal/restoreauthority/snapshot_linux.go:129`). |
-| **Replica link certificates** | Self-signed, 10 years (`internal/authoritylog/transport.go:171`), one pinned per side | By hand: a new certificate, copied and pinned on the other host. The worker's preflight warns 30 days before expiry (`internal/worker/preflight_linux.go:199`). |
+| **Unlock key** | Off both hosts; the catalogue keeps its recipient | Only through a failover: the new standby gets a new one. A snapshot with another recipient is refused (`internal/restoreauthority/snapshot_linux.go:131`). |
+| **Replica link certificates** | Self-signed, 10 years (`internal/authoritylog/transport.go:171`), one pinned per side | By hand: a new certificate, copied and pinned on the other host. Nothing warns before they expire: the worker's preflight did, until the link moved to the authority service in ADR 006 wave 2. |
 | **API TLS certificate** | `-tls-cert`, `-tls-key` | Renewed by the operator, reloaded on `SIGHUP`; the preflight warns 30 days before expiry. |
 | **Boot credentials** | Per VM, 24 hours (`internal/runtime/firecracker_control_linux.go:36`) | New at every boot. |
 | **Backup passphrases** (pgBackRest, rclone crypt) | `/etc/pgbackrest`, `/etc/agentcapsule-archive-ship` | Not in place: a new passphrase means a new repository or bucket, and the old one expires by age. |
