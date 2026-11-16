@@ -2,9 +2,12 @@
 
 Date: November 16, 2026. **Status: decided by the product owner on November
 16, 2026** (see [Decision](#decision)); **built on November 16, 2026**: §2
-items 1 to 6 (see [What was built](#6-what-was-built)). This record states the
-two decisions, what the code did when they were taken, what changes, and what
-the models say.
+items 1 to 6 (see [What was built](#6-what-was-built)). **Amended on November
+16, 2026** (§7): a request's closure fences its two parties only, the findings
+of an independent review are fixed or recorded, and the content of a request
+closed before delivery gets a retention (a default pending the product
+owner). This record states the two decisions, what the code did when they were
+taken, what changes, and what the models say.
 References: product spec §3, EVT-005, EVT-006 and §5
 ([product.md](../product.md)), EVT-02 and D-04 of the
 [roadmap](../../ROADMAP.md), the models
@@ -391,6 +394,10 @@ for a reply or status, nor a death without the store. Both gain one
   refuses. That is why item 5 fences a delivery an attempt may have
   reached.
 
+§7 revises both actions: an unattempted notification or unsent event dies
+anywhere in its queue, and only while the agents its delivery needs are
+active; P3's `attempts == 0` is stated against Go's `may_have_reached`.
+
 Checks run (spec/README.md), evidence under
 `quint/results/quint-delivery-reliability/`: every model typechecks; the
 `quint test` runs of P1 (29), P3 (35), the P1 prefixes, the loaded state and
@@ -502,17 +509,218 @@ Remaining:
 - **A delivery an attempt may have reached, to an A that never boots again,**
   stays closing until A boots for its fence (item 5). Dying without it
   could let a delayed send apply it (`noLateEffect`). If the fence boot
-  itself never succeeds, the operator sees `AgentCapsuleVMBootFailures` and
-  `AgentCapsuleJobsFailing`.
-- **A request to a B that never boots.** Its closure at its deadline (the
-  `expiration` job) fences every store of the installation
-  (`request_closure_targets`; `closedSafe` in P1), so it waits for B, or any
-  other agent that never boots, to boot for that barrier; the request stays
-  `DELIVERING` meanwhile. Item 5 does not change requests.
-- **Request content closed before delivery is never purged.** A request
-  refused, canceled or expired before it reached B keeps its private content
-  without a purge deadline ([api/README.md](../api/README.md)). Fixing it
-  touches every closure path (decline, cancellation, expiration, failure),
-  none of which holds the transit's retention, and needs a choice of when
-  retention starts: a separate change.
-- **TLC and Apalache** checks of the revised P1 and P3 (§3).
+  itself keeps failing, the agent becomes `FAILED` after its restart budget
+  ([ADR 012](012-limits-restart-budgets-egress.md)): the boots stop, the
+  operator sees `AgentCapsuleAgentFailed`, and the fence waits for a wake.
+- **A request to or from an agent that never boots.** Its closure at its
+  deadline (the `expiration` job) fenced every store of the installation, so
+  any agent that never booted held every request. Since §7 it fences the
+  request's two parties only: it still waits for its own party to boot for
+  that barrier, and stays `DELIVERING` or `PROCESSING` meanwhile (see the
+  product owner question in §7.1).
+- **Request content closed before delivery is never purged.** Built in §7.3.
+- **TLC and Apalache** checks of the revised P1 and P3 (§3, §7).
+- **The restore risk of item 5**, recorded in §7.2 (h).
+
+## 7. Closure scope, review fixes and closed requests' content
+
+On November 16, 2026, on the branch `delivery-closure-scope`. Each change
+names the test that fails without it.
+
+### 7.1 A request's closure fences its two parties only
+
+**Before.** `beginClosure` made every agent of the installation that was not
+being provisioned a fence target of the request's closure
+(`request_closure_targets`), as P1's `closedSafe` required
+(`AGENTS.forall`). An expiry, a cancellation or a failure committed only once
+every store had acknowledged `request/<id>`. One agent that never boots held
+every request of the installation in `DELIVERING` or `PROCESSING`.
+
+**What the model shows.** An event that carries `request/<id>` goes only to
+the request's parties: the request to its recipient, the reply to its sender
+(`subjects` and `dest` in P1). No other store can hold an effect of the
+request, and fencing it protects nothing. P1 states it as `closureScope`,
+which holds for every route and fails only when subjects are not scoped to
+their request (`concurrentProtocolWrongRequestFence`). The model allows less
+still:
+
+- the sender's fence: a request under closure never has a reply
+  (`closedNeverReplied`, now in `safety`), because a reply needs no closure
+  and a closure needs an active request;
+- the recipient's fence, when no attempt was allowed to carry the request
+  (`sent`; `may_have_reached` in SQL): that request has no effect
+  (`unsentInert`), and none can be authorized once the closure begins
+  (`dispatchable`).
+
+**Rule chosen: the two parties, always.** Both narrower rules rest on SQL state
+that a restore of PostgreSQL within its 15-minute RPO
+([ADR 004](004-recovery-objectives.md)) can lose: the reply that makes
+"replied" and "closed" exclusive, and `may_have_reached`. A send under way at
+the disaster, over SLIM for instance, could then carry `request/<id>` to a
+party after a closure that did not fence it. The parties are fixed when the
+request is created, and no other store receives an event that carries
+`request/<id>`, restore or not. A late request is the worse case: the
+recipient would work on a request its sender sees expired.
+
+- Code: `beginClosure` inserts the two parties (`closure.go`).
+- Model (P1): `canCommitClose` waits for `closureAcks`, the parties' receipts;
+  `closedSafe` quantifies over the parties. Runs:
+  `closureFencesOnlyItsPartiesTest` (a stopped agent that is not a party
+  cannot be fenced), `closureCommitsWithoutOtherStoresTest` (the closure
+  commits without it, and a send under way to the recipient cannot apply;
+  with the old rule the closure waits), `closureScopeTest`, and
+  `closureWithoutRecipientAllowsStaleEffectTest`, the witness that the
+  recipient's fence is needed: committed without it, the send under way
+  applies the request after its expiry and `noStaleEffect` fails.
+- Test: `TestRequestClosureFencesOnlyItsParties` (PostgreSQL). A third
+  agent's store is unavailable; a request's expiry and a cancellation commit
+  with their two parties as the only targets, and a send under way to the
+  recipient is refused by its fence. Without the change the closure waits for
+  the third store.
+- Projections: the P1 replay compares a closure's barrier receipts on the
+  request's parties (`preimplementation_projection_test.go`); its frozen
+  traces still fence every store, and every fence is still checked in SQLite.
+  P3 has two stores, the parties of each request: unchanged. The KVM tests
+  that counted every store are updated (`control_integration_test.go`,
+  `dispatch_integration_test.go`, `seals_integration_test.go`).
+
+What still waits: a request whose own party never boots. Question for the
+product owner, scenario: agent B never boots; A sends it a request that
+expires. Today the request stays `DELIVERING` until B boots for the closure's
+fence, and A's task waits. Options: (a) keep this, safe against a database
+restore; (b) when no attempt was ever allowed to carry the request, close it
+without B's fence, as item 5 does for a reply, which brings the restore risk
+(h) to requests. Recommended: (a) until (h) is fixed, then (b).
+
+### 7.2 Findings of an independent review
+
+- **(a) Replies that died without a retention.** A reply that died before
+  item 1, or through `RetireDelivery` without the transit, kept
+  `purge_after` empty: never purged, and the status read served it for good.
+  The purge pass now starts the retention of a dead reply that has none, at
+  that pass: its death is not recorded, and the pass is never earlier than
+  the death (`Transit.PurgeExpired`). No migration: the retention's length is
+  the transit's, which SQL does not hold. Test:
+  `TestDeadReplyWithoutRetentionGetsOne`.
+- **(b) An expired reply behind a request delivery.** The retirement needed
+  the mailbox head (`isHead`), and the worker discovered only heads. A reply
+  or status behind a request delivery to an agent that never boots never
+  died. A reply, status or instruction that no attempt reached now dies past
+  its deadline wherever it is in the queue: it never reached the agent, so
+  the order of what the agent receives is unchanged. The worker discovers it
+  (`DiscoverWork`). One an attempt may have reached is the head, and still
+  waits for its fence. [worker.md](../worker.md) now says what still waits
+  for an agent that never boots. Test: `TestExpiredDeliveryBehindAStuckHeadDies`
+  (a reply behind a request delivery, an instruction behind an instruction
+  an attempt may have reached). Models: P1's `retireUnsent` never required
+  the head (`unsentReplyDiesBehindHeadTest`); P3's `expireNotification` no
+  longer requires it for an unattempted notification (`scenario22Test`).
+- **(c) Deletions.** `retirementDue` read the destination's phase without a
+  lock, and the retirement checked no phase. A delivery could die, and alert,
+  where the deletion of an agent should cancel it: a reply whose author is
+  being deleted, or a delivery whose destination's deletion committed in
+  between. The retirement now checks, under the agents' locks, that the
+  agents its delivery needs are live (`deliverable`: the destination, and
+  both parties for a reply), in its first transaction and again after the
+  fence; otherwise it returns `ErrUnavailable` and the deletion cancels the
+  delivery. Instructions likewise. Test:
+  `TestRetirementLeavesADeletionToCancel` (deletion between the check and
+  the retirement, the reply's author being deleted, deletion during the
+  fence, an instruction's agent deleted). Models: P1's `retire` and `retireUnsent` need `retirable`
+  (`retirementLeavesDeletionTest`, `deletionCancelsExpiredReplyTest`); P3's
+  `expireNotification` needs an eligible destination (`refusal22x0Test`,
+  `scenario22x1Test`).
+- **(d) Offboarding.** The docs said a reply is revoked once "the person it is
+  bound to has lost access". Offboarding keeps the principal, and
+  [ADR 002](002-assignment-revocation.md) lets work accepted before a
+  revocation complete for the organization, without making its result
+  readable to the former member. The code follows ADR 002: the agents keep
+  the reply. The wording is fixed ([agents-assignments.md](../api/agents-assignments.md),
+  `peer_reads.go`, `peer_payloads.go`). Test:
+  `TestOffboardingLeavesTheReplyToTheAgent` pins this behaviour; it passed
+  before the change, which is to the docs.
+- **(e) P3 and `may_have_reached`.** P3 decides on `attempts == 0`, Go on
+  `may_have_reached`. A P3 attempt (`notify`) is a claim, its authorization
+  and its send in one step, so every P3 attempt may have reached the store.
+  Go also counts a claim that a crash interrupted before its authorization:
+  that delivery dies without a fence, where P3 retires it behind one. P3
+  thus never assumes less than Go; P1 has the exact rule (`sent`). Written
+  in `expireNotification`.
+- **(f) The reason of a purge under way.** `senderReply` checked the purge
+  before its locked read: a purge committed in between was reported as
+  `content_revoked`. It now locks the reply's content first and decides from
+  it: gone at the end of its retention is `content_purged`, gone before is
+  `content_revoked` (the deletion of a party). Test:
+  `TestStatusReadReportsAPurgeUnderWay`.
+- **(g) A lighter status read.** capsule-adapter polls `/status` every 2 s;
+  the read locked both agents, the request and the content. It now locks the
+  caller's agent (its placement check) and the content only. A request's
+  parties never change and a `REPLIED` request never changes again. The
+  deletion of either party purges the content in the transaction that ends
+  its `LIVE` phase, so content found unpurged under its lock has two live
+  parties. Test: `TestStatusReadLeavesTheRecipientUnlocked` (the recipient's
+  agent and the request are locked by another transaction).
+- **(h) Recorded, not fixed: a restore can lose `may_have_reached`.** A
+  restore of PostgreSQL within its 15-minute RPO can lose a committed
+  `may_have_reached=true`. A send authorized in the lost window may still be
+  on its way: a message delayed in SLIM can outlive the restore. After the
+  restore that delivery looks unsent. Past its deadline it dies without its
+  fence (item 5), and the delayed send can then reach the restored agent and
+  apply it after its death, which `noLateEffect` forbids in P1, a model
+  without restores. A reply reaches an agent that could already read it; an
+  instruction may run although its requester sees it failed. The request
+  closures of §7.1 do not depend on `may_have_reached`. Ways out, for later:
+  record the authorization outside the restored domain, in the authority
+  service ([ADR 006](006-authority-service.md)), before the send; or, when
+  the database is restored, mark every pending delivery as possibly reached,
+  so that each dies behind its fence.
+
+### 7.3 Content of a request closed before delivery
+
+A request refused, canceled, expired or failed before it reached its
+recipient kept its private content with no purge deadline. No doc or record
+fixed a rule ([api/README.md](../api/README.md) left it to EVT-04). **Default
+pending the product owner:** the retention starts at the closure and lasts as
+long as a delivered request's, 7 days. The closure paths do not hold the
+transit's retention, so the worker's purge pass starts it on its first pass
+after the closure, then purges once it has passed (`Transit.PurgeExpired`).
+Content closed before this change gets its 7 days from the first pass after
+the upgrade.
+
+- Test: `TestRequestClosedBeforeDeliveryIsPurged` (declined, canceled,
+  expired; a request waiting for consent keeps its content). Without the
+  change the content keeps no deadline.
+- Question for the product owner, scenario: Alice's agent asks Bob's agent
+  something; Bob declines, or the request expires unanswered. How long does
+  the platform keep the question's text? Options: (a) 7 days from the
+  closure, like a delivered request (the default); (b) purge it at the
+  closure, since nobody will deliver it; (c) keep it until an agent is
+  deleted, as before. Recommended: (a): the owners can still read what was
+  asked for a week, and nothing is kept for good.
+
+### 7.4 Validation
+
+- Each new Go test was run against the code before its change and failed,
+  except `TestOffboardingLeavesTheReplyToTheAgent` (a fix to the docs).
+- The tests of `internal/controlplane` and `internal/worker` with `-race`
+  against PostgreSQL 18: passed.
+- The PostgreSQL campaign `scripts/verify-postgres.py`: passed, 1,138 tests
+  in the integration phase (640 top-level), every test above among them, then
+  the crash and recovery phases
+  (local evidence `quint/results/verify-postgres-delivery-closure-scope`).
+- The model checks of [spec/README.md](../../spec/README.md), evidence under
+  `quint/results/quint-delivery-closure-scope/`: every model typechecks; the
+  runs of P1 (36), P1 with manual consent (5), the P1 prefixes (2) and loaded
+  state (1), P3 (38) and the five witness guards pass; the five broken
+  witness schedules violate their invariant, as they must; `quint run` finds
+  no `safety` violation in P3's five instances (200,000 samples of 40 steps),
+  in `concurrentProtocolFour` (100,000 of 40) or from P1's loaded state
+  (50,000 of 30). The new P1 runs `closureCommitsWithoutOtherStoresTest` and
+  `retirementLeavesDeletionTest`, and the P3 runs `scenario22Test` and
+  `refusal22x0Test`, fail against the models before this change.
+- Not run here: TLC and Apalache (no Java runtime), so neither P1's
+  exhaustive depth-bounded safety nor P3's temporal properties; and the KVM
+  tests, which need root: `TestControlVMDeliveryAndRevocation`,
+  `TestSealedStoreAllowsLaterRevocationAndClosure` and
+  `TestDispatchServiceClosureExpirationAndDeletion`, whose closure counts
+  changed, with the other dispatch tests listed in §6.

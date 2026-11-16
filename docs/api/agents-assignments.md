@@ -454,8 +454,11 @@ channel serve the A2A endpoint of [capsule-adapter](../adapter.md#other-agents-a
   that the sender catches up on a reply whose event never came
   ([ADR 007](../adr/007-delivery-closure-and-priority.md)). It is read with
   the checks of the owners' read. A reply no longer kept comes with `reason`:
-  `content_purged` at the end of its retention, `content_revoked` once its
-  author is deleted or the person it is bound to has lost access.
+  `content_purged` at the end of its retention, `content_revoked` once the
+  deletion of its author has purged it. Offboarding the person it is bound to
+  does not revoke it: the request is work accepted before, which may complete
+  for the organization ([ADR 002](../adr/002-assignment-revocation.md)). The
+  agent keeps reading the reply; the former member reads nothing.
 
 Both pass the placement check of every VM call and decide nothing.
 

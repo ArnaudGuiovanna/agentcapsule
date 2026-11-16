@@ -70,10 +70,16 @@ transaction of the mutation it describes.
 
 **Receipt retention.** On each pass the worker deletes, in bounded batches, the
 expired idempotency receipts (24 h) of both the legacy and tenant domains
-(`Store.PurgeExpiredReceipts`). The private transit content of requests that
-were refused or expired without delivery has no purge deadline yet: this
-depends on the future of the legacy owner messaging and on EVT-04. A reply has
-one, whether its delivery succeeds or dies.
+(`Store.PurgeExpiredReceipts`). The private transit content of a request is
+kept 7 days from its delivery. Content of a request closed before it was
+delivered (refused, canceled, expired or failed) is kept 7 days from its
+closure, then purged: a default pending the product owner
+([ADR 007](../adr/007-delivery-closure-and-priority.md#7-closure-scope-review-fixes-and-closed-requests-content)).
+A reply has one purge deadline, 7 days from its delivery or from the death of
+its delivery. The worker starts a retention that was never started (a request
+closed before delivery, a reply that died before ADR 007) on its first pass
+after the closure or the death, and purges on the same pass once a deadline
+has passed.
 
 **Credential rotation and revocation.** `agentcapsule-admin list-credentials`
 prints, without secrets or fingerprints, the platform and service credentials

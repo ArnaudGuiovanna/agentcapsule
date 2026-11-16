@@ -35,7 +35,9 @@ func nextWorkTicket(ctx context.Context, tx pgx.Tx, host string) (int64, error) 
 }
 
 // DiscoverWork projects durable business intents onto a host-local work queue.
-// Only a mailbox head is scheduled. A bounded oldest-first batch admits new
+// Only a mailbox head is scheduled, and a reply, status or instruction past
+// its deadline that no attempt reached, which dies wherever it is in the
+// queue (ADR 007). A bounded oldest-first batch admits new
 // work; existing tickets are unchanged by repeated discovery. Multi-host fence
 // transport remains separate from this initial single-host coordinator.
 func (s *Store) DiscoverWork(ctx context.Context, host string, limit int) error {
@@ -55,7 +57,8 @@ func (s *Store) DiscoverWork(ctx context.Context, host string, limit int) error 
           FROM outbox o JOIN agent_mailboxes m ON m.id=o.mailbox_id
           JOIN agent_placements p ON p.agent_id=m.dest_agent_id
           WHERE p.host_id=$1 AND m.delivery_state='PENDING' AND o.available_at<=clock_timestamp()
-            AND NOT EXISTS(SELECT 1 FROM agent_mailboxes h WHERE h.dest_agent_id=m.dest_agent_id AND h.delivery_state='PENDING' AND h.seq<m.seq)
+            AND (NOT EXISTS(SELECT 1 FROM agent_mailboxes h WHERE h.dest_agent_id=m.dest_agent_id AND h.delivery_state='PENDING' AND h.seq<m.seq)
+              OR m.kind<>'request' AND NOT m.may_have_reached AND m.expires_at<=clock_timestamp())
         UNION ALL
         SELECT 'closure',c.request_id,r.sender_agent_id,c.requested_at
           FROM request_closures c JOIN agent_requests r ON r.id=c.request_id
