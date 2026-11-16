@@ -210,8 +210,9 @@ paths:
       operationId: listHarnessReleases
       summary: List harness releases
       description: >-
-        Platform credential, or an organization member with agent:read. Releases carry
-        no tenant data. Deprecated releases are listed only with include_deprecated=true.
+        Platform credential, or an organization member with agent:read and a role that
+        reads every agent's metadata (org_owner, org_admin, agent_operator, auditor);
+        an agent_user gets 403. Releases carry no tenant data. Deprecated releases are listed only with include_deprecated=true.
         An agent created on an imported (oci) release boots its harness from the package
         cached on the host; provisioning fails if the host does not hold it.
       security: [{platformBearer: []}, {delegatedBearer: []}, {serviceBearer: []}]
@@ -1157,6 +1158,35 @@ paths:
       responses:
         '201': {$ref: '#/components/responses/AssignmentReceipt'}
         default: {$ref: '#/components/responses/Problem'}
+  /v1/agents/{id}/assignments/{assignment_id}/reassign:
+    post:
+      operationId: reassignAgentAssignment
+      summary: Move an assignment to another member or team
+      description: >-
+        Requires agent:assign and current role org_owner or org_admin. In a
+        single transaction, revokes the active assignment and creates one for
+        the new target (`principal_id` or `team_id`, never both), with the
+        given permissions or, without `permissions`, the same ones. The audit
+        trail records the revocation, then the creation. A revoked
+        assignment, the same target, or a target that already holds an
+        active assignment on the agent returns 409; an inactive or unknown
+        target returns 404 and changes nothing. Work the old target admitted
+        is not canceled and keeps its requester. Results stay bound to their
+        requester: the old target no longer reads them and the new target
+        never does. The harness's own memory is not separated.
+      security: [{delegatedBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/ResourceID'}
+        - {name: assignment_id, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 100}}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ReassignAssignmentInput'}
+      responses:
+        '201': {$ref: '#/components/responses/AssignmentReceipt'}
+        default: {$ref: '#/components/responses/Problem'}
   /v1/agents/{id}/wake:
     post:
       description: >-
@@ -1188,8 +1218,8 @@ paths:
       description: >-
         Technical status visible to the owner or to an authorized service. A
         foreign resource returns 404. Tenant domain (agent:read): visible to
-        the requester of the operation or to a role that can read agent
-        metadata. An instruction that a restore lost runs again: its operation
+        the requester of the operation while it still sees the agent through
+        an assignment, or to a role that can read agent metadata. An instruction that a restore lost runs again: its operation
         is PENDING or RUNNING again until the rerun ends.
       security: [{bearer: []}, {delegatedBearer: []}, {serviceBearer: []}]
       parameters: [{$ref: '#/components/parameters/ResourceID'}]
@@ -1261,9 +1291,10 @@ paths:
     get:
       description: >-
         Metadata of an agent's invocations, most recent first (agent:read).
-        The requester sees only their own. A role that can read agent metadata
-        sees all invocations and the requester. Never the instruction or the
-        result.
+        The requester sees only their own, and only while it still sees the
+        agent through an assignment. A role that can read agent metadata sees
+        all invocations and the requester. An agent the caller cannot see
+        returns 404. Never the instruction or the result.
       security: [{delegatedBearer: []}, {serviceBearer: []}]
       parameters:
         - {$ref: '#/components/parameters/ResourceID'}
@@ -1328,8 +1359,9 @@ paths:
   /v1/invocations/{id}:
     get:
       description: >-
-        State of an invocation (agent:read): for the requester, or for a role
-        that can read agent metadata. Any other case returns 404. No content.
+        State of an invocation (agent:read): for the requester while it still
+        sees the agent through an assignment, or for a role that can read
+        agent metadata. Any other case returns 404. No content.
       security: [{delegatedBearer: []}, {serviceBearer: []}]
       parameters: [{$ref: '#/components/parameters/ResourceID'}]
       responses:
@@ -1659,9 +1691,9 @@ paths:
   /v1/attachments/{id}:
     get:
       description: >-
-        Metadata of a file (agent:read): for its sender, or for a role that
-        can read agent metadata. Any other case returns 404. Never the
-        content.
+        Metadata of a file (agent:read): for its sender while it still sees
+        the agent through an assignment, or for a role that can read agent
+        metadata. Any other case returns 404. Never the content.
       security: [{delegatedBearer: []}, {serviceBearer: []}]
       parameters: [{$ref: '#/components/parameters/ResourceID'}]
       responses:
@@ -2388,6 +2420,19 @@ components:
           maxItems: 3
           uniqueItems: true
           items: {type: string, enum: [read_metadata, invoke, read_content]}
+    ReassignAssignmentInput:
+      type: object
+      additionalProperties: false
+      properties:
+        principal_id: {type: string, minLength: 1, maxLength: 100}
+        team_id: {type: string, minLength: 1, maxLength: 100}
+        permissions:
+          type: array
+          minItems: 1
+          maxItems: 3
+          uniqueItems: true
+          items: {type: string, enum: [read_metadata, invoke, read_content]}
+          description: Permissions of the new target. Without it, the moved assignment's.
     AgentAssignment:
       type: object
       required: [id, agent_id, permissions, status, created_at]

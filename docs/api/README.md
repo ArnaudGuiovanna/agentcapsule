@@ -12,7 +12,9 @@ The organization domains are documented separately:
 and [teams](teams.md).
 Their credentials grant no rights on the legacy routes described below.
 Tenant agents and their assignments are described in
-[agents-assignments.md](agents-assignments.md).
+[agents-assignments.md](agents-assignments.md). What every role and kind of
+caller gets on every route is in the [authorization matrix](rbac.md), which a
+test checks.
 
 ```sh
 go build -trimpath -o bin/agentcapsule-admin ./cmd/agentcapsule-admin

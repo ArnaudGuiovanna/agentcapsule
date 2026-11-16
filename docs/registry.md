@@ -166,7 +166,8 @@ Releases are immutable: `name:version` maps to one package digest forever; anoth
 package claiming it is rejected (`version_conflict`). Requesting a package that is
 already released answers with that release and downloads nothing.
 `POST /v1/harness-releases/{id}/deprecate` stops new agents from using a release;
-agents already pinned to it keep running. Organization members with `agent:read` can
+agents already pinned to it keep running. Organization members with `agent:read` and
+a role that reads every agent's metadata (owner, administrator, operator, auditor) can
 list releases (`GET /v1/harness-releases`).
 
 ## Running an imported release
