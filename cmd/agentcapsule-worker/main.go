@@ -129,6 +129,11 @@ func run() int {
 		"volume_archive_captured", "volume_archive_retry", "delivery_dead"},
 		"reason": append(append(worker.RetryReasons(), worker.ArchiveRetryReasons()...), worker.DeadDeliveryReasons()...),
 		"kind":   append(worker.JobKinds(), worker.DeadDeliveryKinds()...), "vm": worker.ArchiveVMs()}
+	// The model gateway's events: a soft budget passed, a call refused (ADR 011).
+	vocabulary["event"] = append(vocabulary["event"], worker.LLMEvents()...)
+	for key, values := range worker.LLMEventCodes() {
+		vocabulary[key] = append(vocabulary[key], values...)
+	}
 	events, problems := telemetry.NewLogger(os.Stdout, vocabulary), telemetry.NewLogger(os.Stderr, vocabulary)
 	registry := telemetry.NewRegistry()
 	if err = w.EnableTelemetry(registry, opts.Root, opts.MaxActive); err != nil {
@@ -168,6 +173,7 @@ func run() int {
 		return fail("llm_configuration_invalid")
 	}
 	if llm != nil {
+		llm.Observe(worker.NewLLMTelemetry(registry, problems, s.LLMUnresolvedCalls))
 		if err = w.EnableLLM(llm); err != nil {
 			return fail("llm_unavailable")
 		}
