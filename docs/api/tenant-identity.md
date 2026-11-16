@@ -6,18 +6,21 @@ principals and memberships. It adds a single metadata route:
 token, attaches no legacy agent and opens no access to content. Initial
 administration is described in [organizations.md](organizations.md).
 
-## Local public configuration
+## Registering a trust
 
-The API can receive `-delegated-identity-file /path/delegation.json`. Without
-it, JWTs are refused. The JSON file is local, regular, owned by the current user
-or root and not writable by group/others. It may be publicly readable: it
-contains only **public** keys and policies. Private signing keys stay with the
-trusted client.
+The operator registers each organization's trust in PostgreSQL with a local
+command; the API reads it there, in the transaction that consumes each token.
+Registering or changing a trust needs no restart, and the API has no trust
+file. The steps of a new installation are in [bootstrap.md](../bootstrap.md).
+
+The command reads the trust from a local JSON file. The file is regular,
+owned by the current user or root and not writable by group/others. It may be
+publicly readable: it contains only **public** keys and policies. Private
+signing keys stay with the trusted client.
 
 ```json
 {
   "version": 1,
-  "max_token_bytes": 8192,
   "trusts": [{
     "tenant_id": "org_<existing_id>",
     "issuer": "https://client.example",
@@ -32,14 +35,8 @@ trusted client.
 Placeholders must be replaced before loading. The reader refuses unknown or
 duplicate fields, malformed or wrongly sized keys, duplicate `kid`s, extra JSON,
 unknown versions, ambiguous configurations and files over 1 MiB. It follows no
-symlink and downloads no key/JWKS. The API loads an immutable configuration at
-startup; changing it requires a restart. An old instance keeps its
-configuration, but the **current** trust reference in PostgreSQL is still
-required in every transaction.
-
-Loading this file is not enough to activate the trust. The operator must
-independently install its fingerprint in the database, from this explicit
-configuration:
+symlink and downloads no key/JWKS. `max_token_bytes`, if present, is ignored:
+the API accepts tokens of at most 8 KiB.
 
 ```bash
 agentcapsule-admin configure-delegation \
@@ -51,14 +48,21 @@ agentcapsule-admin configure-delegation \
 
 This local command uses `AGENTCAPSULE_DATABASE_URL` and the operator rights of
 that connection. It is not an endpoint usable with a JWT. Its JSON output
-contains only state, fingerprint, generation and `minimum_iat`. The audit
-identifies the local account by UID; it does not claim to identify an OIDC user.
-Installation does not create members: `issuer` and `subject` must already match
-a `user` principal and an active membership of the existing tenant.
+contains only state, fingerprint, generation, `minimum_iat` and, for a key
+change, the key ID and its end. The audit identifies the local account by UID;
+it does not claim to identify an OIDC user. Installation does not create
+members: `issuer` and `subject` must already match a `user` principal and an
+active membership of the existing tenant. An issuer and audience serve one
+organization only: installing them for a second one is refused.
+
+A trust installed before migration 0033 has only its fingerprint in
+PostgreSQL, not its keys: the API refuses its tokens until the operator runs
+`rotate` with its file.
 
 ## Tokens and authorization
 
-The client signs an EdDSA JWT with `kid`, `iss`, a single `aud`, `sub`, `jti`,
+The API verifies each token with the registered key its `kid` names, in the
+trust its `iss` and `aud` name. The client signs an EdDSA JWT with `kid`, `iss`, a single `aud`, `sub`, `jti`,
 `trust_generation`, `iat`, `exp` and the `org:read` scope for this route. `nbf`
 is optional. Dates are whole Unix seconds. The full profile is described in
 [delegatedidentity](../../internal/delegatedidentity/README.md).
@@ -70,14 +74,15 @@ and values exceeding the maximum signed 64-bit integer are refused.
 
 The tenant comes from the server-side trust. A `tenant_id` claim, if present,
 must simply match it. No `role`/`roles` claim grants permission. A valid
-signature is not enough: organization, principal, membership, issuer anchor and
-trust must exist and be active; the fingerprint, the current signed generation,
-the issuance threshold and the absence of a JTI revocation are checked. `iat`,
+signature is not enough: organization, principal, membership, issuer anchor,
+trust and key must exist and be active; the fingerprint, the current signed
+generation, the issuance threshold, the end of the key's overlap and the
+absence of a JTI revocation are checked. `iat`,
 `nbf` and `exp` are rechecked with the PostgreSQL clock, even if cryptographic
 authentication took place earlier.
 
 The consuming transaction repeats these checks in the order organization →
-principal → membership → issuer → trust, with locks held until commit.
+principal → membership → issuer → trust → key, with locks held until commit.
 Trust/JTI mutations take an exclusive lock on the issuer anchor. This also
 covers the case where no JTI tombstone exists yet. An already confirmed
 revocation forbids a new admission; a read admitted earlier may finish before
@@ -118,6 +123,17 @@ initial command, not the state of the trust after later commands.
 - `rotate`, with the same arguments as `install`, explicitly replaces or
   reactivates an existing trust and increments its generation, including when
   the fingerprint stays identical. The client then uses this signed generation.
+  A key absent from the new file is retired at once.
+- `add-key`, with `-audience`, `-key-id` and `-public-key` (standard base64),
+  adds a key to an active trust. Adding the same key again changes nothing.
+- `retire-key`, with `-audience`, `-key-id` and `-overlap` (0 by default, at
+  most 30 days), ends the key's validity after the overlap. An earlier end is
+  never pushed back. The last key without an end cannot be retired.
+
+`add-key` and `retire-key` keep the generation and the issuance threshold:
+tokens signed with the other keys of the trust keep working. This is the
+overlap of a routine key rotation. A key ID keeps its public key for good, and
+a retired key never returns, neither by `add-key` nor by `rotate`.
 - `revoke-trust`, with tenant/issuer/audience and without `trust-file`, revokes
   it.
 - `revoke-token`, with tenant/issuer/`token-id` and without audience or
