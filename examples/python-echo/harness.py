@@ -30,7 +30,8 @@ CREATE TABLE IF NOT EXISTS find_work (
 """
 
 # Codes after which retrying the same call cannot succeed.
-PERMANENT = {"unauthorized", "not_found", "mandate", "conflict", "expired", "transition", "invalid", "quota_exceeded", "rejected"}
+PERMANENT = {"unauthorized", "not_found", "mandate", "conflict", "expired", "transition", "invalid", "quota_exceeded", "rejected",
+             "capability_denied"}
 
 harness = Harness(json_content=True)
 

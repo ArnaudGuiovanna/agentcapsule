@@ -5,6 +5,7 @@ package agentadapter
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"iter"
 	"net/http/httptest"
 	"reflect"
@@ -19,6 +20,23 @@ import (
 )
 
 var rows = capsuleprotocol.ContentPart{Type: "json", JSON: `{"rows":[1,2]}`}
+
+// A call the agent's capabilities do not allow is refused in the terms of
+// the agent's SDK, as a permission error, not as an outage to retry.
+func TestCapabilityRefusalsAreExplained(t *testing.T) {
+	denied := &capsuleprotocol.PlatformError{Code: "capability_denied"}
+	if status, kind, _ := explain(denied, "default"); status != 403 || kind != "permission_error" {
+		t.Fatal("model call", status, kind)
+	}
+	if err := sendError(denied); !errors.Is(err, a2a.ErrUnauthorized) {
+		t.Fatal("request", err)
+	}
+	w := httptest.NewRecorder()
+	platformStatus(w, denied)
+	if w.Code != 403 {
+		t.Fatal("card", w.Code)
+	}
+}
 
 func structuredInvocation(t *testing.T, id string) harnessstore.Event {
 	t.Helper()

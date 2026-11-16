@@ -122,6 +122,10 @@ func platformStatus(w http.ResponseWriter, err error) {
 		plainError(w, http.StatusNotFound, "no such agent")
 		return
 	}
+	if errors.As(err, &remote) && remote.Code == "capability_denied" {
+		plainError(w, http.StatusForbidden, "this agent's harness or its policies do not allow it (agents.discover, agents.delegate)")
+		return
+	}
 	plainError(w, http.StatusServiceUnavailable, "the platform is unavailable; try again")
 }
 
@@ -267,6 +271,8 @@ func sendError(err error) error {
 		return invalid("the platform refused this request")
 	case "unauthorized":
 		return a2a.NewError(a2a.ErrUnauthorized, "this agent may not send requests now")
+	case "capability_denied":
+		return a2a.NewError(a2a.ErrUnauthorized, "this agent's harness or its policies do not allow requests to other agents (agents.delegate)")
 	case "quota_exceeded", "rate_limited":
 		return a2a.NewError(a2a.ErrServerError, "a platform limit refused this request; try again later")
 	}

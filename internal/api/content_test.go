@@ -58,6 +58,54 @@ func tenantInvocationLab(t *testing.T) (*apiDelegationFixture, *controlplane.Tra
 	return l, transit, agent, owner, l.sign(t, at, "bob-invoke", "bob", invokeScopes)
 }
 
+// EXT-003: the catalog of an agent's capabilities shows what its harness
+// requests, what its organization and the agent allow, and the effective set.
+func TestHTTPCapabilityCatalogAndPolicies(t *testing.T) {
+	l, _, agent, owner, bob := tenantInvocationLab(t)
+	path := "/v1/agents/" + agent + "/capabilities"
+	var v controlplane.AgentCapabilities
+	r := call(t, l.server, "GET", path, owner, "", "")
+	if r.Code != 200 || json.Unmarshal(r.Body.Bytes(), &v) != nil || v.Declared || len(v.Effective) != 3 || v.Release.Name != "reference" {
+		t.Fatal("catalog", r.Code, r.Body.String())
+	}
+	if r = call(t, l.server, "PUT", "/v1/organizations/current/capabilities", bob, "o-bob", `{"allowed":[]}`); r.Code != 403 {
+		t.Fatal("a member set the organization's policy", r.Code)
+	}
+	for _, bad := range []string{`{"allowed":["files.write"]}`, `{}`, `{"allowed":null}`} {
+		if r = call(t, l.server, "PUT", "/v1/organizations/current/capabilities", owner, "o-bad", bad); r.Code != 400 {
+			t.Fatal("accepted", bad, r.Code)
+		}
+	}
+	if r = call(t, l.server, "PUT", "/v1/organizations/current/capabilities", owner, "o1", `{"allowed":["llm.invoke","agents.delegate"]}`); r.Code != 200 {
+		t.Fatal("organization policy", r.Code, r.Body.String())
+	}
+	if r = call(t, l.server, "PUT", "/v1/organizations/current/capabilities", owner, "", `{"allowed":[]}`); r.Code != 400 {
+		t.Fatal("a policy change without an idempotency key", r.Code)
+	}
+	if r = call(t, l.server, "PUT", path, owner, "a1", `{"allowed":["llm.invoke"]}`); r.Code != 200 || json.Unmarshal(r.Body.Bytes(), &v) != nil ||
+		len(v.Effective) != 1 || v.Effective[0] != "llm.invoke" {
+		t.Fatal("agent policy", r.Code, r.Body.String())
+	}
+	var org controlplane.CapabilityPolicy
+	if r = call(t, l.server, "GET", "/v1/organizations/current/capabilities", owner, "", ""); r.Code != 200 || json.Unmarshal(r.Body.Bytes(), &org) != nil || len(org.Allowed) != 2 {
+		t.Fatal("organization policy read", r.Code, r.Body.String())
+	}
+	// Bob is assigned with read_metadata: he reads the catalog, but changes nothing.
+	if r = call(t, l.server, "GET", path, bob, "", ""); r.Code != 200 {
+		t.Fatal("an assignee cannot read the catalog", r.Code)
+	}
+	if r = call(t, l.server, "PUT", path, bob, "a-bob", `{"allowed":[]}`); r.Code != 403 {
+		t.Fatal("an assignee set the agent's policy", r.Code)
+	}
+	var releases struct {
+		Items []controlplane.HarnessRelease `json:"items"`
+	}
+	if r = call(t, l.server, "GET", "/v1/harness-releases", owner, "", ""); r.Code != 200 || json.Unmarshal(r.Body.Bytes(), &releases) != nil ||
+		len(releases.Items) != 1 || len(releases.Items[0].Capabilities) != 3 || releases.Items[0].CapabilitiesDeclared {
+		t.Fatal("releases", r.Code, r.Body.String())
+	}
+}
+
 // EXT-001: an invocation carries text and JSON parts, the JSON is validated
 // at the API, crosses the transit encryption unchanged, reaches the agent as
 // a JSON part and comes back in the result.

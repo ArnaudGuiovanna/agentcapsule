@@ -38,7 +38,8 @@ const auditUnion = `
     UNION ALL SELECT id,created_at,action,actor_principal_id,service_principal_id,coalesce(token_id,'') FROM tenant_service_audit WHERE tenant_id=$1
     UNION ALL SELECT id,created_at,'llm.'||action,actor_principal_id,coalesce(provider_id,budget_id),coalesce(alias,'') FROM llm_audit WHERE tenant_id=$1
     UNION ALL SELECT id,created_at,action,'platform:'||actor_account,tenant_id,'' FROM organization_audit WHERE tenant_id=$1 AND changed
-    UNION ALL SELECT id,created_at,'delegation.'||action,'operator',tenant_id,'' FROM delegation_audit WHERE tenant_id=$1 AND changed`
+    UNION ALL SELECT id,created_at,'delegation.'||action,'operator',tenant_id,'' FROM delegation_audit WHERE tenant_id=$1 AND changed
+    UNION ALL SELECT id,created_at,action,actor_principal_id,coalesce(agent_id,tenant_id),'' FROM capability_audit WHERE tenant_id=$1`
 
 func encodeAuditCursor(e AuditEvent) string {
 	return base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf("%d|%s", e.CreatedAt.UTC().UnixMicro(), e.ID)))

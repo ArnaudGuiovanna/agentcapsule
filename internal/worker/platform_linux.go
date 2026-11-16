@@ -296,3 +296,16 @@ func (a platformAPI) RequestStatus(ctx context.Context, requestID string) (capsu
 }
 
 var _ capsuleprotocol.PeerAPI = platformAPI{}
+
+// RequireCapability refuses a call whose capability the agent's harness did
+// not request or a policy denies (ADR 016). It is read from PostgreSQL at
+// each call, before the call's own placement and authority checks.
+func (a platformAPI) RequireCapability(ctx context.Context, name string) error {
+	err := a.store.RequireCapabilityFromVM(ctx, a.caller, name)
+	if errors.Is(err, controlplane.ErrCapability) {
+		return &capsuleprotocol.PlatformError{Code: "capability_denied"}
+	}
+	return platformError(err)
+}
+
+var _ capsuleprotocol.CapabilityAPI = platformAPI{}

@@ -6,3 +6,4 @@ architecture: x86_64
 base: agentcapsule-guest/1
 entrypoint: [/agentcapsule/capsule-adapter, /agentcapsule/adapter.json]
 description: An A2A server agent (official A2A Go SDK) run through capsule-adapter
+capabilities: [agents.delegate, agents.discover]

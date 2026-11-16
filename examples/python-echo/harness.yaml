@@ -6,3 +6,4 @@ architecture: x86_64
 base: agentcapsule-guest/1
 entrypoint: [/usr/local/bin/python3, -I, /opt/harness/harness.py]
 description: Reference Python harness (echo, durable counter, deferred model answers)
+capabilities: [llm.invoke, agents.discover]
