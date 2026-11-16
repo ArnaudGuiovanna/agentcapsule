@@ -44,9 +44,9 @@ func TestPreflightArtifactsNameThePinnedCopies(t *testing.T) {
 	c := ServiceConfig{Root: "/var/lib/agentcapsule/host", Firecracker: ServiceImage{"/opt/fc", "a"}, Jailer: ServiceImage{"/opt/j", "b"},
 		Kernel: ServiceImage{"/opt/k", "c"}, Initrd: ServiceImage{"/opt/i", "d"}}
 	got := c.PreflightArtifacts()
-	want := []preflight.Artifact{{"firecracker", "/opt/fc", "a", "/var/lib/agentcapsule/host/bin/firecracker"},
-		{"jailer", "/opt/j", "b", "/var/lib/agentcapsule/host/bin/jailer"}, {"kernel", "/opt/k", "c", "/var/lib/agentcapsule/host/bin/kernel"},
-		{"initrd", "/opt/i", "d", "/var/lib/agentcapsule/host/bin/initrd"}}
+	want := []preflight.Artifact{{Name: "firecracker", Path: "/opt/fc", SHA256: "a", Pinned: "/var/lib/agentcapsule/host/bin/firecracker"},
+		{Name: "jailer", Path: "/opt/j", SHA256: "b", Pinned: "/var/lib/agentcapsule/host/bin/jailer"}, {Name: "kernel", Path: "/opt/k", SHA256: "c", Pinned: "/var/lib/agentcapsule/host/bin/kernel"},
+		{Name: "initrd", Path: "/opt/i", SHA256: "d", Pinned: "/var/lib/agentcapsule/host/bin/initrd"}}
 	if len(got) != len(want) {
 		t.Fatal(got)
 	}

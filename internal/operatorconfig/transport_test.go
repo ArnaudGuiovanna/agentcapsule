@@ -272,9 +272,9 @@ func TestServerCertificateServesTLSAndReloads(t *testing.T) {
 	t.Cleanup(func() { server.Close() })
 	address := l.Addr().String()
 
-	serial := func(c tls.Config) (*big.Int, error) {
+	serial := func(c *tls.Config) (*big.Int, error) {
 		c.ServerName = "api.example"
-		conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 5 * time.Second}, "tcp", address, &c)
+		conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 5 * time.Second}, "tcp", address, c)
 		if err != nil {
 			return nil, err
 		}
@@ -283,11 +283,11 @@ func TestServerCertificateServesTLSAndReloads(t *testing.T) {
 	}
 	pool := x509.NewCertPool()
 	pool.AppendCertsFromPEM(first.certPEM)
-	got, err := serial(tls.Config{RootCAs: pool})
+	got, err := serial(&tls.Config{RootCAs: pool})
 	if err != nil || got.Cmp(first.template.SerialNumber) != 0 {
 		t.Fatal("handshake", err)
 	}
-	if _, err = serial(tls.Config{RootCAs: pool, MaxVersion: tls.VersionTLS11, MinVersion: tls.VersionTLS10}); err == nil {
+	if _, err = serial(&tls.Config{RootCAs: pool, MaxVersion: tls.VersionTLS11, MinVersion: tls.VersionTLS10}); err == nil {
 		t.Fatal("TLS 1.1 accepted")
 	}
 	// Clear text: the server answers no route, only a refusal.
@@ -306,7 +306,7 @@ func TestServerCertificateServesTLSAndReloads(t *testing.T) {
 		t.Fatal("reload", err)
 	}
 	pool.AppendCertsFromPEM(second.certPEM)
-	if got, err = serial(tls.Config{RootCAs: pool}); err != nil || got.Cmp(second.template.SerialNumber) != 0 {
+	if got, err = serial(&tls.Config{RootCAs: pool}); err != nil || got.Cmp(second.template.SerialNumber) != 0 {
 		t.Fatal("reload not served", err)
 	}
 	// A broken renewal keeps the certificate in service.
@@ -316,7 +316,7 @@ func TestServerCertificateServesTLSAndReloads(t *testing.T) {
 	if err = served.Reload(); !errors.Is(err, ErrTLSKeyMismatch) {
 		t.Fatal("mismatched reload accepted", err)
 	}
-	if got, err = serial(tls.Config{RootCAs: pool}); err != nil || got.Cmp(second.template.SerialNumber) != 0 {
+	if got, err = serial(&tls.Config{RootCAs: pool}); err != nil || got.Cmp(second.template.SerialNumber) != 0 {
 		t.Fatal("old certificate dropped after a failed reload", err)
 	}
 	if !served.NotAfter().Equal(second.template.NotAfter.Truncate(time.Second)) {
