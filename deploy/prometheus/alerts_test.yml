@@ -75,6 +75,96 @@ tests:
         alertname: AgentCapsuleDeliveryDead
         exp_alerts: []
 
+  # Capacity (OPS-03). The images' file system fills as the runtime root's
+  # does above; the images pass the storage pressure threshold at minute 11.
+  # Boots fail ten times from minute 6 to 16. The Directory fails from minute
+  # 6. Memory runs low from minute 6; the CPUs turn busy at minute 11.
+  - interval: 1m
+    input_series:
+      - series: 'agentcapsule_worker_image_disk_used_ratio{job="agentcapsule-worker",instance="host-1"}'
+        values: '0.50 0.75x20 0.85x10'
+      - series: 'agentcapsule_worker_storage_pressure{job="agentcapsule-worker",instance="host-1",filesystem="images"}'
+        values: '0x10 1x20'
+      - series: 'agentcapsule_worker_storage_pressure{job="agentcapsule-worker",instance="host-1",filesystem="data"}'
+        values: '0x30'
+      - series: 'agentcapsule_worker_vm_starts_total{job="agentcapsule-worker",instance="host-1",outcome="failed"}'
+        values: '0x5 0+1x10 10x30'
+      - series: 'agentcapsule_worker_directory_publish_retries_total{job="agentcapsule-worker",instance="host-1"}'
+        values: '0x5 0+1x40'
+      - series: 'node_memory_MemTotal_bytes{job="node",instance="host-1"}'
+        values: '1000x45'
+      - series: 'node_memory_MemAvailable_bytes{job="node",instance="host-1"}'
+        values: '500x5 50x40'
+      - series: 'node_cpu_seconds_total{job="node",instance="host-1",cpu="0",mode="idle"}'
+        values: '0+60x10 600+3x40'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: AgentCapsuleImageDiskPressure
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: AgentCapsuleImageDiskPressure
+        exp_alerts:
+          - exp_labels: {severity: warning, job: agentcapsule-worker, instance: host-1}
+            exp_annotations:
+              summary: The file system of the harness images is more than 70 % full.
+      - eval_time: 15m
+        alertname: AgentCapsuleImageDiskCritical
+        exp_alerts: []
+      - eval_time: 28m
+        alertname: AgentCapsuleImageDiskCritical
+        exp_alerts:
+          - exp_labels: {severity: critical, job: agentcapsule-worker, instance: host-1}
+            exp_annotations:
+              summary: The file system of the harness images is more than 80 % full.
+      - eval_time: 14m
+        alertname: AgentCapsuleStoragePressure
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: AgentCapsuleStoragePressure
+        exp_alerts:
+          - exp_labels: {severity: critical, job: agentcapsule-worker, instance: host-1, filesystem: images}
+            exp_annotations:
+              summary: A file system of the host is past its storage pressure threshold; new agents or harness imports are refused.
+      - eval_time: 5m
+        alertname: AgentCapsuleVMBootFailures
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: AgentCapsuleVMBootFailures
+        exp_alerts:
+          - exp_labels: {severity: warning, job: agentcapsule-worker, instance: host-1, outcome: failed}
+            exp_annotations:
+              summary: VMs failed to boot more than 3 times in 15 minutes.
+      - eval_time: 40m
+        alertname: AgentCapsuleVMBootFailures
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: AgentCapsuleDirectoryUnavailable
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: AgentCapsuleDirectoryUnavailable
+        exp_alerts:
+          - exp_labels: {severity: warning, job: agentcapsule-worker, instance: host-1}
+            exp_annotations:
+              summary: The worker cannot publish to the Directory.
+      - eval_time: 10m
+        alertname: AgentCapsuleHostMemoryLow
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: AgentCapsuleHostMemoryLow
+        exp_alerts:
+          - exp_labels: {severity: warning, job: node, instance: host-1}
+            exp_annotations:
+              summary: Less than 10 % of the host's memory is available.
+      - eval_time: 20m
+        alertname: AgentCapsuleHostCPUSaturated
+        exp_alerts: []
+      - eval_time: 35m
+        alertname: AgentCapsuleHostCPUSaturated
+        exp_alerts:
+          - exp_labels: {severity: warning, instance: host-1}
+            exp_annotations:
+              summary: The host's CPUs are more than 90 % busy.
+
   # WAL archiving (REC-03). host-1: archiving stuck from the start, failing
   # from minute 6. host-2: an idle database, archived an hour ago, nothing
   # waiting. host-3: archive_mode turned off at minute 10. host-4:
