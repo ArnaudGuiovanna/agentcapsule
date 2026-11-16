@@ -2,7 +2,8 @@
 
 * A message is answered at once with "python echo #N: <text>". N counts the
   messages this agent has ever received; it lives in the agent's encrypted
-  SQLite database, so it survives sleep and wake.
+  SQLite database, so it survives sleep and wake. The JSON parts of the
+  message follow, unchanged.
 * "/llm <alias> <text>" asks the organization's model through its alias. The
   answer cannot be produced during the delivery (the platform channel waits for
   it to end), so the harness records the work, answers "working", and posts the
@@ -16,7 +17,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from agentcapsule_harness import WORKING, Harness, PlatformError, text_result  # noqa: E402
+from agentcapsule_harness import WORKING, Harness, PlatformError, content_result, json_part, text_part, text_result  # noqa: E402
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS echo_counter (id INTEGER PRIMARY KEY CHECK (id = 1), n INTEGER NOT NULL);
@@ -31,7 +32,7 @@ CREATE TABLE IF NOT EXISTS find_work (
 # Codes after which retrying the same call cannot succeed.
 PERMANENT = {"unauthorized", "not_found", "mandate", "conflict", "expired", "transition", "invalid", "quota_exceeded", "rejected"}
 
-harness = Harness()
+harness = Harness(json_content=True)
 
 
 def schema(tx):
@@ -65,7 +66,7 @@ def invoke(invocation, tx):
         return WORKING
     tx.execute("INSERT INTO echo_counter(id, n) VALUES (1, 1) ON CONFLICT(id) DO UPDATE SET n = n + 1")
     n = tx.execute("SELECT n FROM echo_counter WHERE id = 1").fetchone()[0]
-    return text_result("python echo #%d: %s" % (n, text))
+    return content_result(text_part("python echo #%d: %s" % (n, text)), *(json_part(v) for v in invocation.values))
 
 
 @harness.on_event
