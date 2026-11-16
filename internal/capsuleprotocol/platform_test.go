@@ -65,11 +65,17 @@ func TestOwnerPostStrictFieldsAndSeparateOperation(t *testing.T) {
 
 func platformFixture(t *testing.T) (*PlatformClient, Credentials, Credentials, *platformFake, func(context.Context) (net.Conn, error)) {
 	t.Helper()
+	api := &platformFake{}
+	c, h, g, dial := platformFixtureFor(t, api)
+	return c, h, g, api, dial
+}
+
+func platformFixtureFor(t *testing.T, api PlatformAPI) (*PlatformClient, Credentials, Credentials, func(context.Context) (net.Conn, error)) {
+	t.Helper()
 	h, g, err := NewBootCredentials(Identity{Incarnation: 1, AgentID: "a", Generation: 1, VMID: "0123456789abcdef"}, time.Hour, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	api := &platformFake{}
 	handler, err := NewPlatformHandler(h.Identity, api)
 	if err != nil {
 		t.Fatal(err)
@@ -89,7 +95,7 @@ func platformFixture(t *testing.T) (*PlatformClient, Credentials, Credentials, *
 	if err != nil {
 		t.Fatal(err)
 	}
-	return client, h, g, api, dial
+	return client, h, g, dial
 }
 
 func TestPlatformFixedIdentityAndStrictPayload(t *testing.T) {

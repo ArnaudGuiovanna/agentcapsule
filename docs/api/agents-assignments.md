@@ -37,6 +37,12 @@ deletes a tenant agent. A tenant principal never reaches the legacy lists.
 | `GET /v1/agents/{id}/directory` | `agent:read` | a role that can read metadata, or a `read_metadata` assignment |
 | `PUT /v1/agents/{id}/inbound` | `agent:manage` | `org_owner`, `org_admin`, `agent_operator` |
 | `GET /v1/agents/{id}/inbound` | `agent:read` | a role that can read metadata, or a `read_metadata` assignment |
+| `GET /v1/agents/{id}/capabilities` | `agent:read` | a role that can read metadata, or a `read_metadata` assignment |
+| `PUT /v1/agents/{id}/capabilities` | `agent:manage` | `org_owner`, `org_admin`, `agent_operator` |
+| `GET /v1/organizations/current/capabilities` | `org:read` | `org_owner`, `org_admin`, `auditor` |
+| `PUT /v1/organizations/current/capabilities` | `quota:manage` | `org_owner`, `org_admin` |
+| `POST /v1/attachments/{id}/link`, `POST /v1/invocations/{id}/result/link` | `agent:content:read` | none: the content's own reader with `read_content` |
+| `GET /v1/downloads/{token}` | none | the link itself; see "Temporary download links" |
 
 The matrix of every route against every role and kind of caller, checked by
 a test, is in [rbac.md](rbac.md).
@@ -180,6 +186,35 @@ on the two routes never replays the response of the other form. Same key and
 same content replays the initial response; same key and different content
 answers 409.
 
+### Text and JSON content (EXT-001)
+
+A message's `content` holds 1 to 32 parts. A part is text, content type
+`text/plain`, or a JSON value, content type `application/json`
+([ADR 016](../adr/016-content-links-capabilities.md)):
+
+```json
+{"content":[{"type":"text","text":"Total these rows."},
+            {"type":"json","json":{"rows":[{"id":1,"amount":12.5}]}}]}
+```
+
+- **Bounds.** The text of the text parts and the compact form of the JSON
+  values add up to at most 32 KiB; the request body to at most 64 KiB. A JSON
+  value is any value but `null`, nested at most 32 levels, in UTF-8. The API
+  refuses anything else with 400 before storing it. The same value with other
+  spacing is the same request for idempotency.
+- **Transit.** The content is encrypted as before; JSON changes nothing there.
+- **Results.** An agent answers with the same parts: the result read by
+  `GET /v1/invocations/{id}/result` is `{"content":[...]}` for the reference
+  harnesses and SDKs. A harness may still answer with another JSON value at
+  delivery, as before.
+- **Harnesses that do not accept JSON.** A harness says at boot whether it
+  accepts JSON parts (control feature `content.json`, see
+  [capsule-control.md](../guest/capsule-control.md)). One that does not, such
+  as a harness built before JSON content, receives each JSON part as a text
+  part holding the compact JSON: `{"type":"text","text":"{\"rows\":[...]}"}`.
+  It never receives a part it would refuse. Requests and replies between
+  agents follow the same rule.
+
 ### Queues, deadlines and dead letters (EVT-02)
 
 - **TTL**: `ttl_seconds` (1 to 86 400, default 3 600) bounds the *wait before
@@ -226,7 +261,7 @@ answers 409.
   retries, delay between attempts and fence closure were already in place
   (`attempt_limit`, `RetryBase`, `RetryMax`, `RetireInstruction`).
 
-Limits: content remains text (the guest protocol has no JSON type); there is no
+Limits: there is no
 `/events` stream yet, no expiry signaled in the state, and no wake of a stopped
 recipient driven by this resource (EVT-02/CAP-02).
 
@@ -388,12 +423,85 @@ most 8).
   version.
 
 Limits: the file passes through the API's memory (8 MiB per simultaneous upload)
-and is stored in PostgreSQL, with no external object storage or temporary link.
+and is stored in PostgreSQL, with no external object storage.
 Media type parameters (`charset`, ...) are not kept. Results remain text: an
 agent cannot return a file yet.
 
 The guest reads its files **after** acknowledging "working" (next section):
 during delivery, its platform calls wait for the host's exclusive turn.
+
+### Temporary download links
+
+A file, or an invocation's result, can be fetched without the bearer token,
+through a link that works for a few minutes
+([ADR 016](../adr/016-content-links-capabilities.md)):
+
+```http
+POST /v1/attachments/{id}/link?ttl_seconds=300
+POST /v1/invocations/{id}/result/link
+→ 201 {"url":"/v1/downloads/dl_...","expires_at":"..."}
+GET /v1/downloads/dl_...      (no Authorization header)
+```
+
+- **Who.** Only who may read the content now: the file's sender, or the
+  invocation's requester, while they hold `read_content` on the agent (scope
+  `agent:content:read`). Anyone else gets 404.
+- **Bound to the caller and one resource.** The link is sealed with a key
+  derived from the installation's receipt key. It carries the credential that
+  minted it, narrowed to `agent:content:read`, and the resource, and shows
+  neither. It opens that one file or result, nothing else.
+- **Checked at each use.** Each download checks the credential, the
+  membership, the assignment and the resource again, exactly as a read with
+  the bearer: a revoked token, member or assignment, or a purged file, closes
+  the link at once. Reading a result through a link starts its retention as
+  the ordinary read does.
+- **Expiry.** 5 minutes by default, 30 seconds to 15 minutes, and never after
+  the minting credential expires. The link can be used several times until
+  then (a default pending the product owner). Minting stores nothing, so it
+  takes no `Idempotency-Key`.
+- **Nothing leaks.** An expired, changed or revoked link is the same 404. The
+  request log and the metrics record the route pattern
+  `/v1/downloads/{token}`, never the link. The answer carries
+  `Content-Disposition: attachment`, `X-Content-SHA256`,
+  `Referrer-Policy: no-referrer` and `Cache-Control: no-store`.
+
+## Capabilities (CAP-01, EXT-003)
+
+What an agent may ask the platform for over its platform channel, beyond
+answering the work delivered to it, is a set of capabilities
+([ADR 016](../adr/016-content-links-capabilities.md)):
+
+| Capability | Platform channel routes |
+|---|---|
+| `llm.invoke` | `/v1/llm/complete`, `/v1/llm/forward` |
+| `agents.delegate` | `/v1/agent-requests`, `/v1/agent-requests/{id}/status` |
+| `agents.discover` | `/v1/directory/find`, `/v1/directory/search`, `/v1/directory/agent` |
+
+Replies to delivered requests, invocation completions, owner messages and the
+invocation's own files need none.
+
+- **Effective set = harness ∩ organization ∩ agent.** The harness requests
+  capabilities in `harness.yaml` (`capabilities:`, see
+  [registry.md](../registry.md)); the importer records them on the release. A
+  manifest without the field predates it and requests every capability (a
+  default pending the product owner). The organization
+  (`PUT /v1/organizations/current/capabilities`) and the agent
+  (`PUT /v1/agents/{id}/capabilities`) each allow a set, `{"allowed":[...]}`;
+  without one, everything.
+- **Catalog.** `GET /v1/agents/{id}/capabilities` shows the pinned release's
+  request (`requested`, `declared`), the organization's and the agent's
+  policies, and the effective set.
+- **Enforcement.** The host's platform channel checks the capability a call
+  needs before the call reaches its effect, at each call: a policy change
+  applies to the agent's next call, without a reboot. A refusal is the typed
+  code `capability_denied` (HTTP 403 on the channel); the reference harness,
+  the Python SDK example and `capsule-adapter` treat it as final.
+- **Release changes.** The catalog and the check read the release the agent
+  is pinned to. A running VM keeps the harness it booted with until it stops,
+  while a release change applies to its capabilities at once.
+- **Audit.** Each policy change bumps the organization's policy version and
+  is audited (`organization.capabilities_changed`,
+  `agent.capabilities_changed`), with who and when, not what is used.
 
 ## Deferred result: the `working` state
 

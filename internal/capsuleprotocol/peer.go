@@ -4,30 +4,25 @@ import (
 	"bytes"
 	"encoding/json"
 	"slices"
-	"strings"
-	"unicode/utf8"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/harnessstore"
 )
 
 // PeerPayload is untrusted application data, never an instruction or a grant.
-// The encoded message is bounded to 64 KiB, including JSON escaping overhead.
+// It holds text and JSON parts. The encoded message is bounded to 64 KiB,
+// including JSON escaping overhead, in its text form (TextOnly): what a
+// recipient that does not accept JSON content receives fits the same bound.
 type PeerPayload struct {
-	Content []TextContent `json:"content"`
+	Content []ContentPart `json:"content"`
 }
 
 func (p PeerPayload) Validate() error {
-	if len(p.Content) < 1 || len(p.Content) > 32 {
-		return ErrProtocol
+	if err := validParts(p.Content, 0); err != nil {
+		return err
 	}
-	for _, c := range p.Content {
-		if c.Type != "text" || !utf8.ValidString(c.Text) || strings.TrimSpace(c.Text) == "" || strings.ContainsRune(c.Text, 0) {
-			return ErrProtocol
-		}
-	}
-	encoded, err := json.Marshal(p)
+	encoded, err := json.Marshal(PeerPayload{Content: TextOnly(p.Content)})
 	defer clear(encoded)
-	if err != nil || len(encoded) > 64*1024 {
+	if err != nil || len(encoded) > MaxPeerPayloadBytes {
 		return ErrProtocol
 	}
 	return nil

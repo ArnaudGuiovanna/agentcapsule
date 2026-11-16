@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorization"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/capability"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/ociregistry"
 	"github.com/jackc/pgx/v5"
 )
@@ -39,10 +40,16 @@ type HarnessRelease struct {
 	RootfsBytes  int64  `json:"rootfs_bytes,omitempty"`
 	// Signer is the ID of the publisher key whose signature was verified at
 	// import, absent for a release imported without signature policy.
-	Signer       string     `json:"signer,omitempty"`
-	State        string     `json:"state"`
-	CreatedAt    time.Time  `json:"created_at"`
-	DeprecatedAt *time.Time `json:"deprecated_at,omitempty"`
+	Signer string `json:"signer,omitempty"`
+	// Capabilities is what the release's harness.yaml requests (ADR 016).
+	// CapabilitiesDeclared is false for a manifest that predates the field
+	// (and a release approved locally): it is treated as requesting every
+	// capability.
+	Capabilities         []string   `json:"capabilities"`
+	CapabilitiesDeclared bool       `json:"capabilities_declared"`
+	State                string     `json:"state"`
+	CreatedAt            time.Time  `json:"created_at"`
+	DeprecatedAt         *time.Time `json:"deprecated_at,omitempty"`
 }
 
 type HarnessImportInput struct {
@@ -61,14 +68,16 @@ func scanImport(row pgx.Row) (HarnessImport, error) {
 }
 
 const releaseColumns = `id,name,version,artifact_digest,source,coalesce(reference,''),coalesce(rootfs_digest,''),coalesce(rootfs_bytes,0),coalesce(signer,''),
-    CASE WHEN enabled THEN 'READY' ELSE 'DEPRECATED' END,created_at,deprecated_at`
+    capabilities,CASE WHEN enabled THEN 'READY' ELSE 'DEPRECATED' END,created_at,deprecated_at`
 
 func scanRelease(row pgx.Row) (HarnessRelease, error) {
 	var v HarnessRelease
-	err := row.Scan(&v.ID, &v.Name, &v.Version, &v.Digest, &v.Source, &v.Reference, &v.RootfsDigest, &v.RootfsBytes, &v.Signer, &v.State, &v.CreatedAt, &v.DeprecatedAt)
+	var capabilities []string
+	err := row.Scan(&v.ID, &v.Name, &v.Version, &v.Digest, &v.Source, &v.Reference, &v.RootfsDigest, &v.RootfsBytes, &v.Signer, &capabilities, &v.State, &v.CreatedAt, &v.DeprecatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = ErrNotFound
 	}
+	v.Capabilities, v.CapabilitiesDeclared = releaseCapabilities(capabilities)
 	return v, err
 }
 
@@ -270,14 +279,20 @@ type ImportedRelease struct {
 	RootfsBytes                 int64
 	// Signer is the verified publisher key ID, or empty.
 	Signer string
+	// Capabilities is what harness.yaml requests; nil when it does not say.
+	Capabilities *[]string
 }
 
 // CompleteHarnessImport publishes the release. name:version is immutable: if
 // it already belongs to another digest, the import is rejected instead.
 func (s *Store) CompleteHarnessImport(ctx context.Context, job ImportJob, r ImportedRelease) (HarnessImport, error) {
 	if !catalogName(r.Name) || !catalogName(r.Version) || r.RootfsBytes < 1 || len(r.RootfsDigest) != 71 ||
-		(r.Signer != "" && len(r.Signer) != 71) {
+		(r.Signer != "" && len(r.Signer) != 71) || (r.Capabilities != nil && capability.ValidSet(*r.Capabilities) != nil) {
 		return HarnessImport{}, ErrInput
+	}
+	var requested []string // NULL: not declared
+	if r.Capabilities != nil {
+		requested = capability.Intersect(*r.Capabilities)
 	}
 	tx, err := s.begin(ctx)
 	if err != nil {
@@ -297,8 +312,8 @@ func (s *Store) CompleteHarnessImport(ctx context.Context, job ImportJob, r Impo
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		releaseID = newID("rel")
-		if _, err = tx.Exec(ctx, `INSERT INTO harness_releases(id,name,version,artifact_digest,source,reference,rootfs_digest,rootfs_bytes,signer)
-            VALUES($1,$2,$3,$4,'oci',$5,$6,$7,nullif($8,''))`, releaseID, r.Name, r.Version, job.Digest, job.Reference, r.RootfsDigest, r.RootfsBytes, r.Signer); err != nil {
+		if _, err = tx.Exec(ctx, `INSERT INTO harness_releases(id,name,version,artifact_digest,source,reference,rootfs_digest,rootfs_bytes,signer,capabilities)
+            VALUES($1,$2,$3,$4,'oci',$5,$6,$7,nullif($8,''),$9)`, releaseID, r.Name, r.Version, job.Digest, job.Reference, r.RootfsDigest, r.RootfsBytes, r.Signer, requested); err != nil {
 			return HarnessImport{}, err
 		}
 	case err != nil:

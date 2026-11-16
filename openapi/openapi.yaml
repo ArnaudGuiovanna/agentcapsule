@@ -112,6 +112,43 @@ paths:
         '401': {$ref: '#/components/responses/Problem'}
         '403': {$ref: '#/components/responses/Problem'}
         '503': {$ref: '#/components/responses/Problem'}
+  /v1/organizations/current/capabilities:
+    get:
+      description: >-
+        What the caller's organization allows its agents to ask the platform
+        for (ADR 016): owners, administrators and auditors (org:read). Without
+        a policy, every capability.
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      responses:
+        '200':
+          description: Organization capability policy
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CapabilityPolicy'}
+        '403': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
+    put:
+      description: >-
+        Replaces what the organization allows (quota:manage; owners and
+        administrators). Applies to the next platform channel call of every
+        agent. Bumps the organization's policy version; audited
+        (organization.capabilities_changed).
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CapabilityPolicy'}
+      responses:
+        '200':
+          description: Policy set, or initial response replayed
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CapabilityPolicy'}
+        '400': {$ref: '#/components/responses/Problem'}  # invalid_request: unknown or repeated capability
+        '403': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
   /v1/organizations/{id}:
     get:
       operationId: getOrganization
@@ -1751,6 +1788,49 @@ paths:
         '404': {$ref: '#/components/responses/Problem'}
         '409': {$ref: '#/components/responses/Problem'}  # agent_unavailable: not live (provisioning or deleted)
         default: {$ref: '#/components/responses/Problem'}
+  /v1/agents/{id}/capabilities:
+    get:
+      description: >-
+        Catalog of the agent's capabilities (EXT-003, ADR 016): what the
+        harness release it is pinned to requests in harness.yaml, what its
+        organization and the agent allow, and the effective intersection, which
+        the platform channel enforces at each call. Readable by whoever may
+        read the agent's metadata.
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters: [{$ref: '#/components/parameters/ResourceID'}]
+      responses:
+        '200':
+          description: Capability catalog
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AgentCapabilities'}
+        '404': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
+    put:
+      description: >-
+        Replaces what this live agent allows (agent:manage; owners,
+        administrators, agent operators). Allowing a capability the harness
+        does not request or the organization denies grants nothing. Applies to
+        the agent's next call; bumps the organization's policy version;
+        audited (agent.capabilities_changed).
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CapabilityPolicy'}
+      responses:
+        '200':
+          description: Policy set (the catalog after it), or initial response replayed
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AgentCapabilities'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}  # agent_unavailable: not live
+        default: {$ref: '#/components/responses/Problem'}
   /v1/agents/{id}/inbound:
     get:
       description: >-
@@ -1951,6 +2031,74 @@ paths:
               schema: {$ref: '#/components/schemas/Attachment'}
         '404': {$ref: '#/components/responses/Problem'}
         '409': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/attachments/{id}/link:
+    post:
+      description: >-
+        Mints a temporary download link to a stored file (ADR 016), for its
+        sender only, while they hold read_content on its agent
+        (agent:content:read). Any other caller gets 404. Minting stores
+        nothing, so it takes no Idempotency-Key: two calls give two links.
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/ResourceID'}
+        - {name: ttl_seconds, in: query, required: false, schema: {type: integer, minimum: 30, maximum: 900, default: 300}, description: "How long the link works."}
+      responses:
+        '201':
+          description: A link to GET without credentials until expires_at
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DownloadLink'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/invocations/{id}/result/link:
+    post:
+      description: >-
+        Mints a temporary download link to an invocation's result, with the
+        rule of the result read: its requester, while they hold read_content
+        (agent:content:read). No Idempotency-Key, as for a file's link.
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/ResourceID'}
+        - {name: ttl_seconds, in: query, required: false, schema: {type: integer, minimum: 30, maximum: 900, default: 300}, description: "How long the link works."}
+      responses:
+        '201':
+          description: A link to GET without credentials until expires_at
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/DownloadLink'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '401': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/downloads/{token}:
+    get:
+      description: >-
+        Serves what a temporary link opens, without an Authorization header.
+        The link is sealed by the platform: it names one resource and carries
+        the credential that minted it, narrowed to agent:content:read, and
+        shows neither. Each download checks that credential, the membership,
+        the assignment and the resource again, as a read with the bearer would;
+        a revocation closes the link at once. An expired, changed or revoked
+        link, or a resource no longer stored, is the same 404. The request log
+        records the route pattern, never the link.
+      security: []
+      parameters:
+        - {name: token, in: path, required: true, schema: {type: string, pattern: '^dl_[A-Za-z0-9_-]+$', maxLength: 4096}}
+      responses:
+        '200':
+          description: >-
+            The file, with its media type, or the result as application/json.
+            Content-Disposition attachment with the file name, X-Content-SHA256,
+            Referrer-Policy no-referrer, Cache-Control no-store.
+          headers:
+            X-Content-SHA256: {schema: {type: string, pattern: '^[0-9a-f]{64}$'}}
+          content:
+            '*/*':
+              schema: {type: string, format: binary}
+        '404': {$ref: '#/components/responses/Problem'}
         default: {$ref: '#/components/responses/Problem'}
   /v1/invocations/{id}/result:
     get:
@@ -2275,6 +2423,11 @@ components:
         rootfs_digest: {type: string}
         rootfs_bytes: {type: integer}
         signer: {type: string, pattern: '^sha256:[0-9a-f]{64}$', description: "ID (SHA-256 of the DER public key) of the publisher key whose signature was verified at import. Absent when the registry rule trusted no publisher key."}
+        capabilities:
+          type: array
+          items: {$ref: '#/components/schemas/Capability'}
+          description: "What the release's harness.yaml requests (ADR 016)."
+        capabilities_declared: {type: boolean, description: "false for a manifest that predates the field, or a locally approved release: it is treated as requesting every capability."}
         state: {type: string, enum: [READY, DEPRECATED]}
         created_at: {type: string, format: date-time}
         deprecated_at: {type: string, format: date-time}
@@ -2354,14 +2507,14 @@ components:
           type: array
           minItems: 1
           maxItems: 32
-          description: Non-empty UTF-8 text, without NUL. Total text limited to 32768 bytes. HTTP envelope limited to 64 KiB.
-          items:
-            type: object
-            additionalProperties: false
-            required: [type, text]
-            properties:
-              type: {type: string, const: text}
-              text: {type: string, minLength: 1}
+          description: >-
+            Text parts (content type text/plain): non-empty UTF-8, without NUL.
+            JSON parts (application/json): any JSON value but null, nested at
+            most 32 levels. Text and the compact form of JSON values add up to
+            at most 32768 bytes. HTTP envelope limited to 64 KiB. A harness that
+            does not accept JSON content receives each JSON part as a text part
+            holding its compact JSON (ADR 016).
+          items: {$ref: '#/components/schemas/ContentPart'}
     Resources:
       type: object
       additionalProperties: false
@@ -2633,6 +2786,48 @@ components:
           uniqueItems: true
           items: {type: integer, minimum: 1, maximum: 99999999}
           description: OASF 1.1.0 domain class IDs, such as 111 (artificial intelligence)
+    ContentPart:
+      description: "One part of a message: text (content type text/plain) or a JSON value (application/json)."
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [type, text]
+          properties:
+            type: {type: string, const: text}
+            text: {type: string, minLength: 1}
+        - type: object
+          additionalProperties: false
+          required: [type, json]
+          properties:
+            type: {type: string, const: json}
+            json: {description: "Any JSON value but null, nested at most 32 levels."}
+    Capability:
+      type: string
+      enum: [llm.invoke, agents.delegate, agents.discover]
+      description: "llm.invoke: call the organization's models. agents.delegate: send requests to other agents and follow them. agents.discover: search and describe the organization's agents."
+    CapabilityPolicy:
+      type: object
+      additionalProperties: false
+      required: [allowed]
+      properties:
+        allowed: {type: array, uniqueItems: true, items: {$ref: '#/components/schemas/Capability'}}
+    AgentCapabilities:
+      type: object
+      required: [agent_id, release, requested, declared, organization, agent, effective]
+      properties:
+        agent_id: {type: string}
+        release: {$ref: '#/components/schemas/HarnessReference'}
+        requested: {type: array, items: {$ref: '#/components/schemas/Capability'}, description: "What the pinned release requests."}
+        declared: {type: boolean, description: "false when the release's manifest predates the field: it requests every capability."}
+        organization: {type: array, items: {$ref: '#/components/schemas/Capability'}}
+        agent: {type: array, items: {$ref: '#/components/schemas/Capability'}}
+        effective: {type: array, items: {$ref: '#/components/schemas/Capability'}, description: "requested ∩ organization ∩ agent; what the platform channel allows. A call outside it is refused with capability_denied."}
+    DownloadLink:
+      type: object
+      required: [url, expires_at]
+      properties:
+        url: {type: string, description: "Path of GET /v1/downloads/{token} on this API."}
+        expires_at: {type: string, format: date-time}
     InboundPolicy:
       type: object
       required: [agent_id, mode]
@@ -2781,19 +2976,13 @@ components:
       type: object
       additionalProperties: false
       required: [content]
-      description: Encoded JSON limited to 64 KiB. Non-empty UTF-8 text, without NUL.
+      description: Encoded JSON limited to 64 KiB, counting JSON parts in their text form. Text parts are non-empty UTF-8 without NUL; JSON parts any value but null, nested at most 32 levels.
       properties:
         content:
           type: array
           minItems: 1
           maxItems: 32
-          items:
-            type: object
-            additionalProperties: false
-            required: [type, text]
-            properties:
-              type: {type: string, const: text}
-              text: {type: string, minLength: 1}
+          items: {$ref: '#/components/schemas/ContentPart'}
     RequestView:
       type: object
       required: [id, sender_agent_id, recipient_agent_id, state, expires_at]

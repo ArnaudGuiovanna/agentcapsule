@@ -2,12 +2,14 @@ package agentadapter
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"strings"
 	"time"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2aclient"
+
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
 )
 
 // Readiness tells whether the agent's server accepts connections.
@@ -40,6 +42,12 @@ func ServerRunner(cfg Config, server Readiness) Runner {
 		}
 		defer client.Destroy()
 		m := a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart(job.Text))
+		if len(job.Content) > 0 {
+			// Text parts as text, JSON parts as A2A data parts.
+			if m.Parts, err = toParts(job.Content); err != nil {
+				return Output{}
+			}
+		}
 		m.ID = "agentcapsule-" + job.ID
 		result, err := client.SendMessage(ctx, &a2a.SendMessageRequest{Message: m, Config: &a2a.SendMessageConfig{ReturnImmediately: true}})
 		if err != nil {
@@ -91,20 +99,49 @@ func ServerRunner(cfg Config, server Readiness) Runner {
 	}
 }
 
-// answerOf keeps the text of the parts, or of fallback when they hold none.
+// answerOf keeps the text and data parts of parts, or of fallback when they
+// hold none. Data parts become JSON parts; other parts are dropped.
 func answerOf(parts, fallback a2a.ContentParts) Output {
-	texts := func(parts a2a.ContentParts) []string {
-		var out []string
-		for _, p := range parts {
-			if t, ok := p.Content.(a2a.Text); ok {
-				out = append(out, string(t))
+	content := fromParts(parts)
+	if len(content) == 0 {
+		content = fromParts(fallback)
+	}
+	out := Output{Completed: true, Text: joined(content)}
+	if capsuleprotocol.HasJSON(content) {
+		out.Content = content
+	}
+	return out
+}
+
+// fromParts keeps the text parts and the data parts, as JSON parts.
+func fromParts(parts a2a.ContentParts) []capsuleprotocol.ContentPart {
+	var out []capsuleprotocol.ContentPart
+	for _, p := range parts {
+		switch v := p.Content.(type) {
+		case a2a.Text:
+			out = append(out, capsuleprotocol.ContentPart{Type: "text", Text: string(v)})
+		case a2a.Data:
+			if b, err := json.Marshal(v.Value); err == nil && v.Value != nil {
+				out = append(out, capsuleprotocol.ContentPart{Type: "json", JSON: capsuleprotocol.JSONValue(b)})
 			}
 		}
-		return out
 	}
-	text := texts(parts)
-	if len(text) == 0 {
-		text = texts(fallback)
+	return out
+}
+
+// toParts gives text parts as A2A text parts and JSON parts as data parts.
+func toParts(content []capsuleprotocol.ContentPart) (a2a.ContentParts, error) {
+	out := make(a2a.ContentParts, 0, len(content))
+	for _, c := range content {
+		if c.Type != "json" {
+			out = append(out, a2a.NewTextPart(c.Text))
+			continue
+		}
+		var v any
+		if err := json.Unmarshal([]byte(c.JSON), &v); err != nil {
+			return nil, err
+		}
+		out = append(out, a2a.NewDataPart(v))
 	}
-	return Output{Completed: true, Text: strings.Join(text, "\n\n")}
+	return out, nil
 }
