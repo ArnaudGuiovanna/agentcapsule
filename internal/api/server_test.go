@@ -3,11 +3,18 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -257,14 +264,20 @@ func TestAPIBinariesBootstrapServeAndShutdown(t *testing.T) {
 	}
 	metricsAddress := l.Addr().String()
 	_ = l.Close()
+	// Production: HTTPS only, with a certificate for the loopback address.
+	certFile, certKeyFile := filepath.Join(dir, "api.crt"), filepath.Join(dir, "api.key")
+	first := writeServerCertificate(t, certFile, certKeyFile)
+	roots := x509.NewCertPool()
+	roots.AddCert(first)
 	log, err := os.Create(filepath.Join(dir, "api.log"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer log.Close()
 	cmd := exec.CommandContext(t.Context(), filepath.Join(dir, "agentcapsule-api"), "-listen", address, "-receipt-key-file", keyFile, "-host-id", "local",
-		"-transit-active-key", "v1", "-transit-key", "v1="+transitKey, "-metrics-listen", metricsAddress)
-	cmd.Env = env
+		"-transit-active-key", "v1", "-transit-key", "v1="+transitKey, "-metrics-listen", metricsAddress,
+		"-tls-cert", certFile, "-tls-key", certKeyFile, "-tls-server-name", "127.0.0.1")
+	cmd.Env = append(env, "AGENTCAPSULE_MODE=")
 	cmd.Stdout = log
 	cmd.Stderr = log
 	if err = cmd.Start(); err != nil {
@@ -279,7 +292,7 @@ func TestAPIBinariesBootstrapServeAndShutdown(t *testing.T) {
 			<-done
 		}
 	})
-	client := &http.Client{Timeout: time.Second}
+	client := &http.Client{Timeout: time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots}}}
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		select {
@@ -288,7 +301,7 @@ func TestAPIBinariesBootstrapServeAndShutdown(t *testing.T) {
 			t.Fatalf("API exited before ready: %v", err)
 		default:
 		}
-		r, err := client.Get("http://" + address + "/v1/health/ready")
+		r, err := client.Get("https://" + address + "/v1/health/ready")
 		if err == nil {
 			io.Copy(io.Discard, r.Body)
 			r.Body.Close()
@@ -301,7 +314,7 @@ func TestAPIBinariesBootstrapServeAndShutdown(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	req, err := http.NewRequestWithContext(t.Context(), "POST", "http://"+address+"/v1/users", strings.NewReader(`{"display_name":"Process user"}`))
+	req, err := http.NewRequestWithContext(t.Context(), "POST", "https://"+address+"/v1/users", strings.NewReader(`{"display_name":"Process user"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -328,6 +341,31 @@ func TestAPIBinariesBootstrapServeAndShutdown(t *testing.T) {
 	if m.StatusCode != 200 || !strings.Contains(string(exposition), `agentcapsule_api_requests_total{route="/v1/users",method="POST",status_class="2xx"} 1`) {
 		t.Fatal("metrics", m.StatusCode, string(exposition))
 	}
+	// Clear text reaches no route: the TLS listener answers it with a refusal.
+	if r, err := (&http.Client{Timeout: time.Second}).Get("http://" + address + "/v1/health/ready"); err == nil {
+		r.Body.Close()
+		if r.StatusCode != http.StatusBadRequest {
+			t.Fatal("clear text served", r.StatusCode)
+		}
+	}
+	// A renewed certificate is served after SIGHUP, to new connections.
+	second := writeServerCertificate(t, certFile, certKeyFile)
+	if err = cmd.Process.Signal(syscall.SIGHUP); err != nil {
+		t.Fatal(err)
+	}
+	served := func() *big.Int {
+		conn, err := tls.Dial("tcp", address, &tls.Config{InsecureSkipVerify: true}) // only to read the certificate
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		return conn.ConnectionState().PeerCertificates[0].SerialNumber
+	}
+	for deadline := time.Now().Add(10 * time.Second); served().Cmp(second.SerialNumber) != 0; time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the renewed certificate is not served after SIGHUP")
+		}
+	}
 	if err = cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
@@ -351,4 +389,45 @@ func TestAPIBinariesBootstrapServeAndShutdown(t *testing.T) {
 	if !strings.Contains(string(output), `"event":"http_request","request_id":"`+created+`","route":"/v1/users","method":"POST","status":201`) {
 		t.Fatal("no event for the request", string(output))
 	}
+}
+
+// writeServerCertificate replaces the API's certificate files with a new
+// self-signed certificate for 127.0.0.1 and returns it.
+func writeServerCertificate(t *testing.T, certFile, keyFile string) *x509.Certificate {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serial, _ := rand.Int(rand.Reader, big.NewInt(1<<62))
+	template := &x509.Certificate{SerialNumber: serial, Subject: pkix.Name{CommonName: "agentcapsule-api"}, NotBefore: time.Now().Add(-time.Hour),
+		NotAfter: time.Now().Add(24 * time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		IPAddresses: []net.IP{net.ParseIP("127.0.0.1")}}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for path, block := range map[string]*pem.Block{certFile: {Type: "CERTIFICATE", Bytes: der}, keyFile: {Type: "PRIVATE KEY", Bytes: keyDER}} {
+		mode := os.FileMode(0o644)
+		if path == keyFile {
+			mode = 0o600
+		}
+		// A new file renamed into place, as a renewal tool does.
+		next := path + ".next"
+		if err = os.WriteFile(next, pem.EncodeToMemory(block), mode); err != nil {
+			t.Fatal(err)
+		}
+		if err = os.Rename(next, path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	certificate, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return certificate
 }

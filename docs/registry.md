@@ -273,7 +273,8 @@ In the worker configuration ([example](../runtime/worker/config.example.json)):
   non-public addresses are refused at dial time, after DNS resolution, so a public
   name cannot be pointed at an internal address. `"local": true` lifts this and
   allows plain HTTP for a registry on the operator's own network; never use it for a
-  public registry.
+  public registry. In production the worker refuses to start with such a rule
+  ([ADR 010](adr/010-transport-security-and-preflight.md)); it is for development.
 - Environment proxy settings are ignored.
 
 ### Publisher signatures
