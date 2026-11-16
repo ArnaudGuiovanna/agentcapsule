@@ -10,13 +10,18 @@ just the feature. `scripts/check-acceptance.py`, run by the hygiene check,
 fails when a requirement of §4 has no row, when a met row cites no test, or
 when a cited test or file no longer exists.
 
-State on 2026-11-16: `mvp-integration` with the install from scratch. Work
-still landing will change rows:
-- JSON content and the capabilities catalogue (EXT-001, EXT-003);
-- re-admission after capacity returns (EVT-007);
-- operations and load (OPS-03);
-- LLM egress and the key policy (LLM-003, LLM-008);
-- the authority service's wave 3 (the restore rows).
+State on 2026-11-16: `mvp-integration` with the install from scratch, then
+the day's merges:
+- JSON content, download links and capabilities (ADR 016);
+- the capacity queue, `QUEUED` and the replay of dead letters (ADR 017);
+- operations: storage pressure, diagnostics, guarded commands, audit
+  retention and the load test (ADR 014);
+- the model providers' egress check, which no row of §4 names (OPS-01 and
+  LLM-02 in the roadmap);
+- key destruction checking the seal (ADR 006 wave 3).
+
+Work still landing will change rows: the API's connection to the authority
+service (ADR 006 wave 4) and the restore onto another host (OUT-7, OPR-12).
 
 Update the row with the change that proves it.
 
@@ -43,28 +48,30 @@ Each test is followed by its kind:
 The control and runtime tests last passed on 2026-11-09. The code changed
 since: drive rate limiters, a network namespace per VMM and the restart
 budget (ADR 012); delivery closure (ADR 007); the worker on the authority
-service (ADR 006 wave 2). A met row that rests on a KVM test holds for the
+service and the seal check (ADR 006 waves 2 and 3); JSON content,
+capabilities and the bounded guest `/tmp` (ADR 016); the capacity queue
+(ADR 017). A met row that rests on a KVM test holds for the
 code of that run. The next KVM run with the integrated guest must confirm it
 ([below](#kvm-runs-the-mvp-still-needs)).
 
 ## Summary
 
-Of the 65 requirements of §4: 39 met, 24 partial, 1 not met, 1 needs KVM.
+Of the 65 requirements of §4: 44 met, 20 partial, 0 not met, 1 needs KVM.
 
 | Part | Met | Partial | Not met | Needs KVM |
 |---|---|---|---|---|
 | Organizations, identity and authorization | 7 | 2 | 0 | 0 |
-| Isolation | 5 | 0 | 2 | 0 |
+| Isolation | 6 | 0 | 1 | 0 |
 | Harness registry and supply chain | 7 | 3 | 0 | 0 |
-| Capsules and runtime | 7 | 4 | 0 | 1 |
-| Invocations and events | 6 | 4 | 0 | 0 |
-| LLM gateway | 2 | 6 | 0 | 0 |
+| Capsules and runtime | 8 | 3 | 0 | 1 |
+| Invocations and events | 7 | 3 | 0 | 0 |
+| LLM gateway | 3 | 5 | 0 | 0 |
 | Discovery and inter-agent communication | 10 | 2 | 0 | 0 |
-| Content, capabilities and clients | 0 | 3 | 1 | 0 |
-| API conventions | 3 | 5 | 1 | 0 |
+| Content, capabilities and clients | 2 | 2 | 0 | 0 |
+| API conventions | 4 | 5 | 0 | 0 |
 | The MVP outcome as one scenario | 4 | 2 | 0 | 1 |
-| Deployment and operations | 8 | 9 | 5 | 1 |
-| **All rows** | **59** | **40** | **9** | **3** |
+| Deployment and operations | 11 | 7 | 4 | 1 |
+| **All rows** | **69** | **34** | **5** | **3** |
 
 ## Requirements
 
@@ -80,7 +87,7 @@ Of the 65 requirements of §4: 39 met, 24 partial, 1 not met, 1 needs KVM.
 | TEN-006 | Revoked sessions and tokens make no new call | met | [`TestRBACMatrix`](../internal/api/rbac_matrix_test.go) (PG): revoked members and tokens get 401 on every route; [`TestHTTPMembersIdempotencyAndRevocation`](../internal/api/members_test.go) (PG): a token signed before the revocation is refused, replays included; [`TestMembersRevocationWaitsForAdmissionAndRefusesStaleReplay`](../internal/controlplane/members_test.go) (PG) | — |
 | TEN-007 | Typed refusal before any reservation | partial | [`TestQueueDepthRefusesBeforeAnythingIsAccepted`](../internal/controlplane/instruction_queues_test.go) (PG): tasks; [`TestHardBudgetRefusesBeforeTheCallAndReleaseGivesCapacityBack`](../internal/controlplane/llm_budgets_test.go) (PG): LLM budget; [`TestAttachmentQuotaHoldsUnderConcurrencyAndExpiryFreesIt`](../internal/controlplane/attachments_test.go) (PG): attachment storage; [`TestAgentReservationConcurrentOwnerAndStorage`](../internal/controlplane/agent_catalog_test.go) (PG): host storage, legacy domain | No organization quota on agents, active VMs, RAM or CPU (TEN-07). Volume storage is a host limit that answers 503, and its tenant path is untested |
 | TEN-008 | OIDC/JWT or signed delegation; free-form user IDs refused | met | [`TestOperatorBootstrapFromEmptyDatabase`](../internal/api/bootstrap_test.go) (PG, real API): headers, bare names, unsigned or foreign-signed tokens, unknown subjects get 401; [`TestSignaturesAndAlgorithmConfusionAreRejected`](../internal/delegatedidentity/verifier_test.go), [`TestRequiredClaimsAndTrustBoundaries`](../internal/delegatedidentity/verifier_test.go) (unit); [`TestTenantIdentityNeedsExplicitTrustAndExistingIdentity`](../internal/controlplane/tenant_identity_test.go) (PG); [verify-install.py](../scripts/verify-install.py) (script) | — (EdDSA JWTs only; OIDC discovery is P1) |
-| TEN-009 | Who, when, resource, outcome; no conversation content | partial | [`TestAuditFeedIsCompletePagedAndMetadataOnly`](../internal/controlplane/audit_feed_test.go) (PG): actor, time, target, action; [`TestPlatformCredentialIsAudited`](../internal/controlplane/operator_bootstrap_test.go) (PG); [`TestOrganizationAuditFailureRollsBackCreationAndDisable`](../internal/controlplane/organizations_test.go) (PG) | No outcome: only committed changes are recorded, refused attempts leave none. No test checks the trail for content after invocations. Queue-limit changes and harness imports are in neither feed |
+| TEN-009 | Who, when, resource, outcome; no conversation content | partial | [`TestAuditFeedIsCompletePagedAndMetadataOnly`](../internal/controlplane/audit_feed_test.go) (PG): actor, time, target, action; [`TestAuditShowsQueueLimitChanges`](../internal/controlplane/operations_test.go) (PG): queue-limit changes; [`TestOperatorCommandsAreDryRunAndAudited`](../internal/controlplane/operations_test.go) (PG): the operator's commands with their outcome, refusals included; [`TestPlatformCredentialIsAudited`](../internal/controlplane/operator_bootstrap_test.go) (PG); [`TestOrganizationAuditFailureRollsBackCreationAndDisable`](../internal/controlplane/organizations_test.go) (PG) | An organization's refused attempts leave no event: only the operator's commands record an outcome. No test checks the trail for content after invocations. Harness imports and replays of dead letters are recorded (`harness_audit`, `instruction_replays`) but in neither feed |
 
 ### Isolation
 
@@ -94,7 +101,7 @@ authentication, never from a request body.
 | ISO-2 | Metrics | met | [`TestHTTPTelemetry`](../internal/api/telemetry_test.go) (PG): route patterns only; [`TestModelCallMetricsAndEventsCarryNoTenant`](../internal/worker/llm_telemetry_test.go) (unit) | — (metrics are the operator's; no tenant route serves them) |
 | ISO-3 | Logs | met | [`TestHTTPTelemetry`](../internal/api/telemetry_test.go) (PG); [`TestAPIBinariesBootstrapServeAndShutdown`](../internal/api/server_test.go) (PG): the API process log holds no token, name or DSN; [`TestFreeTextNeverReachesMetricsOrLogs`](../internal/telemetry/telemetry_test.go) (unit) | — |
 | ISO-4 | Attachments | met | [`TestRBACMatrix`](../internal/api/rbac_matrix_test.go) (PG): 404 to other callers; [`TestProductWorkerTwoOrganizationsStayIsolated`](../internal/worker/product_organizations_integration_test.go) (KVM 2026-11-15): another organization's file cannot be read or attached | — |
-| ISO-5 | Download URLs | not met | — | The feature does not exist: attachments are never downloaded (EVT-04) |
+| ISO-5 | Download URLs | met | [`TestRBACMatrix`](../internal/api/rbac_matrix_test.go) (PG): another organization's owner gets 404 on both link routes, and a bearer opens no download; [`TestHTTPTemporaryDownloadLinks`](../internal/api/downloads_test.go) (PG): only the sender gets a link, which opens its one resource and nothing once the right is gone; [`TestDownloadLinksExpireAndStaySealed`](../internal/controlplane/download_links_test.go) (unit): another installation's link opens nothing | — |
 | ISO-6 | Statistics | not met | [`TestRBACMatrix`](../internal/api/rbac_matrix_test.go) (PG) checks only the status of `GET /v1/llm/usage` and `GET /v1/queue` for another organization | No test asserts that another organization's numbers are absent. The code filters by organization |
 | ISO-7 | Organization from authentication, never from a body | met | [`TestHTTPMembersTenantAndCredentialBoundaries`](../internal/api/members_test.go) (PG): `tenant_id` in a body gets 400, in a query is ignored; [`TestHTTPTeamsLifecycleAndInput`](../internal/api/teams_test.go), [`TestHTTPDelegationCurrentOrganizationAndBoundaries`](../internal/api/delegated_identity_test.go) (PG); [`TestVerifiedIdentityComesFromConfiguredTrust`](../internal/delegatedidentity/verifier_test.go) (unit) | — |
 
@@ -127,7 +134,7 @@ authentication, never from a request body.
 | RUN-008 | Nothing left for another capsule | partial | [`TestProductWorkerTwoOrganizationsStayIsolated`](../internal/worker/product_organizations_integration_test.go) (KVM 2026-11-15): distinct VM, UID and volume; [`TestProductGuestEncryptedPersistenceAndIsolation`](../internal/runtime/product_guest_integration_test.go) (KVM 2026-11-15): a volume alias refused; [`TestRecoverIsolatesAFailingAgent`](../internal/runtime/firecracker_removal_test.go) (unit) | No test that the jail, cgroup, sockets and credentials are gone after a stop, or that a UID is never reused. `verify-vm-isolation.py` runs its own jailer lab, not the product runtime |
 | RUN-009 | Write, stop, restart, read the same value | met | [`TestProductWorkerTenantRunsAPythonHarness`](../internal/worker/product_registry_integration_test.go) (KVM 2026-11-15): the harness's counter continues after sleep and wake; [`TestProductWorkerTwoOwnersPrivateExchange`](../internal/worker/product_peers_integration_test.go), [`TestProductGuestEncryptedPersistenceAndIsolation`](../internal/runtime/product_guest_integration_test.go) (KVM 2026-11-15) | — |
 | RUN-010 | Execution observed only in guests | partial | [`TestProductWorkerTenantRunsAnImportedHarness`](../internal/worker/product_registry_integration_test.go) (KVM 2026-11-15): the harness exists only on the guest's drive and answers | Nothing checks that no harness code runs on the host (for example, that the API and the worker import no harness package) |
-| RUN-011 | `FAILED` or `QUEUED`; no spawn loop | partial | [`TestAnAgentWhoseGuestKeepsFailingIsFailed`](../internal/controlplane/restart_budgets_test.go) (PG): `FAILED` after the restart budget, no more boots; [`TestCrashesSpendTheRestartBudget`](../internal/controlplane/restart_budgets_test.go), [`TestGuestFailuresAreCountedAndLogged`](../internal/worker/restart_budget_test.go) (PG); [`TestProductWorkerStopsBootingAGuestThatCrashesAtBoot`](../internal/worker/product_limits_integration_test.go) (KVM, never run) | The KVM test has never run. No `QUEUED` state: saturation defers the job, and the agent's status shows nothing |
+| RUN-011 | `FAILED` or `QUEUED`; no spawn loop | met | [`TestAnAgentWhoseGuestKeepsFailingIsFailed`](../internal/controlplane/restart_budgets_test.go) (PG): `FAILED` after the restart budget, no more boots; [`TestAFullHostAdmitsWaitingWorkInArrivalOrder`](../internal/controlplane/capacity_queue_test.go) (PG): an agent waiting for a VM slot shows `QUEUED`, and no longer once admitted; [`TestAFailedAgentDoesNotWaitForCapacity`](../internal/controlplane/capacity_queue_test.go) (PG); [`TestCrashesSpendTheRestartBudget`](../internal/controlplane/restart_budgets_test.go), [`TestGuestFailuresAreCountedAndLogged`](../internal/worker/restart_budget_test.go) (PG) | — ([`TestProductWorkerStopsBootingAGuestThatCrashesAtBoot`](../internal/worker/product_limits_integration_test.go) (KVM) has never run) |
 | RUN-012 | No Firecracker mode without `/dev/kvm` and a compatible kernel | met | [`TestKVMDevice`](../internal/preflight/preflight_test.go), [`TestKernelVersion`](../internal/preflight/preflight_test.go), [`TestMandatoryOnAGoodFakeHost`](../internal/preflight/preflight_test.go) (unit): the checks fail on a bad device or an old kernel; [verify-install.py](../scripts/verify-install.py) (script): the worker binary refuses to start when a mandatory check fails, and passes every check on this machine with the artifacts | — (not run as root, nor on a production server) |
 
 ### Invocations and events
@@ -138,12 +145,12 @@ authentication, never from a request body.
 | EVT-002 | `STOPPED → READY → BUSY`, unattended | partial | [`TestProductWorkerNightlyVolumeArchives`](../internal/worker/product_archives_integration_test.go) (KVM 2026-11-15): an invocation wakes a stopped agent and completes, without a wake call; [`TestProductWorkerTenantAgentsTalkOverA2A`](../internal/worker/product_adapter_integration_test.go) (KVM 2026-11-15): a request wakes its recipient | No test reads the state through the sequence, and `BUSY` is not a state of the code |
 | EVT-003 | One key, one business operation | met | [`TestConcurrentIdempotencyAndMandateBudget`](../internal/controlplane/store_test.go) (PG): 18 concurrent calls with one key, one request; [`TestInstructionRollbackConcurrentReplayAndSharedSequence`](../internal/controlplane/instructions_test.go) (PG); [`TestInvocationResourceFollowsTheRequestWithoutExposingContent`](../internal/controlplane/tenant_invocations_test.go) (PG); [`TestHTTPInstructionsOwnerOnlyAndDurableReceipt`](../internal/api/instructions_test.go) (PG): same answer, 422 on another body | — |
 | EVT-004 | Never two writable copies | met | [`TestPlacementConcurrentLeasesAndFencing`](../internal/controlplane/placements_test.go) (PG); [`TestVMGenerationGuardsIncludingIdempotentReplay`](../internal/controlplane/vm_authorization_test.go) (PG); [`TestFirecrackerConcurrentStartAndGenerations`](../internal/runtime/firecracker_integration_test.go), [`TestFirecrackerCrossRegistryVolumeAlias`](../internal/runtime/firecracker_integration_test.go) (KVM 2026-11-09): one writer per volume | — |
-| EVT-005 | No unbounded loop | met | [`TestExhaustedDeliveryFencesLateWorkerAndNotifiesSender`](../internal/controlplane/delivery_test.go) (PG): the attempt limit ends the delivery; [`TestInstructionRetirementFencesDelayedEffectAndKeepsUnknownOutcome`](../internal/controlplane/instruction_delivery_test.go) (PG); [`TestDeadDeliveryIsCountedAndLogged`](../internal/worker/dead_delivery_test.go) (PG); [`TestWorkFairRetryLeaseAndConcurrentClaims`](../internal/controlplane/work_test.go) (PG): retry delay honored | — (the backoff formula has no unit test; dead-letter replay is not built) |
+| EVT-005 | No unbounded loop | met | [`TestExhaustedDeliveryFencesLateWorkerAndNotifiesSender`](../internal/controlplane/delivery_test.go) (PG): the attempt limit ends the delivery; [`TestInstructionRetirementFencesDelayedEffectAndKeepsUnknownOutcome`](../internal/controlplane/instruction_delivery_test.go) (PG); [`TestDeadDeliveryIsCountedAndLogged`](../internal/worker/dead_delivery_test.go) (PG); [`TestWorkFairRetryLeaseAndConcurrentClaims`](../internal/controlplane/work_test.go) (PG): retry delay honored | — (the backoff formula has no unit test; a dead letter goes back only by a person's replay: [`TestTheOperatorReplaysADeadLetter`](../internal/controlplane/instruction_replays_test.go) (PG)) |
 | EVT-006 | Expired tasks never run | met | [`TestInvocationTTLAndExpiryAreVisibleAndDistinct`](../internal/controlplane/instruction_queues_test.go) (PG): an expired head ends `expired` without a result; [`TestExpirationWaitsForEffectAndAtomicNotification`](../internal/controlplane/delivery_test.go) (PG): the old envelope is fenced; [`TestQueueDepthRefusesBeforeAnythingIsAccepted`](../internal/controlplane/instruction_queues_test.go), [`TestQueueTenantLimitSpansAgentsAndIsolatesTenants`](../internal/controlplane/instruction_queues_test.go) (PG): agent and organization limits | — (priority left the MVP: ADR 007) |
-| EVT-007 | Resumes, or expires with a clear error | partial | [`TestDeliveryBackpressureDoesNotConsumeAttempt`](../internal/controlplane/delivery_admission_test.go) (PG): blocked admission waits, then delivers; [`TestExpiredDeliveryDiesWithoutItsRecipient`](../internal/controlplane/dead_delivery_test.go) (PG); [`TestMaintenanceDefersAtCapacityAndResumesWithoutDemand`](../internal/worker/maintenance_integration_test.go) (KVM 2026-11-09) | No test of an invocation waiting for host capacity, then resuming: at capacity, dispatch stops another VM. The expiry error does not name capacity. Re-admission is on its way (EVT-02) |
+| EVT-007 | Resumes, or expires with a clear error | met | [`TestAFullHostAdmitsWaitingWorkInArrivalOrder`](../internal/controlplane/capacity_queue_test.go) (PG): work waits for a VM slot, in arrival order across organizations, and boots when one frees; [`TestWorkWaitingPastItsTTLNeverRunsAndLeavesTheQueue`](../internal/controlplane/capacity_queue_test.go) (PG): past its deadline it ends `expired` with `capacity_unavailable`; [`TestInterruptedWorkIsResumed`](../internal/controlplane/capacity_queue_test.go) (PG); [`TestDeliveryBackpressureDoesNotConsumeAttempt`](../internal/controlplane/delivery_admission_test.go) (PG): blocked admission waits, then delivers | — |
 | EVT-008 | Runs no earlier than due | met | [`TestScheduledInvocationIsNeverReleasedBeforeItsTimeAndExactlyOnce`](../internal/controlplane/scheduling_test.go) (PG): nothing released before the due time, once after it; [`TestScheduleBoundsCancellationAndQueueAccounting`](../internal/controlplane/scheduling_test.go) (PG) | — |
 | EVT-009 | `GET /v1/operations/{id}` gives state and result or error | met | [`TestHTTPInstructionResultFromRealHarnessAfterLostACK`](../internal/api/instruction_process_test.go) (PG, real harness process): 404 before the result, then 200 with it; [`TestHTTPLifecycleCommandsArePrivateAndRemainObservable`](../internal/api/lifecycle_test.go) (PG): state and error code; [`TestProductWorkerTenantAsyncInvocationWithFileAndModel`](../internal/worker/product_tenant_integration_test.go) (KVM 2026-11-15): polled to `completed` | — (the result is at `/v1/operations/{id}/result` and `/v1/invocations/{id}/result`) |
-| EVT-010 | No stop during uncheckpointed work | partial | [`TestWorkingAgentIsNotPutToSleepByItsIdlePolicy`](../internal/controlplane/invocation_completion_test.go) (PG); [`TestWorkKeepsAnAgentAwake`](../internal/controlplane/idle_policy_test.go), [`TestIdleAgentSleepsOnceAfterItsDelayAndNeverBefore`](../internal/controlplane/idle_policy_test.go) (PG); [`TestQuiesceStopRequiresGuestACKAndPhysicalRetirement`](../internal/worker/quiesce_test.go) (PG) | Work the platform cannot see is not covered. At capacity, dispatch stops another VM without checking its work. The idle loop has not run on KVM |
+| EVT-010 | No stop during uncheckpointed work | partial | [`TestWorkingAgentIsNotPutToSleepByItsIdlePolicy`](../internal/controlplane/invocation_completion_test.go) (PG); [`TestWorkKeepsAnAgentAwake`](../internal/controlplane/idle_policy_test.go), [`TestIdleAgentSleepsOnceAfterItsDelayAndNeverBefore`](../internal/controlplane/idle_policy_test.go) (PG); [`TestWorkStopsOnlyVMsThatAreNotComputing`](../internal/controlplane/capacity_queue_test.go) (PG): a full host never stops a computing VM; [`TestQuiesceStopRequiresGuestACKAndPhysicalRetirement`](../internal/worker/quiesce_test.go) (PG) | Work the platform cannot see is not covered. The idle loop has not run on KVM |
 
 ### LLM gateway
 
@@ -151,8 +158,8 @@ authentication, never from a request body.
 |---|---|---|---|---|
 | LLM-001 | No mandatory provider | met | [`TestEstimatedCostIsExactAtTheBounds`](../internal/controlplane/llm_cost_test.go) (PG): three aliases on two providers in one organization; [`TestProductWorkerTwoOrganizationsStayIsolated`](../internal/worker/product_organizations_integration_test.go) (KVM 2026-11-15): an organization without a provider runs its agent; [`TestModelBridgeIsUnavailableUntilEnabled`](../internal/worker/llm_errors_test.go) (unit) | — |
 | LLM-002 | Mock tests plus optional live tests | partial | [`TestOpenAIAdapterWireFormatAndUsage`](../internal/llmgateway/gateway_test.go), [`TestAnthropicAdapterWireFormat`](../internal/llmgateway/gateway_test.go), [`TestForwardAnthropicCountsCachedInput`](../internal/llmgateway/forward_test.go) (unit); [`TestLiveOfficialSDKsThroughTheModelEndpoint`](../internal/agentadapter/live_test.go) (optional, `verify-adapter.py` against a local model) | No live test against Anthropic's own API (LLM-02); no recorded live run of the `Complete` path of the Anthropic adapter |
-| LLM-003 | No key in volumes, snapshots or traces | partial | [`TestLLMProviderSecretsStayWriteOnlyAndEncrypted`](../internal/controlplane/llm_providers_test.go) (PG): the stored ciphertext and the answers hold no key; [`TestLLMBridgeCarriesOnlyAnAliasAndTypedOutcomes`](../internal/capsuleprotocol/platform_test.go) (unit): a key never crosses to the VM; [`TestProductWorkerTenantAsyncInvocationWithFileAndModel`](../internal/worker/product_tenant_integration_test.go) (KVM 2026-11-15): the key is added on the host | No test searches volumes, archives, logs or traces for the key. The audit check in the first test never runs its assertion (see the findings) |
-| LLM-004 | Unauthorized agents refused | partial | [`TestDeniedAliasNeverReachesTheProvider`](../internal/controlplane/llm_access_test.go) (PG): no reservation, no provider call; [`TestListedAliasServesOnlyGrantedAgentsAndTeams`](../internal/controlplane/llm_access_test.go) (PG); [`TestModelCallFromAVMIsBoundToItsTenantAndPlacement`](../internal/controlplane/llm_vm_test.go) (PG): a stale VM refused | The harness's `llm.invoke` capability (the scope) is neither enforced nor tested (CAP-01) |
+| LLM-003 | No key in volumes, snapshots or traces | partial | [`TestLLMProviderSecretsStayWriteOnlyAndEncrypted`](../internal/controlplane/llm_providers_test.go) (PG): the stored ciphertext, the answers, the audit and the stored receipt hold no key; [`TestLLMBridgeCarriesOnlyAnAliasAndTypedOutcomes`](../internal/capsuleprotocol/platform_test.go) (unit): a key never crosses to the VM; [`TestProductWorkerTenantAsyncInvocationWithFileAndModel`](../internal/worker/product_tenant_integration_test.go) (KVM 2026-11-15): the key is added on the host | No test searches volumes, archives, logs or traces for the key |
+| LLM-004 | Unauthorized agents refused | met | [`TestDeniedAliasNeverReachesTheProvider`](../internal/controlplane/llm_access_test.go) (PG): no reservation, no provider call; [`TestListedAliasServesOnlyGrantedAgentsAndTeams`](../internal/controlplane/llm_access_test.go) (PG); [`TestModelCallFromAVMIsBoundToItsTenantAndPlacement`](../internal/controlplane/llm_vm_test.go) (PG): a stale VM refused; [`TestPlatformChannelEnforcesCapabilities`](../internal/capsuleprotocol/platform_capability_test.go) (unit): a model call without `llm.invoke` is refused before it reaches the gateway; [`TestEffectiveCapabilitiesAreTheIntersection`](../internal/controlplane/capabilities_test.go) (PG) | — ([`TestProductWorkerEnforcesCapabilities`](../internal/worker/product_content_integration_test.go) (KVM) has never run) |
 | LLM-005 | Per-period metrics; hard and soft caps | partial | [`TestScopedAndSoftBudgets`](../internal/controlplane/llm_budgets_test.go) (PG): an agent's hard cap refuses, an organization's soft cap flags; [`TestHardCostBudgetReservesSettlesAndRefusesBeforeTheProvider`](../internal/controlplane/llm_cost_test.go), [`TestAgentCostBudgetAndSoftCostCap`](../internal/controlplane/llm_cost_test.go) (PG); [`TestModelCallMetricsAndEventsCarryNoTenant`](../internal/worker/llm_telemetry_test.go) (unit) | No test of a per-model (alias) budget, nor of a period rolling over |
 | LLM-006 | Quota errors explicit; no reboot loop | partial | [`TestModelBridgeErrorsCrossAsEnumeratedCodesOnly`](../internal/worker/llm_errors_test.go) (unit): `quota_exceeded`, `rate_limited`; [`TestPlatformOutcomesBecomeSDKErrors`](../internal/agentadapter/model_test.go) (unit); [`TestRetriesOnlyBeforeAcceptanceAndNeverOnDefiniteRefusal`](../internal/llmgateway/gateway_test.go), [`TestBreakerOpensThenProbesOnce`](../internal/llmgateway/gateway_test.go) (unit) | No test that a quota or provider error leaves the VM running, without a restart |
 | LLM-007 | Effective on the next request | met | [`TestLLMRotationAndDisableApplyToTheNextCall`](../internal/controlplane/llm_providers_test.go) (PG): the next route resolution uses the new key, a disabled provider is gone; [`TestLLMRoutesDoNotCrossTenantsAndAliasDisableIsImmediate`](../internal/controlplane/llm_providers_test.go) (PG); [`TestLLMProviderEndpointsNeverReturnTheCredential`](../internal/api/llm_test.go) (PG) | — (the key is resolved at each call; no test checks the header sent after a rotation) |
@@ -164,7 +171,7 @@ authentication, never from a request body.
 |---|---|---|---|---|
 | A2A-001 | Updated when capabilities change | met | [`TestPublisherAgainstThePrivateDirectory`](../internal/directory/services_test.go) (interop): the record passes OASF 1.1.0, a skill change publishes a new record; [`TestDirectoryProfilesAreGovernedAndPublishedByRevision`](../internal/controlplane/agent_directory_test.go) (PG); [`TestRecordPublishesOnlyTheDescribedFields`](../internal/directory/directory_test.go) (unit) | — (capabilities are the skills the organization declares; the harness's never feed the record) |
 | A2A-002 | Skill search works while `STOPPED` | met | [`TestProductWorkerTenantFlagshipJourney`](../internal/worker/product_flagship_integration_test.go) (KVM 2026-11-15): B asleep, A finds it by skill from its VM; [`TestPublisherAgainstThePrivateDirectory`](../internal/directory/services_test.go) (interop) | — |
-| A2A-003 | Other organizations invisible | met | [`TestDirectorySearchFromAVMIsCheckedAgainstPostgreSQL`](../internal/controlplane/agent_directory_test.go) (PG); [`TestPublisherAgainstThePrivateDirectory`](../internal/directory/services_test.go) (interop): another organization's scope finds nothing; [`TestDescribeAgentFromAVMFollowsTheRecipientRules`](../internal/controlplane/peer_reads_test.go) (PG) | — (the filter is the organization and discoverability; there is no assignment filter, unlike docs/interop.md) |
+| A2A-003 | Other organizations invisible | met | [`TestDirectorySearchFromAVMIsCheckedAgainstPostgreSQL`](../internal/controlplane/agent_directory_test.go) (PG); [`TestPublisherAgainstThePrivateDirectory`](../internal/directory/services_test.go) (interop): another organization's scope finds nothing; [`TestDescribeAgentFromAVMFollowsTheRecipientRules`](../internal/controlplane/peer_reads_test.go) (PG) | — (the filter is the organization and discoverability; there is no assignment filter) |
 | A2A-004 | Agent Card and transitions tested on the pinned spec | met | [`TestTheOfficialA2AClientSendsARequestAndGetsTheReply`](../internal/agentadapter/a2a_test.go) (unit): the official a2a-go client checks the card and the states; [`TestRequestsThatEndWithoutAReply`](../internal/agentadapter/a2a_test.go), [`TestTheA2AEndpointRefusals`](../internal/agentadapter/a2a_test.go), [`TestCardsAndDiscovery`](../internal/agentadapter/a2a_test.go) (unit) | — |
 | A2A-005 | Visible in the private SLIM node | partial | [`TestBridgesCarryDeliveriesThroughTheNode`](../runtime/slimbridge/services_test.go) (interop); [`TestA2AOverSLIMThroughThePrivateNode`](../runtime/interop/a2aslim/a2aslim_test.go) (interop); [`TestProductWorkerTenantAgentsTalkOverSLIM`](../internal/worker/product_slim_integration_test.go) (KVM 2026-11-15) | No test observes the exchange on the node itself: only the bridges' output is asserted, and the node's logs are kept but not read |
 | A2A-006 | Worker crash loses no accepted task | met | [`TestDeliveryWorkerProcessCrash`](../internal/controlplane/delivery_test.go) (PG): a SIGKILL before or after the commit, the request delivered once; [`TestWorkDatabaseRecovery`](../internal/controlplane/work_test.go) (PG, WAL recovery); [`TestDispatchWorkerCrashRecovery`](../internal/worker/dispatch_integration_test.go) (KVM 2026-11-09) | — |
@@ -179,10 +186,10 @@ authentication, never from a request body.
 
 | ID | Acceptance | Status | Proof | Missing |
 |---|---|---|---|---|
-| EXT-001 | Invocation works | partial | [`TestProductWorkerTenantAsyncInvocationWithFileAndModel`](../internal/worker/product_tenant_integration_test.go) (KVM 2026-11-15): a text invocation; [`TestHTTPInstructionResultFromRealHarnessAfterLostACK`](../internal/api/instruction_process_test.go) (PG) | Structured JSON content does not exist yet: the guest protocol accepts text only (in progress) |
+| EXT-001 | Invocation works | met | [`TestHTTPInvocationCarriesStructuredJSON`](../internal/api/content_test.go) (PG): text and JSON parts, the JSON validated at the API, through the transit encryption to the agent as a JSON part, and back in the result; [`TestJSONContentReachesTheRunAndComesBack`](../internal/agentadapter/content_test.go), [`TestContentPartsCarryStructuredJSON`](../internal/capsuleprotocol/content_test.go) (unit); [`TestProductWorkerTenantAsyncInvocationWithFileAndModel`](../internal/worker/product_tenant_integration_test.go) (KVM 2026-11-15): a text invocation | — (JSON on KVM, [`TestProductWorkerDeliversJSONContent`](../internal/worker/product_content_integration_test.go), has never run) |
 | EXT-002 | Right agent only; cross-tenant refused | partial | [`TestAttachmentReachesOnlyItsRunningInvocationEncrypted`](../internal/controlplane/attachments_test.go) (PG): only the recipient's current VM, while its invocation runs; [`TestAttachmentUploadRulesAreEnforcedBeforeStoring`](../internal/controlplane/attachments_test.go) (PG): MIME, size, hash; [`TestProductWorkerTwoOrganizationsStayIsolated`](../internal/worker/product_organizations_integration_test.go) (KVM 2026-11-15): cross-tenant refused | No test attaches a file uploaded for agent A to an invocation of agent B of the same organization |
-| EXT-003 | Matches manifest and policy | not met | — | No catalogue of harness capabilities: the manifest has no capabilities field (in progress) |
-| EXT-008 | Every MVP feature usable without a UI | partial | [`TestRBACMatrixCoversEveryRoute`](../internal/api/rbac_matrix_test.go) (unit): every feature is an HTTP route; [verify-install.py](../scripts/verify-install.py) (script): the install and an organization's first steps by CLI and curl | No example for agents, assignments, invocations, polling, wake and sleep, inbound and held requests, service accounts, audit, LLM providers and budgets; nothing tests the examples. No diagnostic export (API-02) |
+| EXT-003 | Matches manifest and policy | met | [`TestHTTPCapabilityCatalogAndPolicies`](../internal/api/content_test.go) (PG): an agent's catalog shows what its harness requests, what its organization and the agent allow, and the effective set; [`TestEffectiveCapabilitiesAreTheIntersection`](../internal/controlplane/capabilities_test.go), [`TestReleasesRecordTheCapabilitiesTheyRequest`](../internal/controlplane/capabilities_test.go) (PG); [`TestManifestDeclaresItsCapabilities`](../internal/harnesspkg/package_test.go) (unit); [`TestPlatformChannelEnforcesCapabilities`](../internal/capsuleprotocol/platform_capability_test.go) (unit): a call outside the effective set is refused | — ([`TestProductWorkerEnforcesCapabilities`](../internal/worker/product_content_integration_test.go) (KVM) has never run) |
+| EXT-008 | Every MVP feature usable without a UI | partial | [`TestRBACMatrixCoversEveryRoute`](../internal/api/rbac_matrix_test.go) (unit): every feature is an HTTP route; [verify-install.py](../scripts/verify-install.py) (script): the install and an organization's first steps by CLI and curl | No example for agents, assignments, invocations, polling, wake and sleep, inbound and held requests, service accounts, audit, LLM providers and budgets; nothing tests the examples |
 
 ### API conventions
 
@@ -195,7 +202,7 @@ authentication, never from a request body.
 | CONV-5 | Opaque IDs and cursors | partial | [`TestAuditFeedIsCompletePagedAndMetadataOnly`](../internal/controlplane/audit_feed_test.go) (PG): an opaque cursor, a bad one refused; [`TestHTTPAuditFeed`](../internal/api/tenant_agents_test.go) (PG) | No test of the IDs' shape; other cursors are the last resource ID |
 | CONV-6 | `application/problem+json` with a stable `code` | met | [`TestHTTPAccountsAndRoleBoundary`](../internal/api/server_test.go) (PG): 12 error cases; [`TestEveryProblemCodeIsDeclared`](../internal/api/telemetry_test.go) (unit): every code is in a closed list | — |
 | CONV-7 | Bounded payloads | met | [`TestHTTPAccountsAndRoleBoundary`](../internal/api/server_test.go) (PG): a 70 kB body gets 413; [`TestHTTPTenantInvocationIsGovernedByAssignments`](../internal/api/tenant_agents_test.go) (PG): an oversized attachment gets 413; [`TestMalformedAndOversizedTokensFailWithoutIdentity`](../internal/delegatedidentity/verifier_test.go) (unit) | — |
-| CONV-8 | Temporary download URLs bound to identity | not met | — | The feature does not exist (ISO-5) |
+| CONV-8 | Temporary download URLs bound to identity | met | [`TestHTTPTemporaryDownloadLinks`](../internal/api/downloads_test.go) (PG): a link is bound to the person who asked and to one resource, works without the bearer, and opens nothing once that person loses the right; [`TestDownloadLinksExpireAndStaySealed`](../internal/controlplane/download_links_test.go) (unit): it expires, shows nothing of what it opens, and stands for its principal narrowed to reading content | — |
 | CONV-9 | No route forwards a raw Firecracker or shell command | partial | [`TestHTTPAgentReservationsAndOwnerIsolation`](../internal/api/agents_test.go) (PG): `host_id` and `volume_path` refused; [`TestRBACMatrixCoversEveryRoute`](../internal/api/rbac_matrix_test.go) (unit): a closed list of routes | Nothing asserts that the API never links the runtime or the worker; true today |
 
 ## The MVP outcome as one scenario
@@ -232,16 +239,16 @@ The promises of §2 and §3.
 | DEP-1 | Self-hosted, no external telemetry without consent | not met | — | No test denies egress during a run. By design, metrics are served on loopback and nothing calls out |
 | DEP-2 | Single host; off-host backups mandatory | partial | [verify-backups.py](../scripts/verify-backups.py), [verify-archive-shipping.py](../scripts/verify-archive-shipping.py) (script) | Nothing makes backups mandatory: the worker's `archives` section is optional |
 | DEP-3 | KVM required; a preflight refuses an incompatible host | partial | [`TestKVMDevice`](../internal/preflight/preflight_test.go), [`TestCgroups`](../internal/preflight/preflight_test.go), [`TestRuntimeFileSystemAndDisk`](../internal/preflight/preflight_test.go) (unit); [verify-install.py](../scripts/verify-install.py) (script): the preflight on this machine, and the refusal | The mandatory checks hold no disk check; "network" is only network namespaces; no production host |
-| DEP-4 | An HTTPS API and an administration and diagnostic CLI | partial | [verify-install.py](../scripts/verify-install.py) (script): the admin CLI and the API over HTTPS; [`TestAdminRefusesAClearTextDatabaseInProduction`](../cmd/agentcapsule-admin/main_test.go) (unit) | No diagnostic commands (API-02) |
+| DEP-4 | An HTTPS API and an administration and diagnostic CLI | met | [verify-install.py](../scripts/verify-install.py) (script): the admin CLI and the API over HTTPS; [`TestAdminRefusesAClearTextDatabaseInProduction`](../cmd/agentcapsule-admin/main_test.go) (unit); [`TestDiagnosticsLeakNoSecretContentOrPersonalData`](../cmd/agentcapsule-admin/diagnostics_test.go) (PG): `agentcapsule-admin diagnostics` exports the host's state, and no secret, content or personal data | — |
 | DEP-5 | Capacity starting points, to be measured | not met | — | No run with several VMs, no RAM or boot time committed (OPS-03) |
 | OPR-1 | Health and readiness endpoints | met | [`TestAPIBinariesBootstrapServeAndShutdown`](../internal/api/server_test.go) (PG); [verify-install.py](../scripts/verify-install.py), [verify-failover.py](../scripts/verify-failover.py) (script) | — |
 | OPR-2 | Prometheus metrics, correlation IDs | met | [`TestHTTPTelemetry`](../internal/api/telemetry_test.go), [`TestHTTPOperationsRecordTheirRequestID`](../internal/api/telemetry_test.go) (PG); [`TestRetryReasons`](../internal/worker/telemetry_test.go) (PG); [`TestProductWorkerTenantAgentsTalkOverA2A`](../internal/worker/product_adapter_integration_test.go) (KVM 2026-11-15): the worker's metrics | — |
 | OPR-3 | Traces with pseudonymized IDs | not met | — | No spans (OPS-02) |
 | OPR-4 | Redacted logs | met | [`TestFreeTextNeverReachesMetricsOrLogs`](../internal/telemetry/telemetry_test.go) (unit); [`TestAPIBinariesBootstrapServeAndShutdown`](../internal/api/server_test.go) (PG) | — |
-| OPR-5 | Operator CLI for queues, boot errors, diagnostics, restore tests, GC | not met | — | No commands for queues, diagnostics, restore tests or garbage collection; boot failures have `clear-agent-failure`, restores the worker's `-restore-agent` (API-02) |
+| OPR-5 | Operator CLI for queues, boot errors, diagnostics, restore tests, GC | partial | [`TestDiagnosticsLeakNoSecretContentOrPersonalData`](../cmd/agentcapsule-admin/diagnostics_test.go) (PG): the diagnostic export, with each host's queue and the failed boots of 7 days; [`TestReplayDeadLetterCommand`](../cmd/agentcapsule-admin/replay_test.go) (unit), [`TestTheOperatorReplaysADeadLetter`](../internal/controlplane/instruction_replays_test.go) (PG): dead letters; [`TestDestructiveCommandsAreConfirmedDryRunAndAudited`](../cmd/agentcapsule-admin/guard_test.go) (PG) | No command tests a restore or collects garbage: the restore is the worker's `-restore-agent`, and archives and cached images are cleaned up automatically. Boot failures have `clear-agent-failure`, without a test of the command itself |
 | OPR-6 | Disk alerts at 70% and 80% | met | [verify-alerts.py](../scripts/verify-alerts.py) (script): `AgentCapsuleDiskPressure` and `AgentCapsuleDiskCritical` with promtool tests; [`TestRuntimeFileSystemAndDisk`](../internal/preflight/preflight_test.go) (unit) | — |
-| OPR-7 | Imports and new volumes refused past a pressure threshold | partial | [`TestAgentReservationConcurrentOwnerAndStorage`](../internal/controlplane/agent_catalog_test.go) (PG): a static storage budget | No refusal tied to measured disk use; imports have no disk check |
-| OPR-8 | Alerts on CPU, memory, queue age, boot failures, Directory or SLIM outages | partial | [verify-alerts.py](../scripts/verify-alerts.py) (script): the rules load; queue age and SLIM have promtool tests | 9 of 36 rules have no promtool test, among them CPU, memory, boot failures and the Directory |
+| OPR-7 | Imports and new volumes refused past a pressure threshold | met | [`TestStoragePressureIsRecordedAndServed`](../internal/worker/operations_test.go) (PG): a file system past its threshold is recorded; [`TestStoragePressureRefusesNewVolumesAndImports`](../internal/controlplane/operations_test.go) (PG): new agents and imports refused while it lasts, nothing reserved; [`TestHTTPStoragePressureIsATypedRefusal`](../internal/api/operations_test.go) (PG): `storage_pressure`; [`TestImportsWaitUnderStoragePressure`](../internal/worker/operations_test.go) (PG): an import downloads nothing | — |
+| OPR-8 | Alerts on CPU, memory, queue age, boot failures, Directory or SLIM outages | met | [verify-alerts.py](../scripts/verify-alerts.py) (script): promtool tests of `AgentCapsuleHostCPUSaturated`, `AgentCapsuleHostMemoryLow`, `AgentCapsuleQueueDelayed`, `AgentCapsuleInvocationsDelayed`, `AgentCapsuleVMBootFailures`, `AgentCapsuleDirectoryUnavailable` and `AgentCapsuleSLIMUnavailable`, each firing and staying silent; the script fails on a rule without both cases; [`test_the_repository_rules_are_all_tested`](../scripts/test_verify_alerts.py) (unit) | — |
 | OPR-9 | Off-host, encrypted, versioned backups of PostgreSQL and volumes | met | [verify-backups.py](../scripts/verify-backups.py), [verify-archive-shipping.py](../scripts/verify-archive-shipping.py) (script): both stores, no clear text, restore from each; [`test_fetch_from_each_store`](../scripts/test_archive_ship.py) (unit) | — (the provider's versioning and object lock are not qualified) |
 | OPR-10 | Backups of harness digests | partial | Covered by the PostgreSQL backup, where they live | No test re-imports the packages after a restore |
 | OPR-11 | Consistent backups (quiesce first), with freshness alerts | met | [`TestProductWorkerNightlyVolumeArchives`](../internal/worker/product_archives_integration_test.go) (KVM 2026-11-15): archives of sleeping or stopped agents; [`TestArchiveSettleAndRetention`](../internal/worker/archive_schedule_test.go) (PG); [verify-alerts.py](../scripts/verify-alerts.py) (script): freshness alerts with promtool tests | — |
@@ -251,7 +258,7 @@ The promises of §2 and §3.
 | OPR-15 | Lost requests between agents delivered again | needs KVM | [`TestRestoreRedeliversALostRequest`](../internal/controlplane/peer_redeliveries_test.go), [`TestRestoreDoesNotReopenAFinalRequest`](../internal/controlplane/peer_redeliveries_test.go), [`TestRestoreRedeliversALostReplyAndStatus`](../internal/controlplane/peer_redeliveries_test.go) (PG); [`TestProductWorkerRestoresAgentToAgentExchange`](../internal/worker/product_restore_integration_test.go) (KVM, never run) | The KVM test has never run |
 | OPR-16 | A restore never revives revoked memberships, assignments, tokens, delegations or keys | partial | [`TestOldImageDoesNotReviveDestroyedKey`](../internal/restoreauthority/key_runs_test.go), [`TestRevocationSurvivesRestoredKeyAndPrecedesCreation`](../internal/keyauthority/files_test.go) (unit): keys; [`TestRevokedRequesterLostInvocationIsNeverRerun`](../internal/controlplane/invocation_reruns_test.go) (PG) | Memberships, assignments, tokens and delegations revoked after a PostgreSQL backup come back with it: their revocations are not held outside the restored domain |
 | OPR-17 | Revocation: no later call succeeds | met | [`TestHTTPMembersIdempotencyAndRevocation`](../internal/api/members_test.go), [`TestMembersRevocationWaitsForAdmissionAndRefusesStaleReplay`](../internal/controlplane/members_test.go) (PG); [`TestDelegationRotationCannotResurrectRevokedToken`](../internal/controlplane/tenant_identity_test.go) (PG); [`TestTenantResultBelongsToTheRequesterAndCurrentRights`](../internal/controlplane/tenant_invocation_test.go) (PG) | — |
-| OPR-18 | Deletion blocks work, stops the VM, destroys volume, key and Directory record | partial | [`TestProductWorkerTwoOwnersPrivateExchange`](../internal/worker/product_peers_integration_test.go) (KVM 2026-11-15): VM, volume and key; [`TestPublisherFollowsTheAgentsRevisions`](../internal/directory/publisher_test.go) (unit): the record withdrawn | The KVM deletion does not check the Directory. No expiry policy for a deleted agent's archives (REC-04) |
+| OPR-18 | Deletion blocks work, stops the VM, destroys volume, key and Directory record | partial | [`TestProductWorkerTwoOwnersPrivateExchange`](../internal/worker/product_peers_integration_test.go) (KVM 2026-11-15): VM, volume and key; [`TestDestructionRequiresPermanentSeal`](../internal/authorityclient/key_runs_test.go) (unit): the key is destroyed only once its store is sealed, through the service and in process; [`TestDeletedAgentArchivesArePurged`](../internal/worker/archive_purge_test.go) (PG): the host's archives go once the key is destroyed; [verify-archive-shipping.py](../scripts/verify-archive-shipping.py) (script): the stores' copies expire by age; [`TestPublisherFollowsTheAgentsRevisions`](../internal/directory/publisher_test.go) (unit): the record withdrawn | The KVM deletion does not check the Directory, and ran before the authority service checked the seal |
 
 ## Release validation
 
@@ -345,12 +352,16 @@ What the MVP still needs:
 - a cross-organization attempt between agents over A2A and SLIM, from VMs;
 - the isolation runs on the product runtime and on a real host;
 - noisy neighbours: one agent's load against another's latency (RUN-007);
-- the statistics and download URLs of ISO-5 and ISO-6.
+- the statistics of ISO-6.
 
 ### Load tests and benchmarks
 
 What exists:
-- no load test;
+- the load test [`TestLoad`](../internal/worker/load_test.go), driven by
+  `scripts/load-test.py` (PG, no VM): on 2026-11-16, on the development
+  machine, the API admitted up to 80 invocations a second with a p99 below
+  130 ms, and one dispatch loop delivered 8 a second
+  ([worker.md](worker.md#load-test));
 - no `Benchmark` or `Fuzz` function;
 - capacity tests with one slot, for correctness only:
   [`TestDispatchPreparationAndOneSlotCapacity`](../internal/worker/dispatch_integration_test.go),
@@ -363,16 +374,18 @@ What exists:
 What the MVP still needs (OPS-03; load tests may come from the operations
 work):
 - a run at `max_active` with N VMs: RAM per VM, boot time p50 and p95;
-- API throughput and latency (p95, p99);
-- the queue under load;
-- the scheduler at capacity;
-- results committed with their host.
+- the load test on a production host;
+- the scheduler at capacity with real VMs.
 
 ### KVM runs the MVP still needs
 
 - Never run: [`TestProductWorkerDriveCeilingsHoldAgainstAFloodingGuest`](../internal/worker/product_limits_integration_test.go)
   (RUN-007), [`TestProductWorkerStopsBootingAGuestThatCrashesAtBoot`](../internal/worker/product_limits_integration_test.go)
-  (RUN-011), [`TestProductWorkerRestoresAgentToAgentExchange`](../internal/worker/product_restore_integration_test.go) (OPR-15).
+  (RUN-011), [`TestProductWorkerRestoresAgentToAgentExchange`](../internal/worker/product_restore_integration_test.go) (OPR-15),
+  [`TestProductWorkerBoundsTheGuestTmp`](../internal/worker/product_content_integration_test.go),
+  [`TestProductWorkerDeliversJSONContent`](../internal/worker/product_content_integration_test.go) (EXT-001) and
+  [`TestProductWorkerEnforcesCapabilities`](../internal/worker/product_content_integration_test.go) (EXT-003, LLM-004).
+  `verify-product-guest.py` requires every one of them.
 - Every product test, again, with the integrated guest: the code changed
   after the run of 2026-11-15, and the labs now serve the API over TLS
   (OUT-4).
@@ -387,7 +400,8 @@ Inconsistencies found while tracing, with where they are. None is fixed here
 unless said.
 
 - **product.md against the code:**
-  - `BUSY` (§3, EVT-002) and `QUEUED` (RUN-011) are not states of the code;
+  - `BUSY` (§3, EVT-002) is not a state of the code; `QUEUED` (RUN-011) is
+    since ADR 017;
   - RUN-001 says "without booting", but creation boots a restricted VM to
     format the volume;
   - REG-001 and the API conventions promise `operation_id`, but invocations
@@ -396,30 +410,23 @@ unless said.
     `/result`;
   - A2A-008 lists "delivered" and "working" apart; the code has one state,
     `PROCESSING`;
-  - §3 says the gateway enforces `llm.invoke`; it does not yet (ADR 011).
-- **docs/interop.md** says the search filters by assignment; it filters by
-  organization and discoverability.
-- **docs/recovery.md** has stale sentences:
-  - "nothing copies [the keys] yet": the replica is built;
-  - `TestProductWorkerNightlyVolumeArchives` "remains to be run under KVM":
-    it passed;
-  - "Still to do" lists the redelivery between agents, built by ADR 008;
-  - it also says the replica's promotion command is not built;
-    `agentcapsule-authority promote` exists.
-- **docs/worker.md** says the deletion in a real VM remains to run under KVM;
-  [`TestProductWorkerTwoOwnersPrivateExchange`](../internal/worker/product_peers_integration_test.go) deletes both agents and passed.
+  - §3 says the gateway enforces `llm.invoke`: the host's platform channel
+    enforces it since ADR 016, before the gateway.
+- **Fixed since** (the cleanup of the integration):
+  - docs/interop.md said the search filters by assignment; it filters by
+    organization and discoverability;
+  - docs/recovery.md said nothing copies the keys, that the nightly archives
+    and the promotion were still to come, and listed the redelivery between
+    agents as to do;
+  - docs/worker.md said the deletion in a real VM remained to run under KVM;
+  - the audit check of [`TestLLMProviderSecretsStayWriteOnlyAndEncrypted`](../internal/controlplane/llm_providers_test.go)
+    never asserted; it now requires the creation's audit row;
+  - `verify-product-guest.py` did not require the newest worker tests; it
+    now refuses a product worker test it does not list.
 - **Tests weaker than their names:**
-  - in [`TestLLMProviderSecretsStayWriteOnlyAndEncrypted`](../internal/controlplane/llm_providers_test.go), the audit check
-    never asserts: `LIMIT 0` applies to the whole `UNION ALL`, so
-    `string_agg` is NULL, the scan fails, and the `err == nil` guard skips
-    the check;
   - [`TestQueueTenantLimitSpansAgentsAndIsolatesTenants`](../internal/controlplane/instruction_queues_test.go) uses one
     organization;
   - [`TestAuditFeedIsCompletePagedAndMetadataOnly`](../internal/controlplane/audit_feed_test.go) has no content check.
-- **The KVM runner** does not list the three newest worker tests among the
-  scenarios it requires (`verify-product-guest.py`). It runs every product
-  worker test and refuses a failure, so they run when they exist; a missing
-  one would go unnoticed.
 - **The install from scratch** (fixed in the docs here):
   - bootstrap.md did not say that the build needs a C compiler and
     libcryptsetup's headers;
