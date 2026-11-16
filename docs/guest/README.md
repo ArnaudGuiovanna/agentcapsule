@@ -98,6 +98,11 @@ private return can be read through the request API and through the separate
 message the companion drops in its owner's inbox. An additional test links the
 API, PostgreSQL, mTLS and this real process, with loss of the first result and
 then a replay. This does not by itself validate execution in an encrypted VM.
+Its entrypoint arguments can select a test behaviour, for the KVM tests of
+the platform's limits ([ADR 012](../adr/012-limits-restart-budgets-egress.md)):
+`crash-at-boot` exits before serving, and `flood-volume <bytes>` serves while
+rewriting 32 MiB of its data directory as fast as it can. Without arguments
+it behaves as above.
 
 **Harness from the registry.** When the host attaches a harness drive (an agent
 pinned to an imported release, see [../registry.md](../registry.md)), the boot

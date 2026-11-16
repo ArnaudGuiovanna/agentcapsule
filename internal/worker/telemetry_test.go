@@ -27,6 +27,7 @@ func TestRetryReasons(t *testing.T) {
 	away := &net.OpError{Op: "dial", Net: "unix", Err: os.NewSyscallError("connect", syscall.ENOENT)}
 	for want, err := range map[string]error{
 		"wake_budget":      fmt.Errorf("deliver: %w", controlplane.ErrWakeBudget),
+		"agent_failed":     fmt.Errorf("start: %w", controlplane.ErrAgentFailed),
 		"slim_unavailable": errors.Join(away),
 		"capacity":         fmt.Errorf("start: %w", runtime.ErrCapacity),
 		"error":            errors.New("database unavailable"),

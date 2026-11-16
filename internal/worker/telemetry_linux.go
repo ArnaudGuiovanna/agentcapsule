@@ -19,7 +19,11 @@ import (
 
 var (
 	jobKinds     = []string{"provision", "lifecycle", "delivery", "closure", "deletion", "expiration"}
-	retryReasons = []string{"wake_budget", "slim_unavailable", "capacity", "error"}
+	retryReasons = []string{"wake_budget", "agent_failed", "slim_unavailable", "capacity", "error"}
+	// A guest fails at boot or crashes; an agent that spends its restart
+	// budget is FAILED for the kind of its last failure (ADR 012).
+	guestFailureKinds   = []string{controlplane.GuestBootFailed, controlplane.GuestCrashed}
+	agentFailureReasons = []string{"boot_failed", "crashed"}
 	// A delivery dies when its attempts are spent or its deadline passes,
 	// the deadline winning when both hold (ADR 007).
 	deadKinds   = []string{"reply", "status", "instruction"}
@@ -27,14 +31,16 @@ var (
 )
 
 // RetryReason classifies why work waits for its next attempt, for metrics
-// and events: the organization's wake budget, an absent SLIM bridge or node,
-// the host's VM capacity, or any other error.
+// and events: the organization's wake budget, a FAILED agent, an absent SLIM
+// bridge or node, the host's VM capacity, or any other error.
 func RetryReason(err error) string {
 	var bridge *slimlink.BridgeError
 	var socket *net.OpError
 	switch {
 	case errors.Is(err, controlplane.ErrWakeBudget):
 		return "wake_budget"
+	case errors.Is(err, controlplane.ErrAgentFailed):
+		return "agent_failed"
 	case errors.As(err, &bridge), errors.As(err, &socket) && socket.Net == "unix":
 		return "slim_unavailable"
 	case errors.Is(err, runtime.ErrCapacity):
@@ -49,6 +55,10 @@ type workerTelemetry struct {
 	dead         *telemetry.Counter
 	starts       *telemetry.Counter
 	startSeconds *telemetry.Histogram
+	// guestFailures counts failed boots and crashes of guests;
+	// agentsFailed, the agents that spent their restart budget.
+	guestFailures *telemetry.Counter
+	agentsFailed  *telemetry.Counter
 }
 
 // EnableTelemetry registers the worker's metrics (OPS-02): jobs by kind and
@@ -69,13 +79,21 @@ func (w *Placements) EnableTelemetry(registry *telemetry.Registry, root string, 
 			telemetry.Label{Name: "outcome", Values: []string{"started", "failed"}}),
 		startSeconds: registry.Histogram("agentcapsule_worker_vm_start_seconds", "Duration of successful VM boots.",
 			[]float64{0.5, 1, 2, 5, 10, 20, 30, 60, 120}),
+		guestFailures: registry.Counter("agentcapsule_worker_guest_failures_total", "Guests that failed to boot (boot) or went away without a stop (crash).",
+			telemetry.Label{Name: "kind", Values: guestFailureKinds}),
+		agentsFailed: registry.Counter("agentcapsule_worker_agents_failed_total", "Agents that spent their restart budget and are FAILED."),
 	}
-	// Served at zero from the start, so that increase() sees the first death.
+	// Served at zero from the start, so that increase() sees the first death
+	// and the first FAILED agent.
 	for _, k := range deadKinds {
 		for _, r := range deadReasons {
 			m.dead.Add(0, k, r)
 		}
 	}
+	for _, k := range guestFailureKinds {
+		m.guestFailures.Add(0, k)
+	}
+	m.agentsFailed.Add(0)
 	jobs := registry.Gauge("agentcapsule_worker_jobs", "Jobs of this host, by kind.", kind)
 	due := registry.Gauge("agentcapsule_worker_jobs_due", "Jobs due and not held by a worker, by kind.", kind)
 	failing := registry.Gauge("agentcapsule_worker_jobs_failing", "Jobs that failed three times or more, by kind.", kind)
@@ -83,6 +101,7 @@ func (w *Placements) EnableTelemetry(registry *telemetry.Registry, root string, 
 	running := registry.Gauge("agentcapsule_worker_vms_running", "VMs of this host published as running.")
 	registry.Gauge("agentcapsule_worker_vm_capacity", "VMs this host may run at once (max_active).").Set(float64(maxActive))
 	disk := registry.Gauge("agentcapsule_worker_root_disk_used_ratio", "Used share of the file system holding the runtime root (0 to 1).")
+	failedAgents := registry.Gauge("agentcapsule_worker_agents_failed", "Live agents of this host that are FAILED: they boot again only when woken or cleared.")
 	registry.Collect(func(ctx context.Context) error {
 		stats, err := w.store.WorkQueue(ctx, w.hostID)
 		if err != nil {
@@ -108,6 +127,10 @@ func (w *Placements) EnableTelemetry(registry *telemetry.Registry, root string, 
 			return err
 		}
 		running.Set(float64(n))
+		if n, err = w.store.FailedAgents(ctx, w.hostID); err != nil {
+			return err
+		}
+		failedAgents.Set(float64(n))
 		var fs syscall.Statfs_t
 		if err = syscall.Statfs(root, &fs); err != nil {
 			return err
@@ -209,12 +232,33 @@ func (w *Placements) countStart(started time.Time, err error) {
 	m.startSeconds.Since(started)
 }
 
+// countGuestFailure counts a guest's failure and, when it spent its agent's
+// restart budget, the FAILED agent, with the event agent_failed. The event
+// names the reason, not the agent.
+func (w *Placements) countGuestFailure(kind string, failed bool) {
+	if m := w.metrics.Load(); m != nil {
+		m.guestFailures.Inc(kind)
+		if failed {
+			m.agentsFailed.Inc()
+		}
+	}
+	if e := w.jobEvents.Load(); e != nil && failed {
+		reason := "boot_failed"
+		if kind == controlplane.GuestCrashed {
+			reason = "crashed"
+		}
+		e.problems.Event("agent_failed", telemetry.Code("reason", reason))
+	}
+}
+
 // JobKinds and RetryReasons are the vocabularies of the worker's job events,
-// DeadDeliveryKinds and DeadDeliveryReasons those of delivery_dead.
+// DeadDeliveryKinds and DeadDeliveryReasons those of delivery_dead,
+// AgentFailureReasons that of agent_failed.
 func JobKinds() []string            { return slices.Clone(jobKinds) }
 func RetryReasons() []string        { return slices.Clone(retryReasons) }
 func DeadDeliveryKinds() []string   { return slices.Clone(deadKinds) }
 func DeadDeliveryReasons() []string { return slices.Clone(deadReasons) }
+func AgentFailureReasons() []string { return slices.Clone(agentFailureReasons) }
 
 type jobEvents struct{ progress, problems *telemetry.Logger }
 

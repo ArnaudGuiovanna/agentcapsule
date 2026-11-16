@@ -248,6 +248,46 @@ outgoing channel is used in the background by the harness, after the commit of
 the SQLite intent: no platform call blocks the callback that must first return
 its delivery acknowledgment.
 
+## Limits and restart budgets
+
+Each VM's drives have I/O ceilings, enforced by Firecracker's rate limiter
+([ADR 012](adr/012-limits-restart-budgets-egress.md)): by default 64 MiB/s
+and 2000 operations a second on the agent's volume, 128 MiB/s and 4000 on a
+registry harness image, which a boot may first read whole at full speed. The
+VM has no network device and its VMM no network namespace but its own: the
+guest's only way out is the platform channel.
+
+An agent whose guest fails to boot, or crashes, too often stops being booted.
+A boot counts when its VMM ran and then exited, stopped answering, or
+answered with an incompatible contract before it was ready; a crash is a
+confirmed VM gone without a stop. A full host, a refused lease or an
+authority outage does not count. After 5 such failures within an hour, the
+agent is `FAILED`: no work, barrier or credential replacement boots it, its
+open wake ends `FAILED` (`restart_budget_exhausted`), and its work waits
+until a wake or its deadline. A wake requested for the agent gives it a new
+budget, and so does:
+
+```sh
+agentcapsule-admin clear-agent-failure -agent-id <id>
+```
+
+A restore of its volume still boots it, restricted. To change the defaults,
+add to the configuration (every worker of a host the same):
+
+```json
+"drive_limits": {
+  "volume": { "bandwidth_mib_per_second": 64, "iops": 2000 },
+  "harness": { "bandwidth_mib_per_second": 128, "iops": 4000 }
+},
+"restart_budget": { "failures": 5, "window": "1h" }
+```
+
+A number left out keeps its default. Ceilings go from 1 MiB/s to 4 GiB/s
+and from 10 to 1,000,000 operations a second; a budget from 1 to 100
+failures within 1 minute to 24 hours. The operator sees
+`agentcapsule_worker_agents_failed`, the event `agent_failed` and the alert
+`AgentCapsuleAgentFailed` ([observability.md](observability.md)).
+
 ## Replica of the authorities
 
 D-05 ([ADR 005](adr/005-keys-outside-restored-domain.md)) keeps both

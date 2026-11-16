@@ -47,6 +47,9 @@ type AgentView struct {
 	HarnessDigest string         `json:"harness_digest"`
 	Resources     AgentResources `json:"resources"`
 	CreatedAt     time.Time      `json:"created_at"`
+	// FailureReason says why a FAILED agent spent its restart budget:
+	// boot_failed or crashed, the kind of its last failure (ADR 012).
+	FailureReason *string `json:"failure_reason,omitempty"`
 }
 type PlatformOperation struct {
 	ID            string     `json:"id"`
@@ -276,18 +279,21 @@ func (c *AgentCatalog) Reserve(ctx context.Context, p Principal, key string, in 
 
 const agentViewColumns = `a.id,a.owner_user_id,x.name,
         CASE WHEN a.phase<>'LIVE' THEN a.phase
+          WHEN coalesce(p.state,'STOPPED')='STOPPED' AND f.agent_id IS NOT NULL THEN 'FAILED'
           WHEN p.state='RUNNING' AND NOT p.fence_only AND pc.agent_id IS NOT NULL THEN 'READY'
           WHEN p.state='RUNNING' THEN 'STARTING' ELSE coalesce(p.state,'STOPPED') END,
-        r.artifact_digest,x.vcpus,x.memory_mib,x.volume_mib,x.created_at`
+        r.artifact_digest,x.vcpus,x.memory_mib,x.volume_mib,x.created_at,
+        CASE WHEN a.phase='LIVE' AND coalesce(p.state,'STOPPED')='STOPPED' THEN f.reason END`
 const agentViewFrom = ` FROM agents a JOIN agent_specs x ON x.agent_id=a.id JOIN harness_releases r ON r.id=x.release_id
         LEFT JOIN agent_placements p ON p.agent_id=a.id
         LEFT JOIN placement_control_contracts pc ON pc.agent_id=p.agent_id AND pc.host_id=p.host_id
           AND pc.generation=p.generation AND pc.vm_id=p.vm_id AND pc.protocol='capsule.v1'
-          AND pc.incarnation=coalesce((SELECT incarnation FROM store_enrollments WHERE agent_id=a.id),1) `
+          AND pc.incarnation=coalesce((SELECT incarnation FROM store_enrollments WHERE agent_id=a.id),1)
+        LEFT JOIN failed_agents f ON f.agent_id=a.id `
 
 func scanAgentView(row pgx.Row) (AgentView, error) {
 	var v AgentView
-	err := row.Scan(&v.ID, &v.OwnerUserID, &v.Name, &v.State, &v.HarnessDigest, &v.Resources.VCPUs, &v.Resources.MemoryMiB, &v.Resources.DataVolumeMiB, &v.CreatedAt)
+	err := row.Scan(&v.ID, &v.OwnerUserID, &v.Name, &v.State, &v.HarnessDigest, &v.Resources.VCPUs, &v.Resources.MemoryMiB, &v.Resources.DataVolumeMiB, &v.CreatedAt, &v.FailureReason)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = ErrNotFound
 	}

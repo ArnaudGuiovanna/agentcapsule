@@ -1164,7 +1164,9 @@ paths:
         commands. Success follows the host publishing the boot. Tenant domain
         (delegated JWT): requires agent:operate and current role org_owner,
         org_admin or agent_operator. An agent that is not yet active returns
-        503.
+        503. A FAILED agent gets a new restart budget: the request clears it,
+        then the wake boots it; if its guest fails again until the budget is
+        spent, the operation ends FAILED with restart_budget_exhausted.
       security: [{bearer: []}, {delegatedBearer: []}, {serviceBearer: []}]
       parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
       requestBody: {$ref: '#/components/requestBodies/EmptyCommand'}
@@ -2102,7 +2104,8 @@ components:
         id: {type: string}
         owner_user_id: {type: string}
         name: {type: string}
-        state: {type: string}
+        state: {type: string, description: "Observed state (STOPPED, STARTING, READY, FAILED, ...)."}
+        failure_reason: {type: string, enum: [boot_failed, crashed], description: "Why a FAILED agent spent its restart budget: the kind of its last failure. Absent otherwise."}
         harness_digest: {type: string}
         resources: {$ref: '#/components/schemas/Resources'}
         created_at: {type: string, format: date-time}
@@ -2358,7 +2361,8 @@ components:
       properties:
         id: {type: string}
         name: {type: string}
-        state: {type: string, description: "Observed state (STOPPED, STARTING, READY, ...)."}
+        state: {type: string, description: "Observed state (STOPPED, STARTING, READY, FAILED, ...). FAILED: the agent's guest failed to boot or crashed too often; it boots again only when woken."}
+        failure_reason: {type: string, enum: [boot_failed, crashed], description: "Why a FAILED agent spent its restart budget: the kind of its last failure. Absent otherwise."}
         harness_digest: {type: string}
         harness:
           allOf: [{$ref: '#/components/schemas/HarnessReference'}]

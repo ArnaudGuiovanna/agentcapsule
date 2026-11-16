@@ -37,6 +37,9 @@ type Placements struct {
 	// slim carries deliveries between agents through the SLIM bridge; nil
 	// when they go straight to the VM over vsock.
 	slim atomic.Pointer[slimlink.Link]
+	// restart is the restart budget of the host's agents (ADR 012); nil for
+	// the default.
+	restart atomic.Pointer[controlplane.RestartBudget]
 	// metrics counts jobs and boots; nil without telemetry (OPS-02).
 	metrics atomic.Pointer[workerTelemetry]
 	// jobEvents logs each job with its origin; nil without telemetry.
@@ -199,7 +202,14 @@ func (w *Placements) Reconcile(ctx context.Context) (map[string]runtime.VMRun, e
 			}
 			return nil, err
 		}
-		if err := w.store.ObservePlacementStopped(ctx, p.AgentID, w.hostID, p.Generation, true); err != nil {
+		if p.State == "RUNNING" {
+			// The confirmed VMM went away without a stop: its guest crashed,
+			// which counts against the agent's restart budget (ADR 012).
+			err = w.observeGuestFailure(ctx, p.AgentID, p.Generation, controlplane.GuestCrashed)
+		} else {
+			err = w.store.ObservePlacementStopped(ctx, p.AgentID, w.hostID, p.Generation, true)
+		}
+		if err != nil {
 			if errors.Is(err, controlplane.ErrPlacement) {
 				continue
 			}
@@ -276,6 +286,11 @@ func (w *Placements) startRenewal(ctx context.Context, id string, forFence bool,
 	defer cancel()
 	if retire := w.host.Retire(cleanup, id, p.Generation); retire != nil {
 		return run, errors.Join(err, retire)
+	}
+	if errors.Is(err, runtime.ErrBootFailed) {
+		// The guest failed, not the platform: it counts against the
+		// agent's restart budget (ADR 012).
+		return run, errors.Join(err, w.observeGuestFailure(cleanup, id, p.Generation, controlplane.GuestBootFailed))
 	}
 	return run, errors.Join(err, w.store.ObservePlacementStopped(cleanup, id, w.hostID, p.Generation, true))
 }

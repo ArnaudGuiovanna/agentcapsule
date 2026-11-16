@@ -28,6 +28,11 @@
   "delivery_lease": "30s",
   "retry_base": "1s",
   "retry_max": "30s",
+  "drive_limits": {
+    "volume": { "bandwidth_mib_per_second": 64, "iops": 2000 },
+    "harness": { "bandwidth_mib_per_second": 128, "iops": 4000 }
+  },
+  "restart_budget": { "failures": 5, "window": "1h" },
   "directory": {
     "address": "127.0.0.1:8443",
     "ca": "/etc/agentcapsule/interop/control-plane/directory-ca.pem",

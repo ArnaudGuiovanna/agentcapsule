@@ -197,6 +197,15 @@ requested. An agent created cold is therefore `stopped`/`STOPPED` and converged,
 with no VM. `converged: false` after an accepted wake means "requested, not yet
 observed"; this field **reports**, it does not restart a stopped agent.
 
+An agent whose guest failed to boot or crashed 5 times within an hour is
+`FAILED`, with `failure_reason` `boot_failed` or `crashed`, the kind of its
+last failure ([ADR 012](../adr/012-limits-restart-budgets-egress.md)). It is
+not booted again: its open wake ends `FAILED` with the error
+`restart_budget_exhausted`, and invocations and requests to it wait until a
+wake or their deadline. A new wake (`POST /v1/agents/{id}/wake`) gives it a
+new budget and boots it; so does the operator's
+`agentcapsule-admin clear-agent-failure -agent-id <id>`.
+
 Wake, sleep and deletion are audited (`tenant_agent_audit`:
 `agent.wake_requested`, `agent.sleep_requested`, `agent.delete_requested`), in
 the command's transaction: a refused command leaves no trace, a replay adds
