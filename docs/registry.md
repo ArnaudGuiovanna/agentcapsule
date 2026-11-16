@@ -267,14 +267,27 @@ In the worker configuration ([example](../runtime/worker/config.example.json)):
 
 - `repositories`: `"org/"` allows every repository under `org`; `"org/name"` exactly one.
 - The worker connects only to the rule's host, its `token_hosts` (bearer token realm)
-  and `blob_hosts` (redirected blob downloads, such as a CDN). Redirects elsewhere are
-  refused.
-- Connections to loopback, private, link-local, carrier-grade NAT and other
-  non-public addresses are refused at dial time, after DNS resolution, so a public
-  name cannot be pointed at an internal address. `"local": true` lifts this and
-  allows plain HTTP for a registry on the operator's own network; never use it for a
-  public registry. In production the worker refuses to start with such a rule
+  and `blob_hosts` (redirected blob downloads, such as a CDN). It follows a redirect to
+  one of these, at most three times; redirects elsewhere are refused.
+- The worker checks each address when it connects, after DNS resolution, so a public
+  name cannot be pointed at an internal address. This holds for the registry, its token
+  service and its blob hosts, redirects included. The address classes are the model
+  gateway's ([ADR 010](adr/010-transport-security-and-preflight.md) §4):
+  - public addresses are allowed;
+  - internal addresses are refused: loopback, private (RFC 1918, RFC 4193),
+    carrier-grade NAT (`100.64.0.0/10`) and the other reserved ranges;
+  - always refused, whatever the rule: unspecified, multicast and link-local addresses,
+    `0.0.0.0/8`, and the cloud metadata addresses (`169.254.169.254` and the rest of
+    `169.254.0.0/16`, `100.100.100.200`, `168.63.129.16`, `fd00:ec2::254`,
+    `fd00:ec2::23`, `fd20:ce::254`);
+  - IPv4-mapped and NAT64 (`64:ff9b::/96`) addresses count as the IPv4 address they
+    carry.
+- `"local": true` allows internal addresses and plain HTTP, for a registry on the
+  operator's own network; never use it for a public registry. It does not open the
+  always-refused addresses: write `127.0.0.1` or `localhost`, not `0.0.0.0`. In
+  production the worker refuses to start with such a rule
   ([ADR 010](adr/010-transport-security-and-preflight.md)); it is for development.
+- A refused address fails the import with the code `policy`.
 - Environment proxy settings are ignored.
 
 ### Publisher signatures
