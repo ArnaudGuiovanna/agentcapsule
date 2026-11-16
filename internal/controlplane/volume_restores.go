@@ -57,9 +57,11 @@ type VolumeRestorePlan struct {
 // RestoreLoss is a loss that a restore copied from the restore authority.
 // MailboxID is empty when the outcome matches no delivery this database knows:
 // it lost that work too. InvocationID is set for an owner instruction. Rerun
-// is the restore's decision for that invocation (RerunQueued, or RerunSkipped
-// with SkipReason), or empty when it made none: the invocation's delivery was
-// still open, it was canceled, or the authority had recorded its rerun.
+// is the restore's decision for that invocation, or for the redelivery of an
+// agent-to-agent event (RerunQueued, or RerunSkipped with SkipReason), or
+// empty when it made none: the delivery was still open or closed without
+// delivery, the invocation was canceled, or the authority had recorded its
+// rerun.
 type RestoreLoss struct {
 	OutcomeID, MailboxID, InvocationID string
 	Incarnation                        uint64
@@ -307,15 +309,19 @@ func outcomeID(agentID, eventID string) (string, error) {
 // lost invocation (scheduleReruns), and puts the volume back in service:
 // READY at that incarnation. Each loss is mapped to the delivery whose
 // outcome it is, by computing the outcome ID of each of the agent's
-// mailboxes; an owner instruction's mailbox gives its invocation. Repeating
-// it after success returns the recorded losses and ignores declared: it
-// decides nothing again.
+// mailboxes; an owner instruction's mailbox gives its invocation. It also
+// decides the redelivery of each lost agent-to-agent event
+// (scheduleRedeliveries, ADR 008). Repeating it after success returns the
+// recorded losses and ignores declared: it decides nothing again.
 func (s *Store) CompleteVolumeRestore(ctx context.Context, restoreID, host string, declared []DeclaredLoss) ([]RestoreLoss, error) {
 	tx, err := s.begin(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer rollback(tx)
+	if err = lockRestorePeers(ctx, tx, restoreID, declared); err != nil {
+		return nil, err
+	}
 	plan, a, err := restorePlan(ctx, tx, restoreID, host)
 	if err != nil {
 		return nil, err
@@ -367,6 +373,9 @@ func (s *Store) CompleteVolumeRestore(ctx context.Context, restoreID, host strin
 	if err = scheduleReruns(ctx, tx, restoreID, a, recorded); err != nil {
 		return nil, err
 	}
+	if err = scheduleRedeliveries(ctx, tx, restoreID, recorded); err != nil {
+		return nil, err
+	}
 	if _, err = tx.Exec(ctx, "UPDATE store_enrollments SET stage='READY' WHERE agent_id=$1", r.AgentID); err != nil {
 		return nil, err
 	}
@@ -382,8 +391,9 @@ func (s *Store) CompleteVolumeRestore(ctx context.Context, restoreID, host strin
 
 func restoreLosses(ctx context.Context, tx pgx.Tx, restoreID string) ([]RestoreLoss, error) {
 	rows, err := tx.Query(ctx, `SELECT l.outcome_id,coalesce(l.mailbox_id,''),coalesce(l.invocation_id,''),l.incarnation,l.declared_at,
-            coalesce(r.state,''),coalesce(r.skip_reason,'')
+            coalesce(r.state,p.state,''),coalesce(r.skip_reason,p.skip_reason,'')
         FROM volume_restore_losses l LEFT JOIN invocation_reruns r ON (r.restore_id,r.outcome_id)=(l.restore_id,l.outcome_id)
+        LEFT JOIN peer_redeliveries p ON (p.restore_id,p.outcome_id)=(l.restore_id,l.outcome_id)
         WHERE l.restore_id=$1 ORDER BY l.outcome_id`, restoreID)
 	if err != nil {
 		return nil, err

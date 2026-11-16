@@ -141,6 +141,9 @@ type RequestView struct {
 	CorrelationID    string                       `json:"correlation_id,omitempty"`
 	Payload          *capsuleprotocol.PeerPayload `json:"payload,omitempty"`
 	Reply            *capsuleprotocol.PeerPayload `json:"reply,omitempty"`
+	// LostAt is the time a restore last lost one of the request's events
+	// (ADR 008). The event may have been delivered again since.
+	LostAt *time.Time `json:"lost_at,omitempty"`
 }
 
 func (c *AgentCatalog) Request(ctx context.Context, p Principal, id string) (RequestView, error) {
@@ -165,6 +168,9 @@ func (c *AgentCatalog) Request(ctx context.Context, p Principal, id string) (Req
 	}
 	result = RequestView{ID: r.ID, SenderAgentID: r.Sender, RecipientAgentID: r.Recipient, State: r.State, ExpiresAt: r.Deadline}
 	if err = tx.QueryRow(ctx, "SELECT coalesce((SELECT phase FROM request_closures WHERE request_id=$1),'')", id).Scan(&result.ClosureState); err != nil {
+		return RequestView{}, err
+	}
+	if result.LostAt, err = requestLostAt(ctx, tx, id); err != nil {
 		return RequestView{}, err
 	}
 	content, err := c.transit.readPeerContent(ctx, tx, r, agents, "request")
