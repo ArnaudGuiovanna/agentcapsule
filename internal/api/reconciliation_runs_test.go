@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -223,7 +224,10 @@ func TestReconciliationReplaysRoot(t *testing.T) {
 	if grant.State != controlplane.RevocationConfirmed {
 		t.Fatal("the member's revocation is not on the replica", grant)
 	}
-	if _, err := a.catalog.BeginRevocation(ctx, "agent/"+sealed); err != nil {
+	// A request closed in the window: its subject, a role apart from the
+	// stores'.
+	subject := "request/req_" + strings.Repeat("5", 32)
+	if _, err := a.catalog.BeginRevocation(ctx, subject); err != nil {
 		t.Fatal(err)
 	}
 	if err := a.catalog.RecordRetiredSeal(ctx, sealedStore); err != nil {
@@ -258,8 +262,11 @@ func TestReconciliationReplaysRoot(t *testing.T) {
 	if code := call(t, l.server, "GET", "/v1/organizations/current", token, "", "").Code; code != 401 {
 		t.Fatal("the revoked member reads after the reconciliation", code)
 	}
-	if !scalar[bool](t, l, `SELECT EXISTS(SELECT 1 FROM revocation_catalogue WHERE subject=$1)`, "agent/"+sealed) {
+	if !scalar[bool](t, l, `SELECT EXISTS(SELECT 1 FROM revocation_catalogue WHERE subject=$1)`, subject) {
 		t.Fatal("the revocation subject was not copied back")
+	}
+	if r.SubjectsCopied != 1 {
+		t.Fatal("the subjects copied", r.SubjectsCopied)
 	}
 	if !slices.Equal(r.DeletionsResumed, []string{sealed}) ||
 		scalar[string](t, l, `SELECT phase FROM agents WHERE id=$1`, sealed) != "QUIESCING" ||
