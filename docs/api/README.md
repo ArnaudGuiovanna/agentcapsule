@@ -57,8 +57,10 @@ with its `X-Request-ID`, on standard output.
 files without printing them. Retrying with the same files confirms the same
 token without extending its lifetime. After an unknown commit result, keep
 these files and rerun the same command. Existing files are never overwritten.
-Do not replace the receipt key: it is needed to re-read idempotent responses,
-notably the issuance of a service account token.
+Do not replace the receipt key: it is needed to re-read the idempotent
+responses written without the authority service's daily keys
+([below](#the-daily-receipt-keys)), and it seals the LLM providers'
+credentials.
 Its fingerprint is bound to the installation; a lost or replaced file cannot
 silently reset this key. The API refuses to start with a different key, and its
 readiness probe also checks this binding.
@@ -168,7 +170,38 @@ The available routes are described in the canonical contract
 response for 24 hours; a different body gives `422`, and a concurrent call
 already in a transaction gives `409`. A revocation is checked before an old
 receipt is read again. Personal tokens are stored as hashes; their replayable
-issuance responses are encrypted with the receipt key.
+issuance responses are encrypted with the key of their day
+([below](#the-daily-receipt-keys)).
+
+### The daily receipt keys
+
+With the authority service, the API encrypts each new idempotency receipt
+with the **daily receipt key** of the day it writes it (UTC), and records
+the day with the receipt ([ADR 006](../adr/006-authority-service.md) §7).
+The service keeps these keys in the key authority, replicates them to the
+standby with the volume keys, and destroys each day's key at 01:00 UTC two
+days after its day began, once every receipt of the day has expired. So a
+database backup holds no token secret anyone can read once that time has
+passed, at most 49 hours after the backup.
+
+- The API keeps today's and yesterday's keys in memory, and asks the
+  service for a key it does not hold, at most 5 seconds.
+- A replay within 24 hours returns the first response, secrets included,
+  as before. After a failover, the promoted authorities hold the same keys.
+- A new request whose day's key the service does not give fails before it
+  runs: 503 `authority_unavailable`, `Retry-After: 5`. Nothing is
+  committed; try again with the same key.
+- A replay whose day's key is gone answers 409
+  `idempotency_receipt_unreadable`. The request took effect the first time,
+  and does not run again: read its result through the API, or send a new
+  request with a new key. This happens only after a failover that lost a
+  key the old primary created alone while the standby was away
+  ([recovery.md](../recovery.md#the-daily-receipt-keys)).
+- A receipt written before this release, or by an API in development mode
+  without the service, names no day: the installation's receipt key reads
+  it until it expires. That key also still derives the key of the LLM
+  provider credentials and of the download links, which do not rotate
+  ([llm.md](llm.md#known-limits)).
 
 ## The authority service
 
@@ -202,8 +235,9 @@ flags: `-authority-socket`, `-restore-authority-id` and `-key-authority-id`.
 - Every route that revokes access records the revocation with the service
   before it commits ([below](#revocations-pending-and-confirmed)).
 
-The daily receipt key and the reconciliation after a failover will go
-through the same socket (ADR 006 §7).
+The API takes the daily receipt keys from the same socket
+([above](#the-daily-receipt-keys)). The reconciliation after a failover
+will go through it too (ADR 006 §7).
 
 ## Revocations: pending and confirmed
 

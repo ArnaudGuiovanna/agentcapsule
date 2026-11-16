@@ -295,6 +295,10 @@ func (r *replicator) monitor() {
 			}
 			r.mu.Unlock()
 			if done {
+				// The replica holds the whole log: drop it, so that a
+				// receipt key created in degraded mode leaves no wrapped
+				// copy in the log once acknowledged.
+				r.catalog.prune(r.stop, tail)
 				return
 			}
 			select {

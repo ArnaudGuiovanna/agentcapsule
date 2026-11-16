@@ -56,4 +56,7 @@ means that nothing changed: try again ([README](README.md#revocations-pending-an
   failover is not built yet (wave 7): until then, invalidate or rotate the
   tokens before reopening (D-03/D-05).
 - The encrypted issuance receipt contains a temporary copy of the secret, kept
-  24 hours and protected by the installation's receipt key.
+  24 hours and protected by the daily receipt key of its day, which the
+  authority service destroys once the receipt has expired
+  ([README.md](README.md#the-daily-receipt-keys)); without the service
+  (development), by the installation's receipt key.

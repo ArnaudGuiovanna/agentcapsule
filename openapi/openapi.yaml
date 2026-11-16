@@ -2354,6 +2354,13 @@ components:
       name: Idempotency-Key
       in: header
       required: true
+      description: >-
+        The same identity, route, key and input replay the first response for
+        24 hours. With the authority service, each receipt is encrypted with
+        the daily key of its day (ADR 006 §7): a request whose day's key the
+        service does not give answers 503 authority_unavailable before it
+        runs; a replay whose day's key is gone answers 409
+        idempotency_receipt_unreadable, and the request does not run again.
       schema: {type: string, minLength: 1, maxLength: 200, pattern: '^[!-~]+$'}
   responses:
     LlmProviderReceipt:

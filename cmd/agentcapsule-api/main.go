@@ -165,6 +165,12 @@ func run(args []string) int {
 	if err != nil {
 		return fail("receipt_key_does_not_match_installation")
 	}
+	// Each new receipt is encrypted with the daily key of the authority
+	// service (ADR 006 §7). The installation's key still reads the receipts
+	// written before, and derives the LLM credential and download link keys.
+	if authorities != nil && accounts.UseDailyReceiptKeys(authorities.ReceiptKeys()) != nil {
+		return fail("api_initialization_failed")
+	}
 	if authorities != nil {
 		// After a failover the database may lack what the authorities
 		// hold: the API opens only once agentcapsule-admin reconcile has

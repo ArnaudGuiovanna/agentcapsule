@@ -24,6 +24,7 @@ import (
 	"syscall"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authoritylog"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/keyauthority"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -475,8 +476,13 @@ func (c *Catalog) loop(ctx context.Context, replicated bool, kind string, fn fun
 	if err = c.repl.acknowledge(ctx, c, done.epoch, done.record, kind); err != nil {
 		return err
 	}
+	// Only what the replica acknowledged: a daily receipt key created in
+	// degraded mode (ADR 006 §7) stays in the log until the replica holds
+	// it, and the monitor prunes it then.
 	if done.record.HasSecret() {
-		c.prune(ctx, done.record.Seq)
+		if acked := c.repl.acknowledged(done.epoch); acked > 0 {
+			c.prune(ctx, min(done.record.Seq, acked))
+		}
 	}
 	return nil
 }
@@ -587,7 +593,8 @@ func (c *Catalog) attempt(ctx context.Context, replicated bool, kind string, fn 
 // state. Runtime integration must check existing stores before admitting work.
 func (c *Catalog) Register(ctx context.Context, store, volume string) (Binding, error) {
 	b := Binding{Store: store, Volume: volume, Incarnation: 1}
-	if !validName(store) || !validName(volume) {
+	// The daily receipt keys' agent is never a store (ADR 006 §7).
+	if !validName(store) || !validName(volume) || store == keyauthority.ReceiptKeyAgent {
 		return b, ErrInput
 	}
 	err := c.operate(ctx, authoritylog.WriteRegistration, func(tx *sql.Tx) error {

@@ -518,7 +518,7 @@ func servePrimary(c config) int {
 	registry := telemetry.NewRegistry()
 	catalog.ObserveReplication(authoritylog.NewMetrics(registry))
 	server, err := authorityservice.New(ctx, authorityservice.Config{Catalog: catalog, Keys: keys, APIUID: *p.APIUID,
-		MaxKeyHold: c.maxKeyHold, Metrics: authorityservice.NewMetrics(registry), Logger: problems})
+		MaxKeyHold: c.maxKeyHold, Metrics: authorityservice.NewMetrics(registry), Logger: problems, Events: events})
 	if err != nil {
 		return fail("restore_authority_unavailable")
 	}
@@ -540,7 +540,16 @@ func servePrimary(c config) int {
 	defer closeMetrics()
 	mode, _ := catalog.ReplicationMode()
 	events.Event("service_started", telemetry.Int("epoch", int64(server.Status().Epoch)), telemetry.Code("mode", mode))
+	// The daily receipt keys: today's, tomorrow's a day ahead, and the
+	// destruction of each day's once its receipts have expired (ADR 006 §7).
+	keeping := make(chan struct{})
+	go func() {
+		defer close(keeping)
+		server.KeepReceiptKeys(ctx)
+	}()
 	err = server.Serve(ctx, worker, api)
+	stop()
+	<-keeping
 	events.Event("service_stopped")
 	if errors.Is(err, context.Canceled) {
 		return 0

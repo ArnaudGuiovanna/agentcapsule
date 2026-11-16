@@ -139,7 +139,10 @@ var auditRetentionIndexesSQL string
 //go:embed migrations/0040_access_revocations.sql
 var accessRevocationsSQL string
 
-//go:embed migrations/0041_authority_reconciliations.sql
+//go:embed migrations/0041_receipt_key_days.sql
+var receiptKeyDaysSQL string
+
+//go:embed migrations/0042_authority_reconciliations.sql
 var authorityReconciliationsSQL string
 
 // Append migrations; never edit an installed migration. The original schema
@@ -186,7 +189,8 @@ var controlPlaneMigrations = []schemaMigration{
 	{version: 38, name: "host-takeovers", sql: hostTakeoversSQL},
 	{version: 39, name: "audit-retention-indexes", sql: auditRetentionIndexesSQL},
 	{version: 40, name: "access-revocations", sql: accessRevocationsSQL},
-	{version: 41, name: "authority-reconciliations", sql: authorityReconciliationsSQL},
+	{version: 41, name: "receipt-key-days", sql: receiptKeyDaysSQL},
+	{version: 42, name: "authority-reconciliations", sql: authorityReconciliationsSQL},
 }
 
 func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error {

@@ -226,6 +226,10 @@ func failure(w http.ResponseWriter, err error) {
 		problem(w, 422, "idempotency_key_reused")
 	case errors.Is(err, controlplane.ErrInProgress):
 		problem(w, 409, "idempotency_key_in_progress")
+	case errors.Is(err, controlplane.ErrReceiptUnreadable):
+		// The request took effect, and its receipt's daily key is gone (ADR
+		// 006 §7): it does not run again.
+		problem(w, 409, "idempotency_receipt_unreadable")
 	case errors.Is(err, controlplane.ErrUnavailable):
 		problem(w, 409, "agent_unavailable")
 	case errors.Is(err, controlplane.ErrTransition):

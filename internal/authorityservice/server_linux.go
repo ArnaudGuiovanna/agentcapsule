@@ -59,11 +59,17 @@ type Config struct {
 	Metrics *Metrics
 	// Logger receives the events of Vocabulary.
 	Logger *telemetry.Logger
+	// Events receives the creation and the destruction of each daily
+	// receipt key; Now is the clock of their days, time.Now when nil. Tests
+	// replace it.
+	Events *telemetry.Logger
+	Now    func() time.Time
 }
 
 // Vocabulary is the vocabulary of the service's log events.
 func Vocabulary() map[string][]string {
-	return map[string][]string{"event": {"peer_refused", "hold_expired"}, "socket": {RoleWorker, RoleAPI}, "kind": HoldKinds()}
+	return map[string][]string{"event": {"peer_refused", "hold_expired", "receipt_key_created", "receipt_key_destroyed", "receipt_key_failed"},
+		"socket": {RoleWorker, RoleAPI}, "kind": HoldKinds(), "step": {"create", "destroy"}}
 }
 
 // Server serves both authorities on the worker socket and the API socket.
@@ -346,7 +352,7 @@ func (s *Server) handle(ctx context.Context, conn *net.UnixConn, role string, re
 	case !ok:
 		s.respond(conn, Response{Error: CodeProtocol})
 		return false
-	case role != RoleWorker && !op.api:
+	case role != RoleWorker && !op.api, role == RoleWorker && op.apiOnly:
 		s.respond(conn, Response{Error: CodeRole})
 		return false
 	case timeout <= 0 || timeout > MaxTimeout:
@@ -377,6 +383,10 @@ func (s *Server) handle(ctx context.Context, conn *net.UnixConn, role string, re
 				s.respond(conn, Response{Error: code})
 				lost := h.held.Load() && !released
 				return !lost && code != CodeProtocol && code != CodeRole && code != CodeHoldExpired
+			}
+			// The operation wrote its answer itself: a key after its frame.
+			if a, ok := out.result.(answered); ok {
+				return a.ok
 			}
 			if out.result == nil {
 				out.result = struct{}{}

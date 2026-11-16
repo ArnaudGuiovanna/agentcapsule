@@ -750,3 +750,56 @@ tests:
           - exp_labels: {severity: warning, job: agentcapsule-worker, instance: host-1}
             exp_annotations:
               summary: A process cannot read its current state for its metrics (database or disk).
+
+  # The daily receipt keys (ADR 006 wave 6). host-1 holds no key of the day
+  # from 00:02 to 00:10; host-2 lacks tomorrow's key until 01:31; host-3
+  # keeps an expired key from 00:10 to 01:20.
+  - interval: 1m
+    input_series:
+      - series: 'agentcapsule_authority_receipt_key_ready{job="agentcapsule-authority",instance="host-1",day="today"}'
+        values: '1x1 0x8 1x80'
+      - series: 'agentcapsule_authority_receipt_key_ready{job="agentcapsule-authority",instance="host-1",day="tomorrow"}'
+        values: '1x100'
+      - series: 'agentcapsule_authority_receipt_key_ready{job="agentcapsule-authority",instance="host-2",day="today"}'
+        values: '1x100'
+      - series: 'agentcapsule_authority_receipt_key_ready{job="agentcapsule-authority",instance="host-2",day="tomorrow"}'
+        values: '0x90 1x10'
+      - series: 'agentcapsule_authority_receipt_keys_overdue{job="agentcapsule-authority",instance="host-3"}'
+        values: '0x9 1x70 0x20'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: AgentCapsuleReceiptKeyMissing
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: AgentCapsuleReceiptKeyMissing
+        exp_alerts:
+          - exp_labels: {severity: critical, job: agentcapsule-authority, instance: host-1, day: today}
+            exp_annotations:
+              summary: The authority service holds no receipt key of the day; the API refuses every request that takes an idempotency key.
+      - eval_time: 12m
+        alertname: AgentCapsuleReceiptKeyMissing
+        exp_alerts: []
+      - eval_time: 50m
+        alertname: AgentCapsuleNextReceiptKeyMissing
+        exp_alerts: []
+      - eval_time: 75m
+        alertname: AgentCapsuleNextReceiptKeyMissing
+        exp_alerts:
+          - exp_labels: {severity: warning, job: agentcapsule-authority, instance: host-2, day: tomorrow}
+            exp_annotations:
+              summary: Tomorrow's receipt key is missing; if the standby does not return by midnight UTC, the next day's key will be created on the primary alone.
+      - eval_time: 95m
+        alertname: AgentCapsuleNextReceiptKeyMissing
+        exp_alerts: []
+      - eval_time: 60m
+        alertname: AgentCapsuleReceiptKeyNotDestroyed
+        exp_alerts: []
+      - eval_time: 75m
+        alertname: AgentCapsuleReceiptKeyNotDestroyed
+        exp_alerts:
+          - exp_labels: {severity: warning, job: agentcapsule-authority, instance: host-3}
+            exp_annotations:
+              summary: A daily receipt key outlives its destruction time; its destruction waits for the standby or fails, and backups of its day stay readable.
+      - eval_time: 85m
+        alertname: AgentCapsuleReceiptKeyNotDestroyed
+        exp_alerts: []
