@@ -1011,13 +1011,14 @@ CI runs this qualification in the `backups` job, with PostgreSQL 16.
 
 ## Volume archives (REC-02)
 
-> **Not yet true after a disaster.** The keys that open these archives stay
-> in the key authority, on the primary host: nothing copies them yet. If the
-> host is lost, the archives on S3 and on the standby cannot be opened, and
-> the agents' memory is lost, not just its last 24 hours. The restore
-> authority's catalogue is lost too. This waits for D-05
-> ([ADR 005](adr/005-keys-outside-restored-domain.md)). A restore on the same
-> host, from a local archive, is not affected.
+> **Not yet true after a disaster.** The keys that open these archives, and
+> the restore authority's catalogue, survive the primary host only through
+> [the authorities' replica](#the-authorities-replica-d-05) (D-05): without
+> it, losing the host loses every key, so every archive on S3 and on the
+> standby. With it, the [promoted replica](#promote-the-replica) opens them.
+> But a restore onto a host other than the agent's own is not built yet
+> ([Still to do](#still-to-do-adr-004), item 2). A restore on the same host,
+> from a local archive, is not affected.
 
 The maintenance worker archives each agent's encrypted volume about once a day,
 without being stopped. The volume RPO is 24 hours. Configure the `archives`
@@ -1049,8 +1050,8 @@ The selection, the records and retention are tested on PostgreSQL. The KVM test
 archived by the running maintenance loop while it delivers to another agent,
 then an overdue running agent stopped for its archive and woken by its next
 invocation. Each archive is opened with the restore authority (manifest, size,
-digest). This test is compiled and remains to be run under KVM. Restoring an
-agent from one of these archives is the next section.
+digest). It passed on KVM on 2026-11-13 (13 of 13 worker tests, guest v19).
+Restoring an agent from one of these archives is the next section.
 
 ## Restoring an agent from an archive
 
@@ -1579,14 +1580,16 @@ rules are about copies, not about forensic erasure.
 
 ## Still to do (ADR 004)
 
-1. **Lost requests between agents.** A restore queues the lost invocations
-   again and shows them as `lost` (above). The requests and messages between
-   agents that it lost stay recorded, without a rerun
-   ([ADR 003](adr/003-restore-rpo.md#what-remains)).
+1. **Lost requests between agents, on KVM.** A restore delivers again the
+   agent-to-agent events it lost
+   ([above](#the-lost-agent-to-agent-events), ADR 008).
+   `TestProductWorkerRestoresAgentToAgentExchange` is written and not yet
+   run.
 2. **Restoring onto the standby.** A fetch of an archive is qualified
-   ([above](#fetch-an-archive-back)). Installing it there and restoring the
-   agent needs the authorities on the standby: their replica is built
-   ([D-05](#the-authorities-replica-d-05)); its promotion command is not.
+   ([above](#fetch-an-archive-back)). The authorities on the standby are
+   built: their replica ([D-05](#the-authorities-replica-d-05)) and its
+   promotion ([Promote the replica](#promote-the-replica)). Restoring an
+   agent onto a host other than its own is not.
 3. **A failover exercise** that measures the RPO and the RTO of the whole
    platform, on real hosts. The database and the API fail over on one
    machine, with their configuration and keys
