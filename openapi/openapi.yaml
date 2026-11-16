@@ -496,8 +496,9 @@ paths:
                 alias: {type: string, minLength: 1, maxLength: 100}
                 provider_id: {type: string, minLength: 1, maxLength: 100}
                 upstream_model: {type: string, minLength: 1, maxLength: 200}
-                input_micro_per_mtok: {type: integer, minimum: 0, description: Estimated price per million input tokens}
-                output_micro_per_mtok: {type: integer, minimum: 0, description: Estimated price per million output tokens}
+                input_micro_per_mtok: {type: integer, minimum: 0, maximum: 1000000000000, description: Estimated price per million input tokens}
+                output_micro_per_mtok: {type: integer, minimum: 0, maximum: 1000000000000, description: Estimated price per million output tokens}
+                access: {type: string, enum: [organization, listed], default: organization, description: "`listed`: only the agents the alias's grants name may call it"}
       responses:
         '201': {$ref: '#/components/responses/LlmAliasReceipt'}
         default: {$ref: '#/components/responses/Problem'}
@@ -513,6 +514,122 @@ paths:
       requestBody: {$ref: '#/components/requestBodies/EmptyCommand'}
       responses:
         '200': {$ref: '#/components/responses/LlmAliasReceipt'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/llm/aliases/{alias}/access:
+    post:
+      operationId: setLlmAliasAccess
+      summary: Open an alias to the organization or restrict it to its grants
+      description: >-
+        Requires provider:manage and current role org_owner or org_admin.
+        `organization`: every agent of the organization may call the alias.
+        `listed`: only the agents its active grants name, directly or through
+        an active assignment to an active team; any other agent is refused
+        before any reservation. Takes effect on the next reservation. A
+        disabled alias returns 409.
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters:
+        - {name: alias, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 100}}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [access]
+              properties:
+                access: {type: string, enum: [organization, listed]}
+      responses:
+        '200': {$ref: '#/components/responses/LlmAliasReceipt'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/llm/aliases/{alias}/prices:
+    post:
+      operationId: setLlmAliasPrices
+      summary: Replace an alias's estimation prices
+      description: >-
+        Requires provider:manage and current role org_owner or org_admin.
+        Both prices are required, in micro-units of the organization's
+        currency per million tokens; zero is a free model. A call keeps the
+        prices of its reservation. A disabled alias returns 409.
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters:
+        - {name: alias, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 100}}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [input_micro_per_mtok, output_micro_per_mtok]
+              properties:
+                input_micro_per_mtok: {type: integer, minimum: 0, maximum: 1000000000000}
+                output_micro_per_mtok: {type: integer, minimum: 0, maximum: 1000000000000}
+      responses:
+        '200': {$ref: '#/components/responses/LlmAliasReceipt'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/llm/aliases/{alias}/grants:
+    get:
+      operationId: listLlmAliasGrants
+      summary: List an alias's grants
+      description: Requires provider:manage and current role org_owner or org_admin. Revoked grants included.
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters:
+        - {name: alias, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 100}}
+        - {name: after, in: query, schema: {type: string, maxLength: 100}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 100}}
+      responses:
+        '200':
+          description: Page sorted by identifier
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/LlmAliasGrant'}}
+        default: {$ref: '#/components/responses/Problem'}
+    post:
+      operationId: createLlmAliasGrant
+      summary: Let an agent, or the agents assigned to a team, call a listed alias
+      description: >-
+        Requires provider:manage and current role org_owner or org_admin.
+        Exactly one of agent_id and team_id. An agent of the organization or
+        an active team (404 otherwise, 409 for a disabled team); one active
+        grant per agent or team and alias (409). A grant on an alias open to
+        the organization applies once the alias is listed.
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters:
+        - {name: alias, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 100}}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                agent_id: {type: string, maxLength: 100}
+                team_id: {type: string, maxLength: 100}
+      responses:
+        '201': {$ref: '#/components/responses/LlmAliasGrantReceipt'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/llm/aliases/{alias}/grants/{id}/revoke:
+    post:
+      operationId: revokeLlmAliasGrant
+      summary: Revoke a grant
+      description: Takes effect on the next reservation. Revoking the last grant of a listed alias leaves it reachable by no agent. Idempotent.
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters:
+        - {name: alias, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 100}}
+        - {$ref: '#/components/parameters/ResourceID'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody: {$ref: '#/components/requestBodies/EmptyCommand'}
+      responses:
+        '200': {$ref: '#/components/responses/LlmAliasGrantReceipt'}
         default: {$ref: '#/components/responses/Problem'}
   /v1/llm/budgets:
     get:
@@ -536,14 +653,17 @@ paths:
         default: {$ref: '#/components/responses/Problem'}
     post:
       operationId: createLlmBudget
-      summary: Create a token budget
+      summary: Create a token or cost budget
       description: >-
         Requires quota:manage and current role org_owner or org_admin. A
         budget covers the organization, an agent, an alias, or an agent and an
-        alias, over the UTC day or month. In hard mode, a call that does not
-        fit is rejected before any provider call. In soft mode it goes through
-        with a warning. Only one active budget per scope and period (409
-        otherwise).
+        alias, over the UTC day or month. It limits tokens (limit_tokens) or
+        estimated cost in micro-units of the organization's currency
+        (limit_cost_micro): exactly one. In hard mode, a call that does not
+        fit is rejected before any provider call; a hard cost budget also
+        rejects a call to an alias whose prices were never set. In soft mode
+        it goes through with a warning. Only one active budget per scope,
+        period and unit (409 otherwise).
       security: [{delegatedBearer: []}, {serviceBearer: []}]
       parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
       requestBody:
@@ -553,12 +673,13 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [period, limit_tokens, mode]
+              required: [period, mode]
               properties:
                 agent_id: {type: string, maxLength: 100}
                 alias: {type: string, maxLength: 100}
                 period: {type: string, enum: [day, month]}
-                limit_tokens: {type: integer, minimum: 1}
+                limit_tokens: {type: integer, minimum: 1, maximum: 1000000000000000}
+                limit_cost_micro: {type: integer, minimum: 1, maximum: 1000000000000000}
                 mode: {type: string, enum: [hard, soft]}
       responses:
         '201': {$ref: '#/components/responses/LlmBudgetReceipt'}
@@ -593,6 +714,69 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/LlmUsage'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/llm/calls/unresolved:
+    get:
+      operationId: listUnresolvedLlmCalls
+      summary: Calls of unknown outcome
+      description: >-
+        Requires usage:read and role org_owner, org_admin or auditor. Calls
+        the provider may have processed (a timeout after sending), and
+        reservations older than 15 minutes whose worker stopped. Each keeps
+        counting its reserved tokens and cost until it is settled or released.
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters:
+        - {name: after, in: query, schema: {type: string, maxLength: 100}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 100}}
+      responses:
+        '200':
+          description: Page sorted by identifier
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/LlmCall'}}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/llm/calls/{id}/settle:
+    post:
+      operationId: settleLlmCall
+      summary: Settle a call of unknown outcome
+      description: >-
+        Requires quota:manage and current role org_owner or org_admin. The
+        usage read in the provider's account, priced at the call's
+        reservation. A resolved call, or one that may still be running,
+        returns 409.
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [input_tokens, output_tokens]
+              properties:
+                input_tokens: {type: integer, minimum: 0, maximum: 1000000000000}
+                output_tokens: {type: integer, minimum: 0, maximum: 1000000000000}
+      responses:
+        '200': {$ref: '#/components/responses/LlmCallReceipt'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/llm/calls/{id}/release:
+    post:
+      operationId: releaseLlmCall
+      summary: Release a call of unknown outcome
+      description: >-
+        Requires quota:manage and current role org_owner or org_admin. The
+        provider billed nothing: the reservation stops counting. A resolved
+        call, or one that may still be running, returns 409.
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody: {$ref: '#/components/requestBodies/EmptyCommand'}
+      responses:
+        '200': {$ref: '#/components/responses/LlmCallReceipt'}
         default: {$ref: '#/components/responses/Problem'}
   /v1/service-accounts:
     get:
@@ -1890,6 +2074,20 @@ components:
       content:
         application/json:
           schema: {$ref: '#/components/schemas/LlmBudget'}
+    LlmAliasGrantReceipt:
+      description: Grant created/revoked, or initial response replayed
+      headers:
+        Idempotency-Replayed: {schema: {type: boolean}}
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/LlmAliasGrant'}
+    LlmCallReceipt:
+      description: Call settled/released, or initial response replayed
+      headers:
+        Idempotency-Replayed: {schema: {type: boolean}}
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/LlmCall'}
     ServiceAccountReceipt:
       description: Service account created/disabled, or initial response replayed
       headers:
@@ -2130,16 +2328,44 @@ components:
         rotated_at: {type: string, format: date-time}
     LlmBudget:
       type: object
-      required: [id, period, limit_tokens, mode, status, created_at]
+      required: [id, period, mode, status, created_at]
       properties:
         id: {type: string}
         agent_id: {type: string}
         alias: {type: string}
         period: {type: string, enum: [day, month]}
-        limit_tokens: {type: integer}
+        limit_tokens: {type: integer, description: Present for a token budget}
+        limit_cost_micro: {type: integer, description: Present for a cost budget, in micro-units of the organization's currency}
         mode: {type: string, enum: [hard, soft]}
         status: {type: string, enum: [active, disabled]}
         created_at: {type: string, format: date-time}
+        used: {type: integer, description: "What the current window counts, in the budget's unit: settled, in flight and of unknown outcome. Lists give it for active budgets."}
+    LlmAliasGrant:
+      type: object
+      required: [id, alias, status, created_at]
+      properties:
+        id: {type: string}
+        alias: {type: string}
+        agent_id: {type: string, description: Exactly one of agent_id and team_id}
+        team_id: {type: string}
+        status: {type: string, enum: [active, revoked]}
+        created_at: {type: string, format: date-time}
+        revoked_at: {type: string, format: date-time}
+    LlmCall:
+      type: object
+      required: [id, agent_id, alias, state, reserved_tokens, reserved_cost_micro, created_at]
+      properties:
+        id: {type: string}
+        agent_id: {type: string}
+        alias: {type: string}
+        state: {type: string, enum: [reserved, unknown, settled, released]}
+        reserved_tokens: {type: integer}
+        reserved_cost_micro: {type: integer}
+        input_tokens: {type: integer}
+        output_tokens: {type: integer}
+        estimated_cost_micro: {type: integer, description: Absent when the alias had no prices at reservation}
+        created_at: {type: string, format: date-time}
+        resolved_at: {type: string, format: date-time}
     InvocationInput:
       allOf:
         - {$ref: '#/components/schemas/OwnerInstruction'}
@@ -2240,7 +2466,7 @@ components:
         expires_at: {type: string, format: date-time, description: "End of validity of a file not yet attached."}
     LlmUsage:
       type: object
-      required: [period, since, lines, cost_is_estimate]
+      required: [period, since, lines, totals, cost_is_estimate]
       properties:
         period: {type: string, enum: [day, month]}
         since: {type: string, format: date-time}
@@ -2249,7 +2475,7 @@ components:
           type: array
           items:
             type: object
-            required: [agent_id, alias, calls, settled_input_tokens, settled_output_tokens, pending_tokens, unknown_outcome_tokens, estimated_cost_micro]
+            required: [agent_id, alias, calls, settled_input_tokens, settled_output_tokens, pending_tokens, unknown_outcome_tokens, estimated_cost_micro, pending_cost_micro, unknown_outcome_cost_micro]
             properties:
               agent_id: {type: string}
               alias: {type: string}
@@ -2258,13 +2484,20 @@ components:
               settled_output_tokens: {type: integer}
               pending_tokens: {type: integer}
               unknown_outcome_tokens: {type: integer}
-              estimated_cost_micro: {type: integer}
+              estimated_cost_micro: {type: integer, description: Settled calls}
+              pending_cost_micro: {type: integer, description: Reserved cost of calls in flight}
+              unknown_outcome_cost_micro: {type: integer, description: Reserved cost of calls of unknown outcome}
+        totals:
+          type: object
+          description: The organization's sum of the lines, with the same fields except agent_id and alias.
     LlmAlias:
       type: object
-      required: [alias, provider_id, upstream_model, status, created_at, input_micro_per_mtok, output_micro_per_mtok]
+      required: [alias, provider_id, upstream_model, status, created_at, input_micro_per_mtok, output_micro_per_mtok, priced, access]
       properties:
         input_micro_per_mtok: {type: integer}
         output_micro_per_mtok: {type: integer}
+        priced: {type: boolean, description: "The organization set the prices; zero prices are then a free model"}
+        access: {type: string, enum: [organization, listed]}
         alias: {type: string}
         provider_id: {type: string}
         upstream_model: {type: string}
