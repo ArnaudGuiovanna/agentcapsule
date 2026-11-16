@@ -18,10 +18,11 @@ the day's merges:
   retention and the load test (ADR 014);
 - the model providers' egress check, which no row of §4 names (OPS-01 and
   LLM-02 in the roadmap);
-- key destruction checking the seal (ADR 006 wave 3).
+- key destruction checking the seal (ADR 006 wave 3);
+- the API on the authority service (ADR 006 wave 4).
 
-Work still landing will change rows: the API's connection to the authority
-service (ADR 006 wave 4) and the restore onto another host (OUT-7, OPR-12).
+Work still landing will change rows: the restore onto another host (OUT-7,
+OPR-12).
 
 Update the row with the change that proves it.
 
@@ -253,7 +254,7 @@ The promises of §2 and §3.
 | OPR-10 | Backups of harness digests | partial | Covered by the PostgreSQL backup, where they live | No test re-imports the packages after a restore |
 | OPR-11 | Consistent backups (quiesce first), with freshness alerts | met | [`TestProductWorkerNightlyVolumeArchives`](../internal/worker/product_archives_integration_test.go) (KVM 2026-11-15): archives of sleeping or stopped agents; [`TestArchiveSettleAndRetention`](../internal/worker/archive_schedule_test.go) (PG); [verify-alerts.py](../scripts/verify-alerts.py) (script): freshness alerts with promtool tests | — |
 | OPR-12 | Restore tested on another KVM host | not met | — | Needs D-05 between hosts and a KVM run |
-| OPR-13 | RPO and RTO documented and measured | partial | [verify-failover.py](../scripts/verify-failover.py) (script): database and API, on one machine, scaled settings | The agents and the worker, between real hosts |
+| OPR-13 | RPO and RTO documented and measured | partial | [verify-failover.py](../scripts/verify-failover.py) (script): the database, the authorities and the API, on one machine, scaled settings | The agents and the worker, between real hosts |
 | OPR-14 | A lost invocation shown as `lost` and run again | met | [`TestProductWorkerRestoresAgentFromArchive`](../internal/worker/product_restore_integration_test.go) (KVM 2026-11-15); [`TestRestoreQueuesTheRerunOfLostInvocations`](../internal/controlplane/invocation_reruns_test.go), [`TestRerunsCommitWithTheRestoreAndSurviveCrashes`](../internal/controlplane/invocation_reruns_test.go) (PG); [`TestRevokedRequesterLostInvocationIsNeverRerun`](../internal/controlplane/invocation_reruns_test.go) (PG) | — (after a restore on the same host) |
 | OPR-15 | Lost requests between agents delivered again | needs KVM | [`TestRestoreRedeliversALostRequest`](../internal/controlplane/peer_redeliveries_test.go), [`TestRestoreDoesNotReopenAFinalRequest`](../internal/controlplane/peer_redeliveries_test.go), [`TestRestoreRedeliversALostReplyAndStatus`](../internal/controlplane/peer_redeliveries_test.go) (PG); [`TestProductWorkerRestoresAgentToAgentExchange`](../internal/worker/product_restore_integration_test.go) (KVM, never run) | The KVM test has never run |
 | OPR-16 | A restore never revives revoked memberships, assignments, tokens, delegations or keys | partial | [`TestOldImageDoesNotReviveDestroyedKey`](../internal/restoreauthority/key_runs_test.go), [`TestRevocationSurvivesRestoredKeyAndPrecedesCreation`](../internal/keyauthority/files_test.go) (unit): keys; [`TestRevokedRequesterLostInvocationIsNeverRerun`](../internal/controlplane/invocation_reruns_test.go) (PG) | Memberships, assignments, tokens and delegations revoked after a PostgreSQL backup come back with it: their revocations are not held outside the restored domain |
