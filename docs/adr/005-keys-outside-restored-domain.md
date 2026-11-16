@@ -571,10 +571,21 @@ wait for the standby. Wave 3 completes item 5: the service refuses to
 destroy the key of a store the restore authority has not sealed, and armed,
 the check runs in the catalogue transaction that records the destruction.
 
+ADR 006 wave 4 puts the API on the authority service. Wave 5 builds the
+revocation records for access (§5 item 4; items 6 to 8 of
+[What the code must do](#what-the-code-must-do), finding 1 decided: option
+(a)): every transaction that revokes access, in the API and
+`agentcapsule-admin`, appends a record of its kind to the authorities before
+its PostgreSQL commit, or fails with "try again" and commits nothing. The
+record continues in degraded mode; the API confirms a standing grant's
+revocation only once the replica holds its record, a bearer token's at once
+in degraded mode, and reports the others as pending until then. Outcome
+records keep the event ID. See
+[ADR 006](006-authority-service.md#implementation-status).
+
 Later waves: the announcement and token revocation after a degraded period
-(item 14), revocation records for access (§5.4, finding 1 decided: option (a)),
-reconciliation with PostgreSQL (item 15, §5.5), the daily receipt key, and
-the API on the authority service.
+(item 14), reconciliation with PostgreSQL (item 15, §5.5), which replays the
+access records, and the daily receipt key.
 [recovery.md](../recovery.md#the-authorities-replica-d-05) installs the
 service and the replica.
 
@@ -804,6 +815,8 @@ that code was built (November 15, 2026):
 | `subjectRevocationCompletesAfterResyncTest` | `TestSubjectRevocationCompletesAfterResync` (same file) | Full for the restore authority's subjects; access revocations wait for their records. |
 | `resyncEndsDegradedModeTest` | `TestResyncEndsDegradedMode` (same file) | Full. |
 | `degradedOutcomeIsAnnouncedAsWindowTest` | `TestDegradedOutcomeIsLostWithThePrimary` (same file) | In part: the loss is shown; its announcement is the promotion's (item 14), not built. |
+| `grantRevocationWaitsForReplicaTest` | `TestGrantRevocationWaitsForReplica` (`internal/api/revocation_runs_test.go`, ADR 006 wave 5) | Full: a member's revocation in degraded mode takes effect at once and stays pending; the replica lacks its record. |
+| `grantRevocationResumesAfterResyncTest` | `TestGrantRevocationResumesAfterResync` (same file) | Full: after the resync the replica holds the record and the API confirms the revocation. |
 
 The reconciliation runs (`REPLAY_FIRST`) have none yet: item 15 is not built.
 
@@ -895,14 +908,15 @@ For the replication core (being built):
 For revocation records:
 
 6. Each access revocation appends a record before its PostgreSQL commit
-   (§5 item 4). The record names its kind: bearer token (API token, service
+   (§5 item 4). Built in ADR 006 wave 5. The record names its kind: bearer token (API token, service
    token, platform credential, delegated token ID) or standing grant (member,
    principal, organization, team membership, assignment, mandate, delegation
    trust, LLM provider).
 7. The API confirms a revocation only once its record is on the replica,
    except a bearer token's in degraded mode (finding 1, option (a), decided
    November 15, 2026). Until then it reports the revocation as pending.
-8. Outcome records keep the event ID (§5 item 4).
+   Built in ADR 006 wave 5.
+8. Outcome records keep the event ID (§5 item 4). Built in ADR 006 wave 5.
 
 For promotion and reconciliation:
 

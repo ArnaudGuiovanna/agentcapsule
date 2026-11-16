@@ -1,7 +1,7 @@
 # D-05 — The authority service
 
 Date: November 16, 2026. **Status: accepted by the product owner on November
-16, 2026** (see [Questions](#questions-for-the-product-owner)); waves 1 to 4
+16, 2026** (see [Questions](#questions-for-the-product-owner)); waves 1 to 5
 are built ([Implementation status](#implementation-status)). This record designs
 item 3 of [ADR 005 §5](005-keys-outside-restored-domain.md#5-what-changes-in-code-and-docs)
 and item 5 of its [What the code must do](005-keys-outside-restored-domain.md#what-the-code-must-do).
@@ -547,7 +547,7 @@ kind continues in degraded mode: the revocation takes effect on the primary at
 once. The API commits in PostgreSQL once the record is committed, and
 confirms it if `on_replica`, or if it is a bearer token's and `degraded`.
 Otherwise it reports the revocation as pending, and learns later with
-`on_replica(seq)`. A record that the service did not commit fails the
+`on_replica`, which names the record by its ID (as built, wave 5). A record that the service did not commit fails the
 request, and nothing is committed in PostgreSQL. So does a service that does
 not answer: the API answers "try again in a moment" (question 2). The
 model's acknowledged access revocation is the confirmed one: a pending one is
@@ -935,6 +935,113 @@ Not done in wave 4:
 - The API builds with cgo now: `internal/authorityclient` needs it, as the
   worker does. The release already builds the API with cgo.
 
+November 16, 2026. **Wave 5 is built**: the access revocation records (§7;
+ADR 005, "What the code must do", items 6 to 8).
+
+- **The records.** The catalogue's schema version 4 adds
+  `access_revocations` and `outcome_events`, and the stream two statements
+  of kind `access` and `outcome`. A record holds its ID (`arv_…`, the
+  caller's), its kind, the organization, the revoked objects (each named by
+  the parts of its identity, [api/README.md](../api/README.md#revocations-pending-and-confirmed)),
+  its time, and the epoch and sequence number of the stream's record that
+  carried it: what the reconciliation of wave 7 replays. Triggers refuse to
+  change or delete one. The kind `access` continues in degraded mode. The
+  kinds are a closed vocabulary (`authoritylog.AccessKinds`): four bearer
+  tokens' (`api_token`, `service_token`, `platform_credential`,
+  `delegated_token`) and nine standing grants' (`member`, `principal`,
+  `organization`, `team`, `team_membership`, `assignment`, `mandate`,
+  `delegation_trust`, `llm_provider`).
+- **The operations**, on both sockets. `append_access` fails only when the
+  record was not committed; once committed it always answers
+  `{epoch, seq, on_replica, degraded}`, `on_replica` false when the wait for
+  the replica ended first or the replica refused the record. Appending the
+  same record again changes nothing; another record under its ID is
+  `conflict`. Without a standby (standalone, or promoted before a new
+  standby) `on_replica` is true: nothing more can be waited for, as the
+  model acknowledges any write without a standby. `on_replica` takes the
+  record's ID: a record of an older epoch, brought by a promotion, is on
+  the replica, whatever its sequence number.
+- **Every revoking transaction appends its record before its PostgreSQL
+  commit**, in the transaction, after the rows it changes: members, the
+  service tokens a member issued (also on a role change), technical
+  accounts and their tokens, teams and team memberships, assignments
+  (revoked, replaced or reassigned), LLM providers (disabled, or rotated:
+  the previous generation), organizations, the legacy domain's API tokens,
+  mandates, and in `agentcapsule-admin` the platform credentials and the
+  delegation changes (`revoke-token`, `revoke-trust`, `rotate`,
+  `retire-key`). One record per kind: a member's offboarding appends a
+  `member` record and a `service_token` one. A transaction that revokes
+  nothing new appends nothing. The API waits for the service at most 5
+  seconds, within the request's 10.
+- **The answers.** A record the service did not commit fails the request:
+  503 `authority_unavailable`, `Retry-After: 5`, nothing committed, no
+  answer stored for the key. Otherwise the answer's `revocations` gives each
+  record's `state`, `confirmed` or `pending`, and PostgreSQL keeps it
+  (migration 0040, `access_revocations`, rows only confirmed, never
+  deleted). The API asks about pending ones every 5 seconds, and when one is
+  read (`GET /v1/access-revocations/{id}`); a replay gives the current
+  state. `agentcapsule_api_access_revocations_pending` and
+  `_oldest_pending_seconds` count them.
+- **`agentcapsule-admin`** takes the API's three flags for its revoking
+  commands; in production it refuses them without
+  (`authority_required_in_production`).
+- **Upgrade order** (§4). A replica opened by this release gains the new
+  tables. A replica of the previous release refuses the first record
+  (`conflict`), and the refusal stops the primary until the standby is
+  upgraded; the record stays committed on the primary, its revocation
+  pending. The service refuses a catalogue older than version 4
+  (`restore_authority_upgrade_required`): `init-restore-authority`
+  upgrades it, with the service stopped.
+- **Outcome records keep the event ID** (item 8): the worker records the
+  mailbox's ID with each outcome, and a declared loss names it.
+- Tests: `TestGrantRevocationWaitsForReplica` and
+  `TestGrantRevocationResumesAfterResync` (`internal/api`, PostgreSQL and a
+  real service with its replica and degraded mode: the projections of the
+  two runs); `TestRevocationAppendsItsRecordBeforeItsCommit`,
+  `TestRevocationTriesAgainWithoutTheAuthorityService`,
+  `TestRevocationIsPendingUntilTheReplicaHoldsIt`, and `TestRBACMatrix`,
+  which checks the kind every revoking route records; in
+  `internal/restoreauthority` `TestAccessRecordsAreKeptForGood`,
+  `TestAccessRecordReachesTheReplicaAndSurvivesThePromotion`,
+  `TestAccessRecordContinuesInDegradedMode`,
+  `TestAccessRecordWithinTheDelayFailsUncommitted`,
+  `TestStandbyWithoutTheAccessStatementRefusesTheFirstRecord`,
+  `TestOutcomeRecordKeepsTheEventID`, `TestVersionThreeUpgradesForAccessRecords`;
+  `TestAccessRecordsThroughTheService` (`internal/authorityclient`);
+  `TestRevokingCommandsAppendTheirRecord` (`cmd/agentcapsule-admin`); the
+  admin's revocations through a real service in
+  `TestOperatorBootstrapFromEmptyDatabase`,
+  `TestDelegationOperatorCLIAndRealAPI` and
+  `TestCredentialCLIListRevokeAndReplaceWithNewFile`. Each mechanism was
+  disabled in turn, and its test failed.
+
+Building it changed this record in three places, each for the safer or the
+simpler variant: `on_replica` takes the record's ID, not its sequence
+number (§7); `append_access` answers once the record is committed, even
+when the replica refused it, so that a revocation that took effect is never
+reported as failed; and the kinds add `team`, for a team disabled with its
+memberships. The model needs no change: its acknowledged access revocation
+is the API's confirmed one, and a standing grant's is confirmed only once
+the replica holds it.
+
+Not done in wave 5:
+- The reconciliation that replays the records into PostgreSQL after a
+  failover, and the announcement of the window of pending revocations
+  (wave 7).
+- **A write that waits for the standby holds the records back.** In
+  degraded mode nothing runs behind a record that degraded mode does not let
+  through and the replica lacks (the barrier of ADR 005, item 17): a
+  registration, a seal or a key's creation committed just as the standby
+  went away. Until the standby returns, every revocation then answers
+  "try again". An access record depends on no such write, so it could pass
+  it; that changes the barrier, and is left to the product owner
+  (question 6).
+- Not recorded, because ADR 005's list does not name them: a role lowered
+  (only the service tokens it revokes are), an LLM alias disabled or its
+  grant revoked, an agent's deletion (its revocation subject already is),
+  and a mandate used up (question 7).
+- The KVM product tests have not run with the event ID recorded.
+
 ## 11. Options considered
 
 | Option | Why not |
@@ -952,8 +1059,8 @@ Not done in wave 4:
 ## Questions for the product owner
 
 Answered on November 16, 2026: **1 (a), 2 (a), 3 (a), 4 (b)**, the
-recommended options. Question 5, from wave 4, is open; its recommended
-option is built as the default.
+recommended options. Questions 5, from wave 4, and 6 and 7, from wave 5,
+are open; their recommended or safest options are built as the defaults.
 
 1. **The authority service restarts** (an upgrade, or a crash that systemd
    restarts). For a few seconds, more if the standby does not answer at that
@@ -1017,3 +1124,25 @@ option is built as the default.
    the API needs the service to know whether it may serve after a failover.
    Degraded mode and the wait for the standby keep the API ready in both
    options.
+6. **The standby goes away while an agent is being created** (wave 5). The
+   creation's write reached the primary, not the standby. For as long as
+   the standby is away (minutes, or hours), removing a member or revoking a
+   token answers "try again in a moment"; deliveries and boots go on.
+   - (a) Keep it: a revocation waits, like the creation, for the standby.
+   - (b) Let a revocation's record pass such a write: it depends on
+     nothing the write changed. Revocations then take effect in degraded
+     mode in every case, as decided for finding 1.
+
+   Built: (a), the barrier as it stands. Recommended: (b), in a later
+   change with its own test.
+7. **Which changes count as revocations** (wave 5). An administrator
+   lowers someone from `org_admin` to `agent_user`, or disables a model
+   alias, an hour before the primary is lost; the database restored on the
+   standby is 10 minutes old.
+   - (a) Only what the product spec names: memberships, assignments,
+     tokens, delegations, keys. The person is `org_admin` again after the
+     failover until someone lowers them again; the alias works again.
+   - (b) Also record role reductions and LLM alias changes, so that the
+     reconciliation (wave 7) replays them.
+
+   Built: (a). Recommended: (b), with wave 7.

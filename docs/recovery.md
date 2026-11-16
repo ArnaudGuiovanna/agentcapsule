@@ -502,9 +502,10 @@ On the standby, the replica's `authority-replica.json` becomes
 and runs under the same unit. The directory and the key already belong to
 `agentcapsule-authority`.
 
-**Rollback**, until a release adds a table to the catalogue (ADR 006, wave 5):
-stop both, give the directories back to root, restore the old `worker.json`,
-the old binaries, and the API's flags without the authority service.
+**Rollback**, until the catalogue's version 4 (ADR 006, wave 5, which adds
+the access revocation records): stop both, give the directories back to
+root, restore the old `worker.json`, the old binaries, and the API's flags
+without the authority service. A catalogue of version 4 does not go back.
 
 **The service restarts** (an upgrade, a crash): for a few seconds no agent
 boots, platform calls fail with an error the guest retries, deliveries wait,
@@ -517,6 +518,28 @@ the service before the worker and the API; on a release that adds a record
 to the stream, upgrade the standby's service first. Run `init-restore-authority` for a schema
 upgrade with the service stopped. `AgentCapsuleAuthorityServiceDown`
 (critical) fires when it does not answer for 2 minutes.
+
+**The upgrade to wave 5** (the access revocation records, ADR 006) adds a
+table and two statements to the stream. In this order:
+
+1. On the standby, install the new binary and restart
+   `agentcapsule-authority serve`. It adds the new tables to its replica
+   when it opens it, and changes nothing recorded.
+2. On the primary, stop the authority service, run
+   `agentcapsule-admin init-restore-authority` again as
+   `agentcapsule-authority` (it upgrades the catalogue to version 4 and
+   keeps the identity), install the new binary, and start the service. A
+   new service refuses an older catalogue
+   (`restore_authority_upgrade_required`).
+3. Then the worker and the API.
+
+A standby left on the previous release refuses the first access revocation
+record (`conflict` in `agentcapsule_authority_replica_refusals_total`), and
+that refusal stops the primary: no authority operation runs until the
+standby runs the new release
+(`AgentCapsuleAuthorityReplicationStopped`). The revocation that met the
+refusal took effect, and stays pending until the upgraded standby holds
+its record.
 
 ### Install the replica
 
@@ -661,11 +684,39 @@ replayed by hand. If the standby is lost for good, build a new replica
 ([Install the replica](#install-the-replica), "To rebuild"): the snapshot
 needs the service stopped, which ends degraded mode too.
 
+**Revocations of access** continue too: a member removed, a token revoked
+takes effect at once on the primary. The API confirms a bearer token's
+revocation at once, and reports a standing grant's (a member, an
+assignment, a team, ...) as `pending` until the standby holds its record
+([api/README.md](api/README.md#revocations-pending-and-confirmed)). In the
+first `degraded_after` of an outage, before degraded mode begins,
+revocations answer 503 `authority_unavailable`: try again. They do so for
+the whole outage when a write that waits for the standby (an agent's
+creation or deletion) was committed on the primary just as the standby went
+away: nothing runs behind such a write until the standby holds it (ADR 006,
+wave 5, Not done).
+
 **If the primary is lost during degraded mode**, the outcomes recorded since
 its start exist nowhere else. The failover must announce that period as a
 time window, from the standby's last contact to the failover, and revoke
 every bearer token issued before it (ADR 005, item 14). A revocation started
-in that period was never confirmed, since its completion waited.
+in that period was never confirmed, since its completion waited. An access
+revocation still pending then must be made again: the announcement lists
+that window.
+
+#### Pending revocations
+
+`agentcapsule_api_access_revocations_pending` counts the revocations the
+API reports as `pending`, and
+`agentcapsule_api_access_revocation_oldest_pending_seconds` gives how long
+the oldest has waited ([observability.md](observability.md)). In degraded
+mode they grow; once the standby catches up, the API confirms them within
+seconds and both fall to 0. Pending revocations long after degraded mode
+ended mean that the standby does not take their records: a standby of an
+older release, which refuses them (see the upgrade above). Each one took
+effect on the primary already; nothing is to be revoked again while the
+primary lives. `GET /v1/access-revocations/{id}` gives one revocation's
+state.
 
 **Do not restart the authority service to clear it.** A service that
 restarts cannot tell a standby that is down from one that was promoted
@@ -784,8 +835,10 @@ the standby, as root. Follow this order.
   it is built, the operator announces that window by hand
   ([Degraded mode](#degraded-mode)), and the bearer tokens issued before the
   failover are not revoked.
-- **Revocations of access** in the authority, and their replay into
-  PostgreSQL after a promotion.
+- **The replay of the access revocation records** into PostgreSQL after a
+  promotion (ADR 006, wave 7). The records are on the standby (wave 5), but
+  the promoted database does not learn them yet: after a failover, make
+  again by hand the revocations of the database window.
 - **The daily receipt key** of ADR 005's decision.
 
 ## Failover (REC-03)
@@ -1213,7 +1266,11 @@ and, when the database still knows it, the delivery whose outcome it is: its
 mailbox, and its invocation for an owner instruction. The worker finds them by
 computing the outcome ID of each of the agent's mailboxes. A loss without a
 mailbox is work that the restored database lost too, within its own window.
-The rows are never changed or deleted.
+The rows are never changed or deleted. The restore authority keeps each
+outcome's event ID, the mailbox's, with the outcome (ADR 005 item 8, since
+ADR 006 wave 5): a loss names it even when the database lost the mailbox.
+The announcement after a failover (wave 7) will list them; the
+`volume_restore_losses` rows do not carry it yet.
 
 ### The lost invocations
 

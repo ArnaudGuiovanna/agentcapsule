@@ -277,8 +277,8 @@ in the ordinary unit tests.
 | `restoreAuthorityReplicaTests.oldPrimaryCannotResendAfterPromotionTest` | full | `TestOldPrimaryCannotResendAfterPromotion` |  |
 | `restoreAuthorityReplicaTests.restoredImageRescansUnderNewEpochTest` | partial | `TestReceiptOfTheOldEpochCannotBindAfterPromotion` | The rescan without its degraded period (ADR 005). |
 | `restoreAuthorityReplicaTests.tokenRevocationCoveredByBlanketTest` | pending | — | ADR 006 wave 7 (the announcement and the reconciliation). |
-| `restoreAuthorityReplicaTests.grantRevocationWaitsForReplicaTest` | pending | — | ADR 006 wave 5 (access revocation records). |
-| `restoreAuthorityReplicaTests.grantRevocationResumesAfterResyncTest` | pending | — | ADR 006 wave 5. |
+| `restoreAuthorityReplicaTests.grantRevocationWaitsForReplicaTest` | full | `TestGrantRevocationWaitsForReplica`, `TestAccessRecordContinuesInDegradedMode` | The authority service with its replica, degraded mode and the API on PostgreSQL (ADR 006 wave 5): the model's acknowledged access revocation is the API's confirmed one. In degraded mode a member's revocation takes effect at once and stays `pending`; its record is not on the replica, and no later question confirms it. |
+| `restoreAuthorityReplicaTests.grantRevocationResumesAfterResyncTest` | full | `TestGrantRevocationResumesAfterResync` | After the resync the replica holds the record and the API confirms the revocation; the one left pending in degraded mode is confirmed too. |
 | `restoreAuthorityReplicaTests.subjectRevocationCompletesAfterResyncTest` | full | `TestSubjectRevocationCompletesAfterResync` |  |
 | `restoreAuthorityReplicaTests.degradedOutcomeIsAnnouncedAsWindowTest` | partial | `TestDegradedOutcomeIsLostWithThePrimary` | The loss is shown; its announcement comes with ADR 006 wave 7. |
 | `restoreAuthorityReplicaTests.syncOutcomeIsDeclaredOneByOneTest` | full | `TestSyncOutcomeIsDeclaredOneByOne` |  |

@@ -81,8 +81,17 @@ with a new token file:
 
 ```sh
 agentcapsule-admin list-credentials
-agentcapsule-admin revoke-credential -kind platform -id ptok_...
+agentcapsule-admin revoke-credential -kind platform -id ptok_... -confirm ptok_... \
+  -authority-socket /run/agentcapsule-authority/api.sock \
+  -restore-authority-id restoreauth_... -key-authority-id keyauth_...
 ```
+
+A revocation is recorded with the authority service before it commits
+([api/README.md](api/README.md#revocations-pending-and-confirmed)): in
+production `revoke-credential` refuses to run without these three flags
+(`authority_required_in_production`), the API's own. Run it as the API's
+account, or as root. Its outcome lists the revocation, `pending` until the
+standby holds its record.
 
 ## 3. Start the API
 
@@ -250,8 +259,15 @@ agentcapsule-admin configure-delegation -action add-key -operation-id acme-key-2
   -key-id 2026-12 -public-key '<32 bytes, standard base64>' -confirm 2026-12
 agentcapsule-admin configure-delegation -action retire-key -operation-id acme-retire-2026-11 \
   -tenant-id org_... -issuer https://idp.acme.example -audience agentcapsule:acme \
-  -key-id 2026-11 -overlap 24h -confirm 2026-11
+  -key-id 2026-11 -overlap 24h -confirm 2026-11 \
+  -authority-socket /run/agentcapsule-authority/api.sock \
+  -restore-authority-id restoreauth_... -key-authority-id keyauth_...
 ```
+
+`retire-key`, `rotate`, `revoke-trust` and `revoke-token` revoke access:
+like `revoke-credential`, they record it with the authority service before
+they commit, and take its three flags in production. The result's
+`revocations` says `pending` or `confirmed`.
 
 Every change but `install` repeats its target in `-confirm` (the key ID, the
 issuer for `rotate` and `revoke-trust`, the token ID for `revoke-token`) and

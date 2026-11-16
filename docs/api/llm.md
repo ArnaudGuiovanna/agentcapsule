@@ -9,8 +9,8 @@ carry this scope.
 |---|---|
 | `POST /v1/llm/providers` | declares a provider (`openai_compatible` or `anthropic`), https URL (or http to localhost, which the worker refuses to call in production, [ADR 010](../adr/010-transport-security-and-preflight.md)), write-only credential. An https URL that writes an internal address out (an IP address that is not public, `localhost`, a numeric form such as `127.1`) is refused with `provider_address_not_allowed` (below) |
 | `GET /v1/llm/providers` | metadata, never the credential |
-| `POST /v1/llm/providers/{id}/rotate` | new credential generation, effective on the next call |
-| `POST /v1/llm/providers/{id}/disable` | permanent: erases the ciphertext, disables the aliases |
+| `POST /v1/llm/providers/{id}/rotate` | new credential generation, effective on the next call; the previous one's revocation is recorded with the authority service (`revocations`, [README](README.md#revocations-pending-and-confirmed)) |
+| `POST /v1/llm/providers/{id}/disable` | permanent: erases the ciphertext, disables the aliases; recorded the same way |
 | `POST/GET /v1/llm/aliases`, `POST /v1/llm/aliases/{alias}/disable` | model policy: only an active alias is reachable |
 | `POST /v1/llm/aliases/{alias}/prices` | replaces both estimation prices (below) |
 | `POST /v1/llm/aliases/{alias}/access` | `organization` or `listed` (below) |

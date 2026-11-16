@@ -474,6 +474,28 @@ paths:
         '400': {$ref: '#/components/responses/Problem'}
         '413': {$ref: '#/components/responses/Problem'}
         default: {$ref: '#/components/responses/Problem'}
+  /v1/access-revocations/{id}:
+    get:
+      operationId: getAccessRevocation
+      summary: Read an access revocation and its state
+      description: >-
+        An access revocation that a revoking route, or agentcapsule-admin,
+        recorded with the authority service before its commit (ADR 006 wave
+        5). pending until the standby's replica holds its record, then
+        confirmed; reading a pending one asks the authority service again.
+        An organization's revocations: audit:read and current role
+        org_owner, org_admin or auditor. The platform's own (an organization
+        disabled, an operator's credential or delegation change): the
+        platform credential. Any other is 404.
+      security: [{delegatedBearer: []}, {serviceBearer: []}, {platformBearer: []}]
+      parameters: [{$ref: '#/components/parameters/ResourceID'}]
+      responses:
+        '200':
+          description: The revocation
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AccessRevocation'}
+        default: {$ref: '#/components/responses/Problem'}
   /v1/llm/providers:
     get:
       operationId: listLlmProviders
@@ -2491,6 +2513,7 @@ components:
       type: object
       required: [id, name, status, created_at]
       properties:
+        revocations: {$ref: '#/components/schemas/AccessRevocations'}
         id: {type: string}
         name: {type: string, minLength: 1, maxLength: 100}
         status: {type: string, enum: [active, disabled]}
@@ -2499,6 +2522,7 @@ components:
       type: object
       required: [team_id, principal_id, status, created_at]
       properties:
+        revocations: {$ref: '#/components/schemas/AccessRevocations'}
         team_id: {type: string}
         principal_id: {type: string}
         status: {type: string, enum: [active, revoked]}
@@ -2510,6 +2534,7 @@ components:
       type: object
       required: [id, name, status, policy_version, created_at]
       properties:
+        revocations: {$ref: '#/components/schemas/AccessRevocations'}
         id: {type: string}
         name: {type: string, minLength: 1, maxLength: 100}
         status: {type: string, enum: [active, disabled]}
@@ -2538,6 +2563,7 @@ components:
       type: object
       required: [principal_id, issuer, subject, display_name, role, status, created_at]
       properties:
+        revocations: {$ref: '#/components/schemas/AccessRevocations'}
         principal_id: {type: string}
         issuer: {$ref: '#/components/schemas/RegisteredIdentity'}
         subject: {$ref: '#/components/schemas/RegisteredIdentity'}
@@ -2605,6 +2631,7 @@ components:
       type: object
       required: [id, name, kind, base_url, status, secret_generation, created_at]
       properties:
+        revocations: {$ref: '#/components/schemas/AccessRevocations'}
         id: {type: string}
         name: {type: string}
         kind: {type: string, enum: [openai_compatible, anthropic]}
@@ -2799,6 +2826,7 @@ components:
       type: object
       required: [id, name, role, status, created_at]
       properties:
+        revocations: {$ref: '#/components/schemas/AccessRevocations'}
         id: {type: string}
         name: {type: string}
         role: {type: string, enum: [org_admin, agent_operator, agent_user, auditor]}
@@ -2808,6 +2836,7 @@ components:
       type: object
       required: [id, service_account_id, scopes, expires_at, status, created_at]
       properties:
+        revocations: {$ref: '#/components/schemas/AccessRevocations'}
         id: {type: string}
         service_account_id: {type: string}
         scopes: {type: array, items: {type: string}}
@@ -2973,6 +3002,7 @@ components:
       type: object
       required: [id, agent_id, permissions, status, created_at]
       properties:
+        revocations: {$ref: '#/components/schemas/AccessRevocations'}
         id: {type: string}
         agent_id: {type: string}
         principal_id: {type: string}
@@ -3054,6 +3084,34 @@ components:
         payload: {$ref: '#/components/schemas/PeerPayload'}
         reply: {$ref: '#/components/schemas/PeerPayload'}
         lost_at: {type: string, format: date-time, description: "When a restore last lost one of the request's events (ADR 008). The event may have been delivered again since; a request its recipient lost while working on it shows DELIVERING again."}
+    AccessRevocations:
+      type: array
+      description: >-
+        On the answer of a route that revokes access: the records it appended
+        to the authority service before its commit, one per kind (ADR 006
+        wave 5). Absent when it revoked nothing new, and in development
+        without the authority service. A replay gives each one's current
+        state.
+      items: {$ref: '#/components/schemas/AccessRevocation'}
+    AccessRevocation:
+      type: object
+      required: [id, kind, state, recorded_at]
+      properties:
+        id: {type: string, pattern: '^arv_[0-9a-f]{32}$'}
+        kind:
+          type: string
+          enum: [api_token, service_token, platform_credential, delegated_token, member, principal, organization, team, team_membership, assignment, mandate, delegation_trust, llm_provider]
+          description: "A bearer token's (the first four) or a standing grant's."
+        state:
+          type: string
+          enum: [pending, confirmed]
+          description: >-
+            The revocation took effect at once in both states. confirmed: the
+            standby's replica holds its record, or no standby exists, or it is
+            a bearer token's and the authority service runs in degraded mode.
+            pending: a failover before the standby holds it could undo it.
+        recorded_at: {type: string, format: date-time}
+        confirmed_at: {type: string, format: date-time}
     OwnerMessageView:
       type: object
       required: [id, agent_id, content, created_at]

@@ -111,7 +111,11 @@ being worked on and the recipient's inbound policy.
 the active assignment then creates its replacement for the same target (person
 or team). There is no instant without rights and no double set of active rights.
 An already revoked assignment answers 409; the target must remain active. The
-audit records `assignment.revoked` then `assignment.created`. As with any
+audit records `assignment.revoked` then `assignment.created`. The revoked
+assignment is recorded with the authority service before the commit, as for
+`revoke` and `reassign`: the answer's `revocations` says `pending` or
+`confirmed`, and a 503 `authority_unavailable` means that nothing changed
+([README](README.md#revocations-pending-and-confirmed)). As with any
 authority decision, content already produced is not transferred: only the
 original requester re-reads it, while they hold `read_content`.
 
