@@ -984,8 +984,9 @@ On success, the worker prints a receipt and exits:
 {"restore_id":"rst_…","agent_id":"…","archive_id":"arc_…","incarnation":2,"losses":2,"unmatched_losses":0,"reruns_queued":2,"reruns_skipped":0}
 ```
 
-`reruns_queued` and `reruns_skipped` count the lost invocations that run
-again and those that do not ([The losses](#the-losses)).
+`reruns_queued` and `reruns_skipped` count the lost invocations and
+agent-to-agent events that run again and those that do not
+([The losses](#the-losses)).
 
 On failure, it prints `restore_failed_<reason>` on standard error. The reasons
 are `archive`, `newer_archive`, `busy`, `authority`, `unsupported_harness`,
@@ -1013,8 +1014,9 @@ The steps follow the restore model:
    Then it declares lost, for the new incarnation, each recorded outcome still
    missing, and only then publishes the activation in PostgreSQL.
 7. **Back in service.** The restricted boot is removed. One transaction copies
-   the declared losses into PostgreSQL, puts each lost invocation back in the
-   queue or skips it, and makes the volume `READY` again. The agent wakes on
+   the declared losses into PostgreSQL, puts each lost invocation and each
+   lost agent-to-agent event back in the queue or skips it, and makes the
+   volume `READY` again. The agent wakes on
    its next delivery, at the new incarnation: the first one is usually a
    rerun.
 
@@ -1073,8 +1075,38 @@ which the product owner confirmed on November 16, 2026.
 - **The authority** records the rerun when it is delivered: the outcome's
   status becomes `rerun_confirmed`.
 
-Agent-to-agent requests, replies and statuses that a restore lost are
-recorded with their mailbox, and are not delivered again.
+### The lost agent-to-agent events
+
+In the same transaction, each lost request, reply or status that PostgreSQL
+recorded as delivered is delivered again to the restored agent, or is skipped
+(`peer_redeliveries`, migration 0032). The rules are
+[ADR 008](adr/008-redelivering-lost-agent-requests.md)'s, with defaults
+pending the product owner.
+- **Only the restored agent runs again.** The event goes back to its queue
+  under the same mailbox ID, at its place, with fresh attempts. The other
+  agent's side was not lost.
+- **A request never reopens.** A request event is delivered again only while
+  the request is `PROCESSING`, with no closure under way and before its
+  deadline. The request goes back to `DELIVERING` and keeps its deadline; its
+  sender reads `DELIVERING`, then `PROCESSING` once the recipient has it
+  again. A request in a final state (`REPLIED`, `DECLINED`, `EXPIRED`,
+  `CANCELED`, `FAILED`) keeps it: its event is skipped with
+  `request_closed`.
+- **A reply or a status** is delivered again to the sender, with a fresh
+  7-day window. Its request keeps its final state. `sender_notified` is false
+  until it arrives again.
+- **Skipped**, with a reason: `agent_unavailable` (a party is being deleted),
+  `requester_revoked` (the person the request was sent for can no longer
+  invoke the sender), `content_purged` (the content is no longer kept). An
+  active request that is not delivered again fails at once, with the reason
+  `lost_in_restore`, and its sender gets the `FAILED` status.
+- **Content** waits, without a retention, while its redelivery is queued.
+- **Cancel.** The sender's owner cancels a request delivered again like any
+  active request (`POST /v1/agent-requests/{id}/cancel`).
+- **The API.** `GET /v1/agent-requests/{id}` gives `lost_at`. The sender's
+  status read and its A2A task follow the request's state.
+- **The authority** records the redelivery when it is delivered: the
+  outcome's status becomes `rerun_confirmed`.
 
 ### Tests
 
@@ -1090,6 +1122,11 @@ recorded with their mailbox, and are not delivered again.
   the filters, failures injected before and after the decisions, a crash
   during a rerun's delivery, a revoked requester, purged content, and cancel
   (`internal/controlplane/invocation_reruns_test.go`).
+- PostgreSQL: the redeliveries of lost agent-to-agent events: a request its
+  recipient lost, final requests that do not reopen, a reply and a status the
+  sender lost, both parties restored, a revoked requester, purged content, a
+  party being deleted, and cancel
+  (`internal/controlplane/peer_redeliveries_test.go`).
 - KVM: `TestProductWorkerRestoresAgentFromArchive` restores a real agent from
   an archive taken on demand, stopped twice and resumed. It checks the
   installed bytes, the losses and their invocations, the two invocations
@@ -1097,6 +1134,11 @@ recorded with their mailbox, and are not delivered again.
   `rerun_confirmed`, the agent answering at the new incarnation, and the old
   incarnation refused. It passed on KVM on November 15, 2026
   (`scripts/verify-product-guest.py`, guest v20, 14 of 14 worker tests).
+- KVM: `TestProductWorkerRestoresAgentToAgentExchange` restores two agents
+  of an organization after an A2A exchange: the recipient's answered request
+  is not delivered again, the sender's invocation runs again and its reply is
+  delivered again, and the authority records both reruns. It is written and
+  not yet run.
 
 ## Volume archives off the host (REC-02)
 

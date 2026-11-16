@@ -233,6 +233,12 @@ response or an incompatible closure gives `409`; cancellation does not rewrite
 an acquired outcome. The receiving owner and services cannot cancel in place of
 the sender.
 
+When a restore of either agent lost one of the request's events, reading the
+request gives `lost_at`. A request its recipient lost while working on it is
+`DELIVERING` again until it is delivered again; a final request never changes
+([ADR 008](../adr/008-redelivering-lost-agent-requests.md),
+[recovery.md](../recovery.md#the-lost-agent-to-agent-events)).
+
 The owner manages `GET/PUT /v1/me/messaging-settings` with the two fields
 `discoverable` and `inbound_mode` (`manual` or `auto`). These routes update the
 SQL source used by access checks; the ADS projection and public search have yet

@@ -186,6 +186,16 @@ An agent whose job acts outside it should pass the invocation's identifier
 to the outside service as an idempotency key
 ([adapter.md](../adapter.md#guarantees-and-limits)).
 
+Requests between agents follow
+[ADR 008](../adr/008-redelivering-lost-agent-requests.md)
+([recovery.md](../recovery.md#the-lost-agent-to-agent-events)). Only the
+restored agent gets its lost event again, under the same identifier. A request
+its recipient lost while working on it is `DELIVERING` again until the
+recipient has it again; a request in a final state never changes. A reply or
+a status the sender lost reaches it again. A request the recipient will not
+get again (its requester revoked, its content purged) fails at once, and its
+sender gets the `FAILED` status.
+
 ## Desired and observed state, lifecycle audit (CAP-02)
 
 A tenant agent exposes `state` (observed: `STOPPED`, `STARTING`, `READY`, ...)
@@ -458,7 +468,10 @@ channel serve the A2A endpoint of [capsule-adapter](../adapter.md#other-agents-a
   deletion of its author has purged it. Offboarding the person it is bound to
   does not revoke it: the request is work accepted before, which may complete
   for the organization ([ADR 002](../adr/002-assignment-revocation.md)). The
-  agent keeps reading the reply; the former member reads nothing.
+  agent keeps reading the reply; the former member reads nothing. After a
+  restore of the recipient, a request it was working on reads `DELIVERING`
+  again until it is delivered again
+  ([ADR 008](../adr/008-redelivering-lost-agent-requests.md)).
 
 Both pass the placement check of every VM call and decide nothing.
 
