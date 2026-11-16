@@ -432,6 +432,17 @@ func (t *Transit) markInstructionDead(ctx context.Context, tx pgx.Tx, i instruct
 	code := "delivery_failed"
 	if i.MayHaveReached {
 		code = "delivery_outcome_unknown"
+	} else {
+		// Never sent, and its deadline passed while its agent waited for a VM
+		// slot: say so (ADR 017).
+		var queued bool
+		if err := tx.QueryRow(ctx, `SELECT m.expires_at<=clock_timestamp() AND EXISTS(SELECT 1 FROM capacity_waits q WHERE q.agent_id=m.dest_agent_id)
+            FROM agent_mailboxes m WHERE m.id=$1`, i.ID).Scan(&queued); err != nil {
+			return d, err
+		}
+		if queued {
+			code = "capacity_unavailable"
+		}
 	}
 	if _, err := tx.Exec(ctx, "UPDATE platform_operations SET status='FAILED',error_code=$2,completed_at=clock_timestamp() WHERE id=$1 AND status IN ('PENDING','RUNNING')", i.Operation, code); err != nil {
 		return d, err
