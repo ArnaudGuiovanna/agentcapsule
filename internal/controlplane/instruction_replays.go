@@ -135,8 +135,8 @@ func (c *AgentCatalog) ReplayInvocation(ctx context.Context, p Principal, id, ke
 	if err != nil {
 		return APIReceipt{}, err
 	}
-	if p.Kind != "tenant" || !validOrganizationText(id, 100) {
-		return APIReceipt{}, ErrNotFound
+	if p.Kind != "tenant" {
+		return APIReceipt{}, ErrForbidden
 	}
 	tx, err := c.accounts.store.begin(ctx)
 	if err != nil {
@@ -145,6 +145,9 @@ func (c *AgentCatalog) ReplayInvocation(ctx context.Context, p Principal, id, ke
 	defer rollback(tx)
 	if _, err = authorizeTenantAdminMutation(ctx, tx, p, authorization.ManageQuotas); err != nil {
 		return APIReceipt{}, err
+	}
+	if !validOrganizationText(id, 100) {
+		return APIReceipt{}, ErrNotFound
 	}
 	var agentID string
 	err = tx.QueryRow(ctx, `SELECT o.agent_id FROM platform_operations o JOIN agents a ON a.id=o.agent_id

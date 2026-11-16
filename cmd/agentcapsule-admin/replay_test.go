@@ -4,6 +4,7 @@ package main
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
@@ -21,11 +22,11 @@ func TestReplayDeadLetterCommand(t *testing.T) {
 		{"replay-dead-letter", "-operation-id", "op_1", "-key", "k", "-ttl", "1500ms"},
 		{"replay-dead-letter", "-operation-id", "op_1", "-key", "k", "extra"},
 	} {
-		if out, code := command(t, args...); code != 1 || out != "configuration_required" {
+		if out, code := command(t, args...); code != 1 || strings.TrimSpace(out) != "configuration_required" {
 			t.Fatal(args, out, code)
 		}
 	}
-	if out, code := command(t, "replay-dead-letter", "-operation-id", "op_1", "-key", "k", "-ttl", "10m"); code != 1 || out != "database_configuration_required" {
+	if out, code := command(t, "replay-dead-letter", "-operation-id", "op_1", "-key", "k", "-ttl", "10m"); code != 1 || strings.TrimSpace(out) != "database_configuration_required" {
 		t.Fatal(out, code)
 	}
 	for err, want := range map[error]string{
