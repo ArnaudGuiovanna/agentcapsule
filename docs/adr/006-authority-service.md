@@ -371,7 +371,8 @@ As built (wave 3):
   outages: the worker's deletion job retries.
 - The interface's `DestroyKey(binding)` replaces the key authority's
   `Revoke(agent, volume)` for the worker. `Revoke` names no binding, so both
-  implementations refuse it (`key_input`), as they refuse a bare key hold.
+  implementations refuse it (`keyauthority.ErrInput`; the client sends
+  nothing, as for a bare key hold).
 - `restoreauthority.Local` checks the seal in a catalogue transaction, then
   destroys the key: the rule for a standalone authority, and the same in the
   test double and in the service. Armed, the key authority's journal names
