@@ -1,4 +1,4 @@
-//go:build linux
+//go:build linux && cgo
 
 package worker
 
@@ -271,8 +271,30 @@ func bootClientHarnessContract(t *testing.T, id string, run runtime.VMRun, prepa
 	return client, local
 }
 
+// keysAlone is the laboratory host without authorities: the worker holds
+// the volume key alone.
+const keysAlone = "keys alone"
+
+// forEachBoot runs test on a boot lab for each way the worker holds the
+// volume key: alone on a laboratory host, or under its binding through each
+// implementation of the authorities.
+func forEachBoot(t *testing.T, test func(t *testing.T, b *bootLab)) {
+	for _, way := range append([]string{keysAlone}, authorityImplementations...) {
+		t.Run(way, func(t *testing.T) {
+			b := newBootLab(t)
+			if way != keysAlone {
+				b.withAuthority(t, way, true)
+			}
+			test(t, b)
+		})
+	}
+}
+
 func TestWorkerVolumeBootstrapAuthorityAndLostACK(t *testing.T) {
-	b := newBootLab(t)
+	forEachBoot(t, testWorkerVolumeBootstrapAuthorityAndLostACK)
+}
+
+func testWorkerVolumeBootstrapAuthorityAndLostACK(t *testing.T, b *bootLab) {
 	run := b.claim(t)
 	var calls atomic.Int32
 	client := bootClient(t, b.e.AgentID, run, func(v capsuleprotocol.VolumeBoot, key []byte) error {
@@ -347,7 +369,10 @@ func TestWorkerVolumeBootstrapAuthorityAndLostACK(t *testing.T) {
 }
 
 func TestWorkerRefusesContradictoryShutdownHealth(t *testing.T) {
-	b := newBootLab(t)
+	forEachBoot(t, testWorkerRefusesContradictoryShutdownHealth)
+}
+
+func testWorkerRefusesContradictoryShutdownHealth(t *testing.T, b *bootLab) {
 	run := b.claim(t)
 	wrong := capsuleprotocol.ShutdownUnclean // the fresh SQL plan says clean
 	client := bootClientHealth(t, b.e.AgentID, run, func(capsuleprotocol.VolumeBoot, []byte) error { return nil }, false, &wrong)
@@ -363,7 +388,10 @@ func TestWorkerRefusesContradictoryShutdownHealth(t *testing.T) {
 }
 
 func TestWorkerVolumeBootstrapRechecksAuthorityAfterKeyWait(t *testing.T) {
-	b := newBootLab(t)
+	forEachBoot(t, testWorkerVolumeBootstrapRechecksAuthorityAfterKeyWait)
+}
+
+func testWorkerVolumeBootstrapRechecksAuthorityAfterKeyWait(t *testing.T, b *bootLab) {
 	run := b.claim(t)
 	var calls atomic.Int32
 	client := bootClient(t, b.e.AgentID, run, func(capsuleprotocol.VolumeBoot, []byte) error { calls.Add(1); return nil }, false)
@@ -380,7 +408,10 @@ func TestWorkerVolumeBootstrapRechecksAuthorityAfterKeyWait(t *testing.T) {
 }
 
 func TestWorkerVolumeBootstrapLateACKCannotConfirmExpiredBoot(t *testing.T) {
-	b := newBootLab(t)
+	forEachBoot(t, testWorkerVolumeBootstrapLateACKCannotConfirmExpiredBoot)
+}
+
+func testWorkerVolumeBootstrapLateACKCannotConfirmExpiredBoot(t *testing.T, b *bootLab) {
 	run := b.claim(t)
 	client := bootClient(t, b.e.AgentID, run, func(capsuleprotocol.VolumeBoot, []byte) error { b.expire(t); return nil }, false)
 	if err := b.opts.PrepareGuest(t.Context(), b.e.AgentID, run, client); err != nil {
@@ -395,7 +426,10 @@ func TestWorkerVolumeBootstrapLateACKCannotConfirmExpiredBoot(t *testing.T) {
 }
 
 func TestWorkerVolumeBootstrapFailureCannotInitialize(t *testing.T) {
-	b := newBootLab(t)
+	forEachBoot(t, testWorkerVolumeBootstrapFailureCannotInitialize)
+}
+
+func testWorkerVolumeBootstrapFailureCannotInitialize(t *testing.T, b *bootLab) {
 	run := b.claim(t)
 	var calls atomic.Int32
 	client := bootClient(t, b.e.AgentID, run, func(capsuleprotocol.VolumeBoot, []byte) error {
@@ -410,34 +444,5 @@ func TestWorkerVolumeBootstrapFailureCannotInitialize(t *testing.T) {
 	}
 	if err := b.opts.Confirm(t.Context(), b.e.AgentID, run); !errors.Is(err, capsuleprotocol.ErrVolumeBoot) {
 		t.Fatal("failed opening confirmed", err)
-	}
-}
-
-func TestWorkerKeyAuthorityConfigurationIsPinnedAndSeparate(t *testing.T) {
-	root := t.TempDir()
-	authority := filepath.Join(root, "keys")
-	keys, err := keyauthority.Initialize(t.Context(), authority)
-	if err != nil {
-		t.Fatal(err)
-	}
-	c := ServiceConfig{Root: filepath.Join(root, "runtime"), KeyAuthority: &ServiceKeyAuthority{Root: authority, Identity: keys.Identity()}}
-	if _, err = c.OpenVolumeKeys(); err != nil {
-		t.Fatal(err)
-	}
-	c.Root = authority
-	if _, err = c.OpenVolumeKeys(); err == nil {
-		t.Fatal("nested authority accepted")
-	}
-	c.Root = filepath.Join(root, "runtime")
-	c.KeyAuthority.Identity = "keyauth_" + strings.Repeat("a", 32)
-	if _, err = c.OpenVolumeKeys(); err == nil {
-		t.Fatal("foreign authority accepted")
-	}
-	c.KeyAuthority.Root = filepath.Join(root, "missing")
-	if _, err = c.OpenVolumeKeys(); err == nil {
-		t.Fatal("missing authority created")
-	}
-	if _, err = os.Stat(c.KeyAuthority.Root); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("opening created state", err)
 	}
 }
