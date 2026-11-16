@@ -51,7 +51,7 @@ a production host yet.
 | TEN-04 | Members, teams, assignments, revocation, organization disable | In progress | Reassignment to another target; admission/reassignment races |
 | TEN-05 | Tenant agents and the per-organization data model; peer requests and agent search confined to one organization; two organizations validated side by side on KVM | Done | — |
 | TEN-06 | Service accounts and audit | Partial | Audit export and retention |
-| TEN-07 | Quotas and reservations (agents, VMs, CPU/RAM, disk, queues, LLM, storage) | Partial | Physical limits (CAP-03) and load behavior (OPS-03) |
+| TEN-07 | Quotas and reservations (agents, VMs, CPU/RAM, disk, queues, LLM, storage) | Partial | Organization quotas on CPU, RAM and disk throughput (per-agent ceilings, ADR 012 P1) and load behavior (OPS-03) |
 
 ## Capsules and runtime
 
@@ -59,7 +59,7 @@ a production host yet.
 |---|---|---|---|
 | CAP-01 | Private `capsule.v1` contract, typed envelope, platform channel (peers, LLM, attachments, deferred results); Go and Python harnesses | Partial | Capability negotiation against tenant policy; events |
 | CAP-02 | Cold create, desired/observed state, wake/sleep/delete, reconciliation, single RW generation | Partial | Automatic restart policy for agents that should be running |
-| CAP-03 | Jailer/cgroups hardening, egress control, CPU/RAM/IO/pid/time limits, bounded restarts | Partial | Egress profiles, IO limits, restart budgets |
+| CAP-03 | Jailer/cgroups hardening, egress control, CPU/RAM/IO/pid/time limits, bounded restarts: Firecracker rate limiters on every drive (by default 64 MiB/s and 2000 IOPS on the volume, 128 MiB/s and 4000 on a harness image; drive_limits), a restart budget per agent (5 failed boots or crashes an hour, then FAILED until a wake or agentcapsule-admin clear-agent-failure; migration 0031), no network device and a network namespace per VMM ([ADR 012](docs/adr/012-limits-restart-budgets-egress.md)) | Partial | KVM runs of TestProductWorkerDriveCeilingsHoldAgainstAFloodingGuest and TestProductWorkerStopsBootingAGuestThatCrashesAtBoot (next guest build); the internet egress profile and per-agent ceilings (P1) |
 | CAP-04 | Unmodified agents ([docs/adapter.md](docs/adapter.md)): `capsule-adapter` runs the agent's command for each invocation and serves the OpenAI and Anthropic APIs on the guest loopback, forwarded as written (tools included) through the metered platform channel; `dagger call adapt` packs an existing image; official SDKs qualified against a real model (validated on KVM) | Done | — (A2A between agents and A2A server agents: INT-03) |
 
 ## Invocations and events
