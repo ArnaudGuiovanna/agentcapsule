@@ -739,7 +739,8 @@ the standby, as root. Follow this order.
    (`authority_replica_not_armed`) until step 7 arms the authorities. After a
    restart, the service delays the first reservations and key destructions
    by `max_key_hold`. Start the worker, with its `authority` section, once
-   the database runs here ([the procedure](#the-procedure), step 11).
+   the database runs here and the lost host's agents are restored
+   ([the procedure](#the-procedure), steps 11 to 14).
 7. **Seed a new standby** as soon as possible: a new host, or the old one
    once **wiped**. The old host's authority directories hold the old epoch,
    and keys destroyed since the failover: delete them before the host serves
@@ -775,10 +776,12 @@ the standby, as root. Follow this order.
 When the primary host is lost, the standby takes over: first the database,
 then the API, then the agents and the address clients use. ADR 004 sets the
 objectives: the service answers on the standby within an hour of the
-decision, and the database loses at most 15 minutes. Today the database, the
-API and the authorities can fail over; the authorities' promotion is tested
-in Go, not yet between two hosts. The agents have not been restored on a
-standby yet: that needs a run under KVM.
+decision, and the database loses at most 15 minutes. The database, the API
+and the authorities fail over; the authorities' promotion is tested in Go,
+not yet between two hosts. The standby takes the lost host's agents over and
+restores each from its newest archive
+([ADR 020](adr/020-restoring-a-lost-hosts-agents.md)): tested with a fake host
+and the real stores, and written for KVM, not yet run there.
 
 ### Who decides
 
@@ -801,10 +804,18 @@ This must be ready before any disaster, so that the failover takes minutes:
 - **The same release** of `agentcapsule-api` and `agentcapsule-admin` as on
   the primary, installed on the standby and not started. The same for
   `agentcapsule-worker`, with its configuration for the standby: the same
-  `authority` section. Prepare the primary role's `authority.json` for the
-  standby's service too: the directories the authorities will be promoted
-  into, the same identities, and no `authority_replica`
-  ([Promote the replica](#promote-the-replica)).
+  `authority` section, and a `host_id`, a runtime root, a provisioning UID
+  range and an archive root of its own. Prepare the primary role's
+  `authority.json` for the standby's service too: the directories the
+  authorities will be promoted into, the same identities, and no
+  `authority_replica` ([Promote the replica](#promote-the-replica)).
+- **The agents' harness packages.** The standby's worker boots each agent's
+  release from its own cache. Copy the primary's harness cache (the
+  registry's `cache`, `<runtime root>/releases` by default) to the standby's
+  whenever a release is imported: the worker checks each image against its
+  digest before it boots it. The platform's built-in harness needs nothing.
+- **Fetching archives**: rclone, the shipper and the standby's
+  `rclone.conf` ([Install on the standby](#install-on-the-standby), step 2).
 - **The new primary's repository**: the S3 path (`/agentcapsule-2`), a
   credential that can write there, and a new passphrase. Prepare them in
   advance, and keep them off the standby until the promotion.
@@ -830,10 +841,15 @@ these files by hand, out of band.
 
 ### The procedure
 
-On the standby host, as root unless said otherwise. Follow this order.
+On the standby host, as root unless said otherwise. Follow this order. Each
+step gives its time: measured on one machine where it says so, estimated
+otherwise ([ADR 020](adr/020-restoring-a-lost-hosts-agents.md#the-procedure-and-its-time)).
+Steps 1 to 9 are the RTO: about 20 to 25 minutes. The agents come back after,
+one by one (step 13).
 
-1. **Decide**, and write down the time.
-2. **Fence the old primary.** It must accept no more writes, and reach
+1. **Decide**, and write down the time. Fetch the unlock key and the API's
+   keys from the safe. *About 10 minutes, estimated.*
+2. **Fence the old primary** (*2 to 5 minutes, estimated*). It must accept no more writes, and reach
    neither store:
    - power it off through the provider, and check that the provider reports
      it stopped. Cutting it off the network is not enough: the old primary
@@ -847,8 +863,10 @@ On the standby host, as root unless said otherwise. Follow this order.
    - revoke its S3 credentials at the provider: pgBackRest's and the archive
      shipper's.
 3. **Promote the authorities**: [Promote the replica](#promote-the-replica),
-   steps 2 to 5. They need neither the database nor the API.
-4. **Promote** the standby's PostgreSQL, as `postgres`:
+   steps 2 to 5. They need neither the database nor the API. *Under a
+   minute.*
+4. **Promote** the standby's PostgreSQL, as `postgres` (*0.5 s measured;
+   with step 5, 1 to 2 minutes on real hosts*):
    ```sh
    pg_ctlcluster 18 main promote
    psql -Atc 'SELECT pg_is_in_recovery(), pg_last_xact_replay_timestamp()'
@@ -865,8 +883,10 @@ On the standby host, as root unless said otherwise. Follow this order.
    PostgreSQL: the promoted database brings them.
    Set `AGENTCAPSULE_DATABASE_URL` to the standby's own PostgreSQL.
 7. **Start the API** with the same flags as on the primary
-   ([docs/api](api/README.md)). It checks the schema and the keys before it
-   listens.
+   ([docs/api](api/README.md)), except `-host-id`: the standby's worker
+   `host_id`, where new agents go. On the lost host's, reservations fail with
+   503. It checks the schema and the keys before it listens. *Steps 6 to 8:
+   0.1 s measured; 1 to 2 minutes typed.*
 8. **Check it** on the standby:
    ```sh
    curl -fsS --cacert <the CA of the API's certificate> \
@@ -881,20 +901,56 @@ On the standby host, as root unless said otherwise. Follow this order.
    delegated identity, have one read `GET /v1/organizations/current`.
 9. **Move the address** that clients use to the standby: DNS, a floating
    address or the load balancer. The RTO ends when clients reach the API
-   there.
+   there. *About 5 minutes, estimated.*
 10. **Announce** the database's loss window
     ([below](#announce-the-databases-loss)).
-11. **Start the worker** on the promoted authorities, after the authority
-    service in the primary role: [Promote the replica](#promote-the-replica),
-    step 6. Restoring the
-    agents from their archives on the standby
-    ([Restoring an agent](#restoring-an-agent-from-an-archive)) has not been
-    run under KVM yet.
-12. **Protect the new primary**: the checkpoint and the full backup of
-    [Promote](#promote), step 3, then its freshness timer. Build a new
+11. **Take the lost host over** (*seconds*), with the `host_id` of each
+    worker's configuration:
+    ```sh
+    agentcapsule-admin take-over-host -lost-host <the lost host's host_id> -host <this host's host_id>
+    agentcapsule-admin configure-host -host-id <this host's host_id> -storage-mib <the lost host's limit>
+    ```
+    It is final: the lost host's worker gets no work again, and refuses to
+    start. It prints the number of agents to restore. The second command
+    gives this host the storage that new agents may reserve.
+12. **Start the authority service** in the primary role:
+    [Promote the replica](#promote-the-replica), step 6. *Seconds.*
+13. **Restore the agents**, the maintenance worker stopped:
+    ```sh
+    /opt/agentcapsule/agentcapsule-worker -config /etc/agentcapsule/worker.json \
+      -restore-host <the lost host's host_id> \
+      -archive-root /var/lib/agentcapsule-archives \
+      -archive-fetch /opt/agentcapsule/agentcapsule-archive-ship.py
+    ```
+    Each agent of the lost host moves here and is restored from its newest
+    archive that a store holds: the standby's copy, or S3's
+    ([ADR 020](adr/020-restoring-a-lost-hosts-agents.md)). Its losses after
+    that archive are declared, and its lost invocations and agent-to-agent
+    events queued again. It prints a line per agent, then the totals. *About
+    5 seconds per agent, plus 15 seconds per GiB of volume from the standby's
+    disk, estimated; more from S3.* Read the report:
+    - `restored`: done.
+    - `failed`: run the same command again; it resumes. `archive_unavailable`:
+      no store holds a complete, valid copy of any of its archives. `state`
+      with an imported harness: copy its package into the cache
+      ([Prepare](#prepare)), then run again.
+    - `skipped`: nothing here can restore it. `no_archive`: never archived;
+      `provisioning`: run `agentcapsule-admin abandon-provisioning` for it;
+      `deleting`: its deletion does not end yet. Each stays out of service
+      on the lost host.
+14. **Start the maintenance worker**: `systemctl enable --now
+    agentcapsule-worker`. The reruns start at once. *Seconds.*
+15. **Protect the new primary**: the checkpoint and the full backup of
+    [Promote](#promote), step 3, then its freshness timer, and the archive
+    shipper to stores of its own ([Promote](#promote), step 5). Build a new
     standby as soon as possible: its PostgreSQL ([the standby](#the-standby-rec-03))
     and the authorities' replica
     ([Promote the replica](#promote-the-replica), step 7).
+
+What ADR 006's waves 5 to 7 will add, and the operator does by hand until
+then (the revocations of the database's loss window, the window of a
+degraded period), is in
+[ADR 020](adr/020-restoring-a-lost-hosts-agents.md#what-stays-undone).
 
 ### Announce the database's loss
 
@@ -923,9 +979,12 @@ the callers ([ADR 003](adr/003-restore-rpo.md), option B).
 
 ### Not measured yet
 
-- **The agents**: restoring them on the standby needs a run under KVM. So
-  does the worker, with its promoted authorities and its own copies of the
-  receipt and transit keys.
+- **The agents**: their restore on another host runs with a fake host and
+  the real stores (2.6 s for a 64 MiB volume from S3); with real VMs it needs
+  a run under KVM (`TestProductWorkerRestoresAgentFromShippedArchiveOnAnotherHost`,
+  written). So does the worker, with its promoted authorities and its own
+  copies of the receipt and transit keys. The time per GiB of volume is an
+  estimate.
 - **The authorities' promotion between two hosts**: the Go tests run the
   replica, the promotion and the seeding of a new standby on one machine,
   in one or two processes.
@@ -970,10 +1029,16 @@ The run:
    primary's S3 credential is revoked in the store's configuration (SeaweedFS
    reloads it on SIGHUP), and its key is removed from the SFTP account. Then
    the promotion, the new repository, the keys installed from the safe, the
-   API started, readiness, and the first authenticated read and write. The
-   read is made twice: with the platform token, and with a delegated identity
-   (a JWT signed by the client's Ed25519 key).
-6. **The checks.**
+   API started (with the standby's host ID), readiness, and the first
+   authenticated read and write. The read is made twice: with the platform
+   token, and with a delegated identity (a JWT signed by the client's Ed25519
+   key).
+6. **The takeover**, step 11 above: `take-over-host` on the promoted
+   database, then `configure-host` for the standby. Repeated, it prints the
+   same record; another successor is refused (`conflict`), and so is the
+   lost host as a successor (`host_lost`). The agents' restore (step 13)
+   needs KVM: it is not run here.
+7. **The checks.**
    - Every write acknowledged before the window is on the standby, and every
      missing one is inside it. The survivors are a prefix of the writes.
    - A lost ID reads 404, and its retry with the same key creates it again,
@@ -981,7 +1046,7 @@ The run:
    - After the fence, the old primary's credential gets 403 from S3, and SFTP
      refuses its key. The standby's credential still reads.
    - A checkpoint, then a full backup into the new repository.
-7. **No secret of the run is in the evidence**: the S3 credentials, the
+8. **No secret of the run is in the evidence**: the S3 credentials, the
    passphrases, the platform token, the receipt and transit keys, the
    client's private key and its JWTs.
 
@@ -1011,13 +1076,13 @@ CI runs this qualification in the `backups` job, with PostgreSQL 16.
 
 ## Volume archives (REC-02)
 
-> **Not yet true after a disaster.** The keys that open these archives stay
-> in the key authority, on the primary host: nothing copies them yet. If the
-> host is lost, the archives on S3 and on the standby cannot be opened, and
-> the agents' memory is lost, not just its last 24 hours. The restore
-> authority's catalogue is lost too. This waits for D-05
-> ([ADR 005](adr/005-keys-outside-restored-domain.md)). A restore on the same
-> host, from a local archive, is not affected.
+> **After a disaster**, the keys that open these archives and the restore
+> authority's catalogue come from the authorities' replica on the standby
+> ([D-05](#the-authorities-replica-d-05)), once promoted. Without the
+> replica, they are lost with the primary, and so is every agent's memory, not
+> just its last 24 hours. The standby restores the lost host's agents from
+> the stores' copies ([ADR 020](adr/020-restoring-a-lost-hosts-agents.md),
+> [the procedure](#the-procedure), step 13).
 
 The maintenance worker archives each agent's encrypted volume about once a day,
 without being stopped. The volume RPO is 24 hours. Configure the `archives`
@@ -1058,9 +1123,10 @@ The worker restores one agent, on its own host, from one of its archives
 (REC-02). The agent gets a **new incarnation** of the same volume, and every
 outcome the archive lacks is **declared lost**, as
 [ADR 003](adr/003-restore-rpo.md#model-revision-option-b) requires. This is the
-building block of a disaster restore. A restore onto another host needs the
-keys, secrets and revocations outside the restored domain
-([D-05](adr/005-keys-outside-restored-domain.md)): it is not possible yet.
+building block of a disaster restore: on the host that takes a lost host over,
+the same restore moves the agent there first
+([ADR 020](adr/020-restoring-a-lost-hosts-agents.md),
+[the procedure](#the-procedure), step 13).
 
 ### Run it
 
@@ -1266,6 +1332,14 @@ pending the product owner.
   is not delivered again, the sender's invocation runs again and its reply is
   delivered again, and the authority records both reruns. It is written and
   not yet run.
+- On another host ([ADR 020](adr/020-restoring-a-lost-hosts-agents.md#tests)):
+  the takeover and the move in PostgreSQL
+  (`internal/controlplane/host_takeovers_test.go`); `-restore-host` with the
+  fake host (`internal/worker/host_restore_test.go`); a restore from the
+  stores' copies (`verify-archive-shipping.py --restore-from-copies`); and,
+  written for KVM, not yet run,
+  `TestProductWorkerRestoresAgentFromShippedArchiveOnAnotherHost`, which needs
+  rclone (`AGENTCAPSULE_KVM_RCLONE` or `PATH`) and the `nobody` account.
 
 ## Volume archives off the host (REC-02)
 
@@ -1440,7 +1514,10 @@ The first run uploads every archive: until it ends, the 2-hour alert may fire.
 
 ### Fetch an archive back
 
-On the standby, or any host that takes over, as root:
+The worker does this itself: `-restore-host` for every agent of a lost host,
+and `-restore-agent … -archive-fetch` for one
+([worker.md](worker.md#restoring-a-lost-hosts-agents)). By hand, on the
+standby or any host that takes over, as root:
 1. **Choose the archive**: the agent's newest in `volume_archives`, in the
    restored database, that a store holds. To list the archives of a store:
    ```sh
@@ -1456,8 +1533,8 @@ On the standby, or any host that takes over, as root:
    copy is complete (manifest, size, SHA-256 digest), then renames it into the
    root: files 0600 and directories 0700, as the worker writes them.
 3. The restore authority authenticates the manifest when the archive is
-   opened. Installing the volume and declaring the loss is the restore
-   coordinator's job, still to do.
+   opened. The restore installs the volume and declares the loss
+   ([Restoring an agent](#restoring-an-agent-from-an-archive)).
 
 ### Qualify the shipping
 
@@ -1533,6 +1610,18 @@ It checks:
 The run takes about 7 minutes. It searches its evidence for every secret it
 generated, and finds none. Passed on 2026-11-13.
 
+With `--restore-from-copies --native-tools <dir>`, it also restores a lost
+host's agent from these stores' copies (`TestRestoreFromShippedCopies`, with
+a PostgreSQL of its own and a fake host, [ADR 020](adr/020-restoring-a-lost-hosts-agents.md)):
+the agent's two archives shipped with the host's configuration, the newest
+removed from the standby's copy, the host's archive root deleted; the
+standby takes the host over and restores the agent with its own
+configuration. The newest archive comes from S3, is verified against the
+restore authority, installed into a volume created on the new host, and only
+the outcome after it is declared lost; the older one comes from the
+standby's disk, unchanged. Its archives leave the stores again before the
+next stage.
+
 ## Deleting an agent: its keys and its archives (ADR 018)
 
 Deleting an agent is final. There is no undo
@@ -1583,15 +1672,17 @@ rules are about copies, not about forensic erasure.
    again and shows them as `lost` (above). The requests and messages between
    agents that it lost stay recorded, without a rerun
    ([ADR 003](adr/003-restore-rpo.md#what-remains)).
-2. **Restoring onto the standby.** A fetch of an archive is qualified
-   ([above](#fetch-an-archive-back)). Installing it there and restoring the
-   agent needs the authorities on the standby: their replica is built
-   ([D-05](#the-authorities-replica-d-05)); its promotion command is not.
+2. **Restoring onto the standby.** Built: the takeover, the fetch from the
+   stores, the move and the restore of each agent
+   ([ADR 020](adr/020-restoring-a-lost-hosts-agents.md)). Not yet: its KVM
+   run, parallel restores, the harness packages imported on the standby, the
+   agents still provisioning or being deleted, and what ADR 006 waves 5 to 7
+   add ([ADR 020](adr/020-restoring-a-lost-hosts-agents.md#what-stays-undone)).
 3. **A failover exercise** that measures the RPO and the RTO of the whole
    platform, on real hosts. The database and the API fail over on one
-   machine, with their configuration and keys
-   ([Qualify the failover](#qualify-the-failover)). The agents (D-05 and
-   KVM), the address clients use, and the network between real hosts are not
+   machine, with their configuration and keys, and the standby takes the lost
+   host over ([Qualify the failover](#qualify-the-failover)). The agents
+   (KVM), the address clients use, and the network between real hosts are not
    measured. The API's keys reach the standby by an operator's copy, a
    stand-in until D-05 is decided.
 4. **The standby's copy of the volume archives against the host.** The host's

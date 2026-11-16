@@ -610,5 +610,31 @@ See
 [Restoring an agent from an archive](recovery.md#restoring-an-agent-from-an-archive)
 for the steps, the losses, their reruns and the crashes.
 
-A restore onto another host is not possible: it needs the keys, secrets and
-revocations outside the restored domain (D-05).
+With `-archive-fetch /opt/agentcapsule/agentcapsule-archive-ship.py`, an
+archive missing from the archive root is fetched from the standby's copy, or
+from S3 if the standby has none, and verified against the restore authority
+before the restore uses it. The receipt's `archive_store` says where it came
+from: `local`, `standby` or `s3`.
+
+### Restoring a lost host's agents
+
+After a disaster, the worker of the host that took a lost host over
+(`agentcapsule-admin take-over-host`,
+[ADR 020](adr/020-restoring-a-lost-hosts-agents.md)) restores every agent of
+the lost host, each from its newest archive that a store holds, and moves it
+to this host:
+
+```sh
+/opt/agentcapsule/agentcapsule-worker \
+  -config /etc/agentcapsule/worker.json \
+  -restore-host "$LOST_HOST_ID" \
+  -archive-root /var/lib/agentcapsule-archives \
+  -archive-fetch /opt/agentcapsule/agentcapsule-archive-ship.py
+```
+
+It prints one JSON line per agent as it goes (`restored`, `skipped` or
+`failed`, with a reason), then the totals, and exits 1 if an agent failed. Run
+the same command again to resume: it reports restored agents again and
+resumes unfinished restores first. A worker whose `host_id` names a lost host
+refuses to start (`host_taken_over`).
+[The procedure](recovery.md#the-procedure) gives the whole failover.
