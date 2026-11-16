@@ -469,7 +469,10 @@ operation fail. The registries, tombstones and reserved UIDs are kept.
 
 The final SQL receipt publishes `DELETED` and the `SUCCEEDED` operation
 together. A crash between the physical removal and this receipt leaves a
-resumable operation; a simple seal keeps `CLEANUP_PENDING`. The next barrier
+resumable operation; a simple seal keeps `CLEANUP_PENDING`. Until that
+receipt, `agentcapsule_worker_deletions_unfinished` counts the deletion, and
+`AgentCapsuleDeletionUnfinished` fires after 6 hours: the key still exists
+([observability.md](observability.md)). The next barrier
 acknowledgments on this agent re-check the absence of the file and the permanent
 seal. Older hosts with manually supplied volumes and without a
 provisioner/key authority attest only the execution seal.
