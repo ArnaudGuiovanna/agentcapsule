@@ -164,6 +164,12 @@ func run(args []string) int {
 	if err != nil {
 		return fail("receipt_key_does_not_match_installation")
 	}
+	// Each new receipt is encrypted with the daily key of the authority
+	// service (ADR 006 §7). The installation's key still reads the receipts
+	// written before, and derives the LLM credential and download link keys.
+	if authorities != nil && accounts.UseDailyReceiptKeys(authorities.ReceiptKeys()) != nil {
+		return fail("api_initialization_failed")
+	}
 	handler, err := api.NewForHost(s, accounts, *hostID)
 	if err == nil && (len(transitFiles) != 0 || *activeTransit != "") {
 		keys, e := transitFiles.Read()
