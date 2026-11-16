@@ -43,7 +43,10 @@ seconds. The run:
    (agentcapsule-admin take-over-host, ADR 020; the agents' restore needs
    KVM); a full backup into the new repository; the fence
    (the old primary's credential and key are refused, the standby's
-   credential still reads); what a client sees of a lost write;
+   credential still reads); what a client sees of a lost write, and of a
+   kept one: its replay with the same idempotency key, whose receipt the
+   old primary encrypted with the daily receipt key that the authorities'
+   promotion brought (ADR 006 wave 6);
 9. searches the evidence for every secret of the run.
 
 Runs as an ordinary user with Docker and Go; the images are those of
@@ -705,6 +708,20 @@ def main():
         again, body = call(standby_port, "POST", "/v1/organizations", token, organization(n), f"{writer.prefix}-{n}")
         report["lost_write_seen_by_client"] = {"read_status": status, "retry_status": again, "retry_same_id": bool(body) and body.get("id") == lost_id}
         expect(status == 404 and again == 201 and body["id"] != lost_id, "a lost write does not behave as announced")
+
+        # What a client sees of a write the standby holds: the same request
+        # with the same idempotency key replays its first answer. The old
+        # primary's API encrypted its receipt with the daily receipt key of
+        # its day, which reached the standby with the authorities and came
+        # with their promotion (ADR 006 wave 6).
+        n, kept_id, _ = next(w for w in reversed(writer.acknowledged) if w[1] in present)
+        key = f"{writer.prefix}-{n}"
+        key_day = lab.output([pg("psql"), "-h", ssock, "-d", "agentcapsule", "-Atq", "-v", "ON_ERROR_STOP=1",
+                              "-c", f"SELECT coalesce(key_day::text,'none') FROM http_receipts WHERE key='{key}'"]).strip()
+        again, body = call(standby_port, "POST", "/v1/organizations", token, organization(n), key)
+        report["kept_write_replayed"] = {"receipt_key_day": key_day, "status": again, "same_id": bool(body) and body.get("id") == kept_id}
+        expect(key_day not in ("", "none"), f"the old primary's receipt names no daily key ({key_day!r})")
+        expect(again == 201 and body["id"] == kept_id, f"a write the standby holds is not replayed after the failover ({again}, {body})")
 
         # The fence: the old primary's credential and key are refused, while
         # the standby's read-only credential still reads the same store.

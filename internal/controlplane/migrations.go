@@ -139,6 +139,9 @@ var auditRetentionIndexesSQL string
 //go:embed migrations/0040_access_revocations.sql
 var accessRevocationsSQL string
 
+//go:embed migrations/0041_receipt_key_days.sql
+var receiptKeyDaysSQL string
+
 // Append migrations; never edit an installed migration. The original schema
 // also upgrades pre-ledger installations, preserving its historical backfills.
 // Later calls validate its checksum without replaying DDL or those backfills.
@@ -183,6 +186,7 @@ var controlPlaneMigrations = []schemaMigration{
 	{version: 38, name: "host-takeovers", sql: hostTakeoversSQL},
 	{version: 39, name: "audit-retention-indexes", sql: auditRetentionIndexesSQL},
 	{version: 40, name: "access-revocations", sql: accessRevocationsSQL},
+	{version: 41, name: "receipt-key-days", sql: receiptKeyDaysSQL},
 }
 
 func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error {

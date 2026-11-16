@@ -19,9 +19,10 @@ import (
 
 // operation is one operation of the protocol. A hold names its kind.
 type operation struct {
-	api  bool // served on the API socket too
-	hold string
-	run  func(ctx context.Context, s *Server, args json.RawMessage, h *hold) (any, error)
+	api     bool // served on the API socket too
+	apiOnly bool // served on the API socket only
+	hold    string
+	run     func(ctx context.Context, s *Server, args json.RawMessage, h *hold) (any, error)
 }
 
 // operations are those of wave 1 (ADR 006 §10), with wave 3's seal check

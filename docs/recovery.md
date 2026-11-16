@@ -401,9 +401,10 @@ standby host; S3 is its repository 2, with a read-only credential. It checks:
 The key authority and the restore authority must never go back in time, and
 must survive the primary. [ADR 005](adr/005-keys-outside-restored-domain.md)
 keeps a synchronous replica of both on the standby: every write of the
-authorities returns only once the standby holds it on disk. Volume keys and
-the catalogue's signing secret reach the standby only wrapped to the
-operator's **unlock key**, which stays off both hosts.
+authorities returns only once the standby holds it on disk. Volume keys, the
+API's daily receipt keys and the catalogue's signing secret reach the
+standby only wrapped to the operator's **unlock key**, which stays off both
+hosts.
 
 Without the replica, the authorities are standalone: losing the primary loses
 every volume key, so every archive. Install the replica before any agent
@@ -659,12 +660,14 @@ degraded mode, as ADR 005 (question 2) decides:
 
 - **What continues**, without the standby: deliveries (their outcome
   records, reruns included), boots (fence revisions), the start of a
-  revocation, and reads. These writes are on the primary only until the
-  standby returns.
+  revocation, the creation of a new day's receipt key
+  ([below](#the-daily-receipt-keys)), and reads. These writes are on the
+  primary only until the standby returns.
 - **What waits** for the standby: creating an agent (registration, new
   volume key), deleting one (seal, key destruction), restoring one
-  (reservation, declared losses, activation), and the completion of a
-  revocation. Each attempt fails at its deadline, and its job retries.
+  (reservation, declared losses, activation), the completion of a
+  revocation, and the destruction of an old receipt key. Each attempt fails
+  at its deadline, and its job retries.
 
 **What the operator sees.** `AgentCapsuleAuthorityDegraded` (critical)
 after a minute in degraded mode;
@@ -728,6 +731,45 @@ the standby as soon as it starts, without waiting for an operation.
 of such failures. It also fires when the replica refuses the service, after
 a promotion for instance. Restarting the worker is harmless: degraded mode
 belongs to the service, and goes on.
+
+### The daily receipt keys
+
+The API encrypts each idempotency receipt, the secrets of the tokens it
+issues included, with the key of its day, UTC
+([api/README.md](api/README.md#the-daily-receipt-keys)). The authority
+service keeps these keys in the key authority, as it keeps volume keys:
+each reaches the standby wrapped to the unlock key, a snapshot carries
+them, and the promotion installs them. The service, every minute:
+- creates tomorrow's key a day ahead, while the standby answers;
+- creates today's if it is missing, and gives the API yesterday's, today's
+  and tomorrow's;
+- destroys each day's key at 01:00 UTC two days after its day began: 24
+  hours after the last receipt it can have encrypted expired, and an hour
+  for the clocks. A database backup then holds no token secret anyone can
+  read once that time has passed: at most 49 hours after it was taken.
+
+Nothing is to be done by hand. **In degraded mode**, tomorrow's key waits
+for the standby. If the standby is still away when the day comes, the
+service creates the day's key on the primary alone, and the API goes on
+(ADR 006, answer 4(b)). The destruction of an old key waits for the
+standby: the key then lives longer than its two days on the primary,
+`agentcapsule_authority_receipt_keys_overdue` counts it, and
+`AgentCapsuleReceiptKeyNotDestroyed` (warning) fires after an hour. If the
+primary is lost before the standby holds a key created alone, a replay of a
+request of that day answers 409 `idempotency_receipt_unreadable` after the
+failover: the request took effect, and does not run again. The bearer tokens
+issued in that period stay valid until the blanket revocation at a failover
+is built (ADR 005, item 14).
+
+`AgentCapsuleReceiptKeyMissing` (critical) fires when the service has held
+no usable key of the day for 5 minutes: the API then refuses every request
+that takes an `Idempotency-Key`, with 503 `authority_unavailable`. It happens when a day starts
+while a restarted service waits for its standby (it creates nothing then),
+and tomorrow's key was not created ahead. Bring the standby back, as for
+`AgentCapsuleAuthorityReplicationStopped`. `AgentCapsuleNextReceiptKeyMissing`
+(warning) fires when tomorrow's key has been missing for an hour: the
+standby has been away that long, and the next day's key will be created on
+the primary alone if it does not return by midnight UTC.
 
 ### Promote the replica
 
@@ -808,7 +850,11 @@ the standby, as root. Follow this order.
    `authority_replica`, the service refuses to start
    (`authority_replica_not_armed`) until step 7 arms the authorities. After a
    restart, the service delays the first reservations and key destructions
-   by `max_key_hold`. Start the API, with the same identities, once the
+   by `max_key_hold`. The daily receipt keys came with the promotion: a
+   receipt the promoted database holds is replayed as before, except one
+   whose key the old primary created alone in degraded mode
+   ([The daily receipt keys](#the-daily-receipt-keys)). The service goes on
+   creating and destroying them. Start the API, with the same identities, once the
    database runs here; then restore the lost host's agents and start the
    worker ([the procedure](#the-procedure), steps 7 and 11 to 13).
 7. **Seed a new standby** as soon as possible: a new host, or the old one
@@ -839,7 +885,6 @@ the standby, as root. Follow this order.
   promotion (ADR 006, wave 7). The records are on the standby (wave 5), but
   the promoted database does not learn them yet: after a failover, make
   again by hand the revocations of the database window.
-- **The daily receipt key** of ADR 005's decision.
 
 ## Failover (REC-03)
 
@@ -892,7 +937,9 @@ This must be ready before any disaster, so that the failover takes minutes:
 - **The API's configuration and keys.** The operator copies them at
   installation, and again at each rotation, to a safe off both hosts:
   - the receipt key (`-receipt-key-file`). The installation is bound to it,
-    and it also seals the LLM providers' credentials;
+    and it also seals the LLM providers' credentials. It no longer encrypts
+    new receipts: the daily keys of the authority service do, and the
+    promotion brings them ([The daily receipt keys](#the-daily-receipt-keys));
   - the transit keys (`-transit-key`): every one still needed;
   - the TLS certificate and key (`-tls-cert`, `-tls-key`): the API serves
     HTTPS only;
@@ -1131,6 +1178,9 @@ The run:
      missing one is inside it. The survivors are a prefix of the writes.
    - A lost ID reads 404, and its retry with the same key creates it again,
      under a new ID.
+   - A kept write, retried with the same key, replays its first answer: its
+     receipt names the daily receipt key of its day, which the authorities'
+     promotion brought ([The daily receipt keys](#the-daily-receipt-keys)).
    - After the fence, the old primary's credential gets 403 from S3, and SFTP
      refuses its key. The standby's credential still reads.
    - A checkpoint, then a full backup into the new repository.
@@ -1153,7 +1203,7 @@ Results of two runs on 2026-11-16, PostgreSQL 18.6 and pgBackRest 2.58:
 | Full backup into the new repository, after the RTO | 5.59 s | 4.84 s |
 
 No worker runs, so the authorities hold no agent: their promotion opens no
-volume key here. On a host with agents it unwraps each one, and takes
+volume key here, only the daily receipt keys. On a host with agents it unwraps each one, and takes
 longer. The runs of 2026-11-13, before the API needed the authority service,
 measured an RTO of 1.60 s without the authorities' steps.
 

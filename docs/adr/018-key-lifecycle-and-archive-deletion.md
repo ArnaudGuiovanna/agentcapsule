@@ -129,7 +129,8 @@ survives only in copies outside the platform:
 | Key | Where | Rotation before this record |
 | --- | --- | --- |
 | **Transit keys**: invocations, results, messages between agents, **and attachments** | Files given to the API (`-transit-key`, `cmd/agentcapsule-api/main.go:41`) and the worker (`transit.keys`); PostgreSQL keeps each one's SHA-256 and the active ID | **Yes, with an overlap.** `agentcapsule-admin activate-transit-keys` (`cmd/agentcapsule-admin/transit.go:15`) activates a new ID with every key still needed; each content keeps its key ID. **Bug:** the coverage check looked at payloads only (`internal/controlplane/transit.go:79`), not at attachments, which are sealed with a transit key too (`internal/controlplane/attachments.go:143`). A rotation could drop the key of a live attachment, and the API would start without it. Nothing said when an old key could go. |
-| **Receipt key**: idempotency receipts, including token secrets for 24 hours | A file (`-receipt-key-file`); PostgreSQL keeps its SHA-256 (`internal/controlplane/users.go:61`) | **No.** The installation is bound to it. ADR 005 replaces it with a daily key in the authorities, destroyed after 24 hours (ADR 006, wave 6). |
+| **Receipt key** (the installation's): idempotency receipts written without the daily key, the LLM credential key and the download link key | A file (`-receipt-key-file`); PostgreSQL keeps its SHA-256 (`internal/controlplane/users.go:61`) | **No.** The installation is bound to it. Since ADR 006 wave 6 it encrypts no new receipt when the API runs with the authority service; it reads the receipts written before until they expire (24 hours). |
+| **Daily receipt key**: each idempotency receipt of its day, including token secrets for 24 hours | The key authority, as a key of a reserved binding bound to the day; replicated wrapped and promoted like a volume key; in the API's memory (today's and yesterday's) | **Yes, daily** (ADR 006 wave 6). The authority service creates each day's key a day ahead and destroys it at 01:00 UTC two days after its day began; the destruction waits for the standby in degraded mode. |
 | **LLM credential key** | Derived from the receipt key (`users.go:45`) | **No.** The provider credentials it seals rotate through the API (LLM-007); the key that seals them does not ([llm.md](../api/llm.md#known-limits)). |
 | **Catalogue secret**: fence receipts and archive manifests (HMAC) | The restore authority's catalogue, replicated wrapped | No. Old manifests must keep verifying. |
 | **Unlock key** | Off both hosts; the catalogue keeps its recipient | Only through a failover: the new standby gets a new one. A snapshot with another recipient is refused (`internal/restoreauthority/snapshot_linux.go:131`). |
@@ -242,7 +243,7 @@ under the new key would shorten the first part only (question 5).
 | --- | --- | --- | --- | --- |
 | Volume key | No. It lives as long as the volume. The LUKS volume key that its key slot protects never changes, so a new 32-byte key for the slot would leave every archive openable with the old one | — | — | — |
 | Transit keys | Yes | Once a year, and at once on a suspected leak (question 5) | Until the old key seals nothing live, then 4 weeks in the safe | `activate-transit-keys`, `transit-key-usage` |
-| Receipt key | Not before ADR 006 wave 6. Then a daily key, destroyed after 24 hours | Daily | Today's and yesterday's | Automatic |
+| Receipt key | The installation's: no. Receipts take a daily key since ADR 006 wave 6, destroyed 24 hours after its last receipt expired, and an hour | Daily | Today's and yesterday's | Automatic |
 | LLM credential key | Not yet (follow-up 7). On a suspected leak of the receipt key, rotate every provider credential at its provider | — | — | — |
 | Catalogue secret | No | — | — | — |
 | Unlock key | At each failover; otherwise follow-up 5 | — | — | — |
@@ -273,7 +274,10 @@ incarnation, and the error `not_sealed`):
 2. The worker keeps its order: seal, key, volume, PostgreSQL. The service no
    longer relies on it.
 3. The daily receipt key of wave 6 has no store: its destruction is bound to
-   its day, not to a seal. `destroy_key` must tell the two kinds apart.
+   its day, not to a seal. `destroy_key` must tell the two kinds apart. As
+   built: the worker's `destroy_key` never reaches a receipt key (its
+   reserved agent is never a store); the service destroys it by its day, and
+   the stream exempts that destruction from the seal check.
 4. The projection `TestDestructionRequiresPermanentSeal` becomes full.
 
 ## 3. What this record builds

@@ -141,7 +141,9 @@ func (l Local) ActivateRestored(ctx context.Context, r Receipt, a Activation) ([
 }
 
 func (l Local) Ensure(ctx context.Context, agent, volume string) error {
-	if l.Keys == nil {
+	// A daily receipt key is created by EnsureReceiptKey only: never by the
+	// worker's ensure_key (ADR 006 §7).
+	if l.Keys == nil || agent == keyauthority.ReceiptKeyAgent {
 		return keyauthority.ErrInput
 	}
 	return l.Keys.Ensure(ctx, agent, volume)

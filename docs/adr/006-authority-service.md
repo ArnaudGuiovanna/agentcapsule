@@ -1,7 +1,7 @@
 # D-05 — The authority service
 
 Date: November 16, 2026. **Status: accepted by the product owner on November
-16, 2026** (see [Questions](#questions-for-the-product-owner)); waves 1 to 5
+16, 2026** (see [Questions](#questions-for-the-product-owner)); waves 1 to 6
 are built ([Implementation status](#implementation-status)). This record designs
 item 3 of [ADR 005 §5](005-keys-outside-restored-domain.md#5-what-changes-in-code-and-docs)
 and item 5 of its [What the code must do](005-keys-outside-restored-domain.md#what-the-code-must-do).
@@ -562,7 +562,9 @@ hours like one. The service creates the next day's key a day ahead.
 them in memory. If the standby does not hold the next day's key when it is
 due, the service creates it on the primary alone (question 4, option (b)): the
 creation of a receipt key continues in degraded mode, and the destruction of
-the old key waits for the standby.
+the old key waits for the standby. As built (wave 6): `receipt_key(day)`
+also gives tomorrow's key, for an API whose clock runs a little ahead, and
+a day's key is destroyed an hour after its last receipt expired.
 
 **The announcement and the reconciliation** (items 14 and 15). `promote`
 writes the announced window and the blanket revocation of bearer tokens into
@@ -702,7 +704,8 @@ The next waves of D-05 build on these:
   and `grantRevocationResumesAfterResyncTest`; a standby without the new
   statements refuses the first record (upgrade order).
 - **Wave 6 — the daily receipt key.** A receipt older than a day no longer
-  decrypts; the key's destruction reaches the replica.
+  decrypts; the key's destruction reaches the replica. Built: see the
+  [Implementation status](#implementation-status).
 - **Wave 7 — the announcement and the reconciliation** (items 14 and 15),
   with the runs of [§8](#8-the-model).
 
@@ -859,7 +862,8 @@ Not done in wave 3, and left to the key rotation and sealing policy
   (`root.revoked`); the code checks the seal only, which the worker records
   after the deletion's barrier;
 - the daily receipt key of wave 6 has no store: its destruction will need
-  its own operation, bound to its day;
+  its own operation, bound to its day (built in wave 6: the service
+  destroys it, by its day, without a seal);
 - a key registered but never sealed (an abandoned provisioning) cannot be
   destroyed until something seals its store.
 
@@ -1042,6 +1046,109 @@ Not done in wave 5:
   grant revoked, an agent's deletion (its revocation subject already is),
   and a mandate used up (question 7).
 - The KVM product tests have not run with the event ID recorded.
+
+November 16, 2026. **Wave 6 is built**: the daily receipt key (§7; ADR 005,
+Decision of November 13 and answer 4(b) here).
+
+- **The key.** The key authority keeps a day's receipt key as the key of a
+  reserved binding: the agent `agt_000…0`, which no agent has, and a volume
+  ID that names the day, `vol_` then 24 zeros then `YYYYMMDD` (UTC). So it
+  is written, wrapped to the unlock key, replicated, carried by a snapshot,
+  promoted and destroyed exactly as a volume key, with no new format on
+  disk, in the stream or in the replica, and no schema change. Its writes
+  have their own kinds, `receipt_key_create`, which continues in degraded
+  mode, and `receipt_key_destroy`, which waits (`authoritylog/degraded.go`).
+  Its destruction needs no seal: it has no store. The catalogue refuses to
+  register the reserved agent, the worker's `ensure_key` refuses it, and
+  the stream refuses it with a volume that names no day. A destroyed day's
+  key is never created again: its tombstone stays.
+- **`receipt_key(day)`**, on the API socket only (the worker's socket
+  answers `role`): a frame, then the key's 32 raw bytes, as `hold_key`
+  sends a volume key. By the service's clock it gives yesterday's, today's
+  and tomorrow's keys, the last for an API whose clock runs ahead. Reading
+  a key that exists waits for nothing, not even for a restarted service to
+  reach its standby: it changes nothing. Today's key is created if it is
+  missing; another day's never is. A day before yesterday, or yesterday's
+  when the service does not hold it, is gone (`key_revoked`); a day after
+  tomorrow is `key_input`.
+- **The service tends the keys** every minute (`KeepReceiptKeys`, primary
+  role): it creates today's key if missing, tomorrow's while the standby
+  answers (not in degraded mode, nor while a restarted service waits for
+  its standby), and destroys each day's key at 01:00 UTC two days after the
+  day began: 24 hours after its last receipt expired, and an hour for the
+  clocks of the API, PostgreSQL and the service. A step bounded at 30
+  seconds that fails, or waits for the standby, is tried again at the next
+  pass. Events `receipt_key_created`, `receipt_key_destroyed` (standard
+  output) and `receipt_key_failed` (standard error); metrics
+  `agentcapsule_authority_receipt_key_ready{day="today"|"tomorrow"}` and
+  `agentcapsule_authority_receipt_keys_overdue`, with three alerts
+  ([observability.md](../observability.md)).
+- **The API** (`controlplane.Accounts.UseDailyReceiptKeys`, given the
+  service's client) encrypts each new receipt, of both domains, with
+  today's key, and records its day: migration 0041 adds `key_day` to
+  `http_receipts` and `tenant_http_receipts`. It keeps today's and
+  yesterday's keys in memory, asks the service at most 5 seconds for one it
+  does not hold, and forgets older ones. A new request whose day's key the
+  service does not give fails before it runs: 503 `authority_unavailable`.
+  A replay whose day's key is gone, or was created again under another
+  value after a failover lost a key the old primary held alone, answers 409
+  `idempotency_receipt_unreadable`, and the request does not run again.
+- **Migration.** A receipt that names no day, written before this release
+  or by an API without the service (development), keeps the installation's
+  receipt key, and stays readable until it expires, 24 hours after it was
+  written. The installation's key stays, unchanged: it reads those
+  receipts, and derives the LLM credential key and the download link key
+  (ADR 016), which keep today's behaviour. A rotatable key for LLM
+  credentials stays "later, not blocking" (ADR 005 §5 item 10, LLM-01).
+- **What a backup then holds.** A receipt's token secret is readable,
+  with the backup's passphrase, until its day's key is destroyed: a backup
+  taken on day D holds no readable secret once 01:00 UTC on day D+2 has
+  passed, between 25 and 49 hours after it was taken. ADR 005 said "a backup
+  older than a day": the receipt's 24 hours and the key's day add up to two
+  days at most.
+- **Two fixes in the stream**, needed once a record with a wrapped key can
+  continue in degraded mode: such a record was deleted from the primary's
+  log once its write returned, acknowledged or not; it is now deleted only
+  once the replica holds it, and the monitor drops the log once the replica
+  holds all of it. Without them, a key created in degraded mode never
+  reached the standby, which then refused every later record as a gap.
+- **Upgrade order** (§4): a standby of an older release applies receipt
+  key records as volume keys' (same operations), so no order is needed.
+- Tests: `TestReceiptKeyCreationContinuesInDegradedMode`,
+  `TestReceiptKeyDestructionWaitsForTheStandby` (the destruction reaches
+  the replica and removes its wrapped copy), `TestReceiptKeyBindingIsReserved`,
+  `TestStandaloneReceiptKeys`, `TestReceiptKeysSurviveThePromotion` and the
+  receipt keys in `TestEveryStatementAndKeyWriteIsClassified`
+  (`internal/restoreauthority`); `TestReceiptKeyBindingNamesOneDay`,
+  `TestReceiptKeysListsTheDaysHeld` (`internal/keyauthority`);
+  `TestAPIGetsTheDailyReceiptKeys`, `TestServiceTendsTheDailyReceiptKeys`,
+  `TestReceiptKeyOfANewDayIsCreatedWithoutTheStandby`,
+  `TestReceiptKeyNeverTravelsInJSON` (`internal/authorityclient`);
+  `TestPrimaryKeepsTheDailyReceiptKeys` (`cmd/agentcapsule-authority`);
+  `TestReceiptKeyRingKeepsTodayAndYesterday`, `TestReceiptsUseTheKeyOfTheirDay`,
+  `TestTenantReceiptsUseTheKeyOfTheirDay`, `TestReceiptOfAGoneDayKeyIsNotReplayed`,
+  `TestNewReceiptWaitsForTheKeyOfItsDay`,
+  `TestReceiptsOfTheInstallationKeyStayReadable` (`internal/controlplane`,
+  PostgreSQL); `TestHTTPReceiptsOfTheDailyKeys` (`internal/api`).
+  `scripts/verify-failover.py` replays, on the promoted standby, a request
+  acknowledged by the old primary. Each test failed before its change.
+
+The model needs no change (§8): the daily receipt key protects old backups'
+receipts, not the restore invariants, and its creation in degraded mode is
+a write that continues, like an outcome's.
+
+Not done in wave 6:
+- **The blanket revocation at a failover** that covers the tokens of a day
+  whose key was lost (answer 4(b)) is ADR 005's item 14, wave 7. Until
+  then, a token issued in that period stays valid, and its receipt answers
+  409.
+- **A destruction committed as the standby goes away holds the records
+  back**, as in wave 5's notes: `receipt_key_destroy` waits, and runs every
+  day, at about 01:00 UTC. The window is the time between its commit and the
+  standby's acknowledgment.
+- The key authority keeps, per day, an empty lock file, an allocation
+  marker and a tombstone, and the replica one row: about 1,100 small files a
+  year, as for volume keys.
 
 ## 11. Options considered
 

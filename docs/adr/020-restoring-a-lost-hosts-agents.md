@@ -206,9 +206,13 @@ hosts (REC-03).
   access works again. Until wave 5, the operator re-applies the revocations
   of the window from what the organizations report, and the announcement
   says so.
-- **The daily receipt key** (wave 6). The API's receipt key is the long-lived
-  one, copied by hand to the safe and installed on the standby. A receipt it
-  sealed before the failover stays readable after it.
+- **The daily receipt key** (wave 6, built since). New receipts take the
+  daily key of the authority service, which the promotion carries: a
+  receipt sealed before the failover stays readable after it, unless its key
+  was created on the old primary alone in degraded mode (409
+  `idempotency_receipt_unreadable`). The installation's receipt key is still
+  copied by hand to the safe: it reads older receipts and seals the LLM
+  credentials.
 - **The reconciliation of PostgreSQL with the authorities** (wave 7). The
   restored database may be behind the authorities by its loss window:
   - an agent deleted in the window: the authority sealed its store, so its

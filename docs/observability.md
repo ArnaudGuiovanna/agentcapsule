@@ -85,6 +85,8 @@ volume archives and, on the standby host, its replay.
 | `agentcapsule_authority_replication_degraded_since_timestamp_seconds` | gauge | — | When the authority service entered degraded mode, without the standby, as a Unix time; 0 outside it ([recovery.md](recovery.md#degraded-mode)) |
 | `agentcapsule_authority_replication_degraded_waiting` | gauge | `kind` | Authority operations waiting for the standby in degraded mode: `registration`, `reservation`, `loss`, `activation`, `seal`, `key_create`, `key_destroy`, `revocation_done`; `outcome`, `rerun`, `fence`, `revocation_start`, `access` (an access revocation record) and `read` only behind a waiting write the standby lacks |
 | `agentcapsule_authority_replication_degraded_refused_total` | counter | `kind` | Authority operations that waited for the standby in degraded mode until their deadline |
+| `agentcapsule_authority_receipt_key_ready` | gauge | `day` (`today`, `tomorrow`) | 1 when the authority service holds that day's receipt key, created ([recovery.md](recovery.md#the-daily-receipt-keys)). Tomorrow's waits for the standby in degraded mode. Primary role |
+| `agentcapsule_authority_receipt_keys_overdue` | gauge | — | Daily receipt keys the service still holds after their destruction time (01:00 UTC two days after their day began): their destruction waits for the standby, or fails |
 | `agentcapsule_authority_replica_applied_sequence`, `_epoch`, `_last_apply_timestamp_seconds` | gauge | — | The replica's position, epoch and last apply (`agentcapsule-authority serve`, standby host) |
 | `agentcapsule_authority_replica_refusals_total` | counter | `kind` | Requests the replica refused: `gap`, `older_epoch`, `newer_epoch`, `conflict`, `promoted`, `identity`, `invalid`, `unavailable` (standby host) |
 | `agentcapsule_telemetry_collect_errors_total` | counter | — | Scrapes whose current values could not be read |
@@ -182,6 +184,7 @@ Each process writes one JSON object per line, with `time` and `event` first:
 | Worker, restore command | `restore_paused` (standard error) | `reason`: `authority_unavailable`, `waits_for_replica` |
 | Authority service | `service_started` (standard output) | `epoch`, `mode` (`standalone`, `synchronous`, `degraded`, `waiting`) |
 | Authority service | `service_stopped` (standard output); `peer_refused`, `hold_expired` (standard error) | `socket` for a refused peer, `kind` for an expired hold |
+| Authority service | `receipt_key_created`, `receipt_key_destroyed` (standard output); `receipt_key_failed` (standard error) | `day` (YYYYMMDD, UTC); `step` (`create`, `destroy`) for a failure: a step that waits for the standby fails at its 30 seconds, and runs again a minute later ([recovery.md](recovery.md#the-daily-receipt-keys)) |
 
 **Correlation.** Every API response carries `X-Request-ID`, a random 128-bit
 value. The ID says nothing about the person or the content. It follows the
@@ -249,6 +252,9 @@ Their annotations are fixed text.
 | `AgentCapsuleAuthorityDegraded` | The authority service has run in degraded mode, without the standby, for a minute: creating, deleting and restoring agents wait, and losing the host loses the outcomes recorded since (critical) |
 | `AgentCapsuleAuthorityOperationsRefused` | An authority operation gave up waiting for the standby in degraded mode in the last 15 minutes |
 | `AgentCapsuleAuthorityReplicationStopped` | Outside degraded mode, attempts to reach the authorities' replica have kept failing for 5 minutes: an authority service restarted without its standby, or a replica that refuses it. Every authority operation waits or fails (critical) |
+| `AgentCapsuleReceiptKeyMissing` | The authority service has held no usable receipt key of the day for 5 minutes: the API refuses every request that takes an `Idempotency-Key` (503). A day started while a restarted service waited for its standby (critical) |
+| `AgentCapsuleNextReceiptKeyMissing` | Tomorrow's receipt key has been missing for an hour: the standby is away, and the next day's key will be created on the primary alone if it does not return by midnight UTC (ADR 006, answer 4(b)) |
+| `AgentCapsuleReceiptKeyNotDestroyed` | A daily receipt key has outlived its destruction time for an hour: its destruction waits for the standby, or fails. Backups of its day stay readable meanwhile |
 
 [alerts_test.yml](../deploy/prometheus/alerts_test.yml) holds promtool unit
 tests for every alert: each has a case where it fires and one where it stays

@@ -583,9 +583,24 @@ in degraded mode, and reports the others as pending until then. Outcome
 records keep the event ID. See
 [ADR 006](006-authority-service.md#implementation-status).
 
+ADR 006 wave 6 builds the decision on **the token secrets in idempotency
+receipts**: the API encrypts each new receipt with a daily key kept in the
+key authority, replicated wrapped and promoted like a volume key, and
+destroyed at 01:00 UTC two days after its day began, 24 hours after the
+last receipt it can have encrypted expired. A backup holds no readable
+token secret once that time has passed: between 25 and 49 hours after it
+was taken, not "older than a day" as the decision says, since a day's key
+serves a whole day of receipts that live 24 hours each. The replay of a
+request keeps its behaviour while its day's key exists; a replay whose key
+was lost with a primary that created it alone in degraded mode (ADR 006,
+answer 4(b)) answers 409 `idempotency_receipt_unreadable` and does not run
+again. The installation's receipt key stays: it reads the receipts written
+before, and still derives the LLM credential key, which does not rotate
+(§5 item 10, later).
+
 Later waves: the announcement and token revocation after a degraded period
 (item 14), reconciliation with PostgreSQL (item 15, §5.5), which replays the
-access records, and the daily receipt key.
+access records.
 [recovery.md](../recovery.md#the-authorities-replica-d-05) installs the
 service and the replica.
 

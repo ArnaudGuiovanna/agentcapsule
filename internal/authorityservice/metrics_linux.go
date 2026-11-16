@@ -14,6 +14,8 @@ type Metrics struct {
 	holds   *telemetry.Gauge
 	expired *telemetry.Counter
 	refused *telemetry.Counter
+	// receipt are the daily receipt keys' (receipt_keys_linux.go).
+	receipt receiptMetrics
 
 	mu     sync.Mutex
 	active map[string]int
@@ -29,7 +31,8 @@ func NewMetrics(r *telemetry.Registry) *Metrics {
 		refused: r.Counter("agentcapsule_authority_service_refused_peers_total",
 			"Connections the authority service closed at accept because of their peer's account, by socket.",
 			telemetry.Label{Name: "socket", Values: []string{RoleWorker, RoleAPI}}),
-		active: map[string]int{},
+		active:  map[string]int{},
+		receipt: newReceiptMetrics(r),
 	}
 	for _, k := range HoldKinds() {
 		m.holds.Set(0, k)

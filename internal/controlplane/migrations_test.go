@@ -319,6 +319,8 @@ func TestReadyChecksInstalledMigrationLedger(t *testing.T) {
 func revertTenantAgents(t *testing.T, s *Store) {
 	t.Helper()
 	if _, err := s.pool.Exec(t.Context(), `
+        ALTER TABLE http_receipts DROP COLUMN IF EXISTS key_day;
+        ALTER TABLE tenant_http_receipts DROP COLUMN IF EXISTS key_day;
         DROP TABLE IF EXISTS access_revocations;
         DROP FUNCTION IF EXISTS preserve_access_revocation();
         DROP TABLE IF EXISTS volume_relocations, host_takeovers;
