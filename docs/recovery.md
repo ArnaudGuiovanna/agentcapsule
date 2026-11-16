@@ -697,12 +697,25 @@ away: nothing runs behind such a write until the standby holds it (ADR 006,
 wave 5, Not done).
 
 **If the primary is lost during degraded mode**, the outcomes recorded since
-its start exist nowhere else. The failover must announce that period as a
-time window, from the standby's last contact to the failover, and revoke
-every bearer token issued before it (ADR 005, item 14). A revocation started
-in that period was never confirmed, since its completion waited. An access
-revocation still pending then must be made again: the announcement lists
-that window.
+its start exist nowhere else. The standby cannot know whether degraded mode
+ran: by definition it did not hear from the primary. It knows its **last
+contact**, the last request of the primary it answered: the replica writes
+that time on disk before it answers, and the primary reaches it every sixth
+of `degraded_after` (5 seconds by default) even when nothing is written. No
+degraded period can begin less than `degraded_after` after the last
+contact. So the promotion compares the two
+([Promote the replica](#promote-the-replica), step 5): when the last contact
+is older than `degraded_after` at the failover, it assumes a degraded period
+ran (ADR 005, item 14). It then revokes every bearer token issued before the
+failover, moves every delegation trust's `minimum_iat` to the failover, and
+the failover announces the window from the last contact to the failover. A
+revocation started in that period was never confirmed, since its completion
+waited. An access revocation still pending then must be made again: the
+announcement lists that window.
+
+An idle primary also learns at once, at its next heartbeat, that its standby
+went away: it enters degraded mode after `degraded_after` without an
+operation, and `AgentCapsuleAuthorityDegraded` fires.
 
 #### Pending revocations
 

@@ -276,18 +276,18 @@ in the ordinary unit tests.
 | `restoreAuthorityReplicaTests.destructionResumesAfterResyncTest` | full | `TestDestructionResumesAfterResync` |  |
 | `restoreAuthorityReplicaTests.oldPrimaryCannotResendAfterPromotionTest` | full | `TestOldPrimaryCannotResendAfterPromotion` |  |
 | `restoreAuthorityReplicaTests.restoredImageRescansUnderNewEpochTest` | partial | `TestReceiptOfTheOldEpochCannotBindAfterPromotion` | The rescan without its degraded period (ADR 005). |
-| `restoreAuthorityReplicaTests.tokenRevocationCoveredByBlanketTest` | pending | — | ADR 006 wave 7 (the announcement and the reconciliation). |
+| `restoreAuthorityReplicaTests.tokenRevocationCoveredByBlanketTest` | full | `TestTokenRevocationCoveredByBlanket`, `TestPromotionAnnouncesADegradedPeriodBeyondTheDelay` | ADR 006 wave 7: a service token revoked in degraded mode, its record and PostgreSQL's commit lost with the primary; the promotion, later than the degraded delay after the standby's last contact, writes the blanket record, and the reconciliation revokes every bearer token issued before the failover and moves the delegation trusts' `minimum_iat` past it. |
 | `restoreAuthorityReplicaTests.grantRevocationWaitsForReplicaTest` | full | `TestGrantRevocationWaitsForReplica`, `TestAccessRecordContinuesInDegradedMode` | The authority service with its replica, degraded mode and the API on PostgreSQL (ADR 006 wave 5): the model's acknowledged access revocation is the API's confirmed one. In degraded mode a member's revocation takes effect at once and stays `pending`; its record is not on the replica, and no later question confirms it. |
 | `restoreAuthorityReplicaTests.grantRevocationResumesAfterResyncTest` | full | `TestGrantRevocationResumesAfterResync` | After the resync the replica holds the record and the API confirms the revocation; the one left pending in degraded mode is confirmed too. |
 | `restoreAuthorityReplicaTests.subjectRevocationCompletesAfterResyncTest` | full | `TestSubjectRevocationCompletesAfterResync` |  |
-| `restoreAuthorityReplicaTests.degradedOutcomeIsAnnouncedAsWindowTest` | partial | `TestDegradedOutcomeIsLostWithThePrimary` | The loss is shown; its announcement comes with ADR 006 wave 7. |
+| `restoreAuthorityReplicaTests.degradedOutcomeIsAnnouncedAsWindowTest` | full | `TestDegradedOutcomeIsAnnouncedAsWindow` | ADR 006 wave 7: the outcome lost with the primary falls in the window the promotion announces, from the standby's last contact to the failover. The model's window is a set of events; the code's is a time window. |
 | `restoreAuthorityReplicaTests.syncOutcomeIsDeclaredOneByOneTest` | full | `TestSyncOutcomeIsDeclaredOneByOne` |  |
 | `restoreAuthorityReplicaTests.resyncEndsDegradedModeTest` | full | `TestResyncEndsDegradedMode` |  |
-| `restoreAuthorityReplicaTests.reconciliationReplaysRootTest` | pending | — | ADR 006 wave 7. |
-| `restoreAuthorityReplicaTests.shippedDatabaseNeedsNoReportTest` | pending | — | ADR 006 wave 7. |
+| `restoreAuthorityReplicaTests.reconciliationReplaysRootTest` | full | `TestReconciliationReplaysRoot`, `TestReconciliationReplaysEveryRevokingRoute` | ADR 006 wave 7, on PostgreSQL, the authority service, its replica and the promotion. The database the standby promotes is the lab's, with the writes the WAL did not ship taken back by hand. A request's subject stands for subject 0. |
+| `restoreAuthorityReplicaTests.shippedDatabaseNeedsNoReportTest` | full | `TestShippedDatabaseNeedsNoReport` | The restore on PostgreSQL's side is the restore's rows, written by hand. |
 | `restoreAuthorityReplicaTests.promotedAuthorityRunsAloneUntilSeededTest` | full | `TestPromotedAuthorityRunsAloneUntilSeeded` |  |
 | `restoreAuthorityDecidedDegradedTests.blanketCoversTokensOnlyTest` | model-only | — | Degraded mode as first decided, replaced by finding 1 option (a) (ADR 005); documents the finding. |
-| `restoreAuthorityDecidedDegradedTests.shippedGrantRevocationSurvivesTest` | pending | — | ADR 006 wave 7. |
+| `restoreAuthorityDecidedDegradedTests.shippedGrantRevocationSurvivesTest` | full | `TestShippedGrantRevocationSurvives` | Under finding 1 option (a) a standing grant's record also continues in degraded mode, reported pending: the run's step holds as decided. The reconciliation writes PostgreSQL's own record into the promoted authority. |
 | `restoreAuthorityDecidedDegradedTests.completedSubjectRevocationIsLostTest` | model-only | — | Degraded mode as first decided; documents finding 1 (ADR 005). |
 
 ### `restore_witness.qnt`
@@ -318,7 +318,7 @@ in the ordinary unit tests.
 | `restoreWitnessSameEpochBroken` | full | `TestReceiptOfTheSameEpochWouldActivateUnfenced` | Without the epoch in the MAC, the old receipt would activate (ADR 005). |
 | `restoreWitnessDegradedDestructionGuard.guardTest` | full | `TestDegradedModeHoldsKeyDestruction` |  |
 | `restoreWitnessDegradedDestructionBroken` | model-only | — | Broken configuration: Go has no switch that removes the guard. |
-| `restoreWitnessEarlyOpenGuard.guardTest` | pending | — | ADR 006 wave 7. |
+| `restoreWitnessEarlyOpenGuard.guardTest` | full | `TestEarlyOpenGuard`, `TestAPIRefusesToOpenBeforeTheReconciliation` | ADR 006 wave 7: the API's readiness answers 503 `authority_not_reconciled`, and the API refuses to start, until the promoted epoch is reconciled. |
 | `restoreWitnessEarlyOpenBroken` | model-only | — | Broken configuration: Go has no switch that removes the guard. |
 | `restoreWitnessDecidedGrantGuard.guardTest` | pending | — | ADR 006 wave 5: a grant's revocation waits for the replica in degraded mode. |
 | `restoreWitnessDecidedGrant` | model-only | — | Finding 1 of ADR 005: degraded mode as first decided. |

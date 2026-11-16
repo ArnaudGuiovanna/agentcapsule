@@ -13,27 +13,32 @@ seconds. The run:
    (bootstrap-platform), a transit key, the authority service with its
    replica on the standby (both authorities, the unlock key kept in the
    operator's safe, the link's certificates, the snapshot, the replica's
-   service), a tenant with a delegated-identity trust, base backups, and the
-   API on the authority service (ADR 006: production requires it). The
-   operator keeps a copy of the API's keys and configuration off the host: a
-   stand-in until D-05 is decided;
+   service), a tenant with a delegated-identity trust and a second member,
+   base backups, and the API on the authority service (ADR 006: production
+   requires it). The operator keeps a copy of the API's keys and
+   configuration off the host: a stand-in until D-05 is decided;
 3. a client writes steadily through the API, with real authenticated
    requests: it creates an organization every 0.2 seconds and records each
    acknowledged ID with its time;
 4. builds the standby from its own disk; it replays the archive;
-5. the disaster, one and a half archive_timeout after a segment switch: the
-   primary's PostgreSQL, authority service and API are killed with SIGKILL,
-   with the pushes in progress; its data directory, its authorities and the
-   WAL it had not pushed are removed;
+5. the disaster, one and a half archive_timeout after a segment switch: a
+   few seconds before it, the tenant's owner revokes the second member, in
+   the segment that never ships; then the primary's PostgreSQL, authority
+   service and API are killed with SIGKILL, with the pushes in progress; its
+   data directory, its authorities and the WAL it had not pushed are
+   removed;
 6. the failover, timed from the decision: fence the old primary's
    credentials (its S3 credential revoked at the provider, its key removed
    from the standby's SFTP account), promote the authorities' replica with
    the unlock key from the safe and start the standby's authority service in
    the primary role, promote the standby, give it a repository of its own,
-   install the API's configuration and keys, start the API on the promoted
-   authorities with the same identities, then wait for readiness, a first
-   authenticated read (with the platform token and with a delegated
-   identity) and a first write;
+   install the API's configuration and keys. The API refuses to start
+   (authority_not_reconciled), and the promoted database still holds the
+   revoked membership; agentcapsule-admin reconcile replays the revocation
+   from the authority (ADR 006 wave 7). Then the API starts on the promoted
+   authorities with the same identities, and the run waits for readiness, a
+   first authenticated read (with the platform token and with a delegated
+   identity) and a first write. The revoked member reads nothing;
 7. measures the RTO (from the decision to the first write), the RPO (the
    acknowledged writes the standby lacks, and the age of the oldest), and the
    loss window to announce (from the last replayed commit to the disaster).
@@ -79,6 +84,7 @@ ARCHIVE_TIMEOUT, PUSH_MARGIN = BACKUPS.ARCHIVE_TIMEOUT, BACKUPS.PUSH_MARGIN
 PRODUCTION_ARCHIVE_TIMEOUT = 300  # deploy/backup/postgresql.conf
 WRITE_INTERVAL = 0.2  # seconds between two writes of the client
 DISASTER_AFTER_SWITCH = 1.5  # in archive_timeouts: the disaster comes halfway through a segment
+REVOKE_BEFORE_DISASTER = 3  # seconds: the member's revocation, in the segment that never ships
 BINARIES = ("agentcapsule-api", "agentcapsule-admin", "agentcapsule-authority")
 ISSUER, AUDIENCE = "https://client.example", "agentcapsule:organisation"
 HOST_ID = "local"
@@ -321,11 +327,11 @@ def main():
         proc.send_signal(signal.SIGTERM)
         expect(proc.wait(timeout=30) == 0, f"the API of the {name} did not stop cleanly")
 
-    def jwt(key_pem, generation):
-        """A delegated identity, signed by the client's own Ed25519 key, for GET /v1/organizations/current."""
+    def jwt(key_pem, generation, subject="failover-reader", scope="org:read"):
+        """A delegated identity, signed by the client's own Ed25519 key: GET /v1/organizations/current, and the owner's member management."""
         now = int(time.time())
-        claims = {"iss": ISSUER, "aud": AUDIENCE, "sub": "failover-reader", "jti": secrets.token_hex(16), "iat": now, "exp": now + 120,
-                  "scope": "org:read", "trust_generation": generation}
+        claims = {"iss": ISSUER, "aud": AUDIENCE, "sub": subject, "jti": secrets.token_hex(16), "iat": now, "exp": now + 120,
+                  "scope": scope, "trust_generation": generation}
         signing = b64url(json.dumps({"alg": "EdDSA", "typ": "JWT", "kid": "primary"}, separators=(",", ":")).encode()) + "." + \
             b64url(json.dumps(claims, separators=(",", ":")).encode())
         message = work / "client/jwt-input"
@@ -460,7 +466,8 @@ def main():
         lab.credentials.append("".join((client / "identity.pem").read_text().splitlines()[1:-1]))
         public = subprocess.check_output(["openssl", "pkey", "-in", str(client / "identity.pem"), "-pubout", "-outform", "DER"])[-32:]
         (primary_etc / "delegation.json").write_text(json.dumps({"version": 1, "max_token_bytes": 8192, "trusts": [{
-            "tenant_id": tenant["id"], "issuer": ISSUER, "audience": AUDIENCE, "allowed_scopes": ["org:read"], "max_ttl_seconds": 300,
+            "tenant_id": tenant["id"], "issuer": ISSUER, "audience": AUDIENCE, "allowed_scopes": ["org:read", "member:read", "member:manage"],
+            "max_ttl_seconds": 300,
             "keys": [{"kid": "primary", "public_key": base64.b64encode(public).decode()}]}]}))
         (primary_etc / "delegation.json").chmod(0o644)
         trust = json.loads(admin("primary-admin", primary_dsn, "configure-delegation", "-action", "install", "-operation-id", "failover-trust",
@@ -476,6 +483,13 @@ def main():
         time.sleep(max(0.0, not_before - time.time() + 1))
         status, current = call(primary_port, "GET", "/v1/organizations/current", jwt(client / "identity.pem", trust["generation"]))
         expect(status == 200 and current["organization"]["id"] == tenant["id"], f"the delegated identity does not read on the primary ({status})")
+        # The member the owner revokes just before the disaster.
+        manage = "org:read member:read member:manage"
+        status, leaver = call(primary_port, "POST", "/v1/members", jwt(client / "identity.pem", trust["generation"], scope=manage), {
+            "issuer": ISSUER, "subject": "failover-leaver", "display_name": "Leaver", "role": "agent_user"}, "leaver")
+        expect(status == 201, f"the second member was not added ({status})")
+        status, _ = call(primary_port, "GET", "/v1/organizations/current", jwt(client / "identity.pem", trust["generation"], subject="failover-leaver"))
+        expect(status == 200, f"the second member does not read on the primary ({status})")
 
         # The operator's copy of the API's keys and configuration, made at
         # installation and kept off the host. A stand-in until D-05 decides
@@ -512,6 +526,16 @@ def main():
         s["switched_segment_archived_seconds"] = wait(
             lambda: psql(sock, f"SELECT last_archived_wal >= '{segment}' FROM pg_stat_archiver") == "t", ARCHIVE_TIMEOUT,
             "the switched segment did not reach both stores")
+        # A few seconds before the disaster, in the segment that never
+        # ships, the owner revokes the second member. The authority service
+        # holds its record on the standby's replica before PostgreSQL commits.
+        time.sleep(max(0.0, switched + ARCHIVE_TIMEOUT * DISASTER_AFTER_SWITCH - REVOKE_BEFORE_DISASTER - time.monotonic()))
+        status, revoked = call(primary_port, "POST", f"/v1/members/{leaver['principal_id']}/revoke",
+                               jwt(client / "identity.pem", trust["generation"], scope=manage), {}, "revoke-leaver")
+        revocation = ((revoked or {}).get("revocations") or [{}])[0]
+        expect(status == 200 and revocation.get("kind") == "member" and revocation.get("state") == "confirmed",
+               f"the member's revocation was not confirmed on the replica ({status} {revocation})")
+        revoked_at = time.time()
         time.sleep(max(0.0, switched + ARCHIVE_TIMEOUT * DISASTER_AFTER_SWITCH - time.monotonic()))
         expect(writer.is_alive() and not writer.failed, f"the client's writes failed before the disaster: {writer.failed[:3]}")
 
@@ -622,6 +646,24 @@ def main():
         step("promote", promote)
         on_promoted = step("own_repository", lambda: lab.own_repository(standby, ssock))[0]
         step("install_api_configuration_and_keys", install)
+
+        def membership():
+            """The revoked member's membership, as the promoted database holds it."""
+            return lab.output([pg("psql"), "-h", ssock, "-d", "agentcapsule", "-Atq", "-c",
+                               f"SELECT status FROM memberships WHERE principal_id='{leaver['principal_id']}'"])
+
+        def refused_start():
+            # Before the reconciliation the API refuses to start: the
+            # promoted database lacks what the authority holds.
+            proc = start_api("standby-early", standby_etc, standby_dsn, standby_port, srun / "api.sock", STANDBY_HOST_ID)
+            code = proc.wait(timeout=60)
+            apis.pop("standby-early")
+            return code, (out / "api-standby-early.log").read_text().strip().splitlines()[-1]
+
+        early = step("api_refused_before_reconciliation", refused_start)
+        lost = membership()
+        reconciled = step("reconcile", lambda: json.loads(admin("failover-reconcile", standby_dsn, "reconcile",
+                                                                "-authority-socket", srun / "api.sock", *ids)))
         step("start_api", lambda: start_api("standby", standby_etc, standby_dsn, standby_port, srun / "api.sock", STANDBY_HOST_ID))
         step("api_ready", lambda: ready("standby", standby_port))
         step("first_authenticated_read", read)
@@ -630,6 +672,25 @@ def main():
         report["failover"] = {"steps_seconds": steps, "rto_seconds": round(rto, 2)}
         report["authorities"] = {"promotion": promoted, "standby_api_reports": authority_mode(standby_port)}
         expect(report["authorities"]["standby_api_reports"] == "standalone", "the standby's API does not report its authority service standalone")
+        expect(promoted.get("announcement", {}).get("degraded") is False,
+               f"a failover seconds after the standby's last contact announced a degraded period: {promoted.get('announcement')}")
+
+        # The revoked member (ADR 006 wave 7): revoked after the last shipped
+        # segment, lost from the promoted database, held by the authority,
+        # replayed by the reconciliation before the API opened.
+        status, _ = call(standby_port, "GET", "/v1/organizations/current",
+                         jwt(client / "identity.pem", trust["generation"], subject="failover-leaver"))
+        report["reconciliation"] = {
+            "api_before_reconciliation": {"exit_code": early[0], "refusal": early[1]},
+            "revoked_seconds_before_disaster": round(disaster_at - revoked_at, 2),
+            "revoked_member_in_promoted_database": lost, "after_reconciliation": membership(),
+            "reconcile": reconciled, "revoked_member_reads_after_failover": status}
+        expect(early == (1, "authority_not_reconciled"), f"the API opened before the reconciliation: {early}")
+        expect(lost == "active", f"the revocation shipped with the WAL ({lost}): the run does not show its replay")
+        expect(reconciled.get("epoch") == 2 and reconciled.get("records_replayed", 0) >= 1 and reconciled.get("announcement") is None,
+               f"the reconciliation did not replay the revocation: {reconciled}")
+        expect(report["reconciliation"]["after_reconciliation"] == "revoked", "the promoted database lacks the revocation after the reconciliation")
+        expect(status == 401, f"the member revoked before the disaster reads after the failover ({status})")
 
         # ---- The agents' host (ADR 020): the standby takes the lost host
         # over. Its worker then restores the agents from their archives, which
