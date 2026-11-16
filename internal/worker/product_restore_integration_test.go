@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"io"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -244,5 +245,133 @@ func TestProductWorkerRestoresAgentFromArchive(t *testing.T) {
 	if err = l.store.ObservePlacementControl(t.Context(), controlplane.PlacementControlObservation{AgentID: agent, HostID: "local", VMID: run.ID,
 		Generation: run.Generation, Incarnation: 1, Compatible: true}); !errors.Is(err, controlplane.ErrPlacement) {
 		t.Fatal("the old incarnation's control contract was observed", err)
+	}
+}
+
+// deliveryOutcome returns the mailbox of a request's event (request, reply or
+// status) and the restore authority's ID of its outcome in agentID's store.
+func (l *registryLab) deliveryOutcome(agentID, requestID, kind string) (string, string) {
+	l.t.Helper()
+	var mailbox string
+	if err := l.db.QueryRow(l.t.Context(), "SELECT id FROM agent_mailboxes WHERE ref_id=$1 AND kind=$2", requestID, kind).Scan(&mailbox); err != nil {
+		l.t.Fatal(err)
+	}
+	id, _, err := harnessstore.StoredOutcomeFingerprint(agentID, mailbox, [32]byte{}, nil)
+	if err != nil {
+		l.t.Fatal(err)
+	}
+	return mailbox, id
+}
+
+// Two agents of an organization talk over A2A, then each is restored from an
+// archive older than their exchange (REC-02, ADR 008). b is restored first:
+// it lost the request, which it had answered, so the request is not
+// delivered again (request_closed) and stays REPLIED. a is restored next: it
+// lost the invocation that asked b, and the reply. The invocation runs again
+// under its ID and completes with b's answer; the reply is delivered again
+// under its mailbox ID, and the restore authority records both reruns.
+func TestProductWorkerRestoresAgentToAgentExchange(t *testing.T) {
+	pkg := os.Getenv("AGENTCAPSULE_KVM_A2A_HARNESS")
+	if pkg == "" {
+		t.Fatal("AGENTCAPSULE_KVM_A2A_HARNESS must name the a2a-agent package (verify-product-guest.py --a2a-harness)")
+	}
+	l := newRegistryLab(t)
+	ref := l.importPackage(pkg, "acme/a2a-agent", "1.0.0")
+	a := l.createOn("restore-a2a-a", "a2a-agent", "1.0.0").AgentID
+	b := l.createOn("restore-a2a-b", "a2a-agent", "1.0.0").AgentID
+	for _, id := range []string{a, b} {
+		l.bootsFrom(id, ref, 2)
+	}
+	l.request(l.owner(), "PUT", "/v1/agents/"+b+"/directory", "restore-b-visible", map[string]any{"visible": true,
+		"description": "Answers with the text it receives.", "skills": []int{10301}}, 200, nil)
+	l.request(l.owner(), "PUT", "/v1/agents/"+b+"/inbound", "restore-b-auto", map[string]string{"mode": "auto"}, 200, nil)
+
+	t.Log("stage: archive both agents, then a asks b")
+	archives, err := volumearchive.New(filepath.Join(t.TempDir(), "archives"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	archiveA, archiveB := "arc_"+strings.Repeat("7", 32), "arc_"+strings.Repeat("8", 32)
+	for agent, id := range map[string]string{a: archiveA, b: archiveB} {
+		if _, err = l.worker.CaptureArchive(t.Context(), agent, id, archives); err != nil {
+			t.Fatal(err)
+		}
+	}
+	question := "what is the capital of France?"
+	answer := b + " answered: echo: " + question
+	ask := l.invoke(a, "restore-a2a-ask", "ask "+b+" "+question)
+	l.await("a gets b's answer", true, func() bool { return l.answered(ask, answer) })
+	var request string
+	if err = l.db.QueryRow(t.Context(), "SELECT id FROM agent_requests WHERE sender_agent_id=$1 AND recipient_agent_id=$2 AND state='REPLIED'",
+		a, b).Scan(&request); err != nil {
+		t.Fatal("the exchange", err)
+	}
+	notified := func() bool {
+		var n bool
+		if err := l.db.QueryRow(t.Context(), "SELECT sender_notified FROM agent_requests WHERE id=$1", request).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	l.await("the reply reaches a", true, notified)
+	requestMailbox, requestOutcome := l.deliveryOutcome(b, request, "request")
+	replyMailbox, replyOutcome := l.deliveryOutcome(a, request, "reply")
+
+	t.Log("stage: b is restored; the answered request is not delivered again")
+	result, err := l.worker.RestoreFromArchive(t.Context(), "rst_"+strings.Repeat("7", 32), b, archiveB, archives)
+	if err != nil {
+		t.Fatal("restore b", err)
+	}
+	if len(result.Losses) != 1 || result.Losses[0].MailboxID != requestMailbox || result.Losses[0].Rerun != controlplane.RerunSkipped ||
+		result.Losses[0].SkipReason != controlplane.SkipRequestClosed {
+		t.Fatal("b's losses", result.Losses)
+	}
+	var state, delivery string
+	if err = l.db.QueryRow(t.Context(), `SELECT r.state,m.delivery_state FROM agent_requests r JOIN agent_mailboxes m ON m.ref_id=r.id
+        WHERE r.id=$1 AND m.id=$2`, request, requestMailbox).Scan(&state, &delivery); err != nil || state != "REPLIED" || delivery != "DELIVERED" {
+		t.Fatal("the answered request after b's restore", state, delivery, err)
+	}
+	if got, _, err := l.worker.authority.OutcomeStatus(t.Context(), requestOutcome); err != nil || got != restoreauthority.StatusLost {
+		t.Fatal("the request's outcome in b", got, err)
+	}
+
+	t.Log("stage: a is restored; its invocation runs again and its reply is delivered again")
+	if result, err = l.worker.RestoreFromArchive(t.Context(), "rst_"+strings.Repeat("8", 32), a, archiveA, archives); err != nil {
+		t.Fatal("restore a", err)
+	}
+	decided := map[string]controlplane.RestoreLoss{}
+	invocationMailbox := ""
+	for _, loss := range result.Losses {
+		decided[loss.MailboxID] = loss
+		if loss.InvocationID == ask {
+			invocationMailbox = loss.MailboxID
+		}
+	}
+	if len(result.Losses) != 2 || invocationMailbox == "" || decided[invocationMailbox].Rerun != controlplane.RerunQueued ||
+		decided[replyMailbox].Rerun != controlplane.RerunQueued || decided[replyMailbox].InvocationID != "" {
+		t.Fatal("a's losses", result.Losses)
+	}
+	if notified() {
+		t.Fatal("a's restored store no longer holds the reply, but it counts as received")
+	}
+	l.await("a's invocation runs again and its reply arrives again", true, func() bool { return l.answered(ask, answer) && notified() })
+	for _, outcome := range []string{replyOutcome, l.outcomeOf(a, ask)} {
+		if got, _, err := l.worker.authority.OutcomeStatus(t.Context(), outcome); err != nil || got != restoreauthority.StatusRerunConfirmed {
+			t.Fatal("the authority did not record the rerun", outcome, got, err)
+		}
+	}
+	// a's rerun asked b again, under a new A2A message: a second request.
+	rows, err := l.db.Query(t.Context(), "SELECT state FROM agent_requests WHERE sender_agent_id=$1 AND recipient_agent_id=$2", a, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		if err = rows.Scan(&state); err != nil || state != "REPLIED" {
+			t.Fatal("an exchange did not end replied", state, err)
+		}
+	}
+	if run := l.runs(2)[a]; run.Incarnation != 2 {
+		t.Fatal("a did not run at its new incarnation", run)
 	}
 }
