@@ -774,7 +774,8 @@ November 16, 2026. **Wave 2 is built**: the worker on the service.
   inside that transaction, and every catalogue operation behind it, up to
   `max_key_hold`. The service refuses `hold_key` without an incarnation
   (`input`), and the client's `WithKey` refuses without sending it
-  (`TestServiceRefusesABareKeyHold`). The worker formats and unlocks volumes
+  (`TestServiceRefusesABareKeyHold`); so does the in-process `Local`
+  (`TestBothImplementationsAgree`). The worker formats and unlocks volumes
   with `HoldKey`. §3 says so.
 - The restore command pauses while the authorities are unavailable, logs
   `restore_paused` (`authority_unavailable`, `waits_for_replica`), and

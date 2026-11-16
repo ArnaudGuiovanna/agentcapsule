@@ -118,7 +118,8 @@ product owner, [ADR 014](../adr/014-operations-capacity-diagnostics-audit.md)).
 `agentcapsule-admin set-audit-retention -days 400 -confirm 400` keeps events
 400 days (30 to 36500); `-dry-run` prints how many events that would delete
 now; `-keep-all` goes back to keeping everything. The worker then deletes older
-events of every audit table, tenant and operator alike, in batches, and
+events of every audit table, tenant and operator alike (the capability policy
+changes and the replays of dead letters among them), in batches, and
 records each purge in the operator's audit. An export carries
 `retention_days` when a retention is set.
 

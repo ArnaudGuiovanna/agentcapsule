@@ -18,6 +18,7 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/restoreauthority"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/runtime"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/slimlink"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/volumearchive"
 )
 
 type Placements struct {
@@ -67,6 +68,8 @@ type Placements struct {
 	afterWork           func(controlplane.WorkerJob)
 	// afterRestoreStep runs once each restore step is durable.
 	afterRestoreStep func(step string) error
+	// hostRestore replaces RestoreFromArchive in RestoreHost; tests only.
+	hostRestore func(ctx context.Context, restoreID, agentID, archiveID string, archives *volumearchive.Store, paused func(error)) (VolumeRestoreResult, error)
 }
 
 // NewPlacements requires a stable, unique host ID bound to this private runtime

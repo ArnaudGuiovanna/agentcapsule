@@ -2769,7 +2769,7 @@ components:
           items: {type: string}
           description: "Attached files, in the given order. The agent reads them after acknowledging 'working', as long as the invocation is not finished. Their bytes are purged as soon as it is."
         result_due_at: {type: string, format: date-time, description: "Present once the agent is 'working'. Deadline for its result."}
-        replayed_at: {type: string, format: date-time, description: "When the newest replay put this dead letter back in its agent's queue. It stays once the replay ends."}
+        replayed_at: {type: string, format: date-time, description: "When the newest replay put this dead letter back in its agent's queue. It stays once the replay ends, until the audit retention deletes the replay's record."}
     Attachment:
       type: object
       required: [id, agent_id, name, media_type, size, sha256, state, created_at, expires_at]

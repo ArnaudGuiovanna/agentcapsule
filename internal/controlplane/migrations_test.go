@@ -321,6 +321,8 @@ func revertTenantAgents(t *testing.T, s *Store) {
 	if _, err := s.pool.Exec(t.Context(), `
         DROP TABLE IF EXISTS access_revocations;
         DROP FUNCTION IF EXISTS preserve_access_revocation();
+        DROP TABLE IF EXISTS volume_relocations, host_takeovers;
+        DROP FUNCTION IF EXISTS preserve_volume_relocation(), preserve_host_takeover();
         DROP TABLE IF EXISTS operator_audit, audit_retention;
         ALTER TABLE worker_hosts DROP COLUMN IF EXISTS data_pressure, DROP COLUMN IF EXISTS image_pressure,
           DROP COLUMN IF EXISTS pressure_observed_at;

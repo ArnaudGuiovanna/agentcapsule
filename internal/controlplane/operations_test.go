@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorization"
+	"github.com/jackc/pgx/v5"
 )
 
 var testOperator = OperatorCommand{Actor: "local-uid:1000"}
@@ -236,6 +237,89 @@ func TestAuditRetentionPurgesOnlyOlderEvents(t *testing.T) {
 	}
 	if days, _ := l.s.AuditRetention(t.Context()); days != nil {
 		t.Fatal("retention not cleared", *days)
+	}
+}
+
+// The retention covers every audit trail of the schema: each table named
+// *_audit, and each other table that records who acted, except the
+// idempotency receipts, which expire on their own. Each has an index that
+// starts with the time the purge selects by, and the purge leaves no event
+// older than the retention in any of them.
+func TestAuditRetentionCoversEveryAuditTable(t *testing.T) {
+	l, c, owner := agentLab(t)
+	agent := createTenantAgent(t, c, owner, "audited")
+	createProvider(t, l, owner, "audited")
+	rows, err := l.s.pool.Query(t.Context(), `SELECT c.relname::text FROM pg_class c
+        WHERE c.relnamespace=current_schema()::regnamespace AND c.relkind='r' AND c.relname NOT IN ('http_receipts','idempotency_keys')
+          AND (c.relname LIKE '%\_audit' OR EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped AND a.attname LIKE '%actor%'))
+        ORDER BY 1`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trails, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil || len(trails) < 2 {
+		t.Fatal("audit tables", trails, err)
+	}
+	at := map[string]string{}
+	for _, a := range auditTables {
+		at[a.table] = a.at
+	}
+	for _, table := range trails {
+		if at[table] == "" {
+			t.Error(table, "is an audit trail the retention leaves out")
+			continue
+		}
+		var indexed bool
+		if err = l.s.pool.QueryRow(t.Context(), `SELECT EXISTS (SELECT 1 FROM pg_index i JOIN pg_attribute a ON a.attrelid=i.indrelid AND a.attnum=i.indkey[0]
+            WHERE i.indrelid=$1::regclass AND a.attname=$2)`, table, at[table]).Scan(&indexed); err != nil || !indexed {
+			t.Error(table, "has no index that starts with", at[table], err)
+		}
+		delete(at, table)
+	}
+	if len(at) != 0 {
+		t.Error("the retention names tables that are not audit trails", at)
+	}
+	if t.Failed() {
+		t.FailNow()
+	}
+	// One event at least in each, all of them older than the retention.
+	seed := func(query string, args ...any) {
+		if _, err := l.s.pool.Exec(t.Context(), query, args...); err != nil {
+			t.Fatal(query, err)
+		}
+	}
+	seed(`INSERT INTO teams(id,tenant_id,name) VALUES('team_old',$1,'old')`, owner.TenantID)
+	seed(`INSERT INTO tenant_team_audit(id,tenant_id,actor_principal_id,team_id,action,previous_status,next_status,changed)
+        VALUES('tta_old',$1,$2,'team_old','team.created','','active',true)`, owner.TenantID, owner.ID)
+	seed(`INSERT INTO tenant_member_audit(id,tenant_id,actor_principal_id,target_principal_id,action,previous_role,next_role,changed)
+        VALUES('tma_old',$1,$2,$2,'member.created','','owner',true)`, owner.TenantID, owner.ID)
+	seed(`INSERT INTO tenant_service_audit(id,tenant_id,actor_principal_id,service_principal_id,action)
+        VALUES('tsa_old',$1,$2,$2,'service_account.created')`, owner.TenantID, owner.ID)
+	seed(`INSERT INTO queue_audit(id,tenant_id,actor_principal_id,action) VALUES('qa_old',$1,$2,'limits.set')`, owner.TenantID, owner.ID)
+	seed(`INSERT INTO capability_audit(id,tenant_id,actor_principal_id,action) VALUES('ca_old',$1,$2,'organization.capabilities_changed')`, owner.TenantID, owner.ID)
+	seed(`INSERT INTO platform_audit(id,action,actor,credential_id,changed) SELECT 'pa_old','platform_credential.created','operator',min(id),true FROM platform_credentials`)
+	seed(`INSERT INTO harness_audit(id,actor_account,credential_id,action,release_id) SELECT 'ha_old','operator','none','release.deprecated',min(id) FROM harness_releases`)
+	seed(`INSERT INTO operator_audit(id,actor,action,target,outcome) VALUES('opa_old','local-uid:0','credential.revoked','none','done')`)
+	seed(`INSERT INTO instruction_replays(id,operation_id,agent_id,tenant_id,actor_kind,request_key,previous_reason,expires_at)
+        SELECT 'ir_old',id,agent_id,$2,'operator','old','expired',clock_timestamp() FROM platform_operations WHERE agent_id=$1`, agent, owner.TenantID)
+	for _, a := range auditTables {
+		if count(t, l.s, a.table) == 0 {
+			t.Fatal(a.table, "has no event: seed one")
+		}
+		seed("UPDATE " + a.table + " SET " + a.at + "=" + a.at + "-interval '400 days'")
+	}
+	thirty := 30
+	if out, err := l.s.SetAuditRetention(t.Context(), testOperator, &thirty); err != nil || out.Outcome != "done" {
+		t.Fatal("retention", out, err)
+	}
+	if n, err := l.s.PurgeAudit(t.Context(), 10000); err != nil || n == 0 {
+		t.Fatal("purge", n, err)
+	}
+	for _, a := range auditTables {
+		var left int
+		if err = l.s.pool.QueryRow(t.Context(), "SELECT count(*) FROM "+a.table+" WHERE "+a.at+" < clock_timestamp()-interval '30 days'").Scan(&left); err != nil || left != 0 {
+			t.Error(a.table, "keeps", left, "events older than the retention", err)
+		}
 	}
 }
 

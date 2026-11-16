@@ -46,9 +46,17 @@ func TestLLMProviderSecretsStayWriteOnlyAndEncrypted(t *testing.T) {
 	if err = l.s.pool.QueryRow(t.Context(), `SELECT secret_ciphertext FROM llm_providers WHERE id=$1`, v.ID).Scan(&raw); err != nil || bytes.Contains(raw, []byte(providerSecret)) || len(raw) < 28 {
 		t.Fatal("credential stored in clear", err)
 	}
+	// The audit records the creation once, by its actor, without the
+	// credential; the stored receipt does not carry it either.
+	var created int
 	var dump string
-	if err = l.s.pool.QueryRow(t.Context(), `SELECT string_agg(t::text,' ') FROM (SELECT * FROM llm_audit UNION ALL SELECT id,tenant_id,'','','',now(),'' FROM tenant_http_receipts LIMIT 0) t`).Scan(&dump); err == nil && strings.Contains(dump, providerSecret) {
-		t.Fatal("credential in audit")
+	if err = l.s.pool.QueryRow(t.Context(), `SELECT count(*) FILTER (WHERE action='provider.created' AND provider_id=$2 AND actor_principal_id=$3), coalesce(string_agg(a::text,' '),'')
+        FROM llm_audit a WHERE tenant_id=$1`, owner.TenantID, v.ID, owner.ID).Scan(&created, &dump); err != nil || created != 1 || strings.Contains(dump, providerSecret) {
+		t.Fatal("creation not audited once, or credential in audit", err, created)
+	}
+	var receipt []byte
+	if err = l.s.pool.QueryRow(t.Context(), `SELECT response_ciphertext FROM tenant_http_receipts WHERE tenant_id=$1 AND operation='llm.provider.create' AND key='p1'`, owner.TenantID).Scan(&receipt); err != nil || bytes.Contains(receipt, []byte(providerSecret)) {
+		t.Fatal("receipt missing or carries the credential", err)
 	}
 	// Invalid inputs.
 	for _, bad := range []CreateLLMProviderInput{

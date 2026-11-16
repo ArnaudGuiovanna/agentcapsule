@@ -251,15 +251,15 @@ Their annotations are fixed text.
 | `AgentCapsuleAuthorityReplicationStopped` | Outside degraded mode, attempts to reach the authorities' replica have kept failing for 5 minutes: an authority service restarted without its standby, or a replica that refuses it. Every authority operation waits or fails (critical) |
 
 [alerts_test.yml](../deploy/prometheus/alerts_test.yml) holds promtool unit
-tests for the disk, storage pressure, queue, invocation wait, boot, Directory,
-host memory and CPU, scrape, SLIM, backup, shipping, standby and authority
-alerts. A single failed attempt to reach the authorities' replica
+tests for every alert: each has a case where it fires and one where it stays
+silent. A single failed attempt to reach the authorities' replica
 stays silent.
 Each backup, shipping and standby threshold is tested on both sides.
 `scripts/verify-alerts.py` checks that every metric the alerts use is
 registered by the code or declared by one of the three textfile scripts. For
 the scripts' metrics, it also checks each label and value that the rules and
-tests match against the script's vocabulary, so a typo fails. With
+tests match against the script's vocabulary, so a typo fails. It fails when
+a rule lacks a case where it fires or one where it stays silent. With
 `--promtool` or `--promtool-image <image@sha256:…>`, it also runs
 `promtool check rules` and `promtool test rules`. CI runs it with Prometheus
 v3.5.0, pinned by digest. A raised disk threshold, or a raised WAL or backup

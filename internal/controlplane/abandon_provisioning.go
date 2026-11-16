@@ -58,7 +58,8 @@ func abandonProvisioning(ctx context.Context, tx pgx.Tx, agentID string) error {
 		return err
 	}
 	// Serialize with discovery so that no job is created while this runs.
-	if err = lockWorkerHost(ctx, tx, host); err != nil {
+	// A lost host's discovery creates none: its reservations may go too.
+	if err = lockWorkerHost(ctx, tx, host); err != nil && !errors.Is(err, ErrHostLost) {
 		return err
 	}
 	var stage string

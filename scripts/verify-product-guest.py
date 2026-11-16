@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import pwd
+import re
 from pathlib import Path
 import shlex
 import shutil
@@ -28,6 +29,27 @@ import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
+
+# Every TestProductWorker* test under internal/worker is required; the Pi and
+# SLIM scenarios only when their optional input is given.
+REQUIRED_WORKER = {"TestProductWorkerProvisioningAndEncryptedWake", "TestProductWorkerTwoOwnersPrivateExchange",
+    "TestProductWorkerContractOutagePreservesCensusAndMaintenance", "TestProductWorkerTenantAsyncInvocationWithFileAndModel",
+    "TestProductWorkerTenantRunsAnImportedHarness", "TestProductWorkerTenantUpgradesAndRollsBackAnImportedHarness",
+    "TestProductWorkerTenantRunsAPythonHarness", "TestProductWorkerTenantRunsAnAdaptedAgent", "TestProductWorkerTwoOrganizationsStayIsolated",
+    "TestProductWorkerTenantAgentsTalkOverA2A", "TestProductWorkerNightlyVolumeArchives", "TestProductWorkerRestoresAgentFromArchive",
+    "TestProductWorkerBoundsTheGuestTmp", "TestProductWorkerDeliversJSONContent", "TestProductWorkerEnforcesCapabilities",
+    "TestProductWorkerDriveCeilingsHoldAgainstAFloodingGuest", "TestProductWorkerStopsBootingAGuestThatCrashesAtBoot",
+    "TestProductWorkerRestoresAgentToAgentExchange"}
+PI_WORKER = {"TestProductWorkerTenantRunsPiOnARealModel"}
+SLIM_WORKER = {"TestProductWorkerTenantAgentsTalkOverSLIM", "TestProductWorkerTenantFlagshipJourney"}
+# Ships archives to stores with rclone before restoring them on another host (ADR 020): run when --rclone is given.
+RCLONE_WORKER = {"TestProductWorkerRestoresAgentFromShippedArchiveOnAnotherHost"}
+
+
+def declared_worker_tests(worker_dir):
+    """The TestProductWorker* functions the worker's test files declare."""
+    return {name for path in sorted(worker_dir.glob("*_test.go"))
+            for name in re.findall(r"^func (TestProductWorker\w+)\(", path.read_text(), re.M)}
 
 
 def sha(path):
@@ -54,6 +76,8 @@ def main():
     p.add_argument("--slim-bridge-build", type=Path,
                    help="optional directory written by scripts/build-slim-bridge.py: also start the private services of deploy/interop (Docker: "
                         "OASF, Directory, SLIM node), carry deliveries between agents through a real SLIM bridge, and run the flagship journey (INT-05)")
+    p.add_argument("--rclone", type=Path,
+                   help="optional rclone 1.60 binary: also restore an agent from a shipped archive on another host (ADR 020)")
     p.add_argument("--pg-bin", type=Path)
     p.add_argument("--pg-library-path", type=Path)
     p.add_argument("--pg-user", help="Non-root owner of the temporary PostgreSQL cluster")
@@ -146,6 +170,8 @@ def main():
                AGENTCAPSULE_KVM_ADAPTED_HARNESS=str(a.adapted_harness), AGENTCAPSULE_KVM_A2A_HARNESS=str(a.a2a_harness),
                CPATH=str(native), CGO_ENABLED="1",
                GOPATH=str(out / "go-path"), GOCACHE=str(out / "go-cache"), TMPDIR=str(out / "tmp"))
+    if a.rclone:
+        env.update(AGENTCAPSULE_KVM_RCLONE=str(a.rclone.resolve()))
     if a.pi_harness:
         env.update(AGENTCAPSULE_KVM_PI_HARNESS=str(a.pi_harness), AGENTCAPSULE_KVM_PI_MODEL_URL=a.pi_model_url, AGENTCAPSULE_KVM_PI_MODEL=a.pi_model)
         if pi_api_key:
@@ -240,25 +266,19 @@ def main():
                            AGENTCAPSULE_KVM_SLIM_ENDPOINT=f"https://127.0.0.1:{port}", AGENTCAPSULE_KVM_SLIM_CERTS=str(certs),
                            AGENTCAPSULE_KVM_INTEROP_CERTS=str(certs), AGENTCAPSULE_KVM_DIRECTORY_ADDR=edge,
                            AGENTCAPSULE_KVM_INTEROP_CONTROL=str(control))
-            skipped = (([] if a.pi_harness else ["TestProductWorkerTenantRunsPiOnARealModel"])
-                       + ([] if slim_build else ["TestProductWorkerTenantAgentsTalkOverSLIM", "TestProductWorkerTenantFlagshipJourney"]))
+            unlisted = sorted(declared_worker_tests(src / "internal/worker") - REQUIRED_WORKER - PI_WORKER - SLIM_WORKER - RCLONE_WORKER)
+            assert not unlisted, "product worker scenarios this script does not require: " + ", ".join(unlisted)
+            skipped = sorted((set() if a.pi_harness else PI_WORKER) | (set() if slim_build else SLIM_WORKER) | (set() if a.rclone else RCLONE_WORKER))
             run("worker-integration", [a.go, "tool", "test2json", "-p", "github.com/ArnaudGuiovanna/agentcapsule/internal/worker",
                 out / "product-worker.test", "-test.v", "-test.run=^TestProductWorker", "-test.timeout=1500s"]
                 + ([f"-test.skip=^({'|'.join(skipped)})$"] if skipped else []), 1560)
             events = [json.loads(line) for line in (out / "worker-integration.log").read_text().splitlines()]
             assert not any(e["Action"] in ["skip", "fail"] for e in events)
             worker_passed = {e["Test"] for e in events if e["Action"] == "pass" and "Test" in e}
-            required_worker = {"TestProductWorkerProvisioningAndEncryptedWake", "TestProductWorkerTwoOwnersPrivateExchange",
-                "TestProductWorkerContractOutagePreservesCensusAndMaintenance", "TestProductWorkerTenantAsyncInvocationWithFileAndModel",
-                "TestProductWorkerTenantRunsAnImportedHarness", "TestProductWorkerTenantUpgradesAndRollsBackAnImportedHarness",
-                "TestProductWorkerTenantRunsAPythonHarness", "TestProductWorkerTenantRunsAnAdaptedAgent", "TestProductWorkerTwoOrganizationsStayIsolated",
-                "TestProductWorkerTenantAgentsTalkOverA2A", "TestProductWorkerNightlyVolumeArchives", "TestProductWorkerRestoresAgentFromArchive",
-                "TestProductWorkerBoundsTheGuestTmp", "TestProductWorkerDeliversJSONContent", "TestProductWorkerEnforcesCapabilities"}
-            if a.pi_harness:
-                required_worker.add("TestProductWorkerTenantRunsPiOnARealModel")
-            if slim_build:
-                required_worker.update({"TestProductWorkerTenantAgentsTalkOverSLIM", "TestProductWorkerTenantFlagshipJourney"})
-            assert required_worker <= worker_passed, "missing required product worker scenario"
+            required_worker = (REQUIRED_WORKER | (PI_WORKER if a.pi_harness else set()) | (SLIM_WORKER if slim_build else set())
+                               | (RCLONE_WORKER if a.rclone else set()))
+            missing = sorted(required_worker - worker_passed)
+            assert not missing, "missing required product worker scenarios: " + ", ".join(missing)
             run("conformance-compile", [a.go, "test", "-c", "-buildvcs=false", "-race", "-tags=kvm_integration,kvm_product_integration",
                 "-o", out / "product-conformance.test", "./internal/controlplane"], 300)
             run("conformance-integration", [a.go, "tool", "test2json", "-p", "github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane",

@@ -130,6 +130,12 @@ var capabilitiesSQL string
 //go:embed migrations/0037_operations.sql
 var operationsSQL string
 
+//go:embed migrations/0038_host_takeovers.sql
+var hostTakeoversSQL string
+
+//go:embed migrations/0039_audit_retention_indexes.sql
+var auditRetentionIndexesSQL string
+
 //go:embed migrations/0040_access_revocations.sql
 var accessRevocationsSQL string
 
@@ -174,6 +180,8 @@ var controlPlaneMigrations = []schemaMigration{
 	{version: 35, name: "capacity-queue-and-replays", sql: capacityQueueAndReplaysSQL},
 	{version: 36, name: "capabilities", sql: capabilitiesSQL},
 	{version: 37, name: "operations", sql: operationsSQL},
+	{version: 38, name: "host-takeovers", sql: hostTakeoversSQL},
+	{version: 39, name: "audit-retention-indexes", sql: auditRetentionIndexesSQL},
 	{version: 40, name: "access-revocations", sql: accessRevocationsSQL},
 }
 

@@ -39,7 +39,9 @@ seconds. The run:
    loss window to announce (from the last replayed commit to the disaster).
    Every acknowledged write older than the window must be there, and every
    missing one inside it;
-8. then, outside the RTO: a full backup into the new repository; the fence
+8. then, outside the RTO: the standby's worker host takes the lost one over
+   (agentcapsule-admin take-over-host, ADR 020; the agents' restore needs
+   KVM); a full backup into the new repository; the fence
    (the old primary's credential and key are refused, the standby's
    credential still reads); what a client sees of a lost write;
 9. searches the evidence for every secret of the run.
@@ -80,6 +82,8 @@ DISASTER_AFTER_SWITCH = 1.5  # in archive_timeouts: the disaster comes halfway t
 BINARIES = ("agentcapsule-api", "agentcapsule-admin", "agentcapsule-authority")
 ISSUER, AUDIENCE = "https://client.example", "agentcapsule:organisation"
 HOST_ID = "local"
+# The standby's worker host, which takes the lost host's agents over (ADR 020).
+STANDBY_HOST_ID = "standby"
 # The API serves HTTPS only (production mode, ADR 010): its certificate is
 # issued by the lab's CA, which the clients trust. Set once the CA exists.
 API_TLS = None
@@ -282,10 +286,10 @@ def main():
         proc.send_signal(signal.SIGTERM)
         expect(proc.wait(timeout=30) == 0, f"the authority service {name} did not stop cleanly")
 
-    def start_api(name, etc, dsn, port, authority_socket):
+    def start_api(name, etc, dsn, port, authority_socket, host_id=HOST_ID):
         """agentcapsule-api with the configuration and keys installed in etc, as its service would start it: production mode, HTTPS,
         on the authority service's API socket."""
-        command = [work / "bin/agentcapsule-api", "-listen", f"127.0.0.1:{port}", "-host-id", HOST_ID,
+        command = [work / "bin/agentcapsule-api", "-listen", f"127.0.0.1:{port}", "-host-id", host_id,
                    "-receipt-key-file", etc / "receipt.key", "-transit-active-key", "v1", "-transit-key", f"v1={etc / 'transit-v1.key'}",
                    "-tls-cert", etc / "api.crt", "-tls-key", etc / "api.key", "-tls-server-name", "127.0.0.1",
                    "-authority-socket", authority_socket, "-restore-authority-id", pinned["restore"], "-key-authority-id", pinned["key"]]
@@ -384,6 +388,7 @@ def main():
         token = (client / "platform.token").read_text()
         private_file(primary_etc / "transit-v1.key", secrets.token_bytes(32))
         admin("primary-admin", primary_dsn, "activate-transit-keys", "-active-key", "v1", "-key", f"v1={primary_etc / 'transit-v1.key'}")
+        admin("primary-admin", primary_dsn, "configure-host", "-host-id", HOST_ID, "-storage-mib", "4096")
         lab.credentials += [token, *key_forms((primary_etc / "receipt.key").read_bytes()), *key_forms((primary_etc / "transit-v1.key").read_bytes())]
 
         # The operator's safe, off both hosts: the unlock key, then the
@@ -617,7 +622,7 @@ def main():
         step("promote", promote)
         on_promoted = step("own_repository", lambda: lab.own_repository(standby, ssock))[0]
         step("install_api_configuration_and_keys", install)
-        step("start_api", lambda: start_api("standby", standby_etc, standby_dsn, standby_port, srun / "api.sock"))
+        step("start_api", lambda: start_api("standby", standby_etc, standby_dsn, standby_port, srun / "api.sock", STANDBY_HOST_ID))
         step("api_ready", lambda: ready("standby", standby_port))
         step("first_authenticated_read", read)
         first_write = step("first_authenticated_write", write)
@@ -625,6 +630,38 @@ def main():
         report["failover"] = {"steps_seconds": steps, "rto_seconds": round(rto, 2)}
         report["authorities"] = {"promotion": promoted, "standby_api_reports": authority_mode(standby_port)}
         expect(report["authorities"]["standby_api_reports"] == "standalone", "the standby's API does not report its authority service standalone")
+
+        # ---- The agents' host (ADR 020): the standby takes the lost host
+        # over. Its worker then restores the agents from their archives, which
+        # needs KVM (TestProductWorkerRestoresAgentFromShippedArchiveOnAnotherHost);
+        # the takeover is the database's part, and runs here.
+        def admin_refused(*args):
+            r = subprocess.run([str(work / "bin/agentcapsule-admin"), *args], env={**go_env, "AGENTCAPSULE_DATABASE_URL": standby_dsn},
+                               capture_output=True, text=True, timeout=60, check=False)
+            with (out / "takeover.log").open("a") as log:
+                log.write("$ agentcapsule-admin " + " ".join(args) + "\n" + r.stdout + r.stderr)
+            return r.returncode != 0, r.stderr.strip()
+
+        record = ("lost_host", "host", "taken_over_at")
+        dry = json.loads(admin("takeover", standby_dsn, "take-over-host", "-lost-host", HOST_ID, "-host", STANDBY_HOST_ID, "-dry-run"))
+        unconfirmed = admin_refused("take-over-host", "-lost-host", HOST_ID, "-host", STANDBY_HOST_ID)
+        started = time.monotonic()
+        taken = json.loads(admin("takeover", standby_dsn, "take-over-host", "-lost-host", HOST_ID, "-host", STANDBY_HOST_ID, "-confirm", HOST_ID))
+        takeover_seconds = round(time.monotonic() - started, 2)
+        admin("takeover", standby_dsn, "configure-host", "-host-id", STANDBY_HOST_ID, "-storage-mib", "4096")
+        again = json.loads(admin("takeover", standby_dsn, "take-over-host", "-lost-host", HOST_ID, "-host", STANDBY_HOST_ID, "-confirm", HOST_ID))
+        other = admin_refused("take-over-host", "-lost-host", HOST_ID, "-host", "another-host", "-confirm", HOST_ID)
+        back = admin_refused("take-over-host", "-lost-host", STANDBY_HOST_ID, "-host", HOST_ID, "-confirm", STANDBY_HOST_ID)
+        report["takeover"] = {"seconds": takeover_seconds, "lost_host": taken["lost_host"], "host": taken["host"],
+                              "agents_to_restore": taken["agents_to_restore"], "dry_run": {"outcome": dry["outcome"], "dry_run": dry["dry_run"]},
+                              "without_confirmation": unconfirmed, "outcome": taken["outcome"], "repeated": again["outcome"],
+                              "repeated_is_the_same": all(again[k] == taken[k] for k in record),
+                              "another_successor_refused": other, "the_lost_host_takes_nothing_over": back}
+        expect(dry["outcome"] == "done" and dry["dry_run"] and unconfirmed == (True, "confirmation_required")
+               and taken["lost_host"] == HOST_ID and taken["host"] == STANDBY_HOST_ID and taken["outcome"] == "done"
+               and again["outcome"] == "unchanged" and all(again[k] == taken[k] for k in record)
+               and other == (True, "take_over_host_rejected_conflict") and back == (True, "take_over_host_rejected_host_lost"),
+               "the takeover is not as expected; see takeover.log")
 
         # ---- After the RTO. A full backup into the new repository: until it
         # ends, the new primary has no backup of its own. A checkpoint first:
