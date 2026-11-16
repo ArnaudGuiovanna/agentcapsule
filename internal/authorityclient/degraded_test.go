@@ -64,6 +64,12 @@ func TestServiceRunsDegradedMode(t *testing.T) {
 	if err = c.RecordOutcome(ctx, b, restoreauthority.Outcome{ID: "event-1", Digest: digest("one")}); err != nil {
 		t.Fatal("an outcome waited in degraded mode", err)
 	}
+	// The API sees the same mode on its socket (ADR 006, wave 4): its
+	// readiness probe reports it.
+	api := l.apiClient(t)
+	if status, err := api.Status(ctx); err != nil || status.Mode != restoreauthority.ModeDegraded || status.DegradedSince == 0 {
+		t.Fatal("the API's view of degraded mode", status, err)
+	}
 	if _, err = c.ReserveIncarnation(within(t, 500*time.Millisecond), b, "restore"); !errors.Is(err, restoreauthority.ErrWaitsForReplica) ||
 		!errors.Is(err, restoreauthority.ErrUnavailable) {
 		t.Fatal("a reservation ran in degraded mode", err)
@@ -83,5 +89,68 @@ func TestServiceRunsDegradedMode(t *testing.T) {
 	}
 	if status, err := c.Status(ctx); err != nil || status.Mode != restoreauthority.ModeSynchronous || status.DegradedSince != 0 {
 		t.Fatal(status, err)
+	}
+	if status, err := api.Status(ctx); err != nil || status.Mode != restoreauthority.ModeSynchronous || status.DegradedSince != 0 {
+		t.Fatal("the API's view after degraded mode", status, err)
+	}
+}
+
+// The service reaches its replica at start, without waiting for an
+// operation (ADR 006, wave 4): on an idle host the API's readiness reports
+// it synchronous, not waiting. A standby that does not answer keeps it
+// waiting, never degraded (finding 2), and its failed attempts reach the
+// metrics, until the standby answers.
+func TestServiceReachesItsReplicaWithoutAnOperation(t *testing.T) {
+	dir := t.TempDir()
+	keys, catalog := authorities(t, dir)
+	_, recipient, err := authoritylog.GenerateUnlockKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := filepath.Join(dir, "snapshot.sqlite")
+	if _, err = catalog.Snapshot(t.Context(), keys, recipient, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	replica, err := restoreauthority.InitializeReplica(t.Context(), filepath.Join(dir, "replica"), snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { replica.Close() })
+	link := &tap{target: replica, down: true}
+	if err = svc.LinkTo(t.Context(), catalog, keys, link, authoritylog.MinDegradedAfter); err != nil {
+		t.Fatal(err)
+	}
+	l := serve(t, keys, catalog)
+	catalog.ObserveReplication(authoritylog.NewMetrics(l.registry))
+	api := l.apiClient(t)
+	mode := func() string {
+		t.Helper()
+		status, err := api.Status(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return status.Mode
+	}
+	failed := func() bool {
+		for _, line := range strings.Split(l.scrape(t), "\n") {
+			if strings.HasPrefix(line, "agentcapsule_authority_replication_errors_total{") && !strings.HasSuffix(line, " 0") {
+				return true
+			}
+		}
+		return false
+	}
+	for deadline := time.Now().Add(10 * time.Second); !failed(); time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the service did not try to reach its replica")
+		}
+	}
+	if got := mode(); got != restoreauthority.ModeWaiting {
+		t.Fatal("a service that never reached its replica reports", got)
+	}
+	link.set(false)
+	for deadline := time.Now().Add(10 * time.Second); mode() != restoreauthority.ModeSynchronous; time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the service did not reach its replica without an operation:", mode())
+		}
 	}
 }

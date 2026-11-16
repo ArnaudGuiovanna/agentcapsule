@@ -22,9 +22,18 @@ import (
 // command runs the entry point and returns what it printed and its code.
 func command(t *testing.T, args ...string) (string, int) {
 	t.Helper()
-	r, w, err := os.Pipe()
+	out, code, err := capture(args...)
 	if err != nil {
 		t.Fatal(err)
+	}
+	return out, code
+}
+
+// capture is command without the test, for another goroutine.
+func capture(args ...string) (string, int, error) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		return "", 0, err
 	}
 	stdout, stderr := os.Stdout, os.Stderr
 	os.Stdout, os.Stderr = w, w
@@ -33,10 +42,7 @@ func command(t *testing.T, args ...string) (string, int) {
 	w.Close()
 	out, err := io.ReadAll(r)
 	r.Close()
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(out), code
+	return string(out), code, err
 }
 
 func certificate(t *testing.T, dir string, notAfter time.Time) (string, string) {

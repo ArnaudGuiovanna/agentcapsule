@@ -27,6 +27,12 @@ described in [docs/worker.md](worker.md).
   install -d -m 700 /etc/agentcapsule
   ```
 
+- Install the authority service, with both authorities, and start it
+  ([recovery.md](recovery.md#install-the-authority-service)). Keep the two
+  identities that the init commands print: the API pins them. The API's account
+  is the service's `api_uid`, and a member of the group
+  `agentcapsule-authority-clients`.
+
 - From the organization's identity provider, or from the client that will
   sign its users' tokens, get:
   - its **issuer**, the `iss` of its tokens;
@@ -84,11 +90,18 @@ agentcapsule-admin revoke-credential -kind platform -id ptok_...
 AGENTCAPSULE_DATABASE_URL=... agentcapsule-api \
   -receipt-key-file /etc/agentcapsule/receipt.key -host-id local \
   -listen 0.0.0.0:8443 -tls-cert /etc/agentcapsule/api.crt -tls-key /etc/agentcapsule/api.key \
-  -tls-server-name api.example.net
+  -tls-server-name api.example.net \
+  -authority-socket /run/agentcapsule-authority/api.sock \
+  -restore-authority-id restoreauth_... -key-authority-id keyauth_...
 ```
 
 `-host-id` names the worker's host: give the `host_id` of the worker's
 configuration ([worker.md](worker.md)). Agents are created on that host.
+
+The last three flags reach the authority service with the identities it
+must hold ([docs/api](api/README.md#the-authority-service)). In production
+the API refuses to start without them, or with another installation's
+identities; it waits for a service that does not answer yet.
 
 In production the API serves HTTPS only. Its certificate, its preflight
 (`-preflight`) and the development mode are described in
@@ -196,7 +209,8 @@ For each later organization, repeat steps 4 to 6.
 ## Before the first agent
 
 An organization runs agents once the host has, in this order:
-- the authority service and the worker, with its preflight passing
+- the worker, on the authority service the API already uses, with its
+  preflight passing
   ([install.md](install.md#operator-steps), [worker.md](worker.md));
 - the host's capacity: `agentcapsule-admin configure-host -host-id local
   -storage-mib ...`, with the API's `-host-id`;
