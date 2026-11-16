@@ -14,19 +14,21 @@ docs/bootstrap.md and docs/install.md step by step, without root:
 4. `agentcapsule-admin bootstrap-platform`: the receipt key and the platform
    token, private files; again with the same files (confirmed), and with
    another token file (refused);
-5. a CA of its own and the API's certificate for api.example.net, then
+5. the authority service in standalone mode: both authorities initialized,
+   `agentcapsule-authority serve` started with its configuration;
+6. a CA of its own and the API's certificate for api.example.net, then
    `agentcapsule-api -preflight` and the API itself, in production mode
-   (HTTPS only); a plain HTTP request gets 400;
-6. the platform header file, and the organization with its first owner
+   (HTTPS only), on the authority service's API socket: the API refuses to
+   start without it, or with another installation's identities; its
+   readiness reports the service; a plain HTTP request gets 400;
+7. the platform header file, and the organization with its first owner
    (curl, as written in bootstrap.md), replayed and refused as a duplicate;
-7. the organization's identity trust (`configure-delegation -action
+8. the organization's identity trust (`configure-delegation -action
    install`, an Ed25519 key made here for the identity provider), replayed;
-8. the owner signs in (`GET /v1/organizations/current`) and names an
+9. the owner signs in (`GET /v1/organizations/current`) and names an
    administrator; user IDs written by the caller are refused;
-9. `agentcapsule-admin list-audit` and the organization's `GET /v1/audit`
-   hold each step and no secret;
-10. the authority service in standalone mode: both authorities initialized,
-    `agentcapsule-authority serve` started with its configuration;
+10. `agentcapsule-admin list-audit` and the organization's `GET /v1/audit`
+    hold each step and no secret;
 11. the worker's preflight with its configuration and the authority
     service: every check this host can pass must pass; `/dev/kvm` must be
     reported as it is (failed when this account cannot open it), and the
@@ -87,6 +89,8 @@ DEVIATIONS = [
     "socket directory (mode 0700).",
     "The worker's preflight and the authority service run in a user namespace where this account is root "
     "(unshare -r), not as root: the docs run them as root and as the account agentcapsule-authority.",
+    "The API runs as this account, outside that namespace: the service sees it as root there, which its API socket "
+    "admits too, so this run does not show the admission of api_uid (the Go tests do).",
     "The identity provider is played by this run: an Ed25519 key made here signs the owner's tokens.",
 ]
 
@@ -419,9 +423,44 @@ def main():
         run.checked("list-credentials: one platform credential")
         run.done()
 
-        # ---- 5. The API's certificate, its preflight, the API (bootstrap.md, 3; install.md, API certificate).
+        # ---- 5. The authority service, standalone (install.md, Operator steps; recovery.md, Install the authority service).
+        run.step("authority", "docs/recovery.md#install-the-authority-service",
+                 "both authorities initialized, then agentcapsule-authority serve without a replica (standalone)")
+        run.run("authority", ["install", "-d", "-m", "0700", key_root, restore_root], base_env)
+        r = admin("authority", "init-key-authority", "-root", key_root)
+        key_id = json.loads(r.stdout)["authority_id"]
+        r = admin("authority", "init-restore-authority", "-root", restore_root, "-data-root", host_root,
+                  "-key-authority-root", key_root, "-key-authority-id", key_id)
+        ids = json.loads(r.stdout)
+        restore_id = ids["authority_id"]
+        run.expect(key_id.startswith("keyauth_") and restore_id.startswith("restoreauth_") and ids.get("key_authority_id") == key_id,
+                   "the authorities' identities are not keyauth_ and restoreauth_, or do not match")
+        run.checked("init-key-authority and init-restore-authority print the identities to pin")
+        sockets.mkdir(parents=True, mode=0o750)
+        authority_config = {"version": 2, "role": "primary",
+                            "key_authority": {"root": str(key_root), "identity": key_id},
+                            "restore_authority": {"root": str(restore_root), "identity": restore_id},
+                            "worker_socket": str(sockets / "worker.sock"), "api_socket": str(sockets / "api.sock"),
+                            "api_uid": os.getuid(), "max_key_hold": "2m", "metrics_listen": f"127.0.0.1:{authority_metrics}"}
+        (etc / "authority.json").write_text(json.dumps(authority_config, indent=2) + "\n")
+        (etc / "authority.json").chmod(0o644)
+        run.start("authority-service", ["unshare", "-r", opt / "agentcapsule-authority", "serve", "-config", etc / "authority.json"], base_env)
+
+        def service_started():
+            return '"service_started"' in (run.logs / "authority-service.log").read_text()
+        run.wait("authority-service", service_started, 30, "the authority service did not log service_started")
+        event = next(json.loads(line) for line in (run.logs / "authority-service.log").read_text().splitlines()
+                     if '"service_started"' in line)
+        run.expect(event.get("mode") == "standalone", f"the service started in mode {event.get('mode')}, not standalone")
+        r = run.run("authority-metrics", ["curl", "-sS", f"http://127.0.0.1:{authority_metrics}/metrics"], base_env)
+        run.expect("agentcapsule_authority" in r.stdout, "the service's metrics hold no agentcapsule_authority series")
+        run.checked("service_started in mode standalone; its metrics answer on loopback")
+        run.done()
+
+        # ---- 6. The API's certificate, its preflight, the API (bootstrap.md, 3; install.md, API certificate).
         run.step("api", "docs/bootstrap.md#3-start-the-api",
-                 "a CA of this run, the API's certificate, agentcapsule-api -preflight, then the API in production mode")
+                 "a CA of this run, the API's certificate, agentcapsule-api -preflight, then the API in production mode, "
+                 "on the authority service")
         client.mkdir(mode=0o700)
         ossl = lambda *args: run.run("certificates", ["openssl", *args], base_env)
         ossl("req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-days", "90", "-subj", "/CN=install CA",
@@ -436,15 +475,27 @@ def main():
         (etc / "api.crt").chmod(0o644)
         for key in (etc / "api.key", client / "ca.key"):
             run.secret("".join(key.read_text().splitlines()[1:-1]))
-        api_args = ["-receipt-key-file", receipt, "-host-id", "local", "-listen", f"127.0.0.1:{api_port}",
+        api_base = ["-receipt-key-file", receipt, "-host-id", "local", "-listen", f"127.0.0.1:{api_port}",
                     "-tls-cert", etc / "api.crt", "-tls-key", etc / "api.key", "-tls-server-name", API_NAME,
                     "-metrics-listen", f"127.0.0.1:{api_metrics}"]
+        authority_args = ["-authority-socket", sockets / "api.sock", "-restore-authority-id", restore_id, "-key-authority-id", key_id]
+        api_args = [*api_base, *authority_args]
         r = run.run("api-preflight", [opt / "agentcapsule-api", *api_args, "-preflight"], admin_env, check=False)
         results, last = parse_preflight(r.stdout)
         report["api_preflight"] = [{"status": s, "check": c, "detail": d} for s, c, d in results]
         run.expect(r.returncode == 0 and last == "preflight_passed",
                    f"agentcapsule-api -preflight: {last or 'no result'} (exit {r.returncode}); see logs/api-preflight.log")
+        run.expect(("ok", "authority") in [(s, c) for s, c, _ in results], "the API's preflight has no passing authority check")
         run.checked("agentcapsule-api -preflight: " + ", ".join(f"{c} {s}" for s, c, _ in results) + "; preflight_passed")
+        # Production refuses an API without the authority service, or pinned
+        # to another installation's authorities, before it opens the database.
+        other = ["-authority-socket", sockets / "api.sock", "-restore-authority-id", "restoreauth_" + "0" * 32, "-key-authority-id", key_id]
+        for label, args, code in (("api-without-authority", api_base, "authority_required_in_production"),
+                                  ("api-other-authority", [*api_base, *other], "authority_identity_mismatch")):
+            r = run.run(label, [opt / "agentcapsule-api", *args], admin_env, check=False, timeout=60)
+            run.expect(r.returncode == 1 and r.stderr.strip() == code, f"{label}: exit {r.returncode}, not 1 with {code}; see logs/{label}.log")
+        run.checked("without the authority flags: authority_required_in_production; with another restore authority: "
+                    "authority_identity_mismatch")
         run.start("api", [opt / "agentcapsule-api", *api_args], admin_env)
 
         def ready():
@@ -453,6 +504,10 @@ def main():
             return r.stdout.strip() == "200"
         run.wait("api", ready, 60, "the API did not become ready over HTTPS")
         run.checked("the API answers /v1/health/ready over HTTPS, its certificate checked against the run's CA for " + API_NAME)
+        status, readiness = curl("api-ready", "GET", "/v1/health/ready")
+        run.expect(status == 200 and isinstance(readiness, dict) and readiness.get("authority") == "standalone",
+                   f"the API's readiness gave {status} {readiness}, not the authority service standalone")
+        run.checked('its readiness reports the authority service: {"status": "ready", "authority": "standalone"}')
         r = run.run("api-plain-http", ["curl", "-sS", "-o", "/dev/null", "-w", "%{http_code}", f"http://127.0.0.1:{api_port}/v1/health/ready"],
                     base_env, check=False)
         run.expect(r.stdout.strip() == "400", f"a plain HTTP request got {r.stdout.strip()}, not 400")
@@ -463,7 +518,7 @@ def main():
         run.checked("platform.header written with umask 077 (mode 0600)")
         run.done()
 
-        # ---- 6. The organization and its first owner (bootstrap.md, 4).
+        # ---- 7. The organization and its first owner (bootstrap.md, 4).
         run.step("organization", "docs/bootstrap.md#4-create-the-organization-and-its-first-owner",
                  "POST /v1/organizations with the platform token; replayed; a second one of the same name refused")
         body = json.dumps({"name": "Acme", "initial_owner": {"issuer": ISSUER, "subject": "alice", "display_name": "Alice"}},
@@ -485,7 +540,7 @@ def main():
         run.checked("another organization of the same name, in another case: 409 organization_name_taken")
         run.done()
 
-        # ---- 7. The organization's identity trust (bootstrap.md, 5).
+        # ---- 8. The organization's identity trust (bootstrap.md, 5).
         run.step("trust", "docs/bootstrap.md#5-register-the-organizations-identity-trust",
                  "the identity provider's Ed25519 key, the trust file, configure-delegation -action install; replayed")
         ossl("genpkey", "-algorithm", "ed25519", "-out", client / "idp.key")
@@ -512,7 +567,7 @@ def main():
         run.checked('the same -operation-id answers "replayed": true')
         run.done()
 
-        # ---- 8. The first owner signs in and names an administrator (bootstrap.md, 6).
+        # ---- 9. The first owner signs in and names an administrator (bootstrap.md, 6).
         run.step("owner", "docs/bootstrap.md#6-the-first-owner-signs-in-and-names-administrators",
                  "GET /v1/organizations/current as the owner; POST /v1/members; user IDs written by the caller refused")
         while time.time() < minimum_iat:
@@ -545,7 +600,7 @@ def main():
         run.checked("401 for " + "; ".join(refusals))
         run.done()
 
-        # ---- 9. The audit (bootstrap.md, What is audited).
+        # ---- 10. The audit (bootstrap.md, What is audited).
         run.step("audit", "docs/bootstrap.md#what-is-audited",
                  "agentcapsule-admin list-audit and the organization's GET /v1/audit hold the steps, no secret")
         r = admin("list-audit", "list-audit")
@@ -563,40 +618,6 @@ def main():
                    f"GET /v1/audit as the owner gave {status} without the organization's creation and its trust")
         run.expect(all(s not in actions for s in run.secrets), "GET /v1/audit returned a secret")
         run.checked("GET /v1/audit as the owner: the organization's creation and its trust, no secret")
-        run.done()
-
-        # ---- 10. The authority service, standalone (install.md, Operator steps; recovery.md, Install the authority service).
-        run.step("authority", "docs/recovery.md#install-the-authority-service",
-                 "both authorities initialized, then agentcapsule-authority serve without a replica (standalone)")
-        run.run("authority", ["install", "-d", "-m", "0700", key_root, restore_root], base_env)
-        r = admin("authority", "init-key-authority", "-root", key_root)
-        key_id = json.loads(r.stdout)["authority_id"]
-        r = admin("authority", "init-restore-authority", "-root", restore_root, "-data-root", host_root,
-                  "-key-authority-root", key_root, "-key-authority-id", key_id)
-        ids = json.loads(r.stdout)
-        restore_id = ids["authority_id"]
-        run.expect(key_id.startswith("keyauth_") and restore_id.startswith("restoreauth_") and ids.get("key_authority_id") == key_id,
-                   "the authorities' identities are not keyauth_ and restoreauth_, or do not match")
-        run.checked("init-key-authority and init-restore-authority print the identities to pin")
-        sockets.mkdir(parents=True, mode=0o750)
-        authority_config = {"version": 2, "role": "primary",
-                            "key_authority": {"root": str(key_root), "identity": key_id},
-                            "restore_authority": {"root": str(restore_root), "identity": restore_id},
-                            "worker_socket": str(sockets / "worker.sock"), "api_socket": str(sockets / "api.sock"),
-                            "api_uid": os.getuid(), "max_key_hold": "2m", "metrics_listen": f"127.0.0.1:{authority_metrics}"}
-        (etc / "authority.json").write_text(json.dumps(authority_config, indent=2) + "\n")
-        (etc / "authority.json").chmod(0o644)
-        run.start("authority-service", ["unshare", "-r", opt / "agentcapsule-authority", "serve", "-config", etc / "authority.json"], base_env)
-
-        def service_started():
-            return '"service_started"' in (run.logs / "authority-service.log").read_text()
-        run.wait("authority-service", service_started, 30, "the authority service did not log service_started")
-        event = next(json.loads(line) for line in (run.logs / "authority-service.log").read_text().splitlines()
-                     if '"service_started"' in line)
-        run.expect(event.get("mode") == "standalone", f"the service started in mode {event.get('mode')}, not standalone")
-        r = run.run("authority-metrics", ["curl", "-sS", f"http://127.0.0.1:{authority_metrics}/metrics"], base_env)
-        run.expect("agentcapsule_authority" in r.stdout, "the service's metrics hold no agentcapsule_authority series")
-        run.checked("service_started in mode standalone; its metrics answer on loopback")
         run.done()
 
         # ---- 11. The worker's preflight (install.md, Preflight).
@@ -656,7 +677,7 @@ def main():
         report["error"] = run.redact(str(e))
         print("FAIL", report["error"], file=sys.stderr)
     finally:
-        for label in list(run.processes):
+        for label in reversed(list(run.processes)):  # the API before the authority service
             code = run.stop(label)
             report.setdefault("stopped", {})[label] = code
         if report.get("stopped", {}).get("api") not in (None, 0) or report.get("stopped", {}).get("authority-service") not in (None, 0):
