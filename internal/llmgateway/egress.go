@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/addrpolicy"
 )
 
 // ErrAddressRefused: the provider's address is not public and the operator
@@ -26,79 +28,6 @@ var ErrAddressRefused = fmt.Errorf("%w: provider address not allowed", ErrReject
 // a CIDR prefix of internal addresses.
 var ErrAllowlist = errors.New("invalid internal provider allowlist")
 
-// Addresses never dialed, whatever the allowlist says, besides the
-// unspecified, multicast and link-local ones (169.254.0.0/16 and fe80::/10,
-// where most clouds serve instance metadata): "this network", and the
-// metadata services that live in other ranges.
-var (
-	thisNetwork = netip.MustParsePrefix("0.0.0.0/8")
-	metadata    = map[netip.Addr]bool{
-		netip.MustParseAddr("100.100.100.200"): true, // Alibaba Cloud
-		netip.MustParseAddr("168.63.129.16"):   true, // Azure host services
-		netip.MustParseAddr("fd00:ec2::254"):   true, // AWS instance metadata
-		netip.MustParseAddr("fd00:ec2::23"):    true, // AWS EKS pod identity
-		netip.MustParseAddr("fd20:ce::254"):    true, // Google Cloud metadata
-	}
-	// nat64 embeds an IPv4 address that a NAT64 gateway connects to.
-	nat64 = netip.MustParsePrefix("64:ff9b::/96")
-)
-
-// internalRanges are the addresses that are not public: refused unless the
-// operator allows them. Loopback, private (RFC 1918, RFC 4193), shared
-// address space (carrier-grade NAT, RFC 6598), and the other special-purpose
-// ranges no public provider uses.
-var internalRanges = []netip.Prefix{
-	netip.MustParsePrefix("10.0.0.0/8"),
-	netip.MustParsePrefix("100.64.0.0/10"),
-	netip.MustParsePrefix("127.0.0.0/8"),
-	netip.MustParsePrefix("172.16.0.0/12"),
-	netip.MustParsePrefix("192.0.0.0/24"),
-	netip.MustParsePrefix("192.0.2.0/24"),
-	netip.MustParsePrefix("192.168.0.0/16"),
-	netip.MustParsePrefix("198.18.0.0/15"),
-	netip.MustParsePrefix("198.51.100.0/24"),
-	netip.MustParsePrefix("203.0.113.0/24"),
-	netip.MustParsePrefix("240.0.0.0/4"),
-	netip.MustParsePrefix("::/8"), // loopback, IPv4-compatible and other reserved forms
-	netip.MustParsePrefix("64:ff9b:1::/48"),
-	netip.MustParsePrefix("100::/64"),
-	netip.MustParsePrefix("2001:db8::/32"),
-	netip.MustParsePrefix("fc00::/7"),
-}
-
-type addressClass int
-
-const (
-	public   addressClass = iota
-	internal              // refused unless the operator allows it
-	never                 // refused even when the allowlist covers it
-)
-
-// effective is the address a connection reaches: an IPv4-mapped IPv6 address
-// and a NAT64 address (64:ff9b::/96) reach the IPv4 address they carry.
-func effective(a netip.Addr) netip.Addr {
-	a = a.WithZone("").Unmap()
-	if nat64.Contains(a) {
-		b := a.As16()
-		return netip.AddrFrom4([4]byte(b[12:]))
-	}
-	return a
-}
-
-func classify(a netip.Addr) addressClass {
-	a = effective(a)
-	switch {
-	case !a.IsValid() || a.IsUnspecified() || a.IsMulticast() || a.IsLinkLocalUnicast() || thisNetwork.Contains(a) || metadata[a]:
-		return never
-	}
-	for _, r := range internalRanges {
-		if r.Contains(a) {
-			return internal
-		}
-	}
-	return public
-}
-
 // InternalHost reports whether a provider URL's host names a non-public
 // address without asking DNS: an IP address that is not public, localhost, or
 // a numeric form that some resolvers read as an address (127.1, 2130706433).
@@ -106,7 +35,7 @@ func classify(a netip.Addr) addressClass {
 // when the gateway connects, after DNS resolution.
 func InternalHost(host string) bool {
 	if a, err := netip.ParseAddr(host); err == nil {
-		return classify(a) != public
+		return addrpolicy.Classify(a) != addrpolicy.Public
 	}
 	name := normalName(host)
 	return name == "localhost" || strings.HasSuffix(name, ".localhost") || numericName(name)
@@ -148,7 +77,7 @@ func ParseAllowlist(entries []string) (Allowlist, error) {
 	for _, e := range entries {
 		if strings.Contains(e, "/") {
 			p, err := netip.ParsePrefix(e)
-			if err != nil || p != p.Masked() || !insideInternal(p) {
+			if err != nil || p != p.Masked() || !addrpolicy.InsideInternal(p) {
 				return Allowlist{}, fmt.Errorf("%w: %q is not a prefix of internal addresses", ErrAllowlist, e)
 			}
 			l.prefixes = append(l.prefixes, p)
@@ -160,10 +89,10 @@ func ParseAllowlist(entries []string) (Allowlist, error) {
 			return Allowlist{}, fmt.Errorf("%w: %q is not host:port", ErrAllowlist, e)
 		}
 		if a, err := netip.ParseAddr(host); err == nil {
-			if a.Zone() != "" || classify(a) != internal {
+			if a.Zone() != "" || addrpolicy.Classify(a) != addrpolicy.Internal {
 				return Allowlist{}, fmt.Errorf("%w: %q is not an internal address that may be allowed", ErrAllowlist, e)
 			}
-			l.addrs[netip.AddrPortFrom(effective(a), uint16(port))] = true
+			l.addrs[netip.AddrPortFrom(addrpolicy.Effective(a), uint16(port))] = true
 			continue
 		}
 		name := normalName(host)
@@ -173,20 +102,6 @@ func ParseAllowlist(entries []string) (Allowlist, error) {
 		l.names[name+":"+strconv.Itoa(int(port))] = true
 	}
 	return l, nil
-}
-
-// insideInternal: the prefix lies within one internal range, so it opens no
-// public or never-allowed address by mistake.
-func insideInternal(p netip.Prefix) bool {
-	if p.Addr().Zone() != "" || p.Addr().Is4In6() {
-		return false
-	}
-	for _, r := range internalRanges {
-		if r.Bits() <= p.Bits() && r.Contains(p.Addr()) {
-			return true
-		}
-	}
-	return false
 }
 
 func (l Allowlist) covers(name string, port uint16, a netip.Addr) bool {
@@ -202,56 +117,22 @@ func (l Allowlist) covers(name string, port uint16, a netip.Addr) bool {
 }
 
 // egress is the gateway's address policy. It applies when a connection is
-// opened, after DNS resolution: a public name that resolves to an internal
-// address is refused like the address itself.
+// opened, after DNS resolution (addrpolicy.Dialer): a public name that
+// resolves to an internal address is refused like the address itself.
 type egress struct {
 	allow    Allowlist
 	loopback bool // tests only
-	lookup   func(context.Context, string) ([]netip.Addr, error)
-	dialer   net.Dialer
 }
 
-func (e *egress) allowed(name string, port uint16, a netip.Addr) bool {
-	a = effective(a)
-	switch classify(a) {
-	case public:
+func (e *egress) allowed(host string, port uint16, a netip.Addr) bool {
+	a = addrpolicy.Effective(a)
+	switch addrpolicy.Classify(a) {
+	case addrpolicy.Public:
 		return true
-	case never:
+	case addrpolicy.Never:
 		return false
 	}
-	return e.loopback && a.IsLoopback() || e.allow.covers(name, port, a)
-}
-
-// dial connects only to the allowed addresses of the host, in the
-// resolver's order.
-func (e *egress) dial(ctx context.Context, network, address string) (net.Conn, error) {
-	host, portText, err := net.SplitHostPort(address)
-	port, perr := strconv.ParseUint(portText, 10, 16)
-	if err != nil || perr != nil {
-		return nil, ErrAddressRefused
-	}
-	addrs := []netip.Addr{}
-	if a, err := netip.ParseAddr(host); err == nil {
-		addrs = append(addrs, a)
-	} else if addrs, err = e.lookup(ctx, host); err != nil {
-		return nil, err
-	}
-	if len(addrs) == 0 {
-		return nil, &net.DNSError{Err: "no address", Name: host, IsNotFound: true}
-	}
-	name := normalName(host)
-	var last error = ErrAddressRefused
-	for _, a := range addrs {
-		if !e.allowed(name, uint16(port), a) {
-			continue
-		}
-		conn, err := e.dialer.DialContext(ctx, network, netip.AddrPortFrom(a, uint16(port)).String())
-		if err == nil {
-			return conn, nil
-		}
-		last = err
-	}
-	return nil, last
+	return e.loopback && a.IsLoopback() || e.allow.covers(normalName(host), port, a)
 }
 
 // TestOptions change a gateway in ways the operator's configuration cannot.
@@ -282,15 +163,12 @@ func NewForTests(c Config, t TestOptions) *Gateway {
 // environment proxy is used (the address check would then apply to the proxy,
 // not to the provider), and every connection passes the address policy.
 func newClient(allow Allowlist, t TestOptions) *http.Client {
-	e := &egress{allow: allow, loopback: t.Loopback, lookup: t.Lookup, dialer: net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}}
-	if e.lookup == nil {
-		e.lookup = func(ctx context.Context, host string) ([]netip.Addr, error) {
-			return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
-		}
-	}
+	e := &egress{allow: allow, loopback: t.Loopback}
+	dialer := &addrpolicy.Dialer{Allow: e.allowed, Refused: ErrAddressRefused, Lookup: t.Lookup,
+		Connect: (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
-	transport.DialContext = e.dial
+	transport.DialContext = dialer.DialContext
 	if t.RootCAs != nil {
 		transport.TLSClientConfig = &tls.Config{RootCAs: t.RootCAs, MinVersion: tls.VersionTLS12}
 	}
