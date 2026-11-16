@@ -391,6 +391,41 @@ func TestDeliveryDeathsAreReported(t *testing.T) {
 	}
 }
 
+// A reply that died without its retention (before ADR 007, or retired by a
+// dispatcher without the transit) gets one from the next purge pass: the
+// status read does not serve it with no end (docs/api/README.md: a reply has
+// one purge deadline whether its delivery succeeds or dies).
+func TestDeadReplyWithoutRetentionGetsOne(t *testing.T) {
+	l := newDeadReplyLab(t)
+	down := unreachable{l.rt}
+	for range 3 {
+		if err := l.tr.DispatchMailbox(t.Context(), l.reply, time.Minute, down); !errors.Is(err, capsuleprotocol.ErrTransport) {
+			t.Fatal(err)
+		}
+		expireLease(t, l.s, l.reply)
+	}
+	if err := l.s.RetireDelivery(t.Context(), l.reply, down); err != nil {
+		t.Fatal(err)
+	}
+	l.deliveryState(t, "DEAD")
+	if _, err := l.tr.PurgeExpired(t.Context(), 1000); err != nil {
+		t.Fatal(err)
+	}
+	var deadline *time.Time
+	if err := l.s.pool.QueryRow(t.Context(), `SELECT p.purge_after FROM transit_payloads p
+        JOIN agent_requests r ON r.reply_ref=p.id WHERE r.id=$1`, l.request).Scan(&deadline); err != nil {
+		t.Fatal(err)
+	}
+	if deadline == nil || time.Until(*deadline) < 7*24*time.Hour-time.Minute || time.Until(*deadline) > 7*24*time.Hour {
+		t.Fatal("a dead reply without retention keeps none", deadline)
+	}
+	l.purgeLater(t)
+	got, err := l.tr.RequestStateFromVM(t.Context(), l.a, l.request)
+	if err != nil || got.Reply != nil || got.Reason != "content_purged" {
+		t.Fatal("the dead reply outlived its retention", got, err)
+	}
+}
+
 // A reply or an instruction past its deadline that no attempt reached dies
 // even while another delivery heads its agent's mailbox: an agent that never
 // boots keeps neither alive (EVT-005). It never reached the agent, so it
