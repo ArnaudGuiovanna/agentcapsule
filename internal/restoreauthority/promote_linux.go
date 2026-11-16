@@ -29,6 +29,8 @@ type Promotion struct {
 	Epoch uint64
 	// Position is the last record the replica applied.
 	Position authoritylog.Position
+	// Announcement is what the failover announces (announcement_linux.go).
+	Announcement Announcement
 }
 
 type replicaVolume struct {
@@ -108,9 +110,21 @@ func unwrap(ctx context.Context, r *Replica, s replicaState, unlock *authoritylo
 //
 // The old primary must be stopped first (docs/recovery.md): with two hosts, it
 // cannot tell an unreachable standby from a promoted one.
+//
+// The promotion also decides what the failover announces (ADR 005, item 14):
+// when the replica's last contact with the primary is older than the
+// degraded delay, a degraded period may have run, and the promoted catalogue
+// gets the blanket revocation record (announcement_linux.go). The decision is
+// written with the replica's promotion mark, so a repeated call keeps it.
 func Promote(ctx context.Context, replicaRoot, restoreRoot, keyRoot string, unlock *authoritylog.UnlockKey) (Promotion, error) {
+	return PromoteWith(ctx, replicaRoot, restoreRoot, keyRoot, unlock, PromoteOptions{})
+}
+
+// PromoteWith is Promote with options.
+func PromoteWith(ctx context.Context, replicaRoot, restoreRoot, keyRoot string, unlock *authoritylog.UnlockKey, o PromoteOptions) (Promotion, error) {
 	var p Promotion
-	if unlock == nil || !validRootPath(replicaRoot) || !validRootPath(restoreRoot) || !validRootPath(keyRoot) {
+	o, ok := o.withDefaults()
+	if !ok || unlock == nil || !validRootPath(replicaRoot) || !validRootPath(restoreRoot) || !validRootPath(keyRoot) {
 		return p, ErrInput
 	}
 	if err := replicaRoots(replicaRoot, restoreRoot, keyRoot); err != nil {
@@ -137,6 +151,9 @@ func Promote(ctx context.Context, replicaRoot, restoreRoot, keyRoot string, unlo
 	p = Promotion{RestoreAuthority: s.restore, KeyAuthority: s.key, Epoch: s.epoch + 1, Position: s.position()}
 	if s.promoted && s.wrapped == nil {
 		// Done before: check what it produced.
+		if p.Announcement, _, err = readAnnouncement(ctx, r.db, p); err != nil {
+			return p, errors.Join(ErrUnavailable, err)
+		}
 		return p, checkPromoted(ctx, restoreRoot, keyRoot, p)
 	}
 	secret, entries, err := unwrap(ctx, r, s, unlock)
@@ -149,20 +166,16 @@ func Promote(ctx context.Context, replicaRoot, restoreRoot, keyRoot string, unlo
 			clear(e.Key)
 		}
 	}()
-	if !s.promoted {
-		result, err := r.db.ExecContext(ctx, "UPDATE replica_state SET promoted=1 WHERE singleton=1 AND promoted=0 AND seq=?", s.seq)
-		if err != nil {
-			return p, err
-		}
-		if n, err := result.RowsAffected(); err != nil || n != 1 {
-			return p, errors.Join(ErrStillReplicating, err)
-		}
-		// In DELETE journal mode, the commit is the journal's unlink: sync
-		// the directory, or a power loss could bring the journal back and
-		// undo the mark.
-		if err = syncDir(filepath.Dir(r.path)); err != nil {
-			return p, err
-		}
+	// The mark and the announcement, in one transaction: a repeated call
+	// keeps both.
+	if p.Announcement, err = markPromoted(ctx, r, s, p, o); err != nil {
+		return p, err
+	}
+	// In DELETE journal mode, the commit is the journal's unlink: sync the
+	// directory, or a power loss could bring the journal back and undo the
+	// mark.
+	if err = syncDir(filepath.Dir(r.path)); err != nil {
+		return p, err
 	}
 	if _, err = keyauthority.Install(ctx, keyRoot, s.key, entries); err != nil {
 		return p, err
@@ -209,7 +222,7 @@ func checkCatalogue(ctx context.Context, restoreRoot string, p Promotion) error 
 	if s.Committed.Epoch != p.Epoch || s.Committed.Seq < p.Position.Seq {
 		return ErrConflict
 	}
-	return nil
+	return checkBlanket(ctx, c.db, p)
 }
 
 // installPromoted writes the restore authority of a promoted standby.
@@ -247,6 +260,9 @@ func installPromoted(ctx context.Context, root, replicaPath string, secret []byt
 		if err = copyPromoted(ctx, conn, replicaPath, secret, p); err != nil {
 			return err
 		}
+	}
+	if err = checkBlanket(ctx, conn, p); err != nil {
+		return err
 	}
 	// Committed before, or now: check it, then publish the identity.
 	var gotIdentity, gotKey string
@@ -286,6 +302,9 @@ func copyPromoted(ctx context.Context, conn *sql.Conn, replicaPath string, secre
 		}
 	}
 	if _, err = tx.ExecContext(ctx, "INSERT INTO main.replication VALUES(1,?,NULL,?,?)", p.Epoch, p.Position.Seq, p.Position.Digest); err != nil {
+		return err
+	}
+	if err = insertBlanket(ctx, tx, p); err != nil {
 		return err
 	}
 	return tx.Commit()
