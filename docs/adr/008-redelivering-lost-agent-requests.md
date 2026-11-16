@@ -226,6 +226,24 @@ scenarios 2, then 12 with A's invocation run again, the authority's
    `PROCESSING` during the redelivery, which hides the restore but needs the
    delivery path to accept a request it believes delivered. Recommended: (a).
 
+## Validation
+
+- Each test of `peer_redeliveries_test.go` was run against the code before
+  the change and failed: the restore made no decision for the lost event.
+- The PostgreSQL campaign `scripts/verify-postgres.py`: passed, 1,245 tests in
+  the integration phase (741 top-level), none skipped, then the crash and
+  recovery phases (local evidence
+  `quint/results/verify-postgres-rec02-a2a-redelivery`).
+- The model checks of [spec/README.md](../../spec/README.md), evidence under
+  `quint/results/quint-rec02-a2a-redelivery/`: every model typechecks; the
+  runs of P1 (45), P1 with manual consent (5), the P1 prefixes (2) and loaded
+  state (1), P3 (42), P2 (34) and the five witness guards pass; the five broken
+  witness schedules violate their invariant, as they must; `quint run` finds no
+  `safety` violation in P3's five instances (200,000 samples of 40 steps), in
+  `concurrentProtocolFour` (100,000 of 40) or from P1's loaded state (50,000
+  of 30). The new runs use the new actions, so they cannot pass against the
+  models before this change.
+
 ## Not done
 
 - **The restore receipt** counts redeliveries with the reruns
