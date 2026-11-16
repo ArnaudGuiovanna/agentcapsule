@@ -122,7 +122,7 @@ may stop any VM, now an idle one first and a computing one last.
 ### 2.2 The capacity queue
 
 When no slot can be had, the agent waits in its host's capacity queue
-(`capacity_waits`, migration 0033), keeps its first place when asked again,
+(`capacity_waits`, migration 0035), keeps its first place when asked again,
 and shows `QUEUED`. Its job spends no attempt. An agent boots only when fewer
 older waiters remain than the slots it could use (free, then stoppable):
 new work never overtakes older work that waits, whatever its organization.
@@ -247,7 +247,7 @@ lacks.
 
 ## 5. What was built
 
-- Migration 0033: `capacity_waits`, the `resume` job kind,
+- Migration 0035: `capacity_waits`, the `resume` job kind,
   `instruction_replays`.
 - The capacity queue, the eviction order, the resume job, the `QUEUED` state,
   `capacity_unavailable`, the metrics and the alert.

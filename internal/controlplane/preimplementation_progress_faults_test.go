@@ -482,6 +482,8 @@ func (a *p3Replay) refuse(t *testing.T, op protocolAction) {
 		if err == nil {
 			t.Fatal("owner observed result without current lookup authority")
 		}
+	case "arrive":
+		a.refusedArrival(t, op, err)
 	default:
 		t.Fatal("unsupported P3 refusal", op.Name)
 	}

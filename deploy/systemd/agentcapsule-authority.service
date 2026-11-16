@@ -1,0 +1,75 @@
+# The authority service (D-05, docs/adr/006-authority-service.md): the one
+# process of a host that owns the key authority and the restore authority. On
+# the primary ("role": "primary") it serves the worker's socket and the API's,
+# and holds the link to the standby, degraded mode and the replication
+# metrics. On the standby ("role": "replica") it holds their replica. The same
+# unit runs on both hosts; /etc/agentcapsule/authority.json says which role.
+#
+# It runs as its own unprivileged user, agentcapsule-authority
+# (agentcapsule-authority.sysusers), which owns the authority directories, or
+# the replica's. Its sockets live in /run/agentcapsule-authority
+# (agentcapsule-authority.tmpfiles). The worker and the API order themselves
+# after it with Wants= and After=, never Requires=
+# (agentcapsule-authority-client.conf): a restart of this service must not
+# restart them. While it restarts, their authority operations fail as outages
+# and are retried; running VMs stay.
+#
+# On the standby, or to reach the standby from the primary, add the other
+# host's address to IPAddressAllow= in a drop-in.
+[Unit]
+Description=Agent Capsule authority service
+Documentation=https://github.com/ArnaudGuiovanna/agentcapsule/blob/main/docs/adr/006-authority-service.md
+After=network-online.target
+Wants=network-online.target
+Before=agentcapsule-worker.service agentcapsule-api.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+User=agentcapsule-authority
+Group=agentcapsule-authority
+ExecStart=/opt/agentcapsule/agentcapsule-authority serve -config /etc/agentcapsule/authority.json
+Restart=always
+RestartSec=1s
+TimeoutStopSec=30s
+UMask=0077
+# No core dump: during a key hold, the process holds a volume key in memory.
+LimitCORE=0
+
+# The service needs no privilege and no device. It writes only its
+# directories: both authorities on the primary, the replica's on the standby
+# (a missing one is skipped), and its sockets' directory.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ReadWritePaths=-/var/lib/agentcapsule-key-authority -/var/lib/agentcapsule-restore-authority
+ReadWritePaths=-/var/lib/agentcapsule-authority-replica /run/agentcapsule-authority
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+# Local sockets, the metrics on loopback, and the link between the hosts.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=localhost
+
+[Install]
+WantedBy=multi-user.target

@@ -134,13 +134,11 @@ func newProductPeerLab(t *testing.T) *productPeerLab {
 	if labRuntimeOptions != nil {
 		labRuntimeOptions(&options)
 	}
+	// The worker reaches the authorities through the authority service, as
+	// in production; the service runs in this test's process.
 	authorityRoot := filepath.Join(t.TempDir(), "restore-authority")
-	authority, err := restoreauthority.Initialize(t.Context(), authorityRoot, keys.Identity())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { authority.Close() })
-	w, err := NewProvisioningPlacements(store, "local", "product-peers-worker", 2*time.Minute, options, keys, authority, ProvisioningConfig{FirstUID: 62300, LastUID: 62309})
+	authority := openAuthority(t, throughService, keys, authorityRoot)
+	w, err := NewProvisioningPlacements(store, "local", "product-peers-worker", 2*time.Minute, options, authority.provider(), authority, ProvisioningConfig{FirstUID: 62300, LastUID: 62309})
 	if err != nil {
 		t.Fatal(err)
 	}

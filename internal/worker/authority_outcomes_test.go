@@ -110,17 +110,17 @@ func readOutcomeJournal(t *testing.T, root, store string) map[string][]byte {
 }
 
 func TestBusinessOutcomeRequiresIndependentCommit(t *testing.T) {
+	forEachAuthority(t, testBusinessOutcomeRequiresIndependentCommit)
+}
+
+func testBusinessOutcomeRequiresIndependentCommit(t *testing.T, implementation string) {
 	for _, invoke := range []bool{false, true} {
 		for _, fault := range []string{"none", "outage-before", "outage-after", "reserve-before", "reserve-after", "conflict", "wrong-store"} {
 			t.Run(fmt.Sprintf("invoke=%t/%s", invoke, fault), func(t *testing.T) {
 				b := newBootLab(t)
 				keys := b.keys.Provider.(*keyauthority.Files)
 				root := filepath.Join(t.TempDir(), "root")
-				a, err := restoreauthority.Initialize(t.Context(), root, keys.Identity())
-				if err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(func() { a.Close() })
+				a := openAuthority(t, implementation, keys, root)
 				binding, err := a.Register(t.Context(), b.e.AgentID, b.e.VolumeID)
 				if err != nil {
 					t.Fatal(err)
@@ -219,11 +219,7 @@ func TestBusinessOutcomeRequiresIndependentCommit(t *testing.T) {
 				}
 				if fault == "none" || fault == "outage-after" {
 					if fault == "outage-after" {
-						a, err = restoreauthority.Open(t.Context(), root, a.Identity(), keys.Identity())
-						if err != nil {
-							t.Fatal(err)
-						}
-						b.w.authority = a
+						a.restart(t)
 					}
 					r, err = b.w.deliverToGuest(t.Context(), b.e.AgentID, client, e, invoke)
 					if err != nil || !r.Replayed || string(r.Result) != `{"durable":true}` {
@@ -241,8 +237,12 @@ func TestBusinessOutcomeRequiresIndependentCommit(t *testing.T) {
 }
 
 func TestPlatformIndependentIdentityGuardsSQLPublication(t *testing.T) {
+	forEachAuthority(t, testPlatformIndependentIdentityGuardsSQLPublication)
+}
+
+func testPlatformIndependentIdentityGuardsSQLPublication(t *testing.T, implementation string) {
 	b := newBootLab(t)
-	a := b.withAuthority(t, true)
+	a := b.withAuthority(t, implementation, true)
 	api := platformAPI{store: b.w.store, caller: controlplane.VMCaller{AgentID: b.e.AgentID, HostID: b.e.HostID}, authority: a, incarnation: 1}
 	// Test the SQL/root portion directly; the physical admission scope is covered
 	// by KVM. The production adapter also validates generation/mandate in SQL.

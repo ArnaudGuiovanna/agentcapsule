@@ -33,14 +33,9 @@ func (w *Placements) captureArchive(ctx context.Context, id, archiveID string, a
 	if w.provisioning == nil || w.authority == nil || archives == nil || !volumearchive.ValidID(archiveID) {
 		return result, controlplane.ErrInput
 	}
-	keys, ok := w.provisioning.keys.(interface{ SeparateFrom(string) error })
-	if !ok {
-		return result, controlplane.ErrInput
-	}
 	for _, check := range []func() error{
 		func() error { return restoreauthority.CheckSeparation(w.provisioning.runtimeRoot, archives.Root()) },
 		func() error { return w.authority.SeparateFrom(archives.Root()) },
-		func() error { return keys.SeparateFrom(archives.Root()) },
 	} {
 		if err := check(); err != nil {
 			return result, err
@@ -68,7 +63,7 @@ func (w *Placements) captureArchive(ctx context.Context, id, archiveID string, a
 		}
 		e := plan.Enrollment
 		binding := enrollmentBinding(e)
-		if err = w.authority.WithBinding(ctx, binding, func() error { return nil }); err != nil {
+		if err = w.authority.CheckBinding(ctx, binding); err != nil {
 			return err
 		}
 		err = w.host.WithStoppedVolume(ctx, id, plan.Placement.Generation, plan.Device, plan.Inode, func(reader io.Reader) error {

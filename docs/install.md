@@ -134,10 +134,9 @@ AGENTCAPSULE_DATABASE_URL=... /opt/agentcapsule/agentcapsule-worker -config /etc
 | `artifact_firecracker`, `artifact_jailer`, `artifact_kernel`, `artifact_initrd` | A file is missing or does not match the SHA-256 the configuration pins. Firecracker or the jailer does not report v1.17.0. The kernel is not an ELF `vmlinux`. Once the worker has started, its copy under `<root>/bin` stands in for a missing source. |
 | `clock` | The kernel says the clock is not synchronized. |
 | `disk_runtime`, `disk_archives` | The file system is 80% used or more; from 70%, a warning. |
-| `key_authority`, `restore_authority` | The directory is missing, is not the worker's with mode 0700, or overlaps the runtime root, the archives or the other authority. |
+| `authority` | With the `authority` section: the authority service does not answer on its worker socket, holds other authorities than the pinned ones, or gives directories that overlap the runtime root or the archives. A service in degraded mode, or waiting for its standby, is a warning. The directories and the link to the standby are the service's ([recovery.md](recovery.md#install-the-authority-service)). |
 | `metrics_listen` | The address is not loopback, or is in use. |
 | `directory_certificate`, `directory_ca`, `directory_edge` | The client certificate is unusable, expired, not for `clientAuth`, or not named `agentcapsule-control-plane`; the CA file holds no certificate; the edge refuses the client or presents another CA's or another name's certificate. An edge that does not answer is a warning. |
-| `authority_replica_tls`, `authority_replica` | The link's certificates do not match this host's authorities, or have expired (within 30 days: a warning). A replica that does not answer is a warning. |
 | `registry` | A rule is `local` (production). |
 | `postgresql` | The connection string may use clear text (production), or the server cannot be reached. The check confirms TLS with the server (`pg_stat_ssl`). |
 

@@ -179,7 +179,7 @@ func TestKeyBytesNeverTravelInJSON(t *testing.T) {
 	if err = c.HoldKey(t.Context(), b, func(_ context.Context, k []byte) error { key = bytes.Clone(k); return nil }); err != nil {
 		t.Fatal(err)
 	}
-	if err = c.WithKey(t.Context(), agent, volume, func(k []byte) error {
+	if err = c.HoldKey(t.Context(), b, func(_ context.Context, k []byte) error {
 		if !bytes.Equal(k, key) {
 			t.Error("two holds carried different keys")
 		}

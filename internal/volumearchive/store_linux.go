@@ -27,6 +27,13 @@ import (
 
 var ErrArchive = errors.New("encrypted archive is missing, inconsistent or incomplete")
 
+// Authority signs and validates manifests: the restore authority, in process
+// or through the authority service (restoreauthority.Authority).
+type Authority interface {
+	SignArchive(context.Context, restoreauthority.Archive) (restoreauthority.Archive, error)
+	ValidateArchive(context.Context, restoreauthority.Archive) error
+}
+
 type Store struct {
 	root          string
 	device, inode uint64
@@ -268,7 +275,7 @@ func newest(dir string) (time.Time, error) {
 // Open authenticates metadata and hashes the actual immutable local ciphertext.
 // Its file descriptor remains on this inode. Untrusted remote objects must first
 // be staged privately and verified; this is not a mutable remote-stream API.
-func (s *Store) Open(ctx context.Context, id string, authority *restoreauthority.Catalog) (*os.File, restoreauthority.Archive, error) {
+func (s *Store) Open(ctx context.Context, id string, authority Authority) (*os.File, restoreauthority.Archive, error) {
 	if authority == nil {
 		return nil, restoreauthority.Archive{}, ErrArchive
 	}
@@ -318,7 +325,7 @@ func (s *Store) Open(ctx context.Context, id string, authority *restoreauthority
 // Capture requires a reader of a coherent, physically excluded ciphertext
 // image. A stable ID makes a lost publication ACK retryable. Pending directories
 // are never accepted as archives, and an existing complete archive is immutable.
-func (s *Store) Capture(ctx context.Context, spec Spec, source io.Reader, authority *restoreauthority.Catalog) (restoreauthority.Archive, error) {
+func (s *Store) Capture(ctx context.Context, spec Spec, source io.Reader, authority Authority) (restoreauthority.Archive, error) {
 	var zero restoreauthority.Archive
 	if !ValidID(spec.ID) || source == nil || authority == nil || spec.Size <= 0 || spec.Size > 32<<30 {
 		return zero, ErrArchive

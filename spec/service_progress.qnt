@@ -141,6 +141,25 @@ module serviceProgress {
   pure def unattemptedDead(st: State, i: int): State = { ...st,
     jobs: st.jobs.set(i, { ...st.jobs.get(i), delivery: Dead, notificationQueued: false }),
     notificationQueue: st.notificationQueue.select(j => j != i) }
+  // ADR 008: a store restored from an archive older than a delivery loses
+  // it, and the restore's last step delivers it again. A request its store
+  // was executing goes back to admission: the restore retired the VM that
+  // ran it, and its deadline still closes it. An acknowledged notification
+  // is pending again, at the end of the queue. Restores happen only before
+  // the run stabilizes, like store losses, so progress is unchanged; a
+  // final job keeps its result. The model holds no content, so the reasons
+  // to skip a redelivery are outside it.
+  action redeliverRequest(i: int): bool = all {
+    not(s.stable), online, s.jobs.get(i).stage == Executing, eligible(i),
+    s' = { ...s, jobs: s.jobs.set(i, { ...s.jobs.get(i), stage: Accepted }),
+      workQueue: s.workQueue.select(j => j != i), running: s.running.exclude(Set(i)),
+      admissionQueue: s.admissionQueue.append(i) },
+  }
+  action redeliverNotification(i: int): bool = all {
+    not(s.stable), online, terminal(i), s.jobs.get(i).delivery == Acked, eligible(i),
+    s' = { ...s, jobs: s.jobs.set(i, { ...s.jobs.get(i), delivery: Pending, notificationQueued: true, attempts: 0 }),
+      notificationQueue: s.notificationQueue.append(i) },
+  }
   action cancelNotification(i: int): bool = all {
     online, atHead(s.notificationQueue, i), s.jobs.get(i).delivery == Pending, not(eligible(i)),
     s' = delivered(s, i, RetiringCancelled, s.jobs.get(i).attempts),
@@ -177,7 +196,8 @@ module serviceProgress {
     nondet a = STORES.oneOf()
     nondet cooperative = Set(false, true).oneOf()
     any { arrive(i, cooperative), admit(i), complete(i), deadline(i), closeDeleted(i),
-      releaseExecution(i), fence(i, a), commitClose(i), attempt(i), expireNotification(i), cancelNotification(i), retireNotification(i), observe(i), recycle(i) },
+      releaseExecution(i), fence(i, a), commitClose(i), attempt(i), expireNotification(i), cancelNotification(i), retireNotification(i), observe(i), recycle(i),
+      redeliverRequest(i), redeliverNotification(i) },
     nondet a = STORES.oneOf()
     any { loseStore(a), recoverStore(a) },
     requestDelete, finishDelete, crashWorker, recoverWorker, loseAuthority, recoverAuthority, stabilize, s' = s,

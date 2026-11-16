@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "role": "primary",
+  "key_authority": {
+    "root": "/var/lib/agentcapsule-key-authority",
+    "identity": "<keyauth_PUBLIC_IDENTITY>"
+  },
+  "restore_authority": {
+    "root": "/var/lib/agentcapsule-restore-authority",
+    "identity": "<restoreauth_PUBLIC_IDENTITY>"
+  },
+  "worker_socket": "/run/agentcapsule-authority/worker.sock",
+  "api_socket": "/run/agentcapsule-authority/api.sock",
+  "api_uid": 990,
+  "max_key_hold": "2m",
+  "authority_replica": {
+    "address": "standby.internal:7443",
+    "certificate": "/etc/agentcapsule/authority-primary.crt",
+    "key": "/etc/agentcapsule/authority-primary.key",
+    "replica_certificate": "/etc/agentcapsule/authority-replica.crt",
+    "degraded_after": "30s"
+  },
+  "metrics_listen": "127.0.0.1:9466"
+}

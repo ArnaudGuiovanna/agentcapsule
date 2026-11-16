@@ -25,7 +25,9 @@ import (
 // This is a projection of P3's macrosteps, not a refinement proof or a test of
 // physical capacity/fairness. P3 destination is the outcome recipient (the Go
 // request sender). The opposite agent executes the request. This binding does
-// not implement P3's selective deletion semantics and must not be used for it.
+// not implement P3's selective deletion semantics and must not be used for it,
+// except in deleted-destination-rejects-new-work, which deletes agent a with
+// no request in flight (preimplementation_progress_deletion_test.go).
 var p3Cases = map[string]bool{
 	"successful-request-observed-and-notified":  true,
 	"hung-handler-terminated-by-deadline":       true,
@@ -39,6 +41,7 @@ var p3Cases = map[string]bool{
 	"worker-crash-recovery":                     true,
 	"authority-recovery-enables-observation":    true,
 	"observe-requires-current-authority":        true,
+	"deleted-destination-rejects-new-work":      true,
 }
 
 type p3Binding struct {
@@ -196,6 +199,9 @@ func (a *p3Replay) step(t *testing.T, op protocolAction) error {
 	if handled, err := a.availabilityStep(t, op); handled {
 		return err
 	}
+	if handled, err := a.deletionStep(t, op); handled {
+		return err
+	}
 	i := p1Int(op.Args[0])
 	b := &a.bound[i]
 	sender, recipient := p3Sender(i), 1-p3Sender(i)
@@ -350,6 +356,7 @@ type p3Observation struct {
 		WorkerUp    bool  `json:"worker_up"`
 		AuthorityUp bool  `json:"authority_up"`
 	}
+	Deletion struct{ Pending, Complete bool }
 }
 
 func (a *p3Replay) sqliteCount(t *testing.T, agent int, table, column, id string) int {
@@ -376,6 +383,7 @@ func (a *p3Replay) sqliteCount(t *testing.T, agent int, table, column, id string
 
 func (a *p3Replay) compare(t *testing.T, w p3Observation, index int) {
 	t.Helper()
+	a.compareDeletion(t, w, index)
 	eq := func(label string, got, want any) {
 		t.Helper()
 		if !reflect.DeepEqual(got, want) {
@@ -596,7 +604,7 @@ func TestPreimplementationP3ITF(t *testing.T) {
 		t.Fatal(err)
 	}
 	read("sources/service_progress.qnt", manifest.ModelSHA)
-	if len(manifest.Cases) != 20 || len(p3Cases) != 12 {
+	if len(manifest.Cases) != 20 || len(p3Cases) != 13 {
 		t.Fatal("P3 coverage inventory changed")
 	}
 	executed := []string{}

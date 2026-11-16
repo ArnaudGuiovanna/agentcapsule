@@ -16,7 +16,7 @@ var problemCodes = []string{"agent_already_exists", "agent_unavailable", "attach
 	"attachment_unavailable", "attachments_purged", "authentication_required", "closure_pending", "expired", "forbidden", "harness_unavailable",
 	"idempotency_key_in_progress", "idempotency_key_required", "idempotency_key_reused", "incomplete_body", "input_purged", "invalid_json",
 	"invalid_path", "invalid_request", "invalid_transition", "json_required", "media_type_required", "method_not_allowed",
-	"not_found", "outcome_unknown", "queue_full", "request_too_large", "requester_revoked", "storage_capacity_unavailable", "temporarily_unavailable"}
+	"not_found", "organization_name_taken", "outcome_unknown", "queue_full", "request_too_large", "requester_revoked", "storage_capacity_unavailable", "temporarily_unavailable"}
 
 var (
 	httpMethods   = []string{"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}

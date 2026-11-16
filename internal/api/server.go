@@ -231,6 +231,8 @@ func failure(w http.ResponseWriter, err error) {
 		problem(w, 409, "closure_pending")
 	case errors.Is(err, controlplane.ErrAgentExists):
 		problem(w, 409, "agent_already_exists")
+	case errors.Is(err, controlplane.ErrOrganizationNameTaken):
+		problem(w, 409, "organization_name_taken")
 	case errors.Is(err, controlplane.ErrRelease):
 		problem(w, 422, "harness_unavailable")
 	case errors.Is(err, controlplane.ErrStorageCapacity):

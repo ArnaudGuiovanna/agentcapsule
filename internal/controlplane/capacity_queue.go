@@ -8,7 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// Work that waits for a VM slot (EVT-007, RUN-011, ADR 017, migration 0033).
+// Work that waits for a VM slot (EVT-007, RUN-011, ADR 017, migration 0035).
 //
 // A host runs at most max_active VMs. Work that needs a VM for an agent whose
 // VM is stopped (a delivery, a wake, the resume of interrupted work) asks for

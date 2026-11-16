@@ -1,14 +1,16 @@
 # Initial organization administration
 
-This part adds a platform administration domain distinct from the legacy
-owner/service accounts. It does not provide OIDC authentication, tenant tokens,
-agent assignment or migration of legacy owners (see the other documents in this
-directory for the tenant domain).
+The platform operator creates, reads and disables organizations. The
+operator has no access to their content. The steps of a new installation,
+from an empty database to an organization's first owner, are in
+[bootstrap.md](../bootstrap.md); the other documents in this directory
+describe the organizations' own routes.
 
 ## Local bootstrap
 
 The operator uses trusted local PostgreSQL access and reuses the existing
-receipt key, or initializes it on a new installation:
+receipt key, or initializes it on a new installation (it migrates first, like
+`agentcapsule-admin migrate`):
 
 ```bash
 agentcapsule-admin bootstrap-platform \
@@ -22,15 +24,16 @@ The connection is supplied by `AGENTCAPSULE_DATABASE_URL`. The private files
 must be accessible only to their owner; the token is written and synced before
 its hash is published in PostgreSQL. It has the prefix `acpp_`, followed by 32
 random bytes encoded in unpadded base64URL (48 characters in total). The command
-does not print it. The initial scope is `platform:admin`; legacy `acp_` tokens
-receive no new rights.
+does not print it. The initial scope is `platform:admin`. The creation is
+audited, with the local account that ran the command (`local-uid:<uid>`); a
+retry that confirms it is not.
 
 A retry must keep the same files and the same account. It confirms a commit
 whose response was lost, without extending the expiry. A different identity, or
 an expired or revoked token, is refused. This command creates only the first
 platform credential; later credential administration is covered by
 `agentcapsule-admin list-credentials` and `revoke-credential` (see the
-[README](README.md)).
+[README](README.md)). A revocation is audited too.
 
 ## Available routes
 
@@ -68,14 +71,16 @@ Organization creation, initial principal, membership, administrative audit and
 encrypted HTTP receipt are atomic. An audit failure rolls back the whole
 transaction. An identical retry returns the initial response; same key with
 other content: 422; identical transaction still in progress: 409. Receipts
-expire after 24 h, like the existing receipts. Organization names are not
-unique.
+expire after 24 h, like the existing receipts. An active organization's name
+is unique, compared without case: a creation with another key and the name of
+an active organization returns 409 `organization_name_taken`, so that running
+the bootstrap twice by mistake makes no second organization. A disabled
+organization's name can be used again.
 
 Disabling is persistent and increments `policy_version` exactly once. A new
 command on an already disabled organization has no effect on that version and
 leaves an audit entry with `changed=false`. Replaying the same receipt adds no
-audit. Members are kept. Legacy agents, which are not attached to tenants, are
-neither stopped nor deleted by this route. Forbidding future tenant operations
+audit. Members are kept. Forbidding future tenant operations
 for a disabled organization relies on this status in the tenant routes; this
 route does not itself offboard anything.
 
@@ -88,7 +93,8 @@ routes to reach their accounts or agents.
 
 The audit keeps the organization, the platform account, the credential ID, the
 action, whether it changed the state, and the time. It keeps no secret and no
-conversation body. Auditing of refused attempts and reading it with the tenant
-`auditor` role are not available yet. Migration 0003 extends the receipt
+conversation body. The operator reads it with `agentcapsule-admin list-audit`,
+the organization with `GET /v1/audit`. Refused attempts are not audited yet.
+Migration 0003 extends the receipt
 constraint; it changes neither the format nor the authenticated data of the old
 encrypted receipts.

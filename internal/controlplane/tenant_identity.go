@@ -3,6 +3,7 @@ package controlplane
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"slices"
 	"time"
@@ -18,11 +19,14 @@ type CurrentOrganization struct {
 	Role         string       `json:"role"`
 }
 
-// AuthenticateDelegation verifies a signature using immutable local config,
-// then resolves existing state. It never installs trust or provisions identity.
+// AuthenticateDelegation verifies a signature, then resolves existing state. It
+// never installs trust or provisions identity. With a nil verifier, the one
+// the API uses, the token is verified with the key it names among the trusts
+// registered in PostgreSQL (ADR 001, D-01); a non-nil verifier is a fixed
+// configuration, still checked against the registered trust.
 func (s *Store) AuthenticateDelegation(ctx context.Context, verifier *delegatedidentity.Verifier, raw string) (Principal, error) {
-	v, err := verifier.Verify(raw)
-	if err != nil {
+	issuer, audience, kid, err := delegatedidentity.Select(raw)
+	if verifier == nil && err != nil {
 		return Principal{}, ErrAuthentication
 	}
 	tx, err := s.begin(ctx)
@@ -30,6 +34,15 @@ func (s *Store) AuthenticateDelegation(ctx context.Context, verifier *delegatedi
 		return Principal{}, err
 	}
 	defer rollback(tx)
+	if verifier == nil {
+		if verifier, err = registeredVerifier(ctx, tx, issuer, audience, kid); err != nil {
+			return Principal{}, err
+		}
+	}
+	v, err := verifier.Verify(raw)
+	if err != nil {
+		return Principal{}, ErrAuthentication
+	}
 	current, err := resolveTenant(ctx, tx, v)
 	if err != nil {
 		return Principal{}, err
@@ -40,7 +53,32 @@ func (s *Store) AuthenticateDelegation(ctx context.Context, verifier *delegatedi
 	return Principal{Kind: "tenant", ID: current.PrincipalID, TenantID: v.TenantID, TokenID: v.TokenID, Scopes: slices.Clone(v.Scopes), delegation: &v}, nil
 }
 
-// Lock order is organization -> principal -> membership -> issuer -> trust.
+// registeredVerifier builds the verifier of one registered key: the trust that
+// the token names, restricted to the key it names. Its fingerprint is that
+// key's, so that adding or retiring another key leaves it valid.
+func registeredVerifier(ctx context.Context, tx pgx.Tx, issuer, audience, kid string) (*delegatedidentity.Verifier, error) {
+	var p trustPolicy
+	var key []byte
+	var ttl int64
+	err := tx.QueryRow(ctx, `SELECT t.tenant_id,coalesce(t.allowed_scopes,'{}'),t.max_ttl_nanoseconds,k.public_key
+        FROM delegation_trusts t JOIN delegation_keys k USING (tenant_id,issuer,audience)
+        WHERE t.issuer=$1 AND t.audience=$2 AND k.key_id=$3 AND k.retired_at IS NULL AND t.max_ttl_nanoseconds IS NOT NULL`,
+		issuer, audience, kid).Scan(&p.tenant, &p.scopes, &ttl, &key)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrAuthentication
+	}
+	if err != nil {
+		return nil, err
+	}
+	p.issuer, p.audience, p.ttl = issuer, audience, time.Duration(ttl)
+	v, err := delegatedidentity.NewVerifier(delegatedidentity.Config{Trusts: []delegatedidentity.Trust{p.trust(map[string]ed25519.PublicKey{kid: key})}})
+	if err != nil {
+		return nil, ErrAuthentication
+	}
+	return v, nil
+}
+
+// Lock order is organization -> principal -> membership -> issuer -> trust -> key.
 // Issuer SHARE protects even an absent JTI tombstone: all revocations take that
 // existing anchor in UPDATE before writing. No row is created by this function.
 func resolveTenant(ctx context.Context, tx pgx.Tx, v delegatedidentity.VerifiedIdentity) (CurrentOrganization, error) {
@@ -80,15 +118,35 @@ func resolveTenant(ctx context.Context, tx pgx.Tx, v delegatedidentity.VerifiedI
 	var fingerprint []byte
 	var minimum time.Time
 	var generation int64
-	err = tx.QueryRow(ctx, `SELECT fingerprint,status,minimum_iat,generation FROM delegation_trusts
-		WHERE tenant_id=$1 AND issuer=$2 AND audience=$3 FOR SHARE`, v.TenantID, v.Issuer, v.Audience).Scan(&fingerprint, &status, &minimum, &generation)
+	var held bool
+	err = tx.QueryRow(ctx, `SELECT fingerprint,status,minimum_iat,generation,max_ttl_nanoseconds IS NOT NULL FROM delegation_trusts
+		WHERE tenant_id=$1 AND issuer=$2 AND audience=$3 FOR SHARE`, v.TenantID, v.Issuer, v.Audience).Scan(&fingerprint, &status, &minimum, &generation, &held)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return CurrentOrganization{}, ErrAuthentication
 	}
 	if err != nil {
 		return CurrentOrganization{}, err
 	}
-	if status != "active" || generation != v.TrustGeneration || generation <= 0 || !bytes.Equal(fingerprint, v.TrustFingerprint[:]) || v.IssuedAt.Before(minimum) {
+	verified := bytes.Equal(fingerprint, v.TrustFingerprint[:])
+	if held {
+		// The signing key must still be valid: not retired, and its overlap
+		// not ended. The identity was verified with the whole registered trust
+		// or with this key alone; either fingerprint must be the current one.
+		// A trust installed before its keys were held here (migration 0034)
+		// has only its fingerprint, checked as before.
+		var keyFingerprint []byte
+		var keyValid bool
+		err = tx.QueryRow(ctx, `SELECT fingerprint,retired_at IS NULL AND (expires_at IS NULL OR expires_at>clock_timestamp()) FROM delegation_keys
+			WHERE tenant_id=$1 AND issuer=$2 AND audience=$3 AND key_id=$4 FOR SHARE`, v.TenantID, v.Issuer, v.Audience, v.KeyID).Scan(&keyFingerprint, &keyValid)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return CurrentOrganization{}, ErrAuthentication
+		}
+		if err != nil {
+			return CurrentOrganization{}, err
+		}
+		verified = keyValid && (verified || bytes.Equal(keyFingerprint, v.TrustFingerprint[:]))
+	}
+	if status != "active" || generation != v.TrustGeneration || generation <= 0 || !verified || v.IssuedAt.Before(minimum) {
 		return CurrentOrganization{}, ErrAuthentication
 	}
 	var revoked, validTime bool

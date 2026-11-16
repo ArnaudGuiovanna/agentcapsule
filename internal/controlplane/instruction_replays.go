@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// Replays of dead letters (EVT-02, ADR 017, migration 0033). The operator, or
+// Replays of dead letters (EVT-02, ADR 017, migration 0035). The operator, or
 // an administrator of the agent's organization, puts an instruction that died
 // without reaching its agent back in its agent's queue:
 //
