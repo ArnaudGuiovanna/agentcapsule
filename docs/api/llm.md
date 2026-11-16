@@ -7,7 +7,7 @@ carry this scope.
 
 | Route | Effect |
 |---|---|
-| `POST /v1/llm/providers` | declares a provider (`openai_compatible` or `anthropic`), https URL (or http to localhost), write-only credential |
+| `POST /v1/llm/providers` | declares a provider (`openai_compatible` or `anthropic`), https URL (or http to localhost, which the worker refuses to call in production, [ADR 010](../adr/010-transport-security-and-preflight.md)), write-only credential |
 | `GET /v1/llm/providers` | metadata, never the credential |
 | `POST /v1/llm/providers/{id}/rotate` | new credential generation, effective on the next call |
 | `POST /v1/llm/providers/{id}/disable` | permanent: erases the ciphertext, disables the aliases |

@@ -116,6 +116,8 @@ described in [scripts/README.md](scripts/README.md).
 
 Installation is not packaged yet. The building blocks are documented:
 
+- [docs/install.md](docs/install.md): TLS on every hop, production and
+  development modes, and the host preflight.
 - [docs/api/README.md](docs/api/README.md): API server, bootstrap and accounts.
 - [docs/api/tenant-identity.md](docs/api/tenant-identity.md): trusting an
   organization's identity provider.
@@ -136,6 +138,7 @@ Installation is not packaged yet. The building blocks are documented:
 | Running an existing agent unchanged | [docs/adapter.md](docs/adapter.md) |
 | Guest runtime and the `capsule.v1` contract | [docs/guest/](docs/guest/) |
 | Interoperability profile (A2A, OASF, Directory, SLIM) | [docs/interop.md](docs/interop.md) |
+| Installing a host: TLS, modes, preflight | [docs/install.md](docs/install.md) |
 | Architecture decisions | [docs/adr/](docs/adr/) |
 | Formal models | [spec/](spec/) |
 | Build, test and verification scripts | [scripts/README.md](scripts/README.md) |

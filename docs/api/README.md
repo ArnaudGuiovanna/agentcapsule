@@ -31,8 +31,14 @@ bin/agentcapsule-admin bootstrap \
 bin/agentcapsule-api \
   -receipt-key-file "$HOME/.local/state/agentcapsule/receipt.key" \
   -host-id local \
-  -listen 127.0.0.1:8080
+  -listen 127.0.0.1:8443 \
+  -tls-cert /etc/agentcapsule/api.crt -tls-key /etc/agentcapsule/api.key \
+  -tls-server-name api.example.net
 ```
+
+On a development machine, `AGENTCAPSULE_MODE=development` lets the API listen
+in plain HTTP on a loopback address instead, without the TLS flags
+([install.md](../install.md#modes)).
 
 Add `-metrics-listen 127.0.0.1:9464` to serve Prometheus metrics on loopback
 ([observability.md](../observability.md)). Each request writes one JSON event,
@@ -86,10 +92,14 @@ errors are reported with a `..._rejected_<reason>` code, and only an unknown
 commit result invites a retry.
 
 The API runs under an unprivileged account with no access to the runtime. It
-expects an already migrated schema. HTTP without TLS is limited to a loopback IP
-address; a remote listener requires `-tls-cert` and `-tls-key`. An HTTPS reverse
-proxy can also reach the local listener. Keep `/v1/health/ready` on the internal
-network. Logs contain only fixed codes and never tokens, DSNs, request bodies or
+expects an already migrated schema. In production it serves HTTPS only, TLS 1.2
+or 1.3, and refuses to start without `-tls-cert` and `-tls-key`, even on
+loopback; a reverse proxy in front of it talks HTTPS to it too. It checks the
+files at start and reads them again on `SIGHUP`
+([install.md](../install.md#api-certificate)). It reaches PostgreSQL over a Unix
+socket or with `sslmode=verify-full`. `-preflight` checks this configuration and
+exits. In development mode only, HTTP without TLS is allowed on a loopback IP
+address. Keep `/v1/health/ready` on the internal network. Logs contain only fixed codes and never tokens, DSNs, request bodies or
 private responses.
 
 The available routes are described in the canonical contract
@@ -134,7 +144,8 @@ bin/agentcapsule-admin activate-transit-keys \
   -active-key v1 -key v1=/private/path/transit-v1.key
 bin/agentcapsule-api \
   -receipt-key-file /private/path/receipt.key -host-id local \
-  -transit-active-key v1 -transit-key v1=/private/path/transit-v1.key
+  -transit-active-key v1 -transit-key v1=/private/path/transit-v1.key \
+  -tls-cert /etc/agentcapsule/api.crt -tls-key /etc/agentcapsule/api.key
 ```
 
 Rotation explicitly activates a new identifier together with all the keys still
