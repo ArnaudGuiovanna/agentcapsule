@@ -193,7 +193,7 @@ func TestHTTPRejectsAmbiguousCredentialsAndPaths(t *testing.T) {
 }
 
 func TestAPIBinariesBootstrapServeAndShutdown(t *testing.T) {
-	_, _, token, dsn := apiLab(t)
+	_, _, _, dsn := apiLab(t)
 	dir := t.TempDir()
 	root, err := filepath.Abs("../..")
 	if err != nil {
@@ -206,25 +206,27 @@ func TestAPIBinariesBootstrapServeAndShutdown(t *testing.T) {
 			t.Fatalf("build %s: %v %s", name, err, output)
 		}
 	}
-	tokenFile, keyFile := filepath.Join(dir, "admin.token"), filepath.Join(dir, "receipt.key")
+	tokenFile, keyFile := filepath.Join(dir, "platform.token"), filepath.Join(dir, "receipt.key")
 	if err = os.WriteFile(keyFile, bytes.Repeat([]byte{0x36}, 32), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err = os.WriteFile(tokenFile, []byte(token), 0600); err != nil {
 		t.Fatal(err)
 	}
 	env := append(os.Environ(), "AGENTCAPSULE_DATABASE_URL="+dsn)
 	bootstrap := func() {
 		t.Helper()
-		c := exec.CommandContext(t.Context(), filepath.Join(dir, "agentcapsule-admin"), "bootstrap", "-receipt-key-file", keyFile, "-token-file", tokenFile, "-service-account", "api-test-admin")
+		c := exec.CommandContext(t.Context(), filepath.Join(dir, "agentcapsule-admin"), "bootstrap-platform", "-receipt-key-file", keyFile, "-token-file", tokenFile, "-platform-account", "api-test-platform")
 		c.Env = env
 		output, err := c.CombinedOutput()
-		if err != nil || string(output) != "bootstrap_complete\n" {
+		if err != nil || string(output) != "platform_bootstrap_complete\n" {
 			t.Fatalf("bootstrap failed: %v (secret output withheld)", err)
 		}
 	}
 	bootstrap()
 	bootstrap()
+	secret, err := os.ReadFile(tokenFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := string(secret)
 	transitKey := filepath.Join(dir, "transit.key")
 	if err = os.WriteFile(transitKey, bytes.Repeat([]byte{0x74}, 32), 0600); err != nil {
 		t.Fatal(err)
@@ -314,13 +316,13 @@ func TestAPIBinariesBootstrapServeAndShutdown(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	req, err := http.NewRequestWithContext(t.Context(), "POST", "https://"+address+"/v1/users", strings.NewReader(`{"display_name":"Process user"}`))
+	req, err := http.NewRequestWithContext(t.Context(), "POST", "https://"+address+"/v1/organizations", strings.NewReader(`{"name":"Process organization","initial_owner":{"issuer":"https://issuer.example","subject":"process-owner","display_name":"Process owner"}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Idempotency-Key", "process-user")
+	req.Header.Set("Idempotency-Key", "process-organization")
 	r, err := client.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -338,7 +340,7 @@ func TestAPIBinariesBootstrapServeAndShutdown(t *testing.T) {
 	}
 	exposition, _ := io.ReadAll(m.Body)
 	m.Body.Close()
-	if m.StatusCode != 200 || !strings.Contains(string(exposition), `agentcapsule_api_requests_total{route="/v1/users",method="POST",status_class="2xx"} 1`) {
+	if m.StatusCode != 200 || !strings.Contains(string(exposition), `agentcapsule_api_requests_total{route="/v1/organizations",method="POST",status_class="2xx"} 1`) {
 		t.Fatal("metrics", m.StatusCode, string(exposition))
 	}
 	// Clear text reaches no route: the TLS listener answers it with a refusal.
@@ -382,11 +384,11 @@ func TestAPIBinariesBootstrapServeAndShutdown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(output), token) || strings.Contains(string(output), "Process user") || strings.Contains(string(output), dsn) {
+	if strings.Contains(string(output), token) || strings.Contains(string(output), "Process owner") || strings.Contains(string(output), dsn) {
 		t.Fatal("sensitive data in process log")
 	}
 	// The request's event carries the X-Request-ID its response gave.
-	if !strings.Contains(string(output), `"event":"http_request","request_id":"`+created+`","route":"/v1/users","method":"POST","status":201`) {
+	if !strings.Contains(string(output), `"event":"http_request","request_id":"`+created+`","route":"/v1/organizations","method":"POST","status":201`) {
 		t.Fatal("no event for the request", string(output))
 	}
 }

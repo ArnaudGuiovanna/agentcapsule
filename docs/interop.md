@@ -196,7 +196,8 @@ answers through two SLIM services, every delivery crosses the node.
 ## Running on a host
 
 [deploy/systemd](../deploy/systemd) holds the units of one host. The worker and
-the control plane have none yet.
+the control plane have none yet. The authority service's files are described
+in [recovery.md](recovery.md#install-the-authority-service).
 
 | File | Install as | Role |
 | --- | --- | --- |

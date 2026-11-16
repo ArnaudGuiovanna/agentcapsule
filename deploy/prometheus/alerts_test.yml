@@ -451,26 +451,27 @@ tests:
             exp_annotations:
               summary: The standby's replay has not been collected for 10 minutes, or never was (agentcapsule-standby-metrics.timer or node_exporter's textfile collector).
 
-  # The authorities' replica (D-05). host-1: the standby stops at 00:05,
-  # degraded mode from 00:06 to 00:20, attempts fail every second until the
-  # standby returns at 00:20, and a seal gives up at 00:08. host-2: a worker
-  # restarted without its standby; its attempts fail and degraded mode never
-  # begins. host-3: one failed attempt at 00:03, then nothing.
+  # The authorities' replica (D-05), from the authority service. host-1: the
+  # standby stops at 00:05, degraded mode from 00:06 to 00:20, attempts fail
+  # every second until the standby returns at 00:20, and a seal gives up at
+  # 00:08. host-2: a service restarted without its standby; its attempts fail
+  # and degraded mode never begins. host-3: one failed attempt at 00:03, then
+  # nothing.
   - interval: 1m
     input_series:
-      - series: 'agentcapsule_authority_replication_degraded_since_timestamp_seconds{job="agentcapsule-worker",instance="host-1"}'
+      - series: 'agentcapsule_authority_replication_degraded_since_timestamp_seconds{job="agentcapsule-authority",instance="host-1"}'
         values: '0x5 360x14 0x10'
-      - series: 'agentcapsule_authority_replication_errors_total{job="agentcapsule-worker",instance="host-1",kind="unreachable"}'
+      - series: 'agentcapsule_authority_replication_errors_total{job="agentcapsule-authority",instance="host-1",kind="unreachable"}'
         values: '0x4 1+60x15 901x10'
-      - series: 'agentcapsule_authority_replication_degraded_refused_total{job="agentcapsule-worker",instance="host-1",kind="seal"}'
+      - series: 'agentcapsule_authority_replication_degraded_refused_total{job="agentcapsule-authority",instance="host-1",kind="seal"}'
         values: '0x7 1x22'
-      - series: 'agentcapsule_authority_replication_degraded_since_timestamp_seconds{job="agentcapsule-worker",instance="host-2"}'
+      - series: 'agentcapsule_authority_replication_degraded_since_timestamp_seconds{job="agentcapsule-authority",instance="host-2"}'
         values: '0x30'
-      - series: 'agentcapsule_authority_replication_errors_total{job="agentcapsule-worker",instance="host-2",kind="unreachable"}'
+      - series: 'agentcapsule_authority_replication_errors_total{job="agentcapsule-authority",instance="host-2",kind="unreachable"}'
         values: '0+60x30'
-      - series: 'agentcapsule_authority_replication_degraded_since_timestamp_seconds{job="agentcapsule-worker",instance="host-3"}'
+      - series: 'agentcapsule_authority_replication_degraded_since_timestamp_seconds{job="agentcapsule-authority",instance="host-3"}'
         values: '0x30'
-      - series: 'agentcapsule_authority_replication_errors_total{job="agentcapsule-worker",instance="host-3",kind="timeout"}'
+      - series: 'agentcapsule_authority_replication_errors_total{job="agentcapsule-authority",instance="host-3",kind="timeout"}'
         values: '0x2 1x27'
     alert_rule_test:
       - eval_time: 6m
@@ -479,9 +480,9 @@ tests:
       - eval_time: 8m
         alertname: AgentCapsuleAuthorityDegraded
         exp_alerts:
-          - exp_labels: {severity: critical, job: agentcapsule-worker, instance: host-1}
+          - exp_labels: {severity: critical, job: agentcapsule-authority, instance: host-1}
             exp_annotations:
-              summary: The worker's authorities run in degraded mode without the standby; creating, deleting and restoring agents wait, and losing this host would lose the outcomes recorded since.
+              summary: The authority service runs in degraded mode without the standby; creating, deleting and restoring agents wait, and losing this host would lose the outcomes recorded since.
       - eval_time: 22m
         alertname: AgentCapsuleAuthorityDegraded
         exp_alerts: []
@@ -491,7 +492,7 @@ tests:
       - eval_time: 9m
         alertname: AgentCapsuleAuthorityOperationsRefused
         exp_alerts:
-          - exp_labels: {severity: warning, job: agentcapsule-worker, instance: host-1, kind: seal}
+          - exp_labels: {severity: warning, job: agentcapsule-authority, instance: host-1, kind: seal}
             exp_annotations:
               summary: Authority operations gave up waiting for the standby in degraded mode; creating, deleting or restoring agents fails until it returns.
       - eval_time: 25m
@@ -503,12 +504,38 @@ tests:
       - eval_time: 12m
         alertname: AgentCapsuleAuthorityReplicationStopped
         exp_alerts:
-          - exp_labels: {severity: critical, job: agentcapsule-worker, instance: host-2}
+          - exp_labels: {severity: critical, job: agentcapsule-authority, instance: host-2}
             exp_annotations:
-              summary: The worker's authorities keep failing to reach their replica outside degraded mode; every authority operation waits or fails.
+              summary: The authority service keeps failing to reach the replica outside degraded mode; every authority operation waits or fails.
       - eval_time: 28m
         alertname: AgentCapsuleAuthorityReplicationStopped
         exp_alerts:
-          - exp_labels: {severity: critical, job: agentcapsule-worker, instance: host-2}
+          - exp_labels: {severity: critical, job: agentcapsule-authority, instance: host-2}
             exp_annotations:
-              summary: The worker's authorities keep failing to reach their replica outside degraded mode; every authority operation waits or fails.
+              summary: The authority service keeps failing to reach the replica outside degraded mode; every authority operation waits or fails.
+
+  # The authority service (ADR 006). host-1's service stops answering at
+  # 00:03 and is back at 00:10; host-2's misses one scrape at 00:04. The
+  # API's and the worker's AgentCapsuleTargetDown does not fire for it.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="agentcapsule-authority",instance="host-1"}'
+        values: '1x2 0x6 1x5'
+      - series: 'up{job="agentcapsule-authority",instance="host-2"}'
+        values: '1x3 0 1x8'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: AgentCapsuleAuthorityServiceDown
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: AgentCapsuleAuthorityServiceDown
+        exp_alerts:
+          - exp_labels: {severity: critical, job: agentcapsule-authority, instance: host-1}
+            exp_annotations:
+              summary: The authority service does not answer its metrics scrape; no agent boots and authority operations fail until it returns.
+      - eval_time: 6m
+        alertname: AgentCapsuleTargetDown
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: AgentCapsuleAuthorityServiceDown
+        exp_alerts: []

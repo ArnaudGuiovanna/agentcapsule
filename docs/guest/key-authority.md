@@ -1,24 +1,40 @@
 # Local volume key authority
 
 `internal/keyauthority` keeps one random LUKS open key per volume, bound to its
-agent. The directory must be private, owned by the worker account and kept out
-of data backups/restores. For the current host pilot, this account is root. Two
-different paths do not guarantee two failure domains or two independent backup
-policies.
+agent. The directory must be private, owned by the account of the authority
+service, `agentcapsule-authority` ([ADR 006](../adr/006-authority-service.md)),
+and kept out of data backups/restores. Root can still read it; the worker,
+which runs as root, never opens it. Two different paths do not guarantee two
+failure domains or two independent backup policies.
 
-The administrator explicitly initializes a new directory:
+The administrator explicitly initializes a new directory, as the service's
+account:
 
 ```sh
-agentcapsule-admin init-key-authority -root /srv/agentcapsule-authority
+runuser -u agentcapsule-authority -- agentcapsule-admin init-key-authority -root /var/lib/agentcapsule-key-authority
 ```
 
 The command returns a public `authority_id` to keep in the installation
 configuration. It returns no key. Repeating it keeps the same identity. The
-worker opens the authority with `keyauthority.Open(root, expectedIdentity)`: it
-refuses an absent authority, a different one, or one with incorrect permissions,
-without creating a replacement. Every operation re-verifies this identity.
-The worker service opens this authority through `ServiceConfig.OpenVolumeKeys`
-(`internal/worker/service_config_linux.go`) and passes it to provisioning.
+authority service opens the authority with
+`keyauthority.Open(root, expectedIdentity)`: it refuses an absent authority, a
+different one, or one with incorrect permissions or another owner, without
+creating a replacement. Every operation re-verifies this identity. Nothing
+else opens the directory while the service runs: it holds the directory's
+owner lock, and the commands that open it refuse with `authority_in_use`.
+
+**The worker borrows a key through a hold.** It reaches the service on its
+worker socket, which admits root only, and pins both authorities' identities
+(its `authority` section, [worker.md](../worker.md)). To format a new volume
+or unlock it at boot, it asks for a key hold under the volume's binding
+{agent, volume, incarnation}: the service holds the restore authority's
+binding, then the key's shared lock, and sends the key as 32 raw bytes after
+its `held` frame, never inside JSON. The worker uses the key, clears its
+buffer, and releases the hold; the end of its connection releases it too. A
+hold lasts at most `max_key_hold` (2 minutes by default). The service refuses
+a key without its binding. Creation and destruction go through the service
+too (`ensure_key`, `destroy_key`). The service's unit disables core dumps,
+and the service never logs or exports a key.
 
 A created key keeps its identity after an interruption. A permanent allocation
 marker prevents generating another key if the published file disappears.
@@ -76,8 +92,8 @@ both authorities on the standby host. There are two modes.
   **This mode gives no disaster protection.**
 - **Synchronous.** The key authority and the restore authority share one
   stream of records. Each write returns only once the replica holds it on
-  disk. The worker enables it with `authority_replica`
-  ([worker.md](../worker.md#replica-of-the-authorities)).
+  disk. The authority service enables it with `authority_replica`
+  ([recovery.md](../recovery.md#install-the-replica)).
 
 In synchronous mode:
 - `Ensure` publishes the key file first. Nobody can use the key yet: its
@@ -108,8 +124,10 @@ without the replica cannot write behind its back. `WithKey` still works.
 **Promotion.** When the primary is lost, `agentcapsule-authority promote`
 opens the replica's copies with the unlock key, checks each key against its
 commitment, and writes a new key authority on the standby with the same
-identity: every live key, every allocation marker and every tombstone. A
-destroyed key stays destroyed: the replica holds its tombstone and no copy.
+identity: every live key, every allocation marker and every tombstone. It
+runs as `agentcapsule-authority`, so the new directories belong to the
+service's account. A destroyed key stays destroyed: the replica holds its
+tombstone and no copy.
 The new authority is standalone, without a `replicated` file, until a
 snapshot arms it for a new standby. The old host's key directory must be
 deleted before that host serves again: it holds keys destroyed since the

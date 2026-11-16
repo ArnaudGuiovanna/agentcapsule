@@ -6,9 +6,9 @@ info:
     Platform administration of organizations, identity, members and teams
     through signed delegation, plus the legacy accounts and agents API. The
     platform, tenant and legacy domains are separate: a credential gains no
-    right in another domain. Legacy agents are not yet migrated to
-    organizations. Validation of the two-tenant product journey is still to be
-    done.
+    right in another domain. The legacy domain is closed: agentcapsule-api
+    refuses its tokens (ADR 001, D-01). Validation of the two-tenant product
+    journey is still to be done.
 servers:
   - url: https://api.example.invalid
 security:
@@ -54,7 +54,8 @@ paths:
         organization, initial principal, org_owner membership, audit entry and
         encrypted receipt. The initial_owner identity is recorded but not
         authenticated, and no token is issued. A replay rechecks the current
-        authorization.
+        authorization. Another key with the name of an active organization,
+        compared without case, gives 409 organization_name_taken.
       security: [{platformBearer: []}]
       parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
       requestBody:
@@ -2053,7 +2054,7 @@ components:
     bearer:
       type: http
       scheme: bearer
-      description: Opaque legacy token acp_. No authority on organization routes.
+      description: Opaque legacy token acp_. No authority on organization routes. Refused by agentcapsule-api (ADR 001, D-01).
     platformBearer:
       type: http
       scheme: bearer
@@ -2070,8 +2071,8 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: >-
-        EdDSA/Ed25519 JWT verified against a local trust installed in the
-        database. Issuer, single audience, subject, jti, trust_generation, iat
+        EdDSA/Ed25519 JWT verified with the key its kid names among the keys
+        registered in the database for its issuer and audience. Issuer, single audience, subject, jti, trust_generation, iat
         and exp are required. The current generation is checked in the
         database, and the scope must match exactly. The issuer cannot freely
         choose a tenant or a role.

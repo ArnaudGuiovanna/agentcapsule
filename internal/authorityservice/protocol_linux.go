@@ -315,8 +315,9 @@ type (
 	ArchiveArgs struct {
 		Archive restoreauthority.Archive `json:"archive"`
 	}
-	// KeyArgs names a volume key. With an incarnation, hold_key holds the
-	// binding {agent, volume, incarnation} around the key, in one hold.
+	// KeyArgs names a volume key. hold_key needs the incarnation: it holds
+	// the binding {agent, volume, incarnation} around the key, in one hold,
+	// and refuses a key without its binding (input).
 	KeyArgs struct {
 		Agent       string `json:"agent"`
 		Volume      string `json:"volume"`

@@ -1,24 +1,25 @@
 //go:build linux
 
-// agentcapsule-authority holds the replica of the key and restore
-// authorities on the standby host (docs/adr/005-keys-outside-restored-domain.md,
-// option a), and prepares it:
+// agentcapsule-authority owns the key and restore authorities: on the
+// primary host, the authority service that the worker reaches through its
+// socket (docs/adr/006-authority-service.md); on the standby, their replica
+// (docs/adr/005-keys-outside-restored-domain.md, option a). It also prepares
+// the replica:
 //
 //	unlock-key     generate the operator's unlock key (kept off both hosts)
 //	certificate    generate one side's certificate for the mutual-TLS link
-//	snapshot       on the primary: arm both authorities, write the replica's start
+//	snapshot       on the primary, the service stopped: arm both
+//	               authorities, write the replica's start
 //	init-replica   on the standby: create the replica from a snapshot
-//	serve          on the standby: receive the primary's records; on the
-//	               primary, with "role": "primary", the authority service
-//	               (docs/adr/006-authority-service.md), used by tests only
-//	               until the worker moves to it
+//	serve          on the primary, with "role": "primary", the authority
+//	               service; on the standby, receive the primary's records
 //	promote        on the standby, once the old primary is stopped: turn the
 //	               replica into both authorities, under the next epoch
 //
-// It is a separate binary, not a worker mode: the standby runs no worker,
-// no VM and no database writer, and the replica runs as an unprivileged
-// account that owns only its directory. Output is JSON; no secret is ever
-// written to standard output.
+// It is a separate binary, not a worker mode: it runs as the unprivileged
+// account agentcapsule-authority, which owns the directories, on both hosts.
+// The standby runs no worker, no VM and no database writer. Output is JSON;
+// no secret is ever written to standard output.
 //
 // One process at a time opens an authority directory: serve holds the lock
 // of its directories while it runs, and snapshot, init-replica and promote
@@ -152,10 +153,10 @@ func certificate(args []string) int {
 
 func snapshot(args []string) int {
 	f := flag.NewFlagSet("snapshot", flag.ContinueOnError)
-	keyRoot := f.String("key-authority-root", "", "the worker's key_authority.root")
-	keyID := f.String("key-authority-id", "", "the worker's key_authority.identity")
-	restoreRoot := f.String("restore-authority-root", "", "the worker's restore_authority.root")
-	restoreID := f.String("restore-authority-id", "", "the worker's restore_authority.identity")
+	keyRoot := f.String("key-authority-root", "", "the service's key_authority.root")
+	keyID := f.String("key-authority-id", "", "the service's key_authority.identity")
+	restoreRoot := f.String("restore-authority-root", "", "the service's restore_authority.root")
+	restoreID := f.String("restore-authority-id", "", "the service's restore_authority.identity")
 	recipientText := f.String("recipient", "", "the unlock key's recipient, from unlock-key")
 	out := f.String("out", "", "new snapshot file, outside both authorities")
 	if !parse(f, args) || *keyRoot == "" || *restoreRoot == "" || *out == "" {
@@ -257,8 +258,8 @@ type primaryConfig struct {
 	APIUID           *uint32             `json:"api_uid"`
 	// MaxKeyHold caps a hold of a key in use: 2m when empty, from 30s to 10m.
 	MaxKeyHold string `json:"max_key_hold,omitempty"`
-	// AuthorityReplica is the worker's section of today, unchanged; the
-	// authorities are standalone without it.
+	// AuthorityReplica is the section the worker had before the service,
+	// unchanged; the authorities are standalone without it.
 	AuthorityReplica *replicaLink `json:"authority_replica,omitempty"`
 	MetricsListen    string       `json:"metrics_listen,omitempty"`
 }
@@ -509,25 +510,11 @@ func servePrimary(c config) int {
 	events, problems := telemetry.NewLogger(os.Stdout, vocabulary), telemetry.NewLogger(os.Stderr, vocabulary)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	keys, err := keyauthority.Open(p.KeyAuthority.Root, p.KeyAuthority.Identity)
-	if err != nil {
-		return fail("key_authority_unavailable")
-	}
-	catalog, err := restoreauthority.Open(ctx, p.RestoreAuthority.Root, p.RestoreAuthority.Identity, keys.Identity())
-	if err != nil {
-		return fail("restore_authority_unavailable")
+	keys, catalog, code := openPrimary(ctx, c)
+	if code != "" {
+		return fail(code)
 	}
 	defer catalog.Close()
-	switch err = authorityservice.Link(ctx, catalog, keys, c.link); {
-	case errors.Is(err, restoreauthority.ErrReplicaRequired):
-		return fail("authority_replica_required")
-	case errors.Is(err, restoreauthority.ErrNotArmed):
-		return fail("authority_replica_not_armed")
-	case errors.Is(err, authorityservice.ErrReplicaConfiguration):
-		return fail("authority_replica_configuration_invalid")
-	case err != nil:
-		return fail("restore_authority_unavailable")
-	}
 	registry := telemetry.NewRegistry()
 	catalog.ObserveReplication(authoritylog.NewMetrics(registry))
 	server, err := authorityservice.New(ctx, authorityservice.Config{Catalog: catalog, Keys: keys, APIUID: *p.APIUID,
@@ -561,6 +548,39 @@ func servePrimary(c config) int {
 	return fail("service_stopped")
 }
 
+// openPrimary opens both authorities of the primary role, and links them to
+// the standby when authority_replica is set; it returns the code of its
+// failure. Standalone without the section, unless a snapshot armed them:
+// then it refuses (authority_replica_required). Authorities that no snapshot
+// armed, such as promoted ones before a new standby is seeded, refuse the
+// section (authority_replica_not_armed). The caller holds their owner lock.
+func openPrimary(ctx context.Context, c config) (*keyauthority.Files, *restoreauthority.Catalog, string) {
+	p := c.primary
+	keys, err := keyauthority.Open(p.KeyAuthority.Root, p.KeyAuthority.Identity)
+	if err != nil {
+		return nil, nil, "key_authority_unavailable"
+	}
+	catalog, err := restoreauthority.Open(ctx, p.RestoreAuthority.Root, p.RestoreAuthority.Identity, keys.Identity())
+	if err != nil {
+		return nil, nil, "restore_authority_unavailable"
+	}
+	code := ""
+	switch err = authorityservice.Link(ctx, catalog, keys, c.link); {
+	case err == nil:
+		return keys, catalog, ""
+	case errors.Is(err, restoreauthority.ErrReplicaRequired):
+		code = "authority_replica_required"
+	case errors.Is(err, restoreauthority.ErrNotArmed):
+		code = "authority_replica_not_armed"
+	case errors.Is(err, authorityservice.ErrReplicaConfiguration):
+		code = "authority_replica_configuration_invalid"
+	default:
+		code = "restore_authority_unavailable"
+	}
+	catalog.Close()
+	return nil, nil, code
+}
+
 // promotionCheck is how often serve looks for a promotion made by another
 // process while no record arrives.
 const promotionCheck = 2 * time.Second
@@ -584,15 +604,15 @@ func watchPromotion(ctx context.Context, replica *restoreauthority.Replica, ever
 }
 
 // promote turns the replica into the two authorities of the new primary. It
-// runs as the worker's account, which must own the replica's directory: the
-// keys it writes in clear belong to the worker, never to the replica's
-// account. The old primary must be stopped first (docs/recovery.md).
+// runs as agentcapsule-authority, which owns the replica's directory, so the
+// promoted directories belong to the authority service's account. The old
+// primary must be stopped first (docs/recovery.md).
 func promote(args []string) int {
 	f := flag.NewFlagSet("promote", flag.ContinueOnError)
 	replicaRoot := f.String("replica-root", "", "the replica's directory, owned by this account")
-	keyRoot := f.String("key-authority-root", "", "new directory: the worker's key_authority.root on this host")
+	keyRoot := f.String("key-authority-root", "", "new directory: the service's key_authority.root on this host")
 	keyID := f.String("key-authority-id", "", "the key authority's identity, as the worker pins it")
-	restoreRoot := f.String("restore-authority-root", "", "new directory: the worker's restore_authority.root on this host")
+	restoreRoot := f.String("restore-authority-root", "", "new directory: the service's restore_authority.root on this host")
 	restoreID := f.String("restore-authority-id", "", "the restore authority's identity, as the worker pins it")
 	unlockPath := f.String("unlock-key-file", "", "private file holding the unlock key, from the safe")
 	if !parse(f, args) || *replicaRoot == "" || *keyRoot == "" || *keyID == "" || *restoreRoot == "" || *restoreID == "" ||

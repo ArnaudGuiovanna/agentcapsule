@@ -35,7 +35,7 @@ func TestAdminRefusesAClearTextDatabaseInProduction(t *testing.T) {
 		t.Setenv(name, "")
 	}
 	dir := t.TempDir()
-	args := []string{"bootstrap", "-receipt-key-file", filepath.Join(dir, "receipt.key"), "-token-file", filepath.Join(dir, "token")}
+	args := []string{"bootstrap-platform", "-receipt-key-file", filepath.Join(dir, "receipt.key"), "-token-file", filepath.Join(dir, "token")}
 	t.Setenv("AGENTCAPSULE_DATABASE_URL", "host=127.0.0.1 port=1 dbname=agentcapsule connect_timeout=2")
 	t.Setenv("AGENTCAPSULE_MODE", "")
 	if out, code := command(t, args...); code != 1 || out != "database_tls_required_in_production\n" {

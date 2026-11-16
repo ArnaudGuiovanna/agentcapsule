@@ -119,7 +119,9 @@ Installation is not packaged yet. The building blocks are documented:
 
 - [docs/install.md](docs/install.md): TLS on every hop, production and
   development modes, and the host preflight.
-- [docs/api/README.md](docs/api/README.md): API server, bootstrap and accounts.
+- [docs/bootstrap.md](docs/bootstrap.md): from an empty database to an
+  organization whose first owner signs in.
+- [docs/api/README.md](docs/api/README.md): API server and its routes.
 - [docs/api/tenant-identity.md](docs/api/tenant-identity.md): trusting an
   organization's identity provider.
 - [docs/worker.md](docs/worker.md): worker configuration

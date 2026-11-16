@@ -3,7 +3,7 @@
 `cmd/agentcapsule-worker` reconciles placements, renews boot certificates and
 resumes interrupted replacements, without any incoming request. It also
 discovers the deliveries, closures, expirations and deletions to process in
-PostgreSQL. With `key_authority` and `provisioning` configured, it also resumes
+PostgreSQL. With `authority` and `provisioning` configured, it also resumes
 creation reservations. The API path with two owners and two VMs, including
 provisioning and encrypted wake, is exercised by
 `scripts/verify-product-guest.py`. The worker also restores an agent from an
@@ -44,36 +44,64 @@ starting; a normal launch does not modify the schema. The `host_id`, the
 registry, the images and the capacity must be consistent across all workers of
 the same host. Stop older versions before migrating.
 
-For encrypted guests, explicitly initialize the key authority with
-`agentcapsule-admin init-key-authority`, then the independent catalog with
-`agentcapsule-admin init-restore-authority --root <catalog> --data-root <runtime>
---key-authority-root <keys> --key-authority-id <keys-identity>`.
-For local provisioning, also add a UID/GID range reserved exclusively for this
-host registry:
+For encrypted guests, the worker needs the key authority and the restore
+authority. Both belong to the **authority service**, `agentcapsule-authority
+serve` ([ADR 006](adr/006-authority-service.md)): one process per host, run
+under its own account `agentcapsule-authority`, owns both directories, and
+the worker reaches them through its local socket. The worker never opens
+their directories. [recovery.md](recovery.md#install-the-authority-service)
+installs the service, initializes both authorities and moves an existing
+install to it. Then give the worker the service's socket and the two
+identities it must hold, and, for local provisioning, a UID/GID range
+reserved exclusively for this host registry:
 
 ```json
 {
-  "key_authority": {
-    "root": "/var/lib/agentcapsule-key-authority",
-    "identity": "<PUBLIC_IDENTITY_RETURNED_BY_INITIALIZATION>"
-  },
-  "restore_authority": {
-    "root": "/var/lib/agentcapsule-restore-authority",
-    "identity": "<PUBLIC_IDENTITY_OF_THE_INDEPENDENT_CATALOG>"
+  "authority": {
+    "socket": "/run/agentcapsule-authority/worker.sock",
+    "restore_authority_id": "<PUBLIC_IDENTITY_OF_THE_INDEPENDENT_CATALOG>",
+    "key_authority_id": "<PUBLIC_IDENTITY_RETURNED_BY_INITIALIZATION>"
   },
   "provisioning": { "first_uid": 62000, "last_uid": 62999 }
 }
 ```
 
-Both authorities must be separate from the runtime and its backups. The service
-refuses an absent authority or one with a different identity; it does not
-initialize it at startup. Running `init-restore-authority` again on an existing
-catalog keeps its identity and upgrades its schema. Version 2 adds the losses
-that a restore declares ([ADR 003](adr/003-restore-rpo.md)). Before the
-upgrade, the worker keeps running; only the loss operations are refused.
-Version 3 adds the log of the [replica](#replica-of-the-authorities); a
-version 2 catalogue keeps working standalone. The UIDs of removed agents stay reserved. This first
-harness source accepts the approved local image whose digest is exactly
+- The socket admits root only, and the service checks the peer's account on
+  each connection.
+- The worker pins both identities. It refuses a service that holds other
+  authorities (`authority_identity_mismatch`). It checks that its runtime
+  root, and its archive root, lie outside both authorities' directories,
+  which the service gives (`authority_domain_overlap`).
+- A worker that starts before the service answers waits for it, and logs
+  `authority_service_waiting` once. Order its unit after the service with
+  [agentcapsule-authority-client.conf](../deploy/systemd/agentcapsule-authority-client.conf)
+  (`Wants=` and `After=`, never `Requires=`).
+- A configuration that still names `key_authority`, `restore_authority` or
+  `authority_replica` is refused (`authority_service_required`): those
+  sections moved to the service's configuration. No worker may write behind
+  the service.
+- Without the `authority` section, the worker runs a laboratory host without
+  authorities: preprovisioned volumes, no provisioning, no archives.
+
+**When the service restarts** (an upgrade, a crash), the worker's authority
+operations fail as outages for a few seconds, and are retried: no agent boots,
+platform calls fail with an error the guest can retry, deliveries wait.
+Running VMs stay: adoption treats an outage as an outage, never as a stale
+binding. After a restart, the service makes restoring or deleting an agent
+wait up to `max_key_hold` (2 minutes), and closing a request up to 30 seconds
+([ADR 006 §3](adr/006-authority-service.md#the-hold)). **When the worker
+restarts**, the service keeps its view of the standby: degraded mode goes on,
+and the restarted worker does not wait for the standby.
+
+The authorities refuse an absent directory or one with a different identity;
+nothing initializes them at startup. Running `init-restore-authority` again on
+an existing catalog keeps its identity and upgrades its schema, with the
+service stopped. Version 2 adds the losses that a restore declares
+([ADR 003](adr/003-restore-rpo.md)). Before the upgrade, the worker keeps
+running; only the loss operations are refused. Version 3 adds the log of the
+[replica](#the-authority-service); a version 2 catalogue keeps working
+standalone. The UIDs of removed agents stay reserved. This first harness
+source accepts the approved local image whose digest is exactly
 `sha256:<initrd.sha256>`; OCI import and assembly remain to be built.
 
 New installations register each volume with an initial incarnation of 1. The
@@ -311,82 +339,50 @@ failures within 1 minute to 24 hours. The operator sees
 `agentcapsule_worker_agents_failed`, the event `agent_failed` and the alert
 `AgentCapsuleAgentFailed` ([observability.md](observability.md)).
 
-## Replica of the authorities
+## The authority service
 
 D-05 ([ADR 005](adr/005-keys-outside-restored-domain.md)) keeps both
-authorities on the standby host too, in a replica. The worker keeps its
-authorities in its own process, and sends each of their writes to the
-replica over mutual TLS. Each write returns only once the replica holds it on
-disk. [recovery.md](recovery.md#the-authorities-replica-d-05) installs the
-replica.
+authorities on the standby host too, in a replica. Since
+[ADR 006](adr/006-authority-service.md), the authority service holds the link
+to the replica, degraded mode, the barrier that keeps every write behind the
+replica, and their metrics. The worker runs none of it. It sees degraded mode
+only through the errors of the writes that wait ("degraded mode: this
+authority operation waits for the replica"), and the service's `status`.
 
-```json
-{
-  "authority_replica": {
-    "address": "standby.internal:7443",
-    "certificate": "/etc/agentcapsule/authority-primary.crt",
-    "key": "/etc/agentcapsule/authority-primary.key",
-    "replica_certificate": "/etc/agentcapsule/authority-replica.crt",
-    "degraded_after": "30s"
-  }
-}
-```
-
-- `address` is the standby's `agentcapsule-authority serve`.
-- `certificate` and `key` are this host's side of the link. The key file is
-  private: mode 0600, owned by the worker's account.
-- `replica_certificate` pins the standby's certificate. Nothing else is
-  trusted: no CA, no host name.
-- Both certificates name the two authorities' identities. A certificate made
-  for another installation does not load.
-- The unlock key's public part is not in this file. The snapshot stored it in
-  the restore authority.
-- `degraded_after` is how long the standby may stay unreachable before
-  degraded mode ([below](#degraded-mode)). Optional: `30s` by default, from
-  `5s` to `10m`. Another value makes the configuration invalid.
-
-**Without this section, the authorities are standalone.** That is the
-behaviour before D-05. It gives no protection against the host's loss: its
-keys and its catalogue exist on this host only. Once a snapshot has armed the
-authorities, the worker refuses to start without this section
-(`authority_replica_required`). With the section and authorities never armed,
-it refuses too (`authority_replica_not_armed`). Unusable certificate files
-give `authority_replica_configuration_invalid`. The archive and restore
-commands use the same section.
-
-**After a failover**, the worker on the standby runs on the authorities that
-`agentcapsule-authority promote` wrote there, with the same identities
-([recovery.md](recovery.md#promote-the-replica)). They are standalone, under
-the next epoch, without this section: no standby exists, so every write
-proceeds, seals, new keys and key destruction included. With the section,
-the worker refuses to start (`authority_replica_not_armed`) until a snapshot
-arms them for a new standby. Fence receipts carry the epoch that signed them,
-inside their MAC: a receipt of the old primary is refused, and every boot and
-restore scans under the new epoch.
+- The link's section, `authority_replica`, is in the service's configuration
+  `/etc/agentcapsule/authority.json`, unchanged
+  ([recovery.md](recovery.md#install-the-replica)): the standby's address,
+  this host's certificate and key, the standby's pinned certificate, and
+  `degraded_after` (30 seconds by default, from 5 seconds to 10 minutes).
+- **Without it, the authorities are standalone.** That gives no protection
+  against the host's loss: its keys and its catalogue exist on this host only.
+  Once a snapshot has armed the authorities, the service refuses to start
+  without the section (`authority_replica_required`). With the section and
+  authorities never armed, it refuses too (`authority_replica_not_armed`).
+- **After a failover**, the service on the standby runs on the promoted
+  authorities, standalone, under the next epoch
+  ([recovery.md](recovery.md#promote-the-replica)). The worker there keeps the
+  same `authority` section: the identities do not change. Fence receipts carry
+  the epoch that signed them: a receipt of the old primary is refused, and
+  every boot and restore scans under the new epoch.
 
 **What a write does.** The restore authority's catalogue holds the log. A
 write commits its record in the same SQLite transaction as its effect. Then
-it sends the record and waits for the replica's acknowledgment. Every
-transaction, a read too, first checks that the replica holds every record
-already committed. If not, it sends them before it acts. So a record left by
-a crash, between the commit and the acknowledgment, reaches the replica
-before anything uses it. The replica refuses a gap in the sequence, a record
-of another epoch, and a resent record whose content changed. The log keeps a
-record only until the replica acknowledges it.
-
-A worker process that starts, or restarts, reaches the replica before it
-does anything with its authorities, reads included. A replicated write costs
-one round trip and the replica's fsync, on top of the local commit.
+the service sends the record and waits for the replica's acknowledgment.
+Every transaction, a read too, first checks that the replica holds every
+record already committed. A replicated write costs one round trip and the
+replica's fsync, on top of the local commit.
 
 ### Degraded mode
 
-ADR 005 (question 2) decides what happens when the standby does not answer.
+ADR 005 (question 2) decides what happens when the standby does not answer;
+[recovery.md](recovery.md#degraded-mode) says what the operator does.
 
 **For the first `degraded_after`** (30 seconds), every authority write
 waits for the standby, and fails when its attempt times out. Deliveries,
 boots, provisioning and removals retry.
 
-**Then the worker enters degraded mode.** Some writes continue without the
+**Then the service enters degraded mode.** Some writes continue without the
 standby; the others still wait:
 
 | Continue: they return once committed on this host | Wait for the standby |
@@ -398,62 +394,25 @@ standby; the others still wait:
 | Reads | — |
 
 A write that waits fails at its deadline with "degraded mode: this
-authority operation waits for the replica", and its job retries. The
-completion of a revocation waits: ADR 005's finding 1 was decided as option
-(a) on November 15, 2026.
+authority operation waits for the replica", and its job retries. A restore
+pauses ([Restoring an agent](#restoring-an-agent)). The completion of a
+revocation waits: ADR 005's finding 1 was decided as option (a) on November
+15, 2026.
 
-Nothing runs on a write of the second column that the standby lacks. If one
-was in flight when the standby stopped answering, every operation waits
-until the standby holds it.
+**When the standby answers again**, the service sends it what it lacks, in
+order, then leaves degraded mode by itself. Until then, those writes exist on
+this host only.
 
-**When the standby answers again**, the worker sends it what it lacks, in
-order: the writes of degraded mode first. Degraded mode ends once the
-standby holds the last of them. The worker keeps trying the standby, about
-once a second, so this happens even without a new operation.
+**A worker restart does not touch degraded mode**: the service keeps it. A
+restart of the service does: the restarted service cannot tell a standby
+that is down from one that was promoted (ADR 005, finding 2), so it runs no
+authority operation, reads included, until it reaches the standby.
 
-**The risk.** Until then, those writes exist on this host only. If it is lost
-during degraded mode, the outcomes recorded since it began are lost too, and
-the failover must announce that period as a time window
-([recovery.md](recovery.md#degraded-mode)). A revocation started in that
-period was never confirmed: its completion waited.
-
-**A restart in degraded mode** does not continue it. The restarted worker
-cannot tell a standby that is down from one that was promoted (ADR 005,
-finding 2). It runs no authority operation, reads included, until it
-reaches the standby, however long that takes. A worker whose standby
-refuses it (another epoch, a promotion) leaves degraded mode and fails
-every operation.
-
-### Metrics and alerts of the replica
-
-The metrics, on `metrics_listen`:
-
-| Metric | Meaning |
-| --- | --- |
-| `agentcapsule_authority_replication_enabled` | 1 in synchronous mode, 0 standalone |
-| `agentcapsule_authority_replication_committed_sequence` | Last record this worker committed locally |
-| `agentcapsule_authority_replication_acknowledged_sequence` | Last record the replica acknowledged to it |
-| `agentcapsule_authority_replication_lag_records`, `_lag_seconds` | Records committed and not acknowledged, and the age of the oldest |
-| `agentcapsule_authority_replication_last_error{kind}` | 1 for the last attempt's error kind; `none` after a success |
-| `agentcapsule_authority_replication_errors_total{kind}` | Failed attempts, by kind |
-| `agentcapsule_authority_replication_write_seconds` | Time from a record's local commit to its acknowledgment |
-| `agentcapsule_authority_replication_degraded_since_timestamp_seconds` | When degraded mode began, as a Unix time; 0 outside it |
-| `agentcapsule_authority_replication_degraded_waiting{kind}` | Operations waiting for the standby in degraded mode, by kind |
-| `agentcapsule_authority_replication_degraded_refused_total{kind}` | Operations that waited for the standby in degraded mode until their deadline, by kind |
-
-The error kinds are a closed list: `unreachable`, `timeout`, `protocol`,
-`replica_behind` (the replica lacks records the log no longer holds),
-`diverged` (the replica and this host disagree), `local`, and `refused_` plus
-the replica's reason (`gap`, `older_epoch`, `newer_epoch`, `conflict`,
-`promoted`, `identity`, `invalid`, `unavailable`). So are the operation
-kinds: `registration`, `reservation`, `loss`, `activation`, `seal`,
-`key_create`, `key_destroy`, `revocation_done`, and the ones degraded mode
-lets through, `outcome`, `rerun`, `fence`, `revocation_start`, `read`. A
-read or a delivery waits only behind a waiting write that the standby lacks.
-
-During degraded mode, `_lag_records` and `_lag_seconds` grow: they count the
-writes that exist on this host only. The alerts are
-`AgentCapsuleAuthorityDegraded`, `AgentCapsuleAuthorityOperationsRefused` and
+The metrics and alerts of the replica are the service's, on its
+`metrics_listen` (`127.0.0.1:9466`, the scrape job `agentcapsule-authority`):
+[observability.md](observability.md#metrics). The alerts are
+`AgentCapsuleAuthorityServiceDown`, `AgentCapsuleAuthorityDegraded`,
+`AgentCapsuleAuthorityOperationsRefused` and
 `AgentCapsuleAuthorityReplicationStopped`
 ([observability.md](observability.md#alerts)).
 
@@ -461,8 +420,8 @@ writes that exist on this host only. The alerts are
 
 After all distributed barriers, the worker seals execution on the host: no new
 boot, no remaining VMM and the file identity verified. With product
-provisioning configured, it then revokes the key in the local authority, then
-removes the single provisioned inode. A permanent journal keeps the
+provisioning configured, it then records the seal and destroys the key through
+the authority service, then removes the single provisioned inode. A permanent journal keeps the
 `REMOVING/REMOVED` steps; it forbids reformatting or recreating this identity
 after an interruption. A replaced file, an extra link or a busy lock makes the
 operation fail. The registries, tombstones and reserved UIDs are kept.
@@ -498,8 +457,9 @@ between its passes: it is never stopped for it. Add to its configuration:
 }
 ```
 
-This section needs `provisioning` and both authorities. The worker checks it at
-start:
+This section needs `provisioning` and the `authority` section. The worker checks
+it at start, and checks the root against the authorities' directories at each
+capture:
 
 | Field | Default | Allowed | Meaning |
 | --- | --- | --- | --- |
@@ -570,9 +530,10 @@ and the standby ([recovery.md](recovery.md#volume-archives-off-the-host-rec-02))
 
 The operator can also capture one agent by hand, with the same worker
 configuration and the same protected PostgreSQL environment. This mode requires
-product provisioning and both independent authorities. It is a separate
-process: first stop the maintenance worker so that it releases its listeners;
-its VMs may stay present and will be reconciled by this command. Restart
+product provisioning and the authority service, which it reaches like the
+maintenance worker. It is a separate process: first stop the maintenance
+worker so that it releases its listeners, not for the authorities; its VMs may
+stay present and will be reconciled by this command. Restart
 maintenance after the capture. The targeted agent stays stopped on exit and can
 be woken through the usual paths. Nightly archives do not need this.
 
@@ -617,8 +578,9 @@ all key copies.
 The operator can restore one agent of this host from one of its archives, into
 a new incarnation, with the same worker configuration and protected PostgreSQL
 environment. Like the archive on demand, it is a separate process: stop the
-maintenance worker first, and restart it after. It needs product provisioning,
-both authorities, and a restore authority catalogue at version 2.
+maintenance worker first, for its listeners, and restart it after. It needs
+product provisioning, the authority service, and a restore authority catalogue
+at version 2.
 
 ```sh
 /opt/agentcapsule/agentcapsule-worker \
@@ -637,6 +599,11 @@ identifier replaces an unfinished restore that has not activated. The worker
 prints a receipt with the new incarnation, the number of declared losses and
 the number of lost invocations and agent-to-agent events that run again, or
 `restore_failed_<reason>`.
+While the authorities do not answer (the service restarts, or waits for the
+standby in degraded mode), the restore pauses: it logs `restore_paused` with
+the reason, then resumes by itself from its last durable step. A refusal of
+the authorities still ends it. `SIGINT` stops a paused restore; the same
+command resumes it later.
 See
 [Restoring an agent from an archive](recovery.md#restoring-an-agent-from-an-archive)
 for the steps, the losses, their reruns and the crashes.

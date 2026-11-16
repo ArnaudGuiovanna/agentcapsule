@@ -1,20 +1,21 @@
 # Go API: installation, accounts and agents
 
-This executable part provides accounts, personal tokens, agent reservation,
-operation tracking, wake/sleep commands, encrypted instructions, consent, and
-private reading of requests and responses. The end-to-end agent-to-agent
-business flow is still in progress (see the [roadmap](../../ROADMAP.md)); this
-API must not be presented as the complete PaaS.
+The API serves organizations: the platform operator's administration
+([organizations.md](organizations.md)), and each organization's members,
+teams, agents, invocations and models ([tenant authentication](tenant-identity.md),
+[member management](members.md), [teams](teams.md),
+[agents-assignments.md](agents-assignments.md)). A new installation follows
+[bootstrap.md](../bootstrap.md), from an empty database to an organization's
+first owner.
 
-The organization domains are documented separately:
-[platform administration](organizations.md),
-[tenant authentication](tenant-identity.md), [member management](members.md)
-and [teams](teams.md).
-Their credentials grant no rights on the legacy routes described below.
-Tenant agents and their assignments are described in
-[agents-assignments.md](agents-assignments.md). What every role and kind of
-caller gets on every route is in the [authorization matrix](rbac.md), which a
-test checks.
+What every role and kind of caller gets on every route is in the
+[authorization matrix](rbac.md), which a test checks.
+
+Where this page speaks of owners, personal tokens, user or service tokens
+(`acp_`), `/v1/users` or `/v1/me`, it describes the historical single-owner
+accounts. That legacy owner domain is closed: `agentcapsule-api` refuses its
+tokens, and no command creates them. Its code remains for tests until they move to
+organizations ([ADR 001](../adr/001-organization-identity.md#tenant-transition-and-operator-bootstrap-d-01)).
 
 ```sh
 go build -trimpath -o bin/agentcapsule-admin ./cmd/agentcapsule-admin
@@ -22,14 +23,16 @@ go build -trimpath -o bin/agentcapsule-api ./cmd/agentcapsule-api
 ```
 
 Provide `AGENTCAPSULE_DATABASE_URL` through the service's protected
-environment. The installation command is local; it is not an HTTP endpoint.
-First create a private directory owned by the account that will run the API:
+environment. The installation commands are local; they are not HTTP
+endpoints. First create a private directory owned by the account that will run
+the API:
 
 ```sh
 install -d -m 700 "$HOME/.local/state/agentcapsule"
-bin/agentcapsule-admin bootstrap \
+bin/agentcapsule-admin migrate
+bin/agentcapsule-admin bootstrap-platform \
   -receipt-key-file "$HOME/.local/state/agentcapsule/receipt.key" \
-  -token-file "$HOME/.local/state/agentcapsule/admin.token"
+  -token-file "$HOME/.local/state/agentcapsule/platform.token"
 bin/agentcapsule-api \
   -receipt-key-file "$HOME/.local/state/agentcapsule/receipt.key" \
   -host-id local \
@@ -46,12 +49,12 @@ Add `-metrics-listen 127.0.0.1:9464` to serve Prometheus metrics on loopback
 ([observability.md](../observability.md)). Each request writes one JSON event,
 with its `X-Request-ID`, on standard output.
 
-Bootstrap applies the migration and writes the secrets to private files
-without printing them. Retrying with the same files confirms the same token
-without extending its lifetime. After an unknown commit result, keep these
-files and rerun the same command. Existing files are never overwritten. Do not
-replace the receipt key: it is needed to re-read idempotent responses, notably
-the issuance of a personal token.
+`bootstrap-platform` applies the migrations and writes the secrets to private
+files without printing them. Retrying with the same files confirms the same
+token without extending its lifetime. After an unknown commit result, keep
+these files and rerun the same command. Existing files are never overwritten.
+Do not replace the receipt key: it is needed to re-read idempotent responses,
+notably the issuance of a service account token.
 Its fingerprint is bound to the installation; a lost or replaced file cannot
 silently reset this key. The API refuses to start with a different key, and its
 readiness probe also checks this binding.
@@ -90,10 +93,11 @@ after the closure or the death, and purges on the same pass once a deadline
 has passed.
 
 **Credential rotation and revocation.** `agentcapsule-admin list-credentials`
-prints, without secrets or fingerprints, the platform and service credentials
-(type, identifier, account, expiry, state). `agentcapsule-admin revoke-credential
--kind platform|service -id <id>` permanently and idempotently revokes one. To
-replace it, rerun `bootstrap-platform` or `bootstrap` with a **new** token file:
+prints, without secrets or fingerprints, the platform credentials (and the
+legacy service credentials of a test database): type, identifier, account,
+expiry, state. `agentcapsule-admin revoke-credential -kind platform -id <id>`
+permanently and idempotently revokes one, and audits it. To replace it, rerun
+`bootstrap-platform` with a **new** token file:
 a secret that was already stored is never accepted again, and a second active
 credential is refused. An expired credential is replaced the same way. Permanent
 errors are reported with a `..._rejected_<reason>` code, and only an unknown
