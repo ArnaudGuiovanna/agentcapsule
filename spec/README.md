@@ -11,7 +11,11 @@ The models are design documentation, not a proof of the Go code. The link to
 the code is made by conformance tests: traces generated from some models are
 replayed against the real implementation and PostgreSQL in
 `internal/controlplane/*_itf_test.go`, with the traces checked in under
-`internal/controlplane/testdata/`. Section numbers (`§6.3`, …) in model headers
+`internal/controlplane/testdata/`, and Go tests named after a run
+(`TestFooBar` for `fooBarTest`) drive the code through that run's steps.
+[projections.md](projections.md) lists every run and witness with the Go
+tests that project it, or why none does; `scripts/check-model-projections.py`
+fails when a run or witness is missing from it. Section numbers (`§6.3`, …) in model headers
 refer to the original design specification, which is not published.
 
 ## Running
@@ -29,7 +33,8 @@ npx quint verify --main=invocationCompletion --init=init --step=step \
   --invariant=safety --max-steps=10 invocation_completion.qnt
 ```
 
-`npm run typecheck` checks every model; CI runs it on each change.
+`npm run typecheck` checks every model; CI runs it on each change, and
+`scripts/check-repo-hygiene.py` checks [projections.md](projections.md).
 
 Runs are checked with `quint test`. A witness module of `restore_witness.qnt`
 is either a guard (`run guardTest`, a `quint test`) or a fixed schedule
