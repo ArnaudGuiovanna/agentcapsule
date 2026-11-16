@@ -130,6 +130,45 @@ func TestOperatorCommandsAreDryRunAndAudited(t *testing.T) {
 	}
 }
 
+// A stuck reservation of an organization's agent can be abandoned too. Its
+// audit stays: the agent is not erased but ends DELETED, its provisioning
+// canceled, its reservation freed for the organization's next agent.
+func TestAbandonProvisioningRetiresAStuckTenantAgent(t *testing.T) {
+	l, c, owner := agentLab(t)
+	id := createTenantAgent(t, c, owner, "stuck")
+	out, err := l.s.AbandonProvisioning(t.Context(), testOperator, id)
+	if err != nil || out.Outcome != "done" {
+		t.Fatal("abandon a tenant agent", out, err)
+	}
+	var phase, status, code string
+	if err = l.s.pool.QueryRow(t.Context(), `SELECT a.phase,o.status,o.error_code FROM agents a JOIN platform_operations o ON o.agent_id=a.id
+        WHERE a.id=$1 AND o.kind='provision'`, id).Scan(&phase, &status, &code); err != nil {
+		t.Fatal(err)
+	}
+	if phase != "DELETED" || status != "CANCELED" || code != "provisioning_abandoned" {
+		t.Fatal("abandoned agent", phase, status, code)
+	}
+	var left int
+	if err = l.s.pool.QueryRow(t.Context(), `SELECT (SELECT count(*) FROM worker_jobs WHERE agent_id=$1)+(SELECT count(*) FROM store_enrollments WHERE agent_id=$1)`, id).Scan(&left); err != nil || left != 0 {
+		t.Fatal("work or enrollment left", left, err)
+	}
+	page, err := l.a.ListAudit(t.Context(), owner, "", 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept := false
+	for _, e := range page.Items {
+		kept = kept || e.Target == id && e.Action == "agent.created"
+	}
+	if !kept {
+		t.Fatal("the organization's audit lost the agent's creation")
+	}
+	if _, err = l.s.AbandonProvisioning(t.Context(), testOperator, id); !errors.Is(err, ErrTransition) {
+		t.Fatal("abandoned twice", err)
+	}
+	createTenantAgent(t, c, owner, "next")
+}
+
 // The audit retention (TEN-06, product §7): every event is kept until the
 // operator sets one. Then the worker's purge deletes the older events only,
 // and records that it did.
@@ -228,6 +267,37 @@ func TestInvocationBacklogCountsWaitingInvocations(t *testing.T) {
 	}
 	if n, _, err = s.InvocationBacklog(t.Context(), "other"); err != nil || n != 0 {
 		t.Fatal("another host's backlog", n, err)
+	}
+}
+
+// An organization's queue limits are an administrative action of its own:
+// GET /v1/audit and the export show their change (TEN-009).
+func TestAuditShowsQueueLimitChanges(t *testing.T) {
+	l, _, owner := agentLab(t)
+	if _, err := l.a.SetQueueLimits(t.Context(), owner, "limits", QueueLimits{MaxPendingPerAgent: 10, MaxPendingTenant: 20}); err != nil {
+		t.Fatal(err)
+	}
+	page, err := l.a.ListAudit(t.Context(), owner, "", 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := 0
+	for _, e := range page.Items {
+		if e.Action == "queue.limits.set" && e.Actor == owner.ID && e.Target == owner.TenantID {
+			found++
+		}
+	}
+	export, err := l.a.ExportAudit(t.Context(), owner, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range export.Items {
+		if e.Action == "queue.limits.set" {
+			found++
+		}
+	}
+	if found != 2 {
+		t.Fatal("the queue limits' change is not in the audit", found, page.Items)
 	}
 }
 

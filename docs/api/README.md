@@ -66,7 +66,10 @@ undeletable, and the owner could not reserve another one.
 while no physical resource exists: step `INSTALLING`, no registered volume, no
 placement, no seal and no active work lease. Beyond that point the command
 refuses and regular deletion applies. A volume file that was created and then
-lost before being registered is not tracked: the operator removes it.
+lost before being registered is not tracked: the operator removes it. An
+organization's agent is not erased, since its audit trail names it: it ends
+`DELETED`, its provisioning `CANCELED` with `provisioning_abandoned`, and its
+reservation no longer counts against the host.
 
 **Destructive operator commands** ([ADR 014](../adr/014-operations-capacity-diagnostics-audit.md)).
 `revoke-credential`, `abandon-provisioning`, `set-audit-retention` and
@@ -89,8 +92,8 @@ storage_pressure` and `Retry-After`, before any reservation.
 
 **Tenant audit trail.** `GET /v1/audit` (scope `audit:read`, role `org_owner`,
 `org_admin` or `auditor`) lists the organization's events with an opaque
-cursor: members, teams, agents, assignments, service accounts and organization
-lifecycle. Each event carries only the actor, the action, the target and a
+cursor: members, teams, agents, assignments, service accounts, queue limits
+(`queue.limits.set`) and organization lifecycle. Each event carries only the actor, the action, the target and a
 reference: never a token, a secret or content. An event is written only in the
 transaction of the mutation it describes.
 

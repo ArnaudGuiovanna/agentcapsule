@@ -364,7 +364,7 @@ paths:
       description: >-
         Requires audit:read and current role org_owner, org_admin or auditor.
         Tenant events only (members, teams, agents, assignments, service
-        accounts, organization), in stable order, with an opaque cursor.
+        accounts, queue limits, organization), in stable order, with an opaque cursor.
         Metadata only: actor, action, target and reference. Never a token,
         secret, prompt or content.
       security: [{delegatedBearer: []}, {serviceBearer: []}]
