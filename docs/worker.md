@@ -141,6 +141,26 @@ cannot read v2.
 This first coordination assumes that all manifest stores are on the same host.
 It does not prove a real delay or the success of each request: an expiration or
 a final failure is possible, and a notification can also exhaust its attempts.
+
+**What follows a dead delivery** ([ADR 007](adr/007-delivery-closure-and-priority.md)).
+A reply, status or instruction dies when its three attempts are spent or its
+deadline (7 days for a reply or status, the TTL for an instruction) passes. A
+delivery past its deadline, or out of attempts, to a live agent is retired
+without preparing that agent, so an agent that never boots does not keep it,
+nor its mailbox, alive. One to an agent being deleted is canceled by the
+deletion. Retiring it fences the agent's store only if an attempt may have
+reached it: such a delivery waits, closing, for the agent to boot for that
+barrier. One that no attempt reached dies at once, without the agent. Then:
+- the request keeps its state: a replied request stays `REPLIED`;
+- the reply stays readable by the sender's agent for 7 days from the death,
+  through the request's status read on the platform channel, then is purged;
+- an instruction fails (`delivery_failed`, or `delivery_outcome_unknown` when
+  an attempt may have reached the agent), and its requester sees it as a dead
+  letter;
+- the operator is told: `agentcapsule_worker_deliveries_dead_total`, the event
+  `delivery_dead` and, for a reply or status, the alert
+  `AgentCapsuleDeliveryDead` ([observability.md](observability.md)).
+
 Eviction can interrupt the guest's computation; the SQLite intent survives, but
 its general wake and a sufficient residence time are not yet guaranteed. The
 FIFO model checks a three-client component, under weak fairness and callback

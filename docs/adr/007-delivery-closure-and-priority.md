@@ -1,8 +1,10 @@
 # D-04 — Delivery closure and priority
 
 Date: November 16, 2026. **Status: decided by the product owner on November
-16, 2026** (see [Decision](#decision)). This record states the two decisions,
-what the code does today, what must change, and what the models say.
+16, 2026** (see [Decision](#decision)); **built on November 16, 2026**: §2
+items 1 to 6 (see [What was built](#6-what-was-built)). This record states the
+two decisions, what the code did when they were taken, what changes, and what
+the models say.
 References: product spec §3, EVT-005, EVT-006 and §5
 ([product.md](../product.md)), EVT-02 and D-04 of the
 [roadmap](../../ROADMAP.md), the models
@@ -49,6 +51,9 @@ D-04 asked two questions:
      problem.
 
 ## 1. Today's behaviour
+
+This section is the code when the decisions were taken. §2 says what changed;
+§6 what was built.
 
 ### How a delivery to A dies
 
@@ -192,6 +197,7 @@ that fails without it.
    - Docs: the "no purge deadline" sentence of
      [api/README.md](../api/README.md#private-exchanges-and-consent) no
      longer covers replies.
+   - **Built** as written (`markDead`, `delivery.go`).
 2. **Let A's agent read its reply.** `/v1/agent-requests/{id}/status` on the
    platform channel also returns the reply to the sender, while the request is
    `REPLIED` and the reply is kept. It reads it through the transit with the
@@ -219,6 +225,14 @@ that fails without it.
    - Why a read and not a second delivery: dead is final in both models
      (§3). Sending the reply again would be a new event the models do not
      have, and it would bring back the loop that bounded attempts remove.
+   - **Built** as written: `Transit.RequestStateFromVM`
+     (`peer_reads.go`), `reply` and `reason` on
+     `capsuleprotocol.RequestStatus` (the client refuses a malformed reply),
+     the worker's read through its transit, capsule-adapter's refresh. A
+     host without the transit, or an older one, still answers without the
+     reply: the task then waits for the event, as before. The guest relays
+     this read (`capsule-init` is built with `internal/capsuleprotocol`):
+     the reply reaches capsule-adapter once the guest is rebuilt.
 3. **Tell the operator.** The metric, event and alert of §4. The retirement
    reports a death, with its reason, to the dispatcher, which counts and logs
    it after the commit. Size: small, about 60 lines of Go, one rule in
@@ -231,21 +245,74 @@ that fails without it.
      fires `AgentCapsuleDeliveryDead`; none keeps it silent.
      `scripts/verify-alerts.py` fails until the metric is registered.
    - Docs: [observability.md](../observability.md) (metrics, events, alerts).
+   - **Built** as written, as `controlplane.DeathObserver`: the retirement
+     reports each death once it has committed; the worker counts and logs it.
+     Every series of the counter is served from zero, so that `increase()`
+     sees the first death. The job that retired the delivery still logs
+     `job_done`. `TestDeliveryDeathsAreReported` checks the report with and
+     without the fence. The worker's test runs with no host: both deliveries
+     die without booting their agent (item 5).
 4. **Say what follows a death.** [worker.md](../worker.md) says a
    notification "can also exhaust its attempts" and stops there. It then says:
    the request keeps its state, the reply stays readable by A for 7 days, the
    operator is told. Size: a paragraph, with items 1 to 3.
+   - **Built**, with item 5: "What follows a dead delivery".
+5. **Let a delivery to an A that never boots die.** Asked by the product
+   owner on November 16, 2026, after this record first listed it under "Not
+   changed". Preparation spends no attempt (`control_linux.go:104-107`) and
+   the deadline was checked only inside a claim (`delivery.go:152-154`,
+   `instruction_delivery.go:128-130`), which needs a prepared A. So a reply,
+   status or instruction to an A that never boots never died, an instruction
+   stayed `accepted` past its TTL, and its job was retried with backoff for
+   good, against EVT-005 and EVT-006.
+   - The dispatcher checks, before preparing A, whether a reply, status or
+     instruction is due to die: closing, past its deadline, or out of
+     attempts with no live lease (`retirementDue`). If so, and A is live, it
+     retires it without preparing A. A request is still closed by its own
+     closure, and a delivery to an A being deleted is still canceled by the
+     deletion, with no one to tell (`TestExpiredDeliveryToADeletedAgentIsCanceled`).
+     Preparation still spends no attempt: a recipient that cannot boot must
+     not use up the budget before its deadline.
+   - The retirement fences A's store only if an attempt may have reached it
+     (`may_have_reached`). When none was ever allowed to, none can be now:
+     `AuthorizeDispatch` and `AuthorizeInstruction` need a current lease on
+     an open delivery before its deadline, and the retirement holds the row.
+     There is no delayed send to fence, so the delivery dies in that
+     transaction, without booting A and without a revocation subject. A dead
+     reply starts its retention (item 1) and A reads it when it comes back
+     (item 2); an instruction fails (`delivery_failed`, `close_reason`
+     `expired`) and its input starts its retention; a rerun's mandate is
+     revoked, and a rerun whose requester lost the right is skipped, as a
+     claim would. The death is counted (item 3) with reason `expired`, or
+     `attempts_exhausted` for attempts claimed but never sent.
+   - A delivery an attempt may have reached still waits for its fence: a
+     delayed send could otherwise apply it after its death
+     (`leased_delivery.qnt`, `noLateEffect`). It is closing, so never sent
+     again, and it dies once A boots for the barrier (a restricted boot that
+     accepts barriers only).
+   - Tests: `TestExpiredDeliveryDiesWithoutItsRecipient` (PostgreSQL; a
+     reply, a status and an instruction to an agent that never boots die at
+     their deadline without a claim or a fence; the agent reads its dead
+     reply when it returns). Without the change the expired delivery waits
+     for its recipient. `TestExpiredDeliveryThatMayHaveReachedWaitsForItsFence`
+     documents the case left to the fence. The models gain the action (§3).
+6. **End the A2A task on a revoked reply's status.** When B is deleted before
+   its reply reached A, A gets a `REPLIED` status without content, reason
+   `content_revoked` (`revocation.go:305-340`). capsule-adapter ignored a
+   `REPLIED` status (`engine.go:221-226`), so the task stayed `WORKING`. It
+   now ends `COMPLETED` with no artifact and the reason in its metadata, as
+   item 2 says for a reply without content. Test:
+   `TestARevokedReplyEndsTheTask` (agentadapter); without the change the task
+   stays `SUBMITTED` when the platform no longer answers, `WORKING` when it
+   does.
 
 Not changed:
 
 - **`sender_notified`** stays false after a death. It means "A received it",
   and B's deletion relies on it to send A a status without content
   (`revocation.go:305-340`).
-- **An A that never boots.** Its delivery waits without spending attempts and
-  never dies. The operator already sees `AgentCapsuleVMBootFailures` and
-  `AgentCapsuleJobsFailing`. The progress model assumes a store comes back
-  (`RECOVERY`); it promises nothing for one that never does. Item 2 covers the
-  late return: A reads its reply even if the delivery died when it came back.
+- **Preparation spends no attempt.** Item 5 makes the deadline independent
+  of A's boot instead.
 - **Attempts and deadline.** 3 attempts and 7 days stay. Option (c) was
   rejected.
 
@@ -253,7 +320,7 @@ For decision 2, only the docs change (§5).
 
 ## 3. The models
 
-### Decision 1: no change
+### Decision 1, items 1 to 4 and 6: no change
 
 "Closed as replied, reply kept, delivery dead" is already a state of both
 models.
@@ -284,6 +351,57 @@ models do not hold content, so retention is outside them.
 The two models use `notified` for two things. In P3 it means the notification
 ended (`Acked`, `Dead` or `Cancelled`). In P1 it means A received it. This
 record says "ended" and "received".
+
+### Item 5: the death at the deadline is now a model action
+
+It was not one. In P3 a notification died only after `MAX_ATTEMPTS` failed
+attempts, each needing its store available (`notify`), then
+`retireNotification`, which needs the store and the slot; `deadline` closes
+requests only. In P1 `beginRetire` needs `attempts == ATTEMPTS`, and
+`retire` needs the destination's fence acknowledgment (`WAIT_ALL`), which
+needs the store alive or sealed (`canFence`). Neither model had a deadline
+for a reply or status, nor a death without the store. Both gain one
+(November 16, 2026):
+
+- **P3, `service_progress.qnt`.** `expireNotification(i)`: the head
+  notification's deadline passes. One never attempted (`attempts == 0`)
+  becomes `Dead` at once, without its store or a slot; one attempted becomes
+  `RetiringDead` and waits for `retireNotification`, as an exhausted one.
+  It is not assumed fair: no progress property relies on it, and
+  `notificationTerminates` can only gain from it. The reliable instance,
+  which promises receipt (`successfulDelivery`), has no deadline. Runs:
+  `scenario20Test` (an unattempted notification dies while its store is
+  lost; the sender's owner still observes the outcome), `scenario21Test`,
+  `refusal21x0Test` and `scenario21x1Test` (an attempted one waits for its
+  store).
+- **P1, `concurrent_protocol.qnt`.** An event records `sent` once an RPC is
+  allowed to carry it (`authorize`; `may_have_reached` in SQL).
+  `expireEvent(e)`: a reply's or status's deadline closes it, whatever its
+  attempts and lease. `retireUnsent(e)`: a closing event never sent becomes
+  `DeadEvent` without its destination's fence. Closing, it can be neither
+  claimed nor authorized, so no effect of it can begin. Two invariants join
+  `safety`: `unsentInert` (an event never sent has no effect and no RPC past
+  its claim) and `noLateEffect` (no effect is applied to a dead event, as in
+  `leased_delivery.qnt`). Runs: `expiredUnsentReplyTest` (the reply dies
+  while A is stopped, with no fence receipt; the request stays `Replied`,
+  not received), `expiredSentReplyWaitsForFenceTest`,
+  `expiredSentReplyRetiredAfterFenceTest`, and
+  `unfencedRetireAllowsLateEffectTest`: retiring a sent event without its
+  fence lets its RPC apply it after its death, which `noLateEffect`
+  refuses. That is why item 5 fences a delivery an attempt may have
+  reached.
+
+Checks run (spec/README.md), evidence under
+`quint/results/quint-delivery-reliability/`: every model typechecks; the
+`quint test` runs of P1 (29), P3 (35), the P1 prefixes, the loaded state and
+the five witness guards pass; `quint run` finds no `safety` violation in
+P3's five instances (200,000 samples of 40 steps each), in
+`concurrentProtocolFour` (100,000 of 40) and from P1's loaded state (50,000
+of 30). Not run here, for want of a Java runtime: Apalache (`quint verify`)
+and TLC, so neither P1's exhaustive depth-bounded safety
+(`concurrent_bounded.qnt`) nor the temporal properties of P3. The P1 and P3
+conformance fixtures under `internal/controlplane/testdata/` pin their own
+copies of the models and are unchanged.
 
 ### Decision 2: no change
 
@@ -323,6 +441,8 @@ notifications are P1 (EXT-005, EXT-007). Four forms were considered.
   as dead letters (`?state=failed|expired`).
 - A worker that stops between the commit and the count loses one count. The
   dead delivery in PostgreSQL stays the record.
+- Built (item 3): every series of the counter is served from zero, so that
+  the alert's `increase()` sees the first death of each kind and reason.
 
 "The administrator" is the installation's operator, the one person with a
 channel for platform events in the MVP: the product owner confirmed this on
@@ -343,5 +463,56 @@ Decision 2:
 Left as they are, because they stay true: `openapi/openapi.yaml:1306-1307` and
 `internal/controlplane/instruction_queues.go:27-30` ("there is no priority").
 
-Decision 1 changes no doc yet: the docs describe the code, and the code
-changes with items 1 to 4.
+Decision 1 changed, with the code: [worker.md](../worker.md) ("What follows
+a dead delivery"), [observability.md](../observability.md),
+[adapter.md](../adapter.md) ("Waiting for the answer"),
+[interop.md](../interop.md) (the `REPLIED` row of "A2A states"),
+[agents-assignments.md](../api/agents-assignments.md) (the `/status` read)
+and [api/README.md](../api/README.md) (transit retention).
+
+## 6. What was built
+
+On November 16, 2026, on the branch `delivery-reliability`: §2 items 1 to 6,
+the docs of §5, the model actions of §3, and a fix found on the way: a
+request between an organization's agents, its reply and its status no longer
+write inbox items with an empty `user_id` (`requests.go`, `closure.go`), rows
+nobody read.
+
+Validation: the unit tests of the packages changed, with `-race`; the
+PostgreSQL campaign `scripts/verify-postgres.py`, passed (1,126 tests in the
+integration phase, among them every test named above, then the crash and
+recovery phases; local evidence
+`quint/results/verify-postgres-delivery-reliability`);
+`scripts/verify-alerts.py` with promtool (Prometheus 3.5.0), passed; the
+model checks of §3, passed. The product guest was rebuilt without root
+(`quint/results/product-guest-build-v21`). Not yet run: a KVM campaign with
+that guest, since the guest relays the status read of item 2 (see
+Remaining).
+
+Remaining:
+
+- **A KVM run** of the product guest rebuilt from this branch (its
+  `capsule-init` relays the status read) and of the a2a-agent harness
+  rebuilt with the new capsule-adapter: `TestProductWorkerTenantAgentsTalkOverA2A`,
+  and the dispatch tests that retire deliveries through a real worker and
+  guest (`TestDispatchServiceRequestReplyAndNotification`,
+  `TestDispatchPreparationAndOneSlotCapacity`,
+  `TestDispatchServiceClosureExpirationAndDeletion`,
+  `TestDispatchWorkerCrashRecovery`).
+- **A delivery an attempt may have reached, to an A that never boots again,**
+  stays closing until A boots for its fence (item 5). Dying without it
+  could let a delayed send apply it (`noLateEffect`). If the fence boot
+  itself never succeeds, the operator sees `AgentCapsuleVMBootFailures` and
+  `AgentCapsuleJobsFailing`.
+- **A request to a B that never boots.** Its closure at its deadline (the
+  `expiration` job) fences every store of the installation
+  (`request_closure_targets`; `closedSafe` in P1), so it waits for B, or any
+  other agent that never boots, to boot for that barrier; the request stays
+  `DELIVERING` meanwhile. Item 5 does not change requests.
+- **Request content closed before delivery is never purged.** A request
+  refused, canceled or expired before it reached B keeps its private content
+  without a purge deadline ([api/README.md](../api/README.md)). Fixing it
+  touches every closure path (decline, cancellation, expiration, failure),
+  none of which holds the transit's retention, and needs a choice of when
+  retention starts: a separate change.
+- **TLC and Apalache** checks of the revised P1 and P3 (§3).
