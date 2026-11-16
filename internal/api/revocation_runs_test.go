@@ -59,6 +59,11 @@ type replicatedAuthority struct {
 	replica *restoreauthority.Replica
 	link    *standbyLink
 	api     *authorityclient.API
+	// The directory of both hosts' authorities and the unlock key, for a
+	// failover (reconciliation_runs_test.go).
+	dir    string
+	keys   *keyauthority.Files
+	unlock *authoritylog.UnlockKey
 }
 
 func newReplicatedAuthority(t *testing.T) *replicatedAuthority {
@@ -74,7 +79,11 @@ func newReplicatedAuthority(t *testing.T) *replicatedAuthority {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { catalog.Close() })
-	_, recipient, err := authoritylog.GenerateUnlockKey()
+	text, recipient, err := authoritylog.GenerateUnlockKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlock, err := authoritylog.ParseUnlockKey(text)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +96,7 @@ func newReplicatedAuthority(t *testing.T) *replicatedAuthority {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { replica.Close() })
-	a := &replicatedAuthority{catalog: catalog, replica: replica, link: &standbyLink{target: replica}}
+	a := &replicatedAuthority{catalog: catalog, replica: replica, link: &standbyLink{target: replica}, dir: dir, keys: keys, unlock: unlock}
 	if err = svc.LinkTo(ctx, catalog, keys, a.link, authoritylog.MinDegradedAfter); err != nil {
 		t.Fatal(err)
 	}

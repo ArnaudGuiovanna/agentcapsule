@@ -391,6 +391,12 @@ func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 		probe, cancel := context.WithTimeout(r.Context(), authorityProbe)
 		mode, err := s.authority(probe)
 		cancel()
+		if errors.Is(err, controlplane.ErrNotReconciled) {
+			// After a failover, until agentcapsule-admin reconcile has run
+			// for the service's epoch (ADR 006 §7, REPLAY_FIRST).
+			problem(w, 503, "authority_not_reconciled")
+			return
+		}
 		if err != nil {
 			problem(w, 503, "authority_unavailable")
 			return
