@@ -22,9 +22,27 @@ paths:
   /v1/health/ready:
     get:
       security: []
-      description: Internal endpoint. Checks the database and the expected schema.
+      description: >-
+        Internal endpoint. Checks the database, the expected schema and the
+        receipt key and, when the API runs with the authority service (always
+        in production, ADR 006), that the service answers with the pinned
+        identities: 503 authority_unavailable otherwise. Reports the
+        service's mode; degraded mode and the wait for the standby do not
+        make the API unready.
       responses:
-        '200': {description: "Database and schema available"}
+        '200':
+          description: "Database, schema and authority service available"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: {type: string, enum: [ready]}
+                  authority:
+                    type: string
+                    enum: [standalone, synchronous, degraded, waiting]
+                    description: The authority service's mode; absent in development mode without the service.
         '503': {$ref: '#/components/responses/Problem'}
   /v1/organizations:
     get:

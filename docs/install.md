@@ -16,11 +16,13 @@ Every process (`agentcapsule-api`, `agentcapsule-worker`,
 | Value | Mode | What it allows |
 |---|---|---|
 | unset or `production` | Production | Only the hops of the table below. |
-| `development` | Development | Plain HTTP for the API on a loopback address, a PostgreSQL connection without TLS, a local registry rule, a model provider on plain HTTP at an address the operator allows ([below](#model-providers-on-internal-addresses)). |
+| `development` | Development | Plain HTTP for the API on a loopback address, a PostgreSQL connection without TLS, a local registry rule, a model provider on plain HTTP at an address the operator allows ([below](#model-providers-on-internal-addresses)), the API without the authority service. |
 
 Any other value stops the process (`mode_invalid`). In development, each
 process writes `development_mode_clear_text_allowed_never_use_in_production`
-on standard error at every start. Development mode never weakens VM isolation:
+on standard error at every start. An API without the authority service
+writes `development_mode_without_authority_service_never_use_in_production`
+too. Development mode never weakens VM isolation:
 the worker runs the same host checks in both modes.
 
 ## Every hop of a production install
@@ -36,7 +38,8 @@ the worker runs the same host checks in both modes.
 | SLIM bridge → SLIM node | Mutual TLS 1.3, with a client certificate from a separate SLIM CA, on loopback. The bridge refuses a node URL that is not `https`. | [slimbridge config](../runtime/slimbridge/config.example.json), [slim.yaml](../deploy/interop/slim.yaml) |
 | Worker → model providers | HTTPS, with the system's CAs, to public addresses only unless the operator allows an internal one. No redirect, no environment proxy. Production refuses a provider URL on plain HTTP before anything is sent (`rejected`). | The organization's providers ([llm.md](api/llm.md)); internal ones in the worker's `llm` section ([below](#model-providers-on-internal-addresses)) |
 | Worker → OCI registries | HTTPS. Credentials are sent only in answer to a challenge. Production refuses a `local` rule, which uses plain HTTP. | Worker `registry` section ([registry.md](registry.md)) |
-| Worker → authority replica | Mutual TLS 1.3 with pinned self-signed certificates bound to this host's authorities. | Worker `authority_replica` section ([worker.md](worker.md#replica-of-the-authorities)) |
+| Worker, API → authority service | Two Unix sockets, on the same host. The service checks the peer's account on every connection: root on the worker's, the API's account (`api_uid`) or root on the API's. Each client pins both authorities' identities. | Worker `authority` section ([worker.md](worker.md)), the API's `-authority-socket` and identities ([docs/api](api/README.md#the-authority-service)) |
+| Authority service → its replica | Mutual TLS 1.3 with pinned self-signed certificates bound to this host's authorities. | `authority_replica` in `authority.json` ([recovery.md](recovery.md#install-the-replica)) |
 | pgBackRest → S3 | HTTPS, the server verified (pgBackRest's default). The data is encrypted before it leaves the host. | [deploy/backup/pgbackrest.conf](../deploy/backup/pgbackrest.conf) |
 | pgBackRest and the archive shipper → standby | SFTP over SSH, the standby's host key checked against a pinned `known_hosts`. The data is encrypted before it leaves the host. | [deploy/backup](../deploy/backup) |
 | Archive shipper → S3 | HTTPS, through an rclone crypt remote. | [rclone.conf.example](../deploy/backup/rclone.conf.example) |
@@ -199,12 +202,18 @@ That is RUN-012: no Firecracker without them.
 ```sh
 AGENTCAPSULE_DATABASE_URL=... agentcapsule-api -receipt-key-file ... -host-id ... \
   -listen 0.0.0.0:8443 -tls-cert /etc/agentcapsule/api.crt -tls-key /etc/agentcapsule/api.key \
-  -tls-server-name api.example.net -preflight
+  -tls-server-name api.example.net \
+  -authority-socket /run/agentcapsule-authority/api.sock -restore-authority-id ... -key-authority-id ... -preflight
 ```
 
 It checks the mode, the certificate (`api_certificate`), the listen addresses
 (`api_listen`, `metrics_listen`: free, so run it before starting the API), the
-receipt key file, the clock and PostgreSQL.
+receipt key file, the authority service (`authority`), the clock and
+PostgreSQL. `authority` fails when the flags are missing in production, when
+the service does not answer on the socket, when this account may not open it
+(not in `agentcapsule-authority-clients`), or when the service holds other
+authorities than the pinned ones. A service in degraded mode, or waiting for
+its standby, is a warning.
 
 ## Operator steps
 
@@ -226,17 +235,21 @@ receipt key file, the clock and PostgreSQL.
    `agentcapsule-admin bootstrap-platform` ([bootstrap.md](bootstrap.md)): the
    API's preflight reads the receipt key it writes.
 7. **Authority service.** Initialize both authorities, start
-   `agentcapsule-authority serve`, and give the worker its `authority` section
-   ([recovery.md](recovery.md#install-the-authority-service)). The worker's
-   preflight checks that the service answers.
+   `agentcapsule-authority serve`, give the worker its `authority` section and
+   the API its `-authority-socket` and identities
+   ([recovery.md](recovery.md#install-the-authority-service)). The API's
+   account joins `agentcapsule-authority-clients`. Both preflights check that
+   the service answers.
 8. **Preflight.** Run `agentcapsule-worker -preflight` and
    `agentcapsule-api -preflight`, and fix every `fail`.
-9. **Start** the worker, then the API, without `AGENTCAPSULE_MODE`. Run the
+9. **Start** the authority service, the worker, then the API, without
+   `AGENTCAPSULE_MODE`. Run the
    preflights again after each change of host, certificate or configuration.
    Then create the organizations ([bootstrap.md](bootstrap.md#4-create-the-organization-and-its-first-owner)).
 
 `scripts/verify-install.py` runs steps 3, 4 (the API's certificate) and 6 to
-8 from an empty directory, without root, then creates an organization and
+8 from an empty directory, without root: the authority service before the
+API, which refuses to start without it. Then it creates an organization and
 ends with a call by its owner. On a host without the artifacts or without
 access to `/dev/kvm`, the worker's preflight reports them as failed and the
 worker refuses to start.

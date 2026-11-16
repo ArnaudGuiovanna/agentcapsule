@@ -170,7 +170,7 @@ Each process writes one JSON object per line, with `time` and `event` first:
 | Worker | `volume_archive_purged` (standard output) | `removed`: archives of deleted agents, whose key is destroyed, deleted from the host ([worker.md](worker.md#nightly-encrypted-archives)) |
 | Worker | `llm_budget_soft_exceeded` (standard error) | `unit` (`tokens`, `cost`), `period` (`day`, `month`), `scope` (`organization`, `agent`, `alias`, `agent_alias`) of the soft budget a model call went past |
 | Worker | `llm_call_refused` (standard error) | `reason` (`budget_tokens`, `budget_cost`, `unpriced`, `alias_access`), and for a budget its `period` and `scope` |
-| Worker | `authority_service_waiting` (standard error, once) | — : the worker waits for the authority service at start |
+| Worker, API | `authority_service_waiting` (standard error, once) | — : the process waits for the authority service at start |
 | Worker, restore command | `restore_paused` (standard error) | `reason`: `authority_unavailable`, `waits_for_replica` |
 | Authority service | `service_started` (standard output) | `epoch`, `mode` (`standalone`, `synchronous`, `degraded`, `waiting`) |
 | Authority service | `service_stopped` (standard output); `peer_refused`, `hold_expired` (standard error) | `socket` for a refused peer, `kind` for an expired hold |
@@ -233,7 +233,7 @@ Their annotations are fixed text.
 | `AgentCapsuleStandbyNotInRecovery` | The standby is not in recovery for 5 minutes: promoted, or started as a primary (critical) |
 | `AgentCapsuleStandbyDown` | The standby's PostgreSQL does not answer for 5 minutes |
 | `AgentCapsuleStandbyMetricsStale` | The standby's replay has not been collected for 10 minutes, or never was |
-| `AgentCapsuleAuthorityServiceDown` | The authority service does not answer its scrape for 2 minutes: no agent boots, platform calls fail, deliveries wait, a restore pauses (critical) |
+| `AgentCapsuleAuthorityServiceDown` | The authority service does not answer its scrape for 2 minutes: no agent boots, platform calls fail, deliveries wait, a restore pauses, the API's readiness probe answers 503 (critical) |
 | `AgentCapsuleAuthorityDegraded` | The authority service has run in degraded mode, without the standby, for a minute: creating, deleting and restoring agents wait, and losing the host loses the outcomes recorded since (critical) |
 | `AgentCapsuleAuthorityOperationsRefused` | An authority operation gave up waiting for the standby in degraded mode in the last 15 minutes |
 | `AgentCapsuleAuthorityReplicationStopped` | Outside degraded mode, attempts to reach the authorities' replica have kept failing for 5 minutes: an authority service restarted without its standby, or a replica that refuses it. Every authority operation waits or fails (critical) |
