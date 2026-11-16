@@ -264,7 +264,9 @@ task, _ := client.GetTask(ctx, &a2a.GetTaskRequest{ID: result.(*a2a.Task).ID})
   artifact `reply`. If the event never comes (its delivery died, ADR 007),
   `GetTask` reads the reply from the platform and completes the task the same
   way. A reply no longer kept completes the task without an artifact; the
-  metadata's `reason` says why (`content_purged`, `content_revoked`).
+  metadata's `reason` says why (`content_purged`, `content_revoked`). So does
+  the `REPLIED` status without content that the platform sends when the
+  replier is deleted before its reply arrived (`content_revoked`).
 - **Tasks outlive the run.** Tasks are kept in the agent's encrypted home.
   `GetTask` answers in a later invocation, and after sleep and wake. A reply
   that arrives after the run ended is kept for the next one.

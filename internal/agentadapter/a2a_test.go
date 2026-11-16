@@ -401,6 +401,40 @@ func TestA2AGetTaskCompletesAfterDeadReply(t *testing.T) {
 	}
 }
 
+// The replier's deletion revokes a reply A never received: the host sends A a
+// REPLIED status without content, reason content_revoked. The task ends with
+// it, even when the platform no longer answers the status read.
+func TestARevokedReplyEndsTheTask(t *testing.T) {
+	l := newA2ALab(t, func(ctx context.Context, l *a2aLab, j Job) string {
+		client, _, err := l.client(ctx, "b")
+		if err != nil {
+			t.Error(err)
+			return ""
+		}
+		sent, _ := client.SendMessage(ctx, &a2a.SendMessageRequest{Message: text("first"), Config: &a2a.SendMessageConfig{ReturnImmediately: true}})
+		if sent == nil {
+			t.Error("not sent")
+			return ""
+		}
+		id := sent.(*a2a.Task).ID
+		l.peers.set(string(id), "REPLIED")
+		l.peers.statusDown = true
+		l.deliver(statusEvent(string(id), "REPLIED", "content_revoked"))
+		task, err := client.GetTask(ctx, &a2a.GetTaskRequest{ID: id})
+		if err != nil {
+			t.Error(err)
+			return ""
+		}
+		return summary(task)
+	})
+	l.deliver(invocation(t, "e1", "go"))
+	l.drain()
+	want := "TASK_STATE_COMPLETED/REPLIED/-/content_revoked"
+	if len(l.p.completions) != 1 || l.p.completions[0].Content[0].Text != want {
+		t.Fatalf("got %v\nwant %s", l.p.completions, want)
+	}
+}
+
 // The endpoint sends nothing it may not: outside an invocation, while
 // answering another agent, past the mandate, or anything but text; it serves
 // no card for itself or an unknown agent, and no task of another peer.

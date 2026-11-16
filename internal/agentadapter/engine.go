@@ -217,9 +217,14 @@ func (h *Engine) Handle(ctx context.Context, e harnessstore.Event, tx harnesssto
 		if _, err := tx.ExecContext(ctx, `UPDATE adapter_work SET state='stopped',reason='request_terminal' WHERE kind='request' AND target=? AND state='pending'`, status.RequestID); err != nil {
 			return nil, err
 		}
-		// A request the agent sent ended without a reply.
+		// A request the agent sent ended without a reply; or it was replied,
+		// but the reply was revoked before it arrived (its author deleted:
+		// reason content_revoked). Either ends the task, without an artifact.
 		switch status.Status {
-		case "DECLINED", "EXPIRED", "CANCELED", "FAILED":
+		case "DECLINED", "EXPIRED", "CANCELED", "FAILED", "REPLIED":
+			if status.Status == "REPLIED" && status.Reason == "" {
+				break
+			}
 			if _, err := tx.ExecContext(ctx, `INSERT INTO adapter_a2a_results(request_id,state,reason,received_ns) VALUES(?,?,?,?)
                 ON CONFLICT(request_id) DO NOTHING`, status.RequestID, status.Status, truncate(status.Reason, 100), time.Now().UnixNano()); err != nil {
 				return nil, err
