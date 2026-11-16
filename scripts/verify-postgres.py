@@ -55,6 +55,10 @@ def main():
         shutil.copytree(ROOT / name, sources / name, ignore=shutil.ignore_patterns("__pycache__"))
     # The pinned Firecracker release, whose version internal/preflight checks.
     shutil.copytree(ROOT / "runtime/firecracker", sources / "runtime/firecracker")
+    # The API's contract and its documentation, which the API's tests check
+    # against the server and run (CONV-1, EXT-008).
+    shutil.copytree(ROOT / "openapi", sources / "openapi")
+    shutil.copytree(ROOT / "docs/api", sources / "docs/api")
     # The configuration examples that the worker's and the authority
     # service's tests read as their programs do.
     for example in ["runtime/worker/config.example.json", *sorted((ROOT / "runtime/authority").glob("*.example.json"))]:
