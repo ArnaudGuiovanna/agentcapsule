@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"flag"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/delegatedidentity"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/operatorconfig"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/preflight"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/telemetry"
 )
 
@@ -30,27 +32,47 @@ func (fixedLog) Write(p []byte) (int, error) {
 	return len(p), err
 }
 
-func run() int {
-	listen := flag.String("listen", "127.0.0.1:8080", "HTTP loopback listener, or HTTPS listener with certificate")
-	keyPath := flag.String("receipt-key-file", "", "private receipt encryption key")
-	delegationPath := flag.String("delegated-identity-file", "", "local public Ed25519 trust configuration (does not activate database trust)")
-	hostID := flag.String("host-id", "", "stable worker host for agent reservations")
-	activeTransit := flag.String("transit-active-key", "", "active transit key ID pinned in PostgreSQL")
+func run(args []string) int {
+	f := flag.NewFlagSet("agentcapsule-api", flag.ContinueOnError)
+	listen := f.String("listen", "127.0.0.1:8080", "HTTPS listener; plain HTTP only on loopback in development mode")
+	keyPath := f.String("receipt-key-file", "", "private receipt encryption key")
+	delegationPath := f.String("delegated-identity-file", "", "local public Ed25519 trust configuration (does not activate database trust)")
+	hostID := f.String("host-id", "", "stable worker host for agent reservations")
+	activeTransit := f.String("transit-active-key", "", "active transit key ID pinned in PostgreSQL")
 	var transitFiles operatorconfig.KeyFiles
-	flag.Var(&transitFiles, "transit-key", "repeatable transit key ID=/absolute/private/key-file")
-	cert := flag.String("tls-cert", "", "TLS certificate chain")
-	tlsKey := flag.String("tls-key", "", "TLS private key")
-	metricsListen := flag.String("metrics-listen", "", "loopback address serving Prometheus metrics at /metrics (none when empty)")
-	flag.Parse()
+	f.Var(&transitFiles, "transit-key", "repeatable transit key ID=/absolute/private/key-file")
+	cert := f.String("tls-cert", "", "TLS certificate chain (PEM), reloaded on SIGHUP")
+	tlsKey := f.String("tls-key", "", "TLS private key (PEM, mode 0600), reloaded on SIGHUP")
+	tlsName := f.String("tls-server-name", "", "name clients use to reach the API; the certificate must cover it")
+	metricsListen := f.String("metrics-listen", "", "loopback address serving Prometheus metrics at /metrics (none when empty)")
+	preflightOnly := f.Bool("preflight", false, "check this configuration (TLS files, ports, PostgreSQL), print what to fix, then exit")
+	if err := f.Parse(args); err != nil {
+		return 2
+	}
 	fail := func(code string) int { fmt.Fprintln(os.Stderr, code); return 1 }
-	if flag.NArg() != 0 || *keyPath == "" || *hostID == "" || (*cert == "") != (*tlsKey == "") {
+	if f.NArg() != 0 || *keyPath == "" || *hostID == "" || (*cert == "") != (*tlsKey == "") || (*tlsName != "" && *cert == "") {
 		return fail("configuration_required")
+	}
+	// Production unless AGENTCAPSULE_MODE=development, which says so at
+	// every start (docs/adr/010-transport-security-and-preflight.md).
+	mode, err := operatorconfig.ModeFromEnvironment()
+	if err != nil {
+		return fail("mode_invalid")
+	}
+	if mode == operatorconfig.Development {
+		fmt.Fprintln(os.Stderr, operatorconfig.DevelopmentWarning)
+	}
+	if *preflightOnly {
+		return runPreflight(mode, *listen, *metricsListen, *cert, *tlsKey, *tlsName, *keyPath)
 	}
 	host, _, err := net.SplitHostPort(*listen)
 	if err != nil {
 		return fail("listen_address_invalid")
 	}
 	if *cert == "" {
+		if mode == operatorconfig.Production {
+			return fail("tls_required_in_production")
+		}
 		ip := net.ParseIP(host)
 		if ip == nil || !ip.IsLoopback() {
 			return fail("tls_required_for_non_loopback_listener")
@@ -61,6 +83,12 @@ func run() int {
 		metricsHost, _, err := net.SplitHostPort(*metricsListen)
 		if ip := net.ParseIP(metricsHost); err != nil || ip == nil || !ip.IsLoopback() {
 			return fail("metrics_listen_must_be_loopback")
+		}
+	}
+	var served *operatorconfig.ServerCertificate
+	if *cert != "" {
+		if served, err = operatorconfig.NewServerCertificate(*cert, *tlsKey, *tlsName); err != nil {
+			return fail(tlsFailure(err))
 		}
 	}
 	key, err := operatorconfig.ReadPrivate(*keyPath, 32)
@@ -78,9 +106,9 @@ func run() int {
 			return fail("delegated_identity_configuration_invalid")
 		}
 	}
-	dsn := os.Getenv("AGENTCAPSULE_DATABASE_URL")
-	if dsn == "" {
-		return fail("database_configuration_required")
+	dsn, code := operatorconfig.DatabaseURL(mode)
+	if code != "" {
+		return fail(code)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
@@ -149,13 +177,37 @@ func run() int {
 		return fail("listener_unavailable")
 	}
 	stopped := make(chan error, 1)
+	if served != nil {
+		server.TLSConfig = served.TLSConfig()
+	}
 	go func() {
-		if *cert != "" {
-			stopped <- server.ServeTLS(listener, *cert, *tlsKey)
+		if served != nil {
+			stopped <- server.ServeTLS(listener, "", "")
 		} else {
 			stopped <- server.Serve(listener)
 		}
 	}()
+	if served != nil {
+		// A renewed certificate takes effect on SIGHUP, for new connections;
+		// files that fail the checks leave the current one in service.
+		hup := make(chan os.Signal, 1)
+		signal.Notify(hup, syscall.SIGHUP)
+		defer signal.Stop(hup)
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-hup:
+					if err := served.Reload(); err != nil {
+						fmt.Fprintln(os.Stderr, "tls_reload_failed_"+tlsFailure(err))
+					} else {
+						fmt.Fprintln(os.Stdout, "tls_reloaded")
+					}
+				}
+			}
+		}()
+	}
 	fmt.Fprintln(os.Stdout, "api_started")
 	select {
 	case err = <-stopped:
@@ -174,4 +226,59 @@ func run() int {
 		return 0
 	}
 }
-func main() { os.Exit(run()) }
+
+// tlsFailure names why the TLS files were refused.
+func tlsFailure(err error) string {
+	switch {
+	case errors.Is(err, operatorconfig.ErrTLSKeyMismatch):
+		return "tls_key_does_not_match_certificate"
+	case errors.Is(err, operatorconfig.ErrTLSValidity):
+		return "tls_certificate_expired_or_not_yet_valid"
+	case errors.Is(err, operatorconfig.ErrTLSName):
+		return "tls_certificate_does_not_cover_server_name"
+	case errors.Is(err, operatorconfig.ErrTLSUsage):
+		return "tls_certificate_not_for_servers"
+	}
+	return "tls_files_invalid"
+}
+
+// runPreflight checks the API's own configuration and exits 1 when a check
+// fails. It changes nothing: each listener is opened and closed at once.
+func runPreflight(mode operatorconfig.Mode, listen, metricsListen, cert, key, name, receiptKey string) int {
+	_, modeResult := preflight.Mode()
+	results := []preflight.Result{modeResult}
+	h := preflight.System()
+	switch {
+	case cert != "":
+		results = append(results, preflight.Certificate(h, "api_certificate", cert, key, x509.ExtKeyUsageServerAuth, name, ""))
+		if name == "" {
+			results = append(results, preflight.Result{Check: "api_server_name", Status: preflight.Warn, Detail: "-tls-server-name not given: the name is not checked",
+				Fix: "give the name clients use, so that the API refuses a certificate that does not cover it"})
+		}
+	case mode == operatorconfig.Production:
+		results = append(results, preflight.Result{Check: "api_certificate", Status: preflight.Fail, Detail: "no -tls-cert and -tls-key: production serves HTTPS only",
+			Fix: "give the certificate chain and its key"})
+	default:
+		results = append(results, preflight.Result{Check: "api_certificate", Status: preflight.Warn, Detail: "plain HTTP on loopback (development)",
+			Fix: "give -tls-cert and -tls-key in production"})
+	}
+	results = append(results, preflight.Listen("api_listen", listen, false))
+	if metricsListen != "" {
+		results = append(results, preflight.Listen("metrics_listen", metricsListen, true))
+	}
+	if _, err := operatorconfig.ReadPrivate(receiptKey, 32); err != nil {
+		results = append(results, preflight.Result{Check: "receipt_key", Status: preflight.Fail, Detail: receiptKey + " is not a private 32-byte file",
+			Fix: "the file written by agentcapsule-admin bootstrap, mode 0600, owned by the API's user"})
+	} else {
+		results = append(results, preflight.Result{Check: "receipt_key", Status: preflight.OK, Detail: receiptKey})
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	results = append(results, preflight.Clock(h), preflight.Database(ctx, mode, os.Getenv(operatorconfig.DatabaseVariable)))
+	if err := preflight.Write(os.Stdout, results); err != nil || preflight.Failed(results) {
+		return 1
+	}
+	return 0
+}
+
+func main() { os.Exit(run(os.Args[1:])) }

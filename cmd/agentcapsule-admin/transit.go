@@ -29,9 +29,9 @@ func activateTransitKeys(args []string) int {
 		return fail("transit_key_file_invalid")
 	}
 	defer operatorconfig.ClearKeys(keys)
-	dsn := os.Getenv("AGENTCAPSULE_DATABASE_URL")
-	if dsn == "" {
-		return fail("database_configuration_required")
+	dsn, code := databaseURL()
+	if code != "" {
+		return fail(code)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

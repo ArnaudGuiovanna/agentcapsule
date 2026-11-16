@@ -7,11 +7,34 @@ carry this scope.
 
 | Route | Effect |
 |---|---|
-| `POST /v1/llm/providers` | declares a provider (`openai_compatible` or `anthropic`), https URL (or http to localhost), write-only credential |
+| `POST /v1/llm/providers` | declares a provider (`openai_compatible` or `anthropic`), https URL (or http to localhost, which the worker refuses to call in production, [ADR 010](../adr/010-transport-security-and-preflight.md)), write-only credential |
 | `GET /v1/llm/providers` | metadata, never the credential |
 | `POST /v1/llm/providers/{id}/rotate` | new credential generation, effective on the next call |
 | `POST /v1/llm/providers/{id}/disable` | permanent: erases the ciphertext, disables the aliases |
 | `POST/GET /v1/llm/aliases`, `POST /v1/llm/aliases/{alias}/disable` | model policy: only an active alias is reachable |
+| `POST /v1/llm/aliases/{alias}/prices` | replaces both estimation prices (below) |
+| `POST /v1/llm/aliases/{alias}/access` | `organization` or `listed` (below) |
+| `POST/GET /v1/llm/aliases/{alias}/grants`, `POST /v1/llm/aliases/{alias}/grants/{id}/revoke` | the agents and teams that may call a listed alias |
+
+## Access per agent and team
+
+An alias's `access` is `organization` (the default: every agent of the
+organization may call it) or `listed`. A listed alias serves only the agents
+its active **grants** name:
+- a grant names one agent (`{"agent_id":"agt_…"}`) or one team
+  (`{"team_id":"team_…"}`);
+- a team grant reaches every agent with an active assignment to that team,
+  whatever the assignment's permissions, while the team is active.
+
+Any other agent is refused before any reservation, and the provider is never
+called. On the VM channel the code is `unauthorized`. Changes apply from the
+next reservation; a call already reserved goes on. Revoking the last grant
+leaves a listed alias reachable by no agent: only setting its access back to
+`organization` opens it to all. A grant on an alias open to the organization
+is kept and applies once the alias is listed. A disabled alias takes no change
+(409). Creating an alias accepts `"access":"listed"`, so that it is never open
+to all. The defaults are those of
+[ADR 011](../adr/011-llm-access-and-cost-budgets.md), pending the product owner.
 
 ## Guarantees
 - The credential is encrypted (AES-256-GCM) with a key derived from the
@@ -22,14 +45,18 @@ carry this scope.
 - Decryption exists only in `ResolveLLMRoute`, which the gateway calls with the
   tenant bound to the authenticated channel. Disabled organization, alias or
   provider: `ErrNotFound` from the next request.
-- Audit: `llm.provider.created|rotated|disabled`, `llm.alias.created|disabled`.
+- Audit: `llm.provider.created|rotated|disabled`,
+  `llm.alias.created|disabled|access_set|prices_set|grant_created|grant_revoked`,
+  `llm.budget.created|disabled`, `llm.usage.settled|released`. A grant's event
+  targets its agent or team, with the alias as reference; a resolved call's
+  targets its agent, with the call as reference.
 
 ## Known limits
 - The encryption key derives from the installation key: losing it also loses the
   credentials (D-05 stays open for a dedicated secret store and rotation of this
   key).
-- Aliases are organization-wide; there is no per-agent or per-team restriction
-  yet, nor budgets (LLM-03).
+- The gateway does not check the harness's `llm.invoke` capability yet
+  (CAP-01).
 
 ## Outbound calls (LLM-02)
 `internal/llmgateway` calls the provider resolved by `ResolveLLMRoute`.
@@ -74,29 +101,86 @@ through the same phase, with `AGENTCAPSULE_TEST_LLM_SECRET`; this secret is neve
 recorded. The `anthropic` adapter has not yet been called against the real API.
 
 ## Budgets and consumption (LLM-03)
-A budget limits the tokens (input + output) of an organization, an agent, an
-alias, or an agent and an alias, per UTC day or month. It requires
-`quota:manage` (roles `org_owner`/`org_admin`); consumption requires
-`usage:read` (`org_owner`, `org_admin`, `auditor`).
+A budget limits the tokens (input + output, `limit_tokens`) or the estimated
+cost (`limit_cost_micro`) of an organization, an agent, an alias, or an agent
+and an alias, per UTC day or month: exactly one of the two limits. One active
+budget per scope, period and unit (409 otherwise): a token budget and a cost
+budget may cover the same scope. Budgets require `quota:manage` (roles
+`org_owner`/`org_admin`); consumption requires `usage:read` (`org_owner`,
+`org_admin`, `auditor`). `GET /v1/llm/budgets` gives each active budget's
+`used`: what its current window counts, in its unit.
 
-Each call goes through `LLMService.Call`: alias resolution, **reservation**
-(pessimistic estimate: about 1 token per 3 bytes + output cap), call, then a
-single outcome:
-- success: settlement with the usage reported by the provider;
+**Prices.** An alias has two prices, `input_micro_per_mtok` and
+`output_micro_per_mtok`: micro-units of the organization's currency (10^-6) per
+million tokens, at most 10^12. Anthropic's cached input counts as input. They
+are set at the alias's creation, or both replaced with `POST
+/v1/llm/aliases/{alias}/prices` (`provider:manage`). The alias is then
+`priced`; zero prices set on purpose are a free model. An alias created without
+prices is not priced.
+
+Each call goes through `LLMService.Call`: alias resolution, access check,
+**reservation**, call, then a single outcome. The reservation counts a
+pessimistic estimate: about 1 token per 3 bytes of input plus the output cap,
+and their cost at the alias's current prices. The call keeps these prices until
+its settlement: a price change applies to calls reserved after it. Outcomes:
+- success: settlement with the usage reported by the provider, priced at the
+  reservation's prices;
 - refusal, 429, 5xx, unavailability: release, the provider billed nothing;
-- timeout after sending: `unknown`, the reservation **keeps counting** and
-  cannot be released as free; a late settlement corrects it.
+- timeout after sending: `unknown`, the reservation (tokens and cost) **keeps
+  counting** and cannot be released as free (below).
 
-A `hard` budget refuses before any call (`ErrBudgetExceeded`), even under
-concurrent calls (the applicable budgets are locked in a fixed order); a `soft`
-budget lets the call through and reports the overrun. A request key already used
-does not count again and never calls the provider again; a reservation left
-`reserved` after a shutdown is treated as unknown.
+A window counts settled calls at their reported tokens and estimated cost,
+calls in flight and of unknown outcome at their reservation, and nothing for
+released calls. A `hard` budget refuses before any call (`ErrBudgetExceeded`,
+code `quota_exceeded` on the VM channel), even under concurrent calls (the
+applicable budgets are locked in a fixed order). A hard **cost** budget also
+refuses a call to an alias that is not priced: its cost cannot be known. A
+`soft` budget lets the call through and reports the overrun: the answer's
+`soft_budget_exceeded`, and the operator's metric and log line. A request key
+already used does not count again and never calls the provider again; a
+reservation left `reserved` after a shutdown is treated as unknown when its key
+comes back.
 
-`GET /v1/llm/usage` separates settled tokens, in-flight tokens and tokens of
-unknown outcome; the cost is an **estimate** based on the alias's
-`input_micro_per_mtok` / `output_micro_per_mtok` (rounded up), never an
-invoice. Metrics carry no content.
+**Exact amounts.** Costs are integers in micro-units, computed exactly and
+rounded up once per call: an estimate never under-reports. A call's cost fits in
+64 bits at the bounds (10^12 tokens, 10^12 per million).
+
+`GET /v1/llm/usage?period=day|month` gives, per agent and per alias (the
+alias names the model), then for the organization (`totals`): settled tokens,
+in-flight tokens and tokens of unknown outcome, and the same three for the
+cost (`estimated_cost_micro` for settled calls, `pending_cost_micro`,
+`unknown_outcome_cost_micro`). The cost is an **estimate**, never an invoice.
+
+### Calls of unknown outcome
+
+Only the organization can read its provider's account, so it reconciles the
+calls the platform cannot settle:
+- `GET /v1/llm/calls/unresolved` (`usage:read`): the calls of unknown outcome,
+  and the reservations older than 15 minutes (longer than any call: the bridge
+  stops at 300 s), whose worker stopped before their outcome. Each item gives
+  the agent, the alias, the reserved tokens and cost and the creation time; no
+  request key, prompt or answer.
+- `POST /v1/llm/calls/{id}/settle` with `{"input_tokens":…,"output_tokens":…}`
+  (`quota:manage`): the usage read in the provider's account, priced at the
+  call's reservation.
+- `POST /v1/llm/calls/{id}/release` (`quota:manage`): the provider billed
+  nothing; the reservation stops counting.
+
+A resolved call, or one still possibly running, answers 409. When a resolution
+and a late settlement by the worker race, one wins and the other is refused.
+Nothing is resolved automatically; an unresolved call counts in the window of
+its creation only.
+
+### Metrics and logs
+
+The worker's metrics count, for the whole installation, settled tokens and
+estimated cost by provider kind, call outcomes, refusals by reason
+(`budget_tokens`, `budget_cost`, `unpriced`, `alias_access`), soft budgets
+passed by unit, and unresolved calls. A soft budget passed and a refused call
+are also logged (`llm_budget_soft_exceeded`, `llm_call_refused`) with the
+budget's unit, period and scope. They name no organization, agent, alias or
+model ([observability.md](../observability.md)); an organization's own figures
+per agent and alias are those of `GET /v1/llm/usage`.
 
 ## VM bridge (CAP-01)
 
@@ -116,8 +200,9 @@ ledger's request key.
   or equivalent field is refused (400) before the adapter. An agent of the legacy
   domain has no gateway (403).
 - **Policy**: the only name the guest supplies is an alias defined by its
-  organization; the alias carries the authorized model. The LLM-03 budgets
-  apply. The provider credential never enters the VM.
+  organization; the alias carries the authorized model. A listed alias serves
+  only the agents granted it. The LLM-03 budgets apply. The provider
+  credential never enters the VM.
 - **Host lock**: placement and reservation happen under host admission; the
   provider call happens **outside** that lock, so that a slow model delays
   neither wake, sleep nor deletion. Accounting survives a cancellation by the
@@ -129,11 +214,13 @@ ledger's request key.
   (see [agents-assignments.md](agents-assignments.md#deferred-result-the-working-state)).
 - **Timeouts**: 300 s in total (two attempts of 140 s); only the model routes
   extend the server's write deadline.
-- **Errors** (enumerated codes, never a provider message): `quota_exceeded` and
-  `rate_limited` (429), `rejected` (provider 4xx), `outcome_unknown` (timeout
-  after sending: the reservation keeps counting; **do not** retry with the same
-  key), `conflict` (key already processed: use a new key), `invalid`,
-  `unauthorized`, `unavailable`.
+- **Errors** (enumerated codes, never a provider message): `quota_exceeded` (a
+  hard budget in tokens or cost, or a hard cost budget on an alias without
+  prices) and `rate_limited` (429), `rejected` (provider 4xx), `outcome_unknown`
+  (timeout after sending: the reservation keeps counting; **do not** retry with
+  the same key), `conflict` (key already processed: use a new key), `invalid`,
+  `unauthorized` (also a listed alias not granted to the agent),
+  `unavailable`.
 - **Replay**: a settled key is never called again and the text is not kept; the
   guest repeats the request with a new key.
 - **Activation**: the worker offers the bridge only if its configuration contains

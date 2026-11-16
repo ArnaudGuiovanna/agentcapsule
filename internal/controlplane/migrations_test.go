@@ -320,6 +320,7 @@ func revertTenantAgents(t *testing.T, s *Store) {
 	t.Helper()
 	if _, err := s.pool.Exec(t.Context(), `
         DROP TABLE IF EXISTS failed_agents, guest_failures;
+        DROP TABLE IF EXISTS llm_alias_grants;
         DROP TABLE IF EXISTS invocation_reruns;
         DROP FUNCTION IF EXISTS preserve_invocation_rerun();
         DROP TABLE IF EXISTS volume_restore_losses, volume_restores;

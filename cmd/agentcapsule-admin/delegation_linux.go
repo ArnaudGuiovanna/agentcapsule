@@ -51,9 +51,9 @@ func configureDelegation(args []string) int {
 	} else if *file != "" {
 		return fail("trust_file_not_used_for_revocation")
 	}
-	dsn := os.Getenv("AGENTCAPSULE_DATABASE_URL")
-	if dsn == "" {
-		return fail("database_configuration_required")
+	dsn, code := databaseURL()
+	if code != "" {
+		return fail(code)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
