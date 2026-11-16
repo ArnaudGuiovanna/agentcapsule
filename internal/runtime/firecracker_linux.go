@@ -13,7 +13,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -42,6 +41,9 @@ type FirecrackerOptions struct {
 	FirecrackerSHA256, JailerSHA256, KernelSHA256, InitrdSHA256 string
 	MaxActive                                                   int
 	BootTimeout                                                 time.Duration
+	// DriveLimits caps the I/O of each VM's drives; zero means
+	// DefaultDriveLimits (CAP-03, ADR 012).
+	DriveLimits DriveLimits
 	// AuthenticatedControl injects per-boot credentials and uses capsule.v1 mTLS
 	// readiness. Ready remains only for explicit laboratory/legacy probe images.
 	AuthenticatedControl bool
@@ -143,6 +145,10 @@ func NewFirecrackerHost(opts FirecrackerOptions) (*FirecrackerHost, error) {
 	}
 	if opts.BootTimeout <= 0 {
 		opts.BootTimeout = 30 * time.Second
+	}
+	opts.DriveLimits = opts.DriveLimits.orDefault()
+	if err := opts.DriveLimits.Validate(); err != nil {
+		return nil, err
 	}
 	root, err := filepath.Abs(opts.Root)
 	if err != nil {
@@ -762,8 +768,7 @@ func (h *FirecrackerHost) start(ctx context.Context, id string, generation uint6
 				return fail(err)
 			}
 			defer log.Close()
-			cmd := exec.Command(filepath.Join(h.root, "bin", "jailer"), "--id", run.ID, "--exec-file", filepath.Join(h.root, "bin", "firecracker"), "--uid", strconv.Itoa(int(a.UID)), "--gid", strconv.Itoa(int(a.UID)), "--chroot-base-dir", filepath.Join(h.root, "jails"), "--new-pid-ns", "--cgroup-version", "2", "--parent-cgroup", strings.TrimPrefix(h.group(run), "/sys/fs/cgroup/"), "--resource-limit", "no-file=256", "--", "--no-api", "--config-file", "/config.json")
-			cmd.SysProcAttr = &syscall.SysProcAttr{UseCgroupFD: true, CgroupFD: int(group.Fd()), Cloneflags: syscall.CLONE_NEWNET}
+			cmd := h.jailerCommand(run, a.UID, group)
 			cmd.Stdout = log
 			cmd.Stderr = log
 			if err = cmd.Start(); err != nil {
@@ -775,6 +780,9 @@ func (h *FirecrackerHost) start(ctx context.Context, id string, generation uint6
 			}
 			boot, cancel := context.WithTimeout(ctx, h.opts.BootTimeout)
 			defer cancel()
+			// Once its VMM is identified, a failed attempt tells whether the
+			// guest failed (ErrBootFailed) before it is cleaned up.
+			failBoot := func(e error) error { return fail(h.bootFailure(ctx, a, e)) }
 			for {
 				pid, ticks, e := h.identify(a)
 				if e == nil && h.opts.PrepareGuest != nil {
@@ -809,21 +817,21 @@ func (h *FirecrackerHost) start(ctx context.Context, id string, generation uint6
 				err = h.opts.Ready(boot, run.Socket)
 			}
 			if err != nil {
-				return fail(err)
+				return failBoot(err)
 			}
 			if err = ownedVolumeLock(run.PID, a.Volume); err != nil {
-				return fail(err)
+				return failBoot(err)
 			}
 			if err = h.opts.Confirm(boot, id, *run); err != nil {
-				return fail(err)
+				return failBoot(err)
 			}
 			run.Phase = "RUNNING"
 			if err = h.save(r); err != nil {
-				return fail(err)
+				return failBoot(err)
 			}
 			if h.opts.AuthenticatedControl && h.opts.ObserveControl != nil {
 				if err = h.opts.ObserveControl(boot, id, *run, true); err != nil {
-					return fail(err)
+					return failBoot(err)
 				}
 			}
 			if h.hook != nil {
@@ -887,18 +895,28 @@ func (h *FirecrackerHost) prepare(a *HostAgent) error {
 	if err := os.Link(a.Volume, filepath.Join(root, "data.ext4")); err != nil {
 		return err
 	}
-	drives := []any{map[string]any{"drive_id": "data", "path_on_host": "/data.ext4", "is_root_device": false, "is_read_only": false, "cache_type": "Writeback", "io_engine": "Sync"}}
+	// Each drive has its own I/O ceiling (CAP-03, ADR 012), enforced by the VMM.
+	limits := h.opts.DriveLimits.orDefault()
+	drives := []any{map[string]any{"drive_id": "data", "path_on_host": "/data.ext4", "is_root_device": false, "is_read_only": false, "cache_type": "Writeback", "io_engine": "Sync",
+		"rate_limiter": limits.Volume.rateLimiter(0)}}
 	if a.Harness != nil {
 		if !h.opts.AuthenticatedControl {
 			return errors.New("a registry harness needs the authenticated guest contract")
 		}
 		// One inode shared by every agent of the release; the VMM only reads it.
-		if err := linkOrCopy(a.Harness.Path, filepath.Join(root, "harness.ext4")); err != nil {
+		image := filepath.Join(root, "harness.ext4")
+		if err := linkOrCopy(a.Harness.Path, image); err != nil {
 			return err
 		}
-		drives = append(drives, map[string]any{"drive_id": "harness", "path_on_host": "/harness.ext4", "is_root_device": false, "is_read_only": true, "cache_type": "Unsafe", "io_engine": "Sync"})
+		st, err := os.Stat(image)
+		if err != nil {
+			return err
+		}
+		drives = append(drives, map[string]any{"drive_id": "harness", "path_on_host": "/harness.ext4", "is_root_device": false, "is_read_only": true, "cache_type": "Unsafe", "io_engine": "Sync",
+			"rate_limiter": limits.Harness.rateLimiter(st.Size())})
 	}
 	resources := a.resources()
+	// No "network-interfaces": the VM has no network device (ADR 012).
 	config := map[string]any{"boot-source": map[string]any{"kernel_image_path": "/kernel", "initrd_path": "/initrd", "boot_args": "console=ttyS0 reboot=k panic=1 pci=off"}, "machine-config": map[string]any{"vcpu_count": resources.VCPUs, "mem_size_mib": resources.MemoryMiB}, "drives": drives, "vsock": map[string]any{"guest_cid": 3, "uds_path": "/vsock"}}
 	b, err := json.Marshal(config)
 	if err != nil {
