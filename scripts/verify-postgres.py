@@ -53,6 +53,8 @@ def main():
     # The Python harness SDK and example, run by the Go conformance tests.
     for name in ("sdk", "examples"):
         shutil.copytree(ROOT / name, sources / name, ignore=shutil.ignore_patterns("__pycache__"))
+    # The pinned Firecracker release, whose version internal/preflight checks.
+    shutil.copytree(ROOT / "runtime/firecracker", sources / "runtime/firecracker")
     (sources / "scripts").mkdir()
     for script in (ROOT / "scripts").glob("*.py"):
         shutil.copy2(script, sources / "scripts" / script.name)

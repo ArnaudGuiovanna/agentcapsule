@@ -105,6 +105,28 @@ func canSeeTenantAgent(p Principal, role string, perms []string) bool {
 		authorization.CanAccessAssignedAgent(access, authorization.ReadAgentMetadata, toPermissions(perms))
 }
 
+// stillSeesAgent says whether a principal whose role does not read every
+// agent's metadata currently sees this agent through an assignment. A
+// requester's own invocations, operations and files stay visible to it only
+// while it does: once its assignment is revoked or moved to another target,
+// it reads nothing more about that agent (D-02, TEN-005).
+func stillSeesAgent(ctx context.Context, tx pgx.Tx, p Principal, role, agentID string) (bool, error) {
+	perms, err := effectiveAgentPermissions(ctx, tx, p.TenantID, p.ID, agentID)
+	if err != nil {
+		return false, err
+	}
+	return canSeeTenantAgent(p, role, perms), nil
+}
+
+// hideUnlessStillSeen answers ErrNotFound when stillSeesAgent is false.
+func hideUnlessStillSeen(ctx context.Context, tx pgx.Tx, p Principal, role, agentID string) error {
+	visible, err := stillSeesAgent(ctx, tx, p, role, agentID)
+	if err == nil && !visible {
+		err = ErrNotFound
+	}
+	return err
+}
+
 // ReserveTenant creates a tenant-owned agent reservation. Like Reserve it only
 // records a durable provisioning operation; the worker creates the volume.
 func (c *AgentCatalog) reserveTenant(ctx context.Context, p Principal, key string, in CreateAgentInput) (APIReceipt, error) {
@@ -520,8 +542,9 @@ func (c *AgentCatalog) GetTenantAgent(ctx context.Context, p Principal, id strin
 	return c.getTenant(ctx, p, id)
 }
 
-// operationTenant lets the requester, or an administrative reader, follow an
-// operation on a tenant agent. Operations of other tenants do not exist here.
+// operationTenant lets the requester while it still sees the agent, or an
+// administrative reader, follow an operation on a tenant agent. Operations of
+// other tenants do not exist here.
 func (c *AgentCatalog) operationTenant(ctx context.Context, p Principal, id string) (PlatformOperation, error) {
 	tx, err := c.accounts.store.begin(ctx)
 	if err != nil {
@@ -543,6 +566,11 @@ func (c *AgentCatalog) operationTenant(ctx context.Context, p Principal, id stri
 	}
 	if err != nil {
 		return PlatformOperation{}, err
+	}
+	if !administrative {
+		if err = hideUnlessStillSeen(ctx, tx, p, current.Role, v.AgentID); err != nil {
+			return PlatformOperation{}, err
+		}
 	}
 	return v, commit(ctx, tx)
 }
