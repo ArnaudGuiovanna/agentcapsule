@@ -31,6 +31,18 @@ npx quint verify --main=invocationCompletion --init=init --step=step \
 
 `npm run typecheck` checks every model; CI runs it on each change.
 
+The concurrent protocol (P1) and service progress (P3) models are checked by
+their runs and by simulation of `safety`:
+
+```bash
+npx quint test --main=concurrentProtocolTests concurrent_protocol_test.qnt
+npx quint run --main=concurrentProtocolFour --init=init --step=step \
+  --invariant=safety --max-steps=40 --max-samples=100000 concurrent_protocol.qnt
+npx quint test --main=serviceProgressTests service_progress_test.qnt
+npx quint run --main=serviceProgressOk --init=init --step=step \
+  --invariant=safety --max-steps=40 --max-samples=200000 service_progress.qnt
+```
+
 Runs are checked with `quint test`. A witness module of `restore_witness.qnt`
 is either a guard (`run guardTest`, a `quint test`) or a fixed schedule
 (`traceInit`, `traceStep`) whose `checked` invariant must fail at its last
@@ -62,7 +74,7 @@ npx quint run --main=restoreAuthorityFailover --step=focusedStep \
 | `fair_admission.qnt` | Fairness of the host admission queue |
 | `barrier_capacity.qnt` | Store barriers competing for VM capacity |
 | `composition.qnt`, `protocol_composition.qnt` | Deletion, requests and delivery composed over shared state |
-| `concurrent_protocol.qnt` (+ `_bounded`, `_focused`, `_loaded`, `_witness`, `_test`) | Concurrent SQL coordination with delayed RPCs; bounded and witness variants for TLC |
+| `concurrent_protocol.qnt` (+ `_bounded`, `_focused`, `_loaded`, `_witness`, `_test`) | Concurrent SQL coordination with delayed RPCs; bounded and witness variants for TLC. A request's closure fences its two parties only: no other store receives an event carrying its subject (`closureScope`, `closedSafe`, [ADR 007 §7](../docs/adr/007-delivery-closure-and-priority.md#71-a-requests-closure-fences-its-two-parties-only)). A reply or status no RPC carried dies at its deadline without a fence, anywhere in its queue (`retireUnsent`) |
 | `revocation.qnt` (+ `_test`) | Deletion barrier for one subject across several stores |
 | `store_seal.qnt`, `store_enrollment.qnt` | Permanent store seal; restoration blocking new work before retiring a store |
 | `restore_authority.qnt` (+ `_test`, `_witness`) | External restore authority, outcome records and declared losses within the RPO window (D-03 option B). Its synchronous replica on the standby, promotion under a new epoch, degraded mode, and PostgreSQL reconciled with the authority after a failover (D-05 option (a), [ADR 005](../docs/adr/005-keys-outside-restored-domain.md#model-revision-d-05-option-a)) |
