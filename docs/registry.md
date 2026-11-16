@@ -38,7 +38,17 @@ architecture: x86_64
 base: agentcapsule-guest/1      # guest ABI: kernel, capsule-init, mount layout
 entrypoint: [/bin/harness, --serve]   # clean absolute path inside harness.ext4
 description: Reference echo harness   # optional
+capabilities: [llm.invoke]            # optional; see below
 ```
+
+`capabilities` lists what the harness asks the platform for over its
+platform channel: `llm.invoke`, `agents.delegate`, `agents.discover`
+([ADR 016](adr/016-content-links-capabilities.md)). The importer records the
+list on the release; an unknown name rejects the package. An empty list asks
+for nothing. A manifest without the field predates it and is treated as
+asking for every capability. The agent gets the intersection of this list and
+its organization's and its own policies
+([agents-assignments.md](api/agents-assignments.md#capabilities-cap-01-ext-003)).
 
 `checksums.json` lists the sha256 of `harness.yaml` and `harness.ext4`, so a package
 copied out of a registry can still be checked. `harness.ext4` is the read-only root
@@ -156,7 +166,10 @@ The import is `IMPORTING` until a worker processes it:
    published, with the ID of the key that signed it (`signer`) if any.
 
 Outcomes: `READY` with a release, or `REJECTED` with `policy`, `not_found`,
-`access_denied`, `signature`, `integrity`, `version_conflict` or `unavailable`. `access_denied`
+`access_denied`, `signature`, `integrity`, `version_conflict`, `unavailable` or
+`storage_pressure`. `storage_pressure` means the file system of the worker's cache
+stayed past its threshold for every attempt ([worker.md](worker.md#storage-pressure));
+while one is, new import requests are refused with `503 storage_pressure`. `access_denied`
 means the registry refused access: the repository is private and the worker has no
 valid credentials for it, or it does not exist (registries often do not say which).
 Network failures are retried with backoff up to 5 attempts. A rejected package can be
@@ -169,6 +182,29 @@ already released answers with that release and downloads nothing.
 agents already pinned to it keep running. Organization members with `agent:read` and
 a role that reads every agent's metadata (owner, administrator, operator, auditor) can
 list releases (`GET /v1/harness-releases`).
+
+### Live test on GHCR
+
+REG-002 asks that the import test pass on GHCR as on a local registry. The
+tests of the worker run on a local registry; `-tags ghcrlive` adds two tests
+that reach GHCR, never run by CI or the PostgreSQL campaign:
+
+```bash
+AGENTCAPSULE_TEST_POSTGRES='host=/path/to/socket user=... dbname=postgres' \
+AGENTCAPSULE_TEST_GHCR_REFERENCE=ghcr.io/<owner>/<name>:<version>@sha256:<digest> \
+go test -tags ghcrlive -run TestLiveGHCR ./internal/worker
+```
+
+`TestLiveGHCRImport` imports the public harness package that the variable
+names, with the assertions of the local-registry test: `READY` with a
+release, read-only files in the cache, nothing left to do.
+`TestLiveGHCRRejectsAnImageThatIsNotAHarness` needs no variable: it gets an
+anonymous token from GHCR, fetches the manifest of a public image that is not a
+harness package, and checks that it is rejected as `integrity` before any
+layer. The rule for GHCR names its blob CDN,
+`pkg-containers.githubusercontent.com`. On 2026-11-16 the second test passed;
+the first needs a harness package published publicly on GHCR, which the
+project does not publish yet.
 
 ## Running an imported release
 
@@ -267,14 +303,27 @@ In the worker configuration ([example](../runtime/worker/config.example.json)):
 
 - `repositories`: `"org/"` allows every repository under `org`; `"org/name"` exactly one.
 - The worker connects only to the rule's host, its `token_hosts` (bearer token realm)
-  and `blob_hosts` (redirected blob downloads, such as a CDN). Redirects elsewhere are
-  refused.
-- Connections to loopback, private, link-local, carrier-grade NAT and other
-  non-public addresses are refused at dial time, after DNS resolution, so a public
-  name cannot be pointed at an internal address. `"local": true` lifts this and
-  allows plain HTTP for a registry on the operator's own network; never use it for a
-  public registry. In production the worker refuses to start with such a rule
+  and `blob_hosts` (redirected blob downloads, such as a CDN). It follows a redirect to
+  one of these, at most three times; redirects elsewhere are refused.
+- The worker checks each address when it connects, after DNS resolution, so a public
+  name cannot be pointed at an internal address. This holds for the registry, its token
+  service and its blob hosts, redirects included. The address classes are the model
+  gateway's ([ADR 010](adr/010-transport-security-and-preflight.md) §4):
+  - public addresses are allowed;
+  - internal addresses are refused: loopback, private (RFC 1918, RFC 4193),
+    carrier-grade NAT (`100.64.0.0/10`) and the other reserved ranges;
+  - always refused, whatever the rule: unspecified, multicast and link-local addresses,
+    `0.0.0.0/8`, and the cloud metadata addresses (`169.254.169.254` and the rest of
+    `169.254.0.0/16`, `100.100.100.200`, `168.63.129.16`, `fd00:ec2::254`,
+    `fd00:ec2::23`, `fd20:ce::254`);
+  - IPv4-mapped and NAT64 (`64:ff9b::/96`) addresses count as the IPv4 address they
+    carry.
+- `"local": true` allows internal addresses and plain HTTP, for a registry on the
+  operator's own network; never use it for a public registry. It does not open the
+  always-refused addresses: write `127.0.0.1` or `localhost`, not `0.0.0.0`. In
+  production the worker refuses to start with such a rule
   ([ADR 010](adr/010-transport-security-and-preflight.md)); it is for development.
+- A refused address fails the import with the code `policy`.
 - Environment proxy settings are ignored.
 
 ### Publisher signatures

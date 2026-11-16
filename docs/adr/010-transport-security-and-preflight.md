@@ -3,7 +3,8 @@
 Date: November 16, 2026. **Status: built; six defaults pending the product
 owner** (see [Questions](#questions-for-the-product-owner)). Amended on
 November 16, 2026: the addresses the worker may call a model provider at
-(§4, questions 5 and 6). References:
+(§4, questions 5 and 6), then the addresses of registries, which now take
+the same classes (§4). References:
 [docs/product.md](../product.md) §2 (MVP outcome, KVM required), §4 (API
 conventions, RUN-012), §6 (secure by default), OPS-01 of the
 [roadmap](../../ROADMAP.md). The operator's side is in
@@ -29,7 +30,7 @@ An inventory of every hop of a production install, before this change:
 | Worker ↔ SLIM bridge | Unix sockets with peer user checks. | None. |
 | Bridge → SLIM node | Mutual TLS 1.3 on loopback, its own CA; the bridge refuses a node that is not `https`. | None. |
 | Worker → model providers | HTTPS, or plain HTTP to `localhost`, `127.0.0.1` or `::1`. | A provider key could cross clear text. An organization administrator could point the worker at any loopback port of the host and, over HTTPS, at any address: the host, the operator's network, a cloud metadata service (found after this record; §4). |
-| Worker → registries | HTTPS, or plain HTTP for a `local` rule, which may carry Basic credentials. | Credentials and packages in clear on the operator's network. |
+| Worker → registries | HTTPS, or plain HTTP for a `local` rule, which may carry Basic credentials. | Credentials and packages in clear on the operator's network. The address check took `0.1.2.3`, NAT64 forms of private addresses and `168.63.129.16` for public addresses, and a `local` rule opened every address, cloud metadata included (found after this record; §4). |
 | Worker → authority replica | Mutual TLS 1.3, pinned certificates. | None. |
 | Backups | pgBackRest and rclone: HTTPS to S3 with verification, SFTP with a pinned host key, data encrypted before it leaves. | None. |
 | Prometheus → `/metrics` | Plain HTTP on loopback, unauthenticated. | Accepted (below). |
@@ -111,6 +112,21 @@ client's approach:
   registered by its name, which its certificate covers. The check at
   connection is the real guard: the API does not know the worker's allowlist.
 
+**Registry addresses** (amended on November 16, 2026). The registry
+client had its own address check, with the gaps the gateway's check closes.
+Both now use the same classes, in `internal/addrpolicy`:
+- A rule connects to public addresses. A `local` rule (development only)
+  also connects to internal ones. No rule connects to the always-refused
+  addresses above, metadata included.
+- The client checks each address when it connects, after DNS resolution:
+  the registry, its token service and its blob hosts alike.
+- A redirect is followed when it leads to the rule's host or one of its
+  `blob_hosts`, a registry's CDN, as before, at most three times. Its
+  connection takes the same check. Credentials and tokens never follow a
+  redirect to another host.
+- A refused address fails the import with the code `policy`. Environment
+  proxies are ignored.
+
 Tests run mock providers on loopback. They reach them through a constructor
 that takes test options and panics outside a test binary (`testing.Testing`),
 so no configuration can reach those options.
@@ -169,6 +185,15 @@ packages, and the platform's binaries, which are not signed yet.
 - `internal/preflight` and `ServiceConfig.Preflight` in `internal/worker`.
 - The API, the worker and `agentcapsule-admin` apply the mode.
 - The gateway's HTTPS rule.
+- The registry client's address check on the shared classes
+  (`internal/addrpolicy`, `internal/ociregistry`). Tests, through a test
+  resolver and network: `0.1.2.3`, `64:ff9b::a00:1` and `168.63.129.16`
+  refused for a public rule; a public name resolving to an internal address
+  refused through the import path, nothing dialed; a redirect to a blob host
+  that resolves to an internal or metadata address refused, a redirect to a
+  public one followed without the registry's token; a `local` rule opening
+  internal addresses but no metadata address, directly or by redirect. Each
+  failed before the change.
 - The gateway's address policy and the operator's allowlist
   (`internal/llmgateway/egress.go`, `ServiceLLM` in `internal/worker`), and
   the API's refusal of an internal address at registration. Tests: each

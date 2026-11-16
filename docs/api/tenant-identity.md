@@ -59,6 +59,13 @@ A trust installed before migration 0034 has only its fingerprint in
 PostgreSQL, not its keys: the API refuses its tokens until the operator runs
 `rotate` with its file.
 
+`rotate` and `revoke-trust` reject existing tokens, `revoke-token` ends one
+for good, and `add-key` and `retire-key` change who may sign in: they also
+need `-confirm`, repeating the issuer (`rotate`, `revoke-trust`), the token ID
+(`revoke-token`) or the key ID (`add-key`, `retire-key`). `-dry-run` checks the change
+and records nothing: no change, no receipt, no audit; the same
+`-operation-id` then runs for real.
+
 ## Tokens and authorization
 
 The API verifies each token with the registered key its `kid` names, in the

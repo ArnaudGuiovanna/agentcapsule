@@ -18,9 +18,42 @@ import (
 //	flood-volume <bytes>   serves normally, and on an ordinary boot also
 //	                       writes its data directory as fast as it can,
 //	                       <bytes> per write, each followed by fdatasync.
+//	fill-tmp <bytes>       before serving, writes up to <bytes> to /tmp; if
+//	                       /tmp is full first, it removes the file and
+//	                       serves, otherwise it exits: /tmp is not bounded.
+//	text-only              serves normally but does not accept JSON content,
+//	                       like a harness built before it existed.
 type behaviour struct {
 	crashAtBoot bool
 	floodChunk  int
+	fillTmp     int64
+	textOnly    bool
+}
+
+var errTmpUnbounded = errors.New("/tmp took the whole fill (test behaviour)")
+
+// fillTmp writes up to limit bytes in dir. It returns nil once the filesystem
+// is full (ENOSPC) and errTmpUnbounded if it took them all. The file is
+// removed either way.
+func fillTmp(dir string, limit int64) error {
+	f, err := os.CreateTemp(dir, "fill-")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	defer f.Close()
+	buf := make([]byte, 1<<20)
+	for written := int64(0); written < limit; {
+		n, err := f.Write(buf[:min(int64(len(buf)), limit-written)])
+		written += int64(n)
+		if errors.Is(err, syscall.ENOSPC) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return errTmpUnbounded
 }
 
 // floodSpan is how much of the flood file is rewritten, again and again, so
@@ -41,6 +74,14 @@ func parseBehaviour(args []string) (behaviour, error) {
 			return behaviour{}, errors.New("invalid flood write size")
 		}
 		return behaviour{floodChunk: n}, nil
+	case len(args) == 2 && args[0] == "fill-tmp":
+		n, err := strconv.ParseInt(args[1], 10, 64)
+		if err != nil || n < 1<<20 || n > 2<<30 {
+			return behaviour{}, errors.New("invalid fill size")
+		}
+		return behaviour{fillTmp: n}, nil
+	case len(args) == 1 && args[0] == "text-only":
+		return behaviour{textOnly: true}, nil
 	}
 	return behaviour{}, errors.New("unknown test behaviour")
 }

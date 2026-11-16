@@ -3,6 +3,8 @@ package ociregistry
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -10,11 +12,13 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
+
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/addrpolicy"
 )
 
 const (
@@ -23,9 +27,14 @@ const (
 	maxToken        = 64 << 10
 )
 
+// errAddress: the rule's address policy refuses every address of the host.
+// Nothing was sent.
+var errAddress = fmt.Errorf("%w: address not allowed for this registry", ErrPolicy)
+
 // client talks to one approved registry. It has its own transport so the
 // address policy of that rule applies to every connection, including blob
-// redirects and token requests. Environment proxies are ignored.
+// redirects and token requests. Environment proxies are ignored: the check
+// would then see the proxy, not the registry.
 type client struct {
 	rule Rule
 	http *http.Client
@@ -33,18 +42,29 @@ type client struct {
 	auth map[string]string // repository -> Authorization header won from a challenge
 }
 
+// network replaces, in tests only, DNS resolution, the connection to an
+// address the rule allows, and the trusted CAs. The rule's address policy
+// stays the production one.
+type network struct {
+	lookup  func(ctx context.Context, host string) ([]netip.Addr, error)
+	connect func(ctx context.Context, network, address string) (net.Conn, error)
+	rootCAs *x509.CertPool
+}
+
 func newClient(rule Rule, timeout time.Duration) *client {
-	dialer := &net.Dialer{Timeout: 10 * time.Second, Control: func(_, address string, _ syscall.RawConn) error {
-		host, _, err := net.SplitHostPort(address)
-		if err != nil {
-			return ErrPolicy
-		}
-		ip := net.ParseIP(host)
-		if ip == nil || (!rule.Local && !publicIP(ip)) {
-			return fmt.Errorf("%w: refusing to connect to a non-public address", ErrPolicy)
-		}
-		return nil
-	}}
+	return newClientOn(rule, timeout, network{})
+}
+
+func newClientOn(rule Rule, timeout time.Duration, n network) *client {
+	dialer := &addrpolicy.Dialer{
+		Allow:   func(_ string, _ uint16, a netip.Addr) bool { return rule.allowsAddress(a) },
+		Refused: errAddress,
+		Lookup:  n.lookup,
+		Connect: n.connect,
+	}
+	if dialer.Connect == nil {
+		dialer.Connect = (&net.Dialer{Timeout: 10 * time.Second}).DialContext
+	}
 	transport := &http.Transport{
 		Proxy:                 nil,
 		DialContext:           dialer.DialContext,
@@ -53,6 +73,9 @@ func newClient(rule Rule, timeout time.Duration) *client {
 		MaxIdleConns:          4,
 		IdleConnTimeout:       30 * time.Second,
 		ForceAttemptHTTP2:     true,
+	}
+	if n.rootCAs != nil {
+		transport.TLSClientConfig = &tls.Config{RootCAs: n.rootCAs, MinVersion: tls.VersionTLS12}
 	}
 	c := &client{rule: rule, auth: map[string]string{}}
 	c.http = &http.Client{Transport: transport, Timeout: timeout, CheckRedirect: func(req *http.Request, via []*http.Request) error {

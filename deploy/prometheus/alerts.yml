@@ -35,6 +35,16 @@ groups:
         annotations:
           summary: A due worker job has waited more than 5 minutes past its time.
 
+      # The invocations' own wait (OPS-03): an agent's deliveries share one
+      # job, so a growing backlog does not show in the jobs' delay above.
+      - alert: AgentCapsuleInvocationsDelayed
+        expr: agentcapsule_worker_invocation_oldest_waiting_seconds > 900
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: An invocation has waited more than 15 minutes to be delivered to its agent.
+
       - alert: AgentCapsuleJobsFailing
         expr: agentcapsule_worker_jobs_failing > 0
         for: 15m
@@ -76,7 +86,17 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: The host runs as many VMs as max_active allows; waking an agent stops another.
+          summary: The host runs as many VMs as max_active allows; new work stops an idle VM or waits.
+
+      # Work waits for a VM slot (ADR 017): every VM of the host is computing.
+      # It boots in arrival order as slots free, or expires with
+      # capacity_unavailable.
+      - alert: AgentCapsuleWorkWaitingForCapacity
+        expr: agentcapsule_worker_capacity_oldest_wait_seconds > 600
+        labels:
+          severity: warning
+        annotations:
+          summary: Work has waited more than 10 minutes for a VM slot; raise max_active or add a host.
 
       - alert: AgentCapsuleDiskPressure
         expr: agentcapsule_worker_root_disk_used_ratio > 0.70
@@ -93,6 +113,34 @@ groups:
           severity: critical
         annotations:
           summary: The runtime root's file system is more than 80 % full.
+
+      # The harness images may have a file system of their own (the
+      # registry's cache); the same 70 % and 80 % levels apply (OPS-03).
+      - alert: AgentCapsuleImageDiskPressure
+        expr: agentcapsule_worker_image_disk_used_ratio > 0.70
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: The file system of the harness images is more than 70 % full.
+
+      - alert: AgentCapsuleImageDiskCritical
+        expr: agentcapsule_worker_image_disk_used_ratio > 0.80
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: The file system of the harness images is more than 80 % full.
+
+      # Past storage_pressure (0.80 by default), the API refuses new agents
+      # (data) or imports (images) with storage_pressure (ADR 014).
+      - alert: AgentCapsuleStoragePressure
+        expr: agentcapsule_worker_storage_pressure == 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: A file system of the host is past its storage pressure threshold; new agents or harness imports are refused.
 
       - alert: AgentCapsuleSLIMUnavailable
         expr: increase(agentcapsule_worker_job_retries_total{reason="slim_unavailable"}[10m]) > 0

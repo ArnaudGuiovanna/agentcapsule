@@ -41,6 +41,14 @@ harness.run()
   no other file, no `COMMIT`, nothing in `capsule_*` tables.
 - **Results.** An invocation returns JSON, usually `text_result("...")`
   (`{"content": [{"type": "text", "text": "..."}]}`), at most 512 KiB.
+- **JSON content.** A message holds text parts and JSON parts
+  (`{"type": "json", "json": value}`, content type `application/json`).
+  `Harness(json_content=True)` says the harness handles them: it then receives
+  JSON parts in invocations (`invocation.values`) and in the requests and
+  replies of other agents. Without it, the platform sends each JSON part as a
+  text part holding the compact JSON. Answer with
+  `content_result(text_part("..."), json_part({...}))`. Text and compact JSON
+  add up to at most 32 KiB per message, and a value nests at most 32 levels.
 - **Deferred results.** The harness cannot call the platform while it is handling a
   delivery (that call would wait for the delivery to end). To use the model or read
   an attachment, record the work in `tx`, return `WORKING`, and finish in

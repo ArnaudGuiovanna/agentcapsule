@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/harnessstore"
@@ -83,6 +84,8 @@ type Server struct {
 	store            *harnessstore.Store
 	mutate           func(context.Context, harnessstore.Event, harnessstore.SQL) ([]byte, error)
 	slots            chan struct{}
+	// json: the harness accepts JSON parts (AcceptJSONContent).
+	json bool
 	// Tests can drop a connection after the durable commit, before the ACK.
 	afterCommit func(http.ResponseWriter)
 }
@@ -223,6 +226,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		invocation := r.URL.Path == "/v1/invoke"
+		if !s.json && EventHasJSON(in.Event.Body) {
+			// The platform sends JSON parts only to a harness that offered
+			// ControlContentJSON; anything else is refused, never guessed.
+			write(http.StatusBadRequest, "invalid_envelope")
+			return
+		}
 		if invocation {
 			if _, err := DecodeInvocation(*in.Event, s.credentials.Identity.AgentID); err != nil {
 				write(http.StatusBadRequest, "invalid_envelope")
@@ -274,6 +283,8 @@ type Client struct {
 	serverName string
 	scheme     string
 	http       *http.Client
+	// contract is the one RequireControlContract last accepted (Accepts).
+	contract atomic.Pointer[ControlCapabilities]
 }
 
 func (c *Client) endpoint(path string) string {

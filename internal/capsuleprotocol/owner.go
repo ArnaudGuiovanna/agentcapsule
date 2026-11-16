@@ -7,7 +7,7 @@ import "context"
 // request; it does not confer the right to issue another peer request.
 type OwnerPost struct {
 	RequestID string        `json:"request_id,omitempty"`
-	Content   []TextContent `json:"content"`
+	Content   []ContentPart `json:"content"`
 }
 
 func (p OwnerPost) Validate() error {

@@ -97,6 +97,9 @@ func run() (result error) {
 	if err != nil {
 		return err
 	}
+	// A command reads JSON parts as text; an A2A server agent gets them as
+	// data parts (ADR 016).
+	s.AcceptJSONContent()
 	endpoint := &agentadapter.ModelEndpoint{Config: cfg}
 	if platform != nil {
 		endpoint.Platform = platform

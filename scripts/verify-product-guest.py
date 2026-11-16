@@ -252,7 +252,8 @@ def main():
                 "TestProductWorkerContractOutagePreservesCensusAndMaintenance", "TestProductWorkerTenantAsyncInvocationWithFileAndModel",
                 "TestProductWorkerTenantRunsAnImportedHarness", "TestProductWorkerTenantUpgradesAndRollsBackAnImportedHarness",
                 "TestProductWorkerTenantRunsAPythonHarness", "TestProductWorkerTenantRunsAnAdaptedAgent", "TestProductWorkerTwoOrganizationsStayIsolated",
-                "TestProductWorkerTenantAgentsTalkOverA2A", "TestProductWorkerNightlyVolumeArchives", "TestProductWorkerRestoresAgentFromArchive"}
+                "TestProductWorkerTenantAgentsTalkOverA2A", "TestProductWorkerNightlyVolumeArchives", "TestProductWorkerRestoresAgentFromArchive",
+                "TestProductWorkerBoundsTheGuestTmp", "TestProductWorkerDeliversJSONContent", "TestProductWorkerEnforcesCapabilities"}
             if a.pi_harness:
                 required_worker.add("TestProductWorkerTenantRunsPiOnARealModel")
             if slim_build:

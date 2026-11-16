@@ -39,7 +39,7 @@ func IsWorkingResult(b []byte) bool {
 type InvocationCompletion struct {
 	OperationID string        `json:"operation_id"`
 	Outcome     string        `json:"outcome"`
-	Content     []TextContent `json:"content,omitempty"`
+	Content     []ContentPart `json:"content,omitempty"`
 }
 
 func (c InvocationCompletion) Validate() error {

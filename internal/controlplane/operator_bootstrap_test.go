@@ -24,7 +24,7 @@ func TestPlatformCredentialIsAudited(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 2 {
-		if err := s.RevokeOperatorCredential(ctx, "platform", p.TokenID); err != nil {
+		if _, err := s.RevokeOperatorCredential(ctx, OperatorCommand{Actor: "local-uid:1000"}, "platform", p.TokenID); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -32,7 +32,8 @@ func TestPlatformCredentialIsAudited(t *testing.T) {
 	if err != nil || len(events) != 3 {
 		t.Fatal("operator audit", events, err)
 	}
-	want := []string{"platform_credential.revoked:false", "platform_credential.revoked:true", "platform_credential.created:true"}
+	// The revocation is a guarded command (ADR 014), audited with its outcome.
+	want := []string{"credential.revoked:false", "credential.revoked:true", "platform_credential.created:true"}
 	for i, e := range events {
 		got := e.Action + ":" + map[bool]string{true: "true", false: "false"}[e.Changed]
 		if got != want[i] || e.Actor != "local-uid:1000" || e.Target != p.TokenID || strings.Contains(e.Reference+e.Target, secret) {

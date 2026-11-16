@@ -48,6 +48,59 @@ func TestManifestIsStrict(t *testing.T) {
 	}
 }
 
+// A harness requests the capabilities it needs (ADR 016). Declaring none is
+// not the same as not declaring: an absent list is a release that predates
+// the field.
+func TestManifestDeclaresItsCapabilities(t *testing.T) {
+	m, err := ParseManifest([]byte(goodManifest + "capabilities: [llm.invoke, agents.delegate]\n"))
+	if err != nil || m.Capabilities == nil || !slices.Equal(*m.Capabilities, []string{"llm.invoke", "agents.delegate"}) {
+		t.Fatal(m.Capabilities, err)
+	}
+	if m, err = ParseManifest([]byte(goodManifest + "capabilities: []\n")); err != nil || m.Capabilities == nil || len(*m.Capabilities) != 0 {
+		t.Fatal("an empty list", m.Capabilities, err)
+	}
+	if m, err = ParseManifest([]byte(goodManifest)); err != nil || m.Capabilities != nil {
+		t.Fatal("no list", m.Capabilities, err)
+	}
+	for _, bad := range []string{"[files.write]", "[llm.invoke, llm.invoke]", "llm.invoke", "[\"\"]"} {
+		if _, err = ParseManifest([]byte(goodManifest + "capabilities: " + bad + "\n")); !errors.Is(err, ErrInvalid) {
+			t.Error("accepted", bad, err)
+		}
+	}
+	// The list survives packing: WritePackage writes what ParseManifest reads.
+	dir := t.TempDir()
+	if err = os.WriteFile(filepath.Join(dir, RootfsFile), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	none := []string{}
+	m.Capabilities = &none
+	if err = WritePackage(dir, m); err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := os.ReadFile(filepath.Join(dir, ManifestFile))
+	if again, err := ParseManifest(raw); err != nil || again.Capabilities == nil || len(*again.Capabilities) != 0 {
+		t.Fatal(string(raw), err)
+	}
+}
+
+// The example harnesses declare the capabilities they use, and parse.
+func TestExampleManifestsDeclareTheirCapabilities(t *testing.T) {
+	paths, err := filepath.Glob("../../examples/*/harness.yaml")
+	if err != nil || len(paths) < 5 {
+		t.Fatal(paths, err)
+	}
+	for _, path := range paths {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m, err := ParseManifest(raw)
+		if err != nil || m.Capabilities == nil {
+			t.Error(path, err)
+		}
+	}
+}
+
 func TestChecksumsListExactlyTheTwoFiles(t *testing.T) {
 	d := Digest([]byte("x"))
 	if _, err := ParseChecksums([]byte(`{"files":{"harness.yaml":"` + d + `","harness.ext4":"` + d + `"}}`)); err != nil {

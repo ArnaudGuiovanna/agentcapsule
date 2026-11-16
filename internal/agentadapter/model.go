@@ -168,6 +168,8 @@ func explain(err error, alias string) (int, string, string) {
 		return http.StatusGatewayTimeout, "api_error", "The provider did not answer in time; the request may have been processed."
 	case "unauthorized":
 		return http.StatusForbidden, "permission_error", "This agent may not call models now."
+	case "capability_denied":
+		return http.StatusForbidden, "permission_error", "This agent's harness or its policies do not allow model calls (llm.invoke)."
 	}
 	return http.StatusServiceUnavailable, "api_error", "The model service is unavailable; retry later."
 }
