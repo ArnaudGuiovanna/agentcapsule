@@ -117,9 +117,9 @@ func sortedKeys[V any](m map[string]V) []string {
 	return keys
 }
 
-// CONV-1: every route the server serves is in openapi/openapi.yaml with
-// each of its methods, every documented operation is served, and the RBAC
-// matrix lists the same operations.
+// CONV-1: every route the server serves is under /v1 and in
+// openapi/openapi.yaml with each of its methods, every documented operation
+// is served, and the RBAC matrix lists the same operations.
 func TestOpenAPIDescribesExactlyTheServedRoutes(t *testing.T) {
 	documented, served := loadOpenAPI(t).routes(), servedRoutes(t)
 	matrix := map[string]bool{}
@@ -128,6 +128,9 @@ func TestOpenAPIDescribesExactlyTheServedRoutes(t *testing.T) {
 	}
 	for _, key := range sortedKeys(served) {
 		method, _, _ := strings.Cut(key, " ")
+		if !strings.HasPrefix(served[key], "/v1/") {
+			t.Error("served outside /v1:", method, served[key])
+		}
 		if _, ok := documented[key]; !ok {
 			t.Error("served, not in openapi/openapi.yaml:", method, served[key])
 		}
