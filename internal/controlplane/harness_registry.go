@@ -157,7 +157,9 @@ func (a *Accounts) GetHarnessImport(ctx context.Context, p Principal, id string)
 }
 
 // ListHarnessReleases is open to the platform operator and to organization
-// members who can read agents: releases carry no tenant data.
+// members whose role reads every agent's metadata (owner, administrator,
+// operator, auditor): releases carry no tenant data, but an agent_user knows
+// only the agents assigned to it.
 func (a *Accounts) ListHarnessReleases(ctx context.Context, p Principal, includeDeprecated bool) ([]HarnessRelease, error) {
 	tx, err := a.store.begin(ctx)
 	if err != nil {
@@ -167,7 +169,11 @@ func (a *Accounts) ListHarnessReleases(ctx context.Context, p Principal, include
 	if p.Kind == "platform" {
 		err = authorizePlatform(ctx, tx, p)
 	} else {
-		_, err = authorizeTenant(ctx, tx, p, authorization.ScopeAgentRead)
+		var current CurrentOrganization
+		if current, err = authorizeTenant(ctx, tx, p, authorization.ScopeAgentRead); err == nil &&
+			!authorization.CanAdminister(tenantAccess(p), authorization.Role(current.Role), authorization.ReadAgentMetadata) {
+			err = ErrForbidden
+		}
 	}
 	if err != nil {
 		return nil, err

@@ -109,7 +109,13 @@ var volumeRestoresSQL string
 //go:embed migrations/0030_invocation_reruns.sql
 var invocationRerunsSQL string
 
-//go:embed migrations/0031_operations.sql
+//go:embed migrations/0031_restart_budgets.sql
+var restartBudgetsSQL string
+
+//go:embed migrations/0032_llm_access_and_cost.sql
+var llmAccessAndCostSQL string
+
+//go:embed migrations/0033_operations.sql
 var operationsSQL string
 
 // Append migrations; never edit an installed migration. The original schema
@@ -146,7 +152,9 @@ var controlPlaneMigrations = []schemaMigration{
 	{version: 28, name: "volume-archives", sql: volumeArchivesSQL},
 	{version: 29, name: "volume-restores", sql: volumeRestoresSQL},
 	{version: 30, name: "invocation-reruns", sql: invocationRerunsSQL},
-	{version: 31, name: "operations", sql: operationsSQL},
+	{version: 31, name: "restart-budgets", sql: restartBudgetsSQL},
+	{version: 32, name: "llm-access-and-cost", sql: llmAccessAndCostSQL},
+	{version: 33, name: "operations", sql: operationsSQL},
 }
 
 func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error {

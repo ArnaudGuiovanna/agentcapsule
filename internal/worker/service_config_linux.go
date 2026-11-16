@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authoritylog"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/keyauthority"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/restoreauthority"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/runtime"
@@ -108,6 +109,12 @@ type ServiceConfig struct {
 	// Archives makes maintenance archive each agent's encrypted volume about
 	// once a day (REC-02, ADR 004); none when absent.
 	Archives *ServiceArchives `json:"archives,omitempty"`
+	// DriveLimits caps the disk I/O of each VM (CAP-03, ADR 012). Every
+	// number left out or zero takes its default (runtime.DefaultDriveLimits).
+	DriveLimits *runtime.DriveLimits `json:"drive_limits,omitempty"`
+	// RestartBudget bounds the failed boots and crashes of each agent's
+	// guest (CAP-03, ADR 012); see ServiceRestartBudget.
+	RestartBudget *ServiceRestartBudget `json:"restart_budget,omitempty"`
 	// StoragePressure is the used share of the volumes' or the images' file
 	// system past which new agents and imports are refused (OPS-03): 0.5 to
 	// 0.95, DefaultStoragePressure (0.80) when absent.
@@ -123,6 +130,47 @@ func (c ServiceConfig) Pressure() *StoragePressure {
 		images = cmp.Or(c.Registry.Cache, filepath.Join(c.Root, "releases"))
 	}
 	return &StoragePressure{Data: c.Root, Images: images, Threshold: cmp.Or(c.StoragePressure, DefaultStoragePressure)}
+}
+
+// ServiceRestartBudget: an agent whose guest fails to boot or crashes
+// Failures times within Window is FAILED until it is woken or cleared.
+// Defaults: 5 failures in 1h. Failures from 1 to 100, Window from 1m to 24h.
+type ServiceRestartBudget struct {
+	Failures int    `json:"failures,omitempty"`
+	Window   string `json:"window,omitempty"`
+}
+
+// Restarts returns the configured restart budget, or the default without the
+// section.
+func (c ServiceConfig) Restarts() (controlplane.RestartBudget, error) {
+	b := controlplane.DefaultRestartBudget
+	if r := c.RestartBudget; r != nil {
+		b.Failures = cmp.Or(r.Failures, b.Failures)
+		if r.Window != "" {
+			window, err := time.ParseDuration(r.Window)
+			if err != nil {
+				return b, errors.New("invalid restart budget")
+			}
+			b.Window = window
+		}
+	}
+	if !b.Valid() {
+		return b, errors.New("invalid restart budget")
+	}
+	return b, nil
+}
+
+// driveLimits returns the configured ceilings, each zero number taking its
+// default.
+func (c ServiceConfig) driveLimits() (runtime.DriveLimits, error) {
+	l := runtime.DefaultDriveLimits
+	if d := c.DriveLimits; d != nil {
+		l.Volume.BandwidthMiBPerSecond = cmp.Or(d.Volume.BandwidthMiBPerSecond, l.Volume.BandwidthMiBPerSecond)
+		l.Volume.IOPS = cmp.Or(d.Volume.IOPS, l.Volume.IOPS)
+		l.Harness.BandwidthMiBPerSecond = cmp.Or(d.Harness.BandwidthMiBPerSecond, l.Harness.BandwidthMiBPerSecond)
+		l.Harness.IOPS = cmp.Or(d.Harness.IOPS, l.Harness.IOPS)
+	}
+	return l, l.Validate()
 }
 
 // ServiceArchives configures the nightly volume archives. Root is a private
@@ -334,6 +382,13 @@ func (c ServiceConfig) Settings() (runtime.FirecrackerOptions, time.Duration, Ma
 	if c.StoragePressure != 0 && !c.Pressure().valid() {
 		return r, 0, m, invalid
 	}
+	if _, err := c.Restarts(); err != nil {
+		return r, 0, m, invalid
+	}
+	drives, err := c.driveLimits()
+	if err != nil {
+		return r, 0, m, invalid
+	}
 	boot, err := time.ParseDuration(c.BootTimeout)
 	if err != nil || boot <= 0 {
 		return r, 0, m, invalid
@@ -377,6 +432,6 @@ func (c ServiceConfig) Settings() (runtime.FirecrackerOptions, time.Duration, Ma
 	}
 	r = runtime.FirecrackerOptions{Root: c.Root, Firecracker: c.Firecracker.Path, FirecrackerSHA256: c.Firecracker.SHA256,
 		Jailer: c.Jailer.Path, JailerSHA256: c.Jailer.SHA256, Kernel: c.Kernel.Path, KernelSHA256: c.Kernel.SHA256,
-		Initrd: c.Initrd.Path, InitrdSHA256: c.Initrd.SHA256, MaxActive: c.MaxActive, BootTimeout: boot, AuthenticatedControl: true}
+		Initrd: c.Initrd.Path, InitrdSHA256: c.Initrd.SHA256, MaxActive: c.MaxActive, BootTimeout: boot, DriveLimits: drives, AuthenticatedControl: true}
 	return r, lease, m, nil
 }

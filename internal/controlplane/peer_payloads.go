@@ -158,8 +158,9 @@ func (t *Transit) resolveDelivery(ctx context.Context, attempt DeliveryAttempt) 
 	return harnessstore.Event{ID: m.ID, Subjects: []string{"agent/" + r.Sender, "agent/" + r.Recipient, "request/" + r.ID, "event/" + m.ID}, Body: encoded}, nil
 }
 
-// readPeerContent requires the caller to own both participant locks and to have
-// separately authorized its role (owner read or current dispatch permission).
+// readPeerContent requires the caller to own both participant locks, or the
+// content's own lock (Transit.senderReply), and to have separately authorized
+// its role (owner read, current dispatch permission, or the sender's read).
 func (t *Transit) readPeerContent(ctx context.Context, tx pgx.Tx, r requestRow, agents map[string]agent, kind string) (peerContent, error) {
 	if kind != "request" && kind != "reply" {
 		return peerContent{}, ErrInput
@@ -211,8 +212,11 @@ func (t *Transit) readPeerContent(ctx context.Context, tx pgx.Tx, r requestRow, 
 
 // peerOwners names the identity each party of a request is bound to: the owner
 // of an agent of a person, or, between agents of an organization, the person
-// whose invocation granted the request's mandate, who must still belong to the
-// organization (D-02).
+// whose invocation granted the request's mandate, who must still be a
+// principal of the organization (D-02). An offboarded member still is one: the
+// request is work accepted before the offboarding, which may complete for the
+// organization (ADR 002). The two agents keep reading its content; the former
+// member reads nothing.
 func peerOwners(ctx context.Context, tx pgx.Tx, r requestRow, agents map[string]agent) (map[string]string, error) {
 	sender, recipient := agents[r.Sender], agents[r.Recipient]
 	if sender.Tenant == "" && recipient.Tenant == "" {

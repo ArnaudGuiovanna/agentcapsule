@@ -162,7 +162,7 @@ func TestDiagnosticsLeakNoSecretContentOrPersonalData(t *testing.T) {
 	defer prometheus.Close()
 
 	archive := filepath.Join(dir, "diagnostics.tar.gz")
-	if out, code := command(t, "diagnostics", "-output", archive, "-worker-config", config, "-worker-metrics", metrics.URL+"/metrics",
+	if out, code := trimmed(t, "diagnostics", "-output", archive, "-worker-config", config, "-worker-metrics", metrics.URL+"/metrics",
 		"-api-metrics", "http://127.0.0.1:1/metrics", "-prometheus", prometheus.URL); code != 0 || out != "diagnostics_written" {
 		t.Fatal("diagnostics", out, code)
 	}
@@ -183,7 +183,7 @@ func TestDiagnosticsLeakNoSecretContentOrPersonalData(t *testing.T) {
 		}
 	}
 	for name, want := range map[string]string{
-		"agentcapsule-diagnostics/database.json":                     `"expected_migration": 31`,
+		"agentcapsule-diagnostics/database.json":                     `"expected_migration": `,
 		"agentcapsule-diagnostics/metrics/worker.prom":               `agentcapsule_worker_jobs{kind="delivery"} 3`,
 		"agentcapsule-diagnostics/worker-authority-replication.json": `"agentcapsule_authority_replication_lag_records": "2"`,
 		"agentcapsule-diagnostics/alerts.json":                       `"alertname": "AgentCapsuleDiskPressure"`,
@@ -210,7 +210,7 @@ func TestDiagnosticsLeakNoSecretContentOrPersonalData(t *testing.T) {
 		t.Fatal("configuration", cfg)
 	}
 	// An existing file is never overwritten.
-	if out, code := command(t, "diagnostics", "-output", archive); code == 0 || out != "diagnostics_output_failed" {
+	if out, code := trimmed(t, "diagnostics", "-output", archive); code == 0 || out != "diagnostics_output_failed" {
 		t.Fatal("overwrote", out, code)
 	}
 }

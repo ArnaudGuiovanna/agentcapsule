@@ -19,8 +19,10 @@ type ServiceLLM struct {
 }
 
 // OpenLLM never creates a key. Without the matching key the worker simply cannot
-// open provider credentials, and the bridge answers unavailable.
-func (c ServiceConfig) OpenLLM(s *controlplane.Store) (*controlplane.LLMService, error) {
+// open provider credentials, and the bridge answers unavailable. With
+// requireHTTPS (production), a provider on plain HTTP is refused before any
+// request is sent.
+func (c ServiceConfig) OpenLLM(s *controlplane.Store, requireHTTPS bool) (*controlplane.LLMService, error) {
 	if c.LLM == nil {
 		return nil, nil
 	}
@@ -38,7 +40,7 @@ func (c ServiceConfig) OpenLLM(s *controlplane.Store) (*controlplane.LLMService,
 	}
 	// Two attempts of 140 s fit inside the bridge's 300 s call budget; one
 	// attempt leaves room for a long answer from an adapted agent.
-	return controlplane.NewLLMService(accounts, llmgateway.New(llmgateway.Config{Timeout: 140 * time.Second}))
+	return controlplane.NewLLMService(accounts, llmgateway.New(llmgateway.Config{Timeout: 140 * time.Second, RequireHTTPS: requireHTTPS}))
 }
 
 // EnableLLM attaches the model gateway once, like EnableTransit.

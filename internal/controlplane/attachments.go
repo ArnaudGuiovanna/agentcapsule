@@ -202,8 +202,8 @@ func (c *AgentCatalog) mayInvoke(ctx context.Context, tx pgx.Tx, p Principal, ag
 	return nil
 }
 
-// GetAttachment shows metadata to the uploader or to a role allowed to read
-// agent metadata. Never content.
+// GetAttachment shows metadata to the uploader while it still sees the agent,
+// or to a role allowed to read agent metadata. Never content.
 func (c *AgentCatalog) GetAttachment(ctx context.Context, p Principal, id string) (Attachment, error) {
 	if p.Kind != "tenant" || !capsuleprotocol.ValidAttachmentID(id) {
 		return Attachment{}, ErrNotFound
@@ -222,6 +222,11 @@ func (c *AgentCatalog) GetAttachment(ctx context.Context, p Principal, id string
         WHERE id=$1 AND tenant_id=$2 AND ($3 OR uploader_principal_id=$4)`, id, p.TenantID, administrative, p.ID))
 	if err != nil {
 		return Attachment{}, err
+	}
+	if !administrative {
+		if err = hideUnlessStillSeen(ctx, tx, p, current.Role, v.AgentID); err != nil {
+			return Attachment{}, err
+		}
 	}
 	return v, commit(ctx, tx)
 }

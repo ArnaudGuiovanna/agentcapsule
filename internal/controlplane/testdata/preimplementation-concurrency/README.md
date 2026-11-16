@@ -12,7 +12,10 @@ Go campaign evidence, not in the immutable model artifact.
 Its projection covers PostgreSQL agents,
 placements, request/terminal states, closure intents, mandate budgets/expiry,
 mailboxes, destination FIFO, leases and opaque tokens, outbox, barrier receipts,
-SQLite effects, stored results, deduplication and durable fences. It also checks
+SQLite effects, stored results, deduplication and durable fences. Since ADR 007
+§7 a request's closure targets its two parties only; the frozen traces still
+fence every store, so a closure's receipts are compared on the request's
+parties, and every fence is still checked in SQLite. It also checks
 real PostgreSQL row-lock exclusion while admitted transactions are suspended.
 The two RPC slots can hold independent SQLite writer transactions simultaneously.
 

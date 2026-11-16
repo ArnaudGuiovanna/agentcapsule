@@ -69,6 +69,15 @@ groups:
         annotations:
           summary: VMs failed to boot more than 3 times in 15 minutes.
 
+      # An agent whose guest kept failing to boot or crashing (ADR 012): it is
+      # FAILED and boots again only when woken or cleared by the operator.
+      - alert: AgentCapsuleAgentFailed
+        expr: increase(agentcapsule_worker_agents_failed_total[15m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: An agent spent its restart budget and is FAILED until it is woken.
+
       - alert: AgentCapsuleCapacityExhausted
         expr: agentcapsule_worker_vms_running >= agentcapsule_worker_vm_capacity
         for: 15m

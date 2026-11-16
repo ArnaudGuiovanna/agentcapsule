@@ -20,7 +20,9 @@ type independentBarrierRuntime struct {
 	root                *restoreauthority.Catalog
 	bindings            map[string]restoreauthority.Binding
 	calls, publications int
-	reserveAfterThird   bool
+	// reserveAfter replaces b's incarnation once that many fences have been
+	// acknowledged: after the last target's, before the final publication.
+	reserveAfter int
 }
 
 func (r *independentBarrierRuntime) Fence(ctx context.Context, target, subject string) error {
@@ -40,7 +42,7 @@ func (r *independentBarrierRuntime) Fence(ctx context.Context, target, subject s
 		return err
 	}
 	r.calls++
-	if r.reserveAfterThird && r.calls == 3 {
+	if r.reserveAfter > 0 && r.calls == r.reserveAfter {
 		_, err = r.root.ReserveIncarnation(ctx, r.bindings["b"], "restore-b")
 	}
 	return err
@@ -55,7 +57,9 @@ func (r *independentBarrierRuntime) CommitBarrier(ctx context.Context, subject s
 }
 
 func TestRevocationRechecksIndependentReceiptsAfterSQLAcknowledgment(t *testing.T) {
-	for _, kind := range []string{"agent", "request"} {
+	// A deletion fences every store; a request's closure its two parties,
+	// a and b (ADR 007 §7).
+	for kind, targets := range map[string]int{"agent": 3, "request": 2} {
 		t.Run(kind, func(t *testing.T) {
 			s, _ := freshStore(t, "auto", 5)
 			root, err := restoreauthority.Initialize(t.Context(), filepath.Join(t.TempDir(), "authority"), "keyauth_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
@@ -63,7 +67,7 @@ func TestRevocationRechecksIndependentReceiptsAfterSQLAcknowledgment(t *testing.
 				t.Fatal(err)
 			}
 			defer root.Close()
-			r := &independentBarrierRuntime{root: root, local: mockStores(t, t.TempDir(), "a", "b", "c"), bindings: map[string]restoreauthority.Binding{}, reserveAfterThird: true}
+			r := &independentBarrierRuntime{root: root, local: mockStores(t, t.TempDir(), "a", "b", "c"), bindings: map[string]restoreauthority.Binding{}, reserveAfter: targets}
 			for _, id := range []string{"a", "b", "c"} {
 				b, err := root.Register(t.Context(), id, "volume-"+id)
 				if err != nil {
@@ -110,7 +114,7 @@ func TestRevocationRechecksIndependentReceiptsAfterSQLAcknowledgment(t *testing.
 					t.Fatal("terminal state published without current independent ACK")
 				}
 			}
-			if r.calls != 3 || r.publications != 2 {
+			if r.calls != targets || r.publications != 2 {
 				t.Fatal("replay failed to verify already-acknowledged SQL manifest", r.calls, r.publications)
 			}
 		})

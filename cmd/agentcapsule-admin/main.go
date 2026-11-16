@@ -33,6 +33,9 @@ func run() int {
 	if len(os.Args) > 1 && os.Args[1] == "abandon-provisioning" {
 		return abandonProvisioning(os.Args[2:])
 	}
+	if len(os.Args) > 1 && os.Args[1] == "clear-agent-failure" {
+		return clearAgentFailure(os.Args[2:])
+	}
 	if len(os.Args) > 1 && os.Args[1] == "list-credentials" {
 		return listCredentials(os.Args[2:])
 	}
@@ -64,7 +67,7 @@ func run() int {
 		return configureCatalog(os.Args[1], os.Args[2:])
 	}
 	if len(os.Args) < 2 || os.Args[1] != "bootstrap" {
-		return fail("usage: agentcapsule-admin bootstrap | bootstrap-platform | list-credentials | revoke-credential | abandon-provisioning | configure-delegation | init-key-authority | init-restore-authority | configure-host | approve-local-harness | activate-transit-keys | set-audit-retention | list-operator-audit | diagnostics")
+		return fail("usage: agentcapsule-admin bootstrap | bootstrap-platform | list-credentials | revoke-credential | abandon-provisioning | clear-agent-failure | configure-delegation | init-key-authority | init-restore-authority | configure-host | approve-local-harness | activate-transit-keys | set-audit-retention | list-operator-audit | diagnostics")
 	}
 	f := flag.NewFlagSet("bootstrap", flag.ContinueOnError)
 	keyPath := f.String("receipt-key-file", "", "private 32-byte receipt encryption key")
@@ -77,9 +80,9 @@ func run() int {
 	if f.NArg() != 0 || *keyPath == "" || *tokenPath == "" || *keyPath == *tokenPath {
 		return fail("configuration_required")
 	}
-	dsn := os.Getenv("AGENTCAPSULE_DATABASE_URL")
-	if dsn == "" {
-		return fail("database_configuration_required")
+	dsn, code := databaseURL()
+	if code != "" {
+		return fail(code)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -153,9 +156,9 @@ func configureCatalog(command string, args []string) int {
 		}
 		digest = fmt.Sprintf("sha256:%x", h.Sum(nil))
 	}
-	dsn := os.Getenv("AGENTCAPSULE_DATABASE_URL")
-	if dsn == "" {
-		return fail("database_configuration_required")
+	dsn, code := databaseURL()
+	if code != "" {
+		return fail(code)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -220,6 +223,21 @@ func initializeKeyAuthority(args []string) int {
 	return 0
 }
 func main() { os.Exit(run()) }
+
+// databaseURL returns AGENTCAPSULE_DATABASE_URL once it satisfies the mode:
+// in production, a Unix socket or verified TLS
+// (docs/adr/010-transport-security-and-preflight.md). Otherwise it returns
+// the code to print.
+func databaseURL() (string, string) {
+	mode, err := operatorconfig.ModeFromEnvironment()
+	if err != nil {
+		return "", "mode_invalid"
+	}
+	if mode == operatorconfig.Development {
+		fmt.Fprintln(os.Stderr, operatorconfig.DevelopmentWarning)
+	}
+	return operatorconfig.DatabaseURL(mode)
+}
 
 func initializeRestoreAuthority(args []string) int {
 	fail := func(code string) int { fmt.Fprintln(os.Stderr, code); return 1 }

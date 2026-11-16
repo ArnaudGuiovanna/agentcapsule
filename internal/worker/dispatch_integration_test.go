@@ -163,8 +163,10 @@ func TestDispatchServiceClosureExpirationAndDeletion(t *testing.T) {
 		return n == 1
 	})
 	stop()
+	// Two closures of requests from a to b: each fences its two parties only
+	// (ADR 007 §7).
 	var n int
-	if err := db.QueryRow(t.Context(), "SELECT count(*) FROM "+pgx.Identifier{schema, "request_closure_targets"}.Sanitize()+" WHERE acknowledged").Scan(&n); err != nil || n != 6 {
+	if err := db.QueryRow(t.Context(), "SELECT count(*) FROM "+pgx.Identifier{schema, "request_closure_targets"}.Sanitize()+" WHERE acknowledged").Scan(&n); err != nil || n != 4 {
 		t.Fatal("closure barrier census", n, err)
 	}
 	if err := db.QueryRow(t.Context(), "SELECT count(*) FROM "+pgx.Identifier{schema, "deletion_targets"}.Sanitize()+" WHERE acknowledged").Scan(&n); err != nil || n != 3 {

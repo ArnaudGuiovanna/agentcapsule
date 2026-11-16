@@ -217,6 +217,13 @@ func (a *p1Replay) compareP1(t *testing.T, w p1Observation, step int, transactio
 	}
 	wanted := []string{}
 	for _, r := range w.SQL.Acks {
+		// A closure's manifest holds its request's two parties only (ADR 007
+		// §7, P1 closureAcks). The frozen traces fence every store; a store
+		// that is not a party is fenced, but has no target row to record.
+		var n int
+		if _, err := fmt.Sscanf(r.Subject, "request/%d", &n); err == nil && r.Store != p1Routes[n][0] && r.Store != p1Routes[n][1] {
+			continue
+		}
 		wanted = append(wanted, p1Agent(r.Store)+":"+r.Subject)
 	}
 	sort.Strings(acks)

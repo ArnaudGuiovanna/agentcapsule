@@ -251,6 +251,12 @@ module concurrentProtocol {
     s.up, freeAgents(s,Set(a)), s.agents.get(a).phase == Active,
     s' = { ...s, agents: s.agents.set(a,{ ...s.agents.get(a), phase: Quiescing }) },
   }
+  // An event dies only while the agents its delivery needs are active: a
+  // deletion cancels the event of an agent being deleted instead, and tells
+  // the sender of a revoked reply (commitDelete). Go: deliverable, checked
+  // under the agents' locks when a delivery dies (ADR 007 §7).
+  pure def retirable(x: State, e: EventId): bool =
+    x.agents.get(dest(e)).phase == Active and (e._2 == 2 or livePeers(x,e._1))
   action beginRetire(e: EventId): bool = all {
     s.up, freeAgents(s,peers(e._1)), e._2 != 0, s.events.get(e).phase == PendingEvent,
     not(s.events.get(e).leased), s.events.get(e).attempts == ATTEMPTS, not(s.events.get(e).closing),
@@ -265,10 +271,12 @@ module concurrentProtocol {
   }
   // A closing event no RPC was ever allowed to carry dies without its
   // destination's fence: closing, it can be neither claimed nor authorized, so
-  // no effect of it can begin (unsentInert). Its destination need not be alive.
+  // no effect of it can begin (unsentInert). Its destination need not be
+  // alive, and the event need not head its queue (no isHead): what never
+  // reached the destination leaves the queue out of order.
   action retireUnsent(e: EventId): bool = all {
     s.up, freeAgents(s,peers(e._1)), s.events.get(e).closing, s.events.get(e).phase == PendingEvent,
-    not(s.events.get(e).sent),
+    not(s.events.get(e).sent), retirable(s,e),
     s' = { ...s, events: s.events.set(e,{ ...s.events.get(e), phase: DeadEvent, leased: false }) },
   }
   pure def wanted(x: State, subject: Subject): bool = match subject {
@@ -291,9 +299,18 @@ module concurrentProtocol {
       s' = { ...s, acks: s.acks.union(Set(receipt)), receipts: s.receipts.exclude(Set(receipt)) } }
   }
   pure def allAcks(x: State, subject: Subject): bool = AGENTS.forall(a => x.acks.contains({ store: a, subject: subject }))
+  // A request's closure waits for the fences of its two parties only (ADR 007
+  // §7): an event carrying its subject goes to one of them (closureScope), so
+  // no other store can hold an effect of it. Within this model even the
+  // sender's fence is not needed, since a request under closure has no reply
+  // (closedNeverReplied). The code keeps it: a restore of PostgreSQL within
+  // its RPO can lose the reply that makes the two exclusive, and a delayed
+  // reply event carries the request's subject to the sender.
+  pure def closureAcks(x: State, r: RequestId): bool =
+    peers(r).forall(a => x.acks.contains({ store: a, subject: RequestSubject(r) }))
   pure def canCommitClose(x: State, r: RequestId): bool = x.up and freeAgents(x,peers(r)) and
     x.requests.get(r).closure != NoClosure and active(x.requests.get(r).phase) and
-    (not(WAIT_ALL) or allAcks(x,RequestSubject(r)))
+    (not(WAIT_ALL) or closureAcks(x,r))
   pure def closeCommitted(x: State, r: RequestId): State = {
     val y = { ...x, events: EVENTS.mapBy(e => if (e._1 == r and e._2 != 2 and x.events.get(e).phase == PendingEvent)
       { ...x.events.get(e), phase: CanceledEvent, leased: false } else x.events.get(e)) }
@@ -314,7 +331,7 @@ module concurrentProtocol {
   action commitDelete(a: AgentId): bool = all { canCommitDelete(s,a), s' = deleteCommitted(s,a) }
   action retire(e: EventId): bool = all {
     s.up, freeAgents(s,peers(e._1)), s.events.get(e).closing, s.events.get(e).phase == PendingEvent,
-    not(WAIT_ALL) or s.acks.contains({ store: dest(e), subject: EventSubject(e) }),
+    not(WAIT_ALL) or s.acks.contains({ store: dest(e), subject: EventSubject(e) }), retirable(s,e),
     s' = { ...s, events: s.events.set(e,{ ...s.events.get(e), phase: DeadEvent, leased: false }) },
   }
   pure def abortLocal(x: State, a: AgentId): State = { ...x,
@@ -388,8 +405,20 @@ module concurrentProtocol {
   val effectOnce = EVENTS.forall(e => s.effects.get(e) <= 1)
   val acksSound = s.acks.forall(r => barrier(s,r.store,r.subject))
   val tombstoneSafe = AGENTS.forall(a => s.agents.get(a).phase == Deleting implies AGENTS.forall(b => barrier(s,b,AgentSubject(a))))
+  // Every store that can hold an effect of an expired or failed request has
+  // its barrier: its parties' (closureScope). noStaleEffect is what it keeps.
   val closedSafe = REQUESTS.forall(r => Set(Expired,Failed).contains(s.requests.get(r).phase) implies
-    AGENTS.forall(a => barrier(s,a,RequestSubject(r))))
+    peers(r).forall(a => barrier(s,a,RequestSubject(r))))
+  // Where closedSafe looks: every event that carries a request's subject goes
+  // to one of that request's parties. It depends on the routes and on
+  // SCOPED_FENCES only: concurrentProtocolWrongRequestFence breaks it.
+  pure val closureScope = EVENTS.forall(e => REQUESTS.forall(r =>
+    subjects(e).contains(RequestSubject(r)) implies peers(r).contains(dest(e))))
+  // A request under closure has no reply, so no event carrying its subject
+  // goes to its sender: replying needs no closure, and a closure needs an
+  // active request.
+  val closedNeverReplied = REQUESTS.forall(r => s.requests.get(r).closure != NoClosure implies
+    s.events.get((r,1)).phase == AbsentEvent)
   val noLiveRequestForDeleted = REQUESTS.forall(r => active(s.requests.get(r).phase) implies
     peers(r).forall(a => s.agents.get(a).phase != Deleting))
   val terminalOutbox = REQUESTS.forall(r => terminal(s.requests.get(r).phase) and s.agents.get(sender(r)).phase == Active implies
@@ -408,7 +437,7 @@ module concurrentProtocol {
   val safety = quotaConserved and terminalStable and lockedAuthority and effectOnce and not(s.badCaller)
     and not(s.staleEffect) and not(s.badOrder) and acksSound and tombstoneSafe and closedSafe
     and noLiveRequestForDeleted and terminalOutbox and noVMSealed and publicationConfirmed and retirementBeforeStopped
-    and unsentInert and noLateEffect
+    and unsentInert and noLateEffect and closedNeverReplied
   action step = any {
     { nondet slot = SLOTS.oneOf(); nondet r = REQUESTS.oneOf(); nondet kind = Set(SubmitCall,ReplyCall,AcceptCall,DeclineCall).oneOf();
       nondet m = AGENTS.oneOf(); receive(slot,r,kind,m) },

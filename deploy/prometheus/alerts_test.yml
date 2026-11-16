@@ -177,6 +177,25 @@ tests:
             exp_annotations:
               summary: The host's CPUs are more than 90 % busy.
 
+  # An agent spends its restart budget at minute 3 (ADR 012).
+  - interval: 1m
+    input_series:
+      - series: 'agentcapsule_worker_agents_failed_total{job="agentcapsule-worker",instance="host-1"}'
+        values: '0 0 0 1x30'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: AgentCapsuleAgentFailed
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: AgentCapsuleAgentFailed
+        exp_alerts:
+          - exp_labels: {severity: warning, job: agentcapsule-worker, instance: host-1}
+            exp_annotations:
+              summary: An agent spent its restart budget and is FAILED until it is woken.
+      - eval_time: 30m
+        alertname: AgentCapsuleAgentFailed
+        exp_alerts: []
+
   # WAL archiving (REC-03). host-1: archiving stuck from the start, failing
   # from minute 6. host-2: an idle database, archived an hour ago, nothing
   # waiting. host-3: archive_mode turned off at minute 10. host-4:

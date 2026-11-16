@@ -440,6 +440,14 @@ func (t *Transit) delivered(ctx context.Context, tx pgx.Tx, id string) error {
 
 // PurgeExpired clears current SQL ciphertext only. Metadata tombstones remain;
 // retaining an old backup/key is outside this operation's erasure guarantees.
+//
+// It first starts the retention of request content that ended without one:
+// a reply whose delivery died before ADR 007, or through a retirement without
+// the transit, and a request closed before it was delivered (declined,
+// canceled, expired or failed). That end is not recorded, so the retention
+// starts at the first pass that finds it: never before the end, and within
+// one pass of it from then on. Same length as a delivered request's or reply's
+// (ADR 007 §7; for a closed request, a default pending the product owner).
 func (t *Transit) PurgeExpired(ctx context.Context, limit int) (int64, error) {
 	if limit < 1 || limit > 1000 {
 		return 0, ErrInput
@@ -449,6 +457,16 @@ func (t *Transit) PurgeExpired(ctx context.Context, limit int) (int64, error) {
 		return 0, err
 	}
 	defer rollback(tx)
+	if _, err = tx.Exec(ctx, `UPDATE transit_payloads SET delivered_at=clock_timestamp(),
+        purge_after=clock_timestamp()+$2::bigint*interval '1 microsecond' WHERE id IN
+        (SELECT p.id FROM transit_payloads p JOIN agent_requests r ON r.id=p.ref_id
+          WHERE p.purged_at IS NULL AND p.purge_after IS NULL
+            AND (p.kind='reply' AND r.reply_ref=p.id AND EXISTS(SELECT 1 FROM agent_mailboxes m
+                  WHERE m.ref_id=r.id AND m.kind='reply' AND m.delivery_state='DEAD')
+              OR p.kind='request' AND r.payload_ref=p.id AND r.state IN ('DECLINED','EXPIRED','CANCELED','FAILED'))
+          ORDER BY p.id LIMIT $1 FOR UPDATE OF p SKIP LOCKED)`, limit, t.retention.Microseconds()); err != nil {
+		return 0, err
+	}
 	tag, err := tx.Exec(ctx, `UPDATE transit_payloads SET ciphertext=NULL,purged_at=clock_timestamp() WHERE id IN
         (SELECT id FROM transit_payloads WHERE purged_at IS NULL AND purge_after<=clock_timestamp() ORDER BY purge_after,id LIMIT $1 FOR UPDATE SKIP LOCKED)`, limit)
 	if err != nil {

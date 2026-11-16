@@ -134,6 +134,166 @@ func (s *Server) disableLLMAlias(w http.ResponseWriter, r *http.Request) {
 	receipt(w, out, err)
 }
 
+// setLLMAliasAccess opens an alias to the organization or lists it (ADR 011).
+func (s *Server) setLLMAliasAccess(w http.ResponseWriter, r *http.Request) {
+	if !method(w, r, "POST") {
+		return
+	}
+	p, ok := s.principal(w, r)
+	if !ok {
+		return
+	}
+	key, ok := idempotency(w, r)
+	if !ok {
+		return
+	}
+	var in controlplane.SetLLMAliasAccessInput
+	if !decode(w, r, &in) {
+		return
+	}
+	out, err := s.accounts.SetLLMAliasAccess(r.Context(), p, r.PathValue("alias"), key, in)
+	receipt(w, out, err)
+}
+
+// setLLMAliasPrices replaces an alias's two prices.
+func (s *Server) setLLMAliasPrices(w http.ResponseWriter, r *http.Request) {
+	if !method(w, r, "POST") {
+		return
+	}
+	p, ok := s.principal(w, r)
+	if !ok {
+		return
+	}
+	key, ok := idempotency(w, r)
+	if !ok {
+		return
+	}
+	var in controlplane.SetLLMAliasPricesInput
+	if !decode(w, r, &in) {
+		return
+	}
+	out, err := s.accounts.SetLLMAliasPrices(r.Context(), p, r.PathValue("alias"), key, in)
+	receipt(w, out, err)
+}
+
+func (s *Server) llmAliasGrants(w http.ResponseWriter, r *http.Request) {
+	if !method(w, r, "GET", "POST") {
+		return
+	}
+	p, ok := s.principal(w, r)
+	if !ok {
+		return
+	}
+	if r.Method == "GET" {
+		after, limit, ok := teamPagination(w, r)
+		if !ok {
+			return
+		}
+		items, err := s.accounts.ListLLMAliasGrants(r.Context(), p, r.PathValue("alias"), after, limit)
+		if err != nil {
+			failure(w, err)
+			return
+		}
+		jsonResponse(w, 200, map[string]any{"items": items})
+		return
+	}
+	key, ok := idempotency(w, r)
+	if !ok {
+		return
+	}
+	var in controlplane.CreateLLMAliasGrantInput
+	if !decode(w, r, &in) {
+		return
+	}
+	out, err := s.accounts.CreateLLMAliasGrant(r.Context(), p, r.PathValue("alias"), key, in)
+	receipt(w, out, err)
+}
+
+func (s *Server) revokeLLMAliasGrant(w http.ResponseWriter, r *http.Request) {
+	if !method(w, r, "POST") {
+		return
+	}
+	p, ok := s.principal(w, r)
+	if !ok {
+		return
+	}
+	key, ok := idempotency(w, r)
+	if !ok {
+		return
+	}
+	var in struct{}
+	if !decode(w, r, &in) {
+		return
+	}
+	out, err := s.accounts.RevokeLLMAliasGrant(r.Context(), p, r.PathValue("alias"), r.PathValue("id"), key)
+	receipt(w, out, err)
+}
+
+// unresolvedLLMCalls lists the calls of unknown outcome (usage:read).
+func (s *Server) unresolvedLLMCalls(w http.ResponseWriter, r *http.Request) {
+	if !method(w, r, "GET") {
+		return
+	}
+	p, ok := s.principal(w, r)
+	if !ok {
+		return
+	}
+	after, limit, ok := teamPagination(w, r)
+	if !ok {
+		return
+	}
+	items, err := s.accounts.ListLLMUnresolved(r.Context(), p, after, limit)
+	if err != nil {
+		failure(w, err)
+		return
+	}
+	jsonResponse(w, 200, map[string]any{"items": items})
+}
+
+// settleLLMCall settles a call of unknown outcome at the usage the
+// organization read in its provider's account (quota:manage).
+func (s *Server) settleLLMCall(w http.ResponseWriter, r *http.Request) {
+	if !method(w, r, "POST") {
+		return
+	}
+	p, ok := s.principal(w, r)
+	if !ok {
+		return
+	}
+	key, ok := idempotency(w, r)
+	if !ok {
+		return
+	}
+	var in controlplane.SettleLLMOutcomeInput
+	if !decode(w, r, &in) {
+		return
+	}
+	out, err := s.accounts.SettleLLMOutcome(r.Context(), p, r.PathValue("id"), key, in)
+	receipt(w, out, err)
+}
+
+// releaseLLMCall records that the provider billed nothing for a call of
+// unknown outcome (quota:manage).
+func (s *Server) releaseLLMCall(w http.ResponseWriter, r *http.Request) {
+	if !method(w, r, "POST") {
+		return
+	}
+	p, ok := s.principal(w, r)
+	if !ok {
+		return
+	}
+	key, ok := idempotency(w, r)
+	if !ok {
+		return
+	}
+	var in struct{}
+	if !decode(w, r, &in) {
+		return
+	}
+	out, err := s.accounts.ReleaseLLMOutcome(r.Context(), p, r.PathValue("id"), key)
+	receipt(w, out, err)
+}
+
 func (s *Server) llmBudgets(w http.ResponseWriter, r *http.Request) {
 	if !method(w, r, "GET", "POST") {
 		return
