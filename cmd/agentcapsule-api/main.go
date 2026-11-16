@@ -13,15 +13,24 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/api"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorityclient"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorityservice"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/operatorconfig"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/preflight"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/restoreauthority"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/telemetry"
 )
+
+// withoutAuthority is written on standard error by an API that starts in
+// development mode without the authority service: production refuses to
+// start without it (docs/adr/006-authority-service.md, answer 3(a)).
+const withoutAuthority = "development_mode_without_authority_service_never_use_in_production"
 
 // The HTTP server's diagnostics must not serialize request headers or contents.
 type fixedLog struct{}
@@ -43,12 +52,16 @@ func run(args []string) int {
 	tlsKey := f.String("tls-key", "", "TLS private key (PEM, mode 0600), reloaded on SIGHUP")
 	tlsName := f.String("tls-server-name", "", "name clients use to reach the API; the certificate must cover it")
 	metricsListen := f.String("metrics-listen", "", "loopback address serving Prometheus metrics at /metrics (none when empty)")
-	preflightOnly := f.Bool("preflight", false, "check this configuration (TLS files, ports, PostgreSQL), print what to fix, then exit")
+	preflightOnly := f.Bool("preflight", false, "check this configuration (TLS files, ports, PostgreSQL, the authority service), print what to fix, then exit")
+	var authority authorityFlags
+	f.StringVar(&authority.socket, "authority-socket", "", "the authority service's API socket; required in production")
+	f.StringVar(&authority.restoreID, "restore-authority-id", "", "pinned identity of the restore authority (restoreauth_…)")
+	f.StringVar(&authority.keyID, "key-authority-id", "", "pinned identity of the key authority (keyauth_…)")
 	if err := f.Parse(args); err != nil {
 		return 2
 	}
 	fail := func(code string) int { fmt.Fprintln(os.Stderr, code); return 1 }
-	if f.NArg() != 0 || *keyPath == "" || *hostID == "" || (*cert == "") != (*tlsKey == "") || (*tlsName != "" && *cert == "") {
+	if f.NArg() != 0 || *keyPath == "" || *hostID == "" || (*cert == "") != (*tlsKey == "") || (*tlsName != "" && *cert == "") || !authority.complete() {
 		return fail("configuration_required")
 	}
 	// Production unless AGENTCAPSULE_MODE=development, which says so at
@@ -61,7 +74,7 @@ func run(args []string) int {
 		fmt.Fprintln(os.Stderr, operatorconfig.DevelopmentWarning)
 	}
 	if *preflightOnly {
-		return runPreflight(mode, *listen, *metricsListen, *cert, *tlsKey, *tlsName, *keyPath)
+		return runPreflight(mode, *listen, *metricsListen, *cert, *tlsKey, *tlsName, *keyPath, authority)
 	}
 	host, _, err := net.SplitHostPort(*listen)
 	if err != nil {
@@ -97,8 +110,34 @@ func run(args []string) int {
 	if code != "" {
 		return fail(code)
 	}
+	// The authority service (docs/adr/006-authority-service.md): the API
+	// reaches it on its API socket, pinning both identities. Production
+	// requires it; development may run without it, and says so.
+	var authorities *authorityclient.API
+	switch {
+	case authority.socket != "":
+		if authorities, err = authority.open(); err != nil {
+			return fail("authority_configuration_invalid")
+		}
+		defer authorities.Close()
+	case mode == operatorconfig.Production:
+		return fail("authority_required_in_production")
+	default:
+		fmt.Fprintln(os.Stderr, withoutAuthority)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+	if authorities != nil {
+		// A service that does not answer yet is waited for, and said once;
+		// one that holds another installation's authorities is refused.
+		waiting := telemetry.NewLogger(os.Stderr, map[string][]string{"event": {"authority_service_waiting"}})
+		var once sync.Once
+		if _, err = authorities.Wait(ctx, func(error) {
+			once.Do(func() { waiting.Event("authority_service_waiting") })
+		}); err != nil {
+			return fail(authorityFailure(err))
+		}
+	}
 	startup, cancel := context.WithTimeout(ctx, 30*time.Second)
 	s, err := controlplane.Open(startup, dsn)
 	if err != nil {
@@ -146,6 +185,12 @@ func run(args []string) int {
 	}
 	if err != nil {
 		return fail("api_initialization_failed")
+	}
+	if authorities != nil {
+		handler.ReportAuthority(func(ctx context.Context) (string, error) {
+			status, err := authorities.Status(ctx)
+			return status.Mode, err
+		})
 	}
 	// One event per request on standard output: its X-Request-ID, route
 	// pattern, status and duration, never an ID from the path or a body.
@@ -217,6 +262,33 @@ func run(args []string) int {
 	}
 }
 
+// authorityFlags reach the authority service's API socket.
+type authorityFlags struct {
+	socket, restoreID, keyID string
+}
+
+// complete reports whether the three flags are given together, or none.
+func (a authorityFlags) complete() bool {
+	return (a.socket == "") == (a.restoreID == "") && (a.socket == "") == (a.keyID == "")
+}
+
+func (a authorityFlags) open() (*authorityclient.API, error) {
+	return authorityclient.NewAPI(a.socket, a.restoreID, a.keyID)
+}
+
+// authorityFailure names why the API did not reach the authority service.
+func authorityFailure(err error) string {
+	switch {
+	case errors.Is(err, authorityservice.ErrIdentity):
+		return "authority_identity_mismatch"
+	case errors.Is(err, authorityservice.ErrRole):
+		return "authority_socket_role_mismatch"
+	case errors.Is(err, authorityservice.ErrProtocol):
+		return "authority_protocol_unsupported"
+	}
+	return "authority_service_unavailable"
+}
+
 // tlsFailure names why the TLS files were refused.
 func tlsFailure(err error) string {
 	switch {
@@ -234,7 +306,7 @@ func tlsFailure(err error) string {
 
 // runPreflight checks the API's own configuration and exits 1 when a check
 // fails. It changes nothing: each listener is opened and closed at once.
-func runPreflight(mode operatorconfig.Mode, listen, metricsListen, cert, key, name, receiptKey string) int {
+func runPreflight(mode operatorconfig.Mode, listen, metricsListen, cert, key, name, receiptKey string, authority authorityFlags) int {
 	_, modeResult := preflight.Mode()
 	results := []preflight.Result{modeResult}
 	h := preflight.System()
@@ -264,11 +336,60 @@ func runPreflight(mode operatorconfig.Mode, listen, metricsListen, cert, key, na
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	results = append(results, preflight.Clock(h), preflight.Database(ctx, mode, os.Getenv(operatorconfig.DatabaseVariable)))
+	results = append(results, authorityCheck(ctx, mode, authority), preflight.Clock(h),
+		preflight.Database(ctx, mode, os.Getenv(operatorconfig.DatabaseVariable)))
 	if err := preflight.Write(os.Stdout, results); err != nil || preflight.Failed(results) {
 		return 1
 	}
 	return 0
+}
+
+// authorityCheck asks the authority service for its status once, as the API
+// does at start, and says what to fix.
+func authorityCheck(ctx context.Context, mode operatorconfig.Mode, authority authorityFlags) preflight.Result {
+	const check = "authority"
+	const flags = "give -authority-socket, -restore-authority-id and -key-authority-id (docs/recovery.md, Install the authority service)"
+	if authority.socket == "" {
+		if mode == operatorconfig.Production {
+			return preflight.Result{Check: check, Status: preflight.Fail, Detail: "no -authority-socket: production needs the authority service", Fix: flags}
+		}
+		return preflight.Result{Check: check, Status: preflight.Warn, Detail: "no authority service (development)", Fix: flags + " in production"}
+	}
+	client, err := authority.open()
+	if err != nil {
+		return preflight.Result{Check: check, Status: preflight.Fail, Detail: "the authority flags are invalid",
+			Fix: "an absolute socket path of at most 100 bytes, and the identities that the init commands printed"}
+	}
+	defer client.Close()
+	probe, done := context.WithTimeout(ctx, 5*time.Second)
+	defer done()
+	status, err := client.Status(probe)
+	switch {
+	case errors.Is(err, authorityservice.ErrIdentity):
+		return preflight.Result{Check: check, Status: preflight.Fail, Detail: "the service on " + authority.socket + " holds other authorities than the pinned ones",
+			Fix: "pin the identities of /etc/agentcapsule/authority.json"}
+	case errors.Is(err, authorityservice.ErrRole):
+		return preflight.Result{Check: check, Status: preflight.Fail, Detail: authority.socket + " is not the service's API socket",
+			Fix: "use the service's api_socket"}
+	case errors.Is(err, syscall.EACCES):
+		return preflight.Result{Check: check, Status: preflight.Fail, Detail: "this account may not open " + authority.socket,
+			Fix: "add the API's account to the group agentcapsule-authority-clients (deploy/systemd/agentcapsule-authority.sysusers), then restart the API"}
+	case err != nil:
+		return preflight.Result{Check: check, Status: preflight.Fail, Detail: "the authority service does not answer on " + authority.socket,
+			Fix: "start agentcapsule-authority, and check that its api_uid is this account"}
+	}
+	switch status.Mode {
+	case restoreauthority.ModeDegraded:
+		return preflight.Result{Check: check, Status: preflight.Warn, Detail: "the authority service runs in degraded mode, without its standby",
+			Fix: "bring the standby back (docs/recovery.md, Degraded mode)"}
+	case restoreauthority.ModeWaiting:
+		return preflight.Result{Check: check, Status: preflight.Warn, Detail: "the authority service waits for its standby and runs nothing",
+			Fix: "start agentcapsule-authority serve on the standby, or check the address and the firewall"}
+	case restoreauthority.ModeStandalone:
+		return preflight.Result{Check: check, Status: preflight.OK,
+			Detail: "the authority service answers with the pinned identities; standalone: no replica, no protection against the host's loss"}
+	}
+	return preflight.Result{Check: check, Status: preflight.OK, Detail: "the authority service answers with the pinned identities, synchronous with its standby"}
 }
 
 func main() { os.Exit(run(os.Args[1:])) }

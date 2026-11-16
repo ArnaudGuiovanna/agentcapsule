@@ -160,6 +160,17 @@ func (l *lab) clientOf(t *testing.T, path, role, restoreID, keyID string) *Clien
 	return c
 }
 
+// apiClient is the API's client, on the API socket.
+func (l *lab) apiClient(t *testing.T) *API {
+	t.Helper()
+	a, err := NewAPI(l.api, l.catalog.Identity(), l.keys.Identity())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { a.Close() })
+	return a
+}
+
 // scrape returns the service's metrics, as Prometheus reads them.
 func (l *lab) scrape(t *testing.T) string {
 	t.Helper()

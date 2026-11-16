@@ -32,8 +32,9 @@ var ErrReplicaConfiguration = errors.New("invalid authority replica configuratio
 // the key authority journals through the catalogue, one stream for both.
 // Without r they stay standalone, unless a snapshot armed them: then it
 // refuses (restoreauthority.ErrReplicaRequired). Authorities that no
-// snapshot armed refuse r (restoreauthority.ErrNotArmed). It does not
-// contact the replica: the first operation, or the monitor, does.
+// snapshot armed refuse r (restoreauthority.ErrNotArmed). It returns
+// without the replica: the catalogue's monitor reaches it in the
+// background, and keeps trying while it does not answer.
 func Link(ctx context.Context, catalog *restoreauthority.Catalog, keys *keyauthority.Files, r *Replica) error {
 	state, err := catalog.Replication(ctx)
 	if err != nil {
@@ -67,12 +68,15 @@ func Link(ctx context.Context, catalog *restoreauthority.Catalog, keys *keyautho
 	return LinkTo(ctx, catalog, keys, client, r.DegradedAfter)
 }
 
-// LinkTo links both armed authorities to the replica behind link; tests run
-// the stream in memory.
+// LinkTo links both armed authorities to the replica behind link, and
+// starts reaching it (ADR 006, wave 4): a service that no operation has
+// used yet reports synchronous once the replica answers, not waiting. Tests
+// run the stream in memory.
 func LinkTo(ctx context.Context, catalog *restoreauthority.Catalog, keys *keyauthority.Files, link authoritylog.Link, degradedAfter time.Duration) error {
 	if err := catalog.ReplicateWith(ctx, link, restoreauthority.ReplicationOptions{DegradedAfter: degradedAfter}); err != nil {
 		return err
 	}
 	keys.SetJournal(catalog)
+	catalog.ReachReplica()
 	return nil
 }

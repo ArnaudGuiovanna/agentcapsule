@@ -46,7 +46,7 @@ in several places, and the worker serves only its own:
 
 The operator records that host B takes over the lost host A, once A is
 fenced: `agentcapsule-admin take-over-host -lost-host A -host B -confirm A`
-(`host_takeovers`, migration 0039). It is an audited operator command, as
+(`host_takeovers`, migration 0038). It is an audited operator command, as
 those of ADR 014: `-dry-run` checks it, and the audit keeps who took which
 host over, and every refusal. From its commit:
 - **A gets no work.** `DiscoverWork` and `ClaimWork` on A fail
