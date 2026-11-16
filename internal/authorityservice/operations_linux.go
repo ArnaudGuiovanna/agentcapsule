@@ -79,9 +79,8 @@ var operations = map[string]operation{
 		// One hold for both: the binding's transaction, then the shared
 		// lock on the key; the key's destruction waits for both, outside
 		// the transaction.
-		use := func(key []byte) error { return s.wait(ctx, h, key) }
 		b := restoreauthority.Binding{Store: a.Agent, Volume: a.Volume, Incarnation: a.Incarnation}
-		return nil, s.local.WithBinding(ctx, b, func() error { return s.local.WithKey(ctx, a.Agent, a.Volume, use) })
+		return nil, s.local.HoldKey(ctx, b, func(ctx context.Context, key []byte) error { return s.wait(ctx, h, key) })
 	}},
 	OpDestroyKey: {run: func(ctx context.Context, s *Server, raw json.RawMessage, _ *hold) (any, error) {
 		a, err := decode[KeyArgs](raw)

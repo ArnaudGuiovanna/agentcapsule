@@ -147,11 +147,12 @@ func (l Local) Ensure(ctx context.Context, agent, volume string) error {
 	return l.Keys.Ensure(ctx, agent, volume)
 }
 
-func (l Local) WithKey(ctx context.Context, agent, volume string, use func([]byte) error) error {
-	if l.Keys == nil {
-		return keyauthority.ErrInput
-	}
-	return l.Keys.WithKey(ctx, agent, volume, use)
+// WithKey refuses: a key is held under its binding only, with HoldKey
+// (ADR 006 wave 2). Held alone, the key's lock would make its destruction
+// wait inside the catalogue's transaction. The service's client refuses the
+// same way.
+func (l Local) WithKey(context.Context, string, string, func([]byte) error) error {
+	return keyauthority.ErrInput
 }
 
 // Revoke refuses: a key is destroyed under its sealed binding only, with
