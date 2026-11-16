@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The failover exercise of ADR 004 for the database and the API (REC-03).
+"""The failover exercise of ADR 004 for the database, the authorities and the API (REC-03).
 
 On one machine, containers and local processes stand for the hosts. The
 stores, the primary and the standby are those of scripts/verify-backups.py
@@ -7,25 +7,33 @@ stores, the primary and the standby are those of scripts/verify-backups.py
 the provider) and to the standby over SFTP (OpenSSH); the standby replays that
 archive, as deploy/standby ships it. archive_timeout is scaled down to 30
 seconds. The run:
-1. builds agentcapsule-api and agentcapsule-admin once: the release installed
-   on both hosts;
+1. builds agentcapsule-api, agentcapsule-admin and agentcapsule-authority
+   once: the release installed on both hosts;
 2. installs the primary: the schema, the receipt key and a platform token
-   (bootstrap-platform), a transit key, a tenant with a delegated-identity
-   trust, base backups, and the API. The operator keeps a copy of the API's
-   keys and configuration off the host: a stand-in until D-05 is decided;
+   (bootstrap-platform), a transit key, the authority service with its
+   replica on the standby (both authorities, the unlock key kept in the
+   operator's safe, the link's certificates, the snapshot, the replica's
+   service), a tenant with a delegated-identity trust, base backups, and the
+   API on the authority service (ADR 006: production requires it). The
+   operator keeps a copy of the API's keys and configuration off the host: a
+   stand-in until D-05 is decided;
 3. a client writes steadily through the API, with real authenticated
    requests: it creates an organization every 0.2 seconds and records each
    acknowledged ID with its time;
 4. builds the standby from its own disk; it replays the archive;
 5. the disaster, one and a half archive_timeout after a segment switch: the
-   primary's PostgreSQL and API are killed with SIGKILL, with the pushes in
-   progress; its data directory and the WAL it had not pushed are removed;
+   primary's PostgreSQL, authority service and API are killed with SIGKILL,
+   with the pushes in progress; its data directory, its authorities and the
+   WAL it had not pushed are removed;
 6. the failover, timed from the decision: fence the old primary's
    credentials (its S3 credential revoked at the provider, its key removed
-   from the standby's SFTP account), promote the standby, give it a
-   repository of its own, install the API's configuration and keys, start the
-   API, then wait for readiness, a first authenticated read (with the
-   platform token and with a delegated identity) and a first write;
+   from the standby's SFTP account), promote the authorities' replica with
+   the unlock key from the safe and start the standby's authority service in
+   the primary role, promote the standby, give it a repository of its own,
+   install the API's configuration and keys, start the API on the promoted
+   authorities with the same identities, then wait for readiness, a first
+   authenticated read (with the platform token and with a delegated
+   identity) and a first write;
 7. measures the RTO (from the decision to the first write), the RPO (the
    acknowledged writes the standby lacks, and the age of the oldest), and the
    loss window to announce (from the last replayed commit to the disaster).
@@ -69,7 +77,7 @@ ARCHIVE_TIMEOUT, PUSH_MARGIN = BACKUPS.ARCHIVE_TIMEOUT, BACKUPS.PUSH_MARGIN
 PRODUCTION_ARCHIVE_TIMEOUT = 300  # deploy/backup/postgresql.conf
 WRITE_INTERVAL = 0.2  # seconds between two writes of the client
 DISASTER_AFTER_SWITCH = 1.5  # in archive_timeouts: the disaster comes halfway through a segment
-BINARIES = ("agentcapsule-api", "agentcapsule-admin")
+BINARIES = ("agentcapsule-api", "agentcapsule-admin", "agentcapsule-authority")
 ISSUER, AUDIENCE = "https://client.example", "agentcapsule:organisation"
 HOST_ID = "local"
 # The API serves HTTPS only (production mode, ADR 010): its certificate is
@@ -223,7 +231,8 @@ def main():
     run, psql, wait, pg, work = lab.run, lab.psql, lab.wait, lab.pg, lab.work
     # The Go programs need none of PostgreSQL's or pgBackRest's libraries.
     go_env = {k: v for k, v in lab.env.items() if k != "LD_LIBRARY_PATH"}
-    apis, logs, writer = {}, [], None
+    apis, services, logs, writer = {}, {}, [], None
+    pinned = {}  # the authorities' identities, as the API pins them
 
     def expect(condition, message):
         if not condition:
@@ -238,11 +247,48 @@ def main():
         expect(r.returncode == 0, f"agentcapsule-admin {args[0]} failed; see {label}.log")
         return r.stdout
 
-    def start_api(name, etc, dsn, port):
-        """agentcapsule-api with the configuration and keys installed in etc, as its service would start it: production mode, HTTPS."""
+    def authority(label, *args):
+        """agentcapsule-authority, as the operator runs it as the service's account. Its output holds public metadata only."""
+        command = [str(work / "bin/agentcapsule-authority"), *(str(x) for x in args)]
+        r = subprocess.run(command, env=go_env, capture_output=True, text=True, timeout=120, check=False)
+        with (out / (label + ".log")).open("a") as log:
+            log.write("$ " + " ".join(command) + "\n" + r.stdout + r.stderr)
+        expect(r.returncode == 0, f"agentcapsule-authority {args[0]} failed; see {label}.log")
+        return json.loads(r.stdout) if r.stdout.strip() else {}
+
+    def configure(path, config):
+        """A service's configuration: this account's, not writable by others, as serve requires."""
+        path.write_text(json.dumps(config, indent=2) + "\n")
+        path.chmod(0o644)
+
+    def start_service(name, config, started):
+        """agentcapsule-authority serve, as its unit runs it; returns its started event once it logs it."""
+        path = out / f"authority-{name}.log"
+        log = path.open("a")
+        logs.append(log)
+        command = [work / "bin/agentcapsule-authority", "serve", "-config", config]
+        log.write("$ " + " ".join(str(c) for c in command) + "\n")
+        log.flush()
+        services[name] = subprocess.Popen([str(c) for c in command], env=go_env, stdout=log, stderr=subprocess.STDOUT)
+
+        def event():
+            expect(services[name].poll() is None, f"the authority service {name} exited; see authority-{name}.log")
+            return next((json.loads(line) for line in path.read_text().splitlines() if f'"{started}"' in line), None)
+        wait(event, 30, f"the authority service {name} did not log {started}", every=0.05)
+        return event()
+
+    def stop_service(name):
+        proc = services.pop(name)
+        proc.send_signal(signal.SIGTERM)
+        expect(proc.wait(timeout=30) == 0, f"the authority service {name} did not stop cleanly")
+
+    def start_api(name, etc, dsn, port, authority_socket):
+        """agentcapsule-api with the configuration and keys installed in etc, as its service would start it: production mode, HTTPS,
+        on the authority service's API socket."""
         command = [work / "bin/agentcapsule-api", "-listen", f"127.0.0.1:{port}", "-host-id", HOST_ID,
                    "-receipt-key-file", etc / "receipt.key", "-transit-active-key", "v1", "-transit-key", f"v1={etc / 'transit-v1.key'}",
-                   "-tls-cert", etc / "api.crt", "-tls-key", etc / "api.key", "-tls-server-name", "127.0.0.1"]
+                   "-tls-cert", etc / "api.crt", "-tls-key", etc / "api.key", "-tls-server-name", "127.0.0.1",
+                   "-authority-socket", authority_socket, "-restore-authority-id", pinned["restore"], "-key-authority-id", pinned["key"]]
         log = (out / f"api-{name}.log").open("a")
         logs.append(log)
         log.write("$ " + " ".join(str(c) for c in command) + "\n")
@@ -259,6 +305,12 @@ def main():
             except (OSError, http.client.HTTPException):
                 return False
         return wait(probe, 60, f"the API of the {name} did not become ready", every=0.05)
+
+    def authority_mode(port):
+        """The authority service's mode, as the API's readiness reports it."""
+        status, body = call(port, "GET", "/v1/health/ready", timeout=5)
+        expect(status == 200, f"the API's readiness gave {status}")
+        return body.get("authority")
 
     def stop_api(name):
         proc = apis.pop(name)
@@ -334,11 +386,67 @@ def main():
         admin("primary-admin", primary_dsn, "activate-transit-keys", "-active-key", "v1", "-key", f"v1={primary_etc / 'transit-v1.key'}")
         lab.credentials += [token, *key_forms((primary_etc / "receipt.key").read_bytes()), *key_forms((primary_etc / "transit-v1.key").read_bytes())]
 
+        # The operator's safe, off both hosts: the unlock key, then the
+        # API's keys and configuration.
+        safe = work / "operator-safe"
+        safe.mkdir(mode=0o700)
+
+        # ---- The authorities (docs/recovery.md, Install the authority
+        # service, Install the replica): both initialized on the primary, the
+        # unlock key generated into the safe, one certificate per host, the
+        # snapshot, the replica's service on the standby, then the primary's
+        # service linked to it. Each host's authority directories, its
+        # /etc/agentcapsule files of the service and its /run directory.
+        pauth, sauth = work / "primary-authority", work / "standby-authority"
+        prun, srun = work / "primary-run", work / "standby-run"
+        for d in (pauth, sauth):
+            d.mkdir(mode=0o700)
+        key_root, restore_root = pauth / "key-authority", pauth / "restore-authority"
+        for d in (key_root, restore_root):
+            d.mkdir(mode=0o700)
+        pinned["key"] = json.loads(admin("primary-admin", primary_dsn, "init-key-authority", "-root", key_root))["authority_id"]
+        pinned["restore"] = json.loads(admin("primary-admin", primary_dsn, "init-restore-authority", "-root", restore_root,
+                                             "-data-root", pauth / "host", "-key-authority-root", key_root,
+                                             "-key-authority-id", pinned["key"]))["authority_id"]
+        ids = ["-restore-authority-id", pinned["restore"], "-key-authority-id", pinned["key"]]
+        recipient = authority("authority-setup", "unlock-key", "-out", safe / "unlock.key")["recipient"]
+        unlock_text = (safe / "unlock.key").read_text().strip()
+        lab.credentials += [unlock_text, unlock_text.split(":", 1)[-1]]  # the key, with and without its prefix
+        authority("authority-setup", "certificate", "-role", "primary", *ids,
+                  "-certificate", pauth / "authority-primary.crt", "-key", pauth / "authority-primary.key")
+        authority("authority-setup", "certificate", "-role", "replica", *ids,
+                  "-certificate", sauth / "authority-replica.crt", "-key", sauth / "authority-replica.key")
+        shutil.copy2(pauth / "authority-primary.crt", sauth / "authority-primary.crt")  # each host has the other's certificate, never its key
+        shutil.copy2(sauth / "authority-replica.crt", pauth / "authority-replica.crt")
+        for key in (pauth / "authority-primary.key", sauth / "authority-replica.key"):
+            lab.credentials.append("".join(key.read_text().splitlines()[1:-1]))
+        snapshot = work / "authority-snapshot.sqlite"
+        authority("authority-setup", "snapshot", "-key-authority-root", key_root, "-key-authority-id", pinned["key"],
+                  "-restore-authority-root", restore_root, "-restore-authority-id", pinned["restore"], "-recipient", recipient, "-out", snapshot)
+        replica_root = sauth / "replica"
+        authority("authority-setup", "init-replica", "-root", replica_root, "-snapshot", snapshot)
+        snapshot.unlink()
+        replica_port = free_port()
+        configure(sauth / "authority.json", {
+            "version": 2, "role": "replica", "root": str(replica_root), "restore_authority_id": pinned["restore"],
+            "key_authority_id": pinned["key"], "listen": f"127.0.0.1:{replica_port}", "certificate": str(sauth / "authority-replica.crt"),
+            "key": str(sauth / "authority-replica.key"), "primary_certificate": str(sauth / "authority-primary.crt")})
+        start_service("replica", sauth / "authority.json", "replica_started")
+        prun.mkdir(mode=0o750)
+        configure(pauth / "authority.json", {
+            "version": 2, "role": "primary", "key_authority": {"root": str(key_root), "identity": pinned["key"]},
+            "restore_authority": {"root": str(restore_root), "identity": pinned["restore"]},
+            "worker_socket": str(prun / "worker.sock"), "api_socket": str(prun / "api.sock"), "api_uid": os.getuid(),
+            "authority_replica": {"address": f"127.0.0.1:{replica_port}", "certificate": str(pauth / "authority-primary.crt"),
+                                  "key": str(pauth / "authority-primary.key"), "replica_certificate": str(pauth / "authority-replica.crt")}})
+        primary_service = start_service("primary", pauth / "authority.json", "service_started")
+        expect(primary_service.get("epoch") == 1, f"the primary's authority service started at epoch {primary_service.get('epoch')}")
+
         # A tenant whose member signs in with a delegated identity: the
         # client's Ed25519 key signs; PostgreSQL holds the public trust, so
         # the standby has it after the promotion.
         primary_port = free_port()
-        start_api("primary", primary_etc, primary_dsn, primary_port)
+        start_api("primary", primary_etc, primary_dsn, primary_port, prun / "api.sock")
         ready("primary", primary_port)
         status, tenant = call(primary_port, "POST", "/v1/organizations", token, {
             "name": "failover tenant", "initial_owner": {"issuer": ISSUER, "subject": "failover-reader", "display_name": "Reader"}}, "tenant")
@@ -354,8 +462,12 @@ def main():
                                  "-tenant-id", tenant["id"], "-issuer", ISSUER, "-audience", AUDIENCE, "-trust-file", primary_etc / "delegation.json"))
         not_before = datetime.fromisoformat(trust["minimum_iat"].replace("Z", "+00:00")).timestamp()
         stop_api("primary")
-        start_api("primary", primary_etc, primary_dsn, primary_port)
+        start_api("primary", primary_etc, primary_dsn, primary_port, prun / "api.sock")
         report["primary"] = {"api_ready_seconds": ready("primary", primary_port)}
+        # The API reports its authority service: synchronous once the service
+        # reaches its replica.
+        report["primary"]["authority_synchronous_seconds"] = wait(lambda: authority_mode(primary_port) == "synchronous", 30,
+                                                                  "the primary's authority service did not reach its replica", every=0.05)
         time.sleep(max(0.0, not_before - time.time() + 1))
         status, current = call(primary_port, "GET", "/v1/organizations/current", jwt(client / "identity.pem", trust["generation"]))
         expect(status == 200 and current["organization"]["id"] == tenant["id"], f"the delegated identity does not read on the primary ({status})")
@@ -363,8 +475,6 @@ def main():
         # The operator's copy of the API's keys and configuration, made at
         # installation and kept off the host. A stand-in until D-05 decides
         # where these keys live and how a standby gets them.
-        safe = work / "operator-safe"
-        safe.mkdir(mode=0o700)
         for name in ("receipt.key", "transit-v1.key", "api.crt", "api.key"):
             shutil.copy2(primary_etc / name, safe / name)
 
@@ -402,7 +512,7 @@ def main():
 
         # ---- The disaster: the primary host is lost at once.
         postmaster = int((data / "postmaster.pid").read_text().split()[0])
-        victims = [apis["primary"].pid, *process_tree(postmaster)]
+        victims = [apis["primary"].pid, services["primary"].pid, *process_tree(postmaster)]
         for pid in victims:
             try:
                 os.kill(pid, signal.SIGKILL)
@@ -415,13 +525,17 @@ def main():
             time.sleep(0.01)
         disaster_at, decided = time.time(), time.monotonic()
         apis.pop("primary").wait()
+        services.pop("primary").wait()
         lab.clusters.remove(data)
         shutil.rmtree(data)  # its data directory, pg_wal included
+        shutil.rmtree(pauth)  # its authorities, lost with the host
+        shutil.rmtree(prun)
         shutil.rmtree(work / "spool", ignore_errors=True)  # the WAL pgBackRest had queued and not pushed
         writer.halt.set()
         writer.join(timeout=30)
         report["disaster"] = {"at": instant(disaster_at), "processes_killed": len(victims), "pushes_cut": pushes,
                               "data_directory_removed": not data.exists(), "spool_removed": not (work / "spool").exists(),
+                              "authorities_removed": not pauth.exists(),
                               "writes_acknowledged": len(writer.acknowledged), "writes_failed": len(writer.failed)}
 
         # ---- The failover, timed from the decision.
@@ -440,6 +554,35 @@ def main():
             run("failover", ["docker", "kill", "--signal=HUP", f"{lab.tag}-s3"])
             # On the standby: the old primary's key leaves the SFTP account.
             run("failover", ["docker", "exec", f"{lab.tag}-sftp", "rm", f"{SFTP_HOME}/.ssh/authorized_keys"])
+
+        def promote_authorities():
+            # docs/recovery.md, Promote the replica, steps 2 to 5: stop the
+            # replica's service; the unlock key from the safe, private; the
+            # promotion into the directories the service will own; the key
+            # file deleted.
+            stop_service("replica")
+            unlock = sauth / "unlock.key"
+            shutil.copy2(safe / "unlock.key", unlock)
+            unlock.chmod(0o600)
+            promoted = authority("failover-authority", "promote", "-replica-root", replica_root,
+                                 "-key-authority-root", sauth / "key-authority", "-key-authority-id", pinned["key"],
+                                 "-restore-authority-root", sauth / "restore-authority", "-restore-authority-id", pinned["restore"],
+                                 "-unlock-key-file", unlock)
+            unlock.unlink()
+            expect(promoted.get("epoch") == 2 and promoted.get("restore_authority_id") == pinned["restore"]
+                   and promoted.get("key_authority_id") == pinned["key"], f"the promotion gave {promoted}")
+            return promoted
+
+        def start_authority_service():
+            # Step 6: the standby's service in the primary role, on the
+            # promoted directories, without authority_replica.
+            srun.mkdir(mode=0o750)
+            configure(sauth / "authority.json", {
+                "version": 2, "role": "primary", "key_authority": {"root": str(sauth / "key-authority"), "identity": pinned["key"]},
+                "restore_authority": {"root": str(sauth / "restore-authority"), "identity": pinned["restore"]},
+                "worker_socket": str(srun / "worker.sock"), "api_socket": str(srun / "api.sock"), "api_uid": os.getuid()})
+            started = start_service("promoted", sauth / "authority.json", "service_started")
+            expect(started.get("epoch") == 2 and started.get("mode") == "standalone", f"the promoted authority service started as {started}")
 
         def promote():
             run("standby", [pg("pg_ctl"), "-D", standby, "-t", "300", "-w", "promote"])
@@ -469,15 +612,19 @@ def main():
             return body["id"]
 
         step("fence_old_primary", fence)
+        promoted = step("promote_authorities", promote_authorities)
+        step("start_authority_service", start_authority_service)
         step("promote", promote)
         on_promoted = step("own_repository", lambda: lab.own_repository(standby, ssock))[0]
         step("install_api_configuration_and_keys", install)
-        step("start_api", lambda: start_api("standby", standby_etc, standby_dsn, standby_port))
+        step("start_api", lambda: start_api("standby", standby_etc, standby_dsn, standby_port, srun / "api.sock"))
         step("api_ready", lambda: ready("standby", standby_port))
         step("first_authenticated_read", read)
         first_write = step("first_authenticated_write", write)
         rto = time.monotonic() - decided
         report["failover"] = {"steps_seconds": steps, "rto_seconds": round(rto, 2)}
+        report["authorities"] = {"promotion": promoted, "standby_api_reports": authority_mode(standby_port)}
+        expect(report["authorities"]["standby_api_reports"] == "standalone", "the standby's API does not report its authority service standalone")
 
         # ---- After the RTO. A full backup into the new repository: until it
         # ends, the new primary has no backup of its own. A checkpoint first:
@@ -543,7 +690,7 @@ def main():
         if writer:
             writer.halt.set()
             writer.join(timeout=30)
-        for proc in apis.values():
+        for proc in [*apis.values(), *services.values()]:
             if proc.poll() is None:
                 proc.send_signal(signal.SIGTERM)
                 try:
