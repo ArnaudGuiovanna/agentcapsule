@@ -148,8 +148,10 @@ if !contract.Supports(capsuleprotocol.ControlEvents) {
 ```
 
 This metadata never replaces authority checks at the time of the effect. The
-negotiation changes neither the client, nor the persistent fences, nor the
-identity and body used to replay an event.
+negotiation changes neither the persistent fences nor the identity used to
+replay an event. `RequireControlContract` records the contract it accepted on
+its client (`Client.Accepts`), from which the worker decides whether JSON
+parts reach that boot as JSON or as text (see "JSON content").
 
 ## Controlled paths and SQL observation
 
