@@ -438,6 +438,12 @@ type authorityService struct {
 	done                                  chan error
 }
 
+// flags are those that reach the service's API socket, as the API and
+// agentcapsule-admin take them.
+func (a *authorityService) flags() []string {
+	return []string{"-authority-socket", a.socket, "-restore-authority-id", a.restoreID, "-key-authority-id", a.keyID}
+}
+
 // startAuthorityService initializes both authorities with agentcapsule-admin
 // and starts the service built in dir, its sockets in a short directory.
 func startAuthorityService(t *testing.T, dir string) *authorityService {

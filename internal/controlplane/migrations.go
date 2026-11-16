@@ -130,6 +130,9 @@ var capabilitiesSQL string
 //go:embed migrations/0037_operations.sql
 var operationsSQL string
 
+//go:embed migrations/0040_access_revocations.sql
+var accessRevocationsSQL string
+
 // Append migrations; never edit an installed migration. The original schema
 // also upgrades pre-ledger installations, preserving its historical backfills.
 // Later calls validate its checksum without replaying DDL or those backfills.
@@ -171,6 +174,7 @@ var controlPlaneMigrations = []schemaMigration{
 	{version: 35, name: "capacity-queue-and-replays", sql: capacityQueueAndReplaysSQL},
 	{version: 36, name: "capabilities", sql: capabilitiesSQL},
 	{version: 37, name: "operations", sql: operationsSQL},
+	{version: 40, name: "access-revocations", sql: accessRevocationsSQL},
 }
 
 func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error {

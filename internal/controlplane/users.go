@@ -190,6 +190,9 @@ func (a *Accounts) withReceipt(ctx context.Context, tx pgx.Tx, s receiptScope, i
 		if err != nil {
 			return APIReceipt{}, errors.New("API receipt cannot be decrypted")
 		}
+		if plain, err = currentRevocations(ctx, tx, plain); err != nil {
+			return APIReceipt{}, err
+		}
 		result.Body = plain
 		result.Replayed = true
 		return result, nil

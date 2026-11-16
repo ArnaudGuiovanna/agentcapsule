@@ -75,7 +75,8 @@ func TestDestructiveCommandsAreConfirmedDryRunAndAudited(t *testing.T) {
 	if !active() || len(audit()) != 0 {
 		t.Fatal("a dry run revoked or recorded")
 	}
-	out, code = trimmed(t, "revoke-credential", "-kind", "platform", "-id", id, "-confirm", id)
+	flags, _ := serveAuthority(t) // the revocation's record (ADR 006 wave 5)
+	out, code = trimmed(t, append([]string{"revoke-credential", "-kind", "platform", "-id", id, "-confirm", id}, flags...)...)
 	if code != 0 || json.Unmarshal([]byte(out), &outcome) != nil || outcome.DryRun || outcome.Outcome != "done" || outcome.Target != id {
 		t.Fatal("revocation", out, code)
 	}

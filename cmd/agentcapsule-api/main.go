@@ -191,6 +191,11 @@ func run(args []string) int {
 			status, err := authorities.Status(ctx)
 			return status.Mode, err
 		})
+		// Every revoking transaction appends its record to the service
+		// before it commits, and the pending ones are confirmed once the
+		// standby holds them (docs/adr/006-authority-service.md §7).
+		s.RecordAccessWith(authorities)
+		go handler.ConfirmRevocations(ctx, 5*time.Second)
 	}
 	// One event per request on standard output: its X-Request-ID, route
 	// pattern, status and duration, never an ID from the path or a body.

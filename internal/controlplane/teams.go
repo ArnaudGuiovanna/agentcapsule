@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/authoritylog"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorization"
 	"github.com/jackc/pgx/v5"
 )
@@ -211,10 +212,19 @@ func (a *Accounts) DisableTeam(ctx context.Context, p Principal, id, key string)
 			return 0, nil, err
 		}
 		t.Status = "disabled"
-		if err = auditTeam(ctx, tx, p, id, nil, "team.disabled", before, t.Status, before != t.Status || tag.RowsAffected() > 0); err != nil {
+		changed := before != t.Status || tag.RowsAffected() > 0
+		if err = auditTeam(ctx, tx, p, id, nil, "team.disabled", before, t.Status, changed); err != nil {
 			return 0, nil, err
 		}
-		return 200, t, nil
+		// The team, and with it every membership it revoked now.
+		revoked := a.store.revocations(tx, p.TenantID)
+		if changed {
+			if err = revoked.add(ctx, authoritylog.AccessTeam, p.TenantID, [][]string{{id}}); err != nil {
+				return 0, nil, err
+			}
+		}
+		body, err := revoked.body(t)
+		return 200, body, err
 	})
 	if err != nil {
 		return APIReceipt{}, err
@@ -284,7 +294,14 @@ func (a *Accounts) changeTeamMembership(ctx context.Context, p Principal, team, 
 		if err = auditTeam(ctx, tx, p, team, &principal, action, before, m.Status, before != m.Status); err != nil {
 			return 0, nil, err
 		}
-		return status, m, nil
+		revoked := a.store.revocations(tx, p.TenantID)
+		if !add && exists && before != m.Status {
+			if err = revoked.add(ctx, authoritylog.AccessTeamMembership, p.TenantID, [][]string{{team, principal}}); err != nil {
+				return 0, nil, err
+			}
+		}
+		body, err := revoked.body(m)
+		return status, body, err
 	})
 	if err != nil {
 		return APIReceipt{}, err

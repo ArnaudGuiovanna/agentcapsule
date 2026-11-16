@@ -66,6 +66,10 @@ type rbacRoute struct {
 	fresh        func(t *testing.T, f *rbacFixture) map[string]string
 	hides        []string
 	upload       bool
+	// revokes is the kind of the access revocation records a success
+	// appends (ADR 006 wave 5), space-separated; empty when it revokes
+	// nothing.
+	revokes string
 }
 
 const (
@@ -93,7 +97,7 @@ var rbacRoutes = []rbacRoute{
 	{Method: "GET", Path: "/v1/organizations", Success: 200, Want: rbacPlatformOnly},
 	{Method: "POST", Path: "/v1/organizations", Success: 201, Want: rbacPlatformOnly, body: `{"name":"{name}","initial_owner":{"issuer":"https://client.example","subject":"{name}","display_name":"X"}}`, fresh: rbacName},
 	{Method: "GET", Path: "/v1/organizations/{org}", Success: 200, Want: rbacPlatformOnly},
-	{Method: "POST", Path: "/v1/organizations/{fresh}/disable", Success: 200, Want: rbacPlatformOnly, body: `{}`, fresh: rbacFreshOrganization, Note: "a disposable organization"},
+	{Method: "POST", Path: "/v1/organizations/{fresh}/disable", revokes: "organization", Success: 200, Want: rbacPlatformOnly, body: `{}`, fresh: rbacFreshOrganization, Note: "a disposable organization"},
 	{Method: "POST", Path: "/v1/harness-imports", Success: 202, Want: rbacPlatformOnly, body: `{"reference":"ghcr.io/acme/matrix@sha256:{digest}"}`, fresh: rbacName},
 	{Method: "GET", Path: "/v1/harness-imports/{import}", Success: 200, Want: rbacPlatformOnly},
 	{Method: "GET", Path: "/v1/harness-releases", Success: 200, Want: "S S S S 403 403 403 403 S S 401 401 S", Note: "the platform's catalog"},
@@ -103,30 +107,31 @@ var rbacRoutes = []rbacRoute{
 	{Method: "GET", Path: "/v1/members", Success: 200, Want: "S S 403 S 403 403 403 403 S F 401 401 403", hides: []string{"{user_principal}"}},
 	{Method: "POST", Path: "/v1/members", Success: 201, Want: rbacCreateAdmin, body: `{"issuer":"https://client.example","subject":"{name}","display_name":"X","role":"agent_user"}`, fresh: rbacName},
 	{Method: "POST", Path: "/v1/members/{member}/role", Success: 200, Want: rbacManage, body: `{"role":"auditor"}`, fresh: rbacFreshMember, Note: "a disposable agent_user"},
-	{Method: "POST", Path: "/v1/members/{member}/revoke", Success: 200, Want: rbacManage, body: `{}`, fresh: rbacFreshMember, Note: "a disposable agent_user"},
+	{Method: "POST", Path: "/v1/members/{member}/revoke", revokes: "member", Success: 200, Want: rbacManage, body: `{}`, fresh: rbacFreshMember, Note: "a disposable agent_user"},
 
 	{Method: "GET", Path: "/v1/teams", Success: 200, Want: "S S 403 S 403 403 403 403 S F 401 401 403", hides: []string{"{team}"}},
 	{Method: "POST", Path: "/v1/teams", Success: 201, Want: rbacCreateAdmin, body: `{"name":"{name}"}`, fresh: rbacName},
 	{Method: "GET", Path: "/v1/teams/{team}", Success: 200, Want: rbacReadAdmin},
-	{Method: "POST", Path: "/v1/teams/{fresh}/disable", Success: 200, Want: rbacManage, body: `{}`, fresh: rbacFreshTeam, Note: "a disposable team"},
+	{Method: "POST", Path: "/v1/teams/{fresh}/disable", revokes: "team", Success: 200, Want: rbacManage, body: `{}`, fresh: rbacFreshTeam, Note: "a disposable team"},
 	{Method: "GET", Path: "/v1/teams/{team}/members", Success: 200, Want: rbacReadAdmin},
 	{Method: "POST", Path: "/v1/teams/{fresh}/members", Success: 201, Want: rbacManage, body: `{"principal_id":"{member}"}`, fresh: rbacFreshTeamAndMember, Note: "a disposable team and member"},
-	{Method: "POST", Path: "/v1/teams/{fresh}/members/{member}/revoke", Success: 200, Want: rbacManage, body: `{}`, fresh: rbacFreshTeamMembership, Note: "a disposable team membership"},
+	{Method: "POST", Path: "/v1/teams/{fresh}/members/{member}/revoke", revokes: "team_membership", Success: 200, Want: rbacManage, body: `{}`, fresh: rbacFreshTeamMembership, Note: "a disposable team membership"},
 
 	{Method: "GET", Path: "/v1/service-accounts", Success: 200, Want: "S S 403 403 403 403 403 403 403 F 401 401 403", hides: []string{"{spare}"}},
 	{Method: "POST", Path: "/v1/service-accounts", Success: 201, Want: rbacCreateAdmin, body: `{"name":"{name}","role":"agent_user"}`, fresh: rbacName},
-	{Method: "POST", Path: "/v1/service-accounts/{fresh}/disable", Success: 200, Want: rbacIdentity, body: `{}`, fresh: rbacFreshServiceAccount, Note: "a disposable agent_user account"},
+	{Method: "POST", Path: "/v1/service-accounts/{fresh}/disable", revokes: "principal", Success: 200, Want: rbacIdentity, body: `{}`, fresh: rbacFreshServiceAccount, Note: "a disposable agent_user account"},
 	{Method: "GET", Path: "/v1/service-accounts/{spare}/tokens", Success: 200, Want: rbacIdentity, Note: "an agent_user account"},
 	{Method: "POST", Path: "/v1/service-accounts/{spare}/tokens", Success: 201, Want: "S S 403 403 403 403 403 403 403 404 401 401 400", body: `{"scopes":["agent:read"],"expires_at":"{expires}"}`, fresh: rbacName, Note: "an agent_user account"},
-	{Method: "POST", Path: "/v1/service-accounts/{spare}/tokens/{token}/revoke", Success: 200, Want: rbacIdentity, body: `{}`, fresh: rbacFreshServiceToken, Note: "a disposable token"},
+	{Method: "POST", Path: "/v1/service-accounts/{spare}/tokens/{token}/revoke", revokes: "service_token", Success: 200, Want: rbacIdentity, body: `{}`, fresh: rbacFreshServiceToken, Note: "a disposable token"},
 
 	{Method: "GET", Path: "/v1/audit", Success: 200, Want: "S S 403 S 403 403 403 403 S F 401 401 403", hides: []string{"{agent}"}},
 	{Method: "GET", Path: "/v1/audit/export?from={from}&to={to}", Success: 200, Want: "S S 403 S 403 403 403 403 S F 401 401 403", fresh: rbacAuditRange, hides: []string{"{agent}"}},
+	{Method: "GET", Path: "/v1/access-revocations/{revocation}", Success: 200, Want: "S S 403 S 403 403 403 403 S 404 401 401 404", Note: "a revocation of the organization"},
 
 	{Method: "GET", Path: "/v1/llm/providers", Success: 200, Want: "S S 403 403 403 403 403 403 403 F 401 401 403", hides: []string{"{provider}"}},
 	{Method: "POST", Path: "/v1/llm/providers", Success: 201, Want: rbacCreateAdmin, body: `{"name":"{name}","kind":"openai_compatible","base_url":"https://llm.example.org/v1","secret":"matrix-credential-0123456789"}`, fresh: rbacName},
-	{Method: "POST", Path: "/v1/llm/providers/{fresh}/rotate", Success: 200, Want: rbacManage, body: `{"secret":"matrix-credential-rotated-0123"}`, fresh: rbacFreshProvider, Note: "a disposable provider"},
-	{Method: "POST", Path: "/v1/llm/providers/{fresh}/disable", Success: 200, Want: rbacManage, body: `{}`, fresh: rbacFreshProvider, Note: "a disposable provider"},
+	{Method: "POST", Path: "/v1/llm/providers/{fresh}/rotate", revokes: "llm_provider", Success: 200, Want: rbacManage, body: `{"secret":"matrix-credential-rotated-0123"}`, fresh: rbacFreshProvider, Note: "a disposable provider"},
+	{Method: "POST", Path: "/v1/llm/providers/{fresh}/disable", revokes: "llm_provider", Success: 200, Want: rbacManage, body: `{}`, fresh: rbacFreshProvider, Note: "a disposable provider"},
 	{Method: "GET", Path: "/v1/llm/aliases", Success: 200, Want: "S S 403 403 403 403 403 403 403 F 401 401 403", hides: []string{"{alias}"}},
 	{Method: "POST", Path: "/v1/llm/aliases", Success: 201, Want: rbacManage, body: `{"alias":"{name}","provider_id":"{provider}","upstream_model":"model-x"}`, fresh: rbacName},
 	{Method: "POST", Path: "/v1/llm/aliases/{fresh}/disable", Success: 200, Want: rbacManage, body: `{}`, fresh: rbacFreshAlias, Note: "a disposable alias"},
@@ -164,9 +169,9 @@ var rbacRoutes = []rbacRoute{
 
 	{Method: "GET", Path: "/v1/agents/{agent}/assignments", Success: 200, Want: rbacManage},
 	{Method: "POST", Path: "/v1/agents/{agent}/assignments", Success: 201, Want: rbacManage, body: `{"principal_id":"{member}","permissions":["read_metadata"]}`, fresh: rbacFreshMember, Note: "to a disposable member"},
-	{Method: "POST", Path: "/v1/agents/{agent}/assignments/{assignment}/revoke", Success: 200, Want: rbacManage, body: `{}`, fresh: rbacFreshAssignment, Note: "a disposable assignment"},
-	{Method: "POST", Path: "/v1/agents/{agent}/assignments/{assignment}/replace", Success: 201, Want: rbacManage, body: `{"permissions":["read_metadata","invoke"]}`, fresh: rbacFreshAssignment, Note: "a disposable assignment"},
-	{Method: "POST", Path: "/v1/agents/{agent}/assignments/{assignment}/reassign", Success: 201, Want: rbacManage, body: `{"principal_id":"{member}"}`, fresh: rbacFreshReassignment, Note: "a disposable assignment, to a disposable member"},
+	{Method: "POST", Path: "/v1/agents/{agent}/assignments/{assignment}/revoke", revokes: "assignment", Success: 200, Want: rbacManage, body: `{}`, fresh: rbacFreshAssignment, Note: "a disposable assignment"},
+	{Method: "POST", Path: "/v1/agents/{agent}/assignments/{assignment}/replace", revokes: "assignment", Success: 201, Want: rbacManage, body: `{"permissions":["read_metadata","invoke"]}`, fresh: rbacFreshAssignment, Note: "a disposable assignment"},
+	{Method: "POST", Path: "/v1/agents/{agent}/assignments/{assignment}/reassign", revokes: "assignment", Success: 201, Want: rbacManage, body: `{"principal_id":"{member}"}`, fresh: rbacFreshReassignment, Note: "a disposable assignment, to a disposable member"},
 
 	{Method: "POST", Path: "/v1/agents/{agent}/messages", Success: 202, Want: rbacInvoke, body: `{"content":[{"type":"text","text":"matrix"}]}`},
 	{Method: "POST", Path: "/v1/agents/{agent}/invocations", Success: 202, Want: "403 403 403 403 S S 404 404 S 404 401 401 400", body: `{"content":[{"type":"text","text":"matrix"}]}`},
@@ -696,6 +701,9 @@ func newRBACFixture(t *testing.T) *rbacFixture {
 	l, minimum, _ := apiAgentsLab(t)
 	f := &rbacFixture{l: l, minimum: minimum, ids: map[string]string{}, own: map[string]map[string]string{},
 		subjects: map[string]string{"owner": "alice"}, static: map[string]string{"platform": l.platform}}
+	// Every revoking route appends its record to the authority service
+	// (ADR 006 wave 5): here one whose replica holds each record at once.
+	l.store.RecordAccessWith(&fakeAuthority{onReplica: true})
 	if err := l.store.ConfigureHostStorage(ctx, "local", 1<<20); err != nil {
 		t.Fatal(err)
 	}
@@ -765,7 +773,14 @@ func newRBACFixture(t *testing.T) *rbacFixture {
 	former := f.assign(t, f.ids["former_principal"], false, all...)
 	f.own["former"] = map[string]string{"inv": f.invoke(t, "former"), "file": f.upload(t, "former")}
 	f.complete(t, f.own["former"]["inv"])
-	f.must(t, "owner", "POST", "/v1/agents/"+f.ids["agent"]+"/assignments/"+former.ID+"/revoke", `{}`, 200, nil)
+	var lost struct {
+		Revocations []controlplane.AccessRevocation `json:"revocations"`
+	}
+	f.must(t, "owner", "POST", "/v1/agents/"+f.ids["agent"]+"/assignments/"+former.ID+"/revoke", `{}`, 200, &lost)
+	if len(lost.Revocations) != 1 {
+		t.Fatal("the former assignee's revocation", lost)
+	}
+	f.ids["revocation"] = lost.Revocations[0].ID
 
 	f.assign(t, f.ids["user_principal"], false, all...)
 	f.own["user"] = map[string]string{"inv": f.invoke(t, "user"), "file": f.upload(t, "user")}
@@ -864,6 +879,20 @@ func TestRBACMatrix(t *testing.T) {
 			if code != expected {
 				t.Errorf("%s %s as %s: %d, want %s: %s", route.Method, route.Path, actor, r.Code, expected, strings.TrimSpace(r.Body.String()))
 				continue
+			}
+			if r.Code == route.Success {
+				// A revoking route reports the records it appended.
+				var answer struct {
+					Revocations []controlplane.AccessRevocation `json:"revocations"`
+				}
+				_ = json.Unmarshal(r.Body.Bytes(), &answer)
+				var kinds []string
+				for _, v := range answer.Revocations {
+					kinds = append(kinds, v.Kind)
+				}
+				if got := strings.Join(kinds, " "); got != route.revokes {
+					t.Errorf("%s %s as %s: revokes %q, want %q", route.Method, route.Path, actor, got, route.revokes)
+				}
 			}
 			if expected == rbacFiltered {
 				for _, hidden := range route.hides {

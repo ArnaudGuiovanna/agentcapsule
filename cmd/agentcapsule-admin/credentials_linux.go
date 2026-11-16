@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -63,6 +64,7 @@ func revokeCredential(args []string) int {
 	kind := f.String("kind", "", "platform or service")
 	id := f.String("id", "", "credential ID from list-credentials")
 	g := newGuard(f, "the credential ID")
+	access := newAccessFlags(f)
 	if err := f.Parse(args); err != nil {
 		return 1
 	}
@@ -79,10 +81,24 @@ func revokeCredential(args []string) int {
 		return code
 	}
 	defer s.Close()
+	// The revocation appends its record to the authority service before it
+	// commits (ADR 006 wave 5); a dry run records nothing.
+	if !*g.dryRun {
+		authorities, code := access.attach(ctx, s)
+		if code != "" {
+			return fail(code)
+		}
+		if authorities != nil {
+			defer authorities.Close()
+		}
+	}
 	out, err := s.RevokeOperatorCredential(operator(ctx), g.command(), *kind, *id)
 	if err != nil {
 		if reason, definite := definiteRefusal(err); definite {
 			return fail("credential_revocation_rejected_" + reason)
+		}
+		if errors.Is(err, controlplane.ErrAuthorityUnavailable) {
+			return fail("authority_unavailable_try_again")
 		}
 		return fail("credential_revocation_unconfirmed_retry_same_command")
 	}

@@ -75,6 +75,9 @@ type OperatorOutcome struct {
 	DryRun  bool   `json:"dry_run"`
 	// Events is, for an audit retention, how many events it would delete now.
 	Events *int64 `json:"events,omitempty"`
+	// Revocations are the access revocations a revoking command recorded
+	// (ADR 006 wave 5): pending until the standby holds them.
+	Revocations []AccessRevocation `json:"revocations,omitempty"`
 }
 
 // RefusalReason names an error decided by the database state or the input:

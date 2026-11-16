@@ -8,8 +8,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"time"
 
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/authoritylog"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/delegatedidentity"
 	"github.com/jackc/pgx/v5"
 )
@@ -59,6 +61,9 @@ type DelegationChangeResult struct {
 	KeyID        string     `json:"key_id,omitempty"`
 	KeyExpiresAt *time.Time `json:"key_expires_at,omitempty"`
 	Replayed     bool       `json:"replayed"`
+	// Revocations are the access revocations the change recorded (ADR 006
+	// wave 5): pending until the standby holds them.
+	Revocations []AccessRevocation `json:"revocations,omitempty"`
 }
 
 // trustPolicy is a stored trust without its keys. Its fingerprint over a key
@@ -158,6 +163,13 @@ func (s *Store) ChangeDelegationAuthority(ctx context.Context, in DelegationChan
 		}
 		if err = json.Unmarshal(response, &out); err != nil {
 			return DelegationChangeResult{}, err
+		}
+		// A replay says what holds now of the revocations it recorded.
+		for i := range out.Revocations {
+			if err = tx.QueryRow(ctx, `SELECT state,confirmed_at FROM access_revocations WHERE id=$1`, out.Revocations[i].ID).
+				Scan(&out.Revocations[i].State, &out.Revocations[i].ConfirmedAt); err != nil {
+				return DelegationChangeResult{}, err
+			}
 		}
 		out.Replayed = true
 		return out, commit(ctx, tx)
@@ -298,6 +310,33 @@ func (s *Store) ChangeDelegationAuthority(ctx context.Context, in DelegationChan
 	}
 	if in.DryRun {
 		return out, nil
+	}
+	// The access this change revokes: its record, before the commit. The
+	// platform's own revocation: its operator reads it.
+	if changed {
+		var object []string
+		kind := authoritylog.AccessDelegationTrust
+		switch in.Action {
+		case "revoke-token":
+			kind, object = authoritylog.AccessDelegatedToken, []string{in.Issuer, in.TokenID}
+		case "revoke-trust":
+			object = []string{in.Issuer, in.Audience}
+		case "rotate":
+			// Tokens of earlier generations, and the keys it retired.
+			object = []string{in.Issuer, in.Audience, "generation", strconv.FormatInt(out.Generation, 10)}
+		case "retire-key":
+			object = []string{in.Issuer, in.Audience, "key", in.KeyID}
+			if out.KeyExpiresAt != nil {
+				object = append(object, out.KeyExpiresAt.UTC().Format(time.RFC3339Nano))
+			}
+		}
+		if object != nil {
+			revoked := s.revocations(tx, "")
+			if err = revoked.add(ctx, kind, in.TenantID, [][]string{object}); err != nil {
+				return out, err
+			}
+			out.Revocations = revoked.list
+		}
 	}
 	response, err = json.Marshal(out)
 	if err != nil {

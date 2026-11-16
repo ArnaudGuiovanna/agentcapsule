@@ -4,6 +4,7 @@ import (
 	"context"
 	"slices"
 
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/authoritylog"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorization"
 )
 
@@ -126,7 +127,14 @@ func (a *Accounts) ReassignAgentAssignment(ctx context.Context, p Principal, age
 		if err = auditTenantAgent(ctx, tx, p, agentID, &s.ID, "assignment.created"); err != nil {
 			return 0, nil, err
 		}
-		return 201, s, nil
+		// The former target's assignment is revoked: its record, before the
+		// commit.
+		revoked := a.store.revocations(tx, p.TenantID)
+		if err = revoked.add(ctx, authoritylog.AccessAssignment, p.TenantID, [][]string{{assignmentID}}); err != nil {
+			return 0, nil, err
+		}
+		body, err := revoked.body(s)
+		return 201, body, err
 	})
 	if err != nil {
 		return APIReceipt{}, err

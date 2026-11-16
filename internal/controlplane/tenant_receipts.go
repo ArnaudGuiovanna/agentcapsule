@@ -58,6 +58,9 @@ func (a *Accounts) withTenantReceipt(ctx context.Context, tx pgx.Tx, p Principal
 		if err != nil {
 			return APIReceipt{}, errors.New("tenant receipt cannot be decrypted")
 		}
+		if plain, err = currentRevocations(ctx, tx, plain); err != nil {
+			return APIReceipt{}, err
+		}
 		result.Body, result.Replayed = plain, true
 		return result, nil
 	}

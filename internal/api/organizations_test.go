@@ -194,11 +194,16 @@ func TestCredentialCLIListRevokeAndReplaceWithNewFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	build := exec.CommandContext(t.Context(), "go", "build", "-o", binary, "./cmd/agentcapsule-admin")
-	build.Dir = root
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build admin: %v %s", err, output)
+	for _, name := range []string{"agentcapsule-admin", "agentcapsule-authority"} {
+		build := exec.CommandContext(t.Context(), "go", "build", "-o", filepath.Join(dir, name), "./cmd/"+name)
+		build.Dir = root
+		if output, err := build.CombinedOutput(); err != nil {
+			t.Fatalf("build %s: %v %s", name, err, output)
+		}
 	}
+	// In production a revocation appends its record to the authority
+	// service before it commits (ADR 006 wave 5).
+	authority := startAuthorityService(t, dir)
 	keyFile := filepath.Join(dir, "receipt.key")
 	if err := os.WriteFile(keyFile, bytes.Repeat([]byte{0x36}, 32), 0600); err != nil {
 		t.Fatal(err)
@@ -236,7 +241,13 @@ func TestCredentialCLIListRevokeAndReplaceWithNewFile(t *testing.T) {
 	if out, err := admin("revoke-credential", "-kind", "platform", "-id", credential.ID); err == nil || out != "confirmation_required\n" {
 		t.Fatalf("revoked without confirmation: %v %q", err, out)
 	}
-	if out, err := admin("revoke-credential", "-kind", "platform", "-id", credential.ID, "-confirm", credential.ID); err != nil || !strings.Contains(out, `"outcome":"done"`) {
+	if out, err := admin("revoke-credential", "-kind", "platform", "-id", credential.ID, "-confirm", credential.ID); err == nil || out != "authority_required_in_production\n" {
+		t.Fatalf("revoked in production without the authority service: %v %q", err, out)
+	}
+	out, err := admin(append([]string{"revoke-credential", "-kind", "platform", "-id", credential.ID, "-confirm", credential.ID}, authority.flags()...)...)
+	var outcome controlplane.OperatorOutcome
+	if err != nil || json.Unmarshal([]byte(out), &outcome) != nil || outcome.Outcome != "done" || len(outcome.Revocations) != 1 ||
+		outcome.Revocations[0].Kind != "platform_credential" || outcome.Revocations[0].State != controlplane.RevocationConfirmed {
 		t.Fatalf("revocation failed: %v %q", err, out)
 	}
 	if _, err = store.Authenticate(t.Context(), string(secret)); err == nil {
@@ -256,7 +267,7 @@ func TestCredentialCLIListRevokeAndReplaceWithNewFile(t *testing.T) {
 	if p, err := store.Authenticate(t.Context(), string(replacement)); err != nil || p.Kind != "platform" {
 		t.Fatal("replacement credential does not authenticate", err)
 	}
-	if out, err := admin("revoke-credential", "-kind", "platform", "-id", "ptok_missing", "-confirm", "ptok_missing"); err == nil || out != "credential_revocation_rejected_not_found\n" {
+	if out, err := admin(append([]string{"revoke-credential", "-kind", "platform", "-id", "ptok_missing", "-confirm", "ptok_missing"}, authority.flags()...)...); err == nil || out != "credential_revocation_rejected_not_found\n" {
 		t.Fatalf("unknown credential not reported as definite: %v %q", err, out)
 	}
 }
