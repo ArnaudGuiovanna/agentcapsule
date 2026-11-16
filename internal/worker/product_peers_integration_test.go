@@ -131,6 +131,9 @@ func newProductPeerLab(t *testing.T) *productPeerLab {
 	}
 	options := opts(t, root)
 	options.AuthenticatedControl, options.Ready, options.BootTimeout = true, nil, time.Minute
+	if labRuntimeOptions != nil {
+		labRuntimeOptions(&options)
+	}
 	authorityRoot := filepath.Join(t.TempDir(), "restore-authority")
 	authority, err := restoreauthority.Initialize(t.Context(), authorityRoot, keys.Identity())
 	if err != nil {

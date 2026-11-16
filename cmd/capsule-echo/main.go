@@ -20,6 +20,13 @@ import (
 )
 
 func run() (result error) {
+	mode, err := parseBehaviour(os.Args[1:])
+	if err != nil {
+		return err
+	}
+	if mode.crashAtBoot {
+		return errCrashAtBoot
+	}
 	config := os.NewFile(3, "harness-configuration")
 	if config == nil {
 		return guestinit.ErrGuest
@@ -70,6 +77,9 @@ func run() (result error) {
 		background <- h.Run(ctx)
 		cancel()
 	}()
+	if mode.floodChunk != 0 && !b.Identity.FenceOnly {
+		go func() { _ = flood(ctx, filepath.Join(b.DataDirectory, "flood"), mode.floodChunk) }()
+	}
 	err = s.ServeLocal(ctx, unix, b.SupervisorUID)
 	cancel()
 	workerErr := <-background // no SQLite close while an outgoing call is active
