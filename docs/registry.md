@@ -38,7 +38,17 @@ architecture: x86_64
 base: agentcapsule-guest/1      # guest ABI: kernel, capsule-init, mount layout
 entrypoint: [/bin/harness, --serve]   # clean absolute path inside harness.ext4
 description: Reference echo harness   # optional
+capabilities: [llm.invoke]            # optional; see below
 ```
+
+`capabilities` lists what the harness asks the platform for over its
+platform channel: `llm.invoke`, `agents.delegate`, `agents.discover`
+([ADR 016](adr/016-content-links-capabilities.md)). The importer records the
+list on the release; an unknown name rejects the package. An empty list asks
+for nothing. A manifest without the field predates it and is treated as
+asking for every capability. The agent gets the intersection of this list and
+its organization's and its own policies
+([agents-assignments.md](api/agents-assignments.md#capabilities-cap-01-ext-003)).
 
 `checksums.json` lists the sha256 of `harness.yaml` and `harness.ext4`, so a package
 copied out of a registry can still be checked. `harness.ext4` is the read-only root

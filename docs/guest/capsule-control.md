@@ -3,9 +3,10 @@
 `GET /v1/capabilities` and `capsuleprotocol.Client.Negotiate` describe the
 operations of the **harness control protocol** available for an authenticated
 boot. This information is neither business skills, nor tool permissions, nor
-tenant scopes. It does not implement the future manifest / tenant policy /
-agent rights intersection planned by the product spec
-([product.md](../product.md)).
+tenant scopes. The intersection of the harness's capabilities with the
+organization's and the agent's policies is a separate, host-side check on
+the platform channel (see "Capabilities on the platform channel" below and
+[ADR 016](../adr/016-content-links-capabilities.md)).
 
 The authenticated product path now requires this negotiation before exposing
 the local proxy, confirming volume preparation and admitting application use.
@@ -22,8 +23,16 @@ a private Unix socket with `SO_PEERCRED` checking on the supervisor side. No
 ```http
 GET /v1/capabilities HTTP/1.1
 X-Capsule-Accept-Protocol: capsule.v2, capsule.v1
+X-Capsule-Accept-Features: content.json
 Accept: application/json
 ```
+
+`X-Capsule-Accept-Features` is optional. It lists the optional features the
+client understands; unknown names are ignored. A server offers an optional
+feature that postdates this header only to a client that lists it, so a
+client that does not send the header (a capsule-init or a worker built
+before it) sees exactly the five features it validates. `outcomes` predates
+the header and is always offered.
 
 The header must be unique, contain between one and eight distinct versions and
 take at most 256 bytes. The format is `capsule.v<positive integer>` with at most
@@ -60,12 +69,26 @@ or incompatible selection.
 | `events` | `POST /v1/events` | Existing durable envelope `Event{ID,Subjects,Body}`, SQLite guards and deduplication unchanged |
 | `invoke.message.user.text` | `POST /v1/invoke` | Existing `message.user` instruction, text content and mandate; not yet an arbitrary JSON invocation |
 | `outcomes` | `POST /v1/outcomes` | Read-only: which of up to 1,024 outcome IDs the store holds, each with the digest of its stored result. Optional |
+| `content.json` | `POST /v1/invoke`, `POST /v1/events` | The harness accepts JSON parts (`{"type":"json","json":...}`) in invocations, requests and replies. Optional, opt-in (`Server.AcceptJSONContent`, `Harness(json_content=True)`); offered only to a client that lists it |
 
 A `fence_only` boot advertises only `health`, `fences` and `outcomes`, and keeps
 refusing events and invocations. The list contains neither quiesce nor volume
 preparation: these operations belong to the `VolumeServer` supervisor, not to
 the harness server. It does not advertise A2A, LLM or outgoing capabilities
 that are still to be integrated.
+
+### JSON content
+
+A harness that does not offer `content.json` never receives a JSON part: the
+worker records the contract each boot negotiated (`Client.Accepts`) and, for
+such a boot, delivers each JSON part as a text part holding the value's
+compact JSON (`capsuleprotocol.TextOnlyEvent`). The rewrite is deterministic:
+a retry to the same boot carries the same bytes, and the outcome is recorded
+for the event the harness received. A harness that did not opt in refuses an
+invocation or a request carrying JSON (`invalid_envelope`). If an agent's
+release changes between two attempts of the same delivery and only one
+harness accepts JSON, the second attempt is a conflict on the same event ID
+and the delivery ends `delivery_outcome_unknown`.
 
 ## Compatibility and errors
 
@@ -174,10 +197,18 @@ until its controlled replacement. No fence receipt is invented from a network
 error.
 
 The generic envelopes of the product spec (`request_id`, `event_id`,
-`idempotency_key`, `deadline`, `content_type`, `payload_ref`, `trace_id`), the
-tenant identity, the intersection of business capabilities and the second
-language remain to be built in coordinated slices. None of these points is
-established here.
+`idempotency_key`, `deadline`, `payload_ref`, `trace_id`) and the tenant
+identity remain to be built in coordinated slices. A part's `type` carries its
+content type (ADR 016).
+
+### Capabilities on the platform channel
+
+Each platform channel route that needs a capability (`llm.invoke`,
+`agents.delegate`, `agents.discover`; `capability.ForRoute`) is checked on
+the host before the call reaches its effect: the platform API implements
+`CapabilityAPI`, which reads the agent's effective set (harness ∩
+organization ∩ agent) in PostgreSQL at each call. A refusal is
+`capability_denied` (HTTP 403). The guest's own bridge has no gate.
 
 ## Rebuilding and switching images
 
