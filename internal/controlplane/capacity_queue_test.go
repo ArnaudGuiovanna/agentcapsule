@@ -282,8 +282,12 @@ func TestWorkWaitingPastItsTTLNeverRunsAndLeavesTheQueue(t *testing.T) {
 			t.Fatal("full host admitted", a)
 		}
 	}
-	// Both instructions expire while the agent waits.
+	// Both instructions expire while the agent waits. The worker's pass first
+	// offers freed slots, then retires them: the agent still waits meanwhile.
 	if _, err = il.s.pool.Exec(t.Context(), "UPDATE agent_mailboxes SET expires_at=clock_timestamp()-interval '1 second' WHERE instruction_id IN ($1,$2)", first.ID, second.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err = il.s.PromoteCapacityHead(t.Context(), "local"); err != nil {
 		t.Fatal(err)
 	}
 	for _, op := range []string{first.ID, second.ID} {
@@ -449,5 +453,23 @@ func TestCapacityQueueProjectsFairAdmissionDeadOwner(t *testing.T) {
 	il.computing(t, c1) // active: it holds its slot
 	if d := il.admit(t, c2, []string{holder, c1}, 0); d.Admit {
 		t.Fatal("admit(2) while 1 holds the slot", d)
+	}
+}
+
+// A FAILED agent never waits for capacity: its wake goes on to fail with
+// restart_budget_exhausted, as on a host with room (ADR 012).
+func TestAFailedAgentDoesNotWaitForCapacity(t *testing.T) {
+	il := newInvocationLab(t)
+	holder := activateTenantAgent(t, il.tenantLab, il.c, il.owner, "holder")
+	il.computing(t, holder)
+	il.wake(t, il.agent, "wake")
+	if _, err := il.s.pool.Exec(t.Context(), `INSERT INTO failed_agents(agent_id,reason,failures) VALUES($1,'boot_failed',5)`, il.agent); err != nil {
+		t.Fatal(err)
+	}
+	if d := il.admit(t, il.agent, []string{holder}, 0); !d.Admit || d.Evict != "" {
+		t.Fatal("a FAILED agent waits for capacity, or stopped a VM", d)
+	}
+	if got := il.waiters(t); len(got) != 0 {
+		t.Fatal("a FAILED agent queued", got)
 	}
 }

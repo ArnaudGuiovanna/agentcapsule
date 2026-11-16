@@ -47,12 +47,15 @@ const workInProgress = `(EXISTS(SELECT 1 FROM platform_operations wo JOIN owner_
 const resumeDue = `a.phase='LIVE' AND NOT EXISTS(SELECT 1 FROM failed_agents f WHERE f.agent_id=a.id) AND ` + workInProgress
 
 // slotDue holds while agent a still needs a VM slot for work: it is live, not
-// FAILED, not running, and has a delivery before its deadline, an open wake,
-// or work in progress to resume. A waiter for which it fails leaves the queue.
+// FAILED, not running, and has a pending delivery, an open wake, or work in
+// progress to resume. A waiter for which it fails leaves the queue. A delivery
+// past its deadline that no attempt reached keeps its agent waiting until it
+// dies, a pass later at most, so that its death can say it waited for
+// capacity; one an attempt may have reached waits for a fence, not a slot.
 const slotDue = `a.phase='LIVE' AND NOT EXISTS(SELECT 1 FROM failed_agents f WHERE f.agent_id=a.id)
     AND NOT EXISTS(SELECT 1 FROM agent_placements sp WHERE sp.agent_id=a.id AND sp.state='RUNNING' AND NOT sp.fence_only)
     AND (EXISTS(SELECT 1 FROM agent_mailboxes sm WHERE sm.dest_agent_id=a.id AND sm.delivery_state='PENDING' AND NOT sm.closing
-           AND sm.expires_at>clock_timestamp())
+           AND (sm.expires_at>clock_timestamp() OR NOT sm.may_have_reached))
       OR EXISTS(SELECT 1 FROM platform_operations so WHERE so.agent_id=a.id AND so.kind='wake' AND so.status IN ('PENDING','RUNNING'))
       OR ` + workInProgress + `)`
 
@@ -96,6 +99,16 @@ func (s *Store) AdmitToSlot(ctx context.Context, host, agent string, running []s
 	}
 	if err = pruneCapacityWaits(ctx, tx, host); err != nil {
 		return SlotDecision{}, err
+	}
+	// An agent with nothing that needs a slot (FAILED, being deleted, its work
+	// gone) never waits: the boot itself gives the precise refusal, such as
+	// restart_budget_exhausted for the wake of a FAILED agent.
+	var due bool
+	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM agents a WHERE a.id=$1 AND `+slotDue+`)`, agent).Scan(&due); err != nil {
+		return SlotDecision{}, err
+	}
+	if !due {
+		return SlotDecision{Admit: true}, commit(ctx, tx)
 	}
 	var ticket *int64
 	err = tx.QueryRow(ctx, "SELECT ticket FROM capacity_waits WHERE agent_id=$1 AND host_id=$2", agent, host).Scan(&ticket)
