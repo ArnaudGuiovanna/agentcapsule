@@ -436,8 +436,9 @@ A worker that is not root (a test, a laboratory) runs the helper in a user names
 its own instead: `debugfs` keeps the worker's account, without capabilities, and
 `inspection_uid` is not used. At start, the worker runs `debugfs -V` in the sandbox,
 and does not start if that fails (`registry_inspection_unavailable`): it needs a
-kernel with `mount_setattr` (5.12, below the 5.14 the worker requires) and, when not
-root, user namespaces. The preflight reports it as `registry_inspection`
+kernel with `mount_setattr` (5.12, below the 5.14 the worker requires), a service
+manager that lets it create namespaces (no `RestrictNamespaces=` in its unit) and,
+when not root, user namespaces. The preflight reports it as `registry_inspection`
 ([install.md](install.md#preflight)).
 
 `pack` runs `mkfs.ext4` and `debugfs -w` unconfined: it builds the publisher's own
