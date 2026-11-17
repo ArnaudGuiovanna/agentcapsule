@@ -13,6 +13,7 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/harnesspkg"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/ociregistry"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/sandbox"
 )
 
 // ServiceRegistry enables harness imports on this host.
@@ -25,6 +26,35 @@ type ServiceRegistry struct {
 	// RequireSignatures is strict mode: every rule must list publisher keys,
 	// so no unsigned package can be imported.
 	RequireSignatures bool `json:"require_signatures,omitempty"`
+	// InspectionUID is the UID, and the GID of the same number, that debugfs
+	// runs as when it inspects a downloaded image (package sandbox):
+	// reserved for this use, owning no file, outside the provisioning range.
+	// Required when the worker runs as root; a worker that is not root
+	// inspects as its own account, in a user namespace, and ignores it.
+	InspectionUID uint32 `json:"inspection_uid,omitempty"`
+}
+
+var (
+	// ErrInspectionUID: a worker run as root needs registry.inspection_uid,
+	// not root's, an agent's or the SLIM bridge's.
+	ErrInspectionUID = errors.New("registry.inspection_uid must be a UID reserved for image inspection: not 0, outside the provisioning range, not the SLIM bridge's")
+	// ErrInspection: debugfs cannot run confined on this host.
+	ErrInspection = errors.New("image inspection cannot run confined on this host")
+)
+
+// inspection returns the sandbox of image inspections: as root, the
+// configured inspection UID and GID, checked against the agents' range and
+// the SLIM bridge's user.
+func (c ServiceConfig) inspection(asRoot bool) (sandbox.Options, error) {
+	uid := c.Registry.InspectionUID
+	if !asRoot {
+		return sandbox.Options{}, nil
+	}
+	p, slim := c.Provisioning, c.SLIM
+	if uid == 0 || p != nil && uid >= p.FirstUID && uid <= p.LastUID || slim != nil && int64(slim.BridgeUID) == int64(uid) {
+		return sandbox.Options{}, ErrInspectionUID
+	}
+	return sandbox.Options{UID: uid, GID: uid}, nil
 }
 
 // RegistryRule is one approved registry. CredentialsFile, for a private
@@ -104,6 +134,15 @@ func (c ServiceConfig) OpenRegistry(s *controlplane.Store, workerID string) (*Ha
 	f, err := ociregistry.NewFetcher(policy, int64(maxMiB)<<20)
 	if err != nil {
 		return nil, err
+	}
+	if f.Sandbox, err = c.inspection(sandbox.AsRoot()); err != nil {
+		return nil, err
+	}
+	// Before any download: debugfs runs confined here, or no import does.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	if err = harnesspkg.CheckInspection(ctx, f.Sandbox); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInspection, err)
 	}
 	return NewHarnessImporter(s, f, cache, workerID)
 }

@@ -127,7 +127,11 @@ agentcapsule-harness verify --ref ghcr.io/acme/echo:1.0.0@sha256:... --key ./acm
 
 `verify` downloads the package and runs the importer's checks (digests, layout,
 `harness.yaml`, image inspection, and the signature when keys are given), so a
-publisher or an operator can check a package before it is imported.
+publisher or an operator can check a package before it is imported. It runs
+`debugfs` in the importer's sandbox ([below](#image-inspection-sandbox)), as the
+`nobody` account (65534) when run as root. Where the machine cannot create the
+sandbox (a container without user namespaces, as in CI), it prints a warning and
+inspects the image unconfined: the platform host never does.
 
 The signature is an in-toto statement naming the package manifest digest, in a DSSE
 envelope signed with the key (ECDSA P-256/P-384/P-521, Ed25519 or RSA of at least
@@ -160,8 +164,9 @@ The import is `IMPORTING` until a worker processes it:
 4. Each blob is streamed to a private staging directory with a size limit and checked
    against its digest.
 5. `harness.yaml`, `checksums.json` and the ext4 superblock are validated, and the
-   image is inspected read-only with `debugfs`: the mount points must be directories
-   and the entrypoint an executable file.
+   image is inspected read-only with `debugfs`, confined
+   ([Image inspection sandbox](#image-inspection-sandbox)): the mount points must be
+   directories and the entrypoint an executable file.
 6. The package moves to `<cache>/sha256/<digest>/`, read-only, and the release is
    published, with the ID of the key that signed it (`signer`) if any.
 
@@ -306,6 +311,7 @@ In the worker configuration ([example](../runtime/worker/config.example.json)):
 ```json
 "registry": {
   "max_harness_mib": 1024,
+  "inspection_uid": 61999,
   "rules": [
     {"host": "ghcr.io", "repositories": ["acme/"],
      "blob_hosts": ["pkg-containers.githubusercontent.com"]}
@@ -313,6 +319,12 @@ In the worker configuration ([example](../runtime/worker/config.example.json)):
 }
 ```
 
+- `inspection_uid`: the UID, and the GID of the same number, that `debugfs` runs as
+  when it inspects a downloaded image ([below](#image-inspection-sandbox)). Reserve it
+  for this use, as the provisioning range is reserved: no account or group uses it, it
+  owns no file, it lies outside the provisioning range and is not the SLIM bridge's
+  user. It needs no entry in `/etc/passwd`. Required when the worker runs as root;
+  without it, the worker does not start (`registry_configuration_invalid`).
 - `repositories`: `"org/"` allows every repository under `org`; `"org/name"` exactly one.
 - The worker connects only to the rule's host, its `token_hosts` (bearer token realm)
   and `blob_hosts` (redirected blob downloads, such as a CDN). It follows a redirect to
@@ -398,6 +410,39 @@ A rule may name a credentials file; the configuration never holds the secret its
 
 Imports run in their own loop beside maintenance, so a large download never delays
 deliveries or VM lifecycle work.
+
+### Image inspection sandbox
+
+`debugfs` (e2fsprogs) parses each downloaded image before the import accepts it. The
+worker runs as root, and the image comes from outside: a flaw of e2fsprogs must not
+reach the host. So every `debugfs` run on a downloaded image is confined
+(`internal/sandbox`, REG-01):
+
+- The worker starts itself again as a helper, in new mount, network, PID, IPC and UTS
+  namespaces, and the helper executes `debugfs`. Its network namespace has only an
+  unconfigured loopback interface.
+- Every mount is read-only and `nosuid`; `/proc` is the namespace's own. The image is
+  opened read-only, then reopened through those read-only mounts, and `debugfs` reads
+  it as its descriptor 3 (`/proc/self/fd/3`).
+- `debugfs` runs as `inspection_uid` and its GID, without supplementary groups or
+  capabilities, with `no_new_privs`. A seccomp filter refuses what reading an image
+  never needs: starting a process, opening a socket, mounting, changing namespaces or
+  credentials, tracing, kernel modules and keys.
+- Limits: 30 seconds of processor time, one minute in all, no byte written to any
+  file, no core dump, 64 open files, and the first victim under memory pressure. The
+  worker kills it at its limits, and with itself.
+
+A worker that is not root (a test, a laboratory) runs the helper in a user namespace of
+its own instead: `debugfs` keeps the worker's account, without capabilities, and
+`inspection_uid` is not used. At start, the worker runs `debugfs -V` in the sandbox,
+and does not start if that fails (`registry_inspection_unavailable`): it needs a
+kernel with `mount_setattr` (5.12, below the 5.14 the worker requires), a service
+manager that lets it create namespaces (no `RestrictNamespaces=` in its unit) and,
+when not root, user namespaces. The preflight reports it as `registry_inspection`
+([install.md](install.md#preflight)).
+
+`pack` runs `mkfs.ext4` and `debugfs -w` unconfined: it builds the publisher's own
+package, on the publisher's machine.
 
 ## Limits
 

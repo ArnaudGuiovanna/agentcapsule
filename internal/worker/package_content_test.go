@@ -11,10 +11,13 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/harnesspkg"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/ociregistry"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/sandbox"
 )
 
 // hostTraps are programs a host could run a package's content with: an
@@ -29,10 +32,12 @@ var hostTraps = []string{"sh", "bash", "dash", "busybox", "env", "python3", "per
 // host: its entrypoint, a script, and its manifest's text, written as shell,
 // each write a marker file on the host. The import, the refill of a lost
 // cache and the eviction run with a PATH where every program a host could
-// run them with announces itself, and debugfs logs its arguments. None of
-// the markers exists after; the only program started is debugfs, read-only
-// (-R stat), on the staged image; and the cache holds the package's files
-// byte for byte, none writable or executable.
+// run them with announces itself, and debugfs logs its arguments and whether
+// it runs confined. Programs report through a FIFO, which a confined one can
+// still write. None of the markers exists after; the only program started is
+// debugfs, read-only (-R stat), confined (no_new_privs, seccomp, PID 1 of its
+// namespace, REG-01), on the image its sandbox opened; and the cache holds
+// the package's files byte for byte, none writable or executable.
 func TestTheHostNeverRunsWhatAPackageHolds(t *testing.T) {
 	l := newImportLab(t)
 	ctx := t.Context()
@@ -71,12 +76,34 @@ func TestTheHostNeverRunsWhatAPackageHolds(t *testing.T) {
 		t.Fatal(err)
 	}
 	traps := t.TempDir()
-	started, forbidden := filepath.Join(t.TempDir(), "debugfs.log"), filepath.Join(t.TempDir(), "forbidden.log")
-	if err = os.WriteFile(filepath.Join(traps, "debugfs"), []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >> "+started+"\nexec "+debugfs+" \"$@\"\n"), 0o755); err != nil {
+	// A confined program writes no file, but can write a FIFO: the reports
+	// wait in it, read at the end.
+	reports := filepath.Join(t.TempDir(), "reports")
+	if err = syscall.Mkfifo(reports, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fifo, err := os.OpenFile(reports, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fifo.Close()
+	// debugfs reports its arguments, and whether it runs with no_new_privs,
+	// under seccomp, as PID 1 of its namespace; with shell builtins only.
+	trap := `#!/bin/sh
+nnp= filter= pid=
+while read -r key value rest; do
+  case $key in NoNewPrivs:) nnp=$value;; Seccomp:) filter=$value;; NSpid:) pid=$value;; esac
+done < /proc/self/status
+confined=unconfined
+[ "$nnp" = 1 ] && [ "$filter" = 2 ] && [ "$pid" = 1 ] && confined=confined
+printf 'debugfs %s %s\n' "$confined" "$*" >> ` + reports + `
+exec ` + debugfs + ` "$@"
+`
+	if err = os.WriteFile(filepath.Join(traps, "debugfs"), []byte(trap), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range hostTraps {
-		trap := fmt.Sprintf("#!/bin/sh\nprintf '%s %%s\\n' \"$*\" >> %s\nexit 1\n", name, forbidden)
+		trap := fmt.Sprintf("#!/bin/sh\nprintf 'forbidden %s %%s\\n' \"$*\" >> %s\nexit 1\n", name, reports)
 		if err = os.WriteFile(filepath.Join(traps, name), []byte(trap), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -139,22 +166,28 @@ func TestTheHostNeverRunsWhatAPackageHolds(t *testing.T) {
 			t.Error("the host ran the package's", name, err)
 		}
 	}
-	if data, err := os.ReadFile(forbidden); !os.IsNotExist(err) {
-		t.Errorf("the host started a program it must not: %s %v", data, err)
+	if err = fifo.SetReadDeadline(time.Now().Add(500 * time.Millisecond)); err != nil {
+		t.Fatal(err)
 	}
-	log, err := os.ReadFile(started)
-	if err != nil {
-		t.Fatal("debugfs never ran: the image was not inspected", err)
+	var log []byte
+	buf := make([]byte, 64<<10)
+	for {
+		n, err := fifo.Read(buf)
+		log = append(log, buf[:n]...)
+		if err != nil {
+			break
+		}
 	}
-	// Each mount point and the entrypoint, at the import and at the refill.
-	readOnly := regexp.MustCompile(`^-R stat "/[^"]*" ` + regexp.QuoteMeta(filepath.Join(l.cache, ".staging")) + `/[^ ]+/` + harnesspkg.RootfsFile + `$`)
+	// Each mount point and the entrypoint, at the import and at the refill;
+	// nothing else.
+	readOnly := regexp.MustCompile(`^debugfs confined -R stat "/[^"]*" ` + regexp.QuoteMeta(sandbox.ImagePath) + `$`)
 	lines := strings.Split(strings.TrimSpace(string(log)), "\n")
 	if len(lines) != 2*(len(harnesspkg.MountPoints)+1) {
-		t.Fatal("debugfs runs", len(lines), lines)
+		t.Fatal("the programs started:", len(lines), lines)
 	}
 	for _, line := range lines {
 		if !readOnly.MatchString(line) {
-			t.Error("debugfs ran otherwise than read-only on the staged image:", line)
+			t.Error("the host started a program other than debugfs, read-only and confined:", line)
 		}
 	}
 }

@@ -47,6 +47,7 @@
   },
   "registry": {
     "max_harness_mib": 1024,
+    "inspection_uid": 61999,
     "rules": [
       {
         "host": "ghcr.io",

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/sandbox"
 )
 
 const goodManifest = `schema: agentcapsule.harness/v1
@@ -218,18 +219,18 @@ func TestPackedImagesHaveTheGuestMountPointsAndAnExecutableEntrypoint(t *testing
 		_ = os.MkdirAll(filepath.Join(src, "bin"), 0o755)
 		_ = os.WriteFile(filepath.Join(src, "bin/harness"), []byte("x"), 0o755)
 	})
-	if err = InspectRootfs(t.Context(), good, m); err != nil {
+	if err = InspectRootfs(t.Context(), good, m, sandbox.Options{}); err != nil {
 		t.Fatal("a packed image failed inspection", err)
 	}
 	notExec := build(func(src string) {
 		_ = os.MkdirAll(filepath.Join(src, "bin"), 0o755)
 		_ = os.WriteFile(filepath.Join(src, "bin/harness"), []byte("x"), 0o644)
 	})
-	if err = InspectRootfs(t.Context(), notExec, m); !errors.Is(err, ErrInvalid) {
+	if err = InspectRootfs(t.Context(), notExec, m, sandbox.Options{}); !errors.Is(err, ErrInvalid) {
 		t.Fatal("a non-executable entrypoint passed", err)
 	}
 	missing := build(func(string) {})
-	if err = InspectRootfs(t.Context(), missing, m); !errors.Is(err, ErrInvalid) {
+	if err = InspectRootfs(t.Context(), missing, m, sandbox.Options{}); !errors.Is(err, ErrInvalid) {
 		t.Fatal("a missing entrypoint passed", err)
 	}
 	// A file where the guest mounts its runtime cannot be packed.

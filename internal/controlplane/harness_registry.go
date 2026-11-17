@@ -7,7 +7,7 @@ import (
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorization"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/capability"
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/ociregistry"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/ociregistry/reference"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -92,7 +92,7 @@ func auditHarness(ctx context.Context, tx pgx.Tx, p Principal, action string, im
 // any connection. A package already released, or already being imported, is
 // answered with that record instead of a new download.
 func (a *Accounts) RequestHarnessImport(ctx context.Context, p Principal, key string, in HarnessImportInput) (APIReceipt, error) {
-	ref, err := ociregistry.ParseReference(in.Reference)
+	ref, err := reference.Parse(in.Reference)
 	if err != nil {
 		return APIReceipt{}, ErrInput
 	}

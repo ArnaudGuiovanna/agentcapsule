@@ -8,12 +8,16 @@ import (
 	"crypto/x509"
 	"errors"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorityservice"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/harnesspkg"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/operatorconfig"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/preflight"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/restoreauthority"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/sandbox"
 )
 
 // DirectoryClientName is the client certificate's common name that the
@@ -97,6 +101,7 @@ func (c ServiceConfig) Preflight(ctx context.Context, h preflight.Host, mode ope
 			out = append(out, preflight.Result{Check: "registry", Status: preflight.Warn, Detail: "a registry rule is local: plain HTTP (development)",
 				Fix: "drop \"local\" in production"})
 		}
+		out = append(out, c.inspectionCheck(ctx, sandbox.AsRoot()))
 	}
 	return append(out, preflight.Database(ctx, mode, dsn))
 }
@@ -174,4 +179,28 @@ func (c ServiceConfig) directoryChecks(ctx context.Context, h preflight.Host) []
 	// The client of internal/directory: the edge's name is the address's host.
 	config := &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: pool, Certificates: []tls.Certificate{pair}, NextProtos: []string{"h2"}}
 	return append(out, preflight.MutualTLS(ctx, "directory_edge", d.Address, config))
+}
+
+// inspectionCheck: debugfs, which inspects each downloaded image, runs
+// confined here (package sandbox), as the configured inspection UID when the
+// worker is root.
+func (c ServiceConfig) inspectionCheck(ctx context.Context, asRoot bool) preflight.Result {
+	const check = "registry_inspection"
+	sb, err := c.inspection(asRoot)
+	if err != nil {
+		return preflight.Result{Check: check, Status: preflight.Fail, Detail: "registry.inspection_uid is missing or not reserved",
+			Fix: "set registry.inspection_uid to a UID (and GID) reserved for image inspection, outside the provisioning range"}
+	}
+	probe, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err = harnesspkg.CheckInspection(probe, sb); err != nil {
+		detail, _, _ := strings.Cut(err.Error(), "\n")
+		return preflight.Result{Check: check, Status: preflight.Fail, Detail: "debugfs cannot run confined: " + detail,
+			Fix: "install e2fsprogs; use a kernel with mount_setattr (5.12), and user namespaces when the worker is not root"}
+	}
+	detail := "debugfs runs confined as this account, in a user namespace (not root)"
+	if asRoot {
+		detail = "debugfs runs confined as UID and GID " + strconv.FormatUint(uint64(sb.UID), 10)
+	}
+	return preflight.Result{Check: check, Status: preflight.OK, Detail: detail}
 }

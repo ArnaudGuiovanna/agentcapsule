@@ -295,6 +295,9 @@ func run() int {
 		}
 	}
 	importer, err := c.OpenRegistry(s, workerID)
+	if errors.Is(err, worker.ErrInspection) {
+		return fail("registry_inspection_unavailable")
+	}
 	if err != nil {
 		return fail("registry_configuration_invalid")
 	}
