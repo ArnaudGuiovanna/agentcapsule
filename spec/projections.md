@@ -381,9 +381,9 @@ in the ordinary unit tests.
 | `serviceProgressTests.scenario22Test` | partial | `TestExpiredDeliveryBehindAStuckHeadDies` | ADR 007 §7, not step by step: on the P3 replay's binding request 1 (b to a) queues behind notice 0 in a's mailbox, so admit(1) is refused before the notices fail. The Go test has the expired delivery behind another to the same agent. |
 | `serviceProgressTests.refusal22x0Test` | full | `TestProgressExpiredNotificationToADeletedStoreIsCanceled`, `TestRetirementLeavesADeletionToCancel` | The dispatcher leaves the reply to an agent being deleted pending (`ErrUnavailable`). |
 | `serviceProgressTests.scenario22x1Test` | partial | `TestProgressExpiredNotificationToADeletedStoreIsCanceled`, `TestRetirementLeavesADeletionToCancel` | Go cancels the reply at the deletion's tombstone: cancelNotification and retireNotification are the deletion's fences and commit, which also complete the deletion the run leaves pending. |
-| `serviceProgressTests.scenario23Test` | partial | `TestRestoreRedeliversALostRequest` | ADR 008, not step by step; the P3 fixture pins the model before ADR 008. |
+| `serviceProgressTests.scenario23Test` | full | `TestRestoredStoreGetsItsRequestAgain`, `TestRestoreRedeliversALostRequest` | ADR 008, on the redelivery lab: admit is the delivery (PROCESSING is P3's Executing until complete); redeliverRequest is b's restore from an archive that lacks it. |
 | `serviceProgressTests.scenario23x1Test` | full | `TestRedeliveredRequestEndsAtItsDeadline` |  |
-| `serviceProgressTests.scenario24Test` | partial | `TestRestoreRedeliversALostReplyAndStatus` | ADR 008, not step by step; the P3 fixture pins the model before ADR 008. |
+| `serviceProgressTests.scenario24Test` | full | `TestRestoredStoreGetsItsNotificationAgain`, `TestRestoreRedeliversALostReplyAndStatus` | ADR 008, on the redelivery lab: redeliverNotification is a's restore from an archive that lacks the reply. |
 | `serviceProgressTests.refusal24x0Test` | model-only | — | `stabilize` is the progress proof's assumption that faults stop; it has no Go counterpart. |
 | `serviceProgressTests.scenario19Test` | full | `TestPreimplementationP3ITF/deleted-destination-rejects-new-work` |  |
 | `serviceProgressTests.refusal19x0Test` | full | `TestPreimplementationP3ITF/deleted-destination-rejects-new-work` |  |
