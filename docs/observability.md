@@ -422,12 +422,13 @@ Prometheus's alerts, and checks that none reaches the archive.
 
 - Traces inside the guest, and in the authority service's own process: their
   calls show as spans of the worker and the API. The delivery, wake and boot
-  spans have never run on KVM: the capacity benchmark records them, and has
-  not run yet.
+  spans ran on KVM once, in the capacity benchmark of 2026-11-17 (112 boots,
+  92 wakes, 72 deliveries, no raw identifier); no test checks them there.
 - Alert thresholds tuned on a real host. The load test
   ([worker.md](worker.md#load-test)) measures the limits on PostgreSQL, without
-  VMs; the [capacity benchmark](worker.md#capacity-benchmark) measures boots,
-  memory and CPU with VMs, and has not run yet.
+  VMs; the [capacity benchmark](worker.md#capacity-benchmark) measured boots,
+  memory and CPU with idle VMs once, on the development machine, not on a
+  server.
 - A SLIM or Directory outage shows only while there is work for it: deliveries
   waiting for SLIM, records waiting for publication. Neither is probed while
   idle.
