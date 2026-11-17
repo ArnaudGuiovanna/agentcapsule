@@ -430,7 +430,7 @@ func TestModelErrorsReachTheGuestAndLeaveItsVMRunning(t *testing.T) {
 	}
 	var p controlplane.LLMProvider
 	l.request(l.owner(), "POST", "/v1/llm/providers", "provider", controlplane.CreateLLMProviderInput{Name: "model", Kind: "openai_compatible",
-		BaseURL: provider.URL, Secret: "sk-quota-test-0123456789"}, 201, &p)
+		BaseURL: provider.URL, Secret: "sk-quota-test-0123456789"}, 201, &p) // gitleaks:allow test fixture, not a credential
 	for _, alias := range []string{"fast", "tight"} {
 		l.request(l.owner(), "POST", "/v1/llm/aliases", alias, controlplane.CreateLLMAliasInput{Alias: alias, ProviderID: p.ID, UpstreamModel: "m"}, 201, nil)
 	}
