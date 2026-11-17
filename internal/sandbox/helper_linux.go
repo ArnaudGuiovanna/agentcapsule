@@ -218,15 +218,16 @@ func execFiltered(p policy, program string, argv, env []string) error {
 	if err != nil {
 		return err
 	}
-	// The address space is limited here: this Go process already maps more,
-	// and could not grow its heap past it.
-	space := unix.Rlimit{Cur: addressSpace, Max: addressSpace}
-	if _, _, e := unix.RawSyscall6(unix.SYS_PRLIMIT64, 0, unix.RLIMIT_AS, uintptr(unsafe.Pointer(&space)), 0, 0, 0); e != 0 {
-		return fmt.Errorf("address space: %w", e)
-	}
 	all := ^uint64(0)
 	if _, _, e := unix.RawSyscall6(unix.SYS_RT_SIGPROCMASK, unix.SIG_SETMASK, uintptr(unsafe.Pointer(&all)), 0, 8, 0, 0); e != 0 {
 		return fmt.Errorf("signals: %w", e)
+	}
+	// The address space is limited here, once no Go code runs any more on
+	// this thread: this Go process already maps more, and could not grow its
+	// heap past the limit.
+	space := unix.Rlimit{Cur: addressSpace, Max: addressSpace}
+	if _, _, e := unix.RawSyscall6(unix.SYS_PRLIMIT64, 0, unix.RLIMIT_AS, uintptr(unsafe.Pointer(&space)), 0, 0, 0); e != 0 {
+		return fmt.Errorf("address space: %w", e)
 	}
 	if _, _, e := unix.RawSyscall(unix.SYS_PRCTL, unix.PR_SET_SECCOMP, unix.SECCOMP_MODE_FILTER, uintptr(unsafe.Pointer(&fprog))); e != 0 {
 		return fmt.Errorf("seccomp: %w", e)
