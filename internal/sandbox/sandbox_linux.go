@@ -52,8 +52,8 @@ func (o Options) Run(ctx context.Context, image, program string, args ...string)
 		return nil, fmt.Errorf("sandbox: %s is not an absolute path", program)
 	}
 	root := AsRoot()
-	if root && !o.Unconfined && (o.UID == 0 || o.GID == 0) {
-		return nil, fmt.Errorf("%w: as root, a dedicated UID and GID other than 0 are required", ErrUnavailable)
+	if root && !o.Unconfined && (!Reservable(o.UID) || !Reservable(o.GID)) {
+		return nil, fmt.Errorf("%w: as root, a dedicated UID and GID are required: not 0 or 65535, below 2147483647", ErrUnavailable)
 	}
 	if o.TestTools && !testing.Testing() {
 		return nil, fmt.Errorf("%w: the test tools' filter outside a test binary", ErrUnavailable)

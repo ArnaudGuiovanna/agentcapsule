@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -28,31 +30,54 @@ type ServiceRegistry struct {
 	RequireSignatures bool `json:"require_signatures,omitempty"`
 	// InspectionUID is the UID, and the GID of the same number, that debugfs
 	// runs as when it inspects a downloaded image (package sandbox):
-	// reserved for this use, owning no file, outside the provisioning range.
-	// Required when the worker runs as root; a worker that is not root
-	// inspects as its own account, in a user namespace, and ignores it.
+	// reserved for this use, owning no file, outside the provisioning range,
+	// no account's or group's, not 65535 and below 2^31-1. Required when the
+	// worker runs as root; a worker that is not root inspects as its own
+	// account, in a user namespace, and ignores it.
 	InspectionUID uint32 `json:"inspection_uid,omitempty"`
 }
 
 var (
 	// ErrInspectionUID: a worker run as root needs registry.inspection_uid,
-	// not root's, an agent's or the SLIM bridge's.
-	ErrInspectionUID = errors.New("registry.inspection_uid must be a UID reserved for image inspection: not 0, outside the provisioning range, not the SLIM bridge's")
+	// not root's, an agent's, the SLIM bridge's, nor any account's or
+	// group's.
+	ErrInspectionUID = errors.New("registry.inspection_uid must be a UID reserved for image inspection: " +
+		"not 0 or 65535, below 2147483647, outside the provisioning range, not the SLIM bridge's, no account's or group's")
 	// ErrInspection: debugfs cannot run confined on this host.
 	ErrInspection = errors.New("image inspection cannot run confined on this host")
 )
 
 // inspection returns the sandbox of image inspections: as root, the
-// configured inspection UID and GID, checked against the agents' range and
-// the SLIM bridge's user.
+// configured inspection UID and GID, checked against the values setresuid
+// may take as "unchanged" (sandbox.Reservable), the agents' range, the SLIM
+// bridge's user, and the host's accounts and groups: the program must own
+// nothing and belong to no group (6 is disk on Debian, with /dev/sd*).
 func (c ServiceConfig) inspection(asRoot bool) (sandbox.Options, error) {
 	uid := c.Registry.InspectionUID
 	if !asRoot {
 		return sandbox.Options{}, nil
 	}
 	p, slim := c.Provisioning, c.SLIM
-	if uid == 0 || p != nil && uid >= p.FirstUID && uid <= p.LastUID || slim != nil && int64(slim.BridgeUID) == int64(uid) {
-		return sandbox.Options{}, ErrInspectionUID
+	switch id := strconv.FormatUint(uint64(uid), 10); {
+	case !sandbox.Reservable(uid):
+		return sandbox.Options{}, fmt.Errorf("%w: %d", ErrInspectionUID, uid)
+	case p != nil && uid >= p.FirstUID && uid <= p.LastUID:
+		return sandbox.Options{}, fmt.Errorf("%w: %d is in the provisioning range", ErrInspectionUID, uid)
+	case slim != nil && int64(slim.BridgeUID) == int64(uid):
+		return sandbox.Options{}, fmt.Errorf("%w: %d is the SLIM bridge's", ErrInspectionUID, uid)
+	default:
+		var account user.UnknownUserIdError
+		var group user.UnknownGroupIdError
+		if u, err := user.LookupId(id); err == nil {
+			return sandbox.Options{}, fmt.Errorf("%w: %d is the account %s's", ErrInspectionUID, uid, u.Username)
+		} else if !errors.As(err, &account) {
+			return sandbox.Options{}, fmt.Errorf("look up UID %d: %w", uid, err)
+		}
+		if g, err := user.LookupGroupId(id); err == nil {
+			return sandbox.Options{}, fmt.Errorf("%w: %d is the group %s's", ErrInspectionUID, uid, g.Name)
+		} else if !errors.As(err, &group) {
+			return sandbox.Options{}, fmt.Errorf("look up GID %d: %w", uid, err)
+		}
 	}
 	return sandbox.Options{UID: uid, GID: uid}, nil
 }

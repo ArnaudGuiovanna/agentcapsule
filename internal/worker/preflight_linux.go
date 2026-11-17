@@ -188,8 +188,10 @@ func (c ServiceConfig) inspectionCheck(ctx context.Context, asRoot bool) preflig
 	const check = "registry_inspection"
 	sb, err := c.inspection(asRoot)
 	if err != nil {
-		return preflight.Result{Check: check, Status: preflight.Fail, Detail: "registry.inspection_uid is missing or not reserved",
-			Fix: "set registry.inspection_uid to a UID (and GID) reserved for image inspection, outside the provisioning range"}
+		detail, _, _ := strings.Cut(strings.TrimPrefix(err.Error(), ErrInspectionUID.Error()+": "), "\n")
+		return preflight.Result{Check: check, Status: preflight.Fail, Detail: "registry.inspection_uid is missing or not reserved: " + detail,
+			Fix: "set registry.inspection_uid to a UID (and GID) reserved for image inspection: not 0 or 65535, below 2147483647, " +
+				"outside the provisioning range, no account's or group's"}
 	}
 	probe, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()

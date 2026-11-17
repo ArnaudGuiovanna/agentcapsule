@@ -128,6 +128,9 @@ func confine(args []string) error {
 			return fmt.Errorf("UID: %w", err)
 		}
 	}
+	if err := checkCredentials(int(uid), int(gid)); err != nil {
+		return err
+	}
 	var none [2]unix.CapUserData
 	if err := unix.Capset(&unix.CapUserHeader{Version: unix.LINUX_CAPABILITY_VERSION_3}, &none[0]); err != nil {
 		return fmt.Errorf("capabilities: %w", err)
@@ -191,6 +194,28 @@ func execFiltered(p policy, program string, argv, env []string) error {
 	runtime.KeepAlive(argvp)
 	runtime.KeepAlive(envp)
 	return e
+}
+
+// checkCredentials fails unless the real, effective and saved UIDs are all
+// uid and the GIDs all gid, without supplementary groups when uid is not 0:
+// setresuid(-1) and the like change nothing and do not fail. For uid 0 (root
+// of the helper's own user namespace) the caller's supplementary groups
+// remain: an account that is not root cannot drop them (the kernel refuses
+// setgroups in a user namespace it creates).
+func checkCredentials(uid, gid int) error {
+	ruid, euid, suid := unix.Getresuid()
+	rgid, egid, sgid := unix.Getresgid()
+	if ruid != uid || euid != uid || suid != uid || rgid != gid || egid != gid || sgid != gid {
+		return fmt.Errorf("credentials: UIDs %d %d %d and GIDs %d %d %d, not %d and %d", ruid, euid, suid, rgid, egid, sgid, uid, gid)
+	}
+	if uid == 0 {
+		return nil
+	}
+	groups, err := unix.Getgroups()
+	if err != nil || len(groups) != 0 {
+		return fmt.Errorf("credentials: supplementary groups %v %v", groups, err)
+	}
+	return nil
 }
 
 // reopen replaces descriptor 3 with the image opened read-only through this

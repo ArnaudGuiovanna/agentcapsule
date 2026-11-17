@@ -10,8 +10,11 @@ package sandbox
 
 import (
 	"errors"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -30,7 +33,8 @@ func requireRoot(t *testing.T) Options {
 // REG-01: as root, the program runs as the dedicated UID and GID, without
 // supplementary groups or capabilities, under seccomp with no_new_privs, as
 // PID 1 of its own mount, network, PID, IPC and UTS namespaces. Without a
-// dedicated UID, nothing runs.
+// dedicated UID, nothing runs; nor with 65535 or a value from 2^31-1 up,
+// which setresuid and setresgid may take as "unchanged".
 func TestAsRootTheProgramRunsAsTheDedicatedAccount(t *testing.T) {
 	o := requireRoot(t)
 	s := confinedAs(t, o)
@@ -38,9 +42,42 @@ func TestAsRootTheProgramRunsAsTheDedicatedAccount(t *testing.T) {
 		t.Errorf("Uid %q Gid %q Groups %q", s["Uid"], s["Gid"], s["Groups"])
 	}
 	namespacesDiffer(t, o)
-	for _, missing := range []Options{{}, {UID: rootTestUID}, {GID: rootTestUID}} {
+	for _, missing := range []Options{{}, {UID: rootTestUID}, {GID: rootTestUID}, {UID: 65535, GID: 65535},
+		{UID: 4294967295, GID: 4294967295}, {UID: rootTestUID, GID: 4294967295}, {UID: 1<<31 - 1, GID: rootTestUID}} {
+		missing.TestTools = true
 		if out, err := missing.Run(t.Context(), "", sh(t), "-c", "echo RAN"); !errors.Is(err, ErrUnavailable) || len(out) != 0 {
 			t.Errorf("as root with %+v: %v %s", missing, err, out)
+		}
+	}
+}
+
+// REG-01: the helper checks the credentials it took, whatever Run asked:
+// started directly with -1 (4294967295) as its UID or GID, which setresuid
+// and setresgid take as "unchanged", it refuses to run the program instead
+// of running it as root.
+func TestAsRootTheHelperChecksItsCredentials(t *testing.T) {
+	requireRoot(t)
+	for _, ids := range [][2]string{{"4294967295", "4294967295"}, {"61999", "4294967295"}, {"4294967295", "61999"}} {
+		null, err := os.Open(os.DevNull)
+		if err != nil {
+			t.Fatal(err)
+		}
+		status, report, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.CommandContext(t.Context(), helperPath, ids[0], ids[1], "1", testToolsFilter, "-", sh(t), "-c", "echo RAN")
+		cmd.Args[0] = HelperName
+		cmd.SysProcAttr = namespaces(true)
+		cmd.ExtraFiles = []*os.File{null, report}
+		out, err := cmd.Output()
+		report.Close()
+		null.Close()
+		reason, _ := io.ReadAll(status)
+		status.Close()
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != 125 || strings.Contains(string(out), "RAN") || !strings.Contains(string(reason), "credentials") {
+			t.Errorf("UID %s GID %s: %v %s (%s)", ids[0], ids[1], err, out, reason)
 		}
 	}
 }

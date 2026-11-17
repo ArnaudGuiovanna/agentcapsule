@@ -29,6 +29,16 @@ func TestAsRootTheImporterNeedsAnInspectionUID(t *testing.T) {
 	if r := c.inspectionCheck(t.Context(), true); r.Status != preflight.Fail {
 		t.Error("the preflight without inspection_uid:", r)
 	}
+	// nobody's UID, and -1, which setresuid takes as "unchanged".
+	for _, uid := range []uint32{65534, 4294967295} {
+		c.Registry.InspectionUID = uid
+		if _, err := c.OpenRegistry(nil, "w"); !errors.Is(err, ErrInspectionUID) {
+			t.Error("as root with inspection_uid", uid, err)
+		}
+		if r := c.inspectionCheck(t.Context(), true); r.Status != preflight.Fail {
+			t.Error("the preflight with inspection_uid", uid, r)
+		}
+	}
 	c.Registry.InspectionUID = 61999
 	// Past the inspection's checks, a missing store is the next refusal.
 	if _, err := c.OpenRegistry(nil, "w"); !errors.Is(err, controlplane.ErrInput) {

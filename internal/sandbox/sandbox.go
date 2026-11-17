@@ -57,9 +57,9 @@ var (
 type Options struct {
 	// UID and GID the program runs as when the caller is root in the initial
 	// user namespace: a UID and a GID reserved for this use, which own no
-	// file and are no agent's. Required then. Any other caller runs the
-	// program in a user namespace of its own, as itself, and they are not
-	// used.
+	// file and are no agent's. Required then, and Reservable. Any other
+	// caller runs the program in a user namespace of its own, as itself, and
+	// they are not used.
 	UID, GID uint32
 	// Timeout bounds the run's duration, CPU the program's processor time;
 	// zero means DefaultTimeout and DefaultCPU. CPU is counted in whole
@@ -74,6 +74,14 @@ type Options struct {
 	// confined: all but those that start a process or open a socket. Outside
 	// a test binary, Run refuses it.
 	TestTools bool
+}
+
+// Reservable reports whether id may be the UID or GID of a run as root: not
+// 0, not 65535, and below 2^31-1. setresuid and setresgid take -1
+// (4294967295) as "unchanged", older interfaces take 65535 the same way, and
+// a value from 2^31 up is negative for some.
+func Reservable(id uint32) bool {
+	return id != 0 && id != 65535 && id < 1<<31-1
 }
 
 func (o Options) withDefaults() Options {
