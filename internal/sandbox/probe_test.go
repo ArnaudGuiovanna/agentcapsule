@@ -72,8 +72,13 @@ func probe(t *testing.T, nr uint64, compat bool, args ...uint64) string {
 	elf = le.AppendUint64(elf, size)
 	elf = le.AppendUint64(elf, 0x1000)
 	elf = append(elf, code...)
-	// Readable by the dedicated account when the test runs as root.
-	dir := t.TempDir()
+	// Reachable by the dedicated account when the test runs as root: not
+	// under the test's own temporary directory, which only root may enter.
+	dir, err := os.MkdirTemp("", "sandbox-probe-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
 	if err := os.Chmod(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
