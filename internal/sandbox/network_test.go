@@ -5,6 +5,7 @@ package sandbox
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -54,19 +55,17 @@ nft -j list ruleset > "$out/nft.json"
 exit $status
 `
 
-// networkProbe tries a TCP connection and a UDP datagram to the lab's
+// networkProbes try a TCP connection and a UDP datagram to the lab's
 // gateway, with bash's /dev/tcp and /dev/udp, from regular builtins.
-func networkProbe(tcp, udp int) string {
-	return "exec 2>&1\n" +
-		"true 3<>/dev/tcp/192.0.2.254/" + strconv.Itoa(tcp) + " && echo TCP-CONNECTED\n" +
-		"echo x 3<>/dev/udp/192.0.2.254/" + strconv.Itoa(udp) + " >&3 && echo UDP-SENT\n" +
-		"echo done\n"
+func networkProbes(tcp, udp int) []string {
+	return []string{"exec 2>&1\ntrue 3<>/dev/tcp/192.0.2.254/" + strconv.Itoa(tcp) + " && echo TCP-CONNECTED\necho SURVIVED\n",
+		"exec 2>&1\necho x 3<>/dev/udp/192.0.2.254/" + strconv.Itoa(udp) + " >&3 && echo UDP-SENT\necho SURVIVED\n"}
 }
 
 // REG-01: a confined program cannot reach the network. In a lab whose only
 // way out is a dummy interface, the probe run directly sends its TCP and UDP
-// packets there, and the same probe confined sends none: it cannot open a
-// socket, and its own network namespace has no interface.
+// packets there, and the same probe confined sends none: the filter kills it
+// when it opens a socket, and its own network namespace has no interface.
 func TestConfinedProgramCannotReachTheNetwork(t *testing.T) {
 	// The lab's namespace belongs to a user namespace of this account, where
 	// the probes run as root of it: confined like any account but root.
@@ -141,7 +140,7 @@ func TestNetworkProbesInTheLab(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	o := Options{UID: uint32(uid), GID: uint32(uid)}
+	o := Options{UID: uint32(uid), GID: uint32(uid), TestTools: true}
 	bash, err := exec.LookPath("bash")
 	if err != nil {
 		t.Fatal(err)
@@ -155,10 +154,11 @@ func TestNetworkProbesInTheLab(t *testing.T) {
 	if err != nil || !strings.Contains(string(sent), "UDP-SENT") {
 		t.Fatalf("the direct probe could not send its datagram: %v %s (TCP: %s)", err, sent, direct)
 	}
-	out, err := o.Run(t.Context(), "", bash, "-c", networkProbe(2001, 2002))
-	t.Logf("confined probe: %s", out)
-	if err != nil || strings.Contains(string(out), "CONNECTED") || strings.Contains(string(out), "SENT") ||
-		strings.Count(string(out), "Operation not permitted") < 2 || !strings.HasSuffix(string(out), "done\n") {
-		t.Errorf("the confined probe: %v\n%s", err, out)
+	for _, script := range networkProbes(2001, 2002) {
+		out, err := o.Run(t.Context(), "", bash, "-c", script)
+		t.Logf("confined probe: %v %s", err, out)
+		if !errors.Is(err, ErrSyscall) || len(out) != 0 {
+			t.Errorf("the confined probe was not killed when it opened its socket: %v\n%s", err, out)
+		}
 	}
 }

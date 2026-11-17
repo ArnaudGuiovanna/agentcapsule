@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"testing"
 	"time"
 )
 
@@ -51,6 +52,9 @@ func (o Options) Run(ctx context.Context, image, program string, args ...string)
 	if root && !o.Unconfined && (o.UID == 0 || o.GID == 0) {
 		return nil, fmt.Errorf("%w: as root, a dedicated UID and GID other than 0 are required", ErrUnavailable)
 	}
+	if o.TestTools && !testing.Testing() {
+		return nil, fmt.Errorf("%w: the test tools' filter outside a test binary", ErrUnavailable)
+	}
 	path := "-"
 	if image != "" {
 		abs, err := filepath.Abs(image)
@@ -81,8 +85,12 @@ func (o Options) Run(ctx context.Context, image, program string, args ...string)
 			uid, gid = 0, 0 // root of the helper's own user namespace: the caller
 		}
 		name = "/proc/self/exe" // this executable, even if replaced on disk since
+		filter := strictFilter
+		if o.TestTools {
+			filter = testToolsFilter
+		}
 		argv = append([]string{strconv.FormatUint(uint64(uid), 10), strconv.FormatUint(uint64(gid), 10),
-			strconv.FormatUint(o.cpuSeconds(), 10), path, program}, args...)
+			strconv.FormatUint(o.cpuSeconds(), 10), filter, path, program}, args...)
 		files = append(files, report)
 		attributes = namespaces(root)
 	}
@@ -119,8 +127,13 @@ func (o Options) Run(ctx context.Context, image, program string, args ...string)
 		return nil, ctx.Err()
 	case limited.Err() != nil:
 		return nil, fmt.Errorf("%w: %s elapsed", ErrLimit, o.Timeout)
-	case errors.As(err, &exit) && exit.Sys().(syscall.WaitStatus).Signaled() && exit.Sys().(syscall.WaitStatus).Signal() == syscall.SIGKILL:
-		return nil, fmt.Errorf("%w: killed (processor time or memory)", ErrLimit)
+	case errors.As(err, &exit) && exit.Sys().(syscall.WaitStatus).Signaled():
+		switch exit.Sys().(syscall.WaitStatus).Signal() {
+		case syscall.SIGKILL:
+			return nil, fmt.Errorf("%w: killed (processor time or memory)", ErrLimit)
+		case syscall.SIGSYS:
+			return nil, ErrSyscall
+		}
 	}
 	return nil, err
 }

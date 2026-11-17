@@ -24,7 +24,7 @@ func requireRoot(t *testing.T) Options {
 	if !AsRoot() {
 		t.Fatal("run as root in the initial user namespace (sudo go test -tags root_integration)")
 	}
-	return Options{UID: rootTestUID, GID: rootTestUID}
+	return Options{UID: rootTestUID, GID: rootTestUID, TestTools: true}
 }
 
 // REG-01: as root, the program runs as the dedicated UID and GID, without

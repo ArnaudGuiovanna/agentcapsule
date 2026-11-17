@@ -109,6 +109,10 @@ exec ` + debugfs + ` "$@"
 		}
 	}
 	t.Setenv("PATH", traps)
+	// The trap debugfs is a shell, which the allow-list of debugfs's calls
+	// would kill: the importer's sandbox lets it run as the tests' shells run
+	// (sandbox.Options.TestTools), with every other confinement.
+	l.importer.fetcher.Sandbox.TestTools = true
 
 	imp := l.request(t, "announcer", ref.String())
 	l.importOne(t)

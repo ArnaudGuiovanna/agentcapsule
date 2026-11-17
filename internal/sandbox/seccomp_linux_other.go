@@ -4,8 +4,13 @@ package sandbox
 
 import "errors"
 
-// installFilter: the filter is written for x86_64, the platform's only
+// policy: the filter is written for x86_64, the platform's only
 // architecture; elsewhere the sandbox is unavailable.
-func installFilter() error {
+type policy struct{}
+
+func strict() policy    { return policy{} }
+func testTools() policy { return policy{} }
+
+func installFilter(policy) error {
 	return errors.New("no seccomp filter for this architecture")
 }

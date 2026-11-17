@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strconv"
 	"syscall"
+	"testing"
 
 	"golang.org/x/sys/unix"
 )
@@ -32,13 +33,20 @@ func init() {
 	os.Exit(125)
 }
 
+// The filters the helper is asked for, by name.
+const (
+	strictFilter    = "strict"
+	testToolsFilter = "test-tools"
+)
+
 // confine sets the sandbox up and executes the program; it returns only on
-// failure. args: UID, GID, processor seconds, the image's absolute path (or
-// "-"), the program, then the program's arguments. Descriptor 3 is the image
-// the caller opened (or /dev/null), 4 the pipe for a failure's reason.
+// failure. args: UID, GID, processor seconds, the filter, the image's
+// absolute path (or "-"), the program, then the program's arguments.
+// Descriptor 3 is the image the caller opened (or /dev/null), 4 the pipe for
+// a failure's reason.
 func confine(args []string) error {
-	if len(args) < 5 {
-		return errors.New("usage: UID GID CPU-SECONDS IMAGE|- PROGRAM [ARGUMENT...]")
+	if len(args) < 6 {
+		return errors.New("usage: UID GID CPU-SECONDS FILTER IMAGE|- PROGRAM [ARGUMENT...]")
 	}
 	uid, err1 := strconv.ParseUint(args[0], 10, 32)
 	gid, err2 := strconv.ParseUint(args[1], 10, 32)
@@ -46,6 +54,19 @@ func confine(args []string) error {
 	if err := errors.Join(err1, err2, err3); err != nil || cpu < 1 {
 		return errors.New("invalid UID, GID or processor seconds")
 	}
+	var filter policy
+	switch args[3] {
+	case strictFilter:
+		filter = strict()
+	case testToolsFilter:
+		if !testing.Testing() {
+			return errors.New("the test tools' filter outside a test binary")
+		}
+		filter = testTools()
+	default:
+		return errors.New("unknown filter")
+	}
+	image, program, argv := args[4], args[5], args[5:]
 	unix.CloseOnExec(statusFD)
 	if err := alone(); err != nil {
 		return err
@@ -69,7 +90,7 @@ func confine(args []string) error {
 	if err := os.Chdir("/"); err != nil {
 		return err
 	}
-	if image := args[3]; image != "-" {
+	if image != "-" {
 		if err := reopen(image); err != nil {
 			return err
 		}
@@ -116,11 +137,10 @@ func confine(args []string) error {
 	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
 		return fmt.Errorf("no_new_privs: %w", err)
 	}
-	if err := installFilter(); err != nil {
+	if err := installFilter(filter); err != nil {
 		return fmt.Errorf("seccomp: %w", err)
 	}
-	program := args[4]
-	return fmt.Errorf("exec %s: %w", program, unix.Exec(program, args[4:], os.Environ()))
+	return fmt.Errorf("exec %s: %w", program, unix.Exec(program, argv, os.Environ()))
 }
 
 // reopen replaces descriptor 3 with the image opened read-only through this

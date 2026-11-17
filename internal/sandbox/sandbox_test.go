@@ -14,6 +14,12 @@ import (
 	"time"
 )
 
+// tools confines the shells and tools of these tests: the program may make
+// any system call but those that start a process or open a socket. The
+// allow-list of every other run is tested on its own (probe_test.go,
+// seccomp_test.go), and on debugfs (internal/harnesspkg).
+var tools = Options{TestTools: true}
+
 // sh is the shell the probes run in; they use builtins and exec only, since
 // the sandbox lets no process start another.
 func sh(t *testing.T) string {
@@ -60,28 +66,33 @@ func confinedAs(t *testing.T, o Options) map[string]string {
 	return s
 }
 
-// namespacesOf lists the program's namespaces, which must all differ from
+// namespacesDiffer checks that the program's namespaces all differ from
 // this process's, but for the cgroup namespace.
 func namespacesDiffer(t *testing.T, o Options) {
 	t.Helper()
-	out, err := o.Run(t.Context(), "", sh(t), "-c", "exec ls -l /proc/self/ns/")
-	if err != nil {
-		t.Fatal(err)
-	}
 	kinds := []string{"mnt", "net", "pid", "ipc", "uts"}
 	if !AsRoot() {
 		kinds = append(kinds, "user")
 	}
+	args := []string{"-c", "exec readlink \"$@\"", "sh"}
 	for _, ns := range kinds {
+		args = append(args, "/proc/self/ns/"+ns)
+	}
+	out, err := o.Run(t.Context(), "", sh(t), args...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	theirs := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(theirs) != len(kinds) {
+		t.Fatalf("the program lists %d namespaces, not %d: %s", len(theirs), len(kinds), out)
+	}
+	for i, ns := range kinds {
 		mine, err := os.Readlink("/proc/self/ns/" + ns)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(string(out), " "+ns+" -> ") {
-			t.Fatalf("the program does not list its %s namespace: %s", ns, out)
-		}
-		if strings.Contains(string(out), " "+ns+" -> "+mine) {
-			t.Errorf("the program shares this process's %s namespace %s", ns, mine)
+		if !strings.HasPrefix(theirs[i], ns+":[") || theirs[i] == mine {
+			t.Errorf("the program's %s namespace is %s, this process's %s", ns, theirs[i], mine)
 		}
 	}
 }
@@ -164,11 +175,11 @@ func TestConfinedProgramHoldsNoPrivilege(t *testing.T) {
 	if AsRoot() {
 		t.Fatal("run as an account other than root; root runs sandbox_root_test.go (-tags root_integration)")
 	}
-	s := confinedAs(t, Options{})
+	s := confinedAs(t, tools)
 	if s["Uid"] != "0\t0\t0\t0" || s["Gid"] != "0\t0\t0\t0" {
 		t.Errorf("in its user namespace the program is Uid %q Gid %q, not root of it", s["Uid"], s["Gid"])
 	}
-	namespacesDiffer(t, Options{})
+	namespacesDiffer(t, tools)
 }
 
 // REG-01: the image is open read-only; the program can write neither it, by
@@ -182,7 +193,7 @@ func TestConfinedProgramCannotWrite(t *testing.T) {
 	if err := os.WriteFile(image, bytes.Repeat([]byte("image"), 1000), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if out := cannotWrite(t, Options{}, image, filepath.Join(dir, "written")); strings.Count(out, "Read-only file system") != 6 {
+	if out := cannotWrite(t, tools, image, filepath.Join(dir, "written")); strings.Count(out, "Read-only file system") != 6 {
 		t.Errorf("an attempt was not refused by the read-only mounts:\n%s", out)
 	}
 }
@@ -190,13 +201,13 @@ func TestConfinedProgramCannotWrite(t *testing.T) {
 // REG-01: a program that hangs is killed at the time limit, one that spins at
 // the processor limit.
 func TestConfinedProgramIsKilledAtItsLimits(t *testing.T) {
-	killedAtLimits(t, Options{})
+	killedAtLimits(t, tools)
 }
 
 // The helper refuses to run outside the namespaces Run creates: started
 // directly under its name, it changes nothing and exits 125.
 func TestHelperRefusesToRunOutsideItsNamespaces(t *testing.T) {
-	cmd := exec.CommandContext(t.Context(), "/proc/self/exe", "0", "0", "1", "-", sh(t), "-c", "echo RAN")
+	cmd := exec.CommandContext(t.Context(), "/proc/self/exe", "0", "0", "1", strictFilter, "-", sh(t), "-c", "echo RAN")
 	cmd.Args[0] = HelperName
 	out, err := cmd.CombinedOutput()
 	var exit *exec.ExitError

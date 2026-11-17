@@ -9,10 +9,11 @@
 // dedicated UID and GID of Options, without supplementary groups. It then
 // sets no_new_privs, the limits (processor time, no file written, no core
 // dump, 64 open files) and a seccomp filter, and executes the program. The
-// program cannot start another process, open a socket, mount, trace or
-// change its credentials; its network namespace has no interface but an
-// unconfigured loopback. The image is open read-only as its file descriptor
-// 3, ImagePath; Run kills it at Options.Timeout.
+// filter is an allow-list of the system calls debugfs makes; any other kills
+// the program: it cannot start another process or thread, open a socket,
+// mount, trace or change its credentials. Its network namespace has no
+// interface but an unconfigured loopback. The image is open read-only as its
+// file descriptor 3, ImagePath; Run kills it at Options.Timeout.
 //
 // A caller that is not root (a test, a publisher's machine) runs the helper
 // in a user namespace of its own instead, where it is root without any
@@ -46,6 +47,10 @@ var (
 	ErrUnavailable = errors.New("sandbox unavailable")
 	// ErrLimit: the program was killed at its time or processor limit.
 	ErrLimit = errors.New("sandboxed program killed at its limit")
+	// ErrSyscall: the program was killed for a system call outside the
+	// filter's allow-list. debugfs never makes one: the image led it astray,
+	// or this host's C library calls one the list lacks.
+	ErrSyscall = errors.New("sandboxed program killed for a system call outside its allow-list")
 )
 
 // Options of a confined run.
@@ -64,6 +69,11 @@ type Options struct {
 	// publisher's tool (agentcapsule-harness) on a machine where the sandbox
 	// is unavailable, never for the platform host.
 	Unconfined bool
+	// TestTools, in a test binary only (testing.Testing), lets the program
+	// also make the system calls of the shells and tools that tests run
+	// confined: all but those that start a process or open a socket. Outside
+	// a test binary, Run refuses it.
+	TestTools bool
 }
 
 func (o Options) withDefaults() Options {
