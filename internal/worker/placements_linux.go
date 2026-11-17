@@ -18,6 +18,7 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/restoreauthority"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/runtime"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/slimlink"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/telemetry"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/volumearchive"
 )
 
@@ -48,6 +49,8 @@ type Placements struct {
 	metrics atomic.Pointer[workerTelemetry]
 	// jobEvents logs each job with its origin; nil without telemetry.
 	jobEvents atomic.Pointer[jobEvents]
+	// tracing records spans (OPR-3); nil without traces.
+	tracing atomic.Pointer[workerTracing]
 	// pressure watches the host's file systems; nil without (OPS-03).
 	pressure atomic.Pointer[StoragePressure]
 	// auditPurgedAt is when the audit trail was last purged (Unix ns).
@@ -171,7 +174,7 @@ func (w *Placements) runtimeOptions(opts runtime.FirecrackerOptions, keys keyaut
 func (w *Placements) platformHandler(host applicationHost, id string, run runtime.VMRun) (http.Handler, error) {
 	identity := capsuleprotocol.Identity{Incarnation: run.Incarnation, AgentID: id, Generation: run.Generation, VMID: run.ID, FenceOnly: run.FenceOnly}
 	api := platformAPI{store: w.store, host: host, caller: controlplane.VMCaller{AgentID: id, HostID: w.hostID, Generation: run.Generation, VMID: run.ID},
-		transit: w.transit.Load, llm: w.llm.Load, directory: w.directory.Load, authority: w.authority, incarnation: run.Incarnation}
+		transit: w.transit.Load, llm: w.llm.Load, directory: w.directory.Load, authority: w.authority, incarnation: run.Incarnation, traces: w.tracing.Load}
 	return capsuleprotocol.NewPlatformHandler(identity, api)
 }
 
@@ -276,11 +279,18 @@ func (w *Placements) startRenewal(ctx context.Context, id string, forFence bool,
 	}
 	var run runtime.VMRun
 	started := time.Now()
-	if p.FenceOnly {
-		run, err = w.host.StartForFence(ctx, id, p.Generation)
-	} else {
-		run, err = w.host.Start(ctx, id, p.Generation)
+	// A boot, not the reuse of a running VMM, has its span (OPR-3).
+	boot, span := ctx, (*telemetry.Span)(nil)
+	if p.State != "RUNNING" {
+		boot, span = bootSpan.Start(ctx)
+		span.ID("agentcapsule.agent", id)
 	}
+	if p.FenceOnly {
+		run, err = w.host.StartForFence(boot, id, p.Generation)
+	} else {
+		run, err = w.host.Start(boot, id, p.Generation)
+	}
+	endBoot(span, p.FenceOnly || forFence, err)
 	if p.State != "RUNNING" && !p.FenceOnly && !forFence {
 		w.countStart(started, err) // a boot for work, not a fence or a reused VMM
 	}

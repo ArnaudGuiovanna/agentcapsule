@@ -31,6 +31,8 @@ type Server struct {
 	// routes are the registered patterns, the vocabulary of telemetry.
 	routes    []string
 	telemetry *apiTelemetry
+	// tracing records spans (OPR-3); nil without traces.
+	tracing *apiTracing
 	// authority reports the authority service to the readiness probe; nil
 	// without the service (development mode only).
 	authority AuthorityStatus
@@ -177,21 +179,26 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 	w = recorder
-	if s.telemetry != nil {
-		route, start := invalidRoute, time.Now()
-		defer func() { s.telemetry.record(route, r.Method, recorder, requestID, time.Since(start)) }()
-		if path.Clean(r.URL.Path) == r.URL.Path {
-			_, route = s.mux.Handler(r)
-		}
+	route := invalidRoute
+	if (s.telemetry != nil || s.tracing != nil) && path.Clean(r.URL.Path) == r.URL.Path {
+		_, route = s.mux.Handler(r)
 	}
+	if s.telemetry != nil {
+		start := time.Now()
+		defer func() { s.telemetry.record(route, r.Method, recorder, requestID, time.Since(start)) }()
+	}
+	// The request's span is the root of its trace, whose ID is requestID.
+	traced, span := s.tracing.start(r.Context(), requestID)
+	var served *http.Request
+	defer func() { s.tracing.finish(span, route, r.Method, served, recorder) }()
 	if path.Clean(r.URL.Path) != r.URL.Path || strings.Contains(strings.ToLower(r.URL.EscapedPath()), "%2f") {
 		problem(w, 400, "invalid_path")
 		return
 	}
-	ctx, attempt := withAttempt(telemetry.WithRequestID(r.Context(), requestID))
+	ctx, attempt := withAttempt(telemetry.WithRequestID(traced, requestID))
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	served := r.WithContext(ctx)
+	served = r.WithContext(ctx)
 	s.mux.ServeHTTP(w, served)
 	// A refused administrative attempt joins its organization's trail
 	// (TEN-009); the mux has set the route and its path values on served.
@@ -373,6 +380,7 @@ func (s *Server) principal(w http.ResponseWriter, r *http.Request) (controlplane
 		return p, false
 	}
 	noteAttempt(r, p)
+	identify(r.Context(), p)
 	return p, true
 }
 func (s *Server) live(w http.ResponseWriter, r *http.Request) {

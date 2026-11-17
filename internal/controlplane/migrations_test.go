@@ -319,6 +319,7 @@ func TestReadyChecksInstalledMigrationLedger(t *testing.T) {
 func revertTenantAgents(t *testing.T, s *Store) {
 	t.Helper()
 	if _, err := s.pool.Exec(t.Context(), `
+        DROP TABLE IF EXISTS trace_pseudonym_key;
         DROP TABLE IF EXISTS tenant_refusal_audit;
         DROP INDEX IF EXISTS instruction_replays_tenant;
         DROP TABLE IF EXISTS authority_reconciliations;

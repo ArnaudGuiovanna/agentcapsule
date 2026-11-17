@@ -22,11 +22,13 @@ func (s *Server) instruct(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
-	out, err := s.catalog.Instruct(r.Context(), p, r.PathValue("id"), key, in)
+	ctx, span := s.tracing.admission(r.Context(), r.PathValue("id"))
+	out, err := s.catalog.Instruct(ctx, p, r.PathValue("id"), key, in)
 	if err == nil {
 		w.Header().Set("Retry-After", "1")
 	}
 	receipt(w, out, err)
+	admitted(span, w, out, err)
 }
 
 func (s *Server) instructionResult(w http.ResponseWriter, r *http.Request) {
@@ -81,11 +83,13 @@ func (s *Server) invocations(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &in) {
 		return
 	}
-	out, err := s.catalog.CreateInvocation(r.Context(), p, r.PathValue("id"), key, in)
+	ctx, span := s.tracing.admission(r.Context(), r.PathValue("id"))
+	out, err := s.catalog.CreateInvocation(ctx, p, r.PathValue("id"), key, in)
 	if err == nil {
 		w.Header().Set("Retry-After", "1")
 	}
 	receipt(w, out, err)
+	admitted(span, w, out, err)
 }
 
 func (s *Server) invocation(w http.ResponseWriter, r *http.Request) {

@@ -138,7 +138,11 @@ func newProductPeerLab(t *testing.T) *productPeerLab {
 	// in production; the service runs in this test's process.
 	authorityRoot := filepath.Join(t.TempDir(), "restore-authority")
 	authority := openAuthority(t, throughService, keys, authorityRoot)
-	w, err := NewProvisioningPlacements(store, "local", "product-peers-worker", 2*time.Minute, options, authority.provider(), authority, ProvisioningConfig{FirstUID: 62300, LastUID: 62309})
+	provisioning := ProvisioningConfig{FirstUID: 62300, LastUID: 62309}
+	if labProvisioning != nil {
+		labProvisioning(&provisioning)
+	}
+	w, err := NewProvisioningPlacements(store, "local", "product-peers-worker", 2*time.Minute, options, authority.provider(), authority, provisioning)
 	if err != nil {
 		t.Fatal(err)
 	}
