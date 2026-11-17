@@ -221,6 +221,12 @@ func TestProductWorkerProvisioningAndEncryptedWake(t *testing.T) {
 		t.Fatal("forced restart lost durable deduplication", receipt, err)
 	}
 	command("sleep", 3)
+	// The binding the store holds before its deletion: once sealed, the
+	// authority gives none (an error carries no result, ADR 006 §2).
+	live, err := authority.Lookup(t.Context(), e.AgentID)
+	if err != nil || live != enrollmentBinding(e) {
+		t.Fatal("the store's binding before its deletion", live, err)
+	}
 	var deletion controlplane.AgentCreation
 	request("DELETE", "/v1/agents/"+e.AgentID, "delete", 202, &deletion)
 	// Actual host seal succeeds, but the authority service goes offline
@@ -258,11 +264,10 @@ func TestProductWorkerProvisioningAndEncryptedWake(t *testing.T) {
 	if _, err = os.Lstat(filepath.Join(options.Root, "volumes", e.VolumeID+".luks")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("physical volume retained", err)
 	}
-	sealedBinding, err := authority.Lookup(t.Context(), e.AgentID)
-	if !errors.Is(err, restoreauthority.ErrSealed) {
+	if _, err = authority.Lookup(t.Context(), e.AgentID); !errors.Is(err, restoreauthority.ErrSealed) {
 		t.Fatal("physical deletion lost independent seal", err)
 	}
-	if _, err = authority.ReserveIncarnation(t.Context(), sealedBinding, "revive-deleted"); !errors.Is(err, restoreauthority.ErrSealed) {
+	if _, err = authority.ReserveIncarnation(t.Context(), live, "revive-deleted"); !errors.Is(err, restoreauthority.ErrSealed) {
 		t.Fatal("sealed identity restored", err)
 	}
 	w.afterRemoval = nil
