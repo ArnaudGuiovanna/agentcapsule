@@ -148,7 +148,7 @@ var authorityReconciliationsSQL string
 //go:embed migrations/0043_tenant_refusal_audit.sql
 var tenantRefusalAuditSQL string
 
-//go:embed migrations/0046_trace_pseudonym_key.sql
+//go:embed migrations/0044_trace_pseudonym_key.sql
 var tracePseudonymKeySQL string
 
 // Append migrations; never edit an installed migration. The original schema

@@ -270,7 +270,7 @@ maintenance, has no span.
 codes with the closed list of their values, numbers, and identifiers. A value
 outside its list is written `invalid`, an undeclared key `invalid_key`. An
 identifier is written as its pseudonym: the first 64 bits of HMAC-SHA256 of
-the identifier under the installation's key, in hex. Migration 0046 creates
+the identifier under the installation's key, in hex. Migration 0044 creates
 that key at random in PostgreSQL (`trace_pseudonym_key`); the API and the
 worker read it at start, so an identifier has the same pseudonym in every
 span of both. Without the key, a pseudonym tells nothing; with it, the

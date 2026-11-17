@@ -8,7 +8,7 @@ import (
 )
 
 // TraceKey returns the installation's pseudonym key for traces (OPR-3,
-// migration 0046): the API and the worker read the same one, so an
+// migration 0044): the API and the worker read the same one, so an
 // identifier has the same pseudonym in every process's spans.
 func (s *Store) TraceKey(ctx context.Context) ([]byte, error) {
 	var key []byte
