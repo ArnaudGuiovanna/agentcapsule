@@ -234,6 +234,26 @@ func confinedKillsAnotherArchitecture(t *testing.T, o Options) {
 	}
 }
 
+// REG-01: the program's address space is bounded: a program that maps 1 GiB
+// is refused (ENOMEM), one that maps 64 MiB is not; run directly, both map.
+func TestConfinedProgramCannotAllocateBeyondItsLimit(t *testing.T) {
+	mapping := func(size uint64) string {
+		return probe(t, unix.SYS_MMAP, false, 0, size, unix.PROT_READ|unix.PROT_WRITE, unix.MAP_PRIVATE|unix.MAP_ANONYMOUS, ^uint64(0), 0)
+	}
+	big, small := mapping(1<<30), mapping(64<<20)
+	for _, path := range []string{big, small} {
+		if err := exec.CommandContext(t.Context(), path).Run(); err != nil {
+			t.Fatal("run directly, the probe could not map its memory:", err)
+		}
+	}
+	if got := outcome(t, Options{}, big); got != refused(unix.ENOMEM) {
+		t.Errorf("1 GiB: %s, not %s", got, refused(unix.ENOMEM))
+	}
+	if got := outcome(t, Options{}, small); got != refused(0) {
+		t.Errorf("64 MiB: %s", got)
+	}
+}
+
 // REG-01: once the filter is in place, the helper runs no Go code until the
 // program starts: a signal on its thread then (Go's scheduler sends SIGURG
 // to preempt) would run a handler whose return the filter refuses, and the

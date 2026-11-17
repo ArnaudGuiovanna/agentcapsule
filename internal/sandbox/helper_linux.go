@@ -98,7 +98,10 @@ func confine(args []string) error {
 		}
 	}
 	// Limits: processor seconds (SIGKILL when spent), no byte written to any
-	// file, no core dump, 64 open files.
+	// file, no core dump, 64 open files; the address space last (see
+	// execFiltered). No RLIMIT_NPROC: the filter refuses every process and
+	// thread, and that limit counts every process of the real UID, so
+	// concurrent runs would fail.
 	for _, l := range []struct {
 		resource int
 		value    uint64
@@ -180,6 +183,12 @@ func execFiltered(p policy, program string, argv, env []string) error {
 	envp, err := syscall.SlicePtrFromStrings(env)
 	if err != nil {
 		return err
+	}
+	// The address space is limited here: this Go process already maps more,
+	// and could not grow its heap past it.
+	space := unix.Rlimit{Cur: addressSpace, Max: addressSpace}
+	if _, _, e := unix.RawSyscall6(unix.SYS_PRLIMIT64, 0, unix.RLIMIT_AS, uintptr(unsafe.Pointer(&space)), 0, 0, 0); e != 0 {
+		return fmt.Errorf("address space: %w", e)
 	}
 	all := ^uint64(0)
 	if _, _, e := unix.RawSyscall6(unix.SYS_RT_SIGPROCMASK, unix.SIG_SETMASK, uintptr(unsafe.Pointer(&all)), 0, 8, 0, 0); e != 0 {

@@ -4,16 +4,18 @@
 //
 // Run starts this same executable again, as a helper named HelperName, in
 // new mount, network, PID, IPC and UTS namespaces. The helper, PID 1 of its
-// namespace, mounts a /proc of its own, makes every mount read-only and
-// nosuid, drops its capabilities and, when the caller is root, takes the
-// dedicated UID and GID of Options, without supplementary groups. It then
-// sets no_new_privs, the limits (processor time, no file written, no core
-// dump, 64 open files) and a seccomp filter, and executes the program. The
-// filter is an allow-list of the system calls debugfs makes; any other kills
-// the program: it cannot start another process or thread, open a socket,
-// mount, trace or change its credentials. Its network namespace has no
-// interface but an unconfigured loopback. The image is open read-only as its
-// file descriptor 3, ImagePath; Run kills it at Options.Timeout.
+// namespace, mounts a /proc of its own, makes every mount read-only, nosuid
+// and nodev, drops its capabilities and, when the caller is root, takes the
+// dedicated UID and GID of Options, without supplementary groups, and checks
+// them. It then sets no_new_privs, the limits (processor time, 256 MiB of
+// address space, no file written, no core dump, 64 open files), marks every
+// descriptor but 0 to 3 close-on-exec, blocks every signal, and executes the
+// program under a seccomp filter. The filter is an allow-list of the system
+// calls debugfs makes; any other kills the program: it cannot start another
+// process or thread, open a socket, mount, trace or change its credentials.
+// Its network namespace has no interface but an unconfigured loopback. The
+// image is open read-only as its file descriptor 3, ImagePath; Run kills it
+// at Options.Timeout.
 //
 // A caller that is not root (a test, a publisher's machine) runs the helper
 // in a user namespace of its own instead, where it is root without any
@@ -38,6 +40,9 @@ const (
 	// maxOutput bounds the standard output kept; the rest is read and
 	// discarded.
 	maxOutput = 1 << 20
+	// addressSpace bounds the program's virtual memory (RLIMIT_AS): debugfs
+	// needs about 24 MiB on the images measured; a mapping past it fails.
+	addressSpace = 256 << 20
 )
 
 var (
