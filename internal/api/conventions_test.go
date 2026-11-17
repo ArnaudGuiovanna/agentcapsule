@@ -42,6 +42,7 @@ var idempotencyOtherBody = map[string]string{
 	"POST /v1/llm/calls/{fresh}/settle":                         `{"input_tokens":11,"output_tokens":5}`,
 	"POST /v1/llm/budgets":                                      `{"alias":"{fresh}","period":"day","limit_tokens":2000,"mode":"soft"}`,
 	"POST /v1/queue/limits":                                     `{"max_pending_per_agent":101,"max_pending_tenant":1000}`,
+	"PUT /v1/organizations/{org}/quotas":                        `{"max_agents":999}`,
 	"POST /v1/agents":                                           `{"name":"{name}-b","harness":{"name":"reference","version":"1.0.0"},"resources":{"vcpus":1,"memory_mib":256,"data_volume_mib":64}}`,
 	"POST /v1/agents/{agent}/idle-policy":                       `{"idle_timeout_seconds":600}`,
 	"POST /v1/agents/{agent}/release":                           `{"harness":{"name":"reference","version":"1.0.0"}}`,

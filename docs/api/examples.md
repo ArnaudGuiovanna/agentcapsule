@@ -279,6 +279,107 @@ HTTP/1.1 200 OK
 }
 ```
 
+## Quotas
+
+The platform operator bounds what an organization's agents may hold: how
+many agents, their volume storage, how many of their VMs run at once, and
+the vCPUs and RAM those VMs reserve
+([ADR 021](../adr/021-organization-quotas.md)). Without a quota there is no
+limit. alice gives the operator her organization's identifier:
+
+```sh
+ORG=$(curl -fsS "$API/v1/organizations/current" -H "Authorization: Bearer $OWNER_TOKEN" \
+  | jq -r .organization.id)
+```
+
+```http
+HTTP/1.1 200 OK
+
+{
+  "organization": {
+    "id": "org_..."
+  },
+  "role": "org_owner"
+}
+```
+
+The operator sets the quotas. A field left out, or `null`, is no limit:
+
+```sh
+curl -fsS -X PUT "$API/v1/organizations/$ORG/quotas" \
+  -H "Authorization: Bearer $PLATFORM_TOKEN" \
+  -H "Idempotency-Key: quotas-1" \
+  -H "Content-Type: application/json" \
+  -d '{"max_agents":10,"max_active_vms":2,"max_vcpus":4,"max_memory_mib":4096,"max_storage_mib":1024}'
+```
+
+```http
+HTTP/1.1 200 OK
+
+{
+  "max_agents": 10,
+  "max_active_vms": 2,
+  "max_vcpus": 4,
+  "max_memory_mib": 4096,
+  "max_storage_mib": 1024
+}
+```
+
+alice reads them, with what her organization holds now. Active VMs, vCPUs
+and RAM count the VMs booted for work; the agent sleeps:
+
+```sh
+curl -fsS "$API/v1/organizations/current/quotas" -H "Authorization: Bearer $OWNER_TOKEN"
+```
+
+```http
+HTTP/1.1 200 OK
+
+{
+  "organization_id": "org_...",
+  "limits": {
+    "max_agents": 10,
+    "max_storage_mib": 1024
+  },
+  "usage": {
+    "agents": 1,
+    "storage_mib": 128,
+    "active_vms": 0,
+    "vcpus": 0,
+    "memory_mib": 0
+  }
+}
+```
+
+An agent past a quota is refused before anything is reserved, and the
+answer names the quota:
+
+```sh
+curl -sS -X POST "$API/v1/agents" \
+  -H "Authorization: Bearer $OWNER_TOKEN" \
+  -H "Idempotency-Key: create-archive" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"archive","harness":{"name":"echo","version":"1.0.0"},"resources":{"vcpus":1,"memory_mib":256,"data_volume_mib":1024}}'
+```
+
+```http
+HTTP/1.1 409 Conflict
+Content-Type: application/problem+json
+
+{
+  "type": "about:blank",
+  "title": "Conflict",
+  "status": 409,
+  "code": "organization_quota_exceeded",
+  "quota": "max_storage_mib"
+}
+```
+
+Work for an agent past the active VMs, vCPUs or RAM is not refused: it
+waits, the agent `QUEUED` with `queue_reason` `organization_quota`, until
+one of the organization's VMs stops, or dies at its deadline with
+`capacity_unavailable`.
+
 ## Assignments
 
 No role invokes an agent: only an assignment does. alice assigns bob to the
