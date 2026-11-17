@@ -148,6 +148,9 @@ var authorityReconciliationsSQL string
 //go:embed migrations/0043_tenant_refusal_audit.sql
 var tenantRefusalAuditSQL string
 
+//go:embed migrations/0046_trace_pseudonym_key.sql
+var tracePseudonymKeySQL string
+
 // Append migrations; never edit an installed migration. The original schema
 // also upgrades pre-ledger installations, preserving its historical backfills.
 // Later calls validate its checksum without replaying DDL or those backfills.
@@ -195,6 +198,7 @@ var controlPlaneMigrations = []schemaMigration{
 	{version: 41, name: "receipt-key-days", sql: receiptKeyDaysSQL},
 	{version: 42, name: "authority-reconciliations", sql: authorityReconciliationsSQL},
 	{version: 43, name: "tenant-refusal-audit", sql: tenantRefusalAuditSQL},
+	{version: 44, name: "trace-pseudonym-key", sql: tracePseudonymKeySQL},
 }
 
 func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error {
