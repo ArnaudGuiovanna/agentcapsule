@@ -9,7 +9,8 @@ teams, agents, invocations and models ([tenant authentication](tenant-identity.m
 first owner.
 
 What every role and kind of caller gets on every route is in the
-[authorization matrix](rbac.md), which a test checks.
+[authorization matrix](rbac.md), which a test checks. Every MVP feature is
+shown with curl in [examples.md](examples.md), which a test runs as written.
 
 Where this page speaks of owners, personal tokens, user or service tokens
 (`acp_`), `/v1/users` or `/v1/me`, it describes the historical single-owner
@@ -165,10 +166,21 @@ address. Keep `/v1/health/ready` on the internal network. Logs contain only fixe
 private responses.
 
 The available routes are described in the canonical contract
-[openapi/openapi.yaml](../../openapi/openapi.yaml). Creations require an
-`Idempotency-Key`. The same identity, route, key and input replay the initial
-response for 24 hours; a different body gives `422`, and a concurrent call
-already in a transaction gives `409`. A revocation is checked before an old
+[openapi/openapi.yaml](../../openapi/openapi.yaml); a test checks that the
+server serves exactly its routes and methods. Every mutation requires an
+`Idempotency-Key`; without one it is refused with `400
+idempotency_key_required` before anything happens. The same identity, route,
+key and input replay the initial response for 24 hours; a different body
+gives `422 idempotency_key_reused`, and a concurrent call already in a
+transaction gives `409`. A key reused on another target of the same route is
+refused with `422`, or, where the target is part of the route's receipt
+(organization disable, release deprecation, agent deletion, wake, sleep,
+invocation cancel and replay, held request decisions, attachment deletion),
+runs as a new request: it never gives back the first target's answer. The
+only routes other than `GET` without a key are the two download-link routes,
+which store nothing ([ADR 016](../adr/016-content-links-capabilities.md)),
+and `PUT /v1/me/messaging-settings`, of the closed legacy domain. A test
+checks all of it on every route. A revocation is checked before an old
 receipt is read again. Personal tokens are stored as hashes; their replayable
 issuance responses are encrypted with the key of their day
 ([below](#the-daily-receipt-keys)).

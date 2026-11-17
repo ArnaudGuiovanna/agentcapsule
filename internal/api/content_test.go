@@ -106,6 +106,52 @@ func TestHTTPCapabilityCatalogAndPolicies(t *testing.T) {
 	}
 }
 
+// EXT-002: a file uploaded for one agent reaches only that agent. Attached to
+// an invocation of another agent of the same organization, by the same
+// member assigned to both, it is refused and nothing is admitted; the file
+// stays for the agent it was uploaded for.
+func TestHTTPAttachmentReachesOnlyTheAgentItWasUploadedFor(t *testing.T) {
+	l, _, first, owner, bob := tenantInvocationLab(t)
+	second := apiActiveTenantAgent(t, l, owner, "other")
+	var members struct {
+		Items []controlplane.Member `json:"items"`
+	}
+	if r := call(t, l.server, "GET", "/v1/members", owner, "", ""); r.Code != 200 || json.Unmarshal(r.Body.Bytes(), &members) != nil {
+		t.Fatal("members", r.Code, r.Body.String())
+	}
+	bobID := ""
+	for _, m := range members.Items {
+		if m.Subject == "bob" {
+			bobID = m.PrincipalID
+		}
+	}
+	assignment := `{"principal_id":"` + bobID + `","permissions":["read_metadata","invoke","read_content"]}`
+	if r := call(t, l.server, "POST", "/v1/agents/"+second+"/assignments", owner, "asg-second", assignment); r.Code != 201 {
+		t.Fatal("assign", r.Code, r.Body.String())
+	}
+	r := rbacRequest(t, l.server, "POST", "/v1/agents/"+first+"/attachments", bob, "upload", "for the first agent only", true)
+	var file controlplane.Attachment
+	if r.Code != 201 || json.Unmarshal(r.Body.Bytes(), &file) != nil || file.AgentID != first {
+		t.Fatal("upload", r.Code, r.Body.String())
+	}
+	input := `{"content":[{"type":"text","text":"read the file"}],"attachments":["` + file.ID + `"]}`
+	if r = call(t, l.server, "POST", "/v1/agents/"+second+"/invocations", bob, "wrong-agent", input); r.Code != 409 || problemCode(r) != "attachment_unavailable" {
+		t.Fatal("a file uploaded for one agent was attached to another's invocation", r.Code, r.Body.String())
+	}
+	var page struct {
+		Items []controlplane.Invocation `json:"items"`
+	}
+	if r = call(t, l.server, "GET", "/v1/agents/"+second+"/invocations", bob, "", ""); r.Code != 200 || json.Unmarshal(r.Body.Bytes(), &page) != nil || len(page.Items) != 0 {
+		t.Fatal("the refused invocation was admitted", r.Code, r.Body.String())
+	}
+	if r = call(t, l.server, "GET", "/v1/attachments/"+file.ID, bob, "", ""); r.Code != 200 || json.Unmarshal(r.Body.Bytes(), &file) != nil || file.State != "pending" {
+		t.Fatal("the refusal changed the file", r.Code, r.Body.String())
+	}
+	if r = call(t, l.server, "POST", "/v1/agents/"+first+"/invocations", bob, "right-agent", input); r.Code != 202 {
+		t.Fatal("the file does not reach the agent it was uploaded for", r.Code, r.Body.String())
+	}
+}
+
 // EXT-001: an invocation carries text and JSON parts, the JSON is validated
 // at the API, crosses the transit encryption unchanged, reaches the agent as
 // a JSON part and comes back in the result.

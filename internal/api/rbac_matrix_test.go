@@ -314,8 +314,8 @@ const (
 
 // TestRBACMatrixIsDocumented checks that docs/api/rbac.md shows this matrix.
 // AGENTCAPSULE_WRITE_RBAC_DOC=1 rewrites the table in place. It needs no
-// database and runs in CI. The PostgreSQL campaign tests a copy of the
-// sources without docs/: there is nothing to compare, and the test says so
+// database and runs in CI. The PostgreSQL campaign copies docs/api; a copy of
+// the sources without docs/ has nothing to compare, and the test says so
 // rather than skip, which that campaign refuses.
 func TestRBACMatrixIsDocumented(t *testing.T) {
 	if _, err := os.Stat("../../docs"); errors.Is(err, fs.ErrNotExist) {

@@ -24,6 +24,8 @@ the day's merges:
   A2A-005, A2A-010, OPR-10, OPR-18), never run yet, the runtime disk at
   every start of the worker (DEP-3) and the refill of the harness cache
   (OPR-10).
+- the API conventions checked route by route, and the curl examples run by
+  a test (EXT-008).
 
 Work still landing will change rows: the restore onto another host (OUT-7,
 OPR-12).
@@ -61,22 +63,25 @@ code of that run. The next KVM run with the integrated guest must confirm it
 
 ## Summary
 
-Of the 65 requirements of §4: 44 met, 14 partial, 0 not met, 7 needs KVM.
+Of the 65 requirements of §4: 47 met, 11 partial, 0 not met, 7 needs KVM.
 
 | Part | Met | Partial | Not met | Needs KVM |
 |---|---|---|---|---|
 | Organizations, identity and authorization | 7 | 2 | 0 | 0 |
 | Isolation | 6 | 0 | 1 | 0 |
 | Harness registry and supply chain | 7 | 3 | 0 | 0 |
-| Capsules and runtime | 8 | 1 | 0 | 3 |
+| Organizations, identity and authorization | 7 | 2 | 0 | 0 |
+| Isolation | 6 | 0 | 1 | 0 |
+| Harness registry and supply chain | 7 | 3 | 0 | 0 |
+| Capsules and runtime | 9 | 0 | 0 | 3 |
 | Invocations and events | 7 | 1 | 0 | 2 |
 | LLM gateway | 3 | 5 | 0 | 0 |
 | Discovery and inter-agent communication | 10 | 0 | 0 | 2 |
-| Content, capabilities and clients | 2 | 2 | 0 | 0 |
-| API conventions | 4 | 5 | 0 | 0 |
+| Content, capabilities and clients | 4 | 0 | 0 | 0 |
+| API conventions | 8 | 1 | 0 | 0 |
 | The MVP outcome as one scenario | 4 | 2 | 0 | 1 |
 | Deployment and operations | 11 | 5 | 4 | 3 |
-| **All rows** | **69** | **26** | **5** | **11** |
+| **All rows** | **76** | **19** | **5** | **11** |
 
 ## Requirements
 
@@ -138,7 +143,7 @@ authentication, never from a request body.
 | RUN-007 | A hostile agent stays within ceilings | needs KVM | [`TestProductWorkerDriveCeilingsHoldAgainstAFloodingGuest`](../internal/worker/product_limits_integration_test.go) (KVM, never run): I/O ceilings; [`TestDrivesHaveIOCeilings`](../internal/runtime/firecracker_limits_test.go), [`TestProvisionedResourcesReachVMConfiguration`](../internal/runtime/firecracker_provisioning_test.go) (unit) | The I/O test has never run. No hostile-guest test for CPU, memory, processes or time |
 | RUN-008 | Nothing left for another capsule | needs KVM | [`TestProductWorkerJailsEachVMAndLeavesNothingBehind`](../internal/worker/product_jail_integration_test.go) (KVM, never run): after a stop, no process runs as the agent's UID, and no jail, cgroup, socket, platform lock or boot credentials remain; the UID owns the agent's volume alone, and nothing once the agent is deleted; the next agent gets another UID; [`TestProductWorkerTwoOrganizationsStayIsolated`](../internal/worker/product_organizations_integration_test.go) (KVM 2026-11-15): distinct VM, UID and volume; [`TestProductGuestEncryptedPersistenceAndIsolation`](../internal/runtime/product_guest_integration_test.go) (KVM 2026-11-15): a volume alias refused; [`TestRecoverIsolatesAFailingAgent`](../internal/runtime/firecracker_removal_test.go) (unit) | The test has never run. The VM's log stays on the host, readable by root alone. `verify-vm-isolation.py` runs its own jailer lab, not the product runtime |
 | RUN-009 | Write, stop, restart, read the same value | met | [`TestProductWorkerTenantRunsAPythonHarness`](../internal/worker/product_registry_integration_test.go) (KVM 2026-11-15): the harness's counter continues after sleep and wake; [`TestProductWorkerTwoOwnersPrivateExchange`](../internal/worker/product_peers_integration_test.go), [`TestProductGuestEncryptedPersistenceAndIsolation`](../internal/runtime/product_guest_integration_test.go) (KVM 2026-11-15) | — |
-| RUN-010 | Execution observed only in guests | partial | [`TestProductWorkerTenantRunsAnImportedHarness`](../internal/worker/product_registry_integration_test.go) (KVM 2026-11-15): the harness exists only on the guest's drive and answers | Nothing checks that no harness code runs on the host (for example, that the API and the worker import no harness package) |
+| RUN-010 | Execution observed only in guests | met | [`TestProductWorkerTenantRunsAnImportedHarness`](../internal/worker/product_registry_integration_test.go) (KVM 2026-11-15): the harness exists only on the guest's drive and answers; [`TestAPILinksNoRuntimeWorkerOrGuestCode`](../cmd/agentcapsule-api/imports_test.go), [`TestWorkerLinksNoHarnessCode`](../cmd/agentcapsule-api/imports_test.go) (unit, `go list -deps`): neither the API nor the worker links a harness, the guest's init or any other code that only the guest programs link; they share the protocol, the capability names and the guest's event store format | — (a package is only parsed and handed to Firecracker; that the worker starts no program but the jailer and the archive fetch is read in the code, not checked) |
 | RUN-011 | `FAILED` or `QUEUED`; no spawn loop | met | [`TestAnAgentWhoseGuestKeepsFailingIsFailed`](../internal/controlplane/restart_budgets_test.go) (PG): `FAILED` after the restart budget, no more boots; [`TestAFullHostAdmitsWaitingWorkInArrivalOrder`](../internal/controlplane/capacity_queue_test.go) (PG): an agent waiting for a VM slot shows `QUEUED`, and no longer once admitted; [`TestAFailedAgentDoesNotWaitForCapacity`](../internal/controlplane/capacity_queue_test.go) (PG); [`TestCrashesSpendTheRestartBudget`](../internal/controlplane/restart_budgets_test.go), [`TestGuestFailuresAreCountedAndLogged`](../internal/worker/restart_budget_test.go) (PG) | — ([`TestProductWorkerStopsBootingAGuestThatCrashesAtBoot`](../internal/worker/product_limits_integration_test.go) (KVM) has never run) |
 | RUN-012 | No Firecracker mode without `/dev/kvm` and a compatible kernel | met | [`TestKVMDevice`](../internal/preflight/preflight_test.go), [`TestKernelVersion`](../internal/preflight/preflight_test.go), [`TestMandatoryOnAGoodFakeHost`](../internal/preflight/preflight_test.go) (unit): the checks fail on a bad device or an old kernel; [verify-install.py](../scripts/verify-install.py) (script): the worker binary refuses to start when a mandatory check fails, and passes every check on this machine with the artifacts | — (not run as root, nor on a production server) |
 
@@ -192,23 +197,23 @@ authentication, never from a request body.
 | ID | Acceptance | Status | Proof | Missing |
 |---|---|---|---|---|
 | EXT-001 | Invocation works | met | [`TestHTTPInvocationCarriesStructuredJSON`](../internal/api/content_test.go) (PG): text and JSON parts, the JSON validated at the API, through the transit encryption to the agent as a JSON part, and back in the result; [`TestJSONContentReachesTheRunAndComesBack`](../internal/agentadapter/content_test.go), [`TestContentPartsCarryStructuredJSON`](../internal/capsuleprotocol/content_test.go) (unit); [`TestProductWorkerTenantAsyncInvocationWithFileAndModel`](../internal/worker/product_tenant_integration_test.go) (KVM 2026-11-15): a text invocation | — (JSON on KVM, [`TestProductWorkerDeliversJSONContent`](../internal/worker/product_content_integration_test.go), has never run) |
-| EXT-002 | Right agent only; cross-tenant refused | partial | [`TestAttachmentReachesOnlyItsRunningInvocationEncrypted`](../internal/controlplane/attachments_test.go) (PG): only the recipient's current VM, while its invocation runs; [`TestAttachmentUploadRulesAreEnforcedBeforeStoring`](../internal/controlplane/attachments_test.go) (PG): MIME, size, hash; [`TestProductWorkerTwoOrganizationsStayIsolated`](../internal/worker/product_organizations_integration_test.go) (KVM 2026-11-15): cross-tenant refused | No test attaches a file uploaded for agent A to an invocation of agent B of the same organization |
+| EXT-002 | Right agent only; cross-tenant refused | met | [`TestHTTPAttachmentReachesOnlyTheAgentItWasUploadedFor`](../internal/api/content_test.go) (PG): a file uploaded for agent A, attached by the same member to an invocation of agent B of the same organization, gets `409 attachment_unavailable`; nothing is admitted and the file stays for A; [`TestAttachmentReachesOnlyItsRunningInvocationEncrypted`](../internal/controlplane/attachments_test.go) (PG): only the recipient's current VM, while its invocation runs; [`TestAttachmentUploadRulesAreEnforcedBeforeStoring`](../internal/controlplane/attachments_test.go) (PG): MIME, size, hash; [`TestRBACMatrix`](../internal/api/rbac_matrix_test.go) (PG): another organization gets 404 on the file; [`TestProductWorkerTwoOrganizationsStayIsolated`](../internal/worker/product_organizations_integration_test.go) (KVM 2026-11-15): cross-tenant refused | — |
 | EXT-003 | Matches manifest and policy | met | [`TestHTTPCapabilityCatalogAndPolicies`](../internal/api/content_test.go) (PG): an agent's catalog shows what its harness requests, what its organization and the agent allow, and the effective set; [`TestEffectiveCapabilitiesAreTheIntersection`](../internal/controlplane/capabilities_test.go), [`TestReleasesRecordTheCapabilitiesTheyRequest`](../internal/controlplane/capabilities_test.go) (PG); [`TestManifestDeclaresItsCapabilities`](../internal/harnesspkg/package_test.go) (unit); [`TestPlatformChannelEnforcesCapabilities`](../internal/capsuleprotocol/platform_capability_test.go) (unit): a call outside the effective set is refused | — ([`TestProductWorkerEnforcesCapabilities`](../internal/worker/product_content_integration_test.go) (KVM) has never run) |
-| EXT-008 | Every MVP feature usable without a UI | partial | [`TestRBACMatrixCoversEveryRoute`](../internal/api/rbac_matrix_test.go) (unit): every feature is an HTTP route; [verify-install.py](../scripts/verify-install.py) (script): the install and an organization's first steps by CLI and curl | No example for agents, assignments, invocations, polling, wake and sleep, inbound and held requests, service accounts, audit, LLM providers and budgets; nothing tests the examples |
+| EXT-008 | Every MVP feature usable without a UI | met | [`TestHTTPExamplesRunAsWritten`](../internal/api/examples_test.go) (PG): [examples.md](api/examples.md) runs as written over HTTPS, 46 calls on 39 routes: a harness import, members, agents, assignments, invocations and their polling, files and download links, wake and sleep, held requests from other agents, a technical account and its revocation, models and budgets, the audit trail and its export, deletion; each answer is compared with the one the page shows; [`TestExampleChecksRefuseWhatTheyCannotVouchFor`](../internal/api/examples_test.go) (unit): a command the test cannot run, or an answer unlike the page's, fails it; [`TestRBACMatrixCoversEveryRoute`](../internal/api/rbac_matrix_test.go) (unit): every feature is an HTTP route; [verify-install.py](../scripts/verify-install.py) (script): the install and an organization's first steps by CLI and curl | — (the test reads curl's and jq's options rather than run the programs; teams, schedules, release changes and replays of dead letters have no example) |
 
 ### API conventions
 
 | ID | Acceptance | Status | Proof | Missing |
 |---|---|---|---|---|
-| CONV-1 | Versioned `/v1` JSON over HTTPS, OpenAPI 3.1 | partial | [`TestAPIBinariesBootstrapServeAndShutdown`](../internal/api/server_test.go) (PG): HTTPS, clear text gets 400; [`TestProductionRefusesClearText`](../cmd/agentcapsule-api/main_test.go) (unit); CI validates `openapi/openapi.yaml` as OpenAPI 3.1; [verify-install.py](../scripts/verify-install.py) (script) | Nothing ties the OpenAPI document to the served routes or answers |
+| CONV-1 | Versioned `/v1` JSON over HTTPS, OpenAPI 3.1 | met | [`TestOpenAPIDescribesExactlyTheServedRoutes`](../internal/api/openapi_test.go) (unit): every route the server serves is under `/v1` and in `openapi/openapi.yaml` with each of its methods, every documented operation is served, and the RBAC matrix lists the same; [`TestHTTPExamplesRunAsWritten`](../internal/api/examples_test.go) (PG): 46 JSON answers over HTTPS, on 39 routes, hold the required fields of their documented schema and no undocumented one; [`TestAPIBinariesBootstrapServeAndShutdown`](../internal/api/server_test.go) (PG): HTTPS, clear text gets 400; [`TestProductionRefusesClearText`](../cmd/agentcapsule-api/main_test.go) (unit); CI validates `openapi/openapi.yaml` as OpenAPI 3.1; [verify-install.py](../scripts/verify-install.py) (script) | — (answers are checked on the routes of the examples, top-level fields and list items, not the fields' types) |
 | CONV-2 | Bearer tokens with subject, organization and scopes | met | [`TestVerifiedIdentityComesFromConfiguredTrust`](../internal/delegatedidentity/verifier_test.go) (unit); [`TestTenantIdentityNeedsExplicitTrustAndExistingIdentity`](../internal/controlplane/tenant_identity_test.go) (PG): altered scopes or tenant refused; [`TestServiceTokenActsWithinItsRoleAndScopesOnly`](../internal/controlplane/service_accounts_test.go) (PG) | — |
-| CONV-3 | `Idempotency-Key` on every mutation | partial | [`TestHTTPLifecycleCommandsArePrivateAndRemainObservable`](../internal/api/lifecycle_test.go), [`TestHTTPAccountsAndRoleBoundary`](../internal/api/server_test.go), [`TestHTTPMembersInputAndLastOwner`](../internal/api/members_test.go) (PG): no key gets 400, a replay is identical | Tested on about 8 of 54 mutations. `PUT /v1/me/messaging-settings` (legacy domain) takes none |
-| CONV-4 | `202` plus `operation_id` for asynchronous work | partial | [`TestHTTPAgentReservationsAndOwnerIsolation`](../internal/api/agents_test.go) (PG); [`TestHTTPLifecycleCommandsArePrivateAndRemainObservable`](../internal/api/lifecycle_test.go) (PG); [`TestHTTPTenantInvocationIsGovernedByAssignments`](../internal/api/tenant_agents_test.go) (PG) | Invocations and harness imports answer `202` with `id`, not `operation_id`; no test lists every asynchronous route |
-| CONV-5 | Opaque IDs and cursors | partial | [`TestAuditFeedIsCompletePagedAndMetadataOnly`](../internal/controlplane/audit_feed_test.go) (PG): an opaque cursor, a bad one refused; [`TestHTTPAuditFeed`](../internal/api/tenant_agents_test.go) (PG) | No test of the IDs' shape; other cursors are the last resource ID |
+| CONV-3 | `Idempotency-Key` on every mutation | met | [`TestEveryMutationNeedsAnIdempotencyKey`](../internal/api/conventions_test.go) (PG): each of the 51 mutations of the organization and platform domains, as a caller it serves: without a key `400 idempotency_key_required`, then the same call with a key succeeds; the same key and body give back the first answer with `Idempotency-Replayed: true`; another body gets `422 idempotency_key_reused`; the key on another target never gives back the first answer; [`TestIdempotencyTablesNameRealRoutes`](../internal/api/conventions_test.go) (unit); [`TestOperatorBootstrapFromEmptyDatabase`](../internal/api/bootstrap_test.go) (PG, real binaries): every route of the closed legacy domain, `PUT /v1/me/messaging-settings` among them, refuses its tokens with 401, and [`TestRBACMatrix`](../internal/api/rbac_matrix_test.go) (PG) gives 403 to every other caller | — (`PUT /v1/me/messaging-settings` takes no key, and no credential the API accepts reaches it; the two download-link routes store nothing and take none, ADR 016) |
+| CONV-4 | `202` plus `operation_id` for asynchronous work | partial | [`TestAsynchronousRoutesAnswer202WithWorkToFollow`](../internal/api/conventions_test.go) (PG): each of the 8 asynchronous routes answers 202 with the identifier of its work, and the route that follows it finds it; [`TestAsynchronousRoutesAreListed`](../internal/api/conventions_test.go), [`TestOpenAPIDocumentsTheAsynchronousRoutes`](../internal/api/openapi_test.go) (unit): the list is complete, against the routes and the document | Agent creation, deletion, wake, sleep and messages answer `operation_id`; harness imports, invocations and their replay answer `id` (an invocation's is an operation, `op_...`, which `GET /v1/operations/{id}` also follows). Adding `operation_id` is a question for the product owner |
+| CONV-5 | Opaque IDs and cursors | met | [`TestIdentifiersAndCursorsAreOpaque`](../internal/api/conventions_test.go) (PG): every identifier in the answers of every `GET` route is a kind and 128 random bits (63 identifiers of 15 kinds); identifiers made in a row share no prefix; the audit cursor shows no field of its page, and a forged one gets 400; another organization's identifier, or an unknown one, as a cursor shows nothing the caller does not see without it; [`TestAuditFeedIsCompletePagedAndMetadataOnly`](../internal/controlplane/audit_feed_test.go) (PG) | — (a list goes on from the last identifier of a page; the audit's cursor is an encoded position, not encrypted) |
 | CONV-6 | `application/problem+json` with a stable `code` | met | [`TestHTTPAccountsAndRoleBoundary`](../internal/api/server_test.go) (PG): 12 error cases; [`TestEveryProblemCodeIsDeclared`](../internal/api/telemetry_test.go) (unit): every code is in a closed list | — |
 | CONV-7 | Bounded payloads | met | [`TestHTTPAccountsAndRoleBoundary`](../internal/api/server_test.go) (PG): a 70 kB body gets 413; [`TestHTTPTenantInvocationIsGovernedByAssignments`](../internal/api/tenant_agents_test.go) (PG): an oversized attachment gets 413; [`TestMalformedAndOversizedTokensFailWithoutIdentity`](../internal/delegatedidentity/verifier_test.go) (unit) | — |
 | CONV-8 | Temporary download URLs bound to identity | met | [`TestHTTPTemporaryDownloadLinks`](../internal/api/downloads_test.go) (PG): a link is bound to the person who asked and to one resource, works without the bearer, and opens nothing once that person loses the right; [`TestDownloadLinksExpireAndStaySealed`](../internal/controlplane/download_links_test.go) (unit): it expires, shows nothing of what it opens, and stands for its principal narrowed to reading content | — |
-| CONV-9 | No route forwards a raw Firecracker or shell command | partial | [`TestHTTPAgentReservationsAndOwnerIsolation`](../internal/api/agents_test.go) (PG): `host_id` and `volume_path` refused; [`TestRBACMatrixCoversEveryRoute`](../internal/api/rbac_matrix_test.go) (unit): a closed list of routes | Nothing asserts that the API never links the runtime or the worker; true today |
+| CONV-9 | No route forwards a raw Firecracker or shell command | met | [`TestAPILinksNoRuntimeWorkerOrGuestCode`](../cmd/agentcapsule-api/imports_test.go) (unit, `go list -deps`): `agentcapsule-api` links neither the runtime, nor the worker, nor the volume code, nor any code of the guest programs; [`TestHTTPAgentReservationsAndOwnerIsolation`](../internal/api/agents_test.go) (PG): `host_id` and `volume_path` refused; [`TestOpenAPIDescribesExactlyTheServedRoutes`](../internal/api/openapi_test.go), [`TestRBACMatrixCoversEveryRoute`](../internal/api/rbac_matrix_test.go) (unit): a closed list of routes | — |
 
 ## The MVP outcome as one scenario
 
@@ -417,8 +422,8 @@ unless said.
     since ADR 017;
   - RUN-001 says "without booting", but creation boots a restricted VM to
     format the volume;
-  - REG-001 and the API conventions promise `operation_id`, but invocations
-    and harness imports answer with `id`;
+  - REG-001 and the API conventions promise `operation_id`, but invocations,
+    their replay and harness imports answer with `id`;
   - EVT-009 says `GET /v1/operations/{id}` gives the result; it is at
     `/result`;
   - A2A-008 lists "delivered" and "working" apart; the code has one state,
@@ -433,6 +438,12 @@ unless said.
     a package again: a new import of a known digest answers with the old
     import. The worker now fetches the packages its agents pin when its cache
     lacks them.
+- **Idempotency keys, two scopes:** a key reused on another target of the
+  same route gets `422` on most routes, and runs as a new request where the
+  receipt's scope holds the target (organization disable, release
+  deprecation, agent deletion, wake, sleep, invocation cancel and replay,
+  held request decisions, attachment deletion). Neither gives back the first
+  target's answer ([`TestEveryMutationNeedsAnIdempotencyKey`](../internal/api/conventions_test.go)).
 - **Fixed since** (the cleanup of the integration):
   - docs/interop.md said the search filters by assignment; it filters by
     organization and discoverability;
