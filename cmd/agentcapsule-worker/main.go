@@ -95,8 +95,9 @@ func run() int {
 	if mode == operatorconfig.Production && c.CheckProductionTransport() != nil {
 		return fail("registry_local_rule_refused_in_production")
 	}
-	// RUN-012: no Firecracker without KVM, a compatible kernel, cgroup v2 and
-	// the pinned artifacts. The failed checks say what to fix.
+	// RUN-012: no Firecracker without KVM, a compatible kernel, cgroup v2, room
+	// on the runtime disk (DEP-3) and the pinned artifacts. The failed checks
+	// say what to fix.
 	if results := c.MandatoryPreflight(context.Background(), preflight.System()); preflight.Failed(results) {
 		var failed []preflight.Result
 		for _, r := range results {

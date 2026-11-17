@@ -157,7 +157,10 @@ printing each failure and its fix (RUN-012):
   `nodev` or `noexec`, because the jailer creates device nodes and runs
   Firecracker in each chroot;
 - each pinned artifact's SHA-256, Firecracker's and the jailer's version
-  (v1.17.0), and an ELF kernel.
+  (v1.17.0), and an ELF kernel;
+- the runtime root's free space (DEP-3): a failure from 95% used, where the
+  agents' volumes have almost no room left to grow, a warning from 80%. The
+  95% level is a default pending the product owner.
 
 `agentcapsule-worker -preflight` adds the clock, disk use (70% warning, 80%
 failure, the alert levels), the authorities' directories (present, private,
@@ -167,8 +170,9 @@ address, the registry rules and PostgreSQL (TLS confirmed by `pg_stat_ssl`).
 `agentcapsule-api -preflight` checks the API's certificate, ports, receipt
 key, the clock and PostgreSQL.
 
-Disk use and the clock are not checked at start: a disk at 81% must not stop
-running agents. A service that does not answer (the Directory edge, the
+The clock is not checked at start, and the disk only from 95% at start: a
+disk at 81% must not stop running agents. Storage pressure refuses new agents
+and imports there ([ADR 014](014-operations-capacity-diagnostics-audit.md)). A service that does not answer (the Directory edge, the
 replica) is a warning; a refusal is a failure.
 
 ### 7. Pinned versions

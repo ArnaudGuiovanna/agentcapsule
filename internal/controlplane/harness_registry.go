@@ -405,3 +405,28 @@ func (s *Store) RetainedHarnessDigests(ctx context.Context, host string) (map[st
 	}
 	return keep, rows.Err()
 }
+
+// PinnedHarnessReleases lists the imported releases that an agent of host,
+// not deleted, is pinned to: the packages its worker needs to boot them. A
+// host rebuilt from its backups fetches them again by digest (OPR-10).
+func (s *Store) PinnedHarnessReleases(ctx context.Context, host string) ([]HarnessRelease, error) {
+	if !catalogName(host) {
+		return nil, ErrInput
+	}
+	rows, err := s.pool.Query(ctx, `SELECT `+releaseColumns+` FROM harness_releases r WHERE r.source='oci' AND EXISTS(
+            SELECT 1 FROM agent_specs x JOIN agents a ON a.id=x.agent_id WHERE x.release_id=r.id AND x.host_id=$1 AND a.phase<>'DELETED')
+        ORDER BY r.name,r.version`, host)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []HarnessRelease
+	for rows.Next() {
+		v, err := scanRelease(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}

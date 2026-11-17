@@ -185,7 +185,7 @@ AGENTCAPSULE_DATABASE_URL=... /opt/agentcapsule/agentcapsule-worker -config /etc
 | `runtime_filesystem` | The runtime root is on tmpfs, NFS, 9p, FUSE or overlayfs, is read-only, or is mounted `nodev` or `noexec` (the jailer creates device nodes and runs Firecracker in each chroot). Another file system than ext4, xfs or btrfs is a warning. |
 | `artifact_firecracker`, `artifact_jailer`, `artifact_kernel`, `artifact_initrd` | A file is missing or does not match the SHA-256 the configuration pins. Firecracker or the jailer does not report v1.17.0. The kernel is not an ELF `vmlinux`. Once the worker has started, its copy under `<root>/bin` stands in for a missing source. |
 | `clock` | The kernel says the clock is not synchronized. |
-| `disk_runtime`, `disk_archives` | The file system is 80% used or more; from 70%, a warning. |
+| `disk_runtime`, `disk_archives` | The file system is 80% used or more; from 70%, a warning. At start, the worker judges `disk_runtime` at 95% (a failure) and 80% (a warning) instead. |
 | `authority` | With the `authority` section: the authority service does not answer on its worker socket, holds other authorities than the pinned ones, or gives directories that overlap the runtime root or the archives. A service in degraded mode, or waiting for its standby, is a warning. The directories and the link to the standby are the service's ([recovery.md](recovery.md#install-the-authority-service)). |
 | `metrics_listen` | The address is not loopback, or is in use. |
 | `directory_certificate`, `directory_ca`, `directory_edge` | The client certificate is unusable, expired, not for `clientAuth`, or not named `agentcapsule-control-plane`; the CA file holds no certificate; the edge refuses the client or presents another CA's or another name's certificate. An edge that does not answer is a warning. |
@@ -193,9 +193,11 @@ AGENTCAPSULE_DATABASE_URL=... /opt/agentcapsule/agentcapsule-worker -config /etc
 | `postgresql` | The connection string may use clear text (production), or the server cannot be reached. The check confirms TLS with the server (`pg_stat_ssl`). |
 
 **At every start**, the worker runs `kvm`, `kernel`, `cgroups`, `namespaces`,
-`runtime_filesystem` and the four artifacts. If one fails, it prints the
-failed checks with their fixes, then `preflight_failed`, and does not start.
-That is RUN-012: no Firecracker without them.
+`runtime_filesystem`, `disk_runtime` and the four artifacts. If one fails, it
+prints the failed checks with their fixes, then `preflight_failed`, and does
+not start. That is RUN-012: no Firecracker without them. At start,
+`disk_runtime` fails only from 95% used, where the volumes would soon fail
+their writes: a disk at 81% does not stop running agents (DEP-3, ADR 010).
 
 **API.** Run as the API's account, with the API's flags:
 

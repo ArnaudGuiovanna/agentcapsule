@@ -31,8 +31,9 @@ manager's protected environment, then run:
 ```
 
 At every start the worker checks KVM, the kernel, cgroups, namespaces, the
-runtime root's file system and the pinned artifacts, and does not start when
-one fails, printing what to fix (RUN-012). `-preflight` runs every check of the
+runtime root's file system and its free space (a failure from 95% used), and
+the pinned artifacts, and does not start when one fails, printing what to fix
+(RUN-012, DEP-3). `-preflight` runs every check of the
 host and of this configuration, changes nothing, and exits
 ([install.md](install.md#preflight)). In production, the worker reaches
 PostgreSQL over a Unix socket or with `sslmode=verify-full`, refuses a `local`

@@ -31,7 +31,8 @@ class WorkerScenarios(unittest.TestCase):
         self.assertFalse(GUEST.REQUIRED_WORKER & (GUEST.PI_WORKER | GUEST.SLIM_WORKER | GUEST.RCLONE_WORKER))
         self.assertEqual(GUEST.RCLONE_WORKER, {"TestProductWorkerRestoresAgentFromShippedArchiveOnAnotherHost"})
         self.assertEqual(GUEST.PI_WORKER, {"TestProductWorkerTenantRunsPiOnARealModel"})
-        self.assertEqual(GUEST.SLIM_WORKER, {"TestProductWorkerTenantAgentsTalkOverSLIM", "TestProductWorkerTenantFlagshipJourney"})
+        self.assertEqual(GUEST.SLIM_WORKER, {"TestProductWorkerTenantAgentsTalkOverSLIM", "TestProductWorkerTenantFlagshipJourney",
+                                             "TestProductWorkerDeletionRemovesTheVolumeTheKeyAndTheDirectoryRecord"})
 
     def test_an_unlisted_test_is_found(self):
         with tempfile.TemporaryDirectory() as tmp:

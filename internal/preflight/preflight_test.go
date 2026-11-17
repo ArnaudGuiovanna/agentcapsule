@@ -283,7 +283,10 @@ func TestRuntimeFileSystemAndDisk(t *testing.T) {
 	expect(t, Disk(h, "runtime", root), Fail, "85% used")
 }
 
-func TestMandatoryOnAGoodFakeHost(t *testing.T) {
+// goodHost is a fake host that passes every mandatory check. Its runtime
+// file system has *used of its 1000 blocks in use.
+func goodHost(t *testing.T, used *uint64) Host {
+	t.Helper()
 	h, root := fakeHost(t)
 	h.Stat = kvmDevice(h.Stat)
 	write(t, filepath.Join(root, "sys/fs/cgroup/cgroup.controllers"), "cpu memory pids\n")
@@ -295,12 +298,18 @@ func TestMandatoryOnAGoodFakeHost(t *testing.T) {
 		if strings.HasSuffix(path, "sys/fs/cgroup") {
 			return syscall.Statfs_t{Type: 0x63677270}, nil
 		}
-		return syscall.Statfs_t{Type: 0xEF53}, nil
+		return syscall.Statfs_t{Type: 0xEF53, Blocks: 1000, Bfree: 1000 - *used, Bavail: 1000 - *used, Bsize: 1 << 20}, nil
 	}
+	return h
+}
+
+func TestMandatoryOnAGoodFakeHost(t *testing.T) {
+	used := uint64(400)
+	h := goodHost(t, &used)
 	dir := t.TempDir()
 	write(t, filepath.Join(dir, "vmlinux"), "\x7fELF")
 	results := Mandatory(t.Context(), h, filepath.Join(dir, "runtime"), []Artifact{{"kernel", filepath.Join(dir, "vmlinux"), digest([]byte("\x7fELF")), ""}})
-	if Failed(results) || len(results) != 6 {
+	if Failed(results) || len(results) != 7 {
 		t.Fatalf("%+v", results)
 	}
 	var out bytes.Buffer
@@ -314,6 +323,49 @@ func TestMandatoryOnAGoodFakeHost(t *testing.T) {
 		!strings.HasSuffix(out.String(), "preflight_failed\n") {
 		t.Fatal(out.String())
 	}
+}
+
+// The runtime root's free space is a mandatory check (DEP-3): a host whose
+// runtime file system is 95% used or more is refused at start, with a fix;
+// from 80%, a warning that does not stop running agents (ADR 010).
+func TestMandatoryChecksTheRuntimeDisk(t *testing.T) {
+	used := uint64(960)
+	h := goodHost(t, &used)
+	runtime := filepath.Join(t.TempDir(), "runtime")
+	disk := func(results []Result) Result {
+		t.Helper()
+		var found []Result
+		for _, r := range results {
+			if r.Check == "disk_runtime" {
+				found = append(found, r)
+			}
+		}
+		if len(found) != 1 {
+			t.Fatalf("disk_runtime appears %d times in %+v", len(found), results)
+		}
+		return found[0]
+	}
+	results := Mandatory(t.Context(), h, runtime, nil)
+	if !Failed(results) {
+		t.Fatal("a runtime disk 96% used passed the mandatory checks")
+	}
+	expect(t, disk(results), Fail, runtime+": 96% used")
+	for _, r := range results {
+		if r.Status == Fail && r.Check != "disk_runtime" {
+			t.Fatal("another check failed on the good host", r)
+		}
+	}
+	used = 850
+	results = Mandatory(t.Context(), h, runtime, nil)
+	expect(t, disk(results), Warn, "85% used")
+	if Failed(results) {
+		t.Fatal("a disk at 85% stopped the worker", results)
+	}
+	used = 750
+	expect(t, disk(Mandatory(t.Context(), h, runtime, nil)), OK, "75% used")
+	// The operator's levels, for -preflight, stay stricter.
+	used = 850
+	expect(t, Disk(h, "runtime", runtime), Fail, "85% used")
 }
 
 type pki struct {

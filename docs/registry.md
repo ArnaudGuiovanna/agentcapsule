@@ -287,6 +287,18 @@ own hard link to their image. To free the space of a release, deprecate it. A de
 package cannot be imported again (the release already exists), so evict only what you
 will not roll back to.
 
+## Refilling the cache
+
+A host rebuilt from its backups has its releases in PostgreSQL, each with the reference
+and digest of its package, but not its cache (OPR-10). In the same loop, at most once a
+minute when idle, the worker fetches again each package that an agent of its host, not
+deleted, pins and that the cache lacks. It fetches the release's reference by digest,
+under the same registry rules, verifies the package as at its import, and keeps it only
+if it holds the release's root file system. Until then the agent does not boot. A
+package that its registry no longer serves leaves its agents stopped: copy it into the
+cache ([recovery.md](recovery.md#prepare)). A one-shot `-restore-agent` or
+`-restore-host` does not refill: run the worker service first, or copy the cache.
+
 ## Worker trust policy
 
 In the worker configuration ([example](../runtime/worker/config.example.json)):

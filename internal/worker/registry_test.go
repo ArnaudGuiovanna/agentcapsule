@@ -7,10 +7,12 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -410,5 +412,106 @@ func TestSignedImportsRecordTheirPublisher(t *testing.T) {
 	l.importOne(t)
 	if v := l.state(t, refused.ID); v.State != "REJECTED" || v.ErrorCode != "signature" || v.Attempts != 1 {
 		t.Fatal("unsigned import under strict mode", v)
+	}
+}
+
+// pinAgent reserves an agent of the host "local" on harness:1.0.0, in the
+// legacy owner domain: an agent of this host then pins the release.
+func (l *importLab) pinAgent(t *testing.T, harness string) {
+	t.Helper()
+	ctx := t.Context()
+	secret, err := l.store.BootstrapService(ctx, "pin-admin-"+harness, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := l.store.Authenticate(ctx, secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := l.accounts.CreateUser(ctx, service, "owner-"+harness, controlplane.CreateUserInput{DisplayName: "Owner"})
+	var owner controlplane.User
+	if err != nil || json.Unmarshal(r.Body, &owner) != nil {
+		t.Fatal(err)
+	}
+	catalog, err := controlplane.NewAgentCatalog(l.accounts, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = l.store.ConfigureHostStorage(ctx, "local", 1024); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = catalog.Reserve(ctx, service, "agent-"+harness, controlplane.CreateAgentInput{OwnerUserID: owner.ID, Name: "On " + harness,
+		Harness:   controlplane.HarnessReference{Name: harness, Version: "1.0.0"},
+		Resources: controlplane.AgentResources{VCPUs: 1, MemoryMiB: 256, DataVolumeMiB: 128}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A host rebuilt from its backups has its releases' digests in PostgreSQL,
+// not its harness cache (OPR-10). Refill fetches again, by the digest its
+// release recorded, each package an agent of the host pins, verifies it as
+// at its import and against the release's root file system, and fetches
+// nothing else. A package that does not hold that root file system is not
+// cached.
+func TestRefillFetchesAgainThePackagesThisHostsAgentsPin(t *testing.T) {
+	l := newImportLab(t)
+	ctx := t.Context()
+	digests := map[string]string{}
+	for _, name := range []string{"pinned", "other"} {
+		ref := l.publish(t, name, "1.0.0")
+		l.request(t, "import-"+name, ref.String())
+		l.importOne(t)
+		digests[name] = ref.Digest
+	}
+	l.pinAgent(t, "pinned")
+	cached := func(name string) bool {
+		_, err := os.Stat(filepath.Join(l.importer.PackageDir(digests[name]), harnesspkg.RootfsFile))
+		return err == nil
+	}
+	staged := func() int {
+		entries, err := os.ReadDir(filepath.Join(l.cache, ".staging"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(entries)
+	}
+	lose := func() {
+		for name := range digests {
+			if err := removeTree(l.importer.PackageDir(digests[name])); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	lose()
+	// An importer that boots nothing on a host has nothing to refill.
+	if got, err := l.importer.Refill(ctx); err != nil || len(got) != 0 {
+		t.Fatal("refilled without a host", got, err)
+	}
+	l.importer.host = "local"
+	got, err := l.importer.Refill(ctx)
+	if err != nil || len(got) != 1 || got[0] != digests["pinned"] {
+		t.Fatal("refill", got, err)
+	}
+	if !cached("pinned") || cached("other") || staged() != 0 {
+		t.Fatal("the cache after the refill", cached("pinned"), cached("other"), staged())
+	}
+	var rootfs string
+	if err = l.db.QueryRow(ctx, "SELECT rootfs_digest FROM harness_releases WHERE artifact_digest=$1", digests["pinned"]).Scan(&rootfs); err != nil {
+		t.Fatal(err)
+	}
+	image, err := os.ReadFile(filepath.Join(l.importer.PackageDir(digests["pinned"]), harnesspkg.RootfsFile))
+	if err != nil || fmt.Sprintf("sha256:%x", sha256.Sum256(image)) != rootfs {
+		t.Fatal("the refilled image is not the release's", err)
+	}
+	if got, err = l.importer.Refill(ctx); err != nil || len(got) != 0 {
+		t.Fatal("a cached package was fetched again", got, err)
+	}
+	// The release recorded another root file system: the package is refused.
+	lose()
+	if _, err = l.db.Exec(ctx, "UPDATE harness_releases SET rootfs_digest=$2 WHERE artifact_digest=$1", digests["pinned"], "sha256:"+strings.Repeat("0", 64)); err != nil {
+		t.Fatal(err)
+	}
+	if got, err = l.importer.Refill(ctx); !errors.Is(err, ociregistry.ErrIntegrity) || len(got) != 0 || cached("pinned") || staged() != 0 {
+		t.Fatal("a package without the release's root file system was cached", got, err)
 	}
 }
