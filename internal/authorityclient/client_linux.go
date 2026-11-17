@@ -305,7 +305,10 @@ func receive(ctx context.Context, conn *net.UnixConn, until time.Time) (svc.Resp
 }
 
 // call runs one operation that is not a hold.
-func (c *Client) call(ctx context.Context, op string, args, result any) error {
+func (c *Client) call(ctx context.Context, op string, args, result any) (err error) {
+	_, span := callSpan.Start(ctx)
+	code := ""
+	defer func() { endCall(span, op, code, false, false, err == nil) }()
 	conn, deadline, err := c.send(ctx, op, args)
 	if err != nil {
 		return err
@@ -315,6 +318,7 @@ func (c *Client) call(ctx context.Context, op string, args, result any) error {
 		conn.Close()
 		return outage(ctx, err)
 	}
+	code = r.Error
 	switch {
 	case r.Error != "":
 		if closes(r.Error) {
@@ -325,10 +329,12 @@ func (c *Client) call(ctx context.Context, op string, args, result any) error {
 		return withContext(ctx, svc.ErrorOf(r.Error))
 	case r.Held != nil:
 		conn.Close()
+		code = svc.CodeProtocol
 		return svc.ErrorOf(svc.CodeProtocol)
 	}
 	c.put(conn)
 	if result != nil && strictJSON(r.Result, result) != nil {
+		code = svc.CodeProtocol
 		return svc.ErrorOf(svc.CodeProtocol)
 	}
 	return nil
@@ -344,6 +350,9 @@ type answer struct {
 // waits for released: only then does the hold succeed, with use's own
 // result. granted reports whether the service granted the hold.
 func (c *Client) hold(ctx context.Context, op string, args any, withKey bool, use func(context.Context, []byte) error) (granted bool, err error) {
+	ctx, span := callSpan.Start(ctx)
+	code, released := "", false
+	defer func() { endCall(span, op, code, true, granted, released) }()
 	conn, deadline, err := c.send(ctx, op, args)
 	if err != nil {
 		return false, err
@@ -353,6 +362,7 @@ func (c *Client) hold(ctx context.Context, op string, args any, withKey bool, us
 		conn.Close()
 		return false, outage(ctx, err)
 	}
+	code = r.Error
 	if r.Error != "" {
 		if closes(r.Error) {
 			conn.Close()
@@ -406,6 +416,7 @@ func (c *Client) hold(ctx context.Context, op string, args any, withKey bool, us
 		// exclusion did not cover all of it.
 		conn.Close()
 		if a.err == nil && a.r.Error != "" {
+			code = a.r.Error
 			return true, withContext(ctx, svc.ErrorOf(a.r.Error))
 		}
 		return true, outage(ctx, svc.ErrHoldLost, a.err)
@@ -423,6 +434,7 @@ func (c *Client) hold(ctx context.Context, op string, args any, withKey bool, us
 		conn.Close()
 		return true, outage(ctx, svc.ErrHoldLost, a.err)
 	case a.r.Error != "":
+		code = a.r.Error
 		if closes(a.r.Error) {
 			conn.Close()
 		} else {
@@ -431,10 +443,12 @@ func (c *Client) hold(ctx context.Context, op string, args any, withKey bool, us
 		return true, withContext(ctx, svc.ErrorOf(a.r.Error))
 	case a.r.Held != nil || a.r.Result == nil:
 		conn.Close()
+		code = svc.CodeProtocol
 		return true, svc.ErrorOf(svc.CodeProtocol)
 	}
 	conn.SetReadDeadline(time.Time{})
 	c.put(conn)
+	released = true
 	return true, useErr
 }
 

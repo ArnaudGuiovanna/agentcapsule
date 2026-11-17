@@ -216,6 +216,24 @@ func run() int {
 	if err = w.EnableStoragePressure(pressure, registry); err != nil {
 		return fail("configuration_invalid")
 	}
+	if c.TraceFile != "" && !archiveRequested {
+		// Spans (OPR-3), every identifier pseudonymized with the
+		// installation's key, which the API reads too.
+		key, err := s.TraceKey(startup)
+		if err != nil {
+			return fail("database_schema_unavailable")
+		}
+		tracer, err := telemetry.NewFileTracer(c.TraceFile, "agentcapsule-worker", key)
+		clear(key)
+		if err != nil {
+			return fail("trace_file_unavailable")
+		}
+		defer tracer.Close()
+		tracer.Count(registry)
+		if err = w.EnableTracing(tracer); err != nil {
+			return fail("telemetry_unavailable")
+		}
+	}
 	importRetries := registry.Counter("agentcapsule_worker_harness_import_retries_total", "Harness imports that failed and will be tried again.")
 	publishRetries := registry.Counter("agentcapsule_worker_directory_publish_retries_total", "Directory publication passes that failed (the Directory unreachable or refusing).")
 	if c.MetricsListen != "" && !archiveRequested {

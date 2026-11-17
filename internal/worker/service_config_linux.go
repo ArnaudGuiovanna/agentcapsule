@@ -85,6 +85,9 @@ type ServiceConfig struct {
 	// MetricsListen serves Prometheus metrics at /metrics on a loopback
 	// address (OPS-02); none when empty.
 	MetricsListen string `json:"metrics_listen,omitempty"`
+	// TraceFile receives the worker's spans as OTLP/JSON lines (OPR-3): an
+	// absolute path, appended to; none when empty.
+	TraceFile string `json:"trace_file,omitempty"`
 	// Archives makes maintenance archive each agent's encrypted volume about
 	// once a day (REC-02, ADR 004); none when absent.
 	Archives *ServiceArchives `json:"archives,omitempty"`

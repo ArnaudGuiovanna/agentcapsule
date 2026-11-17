@@ -94,9 +94,13 @@ func (w *Placements) DispatchPass(ctx context.Context, o DispatchOptions, attemp
 		if w.afterWorkClaim != nil {
 			w.afterWorkClaim(job)
 		}
-		err = w.executeWork(attempt, job, o.DeliveryLease)
+		// The API request behind the job, for its event and its span.
+		origin := w.jobOrigin(attempt, job)
+		traced, span := w.startJob(attempt, job, origin)
+		err = w.executeWork(traced, job, o.DeliveryLease)
+		endJob(span, err)
 		w.countJob(job.Kind, err)
-		w.logJob(job, err)
+		w.logJob(job, origin, err)
 		if err == nil && w.afterWork != nil {
 			w.afterWork(job)
 		}
