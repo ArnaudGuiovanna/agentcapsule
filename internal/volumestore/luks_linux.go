@@ -3,6 +3,9 @@
 package volumestore
 
 /*
+// The file name links the shared library without the development symlink.
+// Go refuses "-l:<file>" here unless $CGO_LDFLAGS_ALLOW allows it: the
+// scripts and CI set CGO_LDFLAGS_ALLOW='-l:libcryptsetup\.so\.12'.
 #cgo LDFLAGS: -l:libcryptsetup.so.12
 #include <libcryptsetup.h>
 #include <errno.h>

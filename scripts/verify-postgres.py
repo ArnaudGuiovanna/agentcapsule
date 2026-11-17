@@ -19,6 +19,9 @@ import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
+# internal/volumestore links "-l:libcryptsetup.so.12", which Go refuses in a
+# #cgo directive unless this pattern allows it.
+CGO_LDFLAGS_ALLOW = r"-l:libcryptsetup\.so\.12"
 
 
 def main():
@@ -70,7 +73,7 @@ def main():
         shutil.copy2(script, sources / "scripts" / script.name)
     hashes = {str(p.relative_to(sources)): hashlib.sha256(p.read_bytes()).hexdigest()
               for p in sources.rglob("*") if p.is_file()}
-    env = dict(os.environ, AGENTCAPSULE_REQUIRE_POSTGRES="1")
+    env = dict(os.environ, AGENTCAPSULE_REQUIRE_POSTGRES="1", CGO_LDFLAGS_ALLOW=CGO_LDFLAGS_ALLOW)
     native_headers = {}
     if args.native_tools:
         native = out / "native"

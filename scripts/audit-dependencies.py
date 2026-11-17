@@ -49,6 +49,9 @@ SPEC.loader.exec_module(TOOLS)
 
 POLICY = SCRIPTS / "license-policy.json"
 STATIC_TAGS = "netgo,osusergo,sqlite_omit_load_extension"
+# internal/volumestore links "-l:libcryptsetup.so.12", which Go refuses in a
+# #cgo directive unless this pattern allows it.
+CGO_LDFLAGS_ALLOW = r"-l:libcryptsetup\.so\.12"
 # (module directory, govulncheck arguments, scan level, blocking, what it is)
 MODULES = (
     (".", ["./..."], "symbol", True, "the platform: cmd/, internal/, examples/"),
@@ -91,7 +94,7 @@ def freeze(target):
 
 
 def go_env(go, native_tools):
-    env = dict(os.environ, GOTOOLCHAIN="local", GOWORK="off", GOFLAGS="-mod=readonly")
+    env = dict(os.environ, GOTOOLCHAIN="local", GOWORK="off", GOFLAGS="-mod=readonly", CGO_LDFLAGS_ALLOW=CGO_LDFLAGS_ALLOW)
     env["PATH"] = f"{Path(go).resolve().parent}:{env.get('PATH', '')}"
     if native_tools:
         env["CGO_CFLAGS"] = f"-I{Path(native_tools).resolve() / 'usr/include'}"

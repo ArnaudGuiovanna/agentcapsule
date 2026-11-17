@@ -17,7 +17,9 @@ described in [docs/worker.md](worker.md).
 
 - Build the binaries: `go build -trimpath -o bin/ ./cmd/...`. The build needs
   Go 1.27.3, a C compiler and the headers of libcryptsetup
-  (`libcryptsetup-dev`): the worker links it.
+  (`libcryptsetup-dev`): the worker links it, by the file name
+  `libcryptsetup.so.12`. Go refuses that flag unless you allow it once:
+  `go env -w CGO_LDFLAGS_ALLOW='-l:libcryptsetup\.so\.12'`.
 - Create a PostgreSQL database and a role that owns it. The admin commands and
   the API read the connection from `AGENTCAPSULE_DATABASE_URL`, in their
   protected environment, never from a flag.

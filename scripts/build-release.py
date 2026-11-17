@@ -45,6 +45,9 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 GO_VERSION = "go1.27.3"
+# internal/volumestore links "-l:libcryptsetup.so.12", which Go refuses in a
+# #cgo directive unless this pattern allows it.
+CGO_LDFLAGS_ALLOW = r"-l:libcryptsetup\.so\.12"
 STATIC_TAGS = "netgo,osusergo,sqlite_omit_load_extension"
 # (name, module directory, package, cgo, static)
 BINARIES = (
@@ -99,6 +102,7 @@ def round_environment(base, round_dir, variant, go, module_cache, epoch, native_
         "GOENV": "off",
         "GOWORK": "off",
         "GOFLAGS": "-mod=readonly",
+        "CGO_LDFLAGS_ALLOW": CGO_LDFLAGS_ALLOW,
         "GOOS": "linux",
         "GOARCH": "amd64",
         "GOAMD64": "v1",

@@ -13,9 +13,12 @@ Thanks for your interest in Agent Capsule. The project is pre-MVP; the
 
 You need Linux amd64, Go 1.27.3, a C compiler, the `libcryptsetup` development
 headers and PostgreSQL 16 or newer. KVM, Firecracker and root access are only needed
-for the VM campaigns.
+for the VM campaigns. The worker links `libcryptsetup.so.12` by its file name,
+a flag Go refuses unless `CGO_LDFLAGS_ALLOW` allows it: allow it once with the
+first command below.
 
 ```bash
+go env -w CGO_LDFLAGS_ALLOW='-l:libcryptsetup\.so\.12'
 go build ./cmd/...
 go test -race ./...
 python3 scripts/verify-postgres.py --pg-bin /usr/lib/postgresql/16/bin --native-tools /

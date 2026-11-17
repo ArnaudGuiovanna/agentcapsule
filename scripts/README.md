@@ -14,7 +14,12 @@ placeholders below with paths from your environment.
 - libcryptsetup headers (`libcryptsetup-dev`) and the shared library
   `libcryptsetup.so.12`. If the headers are not installed system-wide, extract
   them into a private tools directory and pass it with `--native-tools`
-  (`<tools-dir>` below).
+  (`<tools-dir>` below). `internal/volumestore` links the library by file name
+  (`-l:libcryptsetup.so.12`), a flag Go refuses in a `#cgo` directive unless
+  `CGO_LDFLAGS_ALLOW` allows it. The scripts that compile it set
+  `CGO_LDFLAGS_ALLOW='-l:libcryptsetup\.so\.12'` themselves, since `sudo` drops
+  the caller's environment; for your own `go` commands, run
+  `go env -w CGO_LDFLAGS_ALLOW='-l:libcryptsetup\.so\.12'` once.
 - PostgreSQL (server binaries), for `verify-postgres.py` and the PostgreSQL
   phases of the KVM runners.
 - For the backup qualifications: Docker, OpenSSL, OpenSSH's client,

@@ -29,6 +29,9 @@ import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
+# internal/volumestore links "-l:libcryptsetup.so.12", which Go refuses in a
+# #cgo directive unless this pattern allows it.
+CGO_LDFLAGS_ALLOW = r"-l:libcryptsetup\.so\.12"
 
 # Every TestProductWorker* test under internal/worker is required; the Pi and
 # SLIM scenarios only when their optional input is given.
@@ -244,7 +247,7 @@ def main():
     env = {k: v for k, v in os.environ.items() if not k.startswith(("AGENTCAPSULE_", "AC_RUNTIME_CHILD_", "CAPSULE_CRASH_"))}
     env.update(AGENTCAPSULE_KVM_CONFIG=str(out / "config.json"), AGENTCAPSULE_KVM_PYTHON_HARNESS=str(a.python_harness),
                AGENTCAPSULE_KVM_ADAPTED_HARNESS=str(a.adapted_harness), AGENTCAPSULE_KVM_A2A_HARNESS=str(a.a2a_harness),
-               CPATH=str(native), CGO_ENABLED="1",
+               CPATH=str(native), CGO_ENABLED="1", CGO_LDFLAGS_ALLOW=CGO_LDFLAGS_ALLOW,
                GOPATH=str(out / "go-path"), GOCACHE=str(out / "go-cache"), TMPDIR=str(out / "tmp"))
     if a.rclone:
         env.update(AGENTCAPSULE_KVM_RCLONE=str(a.rclone.resolve()))

@@ -82,6 +82,9 @@ import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
+# internal/volumestore links "-l:libcryptsetup.so.12", which Go refuses in a
+# #cgo directive unless this pattern allows it.
+CGO_LDFLAGS_ALLOW = r"-l:libcryptsetup\.so\.12"
 API_NAME = "api.example.net"
 ISSUER, AUDIENCE, KEY_ID = "https://idp.acme.example", "agentcapsule:acme", "2026-11"
 OWNER_SCOPES = "org:read member:read member:manage audit:read"
@@ -219,7 +222,8 @@ def user_namespace_usable():
 def go_environment(a, base_env):
     """The environment of the build: no go.work, no go env file, modules
     read-only, and none fetched inside the network namespace."""
-    env = {**base_env, "CGO_ENABLED": "1", "GOTOOLCHAIN": "local", "GOFLAGS": "-mod=readonly", "GOENV": "off", "GOWORK": "off"}
+    env = {**base_env, "CGO_ENABLED": "1", "CGO_LDFLAGS_ALLOW": CGO_LDFLAGS_ALLOW, "GOTOOLCHAIN": "local",
+           "GOFLAGS": "-mod=readonly", "GOENV": "off", "GOWORK": "off"}
     for name in ("GOCACHE", "GOMODCACHE", "GOPATH", "TMPDIR"):
         if os.environ.get(name):
             env[name] = os.environ[name]

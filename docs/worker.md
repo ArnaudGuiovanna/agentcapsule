@@ -9,9 +9,12 @@ provisioning and encrypted wake, is exercised by
 `scripts/verify-product-guest.py`. The worker also restores an agent from an
 archive, on its own host ([Restoring an agent](#restoring-an-agent)).
 
-Build with the repository's Go version, CGO and the libcryptsetup headers:
+Build with the repository's Go version, CGO and the libcryptsetup headers,
+and allow the worker's link flag `-l:libcryptsetup.so.12`, which Go refuses
+otherwise:
 
 ```sh
+go env -w CGO_LDFLAGS_ALLOW='-l:libcryptsetup\.so\.12'
 go build -trimpath -o bin/agentcapsule-worker ./cmd/agentcapsule-worker
 ```
 

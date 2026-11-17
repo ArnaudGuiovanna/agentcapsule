@@ -21,6 +21,9 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 GO_VERSION = "go1.27.3"
+# internal/volumestore links "-l:libcryptsetup.so.12", which Go refuses in a
+# #cgo directive unless this pattern allows it.
+CGO_LDFLAGS_ALLOW = r"-l:libcryptsetup\.so\.12"
 PACKAGES = ("./cmd/...", "./internal/...")
 PG_SKIP_MESSAGES = {
     "run scripts/verify-postgres.py",
@@ -72,7 +75,7 @@ def local_environment(environ, go):
     env = {key: value for key, value in environ.items()
            if not key.startswith(("AGENTCAPSULE_", "AC_", "CAPSULE_CRASH_", "PG"))}
     env.update(GOTOOLCHAIN="local", GOENV="off", GOWORK="off", GOFLAGS="-mod=readonly",
-               CGO_ENABLED="1", GOOS="linux", GOARCH="amd64", GOEXPERIMENT="")
+               CGO_ENABLED="1", CGO_LDFLAGS_ALLOW=CGO_LDFLAGS_ALLOW, GOOS="linux", GOARCH="amd64", GOEXPERIMENT="")
     env["PATH"] = str(go.parent) + os.pathsep + env.get("PATH", os.defpath)
     return env
 

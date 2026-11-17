@@ -30,6 +30,9 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
+# internal/volumestore links "-l:libcryptsetup.so.12", which Go refuses in a
+# #cgo directive unless this pattern allows it.
+CGO_LDFLAGS_ALLOW = r"-l:libcryptsetup\.so\.12"
 
 
 def main():
@@ -54,7 +57,8 @@ def main():
     env.update({"AGENTCAPSULE_LOAD_RATES": a.rates, "AGENTCAPSULE_LOAD_STEP": a.step, "AGENTCAPSULE_LOAD_AGENTS": str(a.agents),
                 "AGENTCAPSULE_LOAD_WORKERS": str(a.workers), "AGENTCAPSULE_LOAD_BATCH": str(a.batch),
                 "AGENTCAPSULE_LOAD_SERVICE": a.service, "AGENTCAPSULE_LOAD_FAIL_EVERY": str(a.fail_every),
-                "AGENTCAPSULE_LOAD_DRAIN": a.drain, "AGENTCAPSULE_LOAD_REPORT": str(out / "report.json")})
+                "AGENTCAPSULE_LOAD_DRAIN": a.drain, "AGENTCAPSULE_LOAD_REPORT": str(out / "report.json"),
+                "CGO_LDFLAGS_ALLOW": CGO_LDFLAGS_ALLOW})
     if a.native_tools:
         env["CPATH"] = str(a.native_tools.resolve() / "usr/include")
     if a.library_path:

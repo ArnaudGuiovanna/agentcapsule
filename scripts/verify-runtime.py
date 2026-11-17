@@ -19,6 +19,9 @@ import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
+# internal/volumestore links "-l:libcryptsetup.so.12", which Go refuses in a
+# #cgo directive unless this pattern allows it.
+CGO_LDFLAGS_ALLOW = r"-l:libcryptsetup\.so\.12"
 
 
 def sha(path):
@@ -98,7 +101,8 @@ def main():
             env.pop(name)
     cache = a.cache or out
     env.update(AGENTCAPSULE_KVM_CONFIG=str(out / "config.json"), GOPATH=str(cache / "go-path"),
-               GOCACHE=str(cache / "go-cache"), TMPDIR=str(out / "tmp"), CGO_ENABLED="1")
+               GOCACHE=str(cache / "go-cache"), TMPDIR=str(out / "tmp"), CGO_ENABLED="1",
+               CGO_LDFLAGS_ALLOW=CGO_LDFLAGS_ALLOW)
     if native:
         env["CPATH"] = str(native)
     (out / "tmp").mkdir()

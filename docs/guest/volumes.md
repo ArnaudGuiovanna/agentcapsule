@@ -38,11 +38,13 @@ use. This layer opens no dm-crypt mapping and mounts no image on the host.
 ## Build and tests
 
 The library requires Linux, CGO, the `libcryptsetup-dev` headers and the shared
-library `libcryptsetup.so.12`. If the headers are not installed system-wide,
-point `CPATH` at a directory that contains them.
+library `libcryptsetup.so.12`. It links that file by name
+(`-l:libcryptsetup.so.12`), so no development symlink is needed; Go refuses
+the flag unless `CGO_LDFLAGS_ALLOW` allows it, as below. If the headers are
+not installed system-wide, point `CPATH` at a directory that contains them.
 
 ```sh
-CPATH=<tools-dir>/guest-build/usr/include \
+CGO_LDFLAGS_ALLOW='-l:libcryptsetup\.so\.12' CPATH=<tools-dir>/guest-build/usr/include \
   go test -race -count=1 ./internal/volumestore
 
 python3 scripts/verify-postgres.py \

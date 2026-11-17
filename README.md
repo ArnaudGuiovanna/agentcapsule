@@ -93,7 +93,12 @@ against the implementation in the test suite.
 
 ## Building and testing
 
+The worker links `libcryptsetup.so.12` by its file name, a flag Go refuses
+unless `CGO_LDFLAGS_ALLOW` allows it. Allow it once; the scripts set it
+themselves.
+
 ```bash
+go env -w CGO_LDFLAGS_ALLOW='-l:libcryptsetup\.so\.12'
 go build ./cmd/...
 go test -race ./...            # PostgreSQL-backed tests skip without a database
 ```

@@ -55,6 +55,9 @@ import threading
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
+# internal/volumestore links "-l:libcryptsetup.so.12", which Go refuses in a
+# #cgo directive unless this pattern allows it.
+CGO_LDFLAGS_ALLOW = r"-l:libcryptsetup\.so\.12"
 SPEC = importlib.util.spec_from_file_location("verify_backups", ROOT / "scripts/verify-backups.py")
 BACKUPS = importlib.util.module_from_spec(SPEC)
 sys.dont_write_bytecode = True
@@ -765,7 +768,8 @@ def restore_from_copies(a, out, work, env, run, expect, clusters, rclone, host_c
     native = work / "native"
     native.mkdir()
     shutil.copy2(a.native_tools.resolve() / "usr/include/libcryptsetup.h", native / "libcryptsetup.h")
-    test_env = {**env, "CPATH": str(native), "CGO_ENABLED": "1", "GOTOOLCHAIN": "local", "GOFLAGS": "-mod=readonly",
+    test_env = {**env, "CPATH": str(native), "CGO_ENABLED": "1", "CGO_LDFLAGS_ALLOW": CGO_LDFLAGS_ALLOW,
+                "GOTOOLCHAIN": "local", "GOFLAGS": "-mod=readonly",
                 "AGENTCAPSULE_TEST_POSTGRES": f"host={sock} dbname=postgres", "AGENTCAPSULE_REQUIRE_POSTGRES": "1",
                 "AGENTCAPSULE_SHIPPED_STORES": str(config)}
     # The test's volumes and archives, a few hundred MiB: on the evidence's

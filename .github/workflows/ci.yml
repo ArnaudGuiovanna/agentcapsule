@@ -20,6 +20,9 @@ env:
   GOWORK: 'off'
   GOFLAGS: -mod=readonly
   CGO_ENABLED: '1'
+  # internal/volumestore links -l:libcryptsetup.so.12, which Go refuses in a
+  # #cgo directive unless this pattern allows it.
+  CGO_LDFLAGS_ALLOW: '-l:libcryptsetup\.so\.12'
 
 jobs:
   checks:
