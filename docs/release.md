@@ -88,7 +88,7 @@ themselves; their dates are recorded in the reports.
 
 ## Run the audit locally
 
-Linux amd64 with Go 1.27.3, a C compiler, the libcryptsetup headers, e2fsprogs
+Linux amd64 with Go 1.27.4, a C compiler, the libcryptsetup headers, e2fsprogs
 (`debugfs`) and network access. The outputs are new directories; the reports
 are `summary.json` in each.
 
@@ -259,7 +259,7 @@ Download the files you need, with `SHA256SUMS` and `SHA256SUMS.sigstore.json`.
 
    ```bash
    git clone https://github.com/<repository> && cd <name> && git checkout v0.1.0
-   python3 scripts/build-release.py --go <go-1.27.3> --version v0.1.0 --output /tmp/rebuild
+   python3 scripts/build-release.py --go <go-1.27.4> --version v0.1.0 --output /tmp/rebuild
    sha256sum /tmp/rebuild/dist/agentcapsule-api
    ```
 

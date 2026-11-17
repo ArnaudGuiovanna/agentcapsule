@@ -313,13 +313,13 @@ What exists:
 - pgBackRest 2.58 and rclone 1.60.1;
 - PostgreSQL 16 in CI, from Ubuntu 24.04 and not pinned; 18 in the local
   campaigns;
-- Go 1.27.3 in CI. `go.mod` states 1.27.2 as its minimum.
+- Go 1.27.4, one version for CI, releases and the local scripts. Every
+  `go.mod` states it as its minimum.
 
 What the MVP still needs:
 - one table of the tested versions, kept by a check;
 - CI on PostgreSQL 16 and 18;
-- a host kernel other than WSL2's: 6.1 or 6.18 on a real server;
-- one Go version stated for releases (VAL-03 plans 1.27.4).
+- a host kernel other than WSL2's: 6.1 or 6.18 on a real server.
 
 ### Chaos tests
 

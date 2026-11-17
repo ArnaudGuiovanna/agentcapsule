@@ -44,7 +44,7 @@ import urllib.request
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
-GO_VERSION = "go1.27.3"
+GO_VERSION = "go1.27.4"
 # internal/volumestore links "-l:libcryptsetup.so.12", which Go refuses in a
 # #cgo directive unless this pattern allows it.
 CGO_LDFLAGS_ALLOW = r"-l:libcryptsetup\.so\.12"

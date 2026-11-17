@@ -1,6 +1,6 @@
 module agentcapsule.local/slimbridge
 
-go 1.27.3
+go 1.27.4
 
 // agentcapsule-slim-bridge (INT-04), the platform's only SLIM client. The
 // official A2A transport for SLIM (slim-a2a-go v0.5.2) compiles with a2a-go

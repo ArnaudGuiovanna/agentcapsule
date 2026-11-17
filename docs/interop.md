@@ -360,7 +360,7 @@ About 150 MiB in total. In separate runs:
 
 Prerequisites:
 - Linux amd64 with glibc 2.39 or later;
-- Go 1.27.3 and a C compiler;
+- Go 1.27.4 and a C compiler;
 - Python 3.11 or later;
 - for `--services`, Docker with Compose v2 and `openssl`.
 
@@ -369,12 +369,12 @@ verified by SHA256) and the images (about 400 MB).
 
 ```sh
 # Libraries only (no Docker): status passed_libraries_only.
-python3 scripts/verify-interop.py --go /path/to/go1.27.3/bin/go --output <new-dir>
+python3 scripts/verify-interop.py --go /path/to/go1.27.4/bin/go --output <new-dir>
 # With the private services: status passed, int01_complete true.
-python3 scripts/verify-interop.py --go /path/to/go1.27.3/bin/go --services --output <new-dir>
+python3 scripts/verify-interop.py --go /path/to/go1.27.4/bin/go --services --output <new-dir>
 # Also the systemd units, run under the caller's user manager
 # ("--systemd static": only the checks that need no user manager, as in CI).
-python3 scripts/verify-interop.py --go /path/to/go1.27.3/bin/go --services --systemd --output <new-dir>
+python3 scripts/verify-interop.py --go /path/to/go1.27.4/bin/go --services --systemd --output <new-dir>
 ```
 
 The output directory keeps for every run:

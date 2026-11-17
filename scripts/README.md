@@ -9,7 +9,7 @@ placeholders below with paths from your environment.
 ## Prerequisites
 
 - Linux amd64.
-- **Go 1.27.3**, Python 3.10+ (3.11+ for `verify-interop.py`) and a C compiler
+- **Go 1.27.4**, Python 3.10+ (3.11+ for `verify-interop.py`) and a C compiler
   (CGO and the race detector are on).
 - libcryptsetup headers (`libcryptsetup-dev`) and the shared library
   `libcryptsetup.so.12`. If the headers are not installed system-wide, extract
@@ -293,11 +293,12 @@ so it does not run there. The job keeps a run's evidence for seven days only
 when the run's own search found no secret in it and no file holds a private
 key.
 
-Go is pinned to **1.27.3**; the `go 1.25.0` line of `go.mod` remains the
-module's language/minimum version, not a promise of validation on all Go
-versions. CI uses PostgreSQL **16** from Ubuntu 24.04; the patch number and the
-native versions are recorded on each run. The Ubuntu image and its patches
-evolve, so this is not a hermetic system build.
+Go is pinned to **1.27.4**. The `go 1.27.4` line of every `go.mod` is the
+minimum: with `GOTOOLCHAIN=local`, an older Go refuses to build. It is not a
+promise of validation on later Go versions. CI uses PostgreSQL **16** from
+Ubuntu 24.04; the patch number and the native versions are recorded on each
+run. The Ubuntu image and its patches evolve, so this is not a hermetic system
+build.
 
 Actions are pinned by full SHA
 ([checkout v7.0.1](https://github.com/actions/checkout/releases/tag/v7.0.1),

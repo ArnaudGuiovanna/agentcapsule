@@ -25,9 +25,9 @@ import (
 )
 
 const (
-	// Go 1.27.3 on Alpine 3.24: builds agentcapsule-harness and capsule-echo,
+	// Go 1.27.4 on Alpine 3.24: builds agentcapsule-harness and capsule-echo,
 	// and packs images with e2fsprogs.
-	goImage = "golang:1.27-alpine@sha256:fa3d596898d9f126af7c01d14ee7597bab3f39cccf392ef36b69fe77cd681f18"
+	goImage = "golang:1.27-alpine@sha256:70bd7ddea8b6cbe5d6943cde279d6b67feb10cc924fb9100d1d8757c1575b280"
 	// Same base as examples/python-echo/Dockerfile.
 	pythonImage = "python:3.13-alpine@sha256:1e1f6334529d1fb26a2ef619d7cffb30a7c7d7cc1cc7338ebee283a58d1aeaca"
 	// OCI distribution registry for the end-to-end check.

@@ -1,6 +1,6 @@
 module agentcapsule.local/interop-a2aslim
 
-go 1.27.3
+go 1.27.4
 
 // The official A2A transport for SLIM (slim-a2a-go v0.5.2) compiles with
 // a2a-go v2.1.0 to v2.2.0 only. This module keeps that pin away from the

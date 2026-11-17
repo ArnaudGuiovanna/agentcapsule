@@ -11,7 +11,7 @@ Thanks for your interest in Agent Capsule. The project is pre-MVP; the
 
 ## Development setup
 
-You need Linux amd64, Go 1.27.3, a C compiler, the `libcryptsetup` development
+You need Linux amd64, Go 1.27.4, a C compiler, the `libcryptsetup` development
 headers and PostgreSQL 16 or newer. KVM, Firecracker and root access are only needed
 for the VM campaigns. The worker links `libcryptsetup.so.12` by its file name,
 a flag Go refuses unless `CGO_LDFLAGS_ALLOW` allows it: allow it once with the

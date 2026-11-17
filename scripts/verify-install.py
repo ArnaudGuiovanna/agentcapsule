@@ -386,7 +386,7 @@ class Install:
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--go", type=Path, required=True, help="Go executable (1.27.3)")
+    p.add_argument("--go", type=Path, required=True, help="Go executable (1.27.4)")
     p.add_argument("--pg-bin", type=Path, required=True, help="PostgreSQL bin directory (initdb, pg_ctl, psql)")
     p.add_argument("--pg-library-path", type=Path, help="library directory for the PostgreSQL binaries")
     p.add_argument("--native-tools", type=Path, help="directory whose usr/include holds libcryptsetup's headers, if not system-wide")

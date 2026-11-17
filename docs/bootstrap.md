@@ -16,7 +16,7 @@ described in [docs/worker.md](worker.md).
 ## Before you start
 
 - Build the binaries: `go build -trimpath -o bin/ ./cmd/...`. The build needs
-  Go 1.27.3, a C compiler and the headers of libcryptsetup
+  Go 1.27.4, a C compiler and the headers of libcryptsetup
   (`libcryptsetup-dev`): the worker links it, by the file name
   `libcryptsetup.so.12`. Go refuses that flag unless you allow it once:
   `go env -w CGO_LDFLAGS_ALLOW='-l:libcryptsetup\.so\.12'`.

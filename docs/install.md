@@ -288,7 +288,7 @@ Not pinned yet:
 - CI installs `build-essential`, `libcryptsetup-dev` and PostgreSQL 16 from the
   runner's Ubuntu archive. Their versions are recorded in each run's
   toolchain log, not pinned.
-- `actions/setup-go` pins Go 1.27.3 by version. The archive's SHA-256 is not
+- `actions/setup-go` pins Go 1.27.4 by version. The archive's SHA-256 is not
   pinned in the repository.
 - The Dagger CLI starts its engine image by version tag (v0.21.11), not by
   digest.

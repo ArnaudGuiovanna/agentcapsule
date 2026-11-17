@@ -1,6 +1,6 @@
 module agentcapsule.local/interop-probe
 
-go 1.27.3
+go 1.27.4
 
 // Required by Directory v1.8.0's own go.mod; dependency replaces do not propagate.
 replace github.com/ThalesIgnite/crypto11 => github.com/eclipse-keypont/crypto11 v1.6.8
