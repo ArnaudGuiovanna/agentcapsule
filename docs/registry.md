@@ -94,7 +94,9 @@ dagger call check   # the whole chain against a throwaway registry (run by CI)
 `check` builds both reference harnesses, pushes them to a `registry:2` service (a
 registry without the referrers API, like GHCR), checks that an unsigned package is
 refused when a signature is required, then signs both and verifies them as the
-platform importer would. Set `DO_NOT_TRACK=1` to disable Dagger's anonymous telemetry.
+platform importer would, but for the inspection's sandbox: Dagger's containers cannot
+create it, so `verify` and `check` inspect each image unconfined (`--unconfined`, as
+`nobody`). Set `DO_NOT_TRACK=1` to disable Dagger's anonymous telemetry.
 
 Without Dagger, `scripts/build-python-harness.py` builds the same harness with plain
 Docker. Each path is reproducible on its own; their digests differ because they pack
@@ -130,8 +132,10 @@ agentcapsule-harness verify --ref ghcr.io/acme/echo:1.0.0@sha256:... --key ./acm
 publisher or an operator can check a package before it is imported. It runs
 `debugfs` in the importer's sandbox ([below](#image-inspection-sandbox)), as the
 `nobody` account (65534) when run as root. Where the machine cannot create the
-sandbox (a container without user namespaces, as in CI), it prints a warning and
-inspects the image unconfined: the platform host never does.
+sandbox (a container without user namespaces, as in CI), `verify` fails. With
+`--unconfined`, it inspects the image without the sandbox and prints a warning;
+it refuses that flag as root. The Dagger check runs it so, as `nobody`. The
+platform host never inspects unconfined: the sandbox refuses it to root.
 
 The signature is an in-toto statement naming the package manifest digest, in a DSSE
 envelope signed with the key (ECDSA P-256/P-384/P-521, Ed25519 or RSA of at least
@@ -323,8 +327,12 @@ In the worker configuration ([example](../runtime/worker/config.example.json)):
   when it inspects a downloaded image ([below](#image-inspection-sandbox)). Reserve it
   for this use, as the provisioning range is reserved: no account or group uses it, it
   owns no file, it lies outside the provisioning range and is not the SLIM bridge's
-  user. It needs no entry in `/etc/passwd`. Required when the worker runs as root;
-  without it, the worker does not start (`registry_configuration_invalid`).
+  user. It needs no entry in `/etc/passwd`. It must lie between 1 and 2147483646, and
+  not be 65535: the kernel takes -1 (4294967295) as "unchanged", and some interfaces
+  take 65535 the same way. Required when the worker runs as root. The worker refuses a
+  value outside that range, in the provisioning range, the SLIM bridge's, or one that
+  an account or a group of the host has (as a GID, 6 would be `disk` on Debian); it
+  then does not start (`registry_configuration_invalid`).
 - `repositories`: `"org/"` allows every repository under `org`; `"org/name"` exactly one.
 - The worker connects only to the rule's host, its `token_hosts` (bearer token realm)
   and `blob_hosts` (redirected blob downloads, such as a CDN). It follows a redirect to
@@ -421,25 +429,77 @@ reach the host. So every `debugfs` run on a downloaded image is confined
 - The worker starts itself again as a helper, in new mount, network, PID, IPC and UTS
   namespaces, and the helper executes `debugfs`. Its network namespace has only an
   unconfigured loopback interface.
-- Every mount is read-only and `nosuid`; `/proc` is the namespace's own. The image is
-  opened read-only, then reopened through those read-only mounts, and `debugfs` reads
-  it as its descriptor 3 (`/proc/self/fd/3`).
+- Every mount is read-only, `nosuid` and `nodev`: no device node opens. `/proc` is the
+  namespace's own and shows its process only (`subset=pid`); `/sys` is empty. The
+  image is opened read-only, then reopened through those read-only mounts, and
+  `debugfs` reads it as its descriptor 3 (`/proc/self/fd/3`). It inherits no other
+  descriptor than 0 to 3: every other one is closed when it starts, whatever the
+  worker's C code left open.
 - `debugfs` runs as `inspection_uid` and its GID, without supplementary groups or
-  capabilities, with `no_new_privs`. A seccomp filter refuses what reading an image
-  never needs: starting a process, opening a socket, mounting, changing namespaces or
-  credentials, tracing, kernel modules and keys.
-- Limits: 30 seconds of processor time, one minute in all, no byte written to any
-  file, no core dump, 64 open files, and the first victim under memory pressure. The
-  worker kills it at its limits, and with itself.
+  capabilities, with `no_new_privs`; the helper checks its UIDs, GIDs and groups
+  before it starts `debugfs`. It runs on one processor, with every signal blocked.
+- A seccomp filter allows the system calls `debugfs` makes and nothing else
+  ([below](#the-allow-list)). Any other call kills it; it cannot start a process or a
+  thread, open a socket, mount, change namespaces or credentials, or trace.
+- Limits: 30 seconds of processor time, one minute in all, 256 MiB of address space,
+  no byte written to any file, no core dump, 64 open files, and the first victim under
+  memory pressure. The worker kills it at its limits, and with itself; the helper
+  checks that the worker still lives before it starts `debugfs`.
 
 A worker that is not root (a test, a laboratory) runs the helper in a user namespace of
 its own instead: `debugfs` keeps the worker's account, without capabilities, and
-`inspection_uid` is not used. At start, the worker runs `debugfs -V` in the sandbox,
-and does not start if that fails (`registry_inspection_unavailable`): it needs a
-kernel with `mount_setattr` (5.12, below the 5.14 the worker requires), a service
-manager that lets it create namespaces (no `RestrictNamespaces=` in its unit) and,
-when not root, user namespaces. The preflight reports it as `registry_inspection`
-([install.md](install.md#preflight)).
+`inspection_uid` is not used. Such an account cannot drop its supplementary groups;
+`nodev` keeps the devices they open closed. A worker that is root of a user namespace
+other than the host's, as in a container, is refused: it can take no reserved UID. At
+start, the worker runs `debugfs -V` in the sandbox, and does not start if that fails
+(`registry_inspection_unavailable`): it needs a kernel with `mount_setattr` (5.12,
+below the 5.14 the worker requires), a service manager that lets it create namespaces
+(no `RestrictNamespaces=` in its unit) and, when not root, user namespaces. The
+preflight reports it as `registry_inspection` ([install.md](install.md#preflight)).
+
+What remains: `debugfs` can read the host's files that any account may read, through
+the read-only mounts. It can send them nowhere but its standard output, which the
+inspection reduces to a type and a mode. A filesystem allow-list (Landlock) or a
+minimal root would remove that; neither is done.
+
+#### The allow-list
+
+The filter's list is what `debugfs -V` and `debugfs -R 'stat "PATH"' /proc/self/fd/3`,
+run as the inspection runs them, call on 72 images: the reference harnesses, ext2,
+ext3 and ext4 with unusual features (1 KiB and 64 KiB blocks, inline data, bigalloc,
+casefold, MMP, quota, encryption and verity, 32-bit, meta_bg, large directories,
+special files where the entrypoint is expected, a journal to recover), damaged images
+(no superblock, truncated, garbage, empty, a damaged group descriptor or inode table)
+and fuzzed ones. Each call was traced with ptrace, with e2fsprogs 1.47.0 to 1.47.4,
+glibc 2.36, 2.39 and 2.43, and musl:
+
+- reading and writing: `read`, `pread64`, `lseek`, `write`, `writev`, `open`, `openat`,
+  `close`, `fsync`, `fadvise64`, `fstat`, `newfstatat`, `stat`, `lstat`, `access`,
+  `readlink`;
+- memory: `brk`, `mmap`, `munmap`, `mprotect`, and, not measured, `mremap` (glibc's
+  `realloc` of a large block) and `madvise` (musl's allocator);
+- the program's start and end: `execve`, `arch_prctl`, `set_tid_address`,
+  `set_robust_list`, `rseq`, `prlimit64`, `getrandom`, `sched_getaffinity`,
+  `rt_sigaction`, `exit_group`, `getuid`, `geteuid`, `getgid`, `getegid`;
+- clocks, which the vDSO answers unless the clock source does not allow it (not
+  measured): `clock_gettime`, `gettimeofday`, `time`;
+- with some arguments only: `prctl(PR_GET_DUMPABLE)`, `fcntl` to read or set a
+  descriptor's flags, `futex` to wait and wake. The filter answers `ioctl` itself with
+  `ENOTTY`, as the kernel does on the image, a pipe and `/dev/null`, another `prctl` or
+  `fcntl` with `EINVAL`.
+
+Any other call kills `debugfs` (`SECCOMP_RET_KILL_PROCESS`): `debugfs` never makes one,
+so a call outside the list means an image led it astray, or a C library that calls one
+the list lacks. Killing ends the first at once and makes the second visible: the
+import fails with "a system call outside its allow-list". A call numbered above the
+newest of Linux 6.18 gets `ENOSYS`, as an older kernel answers, so that the C library
+falls back to an older call. Another architecture and the x32 calls kill. e2fsprogs
+1.47.4 reads an image's bitmaps with one thread per processor; on its one processor,
+it reads them in its own thread, which the filter requires.
+
+`internal/sandbox`'s tests run a static program of a few instructions per call, under
+exactly that filter, and evaluate the filter for every call number; `internal/harnesspkg`'s
+tests compare `debugfs`'s output confined and direct on images of each kind above.
 
 `pack` runs `mkfs.ext4` and `debugfs -w` unconfined: it builds the publisher's own
 package, on the publisher's machine.

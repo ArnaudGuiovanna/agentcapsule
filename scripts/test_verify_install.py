@@ -65,6 +65,12 @@ class Preflight(unittest.TestCase):
         problems = self.problems(output(), 0, {"kvm": "this account cannot open /dev/kvm read-write"})
         self.assertEqual(problems, ["kvm is ok although this account cannot open /dev/kvm read-write"])
 
+    def test_an_inspection_accepted_as_root_of_a_user_namespace_fails(self):
+        reason = "the worker runs as root of a user namespace"
+        self.assertEqual(self.problems(output(failing=("registry_inspection",)), 1, {"registry_inspection": reason}), [])
+        problems = self.problems(output(), 0, {"registry_inspection": reason})
+        self.assertEqual(problems, [f"registry_inspection is ok although {reason}"])
+
     def test_a_missing_artifact_reported_fine_fails(self):
         problems = self.problems(output(), 0, {"artifact_kernel": "not given"})
         self.assertEqual(problems, ["artifact_kernel is ok although not given"])

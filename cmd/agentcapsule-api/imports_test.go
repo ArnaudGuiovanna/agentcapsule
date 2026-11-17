@@ -191,12 +191,13 @@ var workerStarts = map[string]struct {
 	"internal/worker/host_restore_linux.go":        {1, "the archive shipper the operator names with -archive-fetch"},
 }
 
-// processStarts are the calls that start a program, by package path.
+// processStarts are the calls that start a program, by package path, and
+// the numbers of the system calls that do, for a raw call.
 var processStarts = map[string][]string{
 	"os/exec":               {"Command", "CommandContext"},
 	"os":                    {"StartProcess"},
-	"syscall":               {"Exec", "ForkExec", "StartProcess"},
-	"golang.org/x/sys/unix": {"Exec"},
+	"syscall":               {"Exec", "ForkExec", "StartProcess", "SYS_EXECVE", "SYS_EXECVEAT"},
+	"golang.org/x/sys/unix": {"Exec", "SYS_EXECVE", "SYS_EXECVEAT"},
 }
 
 // REG-007, RUN-010: the worker starts only the programs workerStarts names,

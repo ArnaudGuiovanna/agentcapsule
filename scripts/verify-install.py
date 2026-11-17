@@ -33,9 +33,10 @@ docs/bootstrap.md and docs/install.md step by step, without root:
     hold each step and no secret;
 11. the worker's preflight with its configuration and the authority
     service: every check this host can pass must pass; `/dev/kvm` must be
-    reported as it is (failed when this account cannot open it), and the
+    reported as it is (failed when this account cannot open it), the
     artifacts (Firecracker, the jailer, the guest kernel and image) as
-    missing unless given; when a mandatory check fails, the worker refuses
+    missing unless given, and the image inspection as refused (its sandbox
+    refuses root of a user namespace); when a mandatory check fails, the worker refuses
     to start (RUN-012) and creates no runtime root; then the garbage
     collection on demand (`-collect-garbage`, OPR-5): refused without
     `-confirm`, a dry run, a run, audited, and still no runtime root;
@@ -105,7 +106,8 @@ DEVIATIONS = [
     "PostgreSQL trusts local connections (initdb --auth-local=trust): a cluster of this run only, on a private "
     "socket directory (mode 0700).",
     "The worker's preflight and the authority service run in a user namespace where this account is root "
-    "(unshare -r), not as root: the docs run them as root and as the account agentcapsule-authority.",
+    "(unshare -r), not as root: the docs run them as root and as the account agentcapsule-authority. There the "
+    "preflight's registry_inspection fails: the inspection sandbox refuses root of a user namespace.",
     "The API runs as this account, outside that namespace: the service sees it as root there, which its API socket "
     "admits too, so this run does not show the admission of api_uid (the Go tests do).",
     "The identity provider is played by this run: an Ed25519 key made here signs the owner's tokens.",
@@ -190,7 +192,7 @@ def assess_preflight(results, last, returncode, may_fail):
         if status == "fail" and check not in may_fail:
             problems.append(f"{check} fails on this host")
     for check, reason in may_fail.items():
-        if check.startswith("artifact_") or check == "kvm":
+        if check.startswith("artifact_") or check in ("kvm", "registry_inspection"):
             if seen.get(check) != "fail":
                 problems.append(f"{check} is {seen.get(check)} although {reason}")
     failed = any(status == "fail" for status in seen.values())
@@ -790,6 +792,9 @@ def main():
         kvm = kvm_usable()
         if not kvm:
             may_fail["kvm"] = "this account cannot open /dev/kvm read-write"
+        # Root of a user namespace cannot take registry.inspection_uid: the
+        # inspection sandbox refuses it, as it refuses a container's root.
+        may_fail["registry_inspection"] = "the worker runs as root of a user namespace (unshare -r), which the inspection sandbox refuses"
         r = run.run("worker-preflight", ["unshare", "-r", opt / "agentcapsule-worker", "-config", etc / "worker.json", "-preflight"],
                     admin_env, check=False, timeout=180)
         results, last = parse_preflight(r.stdout)

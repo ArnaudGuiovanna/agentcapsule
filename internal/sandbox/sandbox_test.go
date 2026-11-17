@@ -6,23 +6,35 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
+// tools confines the shells and tools of these tests: the program may make
+// any system call but those that start a process or open a socket. The
+// allow-list of every other run is tested on its own (probe_test.go,
+// seccomp_test.go), and on debugfs (internal/harnesspkg).
+var tools = Options{TestTools: true}
+
 // sh is the shell the probes run in; they use builtins and exec only, since
-// the sandbox lets no process start another.
+// the sandbox lets no process start another. Its link is kept: busybox
+// knows the shell by the name it is run as.
 func sh(t *testing.T) string {
 	t.Helper()
 	p, err := exec.LookPath("sh")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p, err = filepath.EvalSymlinks(p); err != nil {
+	if p, err = filepath.Abs(p); err != nil {
 		t.Fatal(err)
 	}
 	return p
@@ -60,28 +72,33 @@ func confinedAs(t *testing.T, o Options) map[string]string {
 	return s
 }
 
-// namespacesOf lists the program's namespaces, which must all differ from
+// namespacesDiffer checks that the program's namespaces all differ from
 // this process's, but for the cgroup namespace.
 func namespacesDiffer(t *testing.T, o Options) {
 	t.Helper()
-	out, err := o.Run(t.Context(), "", sh(t), "-c", "exec ls -l /proc/self/ns/")
-	if err != nil {
-		t.Fatal(err)
-	}
 	kinds := []string{"mnt", "net", "pid", "ipc", "uts"}
 	if !AsRoot() {
 		kinds = append(kinds, "user")
 	}
+	args := []string{"-c", "exec readlink \"$@\"", "sh"}
 	for _, ns := range kinds {
+		args = append(args, "/proc/self/ns/"+ns)
+	}
+	out, err := o.Run(t.Context(), "", sh(t), args...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	theirs := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(theirs) != len(kinds) {
+		t.Fatalf("the program lists %d namespaces, not %d: %s", len(theirs), len(kinds), out)
+	}
+	for i, ns := range kinds {
 		mine, err := os.Readlink("/proc/self/ns/" + ns)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(string(out), " "+ns+" -> ") {
-			t.Fatalf("the program does not list its %s namespace: %s", ns, out)
-		}
-		if strings.Contains(string(out), " "+ns+" -> "+mine) {
-			t.Errorf("the program shares this process's %s namespace %s", ns, mine)
+		if !strings.HasPrefix(theirs[i], ns+":[") || theirs[i] == mine {
+			t.Errorf("the program's %s namespace is %s, this process's %s", ns, theirs[i], mine)
 		}
 	}
 }
@@ -164,11 +181,11 @@ func TestConfinedProgramHoldsNoPrivilege(t *testing.T) {
 	if AsRoot() {
 		t.Fatal("run as an account other than root; root runs sandbox_root_test.go (-tags root_integration)")
 	}
-	s := confinedAs(t, Options{})
+	s := confinedAs(t, tools)
 	if s["Uid"] != "0\t0\t0\t0" || s["Gid"] != "0\t0\t0\t0" {
 		t.Errorf("in its user namespace the program is Uid %q Gid %q, not root of it", s["Uid"], s["Gid"])
 	}
-	namespacesDiffer(t, Options{})
+	namespacesDiffer(t, tools)
 }
 
 // REG-01: the image is open read-only; the program can write neither it, by
@@ -182,21 +199,222 @@ func TestConfinedProgramCannotWrite(t *testing.T) {
 	if err := os.WriteFile(image, bytes.Repeat([]byte("image"), 1000), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if out := cannotWrite(t, Options{}, image, filepath.Join(dir, "written")); strings.Count(out, "Read-only file system") != 6 {
+	if out := cannotWrite(t, tools, image, filepath.Join(dir, "written")); strings.Count(out, "Read-only file system") != 6 {
 		t.Errorf("an attempt was not refused by the read-only mounts:\n%s", out)
+	}
+}
+
+// REG-01: the program inherits descriptors 0 to 3 only. A file this process
+// holds open for writing without close-on-exec, as C code linked by the
+// worker may hold a volume, is not the program's: it is not listed in its
+// /proc/self/fd, and the program cannot truncate the file through it.
+func TestConfinedProgramInheritsNoOtherDescriptor(t *testing.T) {
+	victim := filepath.Join(t.TempDir(), "volume")
+	if err := os.WriteFile(victim, []byte("another tenant's volume"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fd, err := unix.Open(victim, unix.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(fd)
+	// A high number, which Run's own descriptors cannot take.
+	const leaked = 100
+	if err = unix.Dup2(fd, leaked); err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(leaked)
+	script := "exec 2>&1\n" +
+		"true > /proc/self/fd/" + strconv.Itoa(leaked) + " && echo TRUNCATED\n" +
+		`for f in /proc/self/fd/*; do echo "${f##*/}"; done`
+	out, err := tools.Run(t.Context(), "", sh(t), "-c", script)
+	if err != nil {
+		t.Fatal(err, string(out))
+	}
+	var fds []string
+	for _, line := range strings.Split(string(out), "\n") {
+		if _, err := strconv.Atoi(line); err == nil {
+			fds = append(fds, line)
+		}
+	}
+	// 4 is the directory the shell lists.
+	if strings.Contains(string(out), "TRUNCATED") || !slices.Equal(fds, []string{"0", "1", "2", "3", "4"}) {
+		t.Errorf("the program holds other descriptors, or truncated the file:\n%s", out)
+	}
+	if b, err := os.ReadFile(victim); err != nil || string(b) != "another tenant's volume" {
+		t.Errorf("the file changed: %q %v", b, err)
+	}
+}
+
+// cannotOpenDevices: no device node opens in the sandbox, for writing or
+// reading, whatever its permissions: /dev/null, and those this account may
+// open (/dev/kvm through the kvm group, a terminal multiplexer, a network
+// tunnel). Read-only mounts do not stop writes to a device.
+func cannotOpenDevices(t *testing.T, o Options) {
+	t.Helper()
+	devices := []string{"/dev/null"}
+	for _, d := range []string{"/dev/kvm", "/dev/vhost-net", "/dev/net/tun", "/dev/fuse", "/dev/ptmx"} {
+		if f, err := os.OpenFile(d, os.O_RDWR, 0); err == nil {
+			f.Close()
+			devices = append(devices, d)
+		}
+	}
+	script := "exec 2>&1\n"
+	for _, d := range devices {
+		script += "true 1<> " + d + " && echo OPENED " + d + "\ntrue < " + d + " && echo READ " + d + "\n"
+	}
+	out, err := o.Run(t.Context(), "", sh(t), "-c", script+"echo done")
+	if err != nil {
+		t.Fatal(err, string(out))
+	}
+	if strings.Contains(string(out), "OPENED") || strings.Contains(string(out), "READ") ||
+		strings.Count(string(out), "Permission denied") != 2*len(devices) || !strings.HasSuffix(string(out), "done\n") {
+		t.Errorf("the program opened a device (of %v):\n%s", devices, out)
+	}
+}
+
+// REG-01: the program opens no device node.
+func TestConfinedProgramCannotOpenDevices(t *testing.T) {
+	cannotOpenDevices(t, tools)
+}
+
+// seesNoKernelState: the program's /proc holds its own process only
+// (subset=pid: no /proc/sys, kallsyms, cpuinfo or mounts), and its /sys is
+// empty.
+func seesNoKernelState(t *testing.T, o Options) {
+	t.Helper()
+	script := `for p in /proc/sys /proc/kallsyms /proc/cpuinfo /proc/meminfo /proc/mounts /proc/net /sys/kernel /sys/class /sys/devices /sys/fs; do
+  [ -e "$p" ] && echo "SEES $p"
+done
+[ -r /proc/self/status ] && echo SELF
+for f in /sys/*; do echo "SYS $f"; done
+echo done`
+	out, err := o.Run(t.Context(), "", sh(t), "-c", script)
+	if err != nil {
+		t.Fatal(err, string(out))
+	}
+	if string(out) != "SELF\nSYS /sys/*\ndone\n" {
+		t.Errorf("the program sees the kernel's state:\n%s", out)
+	}
+}
+
+// REG-01: the program sees no more of the kernel than its own process.
+func TestConfinedProgramSeesNoKernelState(t *testing.T) {
+	seesNoKernelState(t, tools)
+}
+
+// REG-01: the program runs on one processor. e2fsprogs 1.47.4 reads an
+// image's bitmaps with one thread per processor it may use, which the
+// filter refuses; on one, it reads them in its own thread. With /sys and
+// /proc/stat hidden, the C library counts the processors of the program's
+// affinity.
+func TestConfinedProgramRunsOnOneProcessor(t *testing.T) {
+	s := status(t, tools)
+	if cpus := s["Cpus_allowed_list"]; cpus == "" || strings.ContainsAny(cpus, ",-") {
+		t.Errorf("the program may run on processors %q", cpus)
 	}
 }
 
 // REG-01: a program that hangs is killed at the time limit, one that spins at
 // the processor limit.
 func TestConfinedProgramIsKilledAtItsLimits(t *testing.T) {
-	killedAtLimits(t, Options{})
+	killedAtLimits(t, tools)
+}
+
+// REG-01: root of a user namespace other than the host's (a container's
+// root, a test under unshare -r) cannot take a reserved UID: Run refuses it,
+// rather than run the program as that root in a user namespace of its own,
+// with access to every file that root owns.
+func TestRootOfAnotherUserNamespaceIsRefused(t *testing.T) {
+	if _, err := exec.LookPath("unshare"); err != nil {
+		t.Fatal("unshare (util-linux) is required:", err)
+	}
+	cmd := exec.CommandContext(t.Context(), "unshare", "--user", "--map-root-user", "--",
+		os.Args[0], "-test.run", "^TestRunAsRootOfAnotherUserNamespace$", "-test.count=1", "-test.v")
+	cmd.Env = append(os.Environ(), "AGENTCAPSULE_SANDBOX_USERNS_ROOT=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "--- PASS: TestRunAsRootOfAnotherUserNamespace ") {
+		t.Fatalf("as root of another user namespace: %v\n%s", err, out)
+	}
+}
+
+// TestRunAsRootOfAnotherUserNamespace runs only under
+// TestRootOfAnotherUserNamespaceIsRefused.
+func TestRunAsRootOfAnotherUserNamespace(t *testing.T) {
+	if os.Getenv("AGENTCAPSULE_SANDBOX_USERNS_ROOT") == "" {
+		return
+	}
+	if os.Geteuid() != 0 || AsRoot() {
+		t.Fatal("not root of another user namespace")
+	}
+	for _, o := range []Options{tools, {UID: 61999, GID: 61999, TestTools: true}} {
+		if out, err := o.Run(t.Context(), "", sh(t), "-c", "echo RAN"); !errors.Is(err, ErrUnavailable) || len(out) != 0 {
+			t.Errorf("%+v: %v %s", o, err, out)
+		}
+	}
+}
+
+// helperCommand is the helper as Run starts it, with args: in its own
+// namespaces, descriptor 3 on /dev/null, 4 the pipe for the reason it
+// fails, 5 its lifeline, whose writing end only this process holds (closing
+// it plays the caller's death). done, once the helper has exited, closes
+// what remains and returns that reason.
+func helperCommand(t *testing.T, args ...string) (cmd *exec.Cmd, lifeline *os.File, done func() string) {
+	t.Helper()
+	null, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, report, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	life, lifeline, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd = exec.CommandContext(t.Context(), helperPath, args...)
+	cmd.Args[0] = HelperName
+	cmd.SysProcAttr = namespaces(AsRoot())
+	cmd.ExtraFiles = []*os.File{null, report, life}
+	cmd.Env = []string{"LC_ALL=C"}
+	done = func() string {
+		for _, f := range []*os.File{null, report, life, lifeline} {
+			f.Close()
+		}
+		reason, _ := io.ReadAll(status)
+		status.Close()
+		return string(reason)
+	}
+	return cmd, lifeline, done
+}
+
+// REG-01: the helper runs the program only while its caller lives. Taking
+// the reserved UID clears the parent-death signal until the helper sets it
+// again; it then checks its lifeline, a pipe whose writing end only the
+// caller holds. Started with that end already closed, as if the caller had
+// died in between, it refuses to run the program.
+func TestHelperRunsNothingOnceItsCallerIsGone(t *testing.T) {
+	cmd, lifeline, done := helperCommand(t, "0", "0", "1", testToolsFilter, "-", sh(t), "-c", "echo RAN")
+	lifeline.Close()
+	out, err := cmd.Output()
+	reason := done()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 125 || strings.Contains(string(out), "RAN") || !strings.Contains(reason, "caller") {
+		t.Fatalf("the helper without its caller: %v %s (%s)", err, out, reason)
+	}
+	// With its caller, the same helper runs the program.
+	cmd, _, done = helperCommand(t, "0", "0", "1", testToolsFilter, "-", sh(t), "-c", "echo RAN")
+	out, err = cmd.Output()
+	if reason := done(); err != nil || string(out) != "RAN\n" {
+		t.Fatalf("the helper with its caller: %v %s (%s)", err, out, reason)
+	}
 }
 
 // The helper refuses to run outside the namespaces Run creates: started
 // directly under its name, it changes nothing and exits 125.
 func TestHelperRefusesToRunOutsideItsNamespaces(t *testing.T) {
-	cmd := exec.CommandContext(t.Context(), "/proc/self/exe", "0", "0", "1", "-", sh(t), "-c", "echo RAN")
+	cmd := exec.CommandContext(t.Context(), helperPath, "0", "0", "1", strictFilter, "-", sh(t), "-c", "echo RAN")
 	cmd.Args[0] = HelperName
 	out, err := cmd.CombinedOutput()
 	var exit *exec.ExitError
