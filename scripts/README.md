@@ -295,7 +295,9 @@ key.
 
 Go is pinned to **1.27.4**. The `go 1.27.4` line of every `go.mod` is the
 minimum: with `GOTOOLCHAIN=local`, an older Go refuses to build. It is not a
-promise of validation on later Go versions. CI uses PostgreSQL **16** from
+promise of validation on later Go versions. The Dagger module's `go.mod` says
+1.27.3, the highest its Go SDK (Dagger v0.21.11) accepts; its code does not
+ship, and the image it builds the harness tools in is Go 1.27.4. CI uses PostgreSQL **16** from
 Ubuntu 24.04; the patch number and the native versions are recorded on each
 run. The Ubuntu image and its patches evolve, so this is not a hermetic system
 build.

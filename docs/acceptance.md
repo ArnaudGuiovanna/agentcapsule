@@ -314,7 +314,8 @@ What exists:
 - PostgreSQL 16 in CI, from Ubuntu 24.04 and not pinned; 18 in the local
   campaigns;
 - Go 1.27.4, one version for CI, releases and the local scripts. Every
-  `go.mod` states it as its minimum.
+  `go.mod` states it as its minimum, except the Dagger module's, whose SDK
+  accepts 1.27.3 at most; its code does not ship.
 
 What the MVP still needs:
 - one table of the tested versions, kept by a check;
