@@ -68,10 +68,11 @@ Not done:
   covers the same need from inside the VMM.
 - **Ceilings per agent** from the harness manifest within the organization's
   quotas. The manifest (`harness.yaml`, `internal/harnesspkg/package.go`)
-  declares no resources today, and organizations have no physical quotas
-  (TEN-07). Each VM has its own buckets, so one agent cannot take another's
-  share; every agent of a host has the same ceilings. Per-agent ceilings are
-  P1 (question 1).
+  declares no resources today. Organizations had no physical quotas (TEN-07)
+  until [ADR 021](021-organization-quotas.md), which bounds their agents,
+  storage, VMs, vCPUs and RAM, not their disk throughput. Each VM has its
+  own buckets, so one agent cannot take another's share; every agent of a
+  host has the same ceilings. Per-agent ceilings are P1 (question 1).
 
 ### 2. Restart budgets
 
