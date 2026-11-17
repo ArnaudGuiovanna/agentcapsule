@@ -129,6 +129,7 @@ checks that none reaches the archive; weakening the filters makes it fail.
 | `configure-delegation -action rotate` or `revoke-trust` | the issuer | `delegation_audit` (the organization's trail) |
 | `configure-delegation -action revoke-token` | the token ID | `delegation_audit` |
 | `configure-delegation -action add-key` or `retire-key` | the key ID | `delegation_audit` |
+| `agentcapsule-worker -collect-garbage` (OPR-5, November 17) | the host ID | `operator_audit` (migration 0044) |
 
 Without `-confirm`, or with another value, a command prints
 `confirmation_required` and opens no connection. `-dry-run` checks everything
@@ -142,6 +143,10 @@ transaction, since the refused change rolls back.
 imports and the operator's replays of dead letters). The other admin commands
 create or configure and destroy nothing. The worker's `-restore-agent` and
 `agentcapsule-authority promote` are not admin commands and are unchanged.
+The worker's `-collect-garbage` removes files of the host, not rows: it is
+recorded once done, `done` if it removed anything, `unchanged` otherwise,
+even when it stopped part way. Its `-test-restore` changes nothing and
+needs no guard ([worker.md](../worker.md#testing-a-restore)).
 
 ## 8. Audit export and retention
 
