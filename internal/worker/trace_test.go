@@ -271,7 +271,10 @@ func TestTraceFollowsAnInvocationFromTheAPIToItsDelivery(t *testing.T) {
 		t.Fatal(err)
 	}
 	o := DispatchOptions{Batch: 4, WorkLease: time.Minute, DeliveryLease: time.Minute, RetryBase: time.Millisecond, RetryMax: time.Second}
-	for delivered := false; !delivered; {
+	for pass, delivered := 0, false; !delivered; pass++ {
+		if pass == 20 {
+			t.Fatal("not delivered")
+		}
 		if err = w.DispatchPass(ctx, o, 10*time.Second); err != nil {
 			t.Fatal(err)
 		}
@@ -280,9 +283,6 @@ func TestTraceFollowsAnInvocationFromTheAPIToItsDelivery(t *testing.T) {
 			t.Fatal(err)
 		}
 		delivered = state == "DELIVERED"
-		if ctx.Err() != nil {
-			t.Fatal("not delivered")
-		}
 	}
 	apiTracer.Close()
 	workerTracer.Close()
