@@ -99,6 +99,17 @@ func (l Local) SeparateFrom(dataRoot string) error {
 	return nil
 }
 
+// Lookup is the catalogue's, with no binding on an error: the service's
+// answer to an error carries no result (ADR 006 §2), and both
+// implementations answer the same. A sealed store's binding is not given.
+func (l Local) Lookup(ctx context.Context, store string) (Binding, error) {
+	b, err := l.Catalog.Lookup(ctx, store)
+	if err != nil {
+		return Binding{}, err
+	}
+	return b, nil
+}
+
 func (l Local) CheckBinding(ctx context.Context, b Binding) error {
 	return l.WithBinding(ctx, b, func() error { return nil })
 }
