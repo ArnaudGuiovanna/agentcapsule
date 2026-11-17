@@ -26,14 +26,15 @@ import (
 var tools = Options{TestTools: true}
 
 // sh is the shell the probes run in; they use builtins and exec only, since
-// the sandbox lets no process start another.
+// the sandbox lets no process start another. Its link is kept: busybox
+// knows the shell by the name it is run as.
 func sh(t *testing.T) string {
 	t.Helper()
 	p, err := exec.LookPath("sh")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p, err = filepath.EvalSymlinks(p); err != nil {
+	if p, err = filepath.Abs(p); err != nil {
 		t.Fatal(err)
 	}
 	return p
