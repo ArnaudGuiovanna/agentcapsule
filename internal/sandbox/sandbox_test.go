@@ -277,6 +277,31 @@ func TestConfinedProgramCannotOpenDevices(t *testing.T) {
 	cannotOpenDevices(t, tools)
 }
 
+// seesNoKernelState: the program's /proc holds its own process only
+// (subset=pid: no /proc/sys, kallsyms, cpuinfo or mounts), and its /sys is
+// empty.
+func seesNoKernelState(t *testing.T, o Options) {
+	t.Helper()
+	script := `for p in /proc/sys /proc/kallsyms /proc/cpuinfo /proc/meminfo /proc/mounts /proc/net /sys/kernel /sys/class /sys/devices /sys/fs; do
+  [ -e "$p" ] && echo "SEES $p"
+done
+[ -r /proc/self/status ] && echo SELF
+for f in /sys/*; do echo "SYS $f"; done
+echo done`
+	out, err := o.Run(t.Context(), "", sh(t), "-c", script)
+	if err != nil {
+		t.Fatal(err, string(out))
+	}
+	if string(out) != "SELF\nSYS /sys/*\ndone\n" {
+		t.Errorf("the program sees the kernel's state:\n%s", out)
+	}
+}
+
+// REG-01: the program sees no more of the kernel than its own process.
+func TestConfinedProgramSeesNoKernelState(t *testing.T) {
+	seesNoKernelState(t, tools)
+}
+
 // REG-01: a program that hangs is killed at the time limit, one that spins at
 // the processor limit.
 func TestConfinedProgramIsKilledAtItsLimits(t *testing.T) {

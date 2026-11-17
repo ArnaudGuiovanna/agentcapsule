@@ -73,14 +73,21 @@ func confine(args []string) error {
 	if err := alone(); err != nil {
 		return err
 	}
-	// Mounts: none propagates to the host; a /proc of this PID namespace;
-	// then every mount read-only, nosuid and nodev. A read-only mount does
-	// not stop a write to a device node: nodev refuses to open any.
+	// Mounts: none propagates to the host; a /proc of this PID namespace and
+	// an empty /sys; then every mount read-only, nosuid and nodev. A
+	// read-only mount does not stop a write to a device node: nodev refuses
+	// to open any.
 	if err := unix.Mount("", "/", "", unix.MS_REC|unix.MS_PRIVATE, ""); err != nil {
 		return fmt.Errorf("private mounts: %w", err)
 	}
-	if err := unix.Mount("proc", "/proc", "proc", unix.MS_NOSUID|unix.MS_NODEV|unix.MS_NOEXEC, ""); err != nil {
+	// /proc shows this namespace's processes only (subset=pid, Linux 5.8):
+	// no /proc/sys, kallsyms, cpuinfo or mounts. /sys is an empty file
+	// system: the kernel's devices and settings are none of the program's.
+	if err := unix.Mount("proc", "/proc", "proc", unix.MS_NOSUID|unix.MS_NODEV|unix.MS_NOEXEC, "subset=pid"); err != nil {
 		return fmt.Errorf("mount /proc: %w", err)
+	}
+	if err := unix.Mount("none", "/sys", "tmpfs", unix.MS_RDONLY|unix.MS_NOSUID|unix.MS_NODEV|unix.MS_NOEXEC, "size=4k,mode=0555"); err != nil {
+		return fmt.Errorf("hide /sys: %w", err)
 	}
 	// Under memory pressure, the kernel kills the program first.
 	if err := os.WriteFile("/proc/self/oom_score_adj", []byte("1000"), 0); err != nil {

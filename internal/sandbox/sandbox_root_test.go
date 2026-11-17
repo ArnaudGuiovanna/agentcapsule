@@ -108,3 +108,9 @@ func TestAsRootTheProgramIsKilledAtItsLimits(t *testing.T) {
 func TestAsRootTheProgramCannotOpenDevices(t *testing.T) {
 	cannotOpenDevices(t, requireRoot(t))
 }
+
+// REG-01: as root, the program sees no more of the kernel than its own
+// process.
+func TestAsRootTheProgramSeesNoKernelState(t *testing.T) {
+	seesNoKernelState(t, requireRoot(t))
+}
