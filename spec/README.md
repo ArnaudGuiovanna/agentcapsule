@@ -28,7 +28,7 @@ npm ci
 npx quint typecheck delivery.qnt
 npx quint run --main=invocationCompletion --init=init --step=step \
   --invariant=safety --max-steps=12 --max-samples=20000 invocation_completion.qnt
-# Bounded model checking needs a Java runtime for Apalache:
+# Bounded model checking needs a Java runtime for Apalache (see below):
 npx quint verify --main=invocationCompletion --init=init --step=step \
   --invariant=safety --max-steps=10 invocation_completion.qnt
 ```
@@ -64,6 +64,53 @@ npx quint run --main=restoreAuthorityFailover --step=focusedStep \
   --invariant=safety --max-steps=80 --max-samples=100000 \
   --witnesses promotedWitness windowRestoredWitness restore_authority.qnt
 ```
+
+### Bounded and exhaustive checks
+
+`quint test` and `quint run` explore samples. Apalache (`quint verify`) checks
+every execution up to a number of steps, and TLC (`quint verify
+--backend=tlc`) every reachable state of a finite instance; both need a Java
+runtime. `scripts/check-models.py` runs every such check the models declare,
+one at a time, and fails unless each ends as the repository expects:
+
+- the fixed witness schedules (`traceInit`, `traceStep`) of
+  `concurrent_witness.qnt`, `restore_witness.qnt` and `protocol_witness.qnt`:
+  `checked` must fail at the schedule's last step (Apalache);
+- the depth wrappers of `concurrent_bounded.qnt`, `concurrent_focused.qnt` and
+  `bounded.qnt`: `safety` (or `checked`) holds in every state up to the depth
+  (TLC; the frontier is a deadlock, which TLC's `-deadlock` ignores);
+- P3's temporal properties (`progress`, `observed`, `deletionCompletes`,
+  `successfulDelivery`) hold, and fail without priority, without the outbox,
+  for endless arrivals and in the two controls of
+  `service_progress_controls.qnt` (TLC);
+- `liveness.qnt` (TLC), the inductive invariants of `induction.qnt` and the
+  three obligations of `protocol_induction.qnt` (Apalache);
+- each other model: every reachable state of its correct instance (TLC), and
+  a counterexample from each broken configuration within a stated number of
+  steps (Apalache).
+
+`python3 scripts/check-models.py --list` prints each check with its bounds,
+backend, expected result and time limit. `scripts/test_check_models.py`, run
+by CI, fails when a witness schedule or a module of the checkers' files has no
+check.
+
+**Tested toolchain** (installed without root, recorded with these digests in
+`~/.local/share/agentcapsule-tools/model-checkers.json`, which the script
+checks before any run):
+
+| Tool | Version | Where | SHA-256 |
+|---|---|---|---|
+| Quint | 0.33.1 | `spec/node_modules` (`npm ci`) | `spec/package-lock.json` |
+| Eclipse Temurin JDK | 21.0.13+9 (LTS) | `jdk/jdk-21.0.13+9` | `OpenJDK21U-jdk_x64_linux_hotspot_21.0.13_9.tar.gz`: `d7f5d5cf865a2902b70ff549b97586a7d3f234e016f041ab447ea740c7d66d1c` |
+| Apalache | 0.62.4, the version Quint 0.33.1 pins | `apalache/apalache-dist-0.62.4/apalache` | `apalache.tgz`: `8ac8488422c30d552735bae11b92a2d014d8e02e8608702acc08f9a2d8a9abb2`; `lib/apalache.jar`: `e5223915507b65cc5f1638bd037ede60f8a4fc1644aff46355779f9b05df9262` |
+| TLC | the one inside `apalache.jar` | | Quint runs `java -cp apalache.jar tlc2.TLC`; it never uses a separate `tla2tools.jar` |
+
+The JDK is the Temurin tarball of the Adoptium API, the Apalache archive the
+`apalache.tgz` of its GitHub release; each digest above matches the one its
+publisher lists. Quint finds Apalache under `QUINT_HOME`
+(`apalache/` here) instead of downloading it into `~/.quint`. The script sets
+`QUINT_HOME`, puts the JDK first on `PATH`, and keeps TLC's files under the
+check's own directory, never in `/tmp`.
 
 ## Models
 
