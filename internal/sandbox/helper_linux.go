@@ -137,6 +137,13 @@ func confine(args []string) error {
 	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
 		return fmt.Errorf("no_new_privs: %w", err)
 	}
+	// Descriptors: the program keeps 0 to 3 only. Go's fork marks only its
+	// own descriptors close-on-exec; the caller's C code (libcryptsetup, in
+	// the worker) may hold a volume or a device open without the flag, which
+	// the program could truncate or map for writing without any check.
+	if err := unix.CloseRange(4, ^uint(0), unix.CLOSE_RANGE_CLOEXEC); err != nil {
+		return fmt.Errorf("close-on-exec: %w", err)
+	}
 	if err := installFilter(filter); err != nil {
 		return fmt.Errorf("seccomp: %w", err)
 	}

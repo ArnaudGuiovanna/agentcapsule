@@ -9,9 +9,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // tools confines the shells and tools of these tests: the program may make
@@ -195,6 +199,48 @@ func TestConfinedProgramCannotWrite(t *testing.T) {
 	}
 	if out := cannotWrite(t, tools, image, filepath.Join(dir, "written")); strings.Count(out, "Read-only file system") != 6 {
 		t.Errorf("an attempt was not refused by the read-only mounts:\n%s", out)
+	}
+}
+
+// REG-01: the program inherits descriptors 0 to 3 only. A file this process
+// holds open for writing without close-on-exec, as C code linked by the
+// worker may hold a volume, is not the program's: it is not listed in its
+// /proc/self/fd, and the program cannot truncate the file through it.
+func TestConfinedProgramInheritsNoOtherDescriptor(t *testing.T) {
+	victim := filepath.Join(t.TempDir(), "volume")
+	if err := os.WriteFile(victim, []byte("another tenant's volume"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fd, err := unix.Open(victim, unix.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(fd)
+	// A high number, which Run's own descriptors cannot take.
+	const leaked = 100
+	if err = unix.Dup2(fd, leaked); err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(leaked)
+	script := "exec 2>&1\n" +
+		"true > /proc/self/fd/" + strconv.Itoa(leaked) + " && echo TRUNCATED\n" +
+		`for f in /proc/self/fd/*; do echo "${f##*/}"; done`
+	out, err := tools.Run(t.Context(), "", sh(t), "-c", script)
+	if err != nil {
+		t.Fatal(err, string(out))
+	}
+	var fds []string
+	for _, line := range strings.Split(string(out), "\n") {
+		if _, err := strconv.Atoi(line); err == nil {
+			fds = append(fds, line)
+		}
+	}
+	// 4 is the directory the shell lists.
+	if strings.Contains(string(out), "TRUNCATED") || !slices.Equal(fds, []string{"0", "1", "2", "3", "4"}) {
+		t.Errorf("the program holds other descriptors, or truncated the file:\n%s", out)
+	}
+	if b, err := os.ReadFile(victim); err != nil || string(b) != "another tenant's volume" {
+		t.Errorf("the file changed: %q %v", b, err)
 	}
 }
 
