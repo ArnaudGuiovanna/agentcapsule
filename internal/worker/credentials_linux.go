@@ -101,8 +101,10 @@ func (w *Placements) refreshCredentials(ctx context.Context, attemptTimeout time
 		err := step(func(ctx context.Context) error {
 			return w.host.WithBarrier(ctx, renewal.AgentID, func(ctx context.Context) error {
 				_, err := w.startRenewal(ctx, renewal.AgentID, false, &renewal)
-				// A FAILED agent's replacement waits for its next wake (ADR 012).
-				if errors.Is(err, controlplane.ErrNoRenewal) || errors.Is(err, controlplane.ErrAgentFailed) {
+				// A FAILED agent's replacement waits for its next wake (ADR 012);
+				// one its organization's quotas refuse, for room (ADR 021).
+				if errors.Is(err, controlplane.ErrNoRenewal) || errors.Is(err, controlplane.ErrAgentFailed) ||
+					errors.Is(err, controlplane.ErrOrganizationQuota) {
 					return nil
 				}
 				return err

@@ -70,6 +70,7 @@ var auditedRoutes = map[string]auditedRoute{
 	"POST /v1/llm/calls/{id}/release":                           {"llm.usage.released", "", "id"},
 	"POST /v1/organizations":                                    {"organization.created", "", ""},
 	"POST /v1/organizations/{id}/disable":                       {"organization.disabled", "id", ""},
+	"PUT /v1/organizations/{id}/quotas":                         {"organization.quotas_set", "id", ""},
 	"POST /v1/harness-imports":                                  {"harness.import.requested", "", ""},
 	"POST /v1/harness-releases/{id}/deprecate":                  {"harness.release.deprecated", "id", ""},
 }

@@ -206,6 +206,71 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/Organization'}
         default: {$ref: '#/components/responses/Problem'}
+  /v1/organizations/{id}/quotas:
+    get:
+      operationId: getOrganizationQuotas
+      summary: Read an organization's quotas and usage as the platform operator
+      description: >-
+        Platform credential with scope platform:admin. A null limit is no
+        limit; an organization the operator never limited has none (ADR 021).
+      security: [{platformBearer: []}]
+      parameters: [{$ref: '#/components/parameters/ResourceID'}]
+      responses:
+        '200':
+          description: Quotas and usage
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OrganizationQuotaStatus'}
+        '404': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
+    put:
+      operationId: setOrganizationQuotas
+      summary: Replace an organization's quotas
+      description: >-
+        Platform credential with scope platform:admin. Replaces every quota:
+        an absent or null field is no limit. A quota below current usage is
+        accepted: nothing running stops and nothing is deleted; new creations
+        are refused and new boots wait until usage falls under it. A max_vcpus
+        or max_memory_mib below what one of the organization's agents needs
+        alone answers 409 quota_below_agent, with quota: that agent could
+        never boot. Audited in the organization's trail
+        (organization.quotas_set). The organization is part of the receipt:
+        the same key on another organization is a new request.
+      security: [{platformBearer: []}]
+      parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/OrganizationQuotas'}
+            example: {max_agents: 20, max_active_vms: 4, max_vcpus: 8, max_memory_mib: 8192, max_storage_mib: 65536}
+      responses:
+        '200':
+          description: Quotas saved, or initial response replayed
+          headers:
+            Idempotency-Replayed: {schema: {type: boolean}, description: "Present and true on replay"}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OrganizationQuotas'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}  # quota_below_agent
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/organizations/current/quotas:
+    get:
+      description: >-
+        The caller's organization's quotas, set by the platform operator, and
+        its usage (usage:read; owners, administrators and auditors). A null
+        limit is no limit (ADR 021).
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      responses:
+        '200':
+          description: Quotas and usage
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OrganizationQuotaStatus'}
+        '403': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
   /v1/harness-imports:
     post:
       operationId: requestHarnessImport
@@ -1327,6 +1392,7 @@ paths:
                 auto_start: {type: boolean, default: false}
       responses:
         '202': {$ref: '#/components/responses/AcceptedOperation'}
+        '409': {$ref: '#/components/responses/Problem'}  # organization_quota_exceeded, with quota max_agents, max_storage_mib, max_vcpus or max_memory_mib (ADR 021); nothing reserved
         '503': {$ref: '#/components/responses/Problem'}  # storage_pressure: the host's data file system is past its threshold; nothing reserved; Retry-After
         default: {$ref: '#/components/responses/Problem'}
   /v1/agents/{id}:
@@ -1501,7 +1567,10 @@ paths:
         org_admin or agent_operator. An agent that is not yet active returns
         503. A FAILED agent gets a new restart budget: the request clears it,
         then the wake boots it; if its guest fails again until the budget is
-        spent, the operation ends FAILED with restart_budget_exhausted.
+        spent, the operation ends FAILED with restart_budget_exhausted. Past
+        the organization's quotas on active VMs, vCPUs or RAM, the wake is
+        accepted and waits, the agent QUEUED with queue_reason
+        organization_quota, until the organization has room (ADR 021).
       security: [{bearer: []}, {delegatedBearer: []}, {serviceBearer: []}]
       parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
       requestBody: {$ref: '#/components/requestBodies/EmptyCommand'}
@@ -2466,6 +2535,10 @@ components:
               title: {type: string}
               status: {type: integer}
               code: {type: string}
+              quota:
+                type: string
+                enum: [max_agents, max_storage_mib, max_active_vms, max_vcpus, max_memory_mib]
+                description: "With organization_quota_exceeded and quota_below_agent only: the organization's quota concerned (ADR 021)."
   requestBodies:
     EmptyCommand:
       required: true
@@ -2715,6 +2788,37 @@ components:
         max_attachment_bytes: {type: integer, minimum: 0, maximum: 68719476736, description: "Bytes of unpurged files the organization may hold (1 MiB to 64 GiB; 0 or absent = 512 MiB)."}
         max_peer_wakes_per_hour: {type: integer, minimum: 0, maximum: 100000, description: "Sleeping agents the organization's agents may wake through requests in a rolling hour (0 or absent = 60). Replies, statuses, invocations by people and explicit wakes are not counted."}
         default: {type: boolean, description: "True while the organization has configured nothing (100 per agent, 1000 in total)."}
+    OrganizationQuotas:
+      type: object
+      additionalProperties: false
+      description: >-
+        An organization's quotas, set by the platform operator (ADR 021). Null
+        or absent is no limit. Agents and storage count every agent not yet
+        deleted; active VMs, vCPUs and RAM count the VMs booted for work that
+        are starting, running or stopping, on every host. A boot only for a
+        barrier (a fence, a provisioning, a restore) is not counted.
+      properties:
+        max_agents: {type: [integer, 'null'], minimum: 1, maximum: 100000, description: "Agents the organization may hold. Past it, POST /v1/agents answers 409 organization_quota_exceeded."}
+        max_active_vms: {type: [integer, 'null'], minimum: 1, maximum: 100000, description: "VMs of its agents that may run at once. Past it, work waits (QUEUED, queue_reason organization_quota), then dies at its deadline with capacity_unavailable."}
+        max_vcpus: {type: [integer, 'null'], minimum: 1, maximum: 1000000, description: "vCPUs those VMs may reserve. Past it, work waits. Creating an agent that alone needs more is refused."}
+        max_memory_mib: {type: [integer, 'null'], minimum: 128, maximum: 1073741824, description: "RAM in MiB those VMs may reserve. Past it, work waits. Creating an agent that alone needs more is refused."}
+        max_storage_mib: {type: [integer, 'null'], minimum: 64, maximum: 1099511627776, description: "Volume storage in MiB its agents may reserve. Past it, POST /v1/agents answers 409 organization_quota_exceeded."}
+    OrganizationQuotaStatus:
+      type: object
+      required: [organization_id, limits, usage]
+      properties:
+        organization_id: {type: string}
+        limits: {$ref: '#/components/schemas/OrganizationQuotas'}
+        usage:
+          type: object
+          required: [agents, storage_mib, active_vms, vcpus, memory_mib]
+          properties:
+            agents: {type: integer}
+            storage_mib: {type: integer}
+            active_vms: {type: integer}
+            vcpus: {type: integer}
+            memory_mib: {type: integer}
+        updated_at: {type: string, format: date-time, description: "When the operator last set the quotas; absent if never."}
     QueueStatus:
       type: object
       required: [limits, pending_tenant, agents, peer_wakes_last_hour]
@@ -2966,8 +3070,9 @@ components:
       properties:
         id: {type: string}
         name: {type: string}
-        state: {type: string, description: "Observed state (STOPPED, STARTING, READY, FAILED, QUEUED, ...). FAILED: the agent's guest failed to boot or crashed too often; it boots again only when woken. QUEUED: work for the stopped agent waits for a VM slot on its full host, in arrival order."}
+        state: {type: string, description: "Observed state (STOPPED, STARTING, READY, FAILED, QUEUED, ...). FAILED: the agent's guest failed to boot or crashed too often; it boots again only when woken. QUEUED: work for the stopped agent waits for a VM slot on its full host, in arrival order, or for room under its organization's quotas."}
         failure_reason: {type: string, enum: [boot_failed, crashed], description: "Why a FAILED agent spent its restart budget: the kind of its last failure. Absent otherwise."}
+        queue_reason: {type: string, enum: [capacity, organization_quota], description: "What a QUEUED agent waits for: a VM slot of its host, or room under its organization's quotas on active VMs, vCPUs or RAM (ADR 021). Absent otherwise."}
         harness_digest: {type: string}
         harness:
           allOf: [{$ref: '#/components/schemas/HarnessReference'}]

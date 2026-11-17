@@ -91,6 +91,8 @@ only its own.
 | `POST /v1/organizations` | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 401 | 401 | yes |
 | `GET /v1/organizations/{id}` | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 401 | 401 | yes |
 | `POST /v1/organizations/{id}/disable` (a disposable organization) | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 401 | 401 | yes |
+| `GET /v1/organizations/{id}/quotas` | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 401 | 401 | yes |
+| `PUT /v1/organizations/{id}/quotas` | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 401 | 401 | yes |
 | `POST /v1/harness-imports` | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 401 | 401 | yes |
 | `GET /v1/harness-imports/{id}` | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 401 | 401 | yes |
 | `GET /v1/harness-releases` (the platform's catalog) | yes | yes | yes | yes | 403 | 403 | 403 | 403 | yes | yes | 401 | 401 | yes |
@@ -136,6 +138,7 @@ only its own.
 | `POST /v1/llm/budgets/{id}/disable` (a disposable budget) | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
 | `GET /v1/llm/usage` | yes | yes | 403 | yes | 403 | 403 | 403 | 403 | 403 | yes | 401 | 401 | 403 |
 | `GET /v1/queue` | yes | yes | 403 | yes | 403 | 403 | 403 | 403 | 403 | yes | 401 | 401 | 403 |
+| `GET /v1/organizations/current/quotas` (the caller's own organization) | yes | yes | 403 | yes | 403 | 403 | 403 | 403 | 403 | filtered | 401 | 401 | 403 |
 | `POST /v1/queue/limits` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | yes | 401 | 401 | 403 |
 | `GET /v1/agents` | yes | yes | yes | yes | yes | yes | filtered | filtered | yes | filtered | 401 | 401 | 403 |
 | `POST /v1/agents` | yes | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | yes | 401 | 401 | 400 |

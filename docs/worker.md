@@ -194,6 +194,20 @@ computing one last. The operator sees `agentcapsule_worker_agents_queued`,
 `agentcapsule_worker_capacity_oldest_wait_seconds` and the alert
 `AgentCapsuleWorkWaitingForCapacity`.
 
+**Work past its organization's quotas** ([ADR 021](adr/021-organization-quotas.md)).
+The operator may bound an organization's VMs running at once, and their
+vCPUs and RAM, on every host. A boot for work past them is refused in the
+transaction that reserves it, and the agent waits in the same queue, with
+the reason `organization_quota` (retry reason `organization_quota`). Such a
+waiter holds no slot against other organizations' work; within its
+organization, newer work waits behind older. The organization's oldest
+waiter on the host may stop the organization's own VMs there that are not
+computing, by the rule above, which frees host slots too; VMs on other hosts
+are not stopped for it. A barrier's boot is neither counted nor refused. A
+credential renewal the quota refuses waits for the next pass. These waits are
+not in `agentcapsule_worker_agents_queued`, its oldest wait or its alert:
+`agentcapsule_worker_agents_waiting_for_quota` counts them.
+
 **Interrupted work resumes.** An agent whose VM stopped while it held work in
 progress (a barrier stopped it, or it crashed) gets a `resume` job: the worker
 boots it again, through the capacity queue, and its harness takes the work up

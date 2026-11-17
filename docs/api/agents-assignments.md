@@ -41,6 +41,7 @@ deletes a tenant agent. A tenant principal never reaches the legacy lists.
 | `PUT /v1/agents/{id}/capabilities` | `agent:manage` | `org_owner`, `org_admin`, `agent_operator` |
 | `GET /v1/organizations/current/capabilities` | `org:read` | `org_owner`, `org_admin`, `auditor` |
 | `PUT /v1/organizations/current/capabilities` | `quota:manage` | `org_owner`, `org_admin` |
+| `GET /v1/organizations/current/quotas` | `usage:read` | `org_owner`, `org_admin`, `auditor` |
 | `POST /v1/attachments/{id}/link`, `POST /v1/invocations/{id}/result/link` | `agent:content:read` | none: the content's own reader with `read_content` |
 | `GET /v1/downloads/{token}` | none | the link itself; see "Temporary download links" |
 
@@ -50,6 +51,19 @@ a test, is in [rbac.md](rbac.md).
 Creation reuses the worker's existing provisioning (reservation, volume,
 activation, automatic wake). The operations of a tenant agent have no owner
 user: they record `requested_by_principal_id`.
+
+**Quotas** ([ADR 021](../adr/021-organization-quotas.md)). The platform
+operator may bound the organization's agents, their volume storage, their
+VMs running at once and the vCPUs and RAM those VMs reserve
+([organizations.md](organizations.md#quotas)); `GET
+/v1/organizations/current/quotas` gives the limits and the usage. A creation
+past the agents or storage quota, or of an agent that alone needs more vCPUs
+or RAM than the organization may run, answers **409
+`organization_quota_exceeded`** with `quota` (`max_agents`,
+`max_storage_mib`, `max_vcpus`, `max_memory_mib`), before anything is
+reserved; the refused attempt joins the organization's trail. An agent being
+deleted counts until its deletion ends. Past the host's own storage, a
+creation answers 503 `storage_capacity_unavailable`.
 
 ## Visibility
 
@@ -260,7 +274,10 @@ A message's `content` holds 1 to 32 parts. A part is text, content type
 - **Capacity**: accepted work never fails for a full host. It waits, spending
   no attempt, and its agent shows `QUEUED`; it boots in arrival order across
   every organization of the host, or dies at its deadline
-  (`capacity_unavailable`). See [worker.md](../worker.md).
+  (`capacity_unavailable`). See [worker.md](../worker.md). Work past the
+  organization's quotas on active VMs, vCPUs or RAM waits the same way, with
+  `queue_reason` `organization_quota`, without holding back other
+  organizations ([ADR 021](../adr/021-organization-quotas.md)).
 - **No priority**: ordering within an agent stays FIFO. The verified delivery
   model has none; priority is P1
   ([ADR 007](../adr/007-delivery-closure-and-priority.md)). Bounded
@@ -324,7 +341,11 @@ with no VM. `converged: false` after an accepted wake means "requested, not yet
 observed"; this field **reports**, it does not restart a stopped agent.
 
 A stopped agent whose work waits for a VM slot on its full host is `QUEUED`
-(RUN-011, [ADR 017](../adr/017-capacity-queue-and-dead-letter-replay.md)).
+(RUN-011, [ADR 017](../adr/017-capacity-queue-and-dead-letter-replay.md)),
+with `queue_reason` `capacity`; one whose work waits for room under its
+organization's quotas is `QUEUED` with `queue_reason` `organization_quota`
+([ADR 021](../adr/021-organization-quotas.md)). A wake past those quotas is
+accepted and waits; it is not refused.
 An agent whose guest failed to boot or crashed 5 times within an hour is
 `FAILED`, with `failure_reason` `boot_failed` or `crashed`, the kind of its
 last failure ([ADR 012](../adr/012-limits-restart-budgets-egress.md)). It is

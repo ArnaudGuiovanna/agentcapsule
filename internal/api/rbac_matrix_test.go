@@ -98,6 +98,8 @@ var rbacRoutes = []rbacRoute{
 	{Method: "POST", Path: "/v1/organizations", Success: 201, Want: rbacPlatformOnly, body: `{"name":"{name}","initial_owner":{"issuer":"https://client.example","subject":"{name}","display_name":"X"}}`, fresh: rbacName},
 	{Method: "GET", Path: "/v1/organizations/{org}", Success: 200, Want: rbacPlatformOnly},
 	{Method: "POST", Path: "/v1/organizations/{fresh}/disable", revokes: "organization", Success: 200, Want: rbacPlatformOnly, body: `{}`, fresh: rbacFreshOrganization, Note: "a disposable organization"},
+	{Method: "GET", Path: "/v1/organizations/{org}/quotas", Success: 200, Want: rbacPlatformOnly},
+	{Method: "PUT", Path: "/v1/organizations/{org}/quotas", Success: 200, Want: rbacPlatformOnly, body: `{"max_agents":1000}`},
 	{Method: "POST", Path: "/v1/harness-imports", Success: 202, Want: rbacPlatformOnly, body: `{"reference":"ghcr.io/acme/matrix@sha256:{digest}"}`, fresh: rbacName},
 	{Method: "GET", Path: "/v1/harness-imports/{import}", Success: 200, Want: rbacPlatformOnly},
 	{Method: "GET", Path: "/v1/harness-releases", Success: 200, Want: "S S S S 403 403 403 403 S S 401 401 S", Note: "the platform's catalog"},
@@ -148,6 +150,7 @@ var rbacRoutes = []rbacRoute{
 	{Method: "POST", Path: "/v1/llm/budgets/{fresh}/disable", Success: 200, Want: rbacManage, body: `{}`, fresh: rbacFreshBudget, Note: "a disposable budget"},
 	{Method: "GET", Path: "/v1/llm/usage", Success: 200, Want: "S S 403 S 403 403 403 403 403 S 401 401 403"},
 	{Method: "GET", Path: "/v1/queue", Success: 200, Want: "S S 403 S 403 403 403 403 403 S 401 401 403"},
+	{Method: "GET", Path: "/v1/organizations/current/quotas", Success: 200, Want: "S S 403 S 403 403 403 403 403 F 401 401 403", hides: []string{"{org}"}, Note: "the caller's own organization"},
 	{Method: "POST", Path: "/v1/queue/limits", Success: 200, Want: rbacCreateAdmin, body: `{"max_pending_per_agent":100,"max_pending_tenant":1000}`},
 
 	{Method: "GET", Path: "/v1/agents", Success: 200, Want: "S S S S S S F F S F 401 401 403", hides: []string{"{agent}"}},

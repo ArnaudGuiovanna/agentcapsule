@@ -136,6 +136,9 @@ When an agent boots, the next waiter's jobs are tried at once; each pass does
 the same for a slot freed by a sleep, a deletion or a crash. Fairness is
 first-come first-served across organizations, not a share per organization:
 the model has no such share, and priority is P1 ([ADR 007](007-delivery-closure-and-priority.md)).
+[ADR 021](021-organization-quotas.md) adds an organization's own quotas on
+VMs, vCPUs and RAM: work past them waits in the same queue, and such a
+waiter does not count among the older waiters other organizations wait for.
 
 Code: `AdmitToSlot`, `SlotTaken`, `PromoteCapacityHead`, `EvictionOrder`
 (`internal/controlplane/capacity_queue.go`); `bootForWork` and

@@ -102,7 +102,8 @@ storage_pressure` and `Retry-After`, before any reservation.
 **Tenant audit trail.** `GET /v1/audit` (scope `audit:read`, role `org_owner`,
 `org_admin` or `auditor`) lists the organization's events with an opaque
 cursor: members, teams, agents, assignments, service accounts, queue limits
-(`queue.limits.set`), organization lifecycle, and the replays of dead letters
+(`queue.limits.set`), organization lifecycle, the operator's changes of its
+quotas (`organization.quotas_set`), and the replays of dead letters
 (`invocation.replayed`, by an administrator or by `operator`, with the
 invocation as `reference`). Each event carries only the actor, the action, the target, a
 reference and its `outcome`: never a token, a secret or content. An event of
@@ -195,7 +196,7 @@ key and input replay the initial response for 24 hours; a different body
 gives `422 idempotency_key_reused`, and a concurrent call already in a
 transaction gives `409`. A key reused on another target of the same route is
 refused with `422`, or, where the target is part of the route's receipt
-(organization disable, release deprecation, agent deletion, wake, sleep,
+(organization disable, organization quotas, release deprecation, agent deletion, wake, sleep,
 invocation cancel and replay, held request decisions, attachment deletion),
 runs as a new request: it never gives back the first target's answer. The
 only routes other than `GET` without a key are the two download-link routes,

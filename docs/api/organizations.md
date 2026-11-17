@@ -49,6 +49,8 @@ All these routes require `Authorization: Bearer <platform-token>` and the
 | `GET /v1/organizations` | `limit` from 1 to 200, default 100; `after` = last opaque ID received; response `{ "items": [...] }` sorted by ID |
 | `GET /v1/organizations/{id}` | Organization metadata, including if disabled; 404 if absent |
 | `POST /v1/organizations/{id}/disable` | JSON `{}` and mandatory `Idempotency-Key`; 200 response with the disabled metadata |
+| `GET /v1/organizations/{id}/quotas` | The organization's quotas (`limits`) and `usage`; see [Quotas](#quotas) |
+| `PUT /v1/organizations/{id}/quotas` | JSON of every quota and mandatory `Idempotency-Key`; 200 response with the quotas saved |
 
 ```json
 {
@@ -93,6 +95,45 @@ committed revocation therefore forbids the replay; an admitted operation holds
 the credential's read lock until its commit. Legacy service or user tokens
 cannot administer organizations, and platform tokens cannot use the legacy
 routes to reach their accounts or agents.
+
+## Quotas
+
+The operator bounds what an organization's agents may hold on the
+installation's hosts (TEN-007, [ADR 021](../adr/021-organization-quotas.md)).
+The organization cannot change these quotas; its owners, administrators and
+auditors read them with `GET /v1/organizations/current/quotas` (`usage:read`).
+Its own queue limits and model budgets stay its own (`quota:manage`).
+
+```json
+{"max_agents": 20, "max_active_vms": 4, "max_vcpus": 8, "max_memory_mib": 8192, "max_storage_mib": 65536}
+```
+
+| Quota | Counts | Past it |
+|---|---|---|
+| `max_agents` (1 to 100 000) | agents not yet deleted, those being provisioned or deleted included | `POST /v1/agents` answers 409 `organization_quota_exceeded`, `"quota": "max_agents"`, before anything is reserved |
+| `max_storage_mib` (64 or more) | their data volumes | the same, `"quota": "max_storage_mib"` |
+| `max_active_vms` (1 to 100 000) | their VMs booted for work, starting, running or stopping, on every host | work waits: the agent is `QUEUED`, `queue_reason` `organization_quota` |
+| `max_vcpus` (1 to 1 000 000), `max_memory_mib` (128 or more) | the vCPUs and RAM of those VMs | work waits; creating an agent that alone needs more answers 409 with that quota |
+
+A field absent or `null` has no limit, and an organization the operator never
+limited has none. `PUT` replaces every quota. A quota below current usage is
+accepted: nothing running stops and nothing is deleted; new creations are
+refused and new boots wait until usage falls under it. A `max_vcpus` or
+`max_memory_mib` below what one of the organization's agents needs alone is
+refused with 409 `quota_below_agent` and that `quota`: the agent could never
+boot. Out-of-range values and unknown fields answer 400. The organization is
+part of the receipt: the same key on another organization is a new request.
+A boot only for a barrier (a fence, a provisioning's initialization, a
+restore, a deletion) is neither counted nor refused.
+
+Work past the active VMs, vCPUs or RAM is never refused: it waits in its
+host's capacity queue ([worker.md](../worker.md)) without holding back other
+organizations, in order within its own, and may stop the organization's own
+idle VMs on its host. It dies at its deadline with `capacity_unavailable`
+like work that waits for a full host.
+
+Each change is audited (`organization.quotas_set`, with `changed`) and shows
+in the organization's trail when the values changed.
 
 The audit keeps the organization, the platform account, the credential ID, the
 action, whether it changed the state, and the time. It keeps no secret and no

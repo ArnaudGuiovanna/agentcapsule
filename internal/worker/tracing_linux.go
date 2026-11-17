@@ -34,12 +34,12 @@ var (
 			{Name: "agentcapsule.retry_reason", Values: retryReasons}},
 		IDs: []string{"agentcapsule.agent"}})
 	wakeSpan = telemetry.NewSpanType("worker.wake", telemetry.SpanInternal, telemetry.SpanAttributes{
-		Codes: []telemetry.Label{{Name: "agentcapsule.outcome", Values: []string{"running", "booted", "capacity", "failed"}},
+		Codes: []telemetry.Label{{Name: "agentcapsule.outcome", Values: []string{"running", "booted", "capacity", "organization_quota", "failed"}},
 			{Name: "agentcapsule.wake.evicted", Values: []string{"yes", "no"}}},
 		IDs: []string{"agentcapsule.agent"}})
 	bootSpan = telemetry.NewSpanType("worker.boot", telemetry.SpanInternal, telemetry.SpanAttributes{
 		Codes: []telemetry.Label{{Name: "agentcapsule.boot.purpose", Values: []string{"work", "fence"}},
-			{Name: "agentcapsule.outcome", Values: []string{"started", "failed", "guest_failed", "capacity"}}},
+			{Name: "agentcapsule.outcome", Values: []string{"started", "failed", "guest_failed", "capacity", "organization_quota"}}},
 		IDs: []string{"agentcapsule.agent"}})
 	platformSpan = telemetry.NewSpanType("platform.call", telemetry.SpanServer, telemetry.SpanAttributes{
 		Codes: []telemetry.Label{{Name: "agentcapsule.platform.call", Values: platformCall}, {Name: "agentcapsule.outcome", Values: platformOutcomes},
@@ -146,6 +146,8 @@ func endWake(span *telemetry.Span, outcome string, evicted bool, err error) {
 	switch {
 	case errors.Is(err, runtime.ErrCapacity):
 		outcome = "capacity"
+	case errors.Is(err, controlplane.ErrOrganizationQuota):
+		outcome = "organization_quota"
 	case err != nil:
 		outcome = "failed"
 		span.Fail()
@@ -173,6 +175,8 @@ func endBoot(span *telemetry.Span, fence bool, err error) {
 		span.Fail()
 	case errors.Is(err, runtime.ErrCapacity):
 		span.Code("agentcapsule.outcome", "capacity")
+	case errors.Is(err, controlplane.ErrOrganizationQuota):
+		span.Code("agentcapsule.outcome", "organization_quota")
 	default:
 		span.Code("agentcapsule.outcome", "failed")
 		span.Fail()

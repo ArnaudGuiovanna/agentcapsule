@@ -161,6 +161,8 @@ func New(store *controlplane.Store, accounts *controlplane.Accounts) (*Server, e
 	s.handle("/v1/organizations/current", s.currentOrganization)
 	s.handle("/v1/organizations/{id}", s.organization)
 	s.handle("/v1/organizations/{id}/disable", s.disableOrganization)
+	s.handle("/v1/organizations/{id}/quotas", s.organizationQuotas)
+	s.handle("/v1/organizations/current/quotas", s.currentOrganizationQuotas)
 	s.handle("/v1/organizations/current/capabilities", s.organizationCapabilities)
 	s.handle("/v1/harness-imports", s.harnessImports)
 	s.handle("/v1/harness-imports/{id}", s.harnessImport)
@@ -206,6 +208,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func problem(w http.ResponseWriter, status int, code string) {
+	quotaProblem(w, status, code, "")
+}
+
+// quotaProblem is a problem that also names, as quota, the organization's
+// quota concerned (TEN-007); problem omits it.
+func quotaProblem(w http.ResponseWriter, status int, code, quota string) {
 	if recorder, ok := w.(*statusRecorder); ok {
 		recorder.problem = code
 	}
@@ -219,11 +227,20 @@ func problem(w http.ResponseWriter, status int, code string) {
 		Title  string `json:"title"`
 		Status int    `json:"status"`
 		Code   string `json:"code"`
-	}{"about:blank", http.StatusText(status), status, code})
+		Quota  string `json:"quota,omitempty"`
+	}{"about:blank", http.StatusText(status), status, code, quota})
 }
 func failure(w http.ResponseWriter, err error) {
 	var refusal *controlplane.ReplayRefusal
+	var quota *controlplane.OrganizationQuotaError
+	var below *controlplane.QuotaBelowAgentError
 	switch {
+	case errors.As(err, &quota):
+		// Waiting does not help: an agent must go, or the operator raise
+		// the quota.
+		quotaProblem(w, 409, "organization_quota_exceeded", quota.Quota)
+	case errors.As(err, &below):
+		quotaProblem(w, 409, "quota_below_agent", below.Quota)
 	case errors.Is(err, controlplane.ErrAuthentication):
 		problem(w, 401, "authentication_required")
 	case errors.Is(err, controlplane.ErrForbidden):

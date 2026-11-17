@@ -776,11 +776,12 @@ func TestExampleChecksRefuseWhatTheyCannotVouchFor(t *testing.T) {
 // examplesCover are the MVP features the page must show (EXT-008): agents,
 // assignments, invocations and their polling, wake and sleep, inbound and
 // held requests, technical accounts, the audit trail, model providers and
-// budgets, files and download links.
+// budgets, the organization's quotas, files and download links.
 var examplesCover = []string{
 	"POST /v1/harness-imports", "GET /v1/harness-imports/{id}", "GET /v1/harness-releases",
 	"POST /v1/members",
 	"POST /v1/agents", "GET /v1/operations/{id}", "GET /v1/agents/{id}", "GET /v1/agents", "DELETE /v1/agents/{id}",
+	"PUT /v1/organizations/{id}/quotas", "GET /v1/organizations/current/quotas",
 	"POST /v1/agents/{id}/assignments", "GET /v1/agents/{id}/assignments",
 	"POST /v1/agents/{id}/invocations", "GET /v1/invocations/{id}", "GET /v1/invocations/{id}/result", "GET /v1/agents/{id}/invocations", "GET /v1/queue",
 	"POST /v1/agents/{id}/attachments", "POST /v1/invocations/{id}/result/link", "GET /v1/downloads/{token}",
