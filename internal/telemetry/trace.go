@@ -322,9 +322,6 @@ func WithParent(ctx context.Context, parent *Span) context.Context {
 	return context.WithValue(ctx, traceKey{}, &traceContext{tracer: parent.tracer, trace: parent.trace, parent: parent.id, span: parent})
 }
 
-// Traced reports whether spans started under ctx are recorded.
-func Traced(ctx context.Context) bool { return from(ctx) != nil }
-
 func parseTraceID(s string) ([16]byte, bool) {
 	var id [16]byte
 	if !requestIDPattern.MatchString(s) {
@@ -424,14 +421,6 @@ func SpanFrom(ctx context.Context) *Span {
 		return c.span
 	}
 	return nil
-}
-
-// TraceID returns the span's trace ID in hex, or "".
-func (s *Span) TraceID() string {
-	if s == nil {
-		return ""
-	}
-	return hex.EncodeToString(s.trace[:])
 }
 
 func (s *Span) set(key, value string, declared bool) {

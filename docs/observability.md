@@ -209,7 +209,8 @@ API request started (an agent's own schedule, an expiry) carries no ID.
 
 ## Traces
 
-The API and the worker record spans (OPR-3) when given a trace file:
+The API and the worker record spans (OPR-3) when given a trace file; without
+one, nothing is recorded (a default pending the product owner):
 
 | Process | Setting |
 | --- | --- |
@@ -283,7 +284,9 @@ print(hmac.new(key, sys.argv[1].encode(), hashlib.sha256).hexdigest()[:16])' <id
 ```
 
 The request ID is the trace ID as it is: it is random, names no one, and
-leads from a person's report to the trace. No span holds a path, a header, a
+leads from a person's report to the trace (a default pending the product
+owner: whoever holds an export and a person's request ID can find that
+person's trace). No span holds a path, a header, a
 body, a token, a prompt, an answer, a model name, a provider's address, a
 store or volume, or an error message. The key stays in the database and its
 backups, never in a trace, a log or the diagnostic export.
