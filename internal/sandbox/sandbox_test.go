@@ -1,0 +1,207 @@
+//go:build linux
+
+package sandbox
+
+import (
+	"bytes"
+	"crypto/sha256"
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+// sh is the shell the probes run in; they use builtins and exec only, since
+// the sandbox lets no process start another.
+func sh(t *testing.T) string {
+	t.Helper()
+	p, err := exec.LookPath("sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, err = filepath.EvalSymlinks(p); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// status reads the fields of /proc/self/status as the program sees them.
+func status(t *testing.T, o Options) map[string]string {
+	t.Helper()
+	out, err := o.Run(t.Context(), "", sh(t), "-c", "exec cat /proc/self/status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields := map[string]string{}
+	for _, line := range strings.Split(string(out), "\n") {
+		if k, v, ok := strings.Cut(line, ":"); ok {
+			fields[k] = strings.TrimSpace(v)
+		}
+	}
+	return fields
+}
+
+// confinedAs checks what every confined program is: no capability, none it
+// could gain, no_new_privs, a seccomp filter, PID 1 of its own namespace.
+func confinedAs(t *testing.T, o Options) map[string]string {
+	t.Helper()
+	s := status(t, o)
+	for _, c := range []string{"CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"} {
+		if s[c] != "0000000000000000" {
+			t.Errorf("%s = %q: the program holds capabilities", c, s[c])
+		}
+	}
+	if s["NoNewPrivs"] != "1" || s["Seccomp"] != "2" || s["NSpid"] != "1" {
+		t.Errorf("NoNewPrivs %q, Seccomp %q, NSpid %q", s["NoNewPrivs"], s["Seccomp"], s["NSpid"])
+	}
+	return s
+}
+
+// namespacesOf lists the program's namespaces, which must all differ from
+// this process's, but for the cgroup namespace.
+func namespacesDiffer(t *testing.T, o Options) {
+	t.Helper()
+	out, err := o.Run(t.Context(), "", sh(t), "-c", "exec ls -l /proc/self/ns/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := []string{"mnt", "net", "pid", "ipc", "uts"}
+	if !AsRoot() {
+		kinds = append(kinds, "user")
+	}
+	for _, ns := range kinds {
+		mine, err := os.Readlink("/proc/self/ns/" + ns)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(out), " "+ns+" -> ") {
+			t.Fatalf("the program does not list its %s namespace: %s", ns, out)
+		}
+		if strings.Contains(string(out), " "+ns+" -> "+mine) {
+			t.Errorf("the program shares this process's %s namespace %s", ns, mine)
+		}
+	}
+}
+
+// cannotWrite runs probes that try to change the image, to write elsewhere,
+// and to start a process; none may succeed, and the image keeps its bytes.
+// It returns what the write attempts printed.
+func cannotWrite(t *testing.T, o Options, image, elsewhere string) string {
+	t.Helper()
+	before, err := os.ReadFile(image)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Each attempt is a regular shell builtin (a special one, such as ":",
+	// would end the shell on a failed redirection): it opens the file in the
+	// shell itself.
+	script := `exec 2>&1
+true 1<> ` + ImagePath + ` && echo OPENED-IMAGE-FOR-WRITING
+printf x 1<> ` + ImagePath + ` && echo WROTE-IMAGE
+printf x >> ` + ImagePath + ` && echo APPENDED-IMAGE
+true > ` + ImagePath + ` && echo TRUNCATED-IMAGE
+true 1<> '` + image + `' && echo OPENED-IMAGE-PATH-FOR-WRITING
+printf x > '` + elsewhere + `' && echo WROTE-ELSEWHERE
+echo done`
+	out, err := o.Run(t.Context(), image, sh(t), "-c", script)
+	if err != nil {
+		t.Fatal(err, string(out))
+	}
+	for _, mark := range []string{"OPENED-IMAGE-FOR-WRITING", "WROTE-IMAGE", "APPENDED-IMAGE", "TRUNCATED-IMAGE",
+		"OPENED-IMAGE-PATH-FOR-WRITING", "WROTE-ELSEWHERE"} {
+		if strings.Contains(string(out), mark) {
+			t.Errorf("the program could do it: %s\n%s", mark, out)
+		}
+	}
+	// Each attempt fails: on the read-only mounts or, for the dedicated
+	// account, on the file's or the directory's permissions.
+	refused := strings.Count(string(out), "Read-only file system") + strings.Count(string(out), "Permission denied")
+	if !strings.HasSuffix(string(out), "done\n") || refused != 6 {
+		t.Errorf("the probe did not run to its end, or an attempt failed otherwise:\n%s", out)
+	}
+	writes := string(out)
+	// The shell gives up when it cannot fork: nothing after runs.
+	out, err = o.Run(t.Context(), image, sh(t), "-c", "exec 2>&1; x=$(echo forked) && echo FORKED")
+	if err == nil || strings.Contains(string(out), "FORKED") {
+		t.Errorf("the program started another process: %v %s", err, out)
+	}
+	after, err := os.ReadFile(image)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Errorf("the image changed: %x to %x %v", sha256.Sum256(before), sha256.Sum256(after), err)
+	}
+	if _, err = os.Stat(elsewhere); !os.IsNotExist(err) {
+		t.Errorf("the program created %s: %v", elsewhere, err)
+	}
+	return writes
+}
+
+// killedAtLimits: a program that sleeps is killed at Timeout, one that spins
+// at CPU, each well before the other limit.
+func killedAtLimits(t *testing.T, o Options) {
+	t.Helper()
+	o.Timeout, o.CPU = time.Second, 30*time.Second
+	start := time.Now()
+	_, err := o.Run(t.Context(), "", sh(t), "-c", "exec sleep 600")
+	if !errors.Is(err, ErrLimit) || time.Since(start) > 10*time.Second {
+		t.Errorf("a sleeping program: %v after %s", err, time.Since(start))
+	}
+	o.Timeout, o.CPU = time.Minute, time.Second
+	start = time.Now()
+	_, err = o.Run(t.Context(), "", sh(t), "-c", "while :; do :; done")
+	if !errors.Is(err, ErrLimit) || time.Since(start) > 20*time.Second {
+		t.Errorf("a spinning program: %v after %s", err, time.Since(start))
+	}
+}
+
+// REG-01: the confined program holds no capability, cannot gain any, runs
+// under seccomp as PID 1 of its own namespaces, and (as an account that is
+// not root) keeps this account's identity: root of its own user namespace,
+// this account on the host.
+func TestConfinedProgramHoldsNoPrivilege(t *testing.T) {
+	if AsRoot() {
+		t.Fatal("run as an account other than root; root runs sandbox_root_test.go (-tags root_integration)")
+	}
+	s := confinedAs(t, Options{})
+	if s["Uid"] != "0\t0\t0\t0" || s["Gid"] != "0\t0\t0\t0" {
+		t.Errorf("in its user namespace the program is Uid %q Gid %q, not root of it", s["Uid"], s["Gid"])
+	}
+	namespacesDiffer(t, Options{})
+}
+
+// REG-01: the image is open read-only; the program can write neither it, by
+// its descriptor or its path, nor any other file, and cannot start a process.
+// The image and its directory belong to the program's account, which may
+// write them: the read-only mounts refuse each attempt, the descriptor's
+// included (the sandbox reopens the image through them).
+func TestConfinedProgramCannotWrite(t *testing.T) {
+	dir := t.TempDir()
+	image := filepath.Join(dir, "image")
+	if err := os.WriteFile(image, bytes.Repeat([]byte("image"), 1000), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out := cannotWrite(t, Options{}, image, filepath.Join(dir, "written")); strings.Count(out, "Read-only file system") != 6 {
+		t.Errorf("an attempt was not refused by the read-only mounts:\n%s", out)
+	}
+}
+
+// REG-01: a program that hangs is killed at the time limit, one that spins at
+// the processor limit.
+func TestConfinedProgramIsKilledAtItsLimits(t *testing.T) {
+	killedAtLimits(t, Options{})
+}
+
+// The helper refuses to run outside the namespaces Run creates: started
+// directly under its name, it changes nothing and exits 125.
+func TestHelperRefusesToRunOutsideItsNamespaces(t *testing.T) {
+	cmd := exec.CommandContext(t.Context(), "/proc/self/exe", "0", "0", "1", "-", sh(t), "-c", "echo RAN")
+	cmd.Args[0] = HelperName
+	out, err := cmd.CombinedOutput()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 125 || strings.Contains(string(out), "RAN") ||
+		!strings.Contains(string(out), "not PID 1") {
+		t.Fatalf("the helper outside Run: %v %s", err, out)
+	}
+}
