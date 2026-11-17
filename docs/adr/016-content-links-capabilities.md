@@ -2,8 +2,8 @@
 
 Date: November 16, 2026. **Status: built on November 16, 2026**, with
 defaults pending the product owner (see [Questions](#questions-for-the-product-owner)).
-The KVM tests that show these on a real VM have run once, on November 17,
-2026; the capabilities test has not passed yet (see [Tests](#tests)).
+The KVM tests that show these on a real VM passed on November 17, 2026 (see
+[Tests](#tests)).
 References: EXT-001, EXT-002, EXT-003 and the API conventions of the
 [product spec](../product.md) (§3 Harnesses, §4), EVT-01, EVT-04 and CAP-01 of
 the [roadmap](../../ROADMAP.md), [capsule-control.md](../guest/capsule-control.md),
@@ -177,7 +177,7 @@ KVM tests (`verify-product-guest.py` requires them):
 check: its lab's model gateway refused its mock provider on loopback, as the
 production gateway must (ADR 010), so the model call that `llm.invoke`
 allows came back `rejected`. Its lab now allows loopback, as every other KVM
-lab does; it has not passed yet.
+lab does. All three passed on November 17, 2026, with guest image v26.
 
 ## Questions for the product owner
 

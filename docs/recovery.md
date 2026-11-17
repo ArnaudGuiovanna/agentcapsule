@@ -1005,7 +1005,8 @@ and the authorities fail over; the authorities' promotion is tested in Go and
 by `verify-failover.py` on one machine, not yet between two hosts. The
 standby takes the lost host's agents over and restores each from its newest
 archive ([ADR 020](adr/020-restoring-a-lost-hosts-agents.md)): tested with a
-fake host and the real stores, and written for KVM, not yet run there.
+fake host and the real stores, and on KVM on 2026-11-17 with a second worker
+host on the same machine, not yet between two hosts.
 
 ### Who decides
 
@@ -1303,7 +1304,10 @@ The run:
    `-confirm` it is refused. Repeated, it prints the same record,
    `unchanged`; another successor is refused (`conflict`), and so is the
    lost host as a successor (`host_lost`). The agents' restore (step 13)
-   needs KVM: it is not run here.
+   needs KVM: it is not run here. The KVM campaign runs it, in process,
+   without this failover
+   (`TestProductWorkerRestoresAgentFromShippedArchiveOnAnotherHost`, passed
+   on 2026-11-17).
 7. **The checks.**
    - Every write acknowledged before the window is on the standby, and every
      missing one is inside it. The survivors are a prefix of the writes.
@@ -1655,19 +1659,21 @@ restore proves those, as the KVM test below does.
   installed bytes, the losses and their invocations, the two invocations
   `lost` then run again to `completed` with `lost_at`, the authority's
   `rerun_confirmed`, the agent answering at the new incarnation, and the old
-  incarnation refused. It passed on KVM on November 15, 2026
-  (`scripts/verify-product-guest.py`, guest v20, 14 of 14 worker tests).
+  incarnation refused. It passed on KVM on November 15, 2026, and again on
+  November 17 (`scripts/verify-product-guest.py`, guest v26, 26 of 26 worker
+  tests).
 - KVM: `TestProductWorkerRestoresAgentToAgentExchange` restores two agents
   of an organization after an A2A exchange: the recipient's answered request
   is not delivered again, the sender's invocation runs again and its reply is
-  delivered again, and the authority records both reruns. It is written and
-  not yet run.
+  delivered again, and the authority records both reruns. It passed on KVM
+  on November 17, 2026.
 - On another host ([ADR 020](adr/020-restoring-a-lost-hosts-agents.md#tests)):
   the takeover and the move in PostgreSQL
   (`internal/controlplane/host_takeovers_test.go`); `-restore-host` with the
   fake host (`internal/worker/host_restore_test.go`); a restore from the
   stores' copies (`verify-archive-shipping.py --restore-from-copies`); and,
-  written for KVM, not yet passed,
+  on KVM, passed on November 17, 2026 with a second worker host on the same
+  machine,
   `TestProductWorkerRestoresAgentFromShippedArchiveOnAnotherHost`, which needs
   rclone (`AGENTCAPSULE_KVM_RCLONE` or `PATH`) and the `nobody` account. It
   runs the shipper of the sources under test, and rclone from its own copy in
