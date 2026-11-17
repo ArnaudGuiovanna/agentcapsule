@@ -1,8 +1,14 @@
 package main
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os/exec"
+	"path/filepath"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -103,5 +109,124 @@ func TestWorkerLinksNoHarnessCode(t *testing.T) {
 		if slices.Contains(denied, p) {
 			t.Error("agentcapsule-worker links", p)
 		}
+	}
+}
+
+// workerStarts is every place in the worker's code that starts a program,
+// with the programs and why. None takes a package's content: a harness runs
+// only in its VM (REG-007, RUN-010).
+var workerStarts = map[string]struct {
+	sites int
+	why   string
+}{
+	"internal/harnesspkg/inspect.go":               {1, "debugfs -R stat, read-only, on a downloaded image before it is accepted"},
+	"internal/harnesspkg/build.go":                 {2, "mkfs.ext4 and debugfs -w, which build a package: the publisher's side, never called by the worker"},
+	"internal/runtime/firecracker_limits_linux.go": {1, "the pinned jailer, which starts the pinned Firecracker: the boot"},
+	"internal/preflight/preflight_linux.go":        {1, "the pinned Firecracker and jailer with --version"},
+	"internal/worker/host_restore_linux.go":        {1, "the archive shipper the operator names with -archive-fetch"},
+}
+
+// processStarts are the calls that start a program, by package path.
+var processStarts = map[string][]string{
+	"os/exec":               {"Command", "CommandContext"},
+	"os":                    {"StartProcess"},
+	"syscall":               {"Exec", "ForkExec", "StartProcess"},
+	"golang.org/x/sys/unix": {"Exec"},
+}
+
+// REG-007, RUN-010: the worker starts only the programs workerStarts names,
+// each from the place it names, and no code of the worker calls what builds
+// a package; its C code starts nothing. The import itself is observed in
+// internal/worker (TestTheHostNeverRunsWhatAPackageHolds).
+func TestWorkerStartsOnlyTheProgramsItNames(t *testing.T) {
+	module := goModule(t)
+	out, err := exec.CommandContext(t.Context(), "go", "list", "-deps", "-f",
+		"{{if not .Standard}}{{.ImportPath}}|{{.Dir}}|{{join .GoFiles \",\"}},{{join .CgoFiles \",\"}}{{end}}", module+"/cmd/agentcapsule-worker").Output()
+	if err != nil {
+		t.Fatal("go list", err)
+	}
+	found := map[string]int{}
+	var building []string
+	cgoStarts := regexp.MustCompile(`\b(system|popen|execv[pe]*|execl[pe]*|posix_spawnp?|fork|vfork|clone)\s*\(`)
+	files := 0
+	for _, line := range strings.Fields(string(out)) {
+		parts := strings.Split(line, "|")
+		pkg, ok := strings.CutPrefix(parts[0], module+"/")
+		if !ok || len(parts) != 3 {
+			continue
+		}
+		for _, name := range strings.Split(parts[2], ",") {
+			if name == "" {
+				continue
+			}
+			files++
+			site := pkg + "/" + name
+			file, err := parser.ParseFile(token.NewFileSet(), filepath.Join(parts[1], name), nil, parser.ParseComments)
+			if err != nil {
+				t.Fatal(err)
+			}
+			imported := map[string]string{}
+			for _, spec := range file.Imports {
+				p, _ := strconv.Unquote(spec.Path.Value)
+				local := p[strings.LastIndex(p, "/")+1:]
+				if spec.Name != nil {
+					local = spec.Name.Name
+				}
+				imported[local] = p
+				// The preamble of import "C" is its C code.
+				if p == "C" && spec.Doc != nil && cgoStarts.MatchString(spec.Doc.Text()) {
+					t.Errorf("%s: its C code may start a program", site)
+				}
+				if p == "C" && file.Imports[0] == spec {
+					for _, group := range file.Comments {
+						if group.End() < spec.Pos() && cgoStarts.MatchString(group.Text()) {
+							t.Errorf("%s: its C code may start a program", site)
+						}
+					}
+				}
+			}
+			ast.Inspect(file, func(n ast.Node) bool {
+				if lit, ok := n.(*ast.CompositeLit); ok {
+					// An exec.Cmd built by hand starts without the calls below.
+					if sel, ok := lit.Type.(*ast.SelectorExpr); ok {
+						if x, ok := sel.X.(*ast.Ident); ok && imported[x.Name] == "os/exec" && sel.Sel.Name == "Cmd" {
+							t.Errorf("%s: an exec.Cmd literal", site)
+						}
+					}
+					return true
+				}
+				sel, ok := n.(*ast.SelectorExpr)
+				if !ok {
+					return true
+				}
+				x, ok := sel.X.(*ast.Ident)
+				if !ok {
+					return true
+				}
+				switch p := imported[x.Name]; {
+				case slices.Contains(processStarts[p], sel.Sel.Name):
+					found[site]++
+				case p == module+"/internal/harnesspkg" && (sel.Sel.Name == "BuildRootfs" || sel.Sel.Name == "WritePackage"):
+					building = append(building, site+": "+sel.Sel.Name)
+				}
+				return true
+			})
+		}
+	}
+	if files < 100 {
+		t.Fatal("go list named too few of the worker's files", files)
+	}
+	for site, n := range found {
+		if want, ok := workerStarts[site]; !ok || want.sites != n {
+			t.Errorf("%s starts a program %d times; workerStarts says %d", site, n, want.sites)
+		}
+	}
+	for site, want := range workerStarts {
+		if found[site] != want.sites {
+			t.Errorf("workerStarts names %s (%s), which no longer starts it %d times", site, want.why, want.sites)
+		}
+	}
+	if len(building) != 0 {
+		t.Error("the worker's code builds packages:", building)
 	}
 }
