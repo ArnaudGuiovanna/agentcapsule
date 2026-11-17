@@ -234,6 +234,14 @@ func (m *Agentcapsule) Sign(ctx context.Context,
 	return strings.TrimSpace(out), err
 }
 
+// verifier runs agentcapsule-harness verify in c. Dagger's containers have
+// neither the capabilities that the sandbox of debugfs needs as root nor
+// user namespaces: verify inspects the image without it (--unconfined),
+// which it refuses as root, so it runs as nobody.
+func verifier(c *dagger.Container, args ...string) *dagger.Container {
+	return c.WithUser("nobody").WithExec(append([]string{"agentcapsule-harness", "verify", "--unconfined"}, args...))
+}
+
 // Verify downloads a package and checks it as the platform's importer would;
 // with a key, it also requires a signature by that key. It prints a report.
 func (m *Agentcapsule) Verify(ctx context.Context,
@@ -249,13 +257,13 @@ func (m *Agentcapsule) Verify(ctx context.Context,
 	local bool,
 ) (string, error) {
 	c := m.toolbox()
-	args := []string{"agentcapsule-harness", "verify", "--ref", ref}
+	args := []string{"--ref", ref}
 	if key != nil {
 		c = c.WithFile("/publisher.pub", key)
 		args = append(args, "--key", "/publisher.pub")
 	}
 	c, args = registryArgs(c, args, username, password, local)
-	return c.WithExec(args).Stdout(ctx)
+	return verifier(c, args...).Stdout(ctx)
 }
 
 // Check runs the whole supply chain against a throwaway registry: builds the
@@ -281,16 +289,16 @@ func (m *Agentcapsule) Check(ctx context.Context) (string, error) {
 		}
 		ref = strings.TrimSpace(ref)
 		// Unsigned, it must be refused when a signature is required.
-		unsigned, err := c.WithExec([]string{"agentcapsule-harness", "verify", "--ref", ref, "--key", "/keys/publisher.pub", "--local"},
-			dagger.ContainerWithExecOpts{Expect: dagger.ReturnTypeFailure}).Stderr(ctx)
+		unsigned, err := c.WithUser("nobody").WithExec([]string{"agentcapsule-harness", "verify", "--unconfined", "--ref", ref,
+			"--key", "/keys/publisher.pub", "--local"}, dagger.ContainerWithExecOpts{Expect: dagger.ReturnTypeFailure}).Stderr(ctx)
 		if err != nil {
 			return "", fmt.Errorf("%s: an unsigned package passed verification: %w", name, err)
 		}
 		if !strings.Contains(unsigned, "signature") {
 			return "", fmt.Errorf("%s: unexpected refusal: %s", name, unsigned)
 		}
-		out, err := c.WithExec([]string{"sh", "-c", "agentcapsule-harness sign --key /keys/publisher.key --ref " + ref + " --local" +
-			" && agentcapsule-harness verify --ref " + ref + " --key /keys/publisher.pub --local"}).Stdout(ctx)
+		signed := c.WithExec([]string{"agentcapsule-harness", "sign", "--key", "/keys/publisher.key", "--ref", ref, "--local"})
+		out, err := verifier(signed, "--ref", ref, "--key", "/keys/publisher.pub", "--local").Stdout(ctx)
 		if err != nil {
 			return "", err
 		}

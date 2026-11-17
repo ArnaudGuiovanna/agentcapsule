@@ -15,8 +15,8 @@ import (
 
 // REG-01: as root, as the worker runs, an image staged read-only (0444) in a
 // directory only root enters (0700) is inspected by debugfs running as the
-// dedicated UID, with the result of an unconfined inspection; without a
-// dedicated UID, nothing is inspected.
+// dedicated UID; without a dedicated UID, or unconfined, nothing is
+// inspected.
 func TestAsRootInspectionRunsAsTheDedicatedAccount(t *testing.T) {
 	if !sandbox.AsRoot() {
 		t.Fatal("run as root in the initial user namespace (sudo go test -tags root_integration)")
@@ -37,8 +37,8 @@ func TestAsRootInspectionRunsAsTheDedicatedAccount(t *testing.T) {
 	if err := InspectRootfs(t.Context(), staged, m, sb); err != nil {
 		t.Fatal("as root, the inspection failed:", err)
 	}
-	if err := InspectRootfs(t.Context(), staged, m, sandbox.Options{Unconfined: true}); err != nil {
-		t.Fatal("unconfined, the inspection failed:", err)
+	if err := InspectRootfs(t.Context(), staged, m, sandbox.Options{Unconfined: true}); !errors.Is(err, sandbox.ErrUnavailable) {
+		t.Fatal("as root, unconfined:", err)
 	}
 	if err := CheckInspection(t.Context(), sb); err != nil {
 		t.Fatal(err)

@@ -71,8 +71,10 @@ type Options struct {
 	// seconds, at least one.
 	Timeout, CPU time.Duration
 	// Unconfined runs the program directly, under Timeout only. It is for the
-	// publisher's tool (agentcapsule-harness) on a machine where the sandbox
-	// is unavailable, never for the platform host.
+	// publisher's tool (agentcapsule-harness verify --unconfined) on a
+	// machine where the sandbox is unavailable, never for the platform host.
+	// Run refuses it as root: the worker, which runs as root, never runs a
+	// program unconfined.
 	Unconfined bool
 	// TestTools, in a test binary only (testing.Testing), lets the program
 	// also make the system calls of the shells and tools that tests run

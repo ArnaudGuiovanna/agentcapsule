@@ -34,7 +34,7 @@ func requireRoot(t *testing.T) Options {
 // supplementary groups or capabilities, under seccomp with no_new_privs, as
 // PID 1 of its own mount, network, PID, IPC and UTS namespaces. Without a
 // dedicated UID, nothing runs; nor with 65535 or a value from 2^31-1 up,
-// which setresuid and setresgid may take as "unchanged".
+// which setresuid and setresgid may take as "unchanged"; nor unconfined.
 func TestAsRootTheProgramRunsAsTheDedicatedAccount(t *testing.T) {
 	o := requireRoot(t)
 	s := confinedAs(t, o)
@@ -48,6 +48,10 @@ func TestAsRootTheProgramRunsAsTheDedicatedAccount(t *testing.T) {
 		if out, err := missing.Run(t.Context(), "", sh(t), "-c", "echo RAN"); !errors.Is(err, ErrUnavailable) || len(out) != 0 {
 			t.Errorf("as root with %+v: %v %s", missing, err, out)
 		}
+	}
+	// Root never runs a program unconfined.
+	if out, err := (Options{Unconfined: true}).Run(t.Context(), "", sh(t), "-c", "echo RAN"); !errors.Is(err, ErrUnavailable) || len(out) != 0 {
+		t.Errorf("as root, unconfined: %v %s", err, out)
 	}
 }
 
