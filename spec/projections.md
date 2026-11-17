@@ -1,8 +1,8 @@
 # Go projections of the model runs
 
 A Go projection of a run drives the real code (PostgreSQL, the harness store,
-the host's admission queue or the authorities) through the run's steps and
-checks the run's expectation. This table lists every `run` of the models,
+the host's work queue or admission queue, or the authorities) through the
+run's steps and checks the run's expectation. This table lists every `run` of the models,
 every fixed witness schedule (a module with `traceInit`, whose `checked`
 invariant must fail) and every simulation witness (a `val` ending in
 `Witness`), with the Go tests that project it.
