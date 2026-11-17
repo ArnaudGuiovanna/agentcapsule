@@ -238,6 +238,9 @@ func TestProductWorkerStopsBootingAGuestThatCrashesAtBoot(t *testing.T) {
 	// The fix, then a wake: a new budget, and the invocation is answered.
 	release("1.0.0", "fixed")
 	l.lifecycle(agent, "wake", "wake-fixed")
+	// A fresh view: decoding into v would keep the earlier failure_reason,
+	// since the answer leaves it out once the agent is no longer FAILED.
+	v = controlplane.TenantAgent{}
 	l.request(l.owner(), "GET", "/v1/agents/"+agent, "", nil, 200, &v)
 	if v.State != "READY" || v.FailureReason != nil {
 		t.Fatal("agent after the wake", v.State, v.FailureReason)
