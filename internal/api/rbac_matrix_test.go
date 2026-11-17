@@ -597,8 +597,15 @@ func rbacFreshAgent(t *testing.T, f *rbacFixture) map[string]string {
 // which a new store must acknowledge before it may serve.
 func (f *rbacFixture) activeAgent(t *testing.T, name string) string {
 	t.Helper()
+	return f.activeAgentOf(t, f.l, f.token(t, "owner"), name)
+}
+
+// activeAgentOf is activeAgent for the organization of lab, whose owner
+// holds token.
+func (f *rbacFixture) activeAgentOf(t *testing.T, lab *apiDelegationFixture, token, name string) string {
+	t.Helper()
 	ctx, s := t.Context(), f.l.store
-	id := apiTenantAgent(t, f.l, f.token(t, "owner"), name)
+	id := apiTenantAgent(t, lab, token, name)
 	jobs, err := s.PendingProvisioning(ctx, "local", 200)
 	if err != nil {
 		t.Fatal(err)

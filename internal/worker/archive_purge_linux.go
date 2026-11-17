@@ -42,9 +42,17 @@ func (w *Placements) purgeArchives(ctx context.Context, a *Archives) {
 // record. An archive whose manifest is unreadable, or names another volume,
 // stays for the operator. It returns how many archives it removed from disk.
 func (w *Placements) purgeDeletedArchives(ctx context.Context, archives *volumearchive.Store) (int, error) {
+	removed, _, err := purgeDeletedArchives(ctx, w.store, w.hostID, archives, false)
+	return len(removed), err
+}
+
+// purgeDeletedArchives is the purge of Placements.purgeDeletedArchives. It
+// returns the archives it removed from disk and their bytes; a dry run
+// returns those it would remove, and changes nothing.
+func purgeDeletedArchives(ctx context.Context, store *controlplane.Store, host string, archives *volumearchive.Store, dryRun bool) ([]string, int64, error) {
 	ids, err := archives.List()
 	if err != nil {
-		return 0, err
+		return nil, 0, err
 	}
 	found := make([]controlplane.ArchiveBinding, 0, len(ids))
 	for _, id := range ids {
@@ -52,14 +60,14 @@ func (w *Placements) purgeDeletedArchives(ctx context.Context, archives *volumea
 			found = append(found, controlplane.ArchiveBinding{ID: id, AgentID: m.Binding.Store, VolumeID: m.Binding.Volume})
 		}
 	}
-	purge, err := w.store.PurgeableVolumeArchives(ctx, w.hostID, found)
+	purge, err := store.PurgeableVolumeArchives(ctx, host, found)
 	if err != nil {
-		return 0, err
+		return nil, 0, err
 	}
-	removed := 0
+	removed, bytes := []string{}, int64(0)
 	for _, p := range purge {
 		if err = ctx.Err(); err != nil {
-			return removed, err
+			return removed, bytes, err
 		}
 		var size int64
 		m, err := archives.Manifest(p.ID)
@@ -71,15 +79,27 @@ func (w *Placements) purgeDeletedArchives(ctx context.Context, archives *volumea
 		default:
 			size = m.Size
 		}
+		var held int64
+		if size > 0 {
+			if held, err = archives.Size(p.ID); err != nil {
+				return removed, bytes, err
+			}
+		}
+		if dryRun {
+			if size > 0 {
+				removed, bytes = append(removed, p.ID), bytes+held
+			}
+			continue
+		}
 		if err = archives.Remove(p.ID); err != nil {
-			return removed, err
+			return removed, bytes, err
 		}
 		if size > 0 {
-			removed++
+			removed, bytes = append(removed, p.ID), bytes+held
 		}
-		if err = w.store.PurgedVolumeArchive(ctx, p.ID, size); err != nil {
-			return removed, err
+		if err = store.PurgedVolumeArchive(ctx, p.ID, size); err != nil {
+			return removed, bytes, err
 		}
 	}
-	return removed, nil
+	return removed, bytes, nil
 }

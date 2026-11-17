@@ -342,7 +342,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends \
-            build-essential libcryptsetup-dev postgresql-16 postgresql-client-16
+            build-essential libcryptsetup-dev postgresql-16 postgresql-client-16 iproute2 nftables
+
+      - name: Allow unprivileged user namespaces
+        run: |
+          # TestWorkerFlowsDialOnlyTheirConfiguredEndpoints runs the worker's
+          # flows in a network namespace of their own (unshare -rn, DEP-1).
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
 
       - name: Real PostgreSQL, Go race and crash recovery
         shell: bash
@@ -551,7 +559,7 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends \
-            build-essential libcryptsetup-dev postgresql-16 postgresql-client-16
+            build-essential libcryptsetup-dev postgresql-16 postgresql-client-16 iproute2 nftables
           postgres_executable="$(dpkg-query -L postgresql-16 | awk '/\/bin\/postgres$/ {print; exit}')"
           test -x "$postgres_executable"
           echo "PG_BIN=$(dirname "$postgres_executable")" >> "$GITHUB_ENV"
@@ -560,7 +568,8 @@ jobs:
         run: |
           # Ubuntu 24.04 restricts them with AppArmor. The run starts the
           # worker's preflight and the authority service in a user namespace
-          # where its account is root (unshare -r); see verify-install.py.
+          # where its account is root (unshare -r), and runs in a network
+          # namespace of its own (unshare -rn, DEP-1); see verify-install.py.
           if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi

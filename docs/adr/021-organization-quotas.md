@@ -47,7 +47,7 @@ the product owner (question 1).
 
 A limit is a number or `null`; `null`, or an organization never limited, is
 no limit. A new installation, and every existing organization, keeps working
-as before (migration 0045).
+as before (migration 0046).
 
 ### 2. What counts
 
@@ -190,7 +190,7 @@ which this machine lacks, and Quint is not installed in this worktree.
 
 ## What was built
 
-- Migration 0045: `organization_quotas`; `capacity_waits.reason`; the audit
+- Migration 0046: `organization_quotas`; `capacity_waits.reason`; the audit
   action `organization.quotas_set`.
 - `internal/controlplane/organization_quotas.go`: the quotas, the creation
   and boot checks, the routes' store functions. `capacity_queue.go`: the

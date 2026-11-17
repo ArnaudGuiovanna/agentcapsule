@@ -195,6 +195,31 @@ func (s *Store) ExpiredVolumeArchives(ctx context.Context, agentID, host string,
         AND captured_at IS NOT NULL AND removed_at IS NULL ORDER BY captured_at DESC,archive_id DESC OFFSET $3`, agentID, host, keep)
 }
 
+// ExpiredHostVolumeArchives is ExpiredVolumeArchives for every agent of host
+// at once, in archive ID order: what retention removes after each agent's
+// next capture, for the operator's garbage collection (OPR-5).
+func (s *Store) ExpiredHostVolumeArchives(ctx context.Context, host string, keep int) ([]string, error) {
+	if keep < 1 || keep > 10000 || host == "" {
+		return nil, ErrInput
+	}
+	rows, err := s.pool.Query(ctx, `SELECT archive_id FROM (SELECT archive_id,row_number() OVER (PARTITION BY agent_id
+        ORDER BY captured_at DESC,archive_id DESC) AS n FROM volume_archives
+        WHERE host_id=$1 AND captured_at IS NOT NULL AND removed_at IS NULL) x WHERE n>$2 ORDER BY archive_id`, host, keep)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := make([]string, 0)
+	for rows.Next() {
+		var id string
+		if err = rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 func (s *Store) archiveIDs(ctx context.Context, query, agentID, host string, args ...any) ([]string, error) {
 	if agentID == "" || host == "" {
 		return nil, ErrInput

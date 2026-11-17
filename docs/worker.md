@@ -832,3 +832,104 @@ the same command again to resume: it reports restored agents again and
 resumes unfinished restores first. A worker whose `host_id` names a lost host
 refuses to start (`host_taken_over`).
 [The procedure](recovery.md#the-procedure) gives the whole failover.
+
+## Testing a restore
+
+The operator can check that an agent can be restored, without restoring it
+and without stopping anything (OPR-5). The maintenance worker keeps running:
+
+```sh
+/opt/agentcapsule/agentcapsule-worker \
+  -config /etc/agentcapsule/worker.json \
+  -test-restore "$AGENT_ID" \
+  -archive-root /var/lib/agentcapsule-archives \
+  -scratch /var/lib/agentcapsule-restore-tests \
+  [-archive-id "$ARCHIVE_ID"] [-archive-fetch /opt/agentcapsule/agentcapsule-archive-ship.py]
+```
+
+It takes the agent's newest archive that PostgreSQL records, the one a
+restore after a host's loss would take, or the one `-archive-id` names. It
+needs product provisioning and the authority service, which it reaches like
+the maintenance worker. `-scratch` is a directory of root, not writable by
+group or others, outside the runtime root, the archive root and both
+authorities, with room for one volume. What it checks, in order:
+1. the manifest is the one the restore authority signed, for a store that is
+   not sealed, and the bytes have the manifest's size and SHA-256 digest;
+2. the archive is of the agent's current volume, and of its size;
+3. a copy in a new private directory under `-scratch` has the same digest;
+4. the key the key authority lends for the agent opens the copy's key slot.
+   The payload is never unlocked: a volume opens only in its guest.
+
+It prints what it checked, then removes its directory:
+
+```json
+{"agent_id":"agt_…","archive_id":"arc_…","archive_store":"local","captured_at":"2026-11-17T02:10:00Z","archive_incarnation":1,"incarnation":1,"size":134217728,"checked":["manifest","digest","volume","copy","key"],"seconds":1.4}
+```
+
+On failure, it prints `restore_test_failed_<reason>` and exits 1:
+`no_archive` (PostgreSQL records none), `archive_unavailable` (not in the
+archive root, and not fetched), `archive` (incomplete, altered, unsigned or of
+another volume), `key` (the agent's key does not open it), `authority` (a
+refusal: a deleted agent's store is sealed), `state` (the agent has no volume
+on this host), `error`.
+
+With `-archive-fetch`, an archive missing from the archive root is fetched
+from the standby's copy, or from S3, into the test's own directory, and
+`archive_store` says from where. The archive root is never written.
+
+**What it changes: nothing.** It reads PostgreSQL, the archive root and the
+authorities' records; it asks the authorities to validate the manifest and to
+lend the key, which reserves nothing and records nothing. It takes no barrier
+and starts no VM, so the agent keeps running and its deliveries go on. While
+it holds the key, a restore or a deletion of that agent waits for it, for the
+time of one key check (about 0.1 s). It skips the mandatory preflight: it
+runs on a host without KVM, or with a full runtime disk. What it does not
+prove: that the guest's file system inside is sound, or that the harness
+boots; a restore proves those
+([recovery.md](recovery.md#test-a-restore)).
+
+## Collecting garbage on demand
+
+The maintenance worker cleans up on its own: the archives past `keep` after
+each capture, the archives of deleted agents and the cached harness packages
+no agent of the host can boot once an hour, and what interrupted captures,
+removals and downloads left. `-collect-garbage` runs the same cleanup now, on
+this host, for example when a disk fills up (OPR-5):
+
+```sh
+/opt/agentcapsule/agentcapsule-worker -config /etc/agentcapsule/worker.json -collect-garbage -dry-run
+/opt/agentcapsule/agentcapsule-worker -config /etc/agentcapsule/worker.json -collect-garbage -confirm "$HOST_ID"
+```
+
+It takes the guards of the operator's destructive commands
+([ADR 014](adr/014-operations-capacity-diagnostics-audit.md) §7):
+- without `-dry-run`, `-confirm` must repeat the configuration's `host_id`;
+  otherwise it prints `confirmation_required` and opens no connection;
+- `-dry-run` prints what it would remove and removes nothing;
+- a run is recorded in `operator_audit` (`garbage.collected`, the host,
+  `done` or `unchanged`), which `agentcapsule-admin list-audit` prints. A dry
+  run is not recorded.
+
+It prints one JSON object: under `archives`, the archives beyond the `keep`
+newest of their agent on this host (`retention`), the archives of deleted
+agents whose key is destroyed (`deleted_agents`), the leftovers, and their
+bytes; under `images`, the digests of the packages no agent can boot
+(`unused`), the leftovers of downloads, and their bytes. A part is absent
+when its section (`archives`, `registry`) is not configured.
+
+```json
+{"action":"garbage.collected","target":"host-1","outcome":"done","dry_run":false,"archives":{"retention":["arc_…"],"deleted_agents":[],"leftovers":0,"bytes":134221824},"images":{"unused":["sha256:…"],"leftovers":1,"bytes":52428800}}
+```
+
+It keeps what the worker keeps: each agent's `keep` newest archives, an
+agent's only archive, the archives taken on demand of live agents, an
+archive whose manifest it cannot read, the approved releases, the packages
+an agent of this host is pinned to or may boot, and imports in progress. It
+runs beside the maintenance worker: each removal is one the worker may make
+too, and repeating one is harmless. A leftover goes only once untouched for
+an hour, so a capture or a download in progress is left alone; the worker's
+own pass removes a download's leftovers at once. It skips the mandatory
+preflight, so that a full disk does not stop it, and never creates the
+runtime root, the archive root or the cache. After an error, it prints what it
+removed so far, records the run, and prints
+`collect_garbage_interrupted_run_again`.

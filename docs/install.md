@@ -257,7 +257,11 @@ its standby, is a warning.
 API, which refuses to start without it. Then it creates an organization and
 ends with a call by its owner. On a host without the artifacts or without
 access to `/dev/kvm`, the worker's preflight reports them as failed and the
-worker refuses to start.
+worker refuses to start. It runs in a network namespace whose only way out
+is a dummy interface, and fails if anything of the install sends a packet
+out, a UDP datagram (a DNS query) or opens a connection to a port nothing of
+the install listens on (DEP-1): the platform calls no one it is not
+configured for. It needs `ip` (iproute2) and `nft` (nftables).
 
 ## Pinned versions
 

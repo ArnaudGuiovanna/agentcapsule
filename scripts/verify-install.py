@@ -36,7 +36,9 @@ docs/bootstrap.md and docs/install.md step by step, without root:
     reported as it is (failed when this account cannot open it), and the
     artifacts (Firecracker, the jailer, the guest kernel and image) as
     missing unless given; when a mandatory check fails, the worker refuses
-    to start (RUN-012) and creates no runtime root;
+    to start (RUN-012) and creates no runtime root; then the garbage
+    collection on demand (`-collect-garbage`, OPR-5): refused without
+    `-confirm`, a dry run, a run, audited, and still no runtime root;
 12. ends with an authenticated call to the API as the organization's owner.
 
 Without root: the worker refuses a configuration that root does not own,
@@ -44,6 +46,16 @@ and the authority service admits only root on the worker's socket. The run
 starts both in a user namespace where this account is root (`unshare -r`),
 which changes no permission on the host: the KVM device, cgroups and mounts
 are seen as this account sees them. Everything else runs as this account.
+
+Nothing dials out (DEP-1): once Go's modules are downloaded, the whole run,
+the build included, is in a network namespace of its own. Its only way out
+is a dummy interface, which the default routes (IPv4 and IPv6) go through,
+so that any attempt to reach another host sends a packet there. nftables
+counts, in that namespace, the packets that leave by another interface than
+loopback, the UDP datagrams (DNS included), and each TCP connection opened
+on loopback by its port. The run fails when a packet left, when a datagram
+was sent, or when a connection went to a port that nothing in the install
+listens on; the counts are in summary.json, under egress.
 
 The run writes summary.json (each step with its document, its duration and
 what it checked; the preflight's results; the deviations from the docs it
@@ -94,7 +106,46 @@ DEVIATIONS = [
     "The API runs as this account, outside that namespace: the service sees it as root there, which its API socket "
     "admits too, so this run does not show the admission of api_uid (the Go tests do).",
     "The identity provider is played by this run: an Ed25519 key made here signs the owner's tokens.",
+    "From the build on, the run is in a network namespace of its own whose only way out is a dummy interface, "
+    "to count what would leave the host (DEP-1); Go's modules are downloaded before, with GOPROXY off after.",
 ]
+# The network namespace of the run (DEP-1). The environment variable marks
+# the run inside it.
+NAMESPACE_ENV = "AGENTCAPSULE_INSTALL_IN_NAMESPACE"
+EGRESS_RULES = """table inet egress {
+  set loopback_tcp { type inet_service; flags dynamic; counter; }
+  counter outside {}
+  counter datagrams {}
+  chain output {
+    type filter hook output priority filter; policy accept;
+    oifname != "lo" counter name outside
+    meta l4proto udp counter name datagrams
+    oifname "lo" tcp flags & (syn | ack) == syn add @loopback_tcp { tcp dport }
+  }
+}
+"""
+# Runs as root of a user namespace that owns a new network namespace: sets
+# up loopback and the dummy way out, loads the rules, runs the rest as this
+# account again (a nested user namespace), then saves the counters.
+NAMESPACE_SETUP = r"""set -e
+out=$1 rules=$2 uid=$3 gid=$4
+shift 4
+ip link set lo up
+ip link add dummy0 type dummy
+ip link set dummy0 addrgenmode none
+ip link set dummy0 up
+ip addr add 192.0.2.1/24 dev dummy0
+ip route add default via 192.0.2.254 dev dummy0
+ip -6 addr add 2001:db8::1/64 dev dummy0 nodad
+ip -6 route add default via 2001:db8::fe dev dummy0
+nft -f "$rules"
+status=0
+unshare --user --map-user="$uid" --map-group="$gid" -- "$@" || status=$?
+mkdir -p "$out/egress"
+nft -j list ruleset > "$out/egress/nft.json"
+ip -j -s link show dev dummy0 > "$out/egress/dummy0.json"
+exit $status
+"""
 
 
 def free_port():
@@ -163,6 +214,88 @@ def user_namespace_usable():
         return subprocess.run(["unshare", "-r", "true"], capture_output=True, timeout=10).returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         return False
+
+
+def go_environment(a, base_env):
+    """The environment of the build: no go.work, no go env file, modules
+    read-only, and none fetched inside the network namespace."""
+    env = {**base_env, "CGO_ENABLED": "1", "GOTOOLCHAIN": "local", "GOFLAGS": "-mod=readonly", "GOENV": "off", "GOWORK": "off"}
+    for name in ("GOCACHE", "GOMODCACHE", "GOPATH", "TMPDIR"):
+        if os.environ.get(name):
+            env[name] = os.environ[name]
+    if a.native_tools:
+        env["CGO_CFLAGS"] = "-I" + str(a.native_tools.resolve() / "usr/include")
+    if os.environ.get(NAMESPACE_ENV) == "1":
+        env["GOPROXY"] = "off"
+    return env
+
+
+def base_environment(work):
+    return {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": os.environ.get("HOME", str(work)), "LANG": "C.UTF-8"}
+
+
+def assess_egress(directory, listeners):
+    """Return what the network namespace counted, and its problems: a packet
+    that left, a UDP datagram, a TCP connection to a port nothing of the
+    install listens on, or counters that saw nothing of the run."""
+    try:
+        tx = json.loads((directory / "dummy0.json").read_text())[0]["stats64"]["tx"]["packets"]
+        ruleset = json.loads((directory / "nft.json").read_text())["nftables"]
+    except (OSError, ValueError, KeyError) as e:
+        return {}, [f"the network namespace's counters are missing: {e}"]
+    counters = {i["counter"]["name"]: i["counter"]["packets"] for i in ruleset if "counter" in i}
+    ports = {}
+    for item in ruleset:
+        if item.get("set", {}).get("name") == "loopback_tcp":
+            for elem in item["set"].get("elem", []):
+                ports[elem["elem"]["val"]] = elem["elem"]["counter"]["packets"]
+    configured = {port: name for name, port in listeners.items()}
+    egress = {"dummy0_tx_packets": tx, "packets_out_of_loopback": counters.get("outside"), "udp_datagrams": counters.get("datagrams"),
+              "loopback_tcp_connections": {f"{port} ({configured.get(port, 'nothing configured')})": n for port, n in sorted(ports.items())}}
+    problems = []
+    if tx != 0 or counters.get("outside") != 0:
+        problems.append(f"{max(tx, counters.get('outside') or 0)} packets left by the dummy interface: something tried to reach another host")
+    if counters.get("datagrams") != 0:
+        problems.append(f"{counters.get('datagrams')} UDP datagrams were sent (a DNS query, telemetry?)")
+    stray = sorted(port for port in ports if port not in configured)
+    if stray:
+        problems.append(f"TCP connections to loopback ports nothing of the install listens on: {stray}")
+    if not ports.get(listeners.get("api")):
+        problems.append("the counters saw no connection to the API: they do not see the run")
+    return egress, problems
+
+
+def run_in_namespace(a):
+    """Download Go's modules, then run this script again in a network
+    namespace of its own, and check what tried to leave it (DEP-1)."""
+    out = a.output.resolve()
+    if out.exists():
+        raise SystemExit(f"{out} exists: give a new evidence directory")
+    base_env = base_environment(Path(tempfile.gettempdir()))
+    subprocess.run([str(a.go.resolve()), "mod", "download"], cwd=ROOT, env=go_environment(a, base_env), check=True, timeout=1200)
+    with tempfile.NamedTemporaryFile("w", prefix="acpi-egress-", suffix=".nft", delete=False) as f:
+        f.write(EGRESS_RULES)
+        rules = f.name
+    try:
+        command = ["unshare", "--user", "--map-root-user", "--net", "--fork", "--", "sh", "-c", NAMESPACE_SETUP, "sh",
+                   str(out), rules, str(os.getuid()), str(os.getgid()), sys.executable, str(Path(__file__).resolve()), *sys.argv[1:]]
+        subprocess.run(command, env={**os.environ, NAMESPACE_ENV: "1"})
+    finally:
+        os.unlink(rules)
+    summary = out / "summary.json"
+    try:
+        report = json.loads(summary.read_text())
+    except (OSError, ValueError):
+        report = {"status": "failed", "error": "the run in the network namespace wrote no summary"}
+    report["egress"], problems = assess_egress(out / "egress", report.get("listeners", {}))
+    if problems:
+        report["status"] = "failed"
+        report["error"] = "; ".join(([report["error"]] if report.get("error") else []) + problems)
+        print("FAIL", "; ".join(problems), file=sys.stderr)
+    out.mkdir(parents=True, exist_ok=True)
+    summary.write_text(json.dumps(report, indent=2) + "\n")
+    print(f"install from scratch: {report['status']}; nothing left the network namespace: {not problems}; evidence in {out}")
+    return 0 if report["status"] == "passed" else 1
 
 
 class Failure(Exception):
@@ -259,7 +392,7 @@ def main():
     p.add_argument("--initrd", type=Path, help="guest image built by build-product-guest.py")
     p.add_argument("--output", type=Path, required=True, help="new evidence directory")
     a = p.parse_args()
-    for tool in ("openssl", "curl", "unshare"):
+    for tool in ("openssl", "curl", "unshare", "ip", "nft"):
         if not shutil.which(tool):
             p.error(tool + " is required")
     if os.geteuid() == 0:
@@ -271,6 +404,8 @@ def main():
     for name, path in given.items():
         if not path.is_file():
             p.error(f"--{name} {path} is not a file")
+    if os.environ.get(NAMESPACE_ENV) != "1":
+        return run_in_namespace(a)
     out = a.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
     started = time.monotonic()
@@ -285,7 +420,7 @@ def main():
     sockets = short / "run/agentcapsule-authority"
     pg_data, pg_socket = work / "postgres", short / "pg"
     client = work / "client"  # the operator's and the identity provider's own files
-    base_env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": os.environ.get("HOME", str(work)), "LANG": "C.UTF-8"}
+    base_env = base_environment(work)
     pg_env = dict(base_env)
     if a.pg_library_path:
         pg_env["LD_LIBRARY_PATH"] = str(a.pg_library_path.resolve())
@@ -293,6 +428,9 @@ def main():
     # Production mode: AGENTCAPSULE_MODE is not set (docs/install.md, Modes).
     admin_env = {**base_env, "AGENTCAPSULE_DATABASE_URL": dsn}
     api_port, api_metrics, authority_metrics, worker_metrics = free_port(), free_port(), free_port(), free_port()
+    # What the install listens on, for the count of connections (DEP-1).
+    report["listeners"] = {"api": api_port, "api_metrics": api_metrics, "authority_metrics": authority_metrics,
+                           "worker_metrics": worker_metrics}
     url = f"https://{API_NAME}:{api_port}"
     curl_tls = ["--cacert", str(client / "ca.pem"), "--resolve", f"{API_NAME}:{api_port}:127.0.0.1"]
     pg_started = False
@@ -346,12 +484,7 @@ def main():
             target = src / name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / name, target)
-        go_env = {**base_env, "CGO_ENABLED": "1", "GOTOOLCHAIN": "local", "GOFLAGS": "-mod=readonly", "GOENV": "off", "GOWORK": "off"}
-        for name in ("GOCACHE", "GOMODCACHE", "GOPATH", "TMPDIR"):
-            if os.environ.get(name):
-                go_env[name] = os.environ[name]
-        if a.native_tools:
-            go_env["CGO_CFLAGS"] = "-I" + str(a.native_tools.resolve() / "usr/include")
+        go_env = go_environment(a, base_env)
         report["go"] = run.run("build", [a.go.resolve(), "version"], go_env).stdout.strip()
         run.run("build", [a.go.resolve(), "build", "-trimpath", "-o", "bin/", "./cmd/..."], go_env, cwd=src, timeout=1200,
                 shown="go build -trimpath -o bin/ ./cmd/...")
@@ -671,6 +804,23 @@ def main():
             run.checked("the worker refuses to start: it prints the failed mandatory checks and preflight_failed (RUN-012)")
         else:
             run.checked("every mandatory check passes here: the worker was not started")
+        # The garbage collection on demand (docs/worker.md, OPR-5): the guards
+        # of ADR 014, and nothing created. This host has nothing to collect.
+        collect = ["unshare", "-r", opt / "agentcapsule-worker", "-config", etc / "worker.json", "-collect-garbage"]
+        r = run.run("worker-collect-garbage", collect, admin_env, check=False, timeout=120)
+        run.expect(r.returncode == 1 and r.stderr.strip() == "confirmation_required", "the collection ran without -confirm")
+        for extra, dry in ((["-dry-run"], True), (["-confirm", "local"], False)):
+            r = run.run("worker-collect-garbage", [*collect, *extra], admin_env, check=False, timeout=120)
+            outcome = json.loads(r.stdout) if r.returncode == 0 and r.stdout.strip() else {}
+            run.expect(outcome.get("outcome") == "unchanged" and outcome.get("dry_run") is dry and outcome.get("target") == "local",
+                       f"-collect-garbage {' '.join(extra)}: exit {r.returncode}; see logs/worker-collect-garbage.log")
+        run.expect(not host_root.exists(), "the garbage collection created the runtime root")
+        r = admin("list-audit", "list-audit")
+        collected = [json.loads(line) for line in r.stdout.splitlines() if '"garbage.collected"' in line]
+        run.expect(len(collected) == 1 and collected[0].get("outcome") == "unchanged",
+                   f"list-audit holds {len(collected)} garbage collections, not the one that ran")
+        run.checked("-collect-garbage: refused without -confirm, a dry run and a run print their outcome, the run alone is "
+                    "audited (garbage.collected, unchanged); the runtime root not created")
         run.done()
 
         # ---- 12. The end: an authenticated call as the organization's owner.
