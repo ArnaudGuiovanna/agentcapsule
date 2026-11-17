@@ -61,6 +61,62 @@ def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+# The capacity benchmark (DEP-5): TestCapacityBenchmark in internal/worker,
+# run with --capacity-agents; its report's format.
+CAPACITY_SCHEMA = "agentcapsule-capacity-benchmark/1"
+CAPACITY_MEASURED = ("boot_seconds", "wake_to_running_seconds", "vmm_rss_mib", "first_answer_seconds",
+                     "wake_from_stopped_answer_seconds")
+
+
+def capacity_sizes(text):
+    """The numbers of agents of --capacity-agents: 1 to 64 each, sorted, once each."""
+    sizes = set()
+    for part in text.split(","):
+        part = part.strip()
+        if not part.isdigit() or not 1 <= int(part) <= 64:
+            raise ValueError(f"--capacity-agents: {part!r} is not a number from 1 to 64")
+        sizes.add(int(part))
+    return sorted(sizes)
+
+
+def check_capacity_report(report, sizes):
+    """Check the benchmark's report and return its summary for verification.json.
+
+    Every requested number of agents has a step, in order. A measured step
+    has each measurement, for as many VMs as agents, and the host's memory
+    and CPU; a step not run says why.
+    """
+    if report.get("schema") != CAPACITY_SCHEMA:
+        raise ValueError("capacity report: unknown schema")
+    if report.get("config", {}).get("agents") != sizes or not report.get("finished_at"):
+        raise ValueError("capacity report: not the requested agents, or unfinished")
+    steps = report.get("steps", [])
+    if [s.get("agents") for s in steps] != sizes:
+        raise ValueError("capacity report: a step is missing")
+    summary = []
+    for s in steps:
+        n = s["agents"]
+        if s.get("status") == "not_run":
+            if not s.get("reason"):
+                raise ValueError(f"capacity report: the step of {n} agents was not run and says not why")
+            summary.append({"agents": n, "status": "not_run", "reason": s["reason"]})
+            continue
+        if s.get("status") != "measured":
+            raise ValueError(f"capacity report: the step of {n} agents has no status")
+        for name in CAPACITY_MEASURED:
+            counted = (s.get(name) or {}).get("count", 0)
+            if counted < n and not (name == "boot_seconds" and counted >= 1):
+                raise ValueError(f"capacity report: {name} of {n} agents has {counted} values")
+        for name in ("host_used_by_vms_mib", "host_cpu_busy_ratio_idle", "vmm_cpu_seconds_per_second_idle", "all_running_seconds"):
+            if not isinstance(s.get(name), (int, float)):
+                raise ValueError(f"capacity report: the step of {n} agents lacks {name}")
+        summary.append({"agents": n, "status": "measured", "boot_p50_seconds": s["boot_seconds"]["p50"],
+                        "first_answer_p50_seconds": s["first_answer_seconds"]["p50"],
+                        "wake_from_stopped_p50_seconds": s["wake_from_stopped_answer_seconds"]["p50"],
+                        "vmm_rss_p50_mib": s["vmm_rss_mib"]["p50"], "host_used_by_vms_mib": s["host_used_by_vms_mib"]})
+    return summary
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     for name in ["go", "firecracker-build", "upstream-firecracker", "kernel", "guest-build", "native-headers", "output"]:
@@ -83,6 +139,11 @@ def main():
                         "OASF, Directory, SLIM node), carry deliveries between agents through a real SLIM bridge, and run the flagship journey (INT-05)")
     p.add_argument("--rclone", type=Path,
                    help="optional rclone 1.60 binary: also restore an agent from a shipped archive on another host (ADR 020)")
+    p.add_argument("--capacity-agents",
+                   help="optional numbers of agents, such as 1,5,10,20: also run the capacity benchmark (DEP-5), which boots that many VMs "
+                        "in turn and writes capacity.json: boot time, each VMM's memory, the host's memory and CPU, the time to a first "
+                        "answer and the wake from STOPPED. Needs --pg-bin; a step that does not fit in the host's memory is not run")
+    p.add_argument("--capacity-memory-mib", type=int, default=256, help="memory of each VM of the capacity benchmark (128 to 8192)")
     p.add_argument("--pg-bin", type=Path)
     p.add_argument("--pg-library-path", type=Path)
     p.add_argument("--pg-user", help="Non-root owner of the temporary PostgreSQL cluster")
@@ -116,6 +177,16 @@ def main():
                     f"(a terminal paste may add ESC[200~ and ESC[201~ around it); it holds {len(pi_api_key.encode())} bytes")
     if bool(a.pg_bin) != bool(a.pg_user):
         p.error("--pg-bin and --pg-user must be supplied together")
+    capacity = None
+    if a.capacity_agents:
+        if not a.pg_bin:
+            p.error("--capacity-agents needs the worker scenarios (--pg-bin and --pg-user)")
+        try:
+            capacity = capacity_sizes(a.capacity_agents)
+        except ValueError as e:
+            p.error(str(e))
+        if not 128 <= a.capacity_memory_mib <= 8192:
+            p.error("--capacity-memory-mib: 128 to 8192")
     slim_build = None
     if a.slim_bridge_build:
         if not a.pg_bin:
@@ -223,6 +294,7 @@ def main():
         assert required <= passed
         worker_passed = set()
         conformance_passed = set()
+        capacity_summary = None
         if a.pg_bin:
             account = pwd.getpwnam(a.pg_user)
             pgroot = Path(tempfile.mkdtemp(prefix="acpg-db-", dir="/var/tmp"))
@@ -308,6 +380,17 @@ def main():
             required_conformance = {"TestPreimplementationP1HostSealITF",
                 "TestPreimplementationP1HostSealITF/sealed-store-satisfies-future-barrier"}
             assert required_conformance <= conformance_passed, "missing P1 host seal projection"
+            if capacity:
+                # The capacity benchmark, last: its VMs never overlap a scenario.
+                env.update(AGENTCAPSULE_KVM_CAPACITY_AGENTS=",".join(map(str, capacity)),
+                           AGENTCAPSULE_KVM_CAPACITY_MEMORY_MIB=str(a.capacity_memory_mib),
+                           AGENTCAPSULE_KVM_CAPACITY_REPORT=str(out / "capacity.json"))
+                run("capacity-benchmark", [a.go, "tool", "test2json", "-p", "github.com/ArnaudGuiovanna/agentcapsule/internal/worker",
+                    out / "product-worker.test", "-test.v", "-test.run=^TestCapacityBenchmark$", "-test.timeout=5400s"], 5520)
+                events = [json.loads(line) for line in (out / "capacity-benchmark.log").read_text().splitlines()]
+                assert not any(e["Action"] in ["skip", "fail"] for e in events)
+                assert any(e["Action"] == "pass" and e.get("Test") == "TestCapacityBenchmark" for e in events), "capacity benchmark did not pass"
+                capacity_summary = check_capacity_report(json.loads((out / "capacity.json").read_text()), capacity)
         (out / "verification.json").write_text(json.dumps({"status": "passed", "executed_tests": sorted(passed),
             "worker_tests": sorted(worker_passed),
             "conformance_tests": sorted(conformance_passed),
@@ -330,6 +413,7 @@ def main():
             "sender_wakes_for_reply": "passed" if "TestProductWorkerSenderWakesForTheReply" in worker_passed else "not_run",
             "harness_refetched_after_restore": "passed" if "TestProductWorkerRefetchesTheHarnessOfARestoredAgent" in worker_passed else "not_run",
             "deletion_with_directory": "passed" if "TestProductWorkerDeletionRemovesTheVolumeTheKeyAndTheDirectoryRecord" in worker_passed else "not_run",
+            "capacity_benchmark": {"report": "capacity.json", "steps": capacity_summary} if capacity_summary is not None else "not_run",
             "scope":"Real jailed encrypted guests and separate unprivileged harness processes. When worker_tests is nonempty, all mandatory worker scenarios passed: contract outage/recovery while preserving the physical census, credential replacement and forced retirement after a blocked quiesce; provisioning and encrypted wake; two owners/agents created via HTTP, manual consent while recipient sleeps, private reply and owner inbox, distinct persistent guest stores across clean sleep/wake, stale control rejection, queued-request cancellation and physical deletion; a tenant agent (delegated identity) acknowledging an invocation as working, then reading its encrypted attachment and calling its model over the platform channel and posting the answer; two tenant agents running a harness imported from an OCI registry, sharing one read-only cached image attached as a second drive and run chrooted by capsule-init; a tenant agent upgraded to another imported release and rolled back across sleep/wake with its encrypted volume, each change applied at the next boot, then the unused deprecated package evicted from the cache while the running release stays; a harness written in Python (built off-host from a pinned base image) imported and run in the guest, answering from its own SQLite state kept across sleep/wake and posting a deferred model answer over the platform channel; an ordinary agent image (Python, the official OpenAI SDK, a tool loop) adapted without change by capsule-adapter, answering invocations by running the agent, whose SDK reached the organization's model through the endpoint on the guest loopback and the platform channel (tools forwarded, every call metered), reading an attached file with its own tool call and answering again after sleep/wake; two agents of one organization, each an A2A server written with the official A2A Go SDK and run unchanged by capsule-adapter, one asking the other over A2A through the adapter's endpoint on its guest loopback (Agent Card, a peer request under the invocation's mandate, the answer as the task's artifact), refused while the recipient is not discoverable, delivered at once under the auto inbound policy, waking the recipient when it sleeps, and holding a request that would wake it beyond the organization's wake budget until the organization allows one more wake; when a2a_over_slim passed, the same two agents on a host that carries deliveries between agents through a real SLIM bridge process (its own unprivileged user, the layout of deploy/systemd) and a private SLIM node: the request and the reply crossing the node, a request waiting without spending an attempt while the bridge is away and delivered once it is back, and a request waking the sleeping recipient through SLIM; when flagship_journey passed, the flagship journey of gate G2 with the private services of deploy/interop: an agent finding another by its skill in the Directory from its own VM while the other sleeps, and getting its answer over A2A and SLIM, the other waking for it; with the Directory down, the search failing and saying so while a request to the known agent still succeeds, and the search succeeding again once the Directory is back; with the SLIM node down, the bridge ending with slim_node_lost, the request waiting, and the bridge started again delivering it once the node is back; when pi_on_real_model passed, Pi (the coding agent, unmodified, packed from an installed release) running in a microVM on a real model (the host's model server or a hosted provider), reading an attached file with its own read tool and answering from its session in the next invocation and again after sleep/wake; two organizations, each trusting its own identity provider, running agents at the same time in separate jailed VMs (distinct users, volumes and keys), with every resource of the other organization answering 404, its model alias unusable and its files impossible to attach, and lists and audit trails limited to one organization; the maintenance loop archiving a sleeping agent's encrypted volume while it keeps delivering to a running agent, which is not interrupted, the archive verified with the restore authority and recorded in PostgreSQL, then, a day later on the scheduler's clock, an overdue running agent stopped for its archive, retention keeping one archive per agent, and the agent waking on its next invocation; when restore_from_archive passed, an agent restored on its own host from an archive taken on demand: the restore stopped twice like a crash and resumed, the volume holding exactly the archive's bytes before the restricted boot at the new incarnation, the two invocations answered after the archive declared lost and mapped to their invocations and only those, the agent answering again from a VM of the new incarnation, and the old incarnation's fence receipt, identity and control observation refused. Direct setup covers installation only. Nonempty conformance_tests separately establish the P1 permanent-seal projection on local mTLS/SQLite, PostgreSQL and a real host registry: same inode, future seal revalidation, missing-file/busy-lock/restart refusals. Its initial placements and VMM retirement are fixtures, not a physical replay of the trace. No concurrent in-flight writer crash, restore onto another host or complete MVP validation is claimed."}, indent=2) + "\n")
     finally:
         cleanup_errors = []
