@@ -253,7 +253,8 @@ A message's `content` holds 1 to 32 parts. A part is text, content type
   the event), `input_purged`, `attachments_purged`, `agent_unavailable`,
   `invalid_transition` (not a dead letter). The invocation is `accepted` again
   and carries `replayed_at`, which stays once it ends. Each replay is
-  audited (`instruction_replays`); the audit retention deletes that record,
+  audited (`instruction_replays`), and shows in the organization's trail as
+  `invocation.replayed`; the audit retention deletes that record,
   and `replayed_at` with it. The operator has the same replay
   (`agentcapsule-admin replay-dead-letter`, [worker.md](../worker.md#replaying-a-dead-letter)).
 - **Capacity**: accepted work never fails for a full host. It waits, spending

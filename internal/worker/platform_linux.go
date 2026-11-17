@@ -14,9 +14,17 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/runtime"
 )
 
+// applicationHost is what the platform channel needs of the host driver
+// (runtime.FirecrackerHost): its shared admission, and the control session of
+// the agent's current boot, whose identity the caller must have.
+type applicationHost interface {
+	WithApplication(context.Context, func(context.Context) error) error
+	Control(context.Context, string) (*capsuleprotocol.Client, error)
+}
+
 type platformAPI struct {
 	store       *controlplane.Store
-	host        *runtime.FirecrackerHost
+	host        applicationHost
 	caller      controlplane.VMCaller
 	transit     func() *controlplane.Transit
 	llm         func() *controlplane.LLMService

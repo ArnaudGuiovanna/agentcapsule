@@ -5,14 +5,17 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorization"
+	"github.com/jackc/pgx/v5"
 )
 
-// AuditEvent is metadata only: who did what to which resource, and when. It
-// never carries a token, a secret, a prompt or any conversation content.
+// AuditEvent is metadata only: who did what to which resource, when, and
+// with what outcome. It never carries a token, a secret, a prompt or any
+// conversation content.
 type AuditEvent struct {
 	ID        string    `json:"id"`
 	CreatedAt time.Time `json:"created_at"`
@@ -21,9 +24,13 @@ type AuditEvent struct {
 	Actor string `json:"actor"`
 	// Target is the principal, agent, service account or tenant concerned.
 	Target string `json:"target"`
-	// Reference is the team, assignment, request or token the action refers
-	// to, if any.
+	// Reference is the team, assignment, request, token or invocation the
+	// action refers to, if any.
 	Reference string `json:"reference,omitempty"`
+	// Outcome is done, or refused for an attempt that an audited route
+	// refused (TEN-009); Reason is then the refusal's code.
+	Outcome string `json:"outcome"`
+	Reason  string `json:"reason,omitempty"`
 }
 
 type AuditPage struct {
@@ -32,16 +39,29 @@ type AuditPage struct {
 	Next string `json:"next,omitempty"`
 }
 
+// auditUnion is the organization's trail: the events of its audit tables,
+// the replays of its dead letters, by its administrators or the operator,
+// and its refused administrative attempts.
 const auditUnion = `
-    SELECT id,created_at,action,actor_principal_id AS actor,target_principal_id AS target,'' AS reference FROM tenant_member_audit WHERE tenant_id=$1 AND changed
-    UNION ALL SELECT id,created_at,action,actor_principal_id,coalesce(target_principal_id,team_id),team_id FROM tenant_team_audit WHERE tenant_id=$1 AND changed
-    UNION ALL SELECT id,created_at,action,actor_principal_id,agent_id,coalesce(assignment_id,request_id,'') FROM tenant_agent_audit WHERE tenant_id=$1
-    UNION ALL SELECT id,created_at,action,actor_principal_id,service_principal_id,coalesce(token_id,'') FROM tenant_service_audit WHERE tenant_id=$1
-    UNION ALL SELECT id,created_at,'llm.'||action,actor_principal_id,coalesce(subject_id,provider_id,budget_id),coalesce(alias,usage_id,'') FROM llm_audit WHERE tenant_id=$1
-    UNION ALL SELECT id,created_at,action,'platform:'||actor_account,tenant_id,'' FROM organization_audit WHERE tenant_id=$1 AND changed
-    UNION ALL SELECT id,created_at,'delegation.'||action,'operator',tenant_id,'' FROM delegation_audit WHERE tenant_id=$1 AND changed
-    UNION ALL SELECT id,created_at,action,actor_principal_id,coalesce(agent_id,tenant_id),'' FROM capability_audit WHERE tenant_id=$1
-    UNION ALL SELECT id,created_at,'queue.'||action,actor_principal_id,tenant_id,'' FROM queue_audit WHERE tenant_id=$1`
+    SELECT id,created_at,action,actor_principal_id AS actor,target_principal_id AS target,'' AS reference,'done' AS outcome,'' AS reason FROM tenant_member_audit WHERE tenant_id=$1 AND changed
+    UNION ALL SELECT id,created_at,action,actor_principal_id,coalesce(target_principal_id,team_id),team_id,'done','' FROM tenant_team_audit WHERE tenant_id=$1 AND changed
+    UNION ALL SELECT id,created_at,action,actor_principal_id,agent_id,coalesce(assignment_id,request_id,''),'done','' FROM tenant_agent_audit WHERE tenant_id=$1
+    UNION ALL SELECT id,created_at,action,actor_principal_id,service_principal_id,coalesce(token_id,''),'done','' FROM tenant_service_audit WHERE tenant_id=$1
+    UNION ALL SELECT id,created_at,'llm.'||action,actor_principal_id,coalesce(subject_id,provider_id,budget_id),coalesce(alias,usage_id,''),'done','' FROM llm_audit WHERE tenant_id=$1
+    UNION ALL SELECT id,created_at,action,'platform:'||actor_account,tenant_id,'','done','' FROM organization_audit WHERE tenant_id=$1 AND changed
+    UNION ALL SELECT id,created_at,'delegation.'||action,'operator',tenant_id,'','done','' FROM delegation_audit WHERE tenant_id=$1 AND changed
+    UNION ALL SELECT id,created_at,action,actor_principal_id,coalesce(agent_id,tenant_id),'','done','' FROM capability_audit WHERE tenant_id=$1
+    UNION ALL SELECT id,created_at,'queue.'||action,actor_principal_id,tenant_id,'','done','' FROM queue_audit WHERE tenant_id=$1
+    UNION ALL SELECT id,replayed_at,'invocation.replayed',coalesce(actor_principal_id,'operator'),agent_id,operation_id,'done','' FROM instruction_replays WHERE tenant_id=$1
+    UNION ALL SELECT id,created_at,action,actor_principal_id,target,reference,'refused',reason FROM tenant_refusal_audit WHERE tenant_id=$1`
+
+const auditColumns = `id,created_at,action,actor,target,reference,outcome,reason`
+
+func scanAuditEvent(rows pgx.Rows) (AuditEvent, error) {
+	var e AuditEvent
+	err := rows.Scan(&e.ID, &e.CreatedAt, &e.Action, &e.Actor, &e.Target, &e.Reference, &e.Outcome, &e.Reason)
+	return e, err
+}
 
 func encodeAuditCursor(e AuditEvent) string {
 	return base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf("%d|%s", e.CreatedAt.UTC().UnixMicro(), e.ID)))
@@ -88,7 +108,7 @@ func (a *Accounts) ListAudit(ctx context.Context, p Principal, cursor string, li
 	if !authorization.CanAdminister(tenantAccess(p), authorization.Role(current.Role), authorization.ReadAudit) {
 		return AuditPage{}, ErrForbidden
 	}
-	rows, err := tx.Query(ctx, `SELECT id,created_at,action,actor,target,reference FROM (`+auditUnion+`) e
+	rows, err := tx.Query(ctx, `SELECT `+auditColumns+` FROM (`+auditUnion+`) e
         WHERE (created_at,id) > ($2::timestamptz,$3::text) ORDER BY created_at,id LIMIT $4`, p.TenantID, after, afterID, limit)
 	if err != nil {
 		return AuditPage{}, err
@@ -96,8 +116,8 @@ func (a *Accounts) ListAudit(ctx context.Context, p Principal, cursor string, li
 	defer rows.Close()
 	page := AuditPage{Items: []AuditEvent{}}
 	for rows.Next() {
-		var e AuditEvent
-		if err = rows.Scan(&e.ID, &e.CreatedAt, &e.Action, &e.Actor, &e.Target, &e.Reference); err != nil {
+		e, err := scanAuditEvent(rows)
+		if err != nil {
 			return AuditPage{}, err
 		}
 		page.Items = append(page.Items, e)
@@ -155,15 +175,15 @@ func (a *Accounts) ExportAudit(ctx context.Context, p Principal, from, to time.T
 	if err != nil {
 		return AuditExport{}, err
 	}
-	rows, err := tx.Query(ctx, `SELECT id,created_at,action,actor,target,reference FROM (`+auditUnion+`) e
+	rows, err := tx.Query(ctx, `SELECT `+auditColumns+` FROM (`+auditUnion+`) e
         WHERE created_at >= $2 AND created_at < $3 ORDER BY created_at,id LIMIT $4`, p.TenantID, from, to, MaxAuditExport+1)
 	if err != nil {
 		return AuditExport{}, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var e AuditEvent
-		if err = rows.Scan(&e.ID, &e.CreatedAt, &e.Action, &e.Actor, &e.Target, &e.Reference); err != nil {
+		e, err := scanAuditEvent(rows)
+		if err != nil {
 			return AuditExport{}, err
 		}
 		out.Items = append(out.Items, e)
@@ -176,4 +196,53 @@ func (a *Accounts) ExportAudit(ctx context.Context, p Principal, from, to time.T
 		return AuditExport{}, ErrAuditExportTooLarge
 	}
 	return out, commit(ctx, tx)
+}
+
+// RefusedAttempt is an administrative attempt that an audited route refused
+// (TEN-009): the action it attempted, the identifiers its path named and the
+// refusal's code (the API's problem code).
+type RefusedAttempt struct {
+	Action    string
+	Target    string
+	Reference string
+	Reason    string
+}
+
+var (
+	refusalAction = regexp.MustCompile(`^[a-z_]+(\.[a-z_]+){1,2}$`)
+	refusalReason = regexp.MustCompile(`^[a-z_]{1,64}$`)
+	// refusalIdentifier is the platform's identifier: a prefix and 128
+	// random bits. Anything else a path named, an alias or a guess, is not
+	// kept: it could carry text of the caller's choosing.
+	refusalIdentifier = regexp.MustCompile(`^[a-z][a-z_]{0,31}_[0-9a-f]{32}$`)
+)
+
+// RecordRefusal adds to the organization's trail an administrative attempt
+// of one of its members or technical accounts that was refused, with outcome
+// refused. The refused change rolled back: the record is its own
+// transaction. It keeps only identifiers and codes: a target that is not a
+// platform identifier is recorded as the organization, a reference that is
+// not one is dropped. Only the API calls it, with a principal it
+// authenticated.
+func (a *Accounts) RecordRefusal(ctx context.Context, p Principal, r RefusedAttempt) error {
+	if p.TenantID == "" || !validOrganizationText(p.ID, 100) || !refusalAction.MatchString(r.Action) || !refusalReason.MatchString(r.Reason) {
+		return ErrInput
+	}
+	target, reference := r.Target, r.Reference
+	if !refusalIdentifier.MatchString(target) {
+		target = p.TenantID
+	}
+	if !refusalIdentifier.MatchString(reference) {
+		reference = ""
+	}
+	tx, err := a.store.begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer rollback(tx)
+	if _, err = tx.Exec(ctx, `INSERT INTO tenant_refusal_audit(id,tenant_id,actor_principal_id,action,target,reference,reason) VALUES($1,$2,$3,$4,$5,$6,$7)`,
+		newID("audit"), p.TenantID, p.ID, r.Action, target, reference, r.Reason); err != nil {
+		return err
+	}
+	return commit(ctx, tx)
 }

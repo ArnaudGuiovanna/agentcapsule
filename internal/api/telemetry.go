@@ -45,7 +45,7 @@ func (s *Server) EnableTelemetry(registry *telemetry.Registry, events io.Writer)
 			route, telemetry.Label{Name: "method", Values: httpMethods}, telemetry.Label{Name: "status_class", Values: statusClasses}),
 		latency: registry.Histogram("agentcapsule_api_request_duration_seconds", "API request latency by route pattern.",
 			[]float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10}, route),
-		log: telemetry.NewLogger(events, map[string][]string{"event": {"http_request"}, "route": routes, "method": httpMethods,
+		log: telemetry.NewLogger(events, map[string][]string{"event": {"http_request", "audit_refusal_unrecorded"}, "route": routes, "method": httpMethods,
 			"problem": problemCodes}),
 	}
 	s.observeRevocations(registry)
@@ -61,6 +61,13 @@ func (t *apiTelemetry) record(route, method string, w *statusRecorder, requestID
 		fields = append(fields, telemetry.Code("problem", w.problem))
 	}
 	t.log.Event("http_request", append(fields, telemetry.Seconds("duration", elapsed))...)
+}
+
+// refusalUnrecorded reports a refused administrative attempt that its
+// organization's trail could not record (TEN-009): the answer went out, the
+// record did not.
+func (t *apiTelemetry) refusalUnrecorded() {
+	t.log.Event("audit_refusal_unrecorded")
 }
 
 // statusRecorder keeps the status and problem code a handler answered with.

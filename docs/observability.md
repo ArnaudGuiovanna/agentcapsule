@@ -169,6 +169,7 @@ Each process writes one JSON object per line, with `time` and `event` first:
 | Process | Event | Fields |
 | --- | --- | --- |
 | API | `http_request` | `request_id`, `route`, `method`, `status`, `problem` (the problem code, if any), `duration` |
+| API | `audit_refusal_unrecorded` (standard output) | — : a refused administrative attempt that its organization's trail could not record ([ADR 014 §10](adr/014-operations-capacity-diagnostics-audit.md#10-refused-attempts-in-the-organizations-trail)); its answer went out |
 | Worker | `maintenance_started`, `maintenance_complete` | — |
 | Worker | `maintenance_retry` | `reason` (as above) |
 | Worker | `wake_budget_exhausted`, `harness_import_retry`, `directory_publish_retry`, `slim_callback_stopped` | — |

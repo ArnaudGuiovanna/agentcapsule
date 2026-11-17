@@ -138,7 +138,8 @@ local user ID), when, the action, the target and the outcome: `done`,
 `unchanged` or `refused` with its reason. A refusal is recorded in its own
 transaction, since the refused change rolls back.
 `agentcapsule-admin list-audit` prints it with the operator's other actions
-(the platform credential, organizations, trusts). The other admin commands
+(the platform credential, organizations, trusts, and since §10 harness
+imports and the operator's replays of dead letters). The other admin commands
 create or configure and destroy nothing. The worker's `-restore-agent` and
 `agentcapsule-authority promote` are not admin commands and are unchanged.
 
@@ -170,6 +171,58 @@ not run here. `TestLiveGHCRRejectsAnImageThatIsNotAHarness` passed on
 fetched and checked against its digest, and a rejection as `integrity` before
 any layer.
 
+## 10. Refused attempts in the organization's trail
+
+TEN-009 asks for who, when, resource and outcome. An organization's trail
+recorded only what happened: a refused attempt left no event, and only the
+operator's commands recorded an outcome (§7).
+
+- **What is recorded.** An audited route that refuses a member or a
+  technical account of an organization adds an event with outcome `refused`
+  to that organization's trail. An audited route is one whose action writes
+  an event of the trail (`auditedRoutes` in `internal/api`; a test keeps the
+  list in step with the routes). The event holds the actor, the time, the
+  action the route would have recorded (`member.created`,
+  `assignment.revoked`, …), the target and reference its path named, and
+  the refusal's code as its reason (`forbidden`, `not_found`,
+  `invalid_json`, `idempotency_key_required`, …). A refusal is one of
+  authorization (403, and 404 for what the caller may not see) or of
+  validation (400, 409, 413, 415, 422).
+- **What is not.** The request's body, its headers, a token. A path value
+  is kept only if it has the form of a platform identifier (a prefix and 128
+  random bits); otherwise (an alias's name, a malformed guess) the target
+  is the organization and the reference is dropped, so that a path cannot
+  carry text of the caller's choosing into the trail. Reads, invocations
+  and messages are not administrative actions: their refusals leave no
+  event. An unauthenticated request (401) names no organization, a method
+  the route does not serve (405) is no attempt of its action, and capacity
+  (429) and availability (5xx) refuse no one in particular: none is
+  recorded. A member's attempt at a platform route (create an organization,
+  import a harness) is recorded in the member's organization.
+- **When.** After the answer, in its own transaction (migration 0043,
+  `tenant_refusal_audit`): the refused change rolled back. A record that
+  fails does not change the answer; the API then logs
+  `audit_refusal_unrecorded`.
+- **The feeds.** Every event of `GET /v1/audit` and of its export carries
+  `outcome` (`done` or `refused`) and, for a refusal, `reason`. The replays
+  of dead letters (`instruction_replays`, ADR 017) join the trail of their
+  agent's organization as `invocation.replayed`, by its administrator or by
+  `operator`, with the invocation as reference. `agentcapsule-admin
+  list-audit` adds the platform's harness imports and deprecations
+  (`harness.import.requested`, `harness.release.deprecated`, from
+  `harness_audit`) and the operator's own replays.
+- **Retention.** §8 covers `tenant_refusal_audit` like every audit table.
+- **Not done.** Nothing bounds how fast one member fills the trail with
+  refused attempts, other than the API's own capacity (question 7).
+
+Tests: `TestRefusedAdministrativeAttemptsJoinTheTrail` and
+`TestEveryAuditedRouteIsServed` (`internal/api`);
+`TestReplaysAndHarnessImportsJoinTheAuditFeeds` and
+`TestAuditTrailHoldsNoConversationContent`, which plants text in
+invocations, messages, results, a request and its reply between two agents
+and a refused attempt, and finds none of it in the trail, its export or the
+operator's feed (`internal/controlplane`).
+
 ## Questions for the product owner
 
 1. **Storage threshold.** A host's disk reaches 80 %. Should creating agents
@@ -194,3 +247,15 @@ any layer.
 5. **Exports.** Should an audit export be itself an audited event, so that an
    organization knows who exported its trail? Recommended: yes, in the next
    iteration; today it is not recorded.
+6. **What a refused attempt names** (§10). A member of an organization
+   tries to assign an agent by an identifier that names nothing in the
+   organization, perhaps an agent of another one. Should the trail keep the
+   identifier the member sent (a, the default), or name only the
+   organization when the identifier is not one of its own (b)? Recommended:
+   (a). It is the member's own input, it shows the auditors what was tried,
+   and it reveals nothing of another organization: the answer was 404
+   either way.
+7. **Many refusals** (§10). A misconfigured client is refused a thousand
+   times an hour. Should each refusal be an event (a, the default), or one
+   event per actor, action and reason each minute, with a count (b)?
+   Recommended: (a) now, (b) if trails grow too fast.

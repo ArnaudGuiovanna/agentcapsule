@@ -175,11 +175,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Request-ID", requestID)
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+	w = recorder
 	if s.telemetry != nil {
-		recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		route, start := invalidRoute, time.Now()
 		defer func() { s.telemetry.record(route, r.Method, recorder, requestID, time.Since(start)) }()
-		w = recorder
 		if path.Clean(r.URL.Path) == r.URL.Path {
 			_, route = s.mux.Handler(r)
 		}
@@ -188,9 +188,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		problem(w, 400, "invalid_path")
 		return
 	}
-	ctx, cancel := context.WithTimeout(telemetry.WithRequestID(r.Context(), requestID), 10*time.Second)
+	ctx, attempt := withAttempt(telemetry.WithRequestID(r.Context(), requestID))
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	s.mux.ServeHTTP(w, r.WithContext(ctx))
+	served := r.WithContext(ctx)
+	s.mux.ServeHTTP(w, served)
+	// A refused administrative attempt joins its organization's trail
+	// (TEN-009); the mux has set the route and its path values on served.
+	s.recordRefusal(served, recorder, attempt)
 }
 
 func problem(w http.ResponseWriter, status int, code string) {
@@ -367,6 +372,7 @@ func (s *Server) principal(w http.ResponseWriter, r *http.Request) (controlplane
 		failure(w, err)
 		return p, false
 	}
+	noteAttempt(r, p)
 	return p, true
 }
 func (s *Server) live(w http.ResponseWriter, r *http.Request) {

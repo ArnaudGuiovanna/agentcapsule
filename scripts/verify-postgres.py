@@ -180,7 +180,7 @@ def main():
             if args.llm_base_url:
                 run("llm-live", [*command, "-tags=llmlive", "-run=^TestLive", "./internal/llmgateway", "./internal/controlplane"], timeout=300, go_json=True,
                     extra_env={"AGENTCAPSULE_TEST_LLM_BASE_URL": args.llm_base_url, "AGENTCAPSULE_TEST_LLM_MODEL": args.llm_model})
-            run("recovery-prepare", [*command, "./internal/controlplane", "-run=^Test(DurableDatabaseRestart|StoreSealDatabaseRecovery|RenewalDatabaseRecovery|WorkDatabaseRecovery)$"],
+            run("recovery-prepare", [*command, "./internal/controlplane", "-run=^Test(DurableDatabaseRestart|StoreSealDatabaseRecovery|RenewalDatabaseRecovery|WorkDatabaseRecovery|InvocationDatabaseRecovery)$"],
                 extra_env={"AGENTCAPSULE_PG_RECOVERY": "prepare"}, timeout=120, go_json=True)
             run("database-crash", [pg_bin / "pg_ctl", "-D", data, "-m", "immediate", "-w", "stop"])
             started = False
@@ -190,7 +190,7 @@ def main():
             # is what this phase checks.
             run("restart", [pg_bin / "pg_ctl", "-D", data, "-l", out / "server.log", "-o", options, "-t", "900", "-w", "start"], timeout=930)
             started = True
-            run("recovery-verify", [*command, "./internal/controlplane", "-run=^Test(DurableDatabaseRestart|StoreSealDatabaseRecovery|RenewalDatabaseRecovery|WorkDatabaseRecovery)$"],
+            run("recovery-verify", [*command, "./internal/controlplane", "-run=^Test(DurableDatabaseRestart|StoreSealDatabaseRecovery|RenewalDatabaseRecovery|WorkDatabaseRecovery|InvocationDatabaseRecovery)$"],
                 extra_env={"AGENTCAPSULE_PG_RECOVERY": "verify"}, timeout=120, go_json=True)
             log = (out / "server.log").read_text()
             if "automatic recovery in progress" not in log:

@@ -39,6 +39,8 @@ type importLab struct {
 	rule     ociregistry.Rule
 	importer *HarnessImporter
 	cache    string
+	// secret is the platform credential of platform, for the API.
+	secret string
 }
 
 func newImportLab(t *testing.T) *importLab {
@@ -122,7 +124,7 @@ func newImportLab(t *testing.T) *importLab {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &importLab{store: s, accounts: accounts, platform: platform, db: db, reg: reg, rule: rule, importer: importer, cache: cache}
+	return &importLab{store: s, accounts: accounts, platform: platform, db: db, reg: reg, rule: rule, importer: importer, cache: cache, secret: secret}
 }
 
 func (l *importLab) publish(t *testing.T, name, version string) ociregistry.Reference {

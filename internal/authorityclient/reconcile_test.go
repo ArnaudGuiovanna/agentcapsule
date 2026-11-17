@@ -38,6 +38,9 @@ func TestReconciliationThroughTheAPISocket(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The quiet period of a new subject ends a second after the service
+	// started, whatever ran in between: served is no later than its start.
+	served := time.Now()
 	l := serve(t, keys, catalog, caps(time.Second, time.Minute), startedNow)
 	api := l.apiClient(t)
 
@@ -67,8 +70,8 @@ func TestReconciliationThroughTheAPISocket(t *testing.T) {
 		t.Fatal("a known subject", err, time.Since(start))
 	}
 	begun, err := api.c.ImportSubjects(ctx, []string{"agent/known", "request/new", "request/new"})
-	if err != nil || begun != 1 || time.Since(start) < 900*time.Millisecond {
-		t.Fatal("a new subject", begun, err, time.Since(start))
+	if err != nil || begun != 1 || time.Since(served) < time.Second {
+		t.Fatal("a new subject", begun, err, time.Since(served))
 	}
 	subjects, err := api.AuthoritySubjects(ctx)
 	if err != nil || !slices.Equal(subjects, []string{"agent/known", "request/new"}) {
