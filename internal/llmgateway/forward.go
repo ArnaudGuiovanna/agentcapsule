@@ -43,7 +43,9 @@ func ForwardOutputCap(dialect string, body []byte) (int, error) {
 
 // Forward sends an agent's native request to its alias's provider: same retries,
 // breaker and outcome rules as Complete.
-func (g *Gateway) Forward(ctx context.Context, route Route, dialect string, body []byte) (ForwardResponse, error) {
+func (g *Gateway) Forward(ctx context.Context, route Route, dialect string, body []byte) (out ForwardResponse, err error) {
+	ctx, span := startCall(ctx, "forward", route)
+	defer func() { endCall(span, out.Usage, err) }()
 	if route.Secret == "" || route.UpstreamModel == "" {
 		return ForwardResponse{}, ErrInvalid
 	}
@@ -70,7 +72,7 @@ func (g *Gateway) Forward(ctx context.Context, route Route, dialect string, body
 	if err != nil || len(prepared) > MaxForwardBytes+len(model) {
 		return ForwardResponse{}, ErrInvalid
 	}
-	var out ForwardResponse
+	var answer ForwardResponse
 	err = g.exchange(ctx, route.Key, target, prepared, headers, func(raw []byte) error {
 		if len(raw) > MaxForwardBytes {
 			return ErrInvalid
@@ -79,13 +81,13 @@ func (g *Gateway) Forward(ctx context.Context, route Route, dialect string, body
 		if err != nil {
 			return err
 		}
-		out = ForwardResponse{Body: raw, Usage: usage}
+		answer = ForwardResponse{Body: raw, Usage: usage}
 		return nil
 	})
 	if err != nil {
 		return ForwardResponse{}, err
 	}
-	return out, nil
+	return answer, nil
 }
 
 // forwardFields parses and checks a forwarded request. The agent chooses its

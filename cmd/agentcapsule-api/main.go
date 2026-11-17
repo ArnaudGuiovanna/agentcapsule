@@ -52,6 +52,7 @@ func run(args []string) int {
 	tlsKey := f.String("tls-key", "", "TLS private key (PEM, mode 0600), reloaded on SIGHUP")
 	tlsName := f.String("tls-server-name", "", "name clients use to reach the API; the certificate must cover it")
 	metricsListen := f.String("metrics-listen", "", "loopback address serving Prometheus metrics at /metrics (none when empty)")
+	traceFile := f.String("trace-file", "", "absolute path of a file receiving the spans as OTLP/JSON lines (none when empty)")
 	preflightOnly := f.Bool("preflight", false, "check this configuration (TLS files, ports, PostgreSQL, the authority service), print what to fix, then exit")
 	var authority authorityFlags
 	f.StringVar(&authority.socket, "authority-socket", "", "the authority service's API socket; required in production")
@@ -222,6 +223,17 @@ func run(args []string) int {
 	// pattern, status and duration, never an ID from the path or a body.
 	registry := telemetry.NewRegistry()
 	handler.EnableTelemetry(registry, os.Stdout)
+	if *traceFile != "" {
+		// Spans (OPR-3), every identifier pseudonymized with the
+		// installation's key, which the worker reads too.
+		tracer, code := openTracer(ctx, s, *traceFile, "agentcapsule-api")
+		if code != "" {
+			return fail(code)
+		}
+		defer tracer.Close()
+		tracer.Count(registry)
+		handler.EnableTracing(tracer)
+	}
 	if *metricsListen != "" {
 		metricsListener, err := net.Listen("tcp", *metricsListen)
 		if err != nil {
@@ -286,6 +298,24 @@ func run(args []string) int {
 		<-stopped
 		return 0
 	}
+}
+
+// openTracer appends service's spans to path, pseudonymized with the
+// installation's key read from PostgreSQL (OPR-3). It returns a failure code
+// otherwise.
+func openTracer(ctx context.Context, s *controlplane.Store, path, service string) (*telemetry.Tracer, string) {
+	read, cancel := context.WithTimeout(ctx, 10*time.Second)
+	key, err := s.TraceKey(read)
+	cancel()
+	if err != nil {
+		return nil, "database_schema_unavailable"
+	}
+	defer clear(key)
+	tracer, err := telemetry.NewFileTracer(path, service, key)
+	if err != nil {
+		return nil, "trace_file_unavailable"
+	}
+	return tracer, ""
 }
 
 // authorityFlags reach the authority service's API socket.

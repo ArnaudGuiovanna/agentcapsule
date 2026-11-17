@@ -295,15 +295,14 @@ func (w *Placements) EnableJobEvents(progress, problems *telemetry.Logger) error
 	return nil
 }
 
-func (w *Placements) logJob(j controlplane.WorkerJob, err error) {
+// logJob writes the job's event; origin is the request ID jobOrigin read.
+func (w *Placements) logJob(j controlplane.WorkerJob, origin string, err error) {
 	e := w.jobEvents.Load()
 	if e == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
 	fields := []telemetry.Field{telemetry.Code("kind", j.Kind)}
-	if origin, lookup := w.store.JobOrigin(ctx, j); lookup == nil && origin != "" {
+	if origin != "" {
 		fields = append(fields, telemetry.RequestID(origin))
 	}
 	if err == nil {

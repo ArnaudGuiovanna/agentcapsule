@@ -148,7 +148,10 @@ var authorityReconciliationsSQL string
 //go:embed migrations/0043_tenant_refusal_audit.sql
 var tenantRefusalAuditSQL string
 
-//go:embed migrations/0044_organization_quotas.sql
+//go:embed migrations/0044_trace_pseudonym_key.sql
+var tracePseudonymKeySQL string
+
+//go:embed migrations/0045_organization_quotas.sql
 var organizationQuotasSQL string
 
 // Append migrations; never edit an installed migration. The original schema
@@ -198,7 +201,8 @@ var controlPlaneMigrations = []schemaMigration{
 	{version: 41, name: "receipt-key-days", sql: receiptKeyDaysSQL},
 	{version: 42, name: "authority-reconciliations", sql: authorityReconciliationsSQL},
 	{version: 43, name: "tenant-refusal-audit", sql: tenantRefusalAuditSQL},
-	{version: 44, name: "organization-quotas", sql: organizationQuotasSQL},
+	{version: 44, name: "trace-pseudonym-key", sql: tracePseudonymKeySQL},
+	{version: 45, name: "organization-quotas", sql: organizationQuotasSQL},
 }
 
 func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error {

@@ -39,14 +39,25 @@ func (w *Placements) Invoke(ctx context.Context, target string, event harnesssto
 }
 
 func (w *Placements) deliver(ctx context.Context, target string, event harnessstore.Event, invoke bool) (harnessstore.Receipt, error) {
+	ctx, span := deliverSpan.Start(ctx)
+	span.ID("agentcapsule.agent", target)
+	if invoke {
+		span.Code("agentcapsule.delivery.kind", "invocation")
+	} else {
+		span.Code("agentcapsule.delivery.kind", "agent_message")
+	}
 	var result harnessstore.Receipt
+	slim := false
 	send := func(ctx context.Context) error {
 		c, err := w.control(ctx, target, false)
 		if err != nil {
 			return err
 		}
+		// The guest's platform calls during the delivery join its span.
+		defer w.turn(target, span)()
 		// Owner instructions are not between agents: they never cross SLIM.
 		if link := w.slim.Load(); link != nil && !invoke {
+			slim = true
 			result, err = w.sendSLIM(ctx, link, target, c, event)
 			return err
 		}
@@ -60,6 +71,7 @@ func (w *Placements) deliver(ctx context.Context, target string, event harnessst
 	} else {
 		err = w.withFreshApplication(ctx, send)
 	}
+	endDelivery(span, slim, err)
 	return result, err
 }
 
@@ -193,12 +205,17 @@ func (w *Placements) fence(ctx context.Context, target, subject string) (result 
 // Past its organization's quotas (ADR 021), target stops its organization's
 // own VMs here that are not computing, or waits in the same queue, and an
 // OrganizationQuotaError makes its job try again later.
-func (w *Placements) bootForWork(ctx context.Context, target string) (runtime.VMRun, error) {
+func (w *Placements) bootForWork(ctx context.Context, target string) (_ runtime.VMRun, err error) {
+	ctx, span := wakeSpan.Start(ctx)
+	span.ID("agentcapsule.agent", target)
+	outcome, evicted := "booted", false
+	defer func() { endWake(span, outcome, evicted, err) }()
 	runs, err := w.Reconcile(ctx)
 	if err != nil {
 		return runtime.VMRun{}, err
 	}
 	if run, ok := runs[target]; ok && !run.FenceOnly {
+		outcome = "running"
 		return w.start(ctx, target, false)
 	}
 	others := make([]string, 0, len(runs))
@@ -219,11 +236,13 @@ func (w *Placements) bootForWork(ctx context.Context, target string) (runtime.VM
 		return runtime.VMRun{}, runtime.ErrCapacity
 	}
 	for _, id := range d.EvictForQuota {
+		evicted = true
 		if err = w.stop(ctx, id, runs[id].Generation, true); err != nil {
 			return runtime.VMRun{}, err
 		}
 	}
 	if d.Evict != "" {
+		evicted = true
 		if err = w.stop(ctx, d.Evict, runs[d.Evict].Generation, true); err != nil {
 			return runtime.VMRun{}, err
 		}

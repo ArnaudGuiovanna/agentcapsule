@@ -1,9 +1,9 @@
 # Observability (OPS-02)
 
 The API and the worker give operators metrics, in the Prometheus text format,
-and one structured event per line. Neither carries content, secrets or tenant
-data. [internal/telemetry](../internal/telemetry) enforces that by
-construction:
+one structured event per line and, on request, [traces](#traces). None carries
+content, secrets or tenant data. [internal/telemetry](../internal/telemetry)
+enforces that by construction:
 - **Closed vocabularies.** Every metric label and every event code declares the
   exact list of its values. Anything else becomes `other` (metrics) or `invalid`
   (events). A filter on characters would not do: a token is made of ordinary
@@ -92,6 +92,7 @@ volume archives and, on the standby host, its replay.
 | `agentcapsule_authority_replica_refusals_total` | counter | `kind` | Requests the replica refused: `gap`, `older_epoch`, `newer_epoch`, `conflict`, `promoted`, `identity`, `invalid`, `unavailable` (standby host) |
 | `agentcapsule_telemetry_collect_errors_total` | counter | — | Scrapes whose current values could not be read |
 | `agentcapsule_telemetry_series_dropped_total` | counter | — | Samples dropped at a metric's series limit (512) |
+| `agentcapsule_telemetry_spans_dropped_total` | counter | — | Spans dropped because the queue to the trace file was full or a write failed ([traces](#traces)); only with a trace file |
 | `agentcapsule_postgres_wal_archiving_enabled` | gauge | — | 1 when PostgreSQL archives its WAL: `archive_mode` on and an archive command or library set (worker) |
 | `agentcapsule_postgres_wal_archive_timeout_seconds` | gauge | — | PostgreSQL's `archive_timeout`; 0 when off (worker) |
 | `agentcapsule_postgres_wal_archive_age_seconds` | gauge | — | Time since PostgreSQL last archived a WAL file (worker). If it archived none since its statistics began, the time since then |
@@ -207,6 +208,105 @@ So a person's report ("my call failed, request ID …") leads from the API's
 log to every job it caused, on the other agents' side included. Work that no
 API request started (an agent's own schedule, an expiry) carries no ID.
 
+## Traces
+
+The API and the worker record spans (OPR-3) when given a trace file; without
+one, nothing is recorded (a default pending the product owner):
+
+| Process | Setting |
+| --- | --- |
+| API | `agentcapsule-api -trace-file /var/log/agentcapsule/api-traces.jsonl` |
+| Worker | `"trace_file": "/var/log/agentcapsule/worker-traces.jsonl"` in its configuration |
+
+Each process appends OTLP/JSON lines to its file: each line is one
+`ExportTraceServiceRequest` of the OpenTelemetry protocol, the format of the
+OpenTelemetry Collector's `otlpjsonfile` receiver (contrib distribution). The
+file is created with mode 0640; rotate it by copying and truncating
+(logrotate's `copytruncate`). Nothing is sent over the network: a collector on
+the host reads the files and exports where the operator decides.
+
+```yaml
+receivers:
+  otlpjsonfile:
+    include: [/var/log/agentcapsule/*-traces.jsonl]
+service:
+  pipelines:
+    traces:
+      receivers: [otlpjsonfile]
+      exporters: [otlp]
+```
+
+**A trace is the work of one API request.** Its trace ID is the request's
+`X-Request-ID`, and the request's span is its root. The worker joins that
+trace through PostgreSQL, as the job events do (see Correlation above): the
+operation the request created keeps the request ID, and each job finds it.
+The job's span names the request's span as its parent, whose span ID is
+derived from the request ID. The IDs have the sizes of W3C Trace Context: 16
+bytes for a trace, 8 for a span, in lowercase hex. Work that no API request
+started has a trace of its own. An incoming `traceparent` header is ignored:
+a trace starts at the API.
+
+| Span | Process, kind | Parent | Attributes |
+| --- | --- | --- | --- |
+| `api.request` | API, server | — | `http.route` (the pattern), `http.request.method`, `http.response.status_code`, `agentcapsule.problem`; pseudonyms `agentcapsule.organization`, `agentcapsule.principal`, `agentcapsule.path.<wildcard>` (never a download link's token) |
+| `invocation.admit` | API, internal | `api.request` | `agentcapsule.outcome` (`accepted`, `replayed`, `refused`), `agentcapsule.problem`; pseudonyms `agentcapsule.agent`, `agentcapsule.invocation` |
+| `worker.job` | worker, consumer | the request's span | `agentcapsule.job.kind`, `agentcapsule.outcome` (`done`, `retried`), `agentcapsule.retry_reason`, `agentcapsule.job.failures`; pseudonyms `agentcapsule.job`, `agentcapsule.agent` |
+| `worker.wake` | worker, internal | `worker.job` | `agentcapsule.outcome` (`running`, `booted`, `capacity`, `organization_quota`, `failed`), `agentcapsule.wake.evicted`; pseudonym `agentcapsule.agent` |
+| `worker.boot` | worker, internal | `worker.wake`, or the job | `agentcapsule.boot.purpose` (`work`, `fence`), `agentcapsule.outcome` (`started`, `failed`, `guest_failed`, `capacity`, `organization_quota`); pseudonym `agentcapsule.agent` |
+| `worker.deliver` | worker, internal | `worker.job` | `agentcapsule.delivery.kind` (`invocation`, `agent_message`), `agentcapsule.delivery.transport` (`vsock`, `slim`), `agentcapsule.outcome`, `agentcapsule.retry_reason`; pseudonym `agentcapsule.agent` |
+| `platform.call` | worker, server | see below | `agentcapsule.platform.call`, `agentcapsule.outcome` (`ok`, or the code the guest receives), `agentcapsule.trace.origin` (`delivery`, `work`, `none`); pseudonym `agentcapsule.agent` |
+| `llm.call` | worker, client | `platform.call` | `agentcapsule.llm.provider`, `agentcapsule.llm.entry` (`complete`, `forward`), `agentcapsule.outcome`, `agentcapsule.llm.attempts`, `agentcapsule.llm.input_tokens`, `agentcapsule.llm.output_tokens` |
+| `authority.call` | API and worker, client | the span it runs under | `agentcapsule.authority.op`, `agentcapsule.outcome` (`ok`, `outage`, or the service's error code), `agentcapsule.authority.held` for a hold; the work done under a hold is its child |
+
+A guest's platform call is a child of the delivery to its agent in progress
+(`delivery`). After the delivery, a call that names its work (the completion
+of an invocation, a request to another agent under a mandate, a reply, a
+request's status) joins the trace of the API request behind that work, read
+from PostgreSQL (`work`). Any other call begins a trace of its own (`none`).
+The guest itself sends no trace context: nothing changes in the guest. A call
+to the authority service outside a request or a job, such as the worker's
+maintenance, has no span.
+
+**Pseudonyms, not identifiers.** Every span type declares its attributes:
+codes with the closed list of their values, numbers, and identifiers. A value
+outside its list is written `invalid`, an undeclared key `invalid_key`. An
+identifier is written as its pseudonym: the first 64 bits of HMAC-SHA256 of
+the identifier under the installation's key, in hex. Migration 0044 creates
+that key at random in PostgreSQL (`trace_pseudonym_key`); the API and the
+worker read it at start, so an identifier has the same pseudonym in every
+span of both. Without the key, a pseudonym tells nothing; with it, the
+operator finds the spans of an agent, a member or an organization:
+
+```bash
+psql "$AGENTCAPSULE_DATABASE_URL" -Atc "SELECT encode(key,'hex') FROM trace_pseudonym_key" | python3 -c '
+import hashlib, hmac, sys
+key = bytes.fromhex(sys.stdin.read().strip())
+print(hmac.new(key, sys.argv[1].encode(), hashlib.sha256).hexdigest()[:16])' <identifier>
+```
+
+The request ID is the trace ID as it is: it is random, names no one, and
+leads from a person's report to the trace (a default pending the product
+owner: whoever holds an export and a person's request ID can find that
+person's trace). No span holds a path, a header, a
+body, a token, a prompt, an answer, a model name, a provider's address, a
+store or volume, or an error message. The key stays in the database and its
+backups, never in a trace, a log or the diagnostic export.
+
+**The cost is bounded.** A finished span waits in a queue of 4,096 for a
+background writer, which writes up to 256 spans per line. When the queue is
+full, for instance on a stuck disk, the span is dropped and counted
+(`agentcapsule_telemetry_spans_dropped_total`): the work never waits for the
+file. Recording a span takes a few microseconds; without a trace file,
+nothing is recorded and nothing is allocated.
+
+[trace_test.go](../internal/telemetry/trace_test.go) checks the OTLP shape,
+that planted identifiers and secrets never reach a span, and the bounds:
+`TestSpansAreOTLPJSONLinesThatFollowARequest`,
+`TestNoIdentifierOrContentReachesASpan`, `TestTracingOverheadIsBounded`.
+`TestTraceFollowsAnInvocationFromTheAPIToItsDelivery` (PostgreSQL) follows
+one invocation from the API to its delivery by the worker, and finds none of
+the request's identifiers, token, names or content in the spans.
+
 ## Alerts
 
 [deploy/prometheus/alerts.yml](../deploy/prometheus/alerts.yml) holds the rules.
@@ -320,11 +420,14 @@ Prometheus's alerts, and checks that none reaches the archive.
 
 ## Not yet covered
 
-- Distributed traces (spans and timings across processes). Correlation is by
-  request ID only.
+- Traces inside the guest, and in the authority service's own process: their
+  calls show as spans of the worker and the API. The delivery, wake and boot
+  spans have never run on KVM: the capacity benchmark records them, and has
+  not run yet.
 - Alert thresholds tuned on a real host. The load test
   ([worker.md](worker.md#load-test)) measures the limits on PostgreSQL, without
-  VMs.
+  VMs; the [capacity benchmark](worker.md#capacity-benchmark) measures boots,
+  memory and CPU with VMs, and has not run yet.
 - A SLIM or Directory outage shows only while there is work for it: deliveries
   waiting for SLIM, records waiting for publication. Neither is probed while
   idle.

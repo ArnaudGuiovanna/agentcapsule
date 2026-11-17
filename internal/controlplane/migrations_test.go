@@ -323,6 +323,7 @@ func revertTenantAgents(t *testing.T, s *Store) {
         ALTER TABLE IF EXISTS organization_audit DROP CONSTRAINT IF EXISTS organization_audit_action_check;
         ALTER TABLE IF EXISTS organization_audit ADD CONSTRAINT organization_audit_action_check
           CHECK (action IN ('organization.created','organization.disabled'));
+        DROP TABLE IF EXISTS trace_pseudonym_key;
         DROP TABLE IF EXISTS tenant_refusal_audit;
         DROP INDEX IF EXISTS instruction_replays_tenant;
         DROP TABLE IF EXISTS authority_reconciliations;

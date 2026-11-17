@@ -143,7 +143,9 @@ from a closed vocabulary (`maintenance_started`, `maintenance_complete`,
 `maintenance_retry` with its reason, …), with no DSN, raw SQL error,
 certificate or user content. With `"metrics_listen": "127.0.0.1:9465"`, the
 worker serves Prometheus metrics at `/metrics` on that loopback address; see
-[observability.md](observability.md). `SIGTERM` and `SIGINT`
+[observability.md](observability.md). With
+`"trace_file": "/var/log/agentcapsule/worker-traces.jsonl"`, it appends its
+spans to that file ([traces](observability.md#traces)). `SIGTERM` and `SIGINT`
 stop the loop and release its listeners; confirmed VMMs remain adoptable.
 
 A replacement request is committed with `STOPPING`. It stays present after the
@@ -429,8 +431,65 @@ of a private one, give `--dsn` a role allowed to create a schema in a
 throwaway database: the test creates its own schema and drops it at the end.
 Compare the limit with the expected peak rate of invocations, and set the
 `AgentCapsuleInvocationsDelayed` and queue limits from it. The load test does
-not boot VMs: boots, their memory and their CPU are measured by the KVM
-campaigns.
+not boot VMs: boots, their memory and their CPU are measured by the capacity
+benchmark.
+
+## Capacity benchmark
+
+`TestCapacityBenchmark` (DEP-5, OPS-03) measures the host's starting points
+with real VMs. It needs KVM and root, like the product campaign that runs it.
+For each number of agents (1, 5, 10 and 20 by default), it creates the agents
+it lacks, puts every agent to sleep, then:
+1. wakes that many agents at once; one worker boots them in turn;
+2. sends each a first invocation, all at once, and waits for every answer;
+3. leaves the VMs idle for 5 seconds and reads the host;
+4. puts them to sleep, then sends each an invocation in turn: each wakes from
+   `STOPPED` to answer.
+
+It measures, per step:
+
+| Field | Meaning |
+| --- | --- |
+| `boot_seconds` | Each VM's boot, from the worker's `worker.boot` spans |
+| `wake_to_running_seconds`, `all_running_seconds` | Each wake request until its operation succeeded, all sent at once; and until the last |
+| `vmm_rss_mib`, `vm_cgroup_memory_mib` | Each VMM's resident memory (`VmRSS`), and its cgroup's charge |
+| `host_used_by_vms_mib` | The host's available memory with every agent asleep, minus the same with the step's VMs idle |
+| `host_cpu_busy_ratio_idle`, `vmm_cpu_seconds_per_second_idle` | The host's busy share of all CPUs, and the VMMs' CPU time per second, while idle |
+| `first_answer_seconds` | Each first invocation until its answer |
+| `wake_from_stopped_answer_seconds` | Each invocation to a stopped agent until its answer |
+| `provision_seconds` | Each agent the step added, created until its first boot |
+
+Durations are in seconds and memory in MiB, each as a count, minimum, p50,
+p90, maximum, mean and sum. A step whose VMs would not fit in the host's
+available memory, as if each used all of its memory, with 1 GiB to spare, is
+recorded as `not_run` with the reason, and nothing boots.
+
+Run it with the product campaign:
+
+```bash
+sudo python3 scripts/verify-product-guest.py <the campaign's usual options> \
+  --pg-bin ... --pg-user ... --capacity-agents 1,5,10,20 [--capacity-memory-mib 256]
+```
+
+It runs last, after the scenarios, and writes `capacity.json` and the
+worker's spans, `capacity-traces.jsonl`, in the evidence directory. The
+campaign checks that every step is there, and that a measured step has a
+value per VM. Each VM has 1 vCPU, the given memory (256 MiB by default) and
+a 128 MiB volume, and runs the reference harness.
+
+Without KVM, a dry run checks the configuration and the host's readings, and
+says which steps would fit; nothing boots:
+
+```bash
+go test -c -tags kvm_integration,kvm_product_integration -o /tmp/worker.test ./internal/worker
+AGENTCAPSULE_KVM_CAPACITY_DRY_RUN=1 AGENTCAPSULE_KVM_CAPACITY_REPORT=$PWD/capacity.json \
+  AGENTCAPSULE_KVM_CAPACITY_AGENTS=1,5,10,20 /tmp/worker.test -test.run '^TestCapacityBenchmark$'
+```
+
+No numbers are committed yet: the first KVM run gives them. Then set
+`max_active` so that that many VMs, each taking the memory the benchmark
+measured, leave the host more than 10 % of its memory:
+`AgentCapsuleHostMemoryLow` fires below.
 
 ## Limits and restart budgets
 

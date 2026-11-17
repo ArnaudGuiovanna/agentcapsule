@@ -9,7 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// Organization quotas (TEN-007, ADR 021, migration 0044).
+// Organization quotas (TEN-007, ADR 021, migration 0045).
 //
 // The platform operator sets, per organization, how many agents it may hold,
 // how much volume storage they reserve, how many of their VMs may run at once
