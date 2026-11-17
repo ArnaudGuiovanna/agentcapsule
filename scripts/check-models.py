@@ -241,6 +241,15 @@ def checks(spec=SPEC):
             scope="every 4-step continuation of the checked 12-action prefix with four requests"),
         tlc(p1[1], "concurrentProtocolClosingDepth4", "checked", timeout=3600, heap="4G", **bounded,
             scope="every 4-step continuation of the checked 22-action deletion prefix with an RPC in flight"),
+        # The behaviours of ADR 007 and ADR 008 begin beyond the explorations
+        # from init (a reply exists after 11 steps): these start where they do.
+        tlc(p1[1], "concurrentProtocolRepliedDepth6", "checked", timeout=3600, heap="6G", **bounded,
+            scope="every 6-step continuation of the checked 11-action prefix with a reply not yet sent"),
+        tlc(p1[1], "concurrentProtocolReplyDeliveredDepth6", "checked", timeout=3600, heap="6G", **bounded,
+            scope="every 6-step continuation of the checked 16-action prefix with the reply delivered"),
+        tlc(p1[1], "concurrentProtocolExpiringDepth6", "checked", timeout=3600, heap="6G", **bounded,
+            scope="every 6-step continuation of the checked 9-action prefix: a request expiring with "
+                  "its delivery under way and a bystander stopped"),
         tlc(p1[1], "concurrentProtocolDepth7", "checked", timeout=4 * 3600, heap="6G", **bounded,
             scope="every execution of up to 7 steps from the initial state"),
         tlc(p1[2], "concurrentProtocolDepth8", "safety", timeout=4 * 3600, heap="6G",

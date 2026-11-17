@@ -65,6 +65,9 @@ in the ordinary unit tests.
 |---|---|---|---|
 | `concurrentPrefixes.loadedPrefixTest` | model-only | — | Checks that a start state of the bounded simulation is reachable; no behaviour of its own. |
 | `concurrentPrefixes.closingPrefixTest` | model-only | — | Checks that a start state of the bounded simulation is reachable; no behaviour of its own. |
+| `concurrentPrefixes.repliedPrefixTest` | model-only | — | Checks that a start state of the TLC exploration is reachable; no behaviour of its own. |
+| `concurrentPrefixes.replyDeliveredPrefixTest` | model-only | — | Checks that a start state of the TLC exploration is reachable; no behaviour of its own. |
+| `concurrentPrefixes.expiringPrefixTest` | model-only | — | Checks that a start state of the TLC exploration is reachable; no behaviour of its own. |
 
 ### `concurrent_loaded.qnt`
 
