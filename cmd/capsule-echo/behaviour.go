@@ -17,7 +17,9 @@ import (
 //	crash-at-boot          exits at once, before serving: the guest stops.
 //	flood-volume <bytes>   serves normally, and on an ordinary boot also
 //	                       writes its data directory as fast as it can,
-//	                       <bytes> per write, each followed by fdatasync.
+//	                       <bytes> per write (a multiple of 4 KiB), each
+//	                       direct (O_DIRECT): past the page cache, it
+//	                       reaches the drive at once and needs no flush.
 //	fill-tmp <bytes>       before serving, writes up to <bytes> to /tmp; if
 //	                       /tmp is full first, it removes the file and
 //	                       serves, otherwise it exits: /tmp is not bounded.
@@ -70,7 +72,7 @@ func parseBehaviour(args []string) (behaviour, error) {
 		return behaviour{crashAtBoot: true}, nil
 	case len(args) == 2 && args[0] == "flood-volume":
 		n, err := strconv.Atoi(args[1])
-		if err != nil || n < 512 || n > 8<<20 || floodSpan%n != 0 {
+		if err != nil || n < 4096 || n > 8<<20 || n%4096 != 0 || floodSpan%n != 0 {
 			return behaviour{}, errors.New("invalid flood write size")
 		}
 		return behaviour{floodChunk: n}, nil
@@ -87,20 +89,29 @@ func parseBehaviour(args []string) (behaviour, error) {
 }
 
 // flood rewrites the first floodSpan bytes of path, chunk bytes per write,
-// each write made durable with fdatasync, until ctx ends or a write fails.
+// until ctx ends or a write fails. The span is allocated first, so that no
+// write allocates. Each write is direct, from a page-aligned buffer: the
+// guest's page cache does not absorb it, and it reaches the drive as
+// requests of its own bytes, with no flush. So the VMM moves exactly the
+// bytes the flood writes, and a KVM test can count them (ADR 012).
 func flood(ctx context.Context, path string, chunk int) error {
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW, 0o600)
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|syscall.O_DIRECT|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	buf := make([]byte, chunk)
+	if err = syscall.Fallocate(int(f.Fd()), 0, 0, floodSpan); err != nil {
+		return err
+	}
+	// An anonymous mapping is page-aligned, as O_DIRECT requires.
+	buf, err := syscall.Mmap(-1, 0, chunk, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_ANON|syscall.MAP_PRIVATE)
+	if err != nil {
+		return err
+	}
+	defer syscall.Munmap(buf)
 	for offset := int64(0); ctx.Err() == nil; offset = (offset + int64(chunk)) % floodSpan {
 		buf[0]++
 		if _, err = f.WriteAt(buf, offset); err != nil {
-			return err
-		}
-		if err = syscall.Fdatasync(int(f.Fd())); err != nil {
 			return err
 		}
 	}

@@ -105,7 +105,10 @@ func TestProductWorkerEnforcesCapabilities(t *testing.T) {
 		_, _ = fmt.Fprint(w, `{"choices":[{"message":{"content":"model answer"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2}}`)
 	}))
 	t.Cleanup(provider.Close)
-	svc, err := controlplane.NewLLMService(l.accounts, llmgateway.New(llmgateway.Config{Timeout: 10 * time.Second, MaxAttempts: 1}))
+	// The provider listens on loopback, which the production gateway refuses
+	// (ADR 010): the lab's gateway allows it, as in every other KVM lab.
+	svc, err := controlplane.NewLLMService(l.accounts, llmgateway.NewForTests(llmgateway.Config{Timeout: 10 * time.Second, MaxAttempts: 1},
+		llmgateway.TestOptions{Loopback: true}))
 	if err != nil {
 		t.Fatal(err)
 	}

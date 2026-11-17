@@ -3,7 +3,8 @@
 Date: November 16, 2026. **Status: built on November 16, 2026**, with
 defaults pending the product owner (see [Questions](#questions-for-the-product-owner)).
 The KVM tests that prove the ceilings and the budget on a real VM have not
-run yet (see [Tests](#tests)).
+passed yet: their first run, on November 17, 2026, failed on faults of the
+tests, fixed since (see [Tests](#tests)).
 References: RUN-007, RUN-008, RUN-011 and §6 of the
 [product spec](../product.md), CAP-03 and TEN-07 of the
 [roadmap](../../ROADMAP.md), [worker.md](../worker.md),
@@ -179,8 +180,10 @@ Unit tests (`go test -race`):
   `TestGuestsHaveNoNetwork`, `TestBootFailureIsTheGuestsOnlyWhenTheGuestFailed`,
   `TestControlAnswers`.
 - `internal/worker`: `TestRestartBudgetAndDriveLimitsConfiguration`,
-  `TestRetryReasons`.
-- `cmd/capsule-echo`: `TestTestBehaviours`, `TestFloodStaysWithinItsSpan`.
+  `TestRetryReasons`, `TestPassesOfAGuestThatFailsAtBoot`,
+  `TestProcIOMovedCountsReadsAndWrites`.
+- `cmd/capsule-echo`: `TestTestBehaviours`, `TestFloodStaysWithinItsSpan`,
+  `TestFloodWritesDirectlyToTheDrive`.
 
 PostgreSQL tests:
 - `internal/controlplane`: `TestAnAgentWhoseGuestKeepsFailingIsFailed`,
@@ -188,15 +191,32 @@ PostgreSQL tests:
   `TestAWakeOfAFailedAgentFails`, `TestAPersonsFailedAgent`.
 - `internal/worker`: `TestGuestFailuresAreCountedAndLogged`.
 
-KVM tests, not run yet (they need root and the next guest build, whose
-`capsule-echo` has the test behaviours `crash-at-boot` and `flood-volume`):
-- `TestProductWorkerDriveCeilingsHoldAgainstAFloodingGuest`: a guest writing
-  1 MiB at a time stays under 8 MiB/s, one writing 4 KiB at a time with
-  `fdatasync` under 200 operations a second, measured from the VMM's
-  `/proc/<pid>/io`; each VMM's network namespace has loopback only.
+KVM tests, not passed yet (they need root, and the drive test needs the next
+guest build, whose `capsule-echo` floods with direct writes):
+- `TestProductWorkerDriveCeilingsHoldAgainstAFloodingGuest`: a guest writes
+  its volume with `O_DIRECT` as fast as it can, so that each write reaches
+  the drive as requests of its own bytes, with no flush. Writing 1 MiB at a
+  time, on a host capped at 4 MiB/s with room for 100,000 operations a
+  second, its VMM moves at most 4 MiB/s. Writing 4 KiB at a time, on a host
+  capped at 200 operations a second with room for 64 MiB/s, it makes at
+  most 200 operations a second. Each check allows one second of bucket and a
+  tenth more, and wants half the ceiling at least. Both are measured from the
+  VMM's `/proc/<pid>/io`: the bytes it read and wrote (`rchar` and `wchar`),
+  divided by 4096 for the operations. Each VMM's network namespace has
+  loopback only.
+  Its first run counted the write calls (`syscw`) of a VMM whose guest wrote
+  4 KiB through the page cache, each followed by `fdatasync`. That count is
+  not the drive's operations: the VMM serves a flush with `fsync`, which is
+  no write call, and signals each completed request with a write call to an
+  eventfd. At 200 operations a second, half of them writes, that is about
+  3000 calls in 10 seconds; the run found 3130, against a bound of 2640.
 - `TestProductWorkerStopsBootingAGuestThatCrashesAtBoot`: the wake of a guest
   that crashes at boot ends `FAILED` after a budget of 3; further passes boot
-  nothing while an invocation waits; a wake after the fix answers it.
+  nothing while an invocation waits; a wake after the fix answers it. The
+  passes that boot the crashing guest may fail only with the guest's boot
+  failures, and those over the `FAILED` agent only with its held delivery.
+  Its first run stopped at the first boot failure, which its passes did not
+  accept.
 
 ## Questions for the product owner
 

@@ -104,8 +104,9 @@ then a replay. This does not by itself validate execution in an encrypted VM.
 Its entrypoint arguments can select a test behaviour, for the KVM tests of
 the platform's limits ([ADR 012](../adr/012-limits-restart-budgets-egress.md)):
 `crash-at-boot` exits before serving, and `flood-volume <bytes>` serves while
-rewriting 32 MiB of its data directory as fast as it can. Without arguments
-it behaves as above.
+rewriting 32 MiB of its data directory as fast as it can, `<bytes>` per
+direct (`O_DIRECT`) write, a multiple of 4 KiB. Without arguments it behaves
+as above.
 
 **Harness from the registry.** When the host attaches a harness drive (an agent
 pinned to an imported release, see [../registry.md](../registry.md)), the boot
