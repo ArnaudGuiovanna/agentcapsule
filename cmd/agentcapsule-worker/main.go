@@ -46,6 +46,11 @@ func run() int {
 	restoreHost := flag.String("restore-host", "", "restore every agent of this lost host, which this host took over, from its archives, then exit")
 	archiveFetch := flag.String("archive-fetch", "", "the archive shipper (agentcapsule-archive-ship.py), to fetch an archive missing from -archive-root from the standby's copy or S3")
 	check := flag.Bool("preflight", false, "check this host and configuration, print what to fix, change nothing, then exit")
+	testAgent := flag.String("test-restore", "", "test the restore of this agent from its newest archive, or -archive-id, in -scratch, change nothing, then exit")
+	scratch := flag.String("scratch", "", "absolute directory outside the runtime, archive and authority roots, where -test-restore works")
+	collect := flag.Bool("collect-garbage", false, "remove the archives past retention, the archives of deleted agents and the unused cached harness images, then exit")
+	dryRun := flag.Bool("dry-run", false, "with -collect-garbage: print what it would remove, remove nothing")
+	confirm := flag.String("confirm", "", "with -collect-garbage: repeat this host's host_id; not needed with -dry-run")
 	flag.Parse()
 	fail := func(code string) int { fmt.Fprintln(os.Stderr, code); return 1 }
 	if *path == "" || flag.NArg() != 0 {
@@ -54,7 +59,16 @@ func run() int {
 	if *restoreHost != "" && (*restoreAgent != "" || *restoreID != "" || *archiveAgent != "" || *archiveID != "" || !filepath.IsAbs(*archiveRoot)) {
 		return fail("restore_host_configuration_invalid")
 	}
-	if *archiveFetch != "" && (!filepath.IsAbs(*archiveFetch) || (*restoreHost == "" && *restoreAgent == "")) {
+	if *testAgent != "" && (*restoreAgent != "" || *restoreID != "" || *restoreHost != "" || *archiveAgent != "" || *migrate || *check || *collect ||
+		!filepath.IsAbs(*archiveRoot) || !filepath.IsAbs(*scratch) || *archiveID != "" && !volumearchive.ValidID(*archiveID)) ||
+		*testAgent == "" && *scratch != "" {
+		return fail("restore_test_configuration_invalid")
+	}
+	if *collect && (*restoreAgent != "" || *restoreID != "" || *restoreHost != "" || *archiveAgent != "" || *archiveID != "" || *archiveRoot != "" ||
+		*archiveFetch != "" || *migrate || *check) || !*collect && (*dryRun || *confirm != "") {
+		return fail("collect_garbage_configuration_invalid")
+	}
+	if *archiveFetch != "" && (!filepath.IsAbs(*archiveFetch) || (*restoreHost == "" && *restoreAgent == "" && *testAgent == "")) {
 		return fail("archive_fetch_configuration_invalid")
 	}
 	// Production unless AGENTCAPSULE_MODE=development, which says so at
@@ -68,6 +82,16 @@ func run() int {
 	}
 	if *check {
 		return runPreflight(*path, mode)
+	}
+	if *testAgent != "" || *collect {
+		c, err := worker.LoadServiceConfig(*path)
+		if err != nil {
+			return fail("configuration_invalid")
+		}
+		if *collect {
+			return collectGarbage(c, mode, *dryRun, *confirm)
+		}
+		return testRestore(c, mode, *testAgent, *archiveID, *archiveRoot, *scratch, *archiveFetch)
 	}
 	restoreRequested := *restoreAgent != "" || *restoreID != ""
 	if restoreRequested && (*restoreAgent == "" || *archiveAgent != "" || !controlplane.ValidRestoreID(*restoreID) ||

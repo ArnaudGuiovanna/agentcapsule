@@ -247,3 +247,52 @@ func TestContainerRefusesUnknownFileAndSymlink(t *testing.T) {
 		t.Fatal("symlink target changed", err)
 	}
 }
+
+// CheckContainer opens a copy's key slot with the volume's key, and refuses
+// another key, another volume's container and a damaged header, without
+// changing the copy it reads.
+func TestCheckContainerOpensOnlyItsOwnKeySlot(t *testing.T) {
+	s, spec, key := fixture(t)
+	c, err := s.Prepare(t.Context(), spec, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(c.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scratch := filepath.Join(t.TempDir(), "copy.luks")
+	if err = os.WriteFile(scratch, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err = CheckContainer(scratch, spec.VolumeID, key); err != nil {
+		t.Fatal("the volume's own key", err)
+	}
+	if after, err := os.ReadFile(scratch); err != nil || !bytes.Equal(after, data) {
+		t.Fatal("the check changed the copy", err)
+	}
+	wrong := bytes.Clone(key)
+	wrong[0] ^= 1
+	if err = CheckContainer(scratch, spec.VolumeID, wrong); !errors.Is(err, ErrLUKS) {
+		t.Fatal("another key opened the container", err)
+	}
+	if err = CheckContainer(scratch, "vol_"+strings.Repeat("c", 32), key); !errors.Is(err, ErrLUKS) {
+		t.Fatal("another volume's container passed", err)
+	}
+	if err = CheckContainer(scratch, spec.VolumeID, key[:16]); !errors.Is(err, ErrInput) {
+		t.Fatal("a short key", err)
+	}
+	f, err := os.OpenFile(scratch, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, offset := range []int64{0, 16384} {
+		if _, err = f.WriteAt([]byte("BROKEN"), offset); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.Close()
+	if err = CheckContainer(scratch, spec.VolumeID, key); !errors.Is(err, ErrLUKS) {
+		t.Fatal("a damaged header passed", err)
+	}
+}

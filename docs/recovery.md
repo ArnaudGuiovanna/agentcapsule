@@ -1385,7 +1385,10 @@ section of the worker ([worker.md](worker.md#nightly-encrypted-archives)):
   published in one step: a crash leaves no partial archive.
 - **Where.** In the worker's archive root, on this host. The worker keeps the
   `keep` newest archives of each agent (7 by default) and never deletes an
-  agent's only archive.
+  agent's only archive. It applies retention after each capture of an agent;
+  `agentcapsule-worker -collect-garbage` applies it to every agent at once,
+  with the purge of deleted agents' archives
+  ([worker.md](worker.md#collecting-garbage-on-demand)).
 - **Records.** PostgreSQL records each capture (`volume_archives`): times,
   size, volume, no content. They decide which agents are due, and give the
   metric `agentcapsule_worker_volume_archive_oldest_seconds`.
@@ -1589,11 +1592,50 @@ pending the product owner.
 - **The authority** records the redelivery when it is delivered: the
   outcome's status becomes `rerun_confirmed`.
 
+### Test a restore
+
+A restore takes the agent out of service. To learn that it would work, without
+it, run the restore test (OPR-5, [worker.md](worker.md#testing-a-restore)),
+beside the maintenance worker:
+
+```sh
+/opt/agentcapsule/agentcapsule-worker \
+  -config /etc/agentcapsule/worker.json \
+  -test-restore "$AGENT_ID" \
+  -archive-root /var/lib/agentcapsule-archives \
+  -scratch /var/lib/agentcapsule-restore-tests \
+  -archive-fetch /opt/agentcapsule/agentcapsule-archive-ship.py
+```
+
+It takes the archive a restore after the host's loss would take: the newest
+that PostgreSQL records for the agent's current volume ([ADR 020](adr/020-restoring-a-lost-hosts-agents.md#3-which-archive)).
+It checks what a restore checks before it stops anything: the manifest the
+restore authority signed, a store that is not sealed, the size and the
+SHA-256 digest, the agent's volume and its size. Then it copies the archive
+into its own directory under `-scratch` and checks that the key the key
+authority lends for the agent opens the copy's key slot: the key and the
+archive belong together. It unlocks no payload, mounts nothing and boots
+nothing, and changes no row, no authority record, no archive and no volume.
+It prints what it checked and removes its copy.
+
+Run it for an agent after its first nightly archive, after a change of the
+authorities (a promotion, a migration to the authority service), and from
+time to time on a few agents. With `-archive-fetch` and the archive removed
+from the archive root by retention, it tests the copy of a store instead:
+the standby's, or S3's. What it does not prove: that the guest's file system
+inside the volume is sound and that the harness boots and answers. Only a
+restore proves those, as the KVM test below does.
+
 ### Tests
 
 - PostgreSQL: the incarnation changes only through a restore, the steps of the
   operation, the atomic steps, the mapping of the losses
   (`internal/controlplane/volume_restores_test.go`).
+- PostgreSQL: the restore test checks the newest recorded archive, refuses
+  another key's container, altered bytes, a missing archive, and changes no
+  table, no authority record and no file of the archive or runtime roots
+  (`TestRestoreTestChecksTheNewestArchiveAndChangesNothing`, in process and
+  through the authority service).
 - The coordinator, with a fake host and a real guest protocol over a harness
   database: only the outcomes after the archive declared lost, a stop after
   each step and resumption, a copy cut half way, a failure after the

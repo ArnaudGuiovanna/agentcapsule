@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
-"""Unit tests of scripts/verify-install.py's reading of the worker's preflight (VAL-02).
+"""Unit tests of scripts/verify-install.py's reading of the worker's preflight (VAL-02)
+and of its network namespace's counters (DEP-1).
 
 The install run must fail when a check this host should pass fails, when
 /dev/kvm or a missing artifact is reported as fine, when a check is missing,
-and when the last line or the exit code does not match the failures.
+and when the last line or the exit code does not match the failures. It must
+fail too when a packet left its network namespace, when a UDP datagram was
+sent, when a connection went to a port nothing of the install listens on, and
+when the counters saw nothing of the run.
 """
 
 import importlib.util
+import json
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 
 SCRIPT = Path(__file__).resolve().with_name("verify-install.py")
@@ -74,6 +80,47 @@ class Preflight(unittest.TestCase):
         text = output(failing=tuple(ARTIFACTS_MISSING), last="preflight_passed")
         self.assertEqual(self.problems(text, 0, ARTIFACTS_MISSING),
                          ["the last line is 'preflight_passed', not preflight_failed", "exit code 0 with a failure"])
+
+
+class Egress(unittest.TestCase):
+    """DEP-1: the run fails on anything that tried to leave its network namespace."""
+
+    LISTENERS = {"api": 8443, "api_metrics": 9464, "authority_metrics": 9466, "worker_metrics": 9465}
+
+    def assess(self, tx=0, outside=0, udp=0, ports=None, files=True):
+        ports = {8443: 12, 9466: 2} if ports is None else ports
+        ruleset = {"nftables": [
+            {"metainfo": {"version": "1.0.9"}},
+            {"set": {"family": "inet", "name": "loopback_tcp", "table": "egress",
+                     "elem": [{"elem": {"val": port, "counter": {"packets": n, "bytes": 60 * n}}} for port, n in ports.items()]}},
+            {"counter": {"family": "inet", "name": "outside", "table": "egress", "packets": outside, "bytes": 0}},
+            {"counter": {"family": "inet", "name": "datagrams", "table": "egress", "packets": udp, "bytes": 0}},
+        ]}
+        with tempfile.TemporaryDirectory() as d:
+            if files:
+                (Path(d) / "nft.json").write_text(json.dumps(ruleset))
+                (Path(d) / "dummy0.json").write_text(json.dumps([{"ifname": "dummy0", "stats64": {"tx": {"packets": tx}}}]))
+            return INSTALL.assess_egress(Path(d), self.LISTENERS)
+
+    def test_a_run_that_stays_on_loopback_passes(self):
+        egress, problems = self.assess()
+        self.assertEqual(problems, [])
+        self.assertEqual(egress["loopback_tcp_connections"], {"8443 (api)": 12, "9466 (authority_metrics)": 2})
+
+    def test_a_packet_out_fails(self):
+        self.assertEqual(len(self.assess(tx=3)[1]), 1)
+        self.assertEqual(len(self.assess(outside=1)[1]), 1)
+
+    def test_a_datagram_fails(self):
+        self.assertEqual(self.assess(udp=1)[1], ["1 UDP datagrams were sent (a DNS query, telemetry?)"])
+
+    def test_a_connection_to_a_port_nothing_listens_on_fails(self):
+        self.assertEqual(self.assess(ports={8443: 3, 4317: 1})[1],
+                         ["TCP connections to loopback ports nothing of the install listens on: [4317]"])
+
+    def test_counters_that_saw_nothing_fail(self):
+        self.assertEqual(self.assess(ports={})[1], ["the counters saw no connection to the API: they do not see the run"])
+        self.assertEqual(len(self.assess(files=False)[1]), 1)
 
 
 if __name__ == "__main__":

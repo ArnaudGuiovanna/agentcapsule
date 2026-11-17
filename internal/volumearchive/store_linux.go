@@ -225,17 +225,27 @@ const (
 // touches its file), and archives already renamed for removal. It never
 // touches a published archive.
 func (s *Store) Sweep(staleAfter time.Duration) error {
+	names, result := s.Leftovers(staleAfter)
+	for _, name := range names {
+		result = errors.Join(result, os.RemoveAll(filepath.Join(s.root, name)))
+	}
+	return result
+}
+
+// Leftovers names what Sweep would delete now, and deletes nothing.
+func (s *Store) Leftovers(staleAfter time.Duration) ([]string, error) {
 	if staleAfter <= 0 {
-		return ErrArchive
+		return nil, ErrArchive
 	}
 	if err := s.check(); err != nil {
-		return err
+		return nil, err
 	}
 	entries, err := os.ReadDir(s.root)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var result error
+	names := []string{}
 	for _, e := range entries {
 		path := filepath.Join(s.root, e.Name())
 		switch {
@@ -248,9 +258,52 @@ func (s *Store) Sweep(staleAfter time.Duration) error {
 		default:
 			continue
 		}
-		result = errors.Join(result, os.RemoveAll(path))
+		names = append(names, e.Name())
 	}
-	return result
+	return names, result
+}
+
+// Size is the number of bytes of a published archive: its container and
+// its manifest. A missing archive has none.
+func (s *Store) Size(id string) (int64, error) {
+	if !ValidID(id) {
+		return 0, ErrArchive
+	}
+	if err := s.check(); err != nil {
+		return 0, err
+	}
+	return treeSize(filepath.Join(s.root, id))
+}
+
+// LeftoverSize is the number of bytes under a leftover Leftovers named.
+func (s *Store) LeftoverSize(name string) (int64, error) {
+	if !strings.HasPrefix(name, pendingPrefix) && !strings.HasPrefix(name, removedPrefix) || strings.ContainsRune(name, '/') {
+		return 0, ErrArchive
+	}
+	return treeSize(filepath.Join(s.root, name))
+}
+
+// treeSize sums the regular files under path, without following links; a
+// missing path has none.
+func treeSize(path string) (int64, error) {
+	var total int64
+	err := filepath.WalkDir(path, func(_ string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.Type().IsRegular() {
+			info, err := d.Info()
+			if err != nil {
+				return err
+			}
+			total += info.Size()
+		}
+		return nil
+	})
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	return total, err
 }
 
 // newest is the latest modification time of a directory and its entries.

@@ -69,13 +69,17 @@ func ScriptFetcher(command []string, root string) ArchiveFetcher {
 // archive it did not sign) ends it. While the authorities do not answer, it
 // waits as a restore does, and tells paused.
 func (w *Placements) FetchArchive(ctx context.Context, archives *volumearchive.Store, fetch ArchiveFetcher, archiveID string, paused func(error)) (string, error) {
-	if w.authority == nil || archives == nil || !volumearchive.ValidID(archiveID) {
+	return fetchArchive(ctx, w.authority, archives, fetch, archiveID, paused)
+}
+
+func fetchArchive(ctx context.Context, authority volumearchive.Authority, archives *volumearchive.Store, fetch ArchiveFetcher, archiveID string, paused func(error)) (string, error) {
+	if authority == nil || archives == nil || !volumearchive.ValidID(archiveID) {
 		return "", controlplane.ErrInput
 	}
 	verify := func() error {
 		wait := restorePause.first
 		for {
-			f, _, err := archives.Open(ctx, archiveID, w.authority)
+			f, _, err := archives.Open(ctx, archiveID, authority)
 			if err == nil {
 				f.Close()
 				return nil
