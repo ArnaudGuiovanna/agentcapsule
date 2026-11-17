@@ -44,6 +44,8 @@ Do not run `go test ./...` at the repository root with sources outside
 | `check-repo-hygiene.py` | Rejects new tracked files with a personal absolute path or Go sources committed under `_evidence/` (baseline: `hygiene-baseline.json`); runs `check-model-projections.py` and `check-acceptance.py` |
 | `check-model-projections.py` | Fails when a run or witness of `spec/*.qnt` is missing from [spec/projections.md](../spec/projections.md), or when the table names a Go test that does not exist |
 | `test_check_model_projections.py` | Unit tests of `check-model-projections.py` |
+| `check-models.py` | The bounded and exhaustive checks of the formal models, one at a time: Apalache and TLC through `quint verify`, each against the result the repository expects (a witness schedule and a broken configuration must fail); refuses to pass on a timeout or a missing tool; see [spec/README.md](../spec/README.md#bounded-and-exhaustive-checks) |
+| `test_check_models.py` | Unit tests of `check-models.py`: every witness schedule and every module of the checkers' files has a check, the reading of Quint's output, the refusal of a missing or changed tool |
 | `check-acceptance.py` | Fails when an MVP requirement of [docs/product.md](../docs/product.md) has no row in [docs/acceptance.md](../docs/acceptance.md), when a met row cites no test, or when a cited test or file does not exist |
 | `test_check_acceptance.py` | Unit tests of `check-acceptance.py` |
 | `verify-install.py` | The install from scratch, without root: builds every binary, installs them into a throwaway prefix, then follows [docs/bootstrap.md](../docs/bootstrap.md) and [docs/install.md](../docs/install.md) (PostgreSQL, migration, platform credential, the API over HTTPS, an organization and its trust, the authority service, the worker's preflight) and ends with a call by the organization's owner; see [below](#install-from-scratch) |
@@ -124,6 +126,25 @@ Files that predate the rules are listed in `scripts/hygiene-baseline.json`;
 fixing one never fails the check. Use `--update` only to record a reviewed
 decision, never to hide a new offending file. CI runs this check before the
 PostgreSQL campaign.
+
+## Model checks (Apalache, TLC)
+
+```bash
+(cd spec && npm ci)
+python3 scripts/check-models.py --list            # the checks, their bounds and time limits
+python3 scripts/check-models.py --quick            # those limited to 15 minutes (about 1 hour)
+python3 scripts/check-models.py --only 'concurrentProtocol|serviceProgress'
+python3 scripts/check-models.py                    # all of them (several hours)
+```
+
+It needs a Java runtime and Apalache, installed without root as
+[spec/README.md](../spec/README.md#bounded-and-exhaustive-checks) says, and
+recorded in `~/.local/share/agentcapsule-tools/model-checkers.json`
+(`--tools` names another directory). The evidence goes to
+`quint/results/check-models-<timestamp>` (git-ignored) unless `--output`
+names a new directory. The checks run one at a time; TLC uses four workers
+(`--workers`). A run passes only when every check ends as expected: a timeout
+or a tool error fails it.
 
 ## Install from scratch
 
