@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"syscall"
 	"testing"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
@@ -145,10 +146,51 @@ func confine(args []string) error {
 	if err := unix.CloseRange(4, ^uint(0), unix.CLOSE_RANGE_CLOEXEC); err != nil {
 		return fmt.Errorf("close-on-exec: %w", err)
 	}
-	if err := installFilter(filter); err != nil {
+	return fmt.Errorf("exec %s: %w", program, execFiltered(filter, program, argv, os.Environ()))
+}
+
+// execve is the system call that executes the program: the helper's only
+// start of a program (cmd/agentcapsule-api's audit of the worker counts it).
+const execve = unix.SYS_EXECVE
+
+// execFiltered installs the filter of p on this thread and executes the
+// program. Once the filter is in place, no Go code may run on the thread: a
+// signal handler, the scheduler or the allocator would make calls the
+// allow-list refuses, and the kernel would kill the helper. So everything is
+// prepared first; then every signal is blocked, and the filter and the
+// execution are raw system calls. The program starts with every signal
+// blocked: SIGKILL and its own faults still reach it.
+func execFiltered(p policy, program string, argv, env []string) error {
+	prog, err := filterProgram(p)
+	if err != nil {
 		return fmt.Errorf("seccomp: %w", err)
 	}
-	return fmt.Errorf("exec %s: %w", program, unix.Exec(program, argv, os.Environ()))
+	fprog := unix.SockFprog{Len: uint16(len(prog)), Filter: &prog[0]}
+	path, err := syscall.BytePtrFromString(program)
+	if err != nil {
+		return err
+	}
+	argvp, err := syscall.SlicePtrFromStrings(argv)
+	if err != nil {
+		return err
+	}
+	envp, err := syscall.SlicePtrFromStrings(env)
+	if err != nil {
+		return err
+	}
+	all := ^uint64(0)
+	if _, _, e := unix.RawSyscall6(unix.SYS_RT_SIGPROCMASK, unix.SIG_SETMASK, uintptr(unsafe.Pointer(&all)), 0, 8, 0, 0); e != 0 {
+		return fmt.Errorf("signals: %w", e)
+	}
+	if _, _, e := unix.RawSyscall(unix.SYS_PRCTL, unix.PR_SET_SECCOMP, unix.SECCOMP_MODE_FILTER, uintptr(unsafe.Pointer(&fprog))); e != 0 {
+		return fmt.Errorf("seccomp: %w", e)
+	}
+	_, _, e := unix.RawSyscall(execve, uintptr(unsafe.Pointer(path)), uintptr(unsafe.Pointer(&argvp[0])), uintptr(unsafe.Pointer(&envp[0])))
+	runtime.KeepAlive(prog)
+	runtime.KeepAlive(path)
+	runtime.KeepAlive(argvp)
+	runtime.KeepAlive(envp)
+	return e
 }
 
 // reopen replaces descriptor 3 with the image opened read-only through this

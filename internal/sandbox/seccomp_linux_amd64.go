@@ -4,7 +4,6 @@ package sandbox
 
 import (
 	"errors"
-	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
@@ -31,7 +30,7 @@ var allowed = []uint32{
 	// allocator) were not measured.
 	unix.SYS_BRK, unix.SYS_MMAP, unix.SYS_MUNMAP, unix.SYS_MPROTECT, unix.SYS_MREMAP, unix.SYS_MADVISE,
 	// The program's start and end, as the C library runs them.
-	unix.SYS_EXECVE, unix.SYS_ARCH_PRCTL, unix.SYS_SET_TID_ADDRESS, unix.SYS_SET_ROBUST_LIST, unix.SYS_RSEQ,
+	execve, unix.SYS_ARCH_PRCTL, unix.SYS_SET_TID_ADDRESS, unix.SYS_SET_ROBUST_LIST, unix.SYS_RSEQ,
 	unix.SYS_PRLIMIT64, unix.SYS_GETRANDOM, unix.SYS_SCHED_GETAFFINITY, unix.SYS_RT_SIGACTION, unix.SYS_EXIT_GROUP,
 	unix.SYS_GETUID, unix.SYS_GETEUID, unix.SYS_GETGID, unix.SYS_GETEGID,
 	// Clocks, which debugfs reads through the vDSO; the kernel answers when
@@ -157,14 +156,7 @@ func compile(p policy) ([]unix.SockFilter, error) {
 	return prog, nil
 }
 
-// installFilter applies the filter of p to the calling thread, which
-// executes the program next; no_new_privs must be set. The program is built
-// first.
-func installFilter(p policy) error {
-	prog, err := compile(p)
-	if err != nil {
-		return err
-	}
-	fprog := unix.SockFprog{Len: uint16(len(prog)), Filter: &prog[0]}
-	return unix.Prctl(unix.PR_SET_SECCOMP, unix.SECCOMP_MODE_FILTER, uintptr(unsafe.Pointer(&fprog)), 0, 0)
+// filterProgram is the seccomp program of p.
+func filterProgram(p policy) ([]unix.SockFilter, error) {
+	return compile(p)
 }

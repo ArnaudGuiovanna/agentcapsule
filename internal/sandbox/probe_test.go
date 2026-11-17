@@ -5,6 +5,7 @@ package sandbox
 import (
 	"encoding/binary"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -230,5 +231,53 @@ func confinedKillsAnotherArchitecture(t *testing.T, o Options) {
 	}
 	if got := outcome(t, o, path); got != killed {
 		t.Errorf("a call through the 32-bit gate: %s, not %s", got, killed)
+	}
+}
+
+// REG-01: once the filter is in place, the helper runs no Go code until the
+// program starts: a signal on its thread then (Go's scheduler sends SIGURG
+// to preempt) would run a handler whose return the filter refuses, and the
+// kernel would kill the helper. Started as Run starts it, the helper's
+// thread receives SIGURG without pause until it exits; the probe, an
+// allowed call, must run every time.
+func TestHelperSurvivesSignalsUnderTheFilter(t *testing.T) {
+	path := probe(t, unix.SYS_GETUID, false)
+	for i := range 20 {
+		null, err := os.Open(os.DevNull)
+		if err != nil {
+			t.Fatal(err)
+		}
+		status, report, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.CommandContext(t.Context(), helperPath, "0", "0", "1", strictFilter, "-", path)
+		cmd.Args[0] = HelperName
+		cmd.SysProcAttr = namespaces(AsRoot())
+		cmd.ExtraFiles = []*os.File{null, report}
+		cmd.Env = []string{"LC_ALL=C"}
+		if err = cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		report.Close()
+		null.Close()
+		done := make(chan struct{})
+		go func(pid int) {
+			for {
+				select {
+				case <-done:
+					return
+				default:
+					_ = unix.Tgkill(pid, pid, unix.SIGURG)
+				}
+			}
+		}(cmd.Process.Pid)
+		err = cmd.Wait()
+		close(done)
+		reason, _ := io.ReadAll(status)
+		status.Close()
+		if err != nil {
+			t.Fatalf("run %d: %v %s", i, err, reason)
+		}
 	}
 }

@@ -24,6 +24,9 @@ import (
 // sandbox up. It is closed when the program starts.
 const statusFD = 4
 
+// helperPath is this executable, even if replaced on disk since it started.
+const helperPath = "/proc/self/exe"
+
 // AsRoot reports whether runs here take Options.UID and GID: the caller is
 // root in the initial user namespace. Root of another user namespace (a
 // container, a test under unshare -r) cannot, and runs the program in a user
@@ -84,7 +87,7 @@ func (o Options) Run(ctx context.Context, image, program string, args ...string)
 		if !root {
 			uid, gid = 0, 0 // root of the helper's own user namespace: the caller
 		}
-		name = "/proc/self/exe" // this executable, even if replaced on disk since
+		name = helperPath
 		filter := strictFilter
 		if o.TestTools {
 			filter = testToolsFilter

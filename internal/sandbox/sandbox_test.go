@@ -285,7 +285,7 @@ func TestConfinedProgramIsKilledAtItsLimits(t *testing.T) {
 // The helper refuses to run outside the namespaces Run creates: started
 // directly under its name, it changes nothing and exits 125.
 func TestHelperRefusesToRunOutsideItsNamespaces(t *testing.T) {
-	cmd := exec.CommandContext(t.Context(), "/proc/self/exe", "0", "0", "1", strictFilter, "-", sh(t), "-c", "echo RAN")
+	cmd := exec.CommandContext(t.Context(), helperPath, "0", "0", "1", strictFilter, "-", sh(t), "-c", "echo RAN")
 	cmd.Args[0] = HelperName
 	out, err := cmd.CombinedOutput()
 	var exit *exec.ExitError
