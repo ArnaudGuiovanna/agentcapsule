@@ -72,7 +72,8 @@ func confine(args []string) error {
 		return err
 	}
 	// Mounts: none propagates to the host; a /proc of this PID namespace;
-	// then every mount read-only and nosuid.
+	// then every mount read-only, nosuid and nodev. A read-only mount does
+	// not stop a write to a device node: nodev refuses to open any.
 	if err := unix.Mount("", "/", "", unix.MS_REC|unix.MS_PRIVATE, ""); err != nil {
 		return fmt.Errorf("private mounts: %w", err)
 	}
@@ -83,7 +84,7 @@ func confine(args []string) error {
 	if err := os.WriteFile("/proc/self/oom_score_adj", []byte("1000"), 0); err != nil {
 		return err
 	}
-	attr := unix.MountAttr{Attr_set: unix.MOUNT_ATTR_RDONLY | unix.MOUNT_ATTR_NOSUID}
+	attr := unix.MountAttr{Attr_set: unix.MOUNT_ATTR_RDONLY | unix.MOUNT_ATTR_NOSUID | unix.MOUNT_ATTR_NODEV}
 	if err := unix.MountSetattr(unix.AT_FDCWD, "/", unix.AT_RECURSIVE, &attr); err != nil {
 		return fmt.Errorf("read-only mounts: %w", err)
 	}

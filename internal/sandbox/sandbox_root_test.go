@@ -76,3 +76,9 @@ func TestAsRootTheProgramCannotReachTheNetwork(t *testing.T) {
 func TestAsRootTheProgramIsKilledAtItsLimits(t *testing.T) {
 	killedAtLimits(t, requireRoot(t))
 }
+
+// REG-01: as root, the dedicated account opens no device node, /dev/null
+// included.
+func TestAsRootTheProgramCannotOpenDevices(t *testing.T) {
+	cannotOpenDevices(t, requireRoot(t))
+}

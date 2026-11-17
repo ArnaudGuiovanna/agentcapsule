@@ -244,6 +244,38 @@ func TestConfinedProgramInheritsNoOtherDescriptor(t *testing.T) {
 	}
 }
 
+// cannotOpenDevices: no device node opens in the sandbox, for writing or
+// reading, whatever its permissions: /dev/null, and those this account may
+// open (/dev/kvm through the kvm group, a terminal multiplexer, a network
+// tunnel). Read-only mounts do not stop writes to a device.
+func cannotOpenDevices(t *testing.T, o Options) {
+	t.Helper()
+	devices := []string{"/dev/null"}
+	for _, d := range []string{"/dev/kvm", "/dev/vhost-net", "/dev/net/tun", "/dev/fuse", "/dev/ptmx"} {
+		if f, err := os.OpenFile(d, os.O_RDWR, 0); err == nil {
+			f.Close()
+			devices = append(devices, d)
+		}
+	}
+	script := "exec 2>&1\n"
+	for _, d := range devices {
+		script += "true 1<> " + d + " && echo OPENED " + d + "\ntrue < " + d + " && echo READ " + d + "\n"
+	}
+	out, err := o.Run(t.Context(), "", sh(t), "-c", script+"echo done")
+	if err != nil {
+		t.Fatal(err, string(out))
+	}
+	if strings.Contains(string(out), "OPENED") || strings.Contains(string(out), "READ") ||
+		strings.Count(string(out), "Permission denied") != 2*len(devices) || !strings.HasSuffix(string(out), "done\n") {
+		t.Errorf("the program opened a device (of %v):\n%s", devices, out)
+	}
+}
+
+// REG-01: the program opens no device node.
+func TestConfinedProgramCannotOpenDevices(t *testing.T) {
+	cannotOpenDevices(t, tools)
+}
+
 // REG-01: a program that hangs is killed at the time limit, one that spins at
 // the processor limit.
 func TestConfinedProgramIsKilledAtItsLimits(t *testing.T) {
