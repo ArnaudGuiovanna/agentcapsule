@@ -126,6 +126,7 @@ func TestProductWorkerDriveCeilingsHoldAgainstAFloodingGuest(t *testing.T) {
 		// 4 MiB/s, and room for 100,000 operations a second.
 		rate := runtime.DriveRate{BandwidthMiBPerSecond: 4, IOPS: 100_000}
 		moved := movedDuringFlood(t, floodingVMM(t, rate, "1048576"))
+		t.Logf("writing 1 MiB at a time: %d bytes moved in %s", moved, floodWindow)
 		perSecond := int64(rate.BandwidthMiBPerSecond) << 20
 		if moved > perSecond*(seconds+1)*11/10 || moved < perSecond*seconds/2 {
 			t.Fatalf("a guest writing 1 MiB at a time moved %d bytes through its VMM in %s; ceiling %d MiB/s",
@@ -136,8 +137,9 @@ func TestProductWorkerDriveCeilingsHoldAgainstAFloodingGuest(t *testing.T) {
 		// 200 operations a second, and room for 64 MiB/s: one operation
 		// for each write of 4 KiB.
 		rate := runtime.DriveRate{BandwidthMiBPerSecond: 64, IOPS: 200}
-		operations := movedDuringFlood(t, floodingVMM(t, rate, "4096")) / 4096
-		perSecond := int64(rate.IOPS)
+		moved := movedDuringFlood(t, floodingVMM(t, rate, "4096"))
+		t.Logf("writing 4 KiB at a time: %d bytes moved in %s", moved, floodWindow)
+		operations, perSecond := moved/4096, int64(rate.IOPS)
 		if operations > perSecond*(seconds+1)*11/10 || operations < perSecond*seconds/2 {
 			t.Fatalf("a guest writing 4 KiB at a time made %d drive operations (bytes its VMM moved / 4096) in %s; ceiling %d a second",
 				operations, floodWindow, rate.IOPS)
@@ -191,7 +193,7 @@ func TestProductWorkerStopsBootingAGuestThatCrashesAtBoot(t *testing.T) {
 	var wake controlplane.AgentCreation
 	l.request(l.owner(), "POST", "/v1/agents/"+agent+"/wake", "wake-crash", map[string]any{}, 202, &wake)
 	// Each boot the guest fails is the wake job's failure, and the pass's.
-	l.awaitPasses("the wake of a guest that crashes at boot", 5*time.Minute, onlyBootFailures, func() bool {
+	failed := l.awaitPasses("the wake of a guest that crashes at boot", 5*time.Minute, onlyBootFailures, func() bool {
 		var op controlplane.PlatformOperation
 		l.request(l.owner(), "GET", "/v1/operations/"+wake.OperationID, "", nil, 200, &op)
 		if op.Status == "SUCCEEDED" || op.Status == "CANCELED" {
@@ -199,6 +201,7 @@ func TestProductWorkerStopsBootingAGuestThatCrashesAtBoot(t *testing.T) {
 		}
 		return op.Status == "FAILED" && op.ErrorCode == "restart_budget_exhausted"
 	})
+	t.Log("passes that failed on the guest's boots:", failed)
 	var v controlplane.TenantAgent
 	l.request(l.owner(), "GET", "/v1/agents/"+agent, "", nil, 200, &v)
 	if v.State != "FAILED" || v.FailureReason == nil || *v.FailureReason != "boot_failed" {
