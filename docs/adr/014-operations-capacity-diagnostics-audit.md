@@ -129,7 +129,7 @@ checks that none reaches the archive; weakening the filters makes it fail.
 | `configure-delegation -action rotate` or `revoke-trust` | the issuer | `delegation_audit` (the organization's trail) |
 | `configure-delegation -action revoke-token` | the token ID | `delegation_audit` |
 | `configure-delegation -action add-key` or `retire-key` | the key ID | `delegation_audit` |
-| `agentcapsule-worker -collect-garbage` (OPR-5, November 17) | the host ID | `operator_audit` (migration 0044) |
+| `agentcapsule-worker -collect-garbage` (OPR-5, November 17) | the host ID | `operator_audit` (migration 0045) |
 
 Without `-confirm`, or with another value, a command prints
 `confirmation_required` and opens no connection. `-dry-run` checks everything

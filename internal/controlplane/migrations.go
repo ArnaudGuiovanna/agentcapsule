@@ -148,7 +148,7 @@ var authorityReconciliationsSQL string
 //go:embed migrations/0043_tenant_refusal_audit.sql
 var tenantRefusalAuditSQL string
 
-//go:embed migrations/0044_garbage_collection_audit.sql
+//go:embed migrations/0045_garbage_collection_audit.sql
 var garbageCollectionAuditSQL string
 
 // Append migrations; never edit an installed migration. The original schema
