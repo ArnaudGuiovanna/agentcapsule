@@ -519,7 +519,9 @@ Remaining:
   that barrier, and stays `DELIVERING` or `PROCESSING` meanwhile (see the
   product owner question in §7.1).
 - **Request content closed before delivery is never purged.** Built in §7.3.
-- **TLC and Apalache** checks of the revised P1 and P3 (§3, §7).
+- **TLC and Apalache** checks of the revised P1 and P3 (§3, §7). Run on
+  2026-11-17 with `scripts/check-models.py`; results in
+  [spec/README.md](../../spec/README.md#bounded-and-exhaustive-checks).
 - **The restore risk of item 5**, recorded in §7.2 (h).
 
 ## 7. Closure scope, review fixes and closed requests' content

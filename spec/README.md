@@ -37,7 +37,8 @@ npx quint verify --main=invocationCompletion --init=init --step=step \
 `scripts/check-repo-hygiene.py` checks [projections.md](projections.md).
 
 The concurrent protocol (P1) and service progress (P3) models are checked by
-their runs and by simulation of `safety`:
+their runs, by simulation of `safety`, and by the bounded and exhaustive
+checks [below](#bounded-and-exhaustive-checks):
 
 ```bash
 npx quint test --main=concurrentProtocolTests concurrent_protocol_test.qnt
@@ -74,8 +75,10 @@ runtime. `scripts/check-models.py` runs every such check the models declare,
 one at a time, and fails unless each ends as the repository expects:
 
 - the fixed witness schedules (`traceInit`, `traceStep`) of
-  `concurrent_witness.qnt`, `restore_witness.qnt` and `protocol_witness.qnt`:
-  `checked` must fail at the schedule's last step (Apalache);
+  `concurrent_witness.qnt` and `restore_witness.qnt`: `checked` must fail at
+  the schedule's last step, not before (Apalache); in `protocol_witness.qnt`
+  the broken instances must fail within their schedule and the conforming one
+  must not;
 - the depth wrappers of `concurrent_bounded.qnt`, `concurrent_focused.qnt` and
   `bounded.qnt`: `safety` (or `checked`) holds in every state up to the depth
   (TLC; the frontier is a deadlock, which TLC's `-deadlock` ignores);
@@ -111,6 +114,14 @@ publisher lists. Quint finds Apalache under `QUINT_HOME`
 (`apalache/` here) instead of downloading it into `~/.quint`. The script sets
 `QUINT_HOME`, puts the JDK first on `PATH`, and keeps TLC's files under the
 check's own directory, never in `/tmp`.
+
+Each check reads only the modules it needs, copied alone into files of the
+same names (`src/` in its directory). `quint verify` sends Apalache the typed
+spec of every module it loaded as one string: the whole of
+`restore_witness.qnt` with `restore_authority.qnt` makes 446 MB of it for one
+witness, and Quint 0.33.1 then fails (`RangeError: Invalid string length`) or
+exits 0 without a result. The script never counts an exit without Quint's
+`[ok]` (and, for TLC, its completion line) as a pass.
 
 ## Models
 

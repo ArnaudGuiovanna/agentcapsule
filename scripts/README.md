@@ -336,7 +336,9 @@ GitHub permissions are limited to reading the repository, with no credentials
 persisted by checkout. No deployment, LLM provider or KVM secret is needed. The
 workflow does not use `pull_request_target` and deploys nothing.
 
-CI does **not** validate Firecracker/jailer on the target host, physical
+CI does **not** run the models' bounded and exhaustive checks
+(`check-models.py`, hours of TLC and Apalache; a release check, see
+[docs/release.md](../docs/release.md)), nor validate Firecracker/jailer on the target host, physical
 storage cuts, complete product isolation, the platform's use of the AGNTCY
 services (INT-02 to INT-05) or an external restore. It does qualify the pinned
 interoperability profile against its private services (`verify-interop.py
