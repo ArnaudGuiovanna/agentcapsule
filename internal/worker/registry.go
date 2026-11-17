@@ -279,53 +279,132 @@ func (h *HarnessImporter) Evict(ctx context.Context) ([]string, error) {
 	if inUse == nil || h.host == "" {
 		return nil, nil
 	}
-	keep, err := h.store.RetainedHarnessDigests(ctx, h.host)
-	if err != nil {
-		return nil, err
-	}
-	booting, err := (*inUse)(ctx)
-	if err != nil {
-		return nil, err
-	}
+	g, err := h.collect(ctx, h.host, *inUse, 0, false)
+	return g.Unused, err
+}
+
+// ImageGarbage is what a collection of the image cache removed, or would
+// remove in a dry run: the packages no agent of the host can boot, by
+// digest, the leftovers of interrupted downloads, and their bytes.
+type ImageGarbage struct {
+	Unused    []string `json:"unused"`
+	Leftovers int      `json:"leftovers"`
+	Bytes     int64    `json:"bytes"`
+}
+
+// collect is Evict for host. With staleAfter, it removes only the download
+// leftovers untouched for that long: a collection that runs beside the
+// worker's own imports (GarbageCollection) leaves a download in progress
+// alone. It lists the cache before it reads what to keep: a package that an
+// import moves into the cache meanwhile belongs to an import that is
+// IMPORTING by then, or READY, and is kept. A dry run removes nothing.
+func (h *HarnessImporter) collect(ctx context.Context, host string, inUse func(context.Context) (map[string]bool, error), staleAfter time.Duration, dryRun bool) (ImageGarbage, error) {
+	g := ImageGarbage{Unused: []string{}}
 	staging := filepath.Join(h.cache, ".staging")
 	leftovers, err := os.ReadDir(staging)
-	if err != nil {
-		return nil, err
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return g, err
 	}
 	for _, e := range leftovers {
-		if err = removeTree(filepath.Join(staging, e.Name())); err != nil {
-			return nil, err
+		path := filepath.Join(staging, e.Name())
+		size, latest, err := treeUsage(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return g, err
+		}
+		if staleAfter > 0 && time.Since(latest) < staleAfter {
+			continue
+		}
+		g.Leftovers++
+		g.Bytes += size
+		if !dryRun {
+			if err = removeTree(path); err != nil {
+				return g, err
+			}
 		}
 	}
 	entries, err := os.ReadDir(filepath.Join(h.cache, "sha256"))
-	if err != nil {
-		return nil, err
+	if errors.Is(err, os.ErrNotExist) {
+		return g, nil
 	}
-	var evicted []string
+	if err != nil {
+		return g, err
+	}
+	keep, err := h.store.RetainedHarnessDigests(ctx, host)
+	if err != nil {
+		return g, err
+	}
+	booting, err := inUse(ctx)
+	if err != nil {
+		return g, err
+	}
 	for _, e := range entries {
 		digest := "sha256:" + e.Name()
 		dir := h.PackageDir(digest)
 		if !harnesspkg.ValidDigest(digest) || keep[digest] || booting[filepath.Join(dir, harnesspkg.RootfsFile)] {
 			continue
 		}
+		size, _, err := treeUsage(dir)
+		if errors.Is(err, os.ErrNotExist) {
+			continue // evicted meanwhile, by the worker or another collection
+		}
+		if err != nil {
+			return g, err
+		}
+		if dryRun {
+			g.Unused, g.Bytes = append(g.Unused, digest), g.Bytes+size
+			continue
+		}
 		// Leave the content-addressed path atomically, then delete.
 		doomed, err := os.MkdirTemp(staging, "evict-")
 		if err != nil {
-			return evicted, err
+			return g, err
 		}
 		// Moving a directory to another parent needs write access to it.
 		if err = os.Chmod(dir, 0o755); err == nil {
 			err = os.Rename(dir, filepath.Join(doomed, "pkg"))
 		}
+		if errors.Is(err, os.ErrNotExist) {
+			if err = os.Remove(doomed); err != nil {
+				return g, err
+			}
+			continue
+		}
 		if err != nil {
-			return evicted, errors.Join(err, os.Remove(doomed))
+			return g, errors.Join(err, os.Remove(doomed))
 		}
 		if err = removeTree(doomed); err != nil {
-			return evicted, err
+			return g, err
 		}
-		evicted = append(evicted, digest)
+		g.Unused, g.Bytes = append(g.Unused, digest), g.Bytes+size
 	}
-	return evicted, nil
+	return g, nil
+}
+
+// treeUsage is the bytes of the regular files under path and the latest
+// modification of path or of anything under it. It follows no link.
+func treeUsage(path string) (int64, time.Time, error) {
+	var size int64
+	var latest time.Time
+	err := filepath.WalkDir(path, func(_ string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if info.ModTime().After(latest) {
+			latest = info.ModTime()
+		}
+		if info.Mode().IsRegular() {
+			size += info.Size()
+		}
+		return nil
+	})
+	return size, latest, err
 }
 
 // removeTree deletes a directory whose subdirectories were sealed read-only.

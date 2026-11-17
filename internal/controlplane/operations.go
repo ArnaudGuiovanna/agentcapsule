@@ -146,6 +146,20 @@ func (s *Store) operatorCommand(ctx context.Context, cmd OperatorCommand, action
 	return out, commit(ctx, tx)
 }
 
+// RecordGarbageCollection audits the operator's garbage collection of host
+// (agentcapsule-worker -collect-garbage, OPR-5): done when it removed
+// something, unchanged otherwise. Its work is on the host's disks, not in
+// the database, so it is recorded once done, even when it stopped part way.
+// A dry run records nothing.
+func (s *Store) RecordGarbageCollection(ctx context.Context, cmd OperatorCommand, host string, removed bool) (OperatorOutcome, error) {
+	return s.operatorCommand(ctx, cmd, "garbage.collected", host, func(pgx.Tx) (bool, error) {
+		if host == "" {
+			return false, ErrInput
+		}
+		return removed, nil
+	})
+}
+
 // auditTables hold the audit trail: the tenants' events and refused
 // attempts, the platform's, the operator's, and the replays of dead letters
 // (ADR 017). The retention
