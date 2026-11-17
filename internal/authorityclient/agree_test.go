@@ -171,8 +171,15 @@ func life(t *testing.T, a implementation) {
 		t.Fatal("a key was destroyed without its binding", err)
 	}
 	must(a.RecordRetiredSeal(ctx, next))
-	if _, err = a.Lookup(ctx, agent); !errors.Is(err, restoreauthority.ErrSealed) {
-		t.Fatal(err)
+	// A sealed store's lookup gives no binding: an error carries no result
+	// (ADR 006 §2), in process as through the service.
+	if got, err := a.Lookup(ctx, agent); !errors.Is(err, restoreauthority.ErrSealed) || got != (restoreauthority.Binding{}) {
+		t.Fatal("a sealed store's lookup", got, err)
+	}
+	// The binding the store had before its seal reserves no incarnation: a
+	// deleted agent is never restored.
+	if _, err = a.ReserveIncarnation(ctx, next, "revive-deleted"); !errors.Is(err, restoreauthority.ErrSealed) {
+		t.Fatal("a sealed store reserved an incarnation", err)
 	}
 	if err = a.HoldKey(ctx, next, func(context.Context, []byte) error { t.Error("a sealed store's key held"); return nil }); !errors.Is(err, restoreauthority.ErrSealed) {
 		t.Fatal(err)

@@ -275,7 +275,9 @@ hosts (REC-03).
   one fetched from the standby's disk.
 - The failover exercise (`verify-failover.py`) takes the lost host over on
   the promoted database, with the API started under the standby's host ID.
-- KVM, written, not run:
+- KVM, written, not passed (its first run, on 2026-11-17, stopped at the
+  ship: the test looked for the shipper outside the campaign's copy of the
+  sources; fixed):
   `TestProductWorkerRestoresAgentFromShippedArchiveOnAnotherHost` archives a
   real agent, ships the archive with rclone crypt, loses the host, and
   restores the agent on a second worker host with its own runtime root, from
