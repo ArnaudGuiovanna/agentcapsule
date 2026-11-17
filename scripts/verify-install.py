@@ -91,7 +91,7 @@ OWNER_SCOPES = "org:read member:read member:manage audit:read"
 # Every check the worker's preflight prints with this configuration.
 PREFLIGHT_CHECKS = ("mode", "configuration", "kvm", "kernel", "cgroups", "namespaces", "runtime_filesystem",
                     "artifact_firecracker", "artifact_jailer", "artifact_kernel", "artifact_initrd", "clock",
-                    "disk_runtime", "authority", "metrics_listen", "registry", "postgresql")
+                    "disk_runtime", "authority", "metrics_listen", "registry", "registry_inspection", "postgresql")
 MANDATORY = ("kvm", "kernel", "cgroups", "namespaces", "runtime_filesystem", "disk_runtime",
              "artifact_firecracker", "artifact_jailer", "artifact_kernel", "artifact_initrd")
 ARTIFACTS = ("firecracker", "jailer", "kernel", "initrd")

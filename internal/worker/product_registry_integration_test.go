@@ -19,7 +19,12 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmgateway"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/ociregistry"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/ociregistry/registrytest"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/sandbox"
 )
+
+// labInspectionUID is the UID and GID debugfs runs as in the labs run as
+// root.
+const labInspectionUID = 61999
 
 // registryLab is a product lab with an in-process OCI registry, an importer
 // attached to the worker, one organization (owner alice) and member bob.
@@ -43,6 +48,9 @@ func newRegistryLab(t *testing.T) *registryLab {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// As root, debugfs inspects each image as a reserved UID (REG-01),
+	// outside the labs' provisioning ranges.
+	fetcher.Sandbox = sandbox.Options{UID: labInspectionUID, GID: labInspectionUID}
 	importer, err := NewHarnessImporter(lab.store, fetcher, filepath.Join(lab.root, "releases"), "kvm-importer")
 	if err != nil {
 		t.Fatal(err)

@@ -11,7 +11,9 @@
 // imports with POST /v1/harness-imports. sign attaches a signature in the
 // cosign v3 format ("cosign sign --key" works as well); the operator trusts the
 // matching public key. verify downloads a package and checks it as the
-// platform's importer would. The registry password, if any, is read from
+// platform's importer would, debugfs confined as on the platform; where this
+// machine cannot confine it (no user namespaces), verify warns and inspects
+// unconfined. The registry password, if any, is read from
 // AGENTCAPSULE_REGISTRY_PASSWORD, never from the command line.
 package main
 
@@ -35,7 +37,25 @@ import (
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/harnesspkg"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/ociregistry"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/sandbox"
 )
+
+// nobody is the account debugfs runs as when verify runs as root.
+const nobody = 65534
+
+// inspection confines debugfs as the platform's worker does, when this
+// machine allows it (package sandbox). Otherwise (a container without user
+// namespaces, as in CI) it says so and inspects unconfined: this tool runs on
+// a publisher's machine, never on the platform host, which always confines.
+func inspection(ctx context.Context) sandbox.Options {
+	sb := sandbox.Options{UID: nobody, GID: nobody}
+	err := harnesspkg.CheckInspection(ctx, sb)
+	if err == nil {
+		return sb
+	}
+	fmt.Fprintln(os.Stderr, "warning: debugfs inspects the image unconfined:", err)
+	return sandbox.Options{Unconfined: true}
+}
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -271,6 +291,7 @@ func verifyPackage(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	f.Sandbox = inspection(ctx)
 	dir, err := os.MkdirTemp("", "agentcapsule-verify-")
 	if err != nil {
 		return err

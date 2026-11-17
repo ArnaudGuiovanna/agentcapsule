@@ -119,7 +119,9 @@ var workerStarts = map[string]struct {
 	sites int
 	why   string
 }{
-	"internal/harnesspkg/inspect.go":               {1, "debugfs -R stat, read-only, on a downloaded image before it is accepted"},
+	"internal/sandbox/sandbox_linux.go": {1, "this executable again, as the sandbox's helper, in new namespaces: for debugfs -R stat, " +
+		"read-only, on a downloaded image before it is accepted (harnesspkg.InspectRootfs), and debugfs -V at start"},
+	"internal/sandbox/helper_linux.go":             {1, "the helper, confined, executes that debugfs"},
 	"internal/harnesspkg/build.go":                 {2, "mkfs.ext4 and debugfs -w, which build a package: the publisher's side, never called by the worker"},
 	"internal/runtime/firecracker_limits_linux.go": {1, "the pinned jailer, which starts the pinned Firecracker: the boot"},
 	"internal/preflight/preflight_linux.go":        {1, "the pinned Firecracker and jailer with --version"},
