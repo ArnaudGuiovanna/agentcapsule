@@ -18,7 +18,7 @@ import (
 
 var (
 	jobKinds     = []string{"provision", "lifecycle", "delivery", "closure", "deletion", "expiration", "resume"}
-	retryReasons = []string{"wake_budget", "agent_failed", "slim_unavailable", "capacity", "storage_pressure", "error"}
+	retryReasons = []string{"wake_budget", "agent_failed", "slim_unavailable", "capacity", "organization_quota", "storage_pressure", "error"}
 	// A guest fails at boot or crashes; an agent that spends its restart
 	// budget is FAILED for the kind of its last failure (ADR 012).
 	guestFailureKinds   = []string{controlplane.GuestBootFailed, controlplane.GuestCrashed}
@@ -31,8 +31,8 @@ var (
 
 // RetryReason classifies why work waits for its next attempt, for metrics
 // and events: the organization's wake budget, a FAILED agent, an absent SLIM
-// bridge or node, the host's VM capacity, its storage pressure, or any
-// other error.
+// bridge or node, the host's VM capacity, the organization's quotas on its
+// VMs, the host's storage pressure, or any other error.
 func RetryReason(err error) string {
 	var bridge *slimlink.BridgeError
 	var socket *net.OpError
@@ -45,6 +45,8 @@ func RetryReason(err error) string {
 		return "slim_unavailable"
 	case errors.Is(err, runtime.ErrCapacity):
 		return "capacity"
+	case errors.Is(err, controlplane.ErrOrganizationQuota):
+		return "organization_quota"
 	case errors.Is(err, controlplane.ErrStoragePressure):
 		return "storage_pressure"
 	}
@@ -108,6 +110,7 @@ func (w *Placements) EnableTelemetry(registry *telemetry.Registry, root string, 
 	failedAgents := registry.Gauge("agentcapsule_worker_agents_failed", "Live agents of this host that are FAILED: they boot again only when woken or cleared.")
 	queued := registry.Gauge("agentcapsule_worker_agents_queued", "Agents of this host waiting for a VM slot (QUEUED).")
 	queuedOldest := registry.Gauge("agentcapsule_worker_capacity_oldest_wait_seconds", "How long the oldest agent waiting for a VM slot has waited.")
+	quotaWaits := registry.Gauge("agentcapsule_worker_agents_waiting_for_quota", "Agents of this host whose work waits for their organization's quotas (QUEUED).")
 	registry.Collect(func(ctx context.Context) error {
 		stats, err := w.store.WorkQueue(ctx, w.hostID)
 		if err != nil {
@@ -149,6 +152,10 @@ func (w *Placements) EnableTelemetry(registry *telemetry.Registry, root string, 
 		}
 		queued.Set(float64(waiting))
 		queuedOldest.Set(longest.Seconds())
+		if waiting, err = w.store.QuotaWaits(ctx, w.hostID); err != nil {
+			return err
+		}
+		quotaWaits.Set(float64(waiting))
 		var fs syscall.Statfs_t
 		if err = syscall.Statfs(root, &fs); err != nil {
 			return err

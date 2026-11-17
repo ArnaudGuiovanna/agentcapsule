@@ -35,6 +35,10 @@ type TenantAgent struct {
 	// FailureReason says why a FAILED agent spent its restart budget:
 	// boot_failed or crashed, the kind of its last failure (ADR 012).
 	FailureReason *string `json:"failure_reason,omitempty"`
+	// QueueReason says what a QUEUED agent waits for: capacity, a VM slot of
+	// its host (ADR 017), or organization_quota, room under its
+	// organization's quotas (ADR 021).
+	QueueReason *string `json:"queue_reason,omitempty"`
 }
 
 // AgentAssignment grants permissions on one agent to one principal or to every
@@ -66,7 +70,9 @@ const tenantAgentColumns = `a.id,x.name,
         CASE WHEN a.phase IN ('QUIESCING','DELETING','DELETED') THEN 'deleted' ELSE coalesce((SELECT CASE o.kind WHEN 'wake' THEN 'running' ELSE 'stopped' END
           FROM platform_operations o WHERE o.agent_id=a.id AND o.kind IN ('wake','sleep') AND o.status IN ('PENDING','RUNNING','SUCCEEDED')
           ORDER BY o.seq DESC LIMIT 1), CASE WHEN x.auto_start THEN 'running' ELSE 'stopped' END) END,x.idle_timeout_seconds,
-        CASE WHEN a.phase='LIVE' AND coalesce(p.state,'STOPPED')='STOPPED' THEN f.reason END`
+        CASE WHEN a.phase='LIVE' AND coalesce(p.state,'STOPPED')='STOPPED' THEN f.reason END,
+        CASE WHEN a.phase='LIVE' AND coalesce(p.state,'STOPPED')='STOPPED' AND f.agent_id IS NULL
+          THEN (SELECT q.reason FROM capacity_waits q WHERE q.agent_id=a.id) END`
 
 // effectivePermissions are the permissions the principal holds on the agent
 // right now: direct assignments plus those of teams it actively belongs to.
@@ -81,7 +87,7 @@ func scanTenantAgent(row pgx.Row, perms *[]string) (TenantAgent, error) {
 	if perms == nil {
 		perms = &sink
 	}
-	err := row.Scan(&v.ID, &v.Name, &v.State, &v.HarnessDigest, &v.Harness.Name, &v.Harness.Version, &v.Resources.VCPUs, &v.Resources.MemoryMiB, &v.Resources.DataVolumeMiB, &v.CreatedAt, &v.DesiredState, &v.IdleTimeoutSeconds, &v.FailureReason, perms)
+	err := row.Scan(&v.ID, &v.Name, &v.State, &v.HarnessDigest, &v.Harness.Name, &v.Harness.Version, &v.Resources.VCPUs, &v.Resources.MemoryMiB, &v.Resources.DataVolumeMiB, &v.CreatedAt, &v.DesiredState, &v.IdleTimeoutSeconds, &v.FailureReason, &v.QueueReason, perms)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = ErrNotFound
 	}
@@ -157,6 +163,11 @@ func (c *AgentCatalog) reserveTenant(ctx context.Context, p Principal, key strin
 			return 0, nil, err
 		}
 		if err = lockWorkerHost(ctx, tx, c.host); err != nil {
+			return 0, nil, err
+		}
+		// The organization's own quotas first (TEN-007): its answer does not
+		// depend on the host's load.
+		if err = checkCreationQuota(ctx, tx, p.TenantID, r); err != nil {
 			return 0, nil, err
 		}
 		// A new agent needs room for its volume (OPS-03).

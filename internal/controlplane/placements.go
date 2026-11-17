@@ -189,6 +189,13 @@ func (s *Store) claimPlacement(ctx context.Context, id, host, worker string, lea
 	if err = bootAllowed(ctx, tx, a); err != nil {
 		return p, err
 	}
+	// This boot is the reservation the organization's quotas bound (TEN-007);
+	// a barrier's boot is the platform's.
+	if !forFence {
+		if err = checkBootQuota(ctx, tx, a); err != nil {
+			return p, err
+		}
+	}
 	if p.Generation >= math.MaxInt64 {
 		return p, fmt.Errorf("placement generation exhausted")
 	}

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/harnessstore"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/runtime"
 )
@@ -189,6 +190,9 @@ func (w *Placements) fence(ctx context.Context, target, subject string) (result 
 // exclusive admission turn and stopped any fence-only VM of target. A full
 // host stops a VM that is not computing for it, an idle one first; with none,
 // target waits in the queue and ErrCapacity makes its job try again later.
+// Past its organization's quotas (ADR 021), target stops its organization's
+// own VMs here that are not computing, or waits in the same queue, and an
+// OrganizationQuotaError makes its job try again later.
 func (w *Placements) bootForWork(ctx context.Context, target string) (runtime.VMRun, error) {
 	runs, err := w.Reconcile(ctx)
 	if err != nil {
@@ -209,7 +213,15 @@ func (w *Placements) bootForWork(ctx context.Context, target string) (runtime.VM
 		return runtime.VMRun{}, err
 	}
 	if !d.Admit {
+		if d.Quota != "" {
+			return runtime.VMRun{}, &controlplane.OrganizationQuotaError{Quota: d.Quota}
+		}
 		return runtime.VMRun{}, runtime.ErrCapacity
+	}
+	for _, id := range d.EvictForQuota {
+		if err = w.stop(ctx, id, runs[id].Generation, true); err != nil {
+			return runtime.VMRun{}, err
+		}
 	}
 	if d.Evict != "" {
 		if err = w.stop(ctx, d.Evict, runs[d.Evict].Generation, true); err != nil {
