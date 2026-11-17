@@ -76,14 +76,63 @@ func guestCode(t *testing.T, module string) []string {
 	return code
 }
 
+// hostImporter downloads, inspects and builds harness packages: the worker's
+// importer, the image checks that run e2fsprogs, and their sandbox. The API
+// only records an import request, checking the reference's syntax
+// (internal/ociregistry/reference).
+var hostImporter = []string{"internal/ociregistry", "internal/harnesspkg", "internal/sandbox"}
+
+// apiStoreRoutes are the only packages through which the API may still link
+// the guest's event store (internal/harnessstore) and the SQLite driver,
+// which makes it need cgo. No other route may appear:
+//   - internal/capsuleprotocol, the protocol shared with the guest, uses
+//     harnessstore's Event and Receipt in its wire types and holds its
+//     server; splitting them changes the guest's code;
+//   - internal/controlplane names harnessstore.Event and Receipt in its
+//     delivery interfaces, and computes outcome IDs with it: moving those to
+//     a package without SQLite comes with the protocol's split;
+//   - internal/restoreauthority keeps the restore authority's catalogue in
+//     SQLite; the API links it through the authority service's client.
+var apiStoreRoutes = map[string][]string{
+	"internal/harnessstore":       {"internal/capsuleprotocol", "internal/controlplane"},
+	"github.com/mattn/go-sqlite3": {"internal/harnessstore", "internal/restoreauthority"},
+}
+
+// importers maps each package the packages link, outside the standard
+// library, to the linked packages that import it, all relative to the
+// module when in it.
+func importers(t *testing.T, module string, packages ...string) map[string][]string {
+	t.Helper()
+	args := []string{"list", "-deps", "-f", "{{if not .Standard}}{{.ImportPath}}:{{join .Imports \",\"}}{{end}}"}
+	for _, p := range packages {
+		args = append(args, module+"/"+p)
+	}
+	out, err := exec.CommandContext(t.Context(), "go", args...).Output()
+	if err != nil {
+		t.Fatal("go list", packages, err)
+	}
+	by := map[string][]string{}
+	for _, line := range strings.Fields(string(out)) {
+		p, imports, _ := strings.Cut(line, ":")
+		for _, imported := range strings.Split(imports, ",") {
+			if imported != "" {
+				by[strings.TrimPrefix(imported, module+"/")] = append(by[strings.TrimPrefix(imported, module+"/")], strings.TrimPrefix(p, module+"/"))
+			}
+		}
+	}
+	return by
+}
+
 // CONV-9, RUN-010: the API is an HTTP front end over PostgreSQL. It links
 // neither the runtime that starts Firecracker, nor the worker, nor any code
 // that runs in a guest. No route can then hand a command to a VM or to the
-// host, nor run a harness, whatever it is sent.
+// host, nor run a harness, whatever it is sent. REG-01: nor does it link the
+// importer, which downloads and inspects images with e2fsprogs; and it links
+// the guest's event store and SQLite only through apiStoreRoutes.
 func TestAPILinksNoRuntimeWorkerOrGuestCode(t *testing.T) {
 	module := goModule(t)
-	denied := append(guestCode(t, module), hostRuntime...)
-	deps(t, module, hostRuntime...) // fails when one is renamed or gone
+	denied := append(append(guestCode(t, module), hostRuntime...), hostImporter...)
+	deps(t, module, append(hostRuntime, hostImporter...)...) // fails when one is renamed or gone
 	linked := deps(t, module, "cmd/agentcapsule-api")
 	if !slices.Contains(linked, "internal/api") {
 		t.Fatal("go list does not see the API's own packages", linked)
@@ -91,6 +140,20 @@ func TestAPILinksNoRuntimeWorkerOrGuestCode(t *testing.T) {
 	for _, p := range linked {
 		if slices.Contains(denied, p) {
 			t.Error("agentcapsule-api links", p)
+		}
+	}
+	by := importers(t, module, "cmd/agentcapsule-api")
+	for store, allowed := range apiStoreRoutes {
+		for _, importer := range by[store] {
+			if !slices.Contains(allowed, importer) {
+				t.Errorf("agentcapsule-api links %s through %s, beyond apiStoreRoutes", store, importer)
+			}
+		}
+		// A route cut is removed from the list, so that it cannot come back.
+		for _, importer := range allowed {
+			if !slices.Contains(by[store], importer) {
+				t.Errorf("apiStoreRoutes lets %s link %s, which it no longer does: remove it", importer, store)
+			}
 		}
 	}
 }

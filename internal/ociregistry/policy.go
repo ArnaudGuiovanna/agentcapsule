@@ -10,10 +10,10 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
-	"regexp"
 	"strings"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/addrpolicy"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/ociregistry/reference"
 )
 
 var (
@@ -75,25 +75,12 @@ type Policy struct {
 	RequireSignatures bool
 }
 
+// The syntax of references and their names is package reference's.
 var (
-	hostPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*(:[0-9]{1,5})?$`)
-	repoPart    = regexp.MustCompile(`^[a-z0-9]+([._-][a-z0-9]+)*$`)
-	tagPattern  = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$`)
+	validHost       = reference.ValidHost
+	validRepository = reference.ValidRepository
+	validDigest     = reference.ValidDigest
 )
-
-func validHost(h string) bool { return len(h) <= 255 && hostPattern.MatchString(h) }
-
-func validRepository(r string) bool {
-	if r == "" || len(r) > 255 {
-		return false
-	}
-	for _, p := range strings.Split(r, "/") {
-		if !repoPart.MatchString(p) {
-			return false
-		}
-	}
-	return true
-}
 
 // Validate refuses rules that would widen the policy by accident.
 func (p Policy) Validate() error {
@@ -150,44 +137,16 @@ func isIPLiteral(hostport string) bool {
 }
 
 // Reference is a package pinned by digest. A tag, if given, is informational.
-type Reference struct {
-	Registry   string
-	Repository string
-	Tag        string
-	Digest     string
-}
-
-func (r Reference) String() string {
-	s := r.Registry + "/" + r.Repository
-	if r.Tag != "" {
-		s += ":" + r.Tag
-	}
-	return s + "@" + r.Digest
-}
+type Reference = reference.Reference
 
 // ParseReference accepts "registry/repository[:tag]@sha256:<hex>". The registry
 // must be explicit: there is no default registry.
 func ParseReference(s string) (Reference, error) {
-	var r Reference
-	name, digest, ok := strings.Cut(s, "@")
-	if !ok || len(s) > 512 || !validDigest(digest) {
-		return r, fmt.Errorf("%w: a reference must be pinned by sha256 digest", ErrPolicy)
+	r, err := reference.Parse(s)
+	if err != nil {
+		return Reference{}, fmt.Errorf("%w: %v", ErrPolicy, err)
 	}
-	registry, rest, ok := strings.Cut(name, "/")
-	if !ok || !validHost(registry) || !(strings.ContainsAny(registry, ".:") || registry == "localhost") {
-		return r, fmt.Errorf("%w: the registry host must be explicit", ErrPolicy)
-	}
-	repo, tag := rest, ""
-	if i := strings.LastIndex(rest, ":"); i >= 0 {
-		repo, tag = rest[:i], rest[i+1:]
-		if !tagPattern.MatchString(tag) {
-			return r, fmt.Errorf("%w: tag", ErrPolicy)
-		}
-	}
-	if !validRepository(repo) {
-		return r, fmt.Errorf("%w: repository", ErrPolicy)
-	}
-	return Reference{Registry: registry, Repository: repo, Tag: tag, Digest: digest}, nil
+	return r, nil
 }
 
 // Allow returns the rule that approves this reference.
@@ -204,18 +163,6 @@ func (p Policy) Allow(ref Reference) (Rule, error) {
 		return Rule{}, fmt.Errorf("%w: repository not approved on %s", ErrPolicy, ref.Registry)
 	}
 	return Rule{}, fmt.Errorf("%w: registry %s not approved", ErrPolicy, ref.Registry)
-}
-
-func validDigest(d string) bool {
-	if len(d) != 71 || !strings.HasPrefix(d, "sha256:") {
-		return false
-	}
-	for _, c := range d[7:] {
-		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
-			return false
-		}
-	}
-	return true
 }
 
 // allowsAddress is the rule's address policy. The client applies it to every
