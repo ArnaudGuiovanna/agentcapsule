@@ -245,7 +245,9 @@ def checks(spec=SPEC):
             scope="every execution of up to 7 steps from the initial state"),
         tlc(p1[2], "concurrentProtocolDepth8", "safety", timeout=4 * 3600, heap="6G",
             scope="every execution of up to 8 steps from the initial state"),
-        tlc(p1[2], "concurrentProtocolLoadedDepth12", "safety", timeout=2 * 3600, heap="6G",
+        # Beyond this machine (12 cores, 15 GB): 2.4 million states after six of
+        # its twelve steps, and growing about fivefold a step. An attempt.
+        tlc(p1[2], "concurrentProtocolLoadedDepth12", "safety", timeout=3600, heap="6G",
             scope="every 12-step continuation of the four-request prefix"),
         # P3, service progress: safety and the temporal properties (TLC).
         tlc("service_progress.qnt", "serviceProgressSmall", "safety", timeout=3600,
@@ -361,7 +363,10 @@ def checks(spec=SPEC):
         apalache("store_seal.qnt", "storeSealEarlyReceipt", "physicalSeal", 5, VIOLATION),
         apalache("store_seal.qnt", "storeSealVolatileBan", "physicalSeal", 7, VIOLATION),
         tlc("store_enrollment.qnt", "storeEnrollmentTiny", "safety"),
-        apalache("store_enrollment.qnt", "storeEnrollmentOk", "safety", 8),
+        # Each step joins its transitions before the invariants are checked
+        # (search.invariant.mode=after): checking each of five invariants on
+        # each transition does not end within 15 minutes.
+        apalache("store_enrollment.qnt", "storeEnrollmentOk", "safety", 8, after=True),
         apalache("store_enrollment.qnt", "storeEnrollmentStaleScan", "noRestoredRevocation", 9, VIOLATION),
         apalache("store_enrollment.qnt", "storeEnrollmentOldReceipt", "currentAcks", 7, VIOLATION),
         apalache("store_enrollment.qnt", "storeEnrollmentNoRetirement", "retiredBeforeInstall", 3, VIOLATION),
