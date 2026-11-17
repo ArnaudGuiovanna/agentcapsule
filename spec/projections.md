@@ -85,7 +85,7 @@ in the ordinary unit tests.
 | `concurrentProtocolTests.foreignMandateTest` | full | `TestForeignMandate` |  |
 | `concurrentProtocolTests.fifoAcrossRequestsTest` | full | `TestFifoAcrossRequests` |  |
 | `concurrentProtocolTests.fifoAfterFirstAckTest` | full | `TestPreimplementationP1ITF/fifo-uses-commit-order` |  |
-| `concurrentProtocolTests.duplicateAfterLostAckTest` | partial | `TestPreimplementationP1ITF/lost-ack-competing-lease`, `TestDeliveryConcurrentClaimsFIFOAndLostAck` | The fixture does not replay the refused late ACK (`acknowledge(0).fail()`). |
+| `concurrentProtocolTests.duplicateAfterLostAckTest` | full | `TestDuplicateAfterLostAck`, `TestPreimplementationP1ITF/lost-ack-competing-lease`, `TestDeliveryConcurrentClaimsFIFOAndLostAck` | `TestDuplicateAfterLostAck` replays the refused late ACK too. |
 | `concurrentProtocolTests.duplicateAcrossGenerationTest` | full | `TestPreimplementationP1ITF/dedup-survives-generation-change` |  |
 | `concurrentProtocolTests.oldChannelTest` | full | `TestPreimplementationP1ITF/old-channel-after-replacement` |  |
 | `concurrentProtocolTests.oldCallerTest` | full | `TestPreimplementationP1ITF/old-caller-after-replacement` |  |
@@ -94,14 +94,14 @@ in the ordinary unit tests.
 | `concurrentProtocolTests.writerBlocksFenceTest` | full | `TestPreimplementationP1ITF/writer-blocks-revocation`, `TestAbortedWriterThenFence` | `TestAbortedWriterThenFence` checks it with the writer in another process. |
 | `concurrentProtocolTests.abortedWriterThenFenceTest` | full | `TestAbortedWriterThenFence`, `TestPreimplementationP1ITF/writer-crash-then-restricted-fencing` | Guest writer crash: the writer process is killed (SIGKILL) inside its open transaction. The fixture cancels the writer instead. |
 | `concurrentProtocolTests.fencedDuplicateRefusedTest` | full | `TestFencedDuplicateRefused` |  |
-| `concurrentProtocolTests.statusAfterReplyRevocationTest` | partial | `TestPreimplementationP1ITF/revoked-reply-gets-fresh-status` | The fixture also delivers the reply, with a lost ACK, before the deletion. |
-| `concurrentProtocolTests.expiredUnsentReplyTest` | partial | `TestExpiredDeliveryDiesWithoutItsRecipient` | Written from ADR 007, not step by step; the P1 fixture pins the model before ADR 007. |
-| `concurrentProtocolTests.expiredSentReplyWaitsForFenceTest` | partial | `TestExpiredDeliveryThatMayHaveReachedWaitsForItsFence` | As above. |
+| `concurrentProtocolTests.statusAfterReplyRevocationTest` | full | `TestStatusAfterReplyRevocation`, `TestPreimplementationP1ITF/revoked-reply-gets-fresh-status` |  |
+| `concurrentProtocolTests.expiredUnsentReplyTest` | full | `TestExpiredUnsentReply`, `TestExpiredDeliveryDiesWithoutItsRecipient` | `retireUnsent` is `RetireDelivery`, which retires a reply no attempt was allowed to carry at once, without a fence. ADR 007; the P1 fixture pins the model before it. |
+| `concurrentProtocolTests.expiredSentReplyWaitsForFenceTest` | full | `TestExpiredSentReplyWaitsForFence`, `TestExpiredDeliveryThatMayHaveReachedWaitsForItsFence` | The refused `retireUnsent`: `RetireDelivery` asks for the stopped destination's fence and leaves the reply pending. |
 | `concurrentProtocolTests.unfencedRetireAllowsLateEffectTest` | model-only | — | Defines a broken action to show why `retireUnsent` needs `not(sent)`; Go has no such path. |
-| `concurrentProtocolTests.expiredSentReplyRetiredAfterFenceTest` | partial | `TestExpiredDeliveryThatMayHaveReachedWaitsForItsFence` | As above. |
-| `concurrentProtocolTests.unsentReplyDiesBehindHeadTest` | partial | `TestExpiredDeliveryBehindAStuckHeadDies` | Written from ADR 007 §7, not step by step. |
-| `concurrentProtocolTests.retirementLeavesDeletionTest` | partial | `TestRetirementLeavesADeletionToCancel` | As above. |
-| `concurrentProtocolTests.deletionCancelsExpiredReplyTest` | partial | `TestRetirementLeavesADeletionToCancel` | As above. |
+| `concurrentProtocolTests.expiredSentReplyRetiredAfterFenceTest` | full | `TestExpiredSentReplyRetiredAfterFence`, `TestExpiredDeliveryThatMayHaveReachedWaitsForItsFence` | `recordFence` and `retire` are `RetireDelivery`'s barrier commit, after the store's fence. |
+| `concurrentProtocolTests.unsentReplyDiesBehindHeadTest` | full | `TestUnsentReplyDiesBehindHead`, `TestExpiredDeliveryBehindAStuckHeadDies` | ADR 007 §7. |
+| `concurrentProtocolTests.retirementLeavesDeletionTest` | full | `TestRetirementLeavesDeletion`, `TestRetirementLeavesADeletionToCancel` | `RetireDelivery` refuses (`ErrUnavailable`) a reply whose author is being deleted. |
+| `concurrentProtocolTests.deletionCancelsExpiredReplyTest` | full | `TestDeletionCancelsExpiredReply`, `TestRetirementLeavesADeletionToCancel` |  |
 | `concurrentProtocolTests.closureFencesOnlyItsPartiesTest` | full | `TestClosureFencesOnlyItsParties`, `TestRequestClosureFencesOnlyItsParties` |  |
 | `concurrentProtocolTests.closureCommitsWithoutOtherStoresTest` | full | `TestClosureCommitsWithoutOtherStores`, `TestRequestClosureFencesOnlyItsParties` |  |
 | `concurrentProtocolTests.closureScopeTest` | model-only | — | Checks the model's own closure scope (`closureScope`) in its initial state. |
@@ -124,8 +124,8 @@ in the ordinary unit tests.
 | `concurrentProtocolManualTests.manualAcceptTest` | full | `TestPreimplementationP1ITF/manual-consent` |  |
 | `concurrentProtocolManualTests.manualAcceptWhileSleepingTest` | full | `TestPreimplementationP1ITF/manual-consent-while-vm-sleeps` |  |
 | `concurrentProtocolManualTests.manualDeclineTest` | full | `TestPreimplementationP1ITF/manual-decline` |  |
-| `concurrentProtocolManualTests.closeBlocksConsentTest` | partial | `TestCancellationIntentBlocksConsentAndSurvivesDeletion` | A cancellation, not an expiry, blocks the consent. |
-| `concurrentProtocolManualTests.abortedAdmissionReleasesLocksTest` | partial | `TestPreimplementationP1ITF/aborted-admission-releases-locks` | The fixture aborts a submission, then requests a deletion; the run aborts an acceptance, then cancels. |
+| `concurrentProtocolManualTests.closeBlocksConsentTest` | full | `TestCloseBlocksConsent`, `TestCancellationIntentBlocksConsentAndSurvivesDeletion` | `TestCloseBlocksConsent` with an expiry, as the run; the other test with a cancellation. |
+| `concurrentProtocolManualTests.abortedAdmissionReleasesLocksTest` | full | `TestAbortedAdmissionReleasesLocks`, `TestPreimplementationP1ITF/aborted-admission-releases-locks` | `TestAbortedAdmissionReleasesLocks` aborts an acceptance, then cancels, as the run; the fixture aborts a submission, then requests a deletion. |
 
 ### `concurrent_witness.qnt`
 
@@ -133,7 +133,7 @@ in the ordinary unit tests.
 |---|---|---|---|
 | `concurrentWitnessStaleCallerGuard.guardTest` | full | `TestSqlRetirementRejectsReceivedCall` |  |
 | `concurrentWitnessStaleCallerBroken` | model-only | — | Broken configuration: Go has no switch that removes the guard. |
-| `concurrentWitnessNoFifoGuard.guardTest` | partial | `TestFifoAcrossRequests` | The same guard with the two requests in the other order. |
+| `concurrentWitnessNoFifoGuard.guardTest` | full | `TestConcurrentWitnessNoFifoGuard`, `TestFifoAcrossRequests` | `TestFifoAcrossRequests` has the two requests in the other order. |
 | `concurrentWitnessNoFifoBroken` | model-only | — | Broken configuration: Go has no switch that removes the guard. |
 | `concurrentWitnessNoDedupGuard.guardTest` | full | `TestPreimplementationP1ITF/lost-ack-competing-lease` |  |
 | `concurrentWitnessNoDedupBroken` | model-only | — | Broken configuration: Go has no switch that removes the guard. |
@@ -191,7 +191,7 @@ in the ordinary unit tests.
 | `protocolCompositionOk.replyAppliedBeforeDeletionTest` | full | `TestProtocolITFMicrosteps/reply-committed-ack-lost-delete` |  |
 | `protocolCompositionOk.transactionDelaysFenceTest` | full | `TestPreimplementationP1ITF/writer-blocks-revocation` |  |
 | `protocolCompositionOk.authorizedEffectDuringQuiescingTest` | full | `TestProtocolITFMicrosteps/transaction-crosses-quiescing` |  |
-| `protocolCompositionOk.expiredLeaseRetryDeduplicatesTest` | partial | `TestProtocolITFMicrosteps/expired-lease-retry`, `TestPreimplementationP1ITF/lost-ack-competing-lease` | Neither replays the refused ACK of the first worker. |
+| `protocolCompositionOk.expiredLeaseRetryDeduplicatesTest` | full | `TestDuplicateAfterLostAck`, `TestProtocolITFMicrosteps/expired-lease-retry`, `TestPreimplementationP1ITF/lost-ack-competing-lease` | `TestDuplicateAfterLostAck` replays the same steps, the first worker's refused ACK included, on the P1 replay. |
 | `protocolCompositionOk.oldGenerationCannotSubmitTest` | full | `TestPreimplementationP1ITF/old-caller-after-replacement` |  |
 | `protocolCompositionOk.oldChannelCannotDeliverTest` | full | `TestPreimplementationP1ITF/old-channel-after-replacement` |  |
 | `protocolCompositionOk.fenceOnlyCannotDeliverTest` | partial | `TestPlacementFenceOnlyAdmission`, `TestCapabilitiesRequireAuthenticationAndRespectFenceOnly` | A fence-only boot is confirmed only as such and refuses application work; no claim is tried. |
