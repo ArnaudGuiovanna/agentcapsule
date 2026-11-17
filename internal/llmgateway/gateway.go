@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/telemetry"
 )
 
 type Message struct {
@@ -185,7 +187,9 @@ func (r Request) valid() bool {
 // retrying only before the provider has accepted work (connection failure, 429,
 // 5xx). A timeout after the request was sent is reported as ErrOutcomeUnknown
 // and is not retried, since a retry could be billed twice.
-func (g *Gateway) Complete(ctx context.Context, route Route, req Request) (Response, error) {
+func (g *Gateway) Complete(ctx context.Context, route Route, req Request) (out Response, err error) {
+	ctx, span := startCall(ctx, "complete", route)
+	defer func() { endCall(span, out.Usage, err) }()
 	if !req.valid() || route.Secret == "" || route.UpstreamModel == "" {
 		return Response{}, ErrInvalid
 	}
@@ -203,15 +207,15 @@ func (g *Gateway) Complete(ctx context.Context, route Route, req Request) (Respo
 	if err != nil {
 		return Response{}, err
 	}
-	var out Response
+	var parsed Response
 	err = g.exchange(ctx, route.Key, target, body, headers, func(raw []byte) (err error) {
-		out, err = parse(raw)
+		parsed, err = parse(raw)
 		return err
 	})
 	if err != nil {
 		return Response{}, err
 	}
-	return out, nil
+	return parsed, nil
 }
 
 // exchange is one logical upstream call with the bounded retries and the
@@ -232,6 +236,7 @@ func (g *Gateway) exchange(ctx context.Context, breakerKey, target string, body 
 				return err
 			}
 		}
+		telemetry.SpanFrom(ctx).Int("agentcapsule.llm.attempts", int64(attempt+1))
 		retry, err := g.once(ctx, target, body, headers, parse)
 		switch {
 		case err == nil:
