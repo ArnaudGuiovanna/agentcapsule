@@ -43,7 +43,7 @@ volume archives and, on the standby host, its replay.
 | `agentcapsule_api_access_revocations_pending` | gauge | — | Access revocations recorded with the authority service but not confirmed: the standby does not hold their record yet ([ADR 006](adr/006-authority-service.md) wave 5). Above 0 in degraded mode; it falls once the standby catches up and the API confirms them (every 5 seconds) |
 | `agentcapsule_api_access_revocation_oldest_pending_seconds` | gauge | — | How long the oldest pending revocation has waited; 0 when none. Long after degraded mode ended, the standby refuses the records: a standby of an older release ([recovery.md](recovery.md#pending-revocations)) |
 | `agentcapsule_worker_jobs_total` | counter | `kind`, `outcome` | Durable jobs processed: `done` or `retried` |
-| `agentcapsule_worker_job_retries_total` | counter | `kind`, `reason` | Why a job waits: `wake_budget`, `agent_failed`, `slim_unavailable`, `capacity`, `storage_pressure`, `error` |
+| `agentcapsule_worker_job_retries_total` | counter | `kind`, `reason` | Why a job waits: `wake_budget`, `agent_failed`, `slim_unavailable`, `capacity`, `organization_quota` (its organization's quotas on VMs, vCPUs or RAM, [ADR 021](adr/021-organization-quotas.md)), `storage_pressure`, `error` |
 | `agentcapsule_worker_deliveries_dead_total` | counter | `kind`, `reason` | Deliveries that died ([ADR 007](adr/007-delivery-closure-and-priority.md)): `kind` `reply`, `status` or `instruction`; `reason` `attempts_exhausted` or `expired`, the deadline winning when both hold. A delivery that the deletion of an agent cancels is not counted. Every series is served from zero. It says that deliveries died, not whose. A worker that stops between a death's commit and its count loses that count; the dead delivery in PostgreSQL stays the record |
 | `agentcapsule_worker_vm_starts_total` | counter | `outcome` | VM boots for work: `started` or `failed` |
 | `agentcapsule_worker_vm_start_seconds` | histogram | — | Duration of successful boots |
@@ -57,6 +57,7 @@ volume archives and, on the standby host, its replay.
 | `agentcapsule_worker_vms_running`, `_vm_capacity` | gauge | — | Running VMs, and `max_active` |
 | `agentcapsule_worker_agents_queued` | gauge | — | Agents of the host whose work waits for a VM slot (`QUEUED`, [ADR 017](adr/017-capacity-queue-and-dead-letter-replay.md)) |
 | `agentcapsule_worker_capacity_oldest_wait_seconds` | gauge | — | How long the oldest of them has waited |
+| `agentcapsule_worker_agents_waiting_for_quota` | gauge | — | Agents of the host whose work waits for their organization's quotas (`QUEUED`, `queue_reason` `organization_quota`, [ADR 021](adr/021-organization-quotas.md)); not in the two gauges above |
 | `agentcapsule_worker_root_disk_used_ratio` | gauge | — | Used share of the runtime root's file system |
 | `agentcapsule_worker_image_disk_used_ratio` | gauge | — | Used share of the file system of the harness images (the registry's cache) |
 | `agentcapsule_worker_storage_pressure` | gauge | `filesystem` (`data`, `images`) | 1 while that file system is past `storage_pressure`: new agents (`data`) or imports (`images`) are refused ([worker.md](worker.md#storage-pressure)) |
