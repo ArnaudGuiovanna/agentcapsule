@@ -67,8 +67,8 @@ func networkProbes(tcp, udp int) []string {
 // packets there, and the same probe confined sends none: the filter kills it
 // when it opens a socket, and its own network namespace has no interface.
 func TestConfinedProgramCannotReachTheNetwork(t *testing.T) {
-	// The lab's namespace belongs to a user namespace of this account, where
-	// the probes run as root of it: confined like any account but root.
+	// The lab's namespace belongs to a user namespace of this account; the
+	// probes run as an account that is not root.
 	cannotReachTheNetwork(t, []string{"--user", "--map-root-user"}, 0)
 }
 
@@ -87,8 +87,14 @@ func cannotReachTheNetwork(t *testing.T, options []string, uid uint32) {
 	if err := os.WriteFile(rules, []byte(labRules), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	args := append(append(options, "--net", "--fork", "--", "sh", "-c", labSetup, "sh", dir, rules),
-		os.Args[0], "-test.run", "^TestNetworkProbesInTheLab$", "-test.count=1", "-test.v")
+	args := append(options, "--net", "--fork", "--", "sh", "-c", labSetup, "sh", dir, rules)
+	if len(options) > 0 {
+		// Root of the lab's user namespace sets the network up; the probes run
+		// as an account of a user namespace inside it, which is not root (Run
+		// refuses root of a user namespace other than the host's).
+		args = append(args, "unshare", "--user", "--map-user="+strconv.Itoa(os.Getuid()), "--map-group="+strconv.Itoa(os.Getgid()), "--")
+	}
+	args = append(args, os.Args[0], "-test.run", "^TestNetworkProbesInTheLab$", "-test.count=1", "-test.v")
 	cmd := exec.CommandContext(t.Context(), "unshare", args...)
 	cmd.Env = append(os.Environ(), "AGENTCAPSULE_SANDBOX_LAB="+strconv.FormatUint(uint64(uid), 10))
 	output, err := cmd.CombinedOutput()

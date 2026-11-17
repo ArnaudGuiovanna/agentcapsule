@@ -29,8 +29,8 @@ const helperPath = "/proc/self/exe"
 
 // AsRoot reports whether runs here take Options.UID and GID: the caller is
 // root in the initial user namespace. Root of another user namespace (a
-// container, a test under unshare -r) cannot, and runs the program in a user
-// namespace of its own like any other account.
+// container, a test under unshare -r) cannot, and Run refuses it; any other
+// account runs the program in a user namespace of its own.
 func AsRoot() bool {
 	if os.Geteuid() != 0 {
 		return false
@@ -54,6 +54,12 @@ func (o Options) Run(ctx context.Context, image, program string, args ...string)
 	root := AsRoot()
 	if o.Unconfined && os.Geteuid() == 0 {
 		return nil, fmt.Errorf("%w: unconfined as root", ErrUnavailable)
+	}
+	// Root of another user namespace cannot take UID and GID, and would run
+	// the program as that root, owner of every file root owns there.
+	if os.Geteuid() == 0 && !root && !o.Unconfined {
+		return nil, fmt.Errorf("%w: root of a user namespace that is not the host's (a container): "+
+			"run as root of the host, or as another account", ErrUnavailable)
 	}
 	if root && !o.Unconfined && (!Reservable(o.UID) || !Reservable(o.GID)) {
 		return nil, fmt.Errorf("%w: as root, a dedicated UID and GID are required: not 0 or 65535, below 2147483647", ErrUnavailable)

@@ -198,7 +198,8 @@ func (c ServiceConfig) inspectionCheck(ctx context.Context, asRoot bool) preflig
 	if err = harnesspkg.CheckInspection(probe, sb); err != nil {
 		detail, _, _ := strings.Cut(err.Error(), "\n")
 		return preflight.Result{Check: check, Status: preflight.Fail, Detail: "debugfs cannot run confined: " + detail,
-			Fix: "install e2fsprogs; use a kernel with mount_setattr (5.12), and user namespaces when the worker is not root"}
+			Fix: "install e2fsprogs; use a kernel with mount_setattr (5.12), and user namespaces when the worker is not root; " +
+				"run the worker as root of the host, not of a container's user namespace"}
 	}
 	detail := "debugfs runs confined as this account, in a user namespace (not root)"
 	if asRoot {

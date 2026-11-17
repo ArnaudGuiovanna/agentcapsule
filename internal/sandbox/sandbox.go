@@ -19,7 +19,9 @@
 //
 // A caller that is not root (a test, a publisher's machine) runs the helper
 // in a user namespace of its own instead, where it is root without any
-// capability on the host, and the program keeps the caller's account.
+// capability on the host, and the program keeps the caller's account. Root
+// of a user namespace that is not the host's (a container's root) is
+// refused: it can take no reserved UID.
 package sandbox
 
 import (

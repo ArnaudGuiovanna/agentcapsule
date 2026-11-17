@@ -282,6 +282,39 @@ func TestConfinedProgramIsKilledAtItsLimits(t *testing.T) {
 	killedAtLimits(t, tools)
 }
 
+// REG-01: root of a user namespace other than the host's (a container's
+// root, a test under unshare -r) cannot take a reserved UID: Run refuses it,
+// rather than run the program as that root in a user namespace of its own,
+// with access to every file that root owns.
+func TestRootOfAnotherUserNamespaceIsRefused(t *testing.T) {
+	if _, err := exec.LookPath("unshare"); err != nil {
+		t.Fatal("unshare (util-linux) is required:", err)
+	}
+	cmd := exec.CommandContext(t.Context(), "unshare", "--user", "--map-root-user", "--",
+		os.Args[0], "-test.run", "^TestRunAsRootOfAnotherUserNamespace$", "-test.count=1", "-test.v")
+	cmd.Env = append(os.Environ(), "AGENTCAPSULE_SANDBOX_USERNS_ROOT=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "--- PASS: TestRunAsRootOfAnotherUserNamespace ") {
+		t.Fatalf("as root of another user namespace: %v\n%s", err, out)
+	}
+}
+
+// TestRunAsRootOfAnotherUserNamespace runs only under
+// TestRootOfAnotherUserNamespaceIsRefused.
+func TestRunAsRootOfAnotherUserNamespace(t *testing.T) {
+	if os.Getenv("AGENTCAPSULE_SANDBOX_USERNS_ROOT") == "" {
+		return
+	}
+	if os.Geteuid() != 0 || AsRoot() {
+		t.Fatal("not root of another user namespace")
+	}
+	for _, o := range []Options{tools, {UID: 61999, GID: 61999, TestTools: true}} {
+		if out, err := o.Run(t.Context(), "", sh(t), "-c", "echo RAN"); !errors.Is(err, ErrUnavailable) || len(out) != 0 {
+			t.Errorf("%+v: %v %s", o, err, out)
+		}
+	}
+}
+
 // The helper refuses to run outside the namespaces Run creates: started
 // directly under its name, it changes nothing and exits 125.
 func TestHelperRefusesToRunOutsideItsNamespaces(t *testing.T) {
