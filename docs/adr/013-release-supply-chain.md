@@ -158,6 +158,37 @@ database of November 16:
 - **Reproducibility.** The seven binaries and the guest image: identical
   digests in two clean builds.
 
+## Go 1.27.4 (amended on November 17, 2026)
+
+- **The pins.** Go moved from 1.27.3 to 1.27.4 everywhere at once: the `go`
+  line of every module (the root module's was 1.27.2), both workflows, the
+  versions `check-go.py`, `build-release.py`, `verify-interop.py` and
+  `build-slim-bridge.py` require, the Dagger builder image and the interop
+  profile. The Dagger module's own `go` line stays 1.27.3, the highest the Go
+  SDK of Dagger v0.21.11 accepts; its code does not ship.
+- **The allowlist.** GO-2026-6859 left it. golang.org/x/net moved to v0.62.0
+  (with x/crypto v0.58.0, x/sync v0.24.0, x/sys v0.49.0 and x/text v0.43.0),
+  which fixes GO-2026-6860 and GO-2026-6866, so their entry left too.
+- **The audit.** `audit-dependencies.py --release` with Go 1.27.4 passes: no
+  called vulnerability in any module. One is required and not called:
+  GO-2026-5932 (x/crypto's openpgp, unmaintained, never linked; the platform
+  links blake2b, blake2s and sha3 only). 56 packages, all licenses allowed.
+- **The release binaries.** `build-release.py --twice`: the seven binaries
+  have identical digests in both builds. grype on their SBOMs (database of
+  November 15): no finding in the standard library or x/net; GO-2026-5932
+  (no severity) in the worker; two Medium in the host's static glibc in
+  capsule-adapter.
+- **A link flag.** Go 1.27.4 refuses `-l:<file>` in a `#cgo LDFLAGS`
+  directive, a fix against linker inputs a dependency chooses. The worker's
+  `-l:libcryptsetup.so.12` links the shared library without the development
+  symlink, which a host that extracts the headers without root lacks. It
+  stays, and `CGO_LDFLAGS_ALLOW='-l:libcryptsetup\.so\.12'` allows that one
+  flag: the workflows and the scripts that compile it set it, developers run
+  `go env -w` once. The other way, `-lcryptsetup`, needs the development
+  package on every build host.
+- **The guest and the harness packages** embed Go binaries built with 1.27.3
+  until they are rebuilt with 1.27.4 and the KVM campaigns rerun on them.
+
 ## Validation
 
 Run locally, on Ubuntu 26.04: the four scripts end to end (the dependency
@@ -188,10 +219,10 @@ provenance attestation and the draft release.
    within 7 days, a High within 30; a Go security release adopted within 14
    days; Firecracker and guest kernel security releases within 30. Shorter
    times need someone on call. Recommendation: keep them until 1.0.
-3. **A release with a called vulnerability.** Today Go 1.27.3 has one
-   (GO-2026-6859). (a) A release waits for the fix even when the finding is
-   allowlisted (today's behavior); (b) the allowlist applies to releases too.
-   Recommendation: (a).
+3. **A release with a called vulnerability.** On November 16, Go 1.27.3 had
+   one (GO-2026-6859), which Go 1.27.4 fixes. (a) A release waits for the
+   fix even when the finding is allowlisted (today's behavior); (b) the
+   allowlist applies to releases too. Recommendation: (a).
 4. **Publishing the guest image and capsule-adapter.** The guest image holds
    GPL (cryptsetup, e2fsprogs, util-linux) and LGPL (glibc) programs, and
    capsule-adapter links glibc statically. Publishing them obliges us to
