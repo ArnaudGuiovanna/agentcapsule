@@ -5,7 +5,6 @@ package sandbox
 import (
 	"encoding/binary"
 	"errors"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -263,40 +262,24 @@ func TestConfinedProgramCannotAllocateBeyondItsLimit(t *testing.T) {
 func TestHelperSurvivesSignalsUnderTheFilter(t *testing.T) {
 	path := probe(t, unix.SYS_GETUID, false)
 	for i := range 20 {
-		null, err := os.Open(os.DevNull)
-		if err != nil {
+		cmd, _, done := helperCommand(t, "0", "0", "1", strictFilter, "-", path)
+		if err := cmd.Start(); err != nil {
 			t.Fatal(err)
 		}
-		status, report, err := os.Pipe()
-		if err != nil {
-			t.Fatal(err)
-		}
-		cmd := exec.CommandContext(t.Context(), helperPath, "0", "0", "1", strictFilter, "-", path)
-		cmd.Args[0] = HelperName
-		cmd.SysProcAttr = namespaces(AsRoot())
-		cmd.ExtraFiles = []*os.File{null, report}
-		cmd.Env = []string{"LC_ALL=C"}
-		if err = cmd.Start(); err != nil {
-			t.Fatal(err)
-		}
-		report.Close()
-		null.Close()
-		done := make(chan struct{})
+		stop := make(chan struct{})
 		go func(pid int) {
 			for {
 				select {
-				case <-done:
+				case <-stop:
 					return
 				default:
 					_ = unix.Tgkill(pid, pid, unix.SIGURG)
 				}
 			}
 		}(cmd.Process.Pid)
-		err = cmd.Wait()
-		close(done)
-		reason, _ := io.ReadAll(status)
-		status.Close()
-		if err != nil {
+		err := cmd.Wait()
+		close(stop)
+		if reason := done(); err != nil {
 			t.Fatalf("run %d: %v %s", i, err, reason)
 		}
 	}

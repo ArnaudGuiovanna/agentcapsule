@@ -44,7 +44,7 @@ const (
 // failure. args: UID, GID, processor seconds, the filter, the image's
 // absolute path (or "-"), the program, then the program's arguments.
 // Descriptor 3 is the image the caller opened (or /dev/null), 4 the pipe for
-// a failure's reason.
+// a failure's reason, 5 the lifeline.
 func confine(args []string) error {
 	if len(args) < 6 {
 		return errors.New("usage: UID GID CPU-SECONDS FILTER IMAGE|- PROGRAM [ARGUMENT...]")
@@ -69,6 +69,7 @@ func confine(args []string) error {
 	}
 	image, program, argv := args[4], args[5], args[5:]
 	unix.CloseOnExec(statusFD)
+	unix.CloseOnExec(lifelineFD)
 	if err := alone(); err != nil {
 		return err
 	}
@@ -139,7 +140,12 @@ func confine(args []string) error {
 		return fmt.Errorf("capabilities: %w", err)
 	}
 	// A change of credentials cleared the parent-death signal: set it again.
+	// The caller may have died in between: its end of the lifeline is then
+	// closed. Past this check, its death kills the helper.
 	if err := unix.Prctl(unix.PR_SET_PDEATHSIG, uintptr(unix.SIGKILL), 0, 0, 0); err != nil {
+		return err
+	}
+	if err := callerAlive(); err != nil {
 		return err
 	}
 	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
@@ -203,6 +209,29 @@ func execFiltered(p policy, program string, argv, env []string) error {
 	runtime.KeepAlive(argvp)
 	runtime.KeepAlive(envp)
 	return e
+}
+
+// callerAlive fails unless the lifeline is a pipe whose writing end is still
+// open: the caller never writes to it, and its end closes only when it dies
+// or when the program has exited.
+func callerAlive() error {
+	var st unix.Stat_t
+	if err := unix.Fstat(lifelineFD, &st); err != nil || st.Mode&unix.S_IFMT != unix.S_IFIFO {
+		return errors.New("no lifeline from the caller")
+	}
+	fds := []unix.PollFd{{Fd: lifelineFD, Events: unix.POLLIN}}
+	for {
+		n, err := unix.Poll(fds, 0)
+		switch {
+		case errors.Is(err, unix.EINTR):
+			continue
+		case err != nil:
+			return fmt.Errorf("lifeline: %w", err)
+		case n != 0 && fds[0].Revents != 0:
+			return errors.New("the caller is gone")
+		}
+		return nil
+	}
 }
 
 // checkCredentials fails unless the real, effective and saved UIDs are all

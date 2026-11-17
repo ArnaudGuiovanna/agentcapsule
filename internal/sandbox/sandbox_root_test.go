@@ -10,7 +10,6 @@ package sandbox
 
 import (
 	"errors"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -62,25 +61,11 @@ func TestAsRootTheProgramRunsAsTheDedicatedAccount(t *testing.T) {
 func TestAsRootTheHelperChecksItsCredentials(t *testing.T) {
 	requireRoot(t)
 	for _, ids := range [][2]string{{"4294967295", "4294967295"}, {"61999", "4294967295"}, {"4294967295", "61999"}} {
-		null, err := os.Open(os.DevNull)
-		if err != nil {
-			t.Fatal(err)
-		}
-		status, report, err := os.Pipe()
-		if err != nil {
-			t.Fatal(err)
-		}
-		cmd := exec.CommandContext(t.Context(), helperPath, ids[0], ids[1], "1", testToolsFilter, "-", sh(t), "-c", "echo RAN")
-		cmd.Args[0] = HelperName
-		cmd.SysProcAttr = namespaces(true)
-		cmd.ExtraFiles = []*os.File{null, report}
+		cmd, _, done := helperCommand(t, ids[0], ids[1], "1", testToolsFilter, "-", sh(t), "-c", "echo RAN")
 		out, err := cmd.Output()
-		report.Close()
-		null.Close()
-		reason, _ := io.ReadAll(status)
-		status.Close()
+		reason := done()
 		var exit *exec.ExitError
-		if !errors.As(err, &exit) || exit.ExitCode() != 125 || strings.Contains(string(out), "RAN") || !strings.Contains(string(reason), "credentials") {
+		if !errors.As(err, &exit) || exit.ExitCode() != 125 || strings.Contains(string(out), "RAN") || !strings.Contains(reason, "credentials") {
 			t.Errorf("UID %s GID %s: %v %s (%s)", ids[0], ids[1], err, out, reason)
 		}
 	}

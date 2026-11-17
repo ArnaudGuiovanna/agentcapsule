@@ -20,9 +20,13 @@ import (
 	"time"
 )
 
-// statusFD is the helper's descriptor for the reason it could not set the
-// sandbox up. It is closed when the program starts.
-const statusFD = 4
+// The helper's descriptors besides the image (3): the pipe for the reason it
+// could not set the sandbox up, and the reading end of its lifeline, a pipe
+// whose writing end only Run holds. Both are closed when the program starts.
+const (
+	statusFD   = 4
+	lifelineFD = 5
+)
 
 // helperPath is this executable, even if replaced on disk since it started.
 const helperPath = "/proc/self/exe"
@@ -86,6 +90,14 @@ func (o Options) Run(ctx context.Context, image, program string, args ...string)
 	}
 	defer status.Close()
 	defer report.Close()
+	// The lifeline: this process alone holds its writing end, until the
+	// program has exited.
+	life, lifeline, err := os.Pipe()
+	if err != nil {
+		return nil, err
+	}
+	defer life.Close()
+	defer lifeline.Close()
 	limited, cancel := context.WithTimeout(ctx, o.Timeout)
 	defer cancel()
 
@@ -103,7 +115,7 @@ func (o Options) Run(ctx context.Context, image, program string, args ...string)
 		}
 		argv = append([]string{strconv.FormatUint(uint64(uid), 10), strconv.FormatUint(uint64(gid), 10),
 			strconv.FormatUint(o.cpuSeconds(), 10), filter, path, program}, args...)
-		files = append(files, report)
+		files = append(files, report, life)
 		attributes = namespaces(root)
 	}
 	cmd := exec.CommandContext(limited, name, argv...)
@@ -127,6 +139,7 @@ func (o Options) Run(ctx context.Context, image, program string, args ...string)
 		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
 	report.Close()
+	life.Close()
 	err = cmd.Wait()
 	reason, _ := io.ReadAll(io.LimitReader(status, 4096))
 	var exit *exec.ExitError

@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -312,6 +313,63 @@ func TestRunAsRootOfAnotherUserNamespace(t *testing.T) {
 		if out, err := o.Run(t.Context(), "", sh(t), "-c", "echo RAN"); !errors.Is(err, ErrUnavailable) || len(out) != 0 {
 			t.Errorf("%+v: %v %s", o, err, out)
 		}
+	}
+}
+
+// helperCommand is the helper as Run starts it, with args: in its own
+// namespaces, descriptor 3 on /dev/null, 4 the pipe for the reason it
+// fails, 5 its lifeline, whose writing end only this process holds (closing
+// it plays the caller's death). done, once the helper has exited, closes
+// what remains and returns that reason.
+func helperCommand(t *testing.T, args ...string) (cmd *exec.Cmd, lifeline *os.File, done func() string) {
+	t.Helper()
+	null, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, report, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	life, lifeline, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd = exec.CommandContext(t.Context(), helperPath, args...)
+	cmd.Args[0] = HelperName
+	cmd.SysProcAttr = namespaces(AsRoot())
+	cmd.ExtraFiles = []*os.File{null, report, life}
+	cmd.Env = []string{"LC_ALL=C"}
+	done = func() string {
+		for _, f := range []*os.File{null, report, life, lifeline} {
+			f.Close()
+		}
+		reason, _ := io.ReadAll(status)
+		status.Close()
+		return string(reason)
+	}
+	return cmd, lifeline, done
+}
+
+// REG-01: the helper runs the program only while its caller lives. Taking
+// the reserved UID clears the parent-death signal until the helper sets it
+// again; it then checks its lifeline, a pipe whose writing end only the
+// caller holds. Started with that end already closed, as if the caller had
+// died in between, it refuses to run the program.
+func TestHelperRunsNothingOnceItsCallerIsGone(t *testing.T) {
+	cmd, lifeline, done := helperCommand(t, "0", "0", "1", testToolsFilter, "-", sh(t), "-c", "echo RAN")
+	lifeline.Close()
+	out, err := cmd.Output()
+	reason := done()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 125 || strings.Contains(string(out), "RAN") || !strings.Contains(reason, "caller") {
+		t.Fatalf("the helper without its caller: %v %s (%s)", err, out, reason)
+	}
+	// With its caller, the same helper runs the program.
+	cmd, _, done = helperCommand(t, "0", "0", "1", testToolsFilter, "-", sh(t), "-c", "echo RAN")
+	out, err = cmd.Output()
+	if reason := done(); err != nil || string(out) != "RAN\n" {
+		t.Fatalf("the helper with its caller: %v %s (%s)", err, out, reason)
 	}
 }
 
