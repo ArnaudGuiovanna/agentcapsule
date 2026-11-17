@@ -115,14 +115,7 @@ func (h *FirecrackerHost) CredentialRotations(ctx context.Context, now time.Time
 			return err
 		}
 		for id, a := range r.Agents {
-			if a.Run == nil {
-				continue
-			}
-			credentials, err := h.controlCredentials(a)
-			if err != nil {
-				return err
-			}
-			needs, err := credentialsDue(credentials, now)
+			needs, err := h.credentialDue(a, now)
 			if err != nil {
 				return err
 			}
@@ -133,6 +126,43 @@ func (h *FirecrackerHost) CredentialRotations(ctx context.Context, now time.Time
 		return nil
 	})
 	return due, err
+}
+
+// CredentialRotation is CredentialRotations for one agent: its VM alone is
+// recovered, then checked.
+func (h *FirecrackerHost) CredentialRotation(ctx context.Context, id string, now time.Time) (VMRun, bool, error) {
+	var run VMRun
+	due := false
+	if !h.opts.AuthenticatedControl {
+		return run, due, nil
+	}
+	err := h.locked(ctx, func(r *hostRegistry) error {
+		if err := h.recoverOne(ctx, r, id); err != nil {
+			return err
+		}
+		a := r.Agents[id]
+		if a == nil {
+			return nil
+		}
+		var err error
+		if due, err = h.credentialDue(a, now); due {
+			run = *a.Run
+		}
+		return err
+	})
+	return run, due, err
+}
+
+// credentialDue tells whether a's VM, if it runs, needs new credentials by now.
+func (h *FirecrackerHost) credentialDue(a *HostAgent, now time.Time) (bool, error) {
+	if a.Run == nil {
+		return false, nil
+	}
+	credentials, err := h.controlCredentials(a)
+	if err != nil {
+		return false, err
+	}
+	return credentialsDue(credentials, now)
 }
 
 func (h *FirecrackerHost) controlReady(ctx context.Context, a *HostAgent) error {
@@ -170,8 +200,9 @@ func waitControlReady(ctx context.Context, c *capsuleprotocol.Client) error {
 }
 
 // Control derives the peer from the verified host registry and current durable
-// placement, never a payload endpoint or identity. Call it for EVERY RPC. A
-// returned session stays bound to its original boot, even after replacement.
+// placement, never a payload endpoint or identity. Call it for EVERY RPC: it
+// adopts the agent's VM again first (recoverOne). A returned session stays
+// bound to its original boot, even after replacement.
 // Inventory recovery can retain an incompatible or unreachable live VMM for
 // maintenance; Control never returns an application session for that boot.
 func (h *FirecrackerHost) Control(ctx context.Context, id string) (*capsuleprotocol.Client, error) {
@@ -209,7 +240,7 @@ func (h *FirecrackerHost) controlSession(ctx context.Context, id string) (*capsu
 	var client *capsuleprotocol.Client
 	var run VMRun
 	err := h.locked(ctx, func(r *hostRegistry) error {
-		if err := h.recover(ctx, r); err != nil {
+		if err := h.recoverOne(ctx, r, id); err != nil {
 			return err
 		}
 		a := r.Agents[id]

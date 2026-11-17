@@ -120,8 +120,11 @@ type FirecrackerHost struct {
 	opts         FirecrackerOptions
 	root, cgroup string
 	// Tests can stop the worker at actual durable/process boundaries.
-	hook           func(string, VMRun)
-	admissionHook  func(string, string)
+	hook          func(string, VMRun)
+	admissionHook func(string, string)
+	// census, when set, stands in for the physical census of a confirmed
+	// VMM (confirmedVMM): tests without KVM.
+	census         func(*HostAgent) (bool, error)
 	platformMu     sync.Mutex
 	platform       map[string]*platformService
 	platformClosed bool
@@ -593,6 +596,10 @@ func ownedVolumeLock(pid int, volume string) error {
 // registry is saved after the pass, including the cleanups that did succeed, and
 // the failures are returned together. A failing agent keeps its Run untouched:
 // it is neither adopted nor cleaned until the cause is resolved.
+//
+// recover is the census of the host: Reconcile, CredentialRotations and a
+// boot's count of the running VMs. An operation on one agent's VM uses
+// recoverOne instead.
 func (h *FirecrackerHost) recover(ctx context.Context, r *hostRegistry) error {
 	var failures []error
 	for _, a := range r.Agents {
@@ -606,15 +613,29 @@ func (h *FirecrackerHost) recover(ctx context.Context, r *hostRegistry) error {
 	return errors.Join(failures...)
 }
 
+// recoverOne is recover for one agent: the reuse of its VM and its control
+// sessions (each delivery, each platform call) adopt that VM again before
+// using it, so a stale or sealed binding retires it there. The host's other
+// VMs wait for its next census: adopting them at every use made each
+// delivery's cost grow with the number of running VMs.
+func (h *FirecrackerHost) recoverOne(ctx context.Context, r *hostRegistry, id string) error {
+	var err error
+	if a := r.Agents[id]; a != nil {
+		if err = h.recoverAgent(ctx, a); err != nil {
+			err = fmt.Errorf("agent %s: %w", id, err)
+		}
+	}
+	return errors.Join(err, h.save(r))
+}
+
 func (h *FirecrackerHost) recoverAgent(ctx context.Context, a *HostAgent) error {
 	if a.Run == nil {
 		return nil
 	}
 	if a.Run.Phase == "RUNNING" && !a.Fenced {
-		if _, _, e := h.identify(a); e == nil {
-			if err := ownedVolumeLock(a.Run.PID, a.Volume); err != nil {
-				return err
-			}
+		if alive, err := h.confirmedVMM(a); err != nil {
+			return err
+		} else if alive {
 			if err := h.opts.Adopt(ctx, a.ID, *a.Run); err == nil {
 				return h.ensurePlatform(a)
 			} else if !errors.Is(err, ErrGeneration) {
@@ -629,6 +650,20 @@ func (h *FirecrackerHost) recoverAgent(ctx context.Context, a *HostAgent) error 
 	return nil
 }
 
+// confirmedVMM tells whether a's confirmed VMM still runs. A live VMM that
+// does not hold its volume's lock is an error, not an absence.
+func (h *FirecrackerHost) confirmedVMM(a *HostAgent) (bool, error) {
+	if h.census != nil {
+		return h.census(a)
+	}
+	if _, _, err := h.identify(a); err != nil {
+		return false, nil
+	}
+	return true, ownedVolumeLock(a.Run.PID, a.Volume)
+}
+
+// Reconcile adopts every confirmed VM of the host, retires the others and
+// returns the runs that remain.
 func (h *FirecrackerHost) Reconcile(ctx context.Context) (map[string]VMRun, error) {
 	result := map[string]VMRun{}
 	err := h.locked(ctx, func(r *hostRegistry) error {
@@ -639,6 +674,22 @@ func (h *FirecrackerHost) Reconcile(ctx context.Context) (map[string]VMRun, erro
 			if a.Run != nil {
 				result[id] = *a.Run
 			}
+		}
+		return nil
+	})
+	return result, err
+}
+
+// ReconcileAgent is Reconcile for one agent: it adopts or retires that
+// agent's VM alone, and returns its run only, if it has one.
+func (h *FirecrackerHost) ReconcileAgent(ctx context.Context, id string) (map[string]VMRun, error) {
+	result := map[string]VMRun{}
+	err := h.locked(ctx, func(r *hostRegistry) error {
+		if err := h.recoverOne(ctx, r, id); err != nil {
+			return err
+		}
+		if a := r.Agents[id]; a != nil && a.Run != nil {
+			result[id] = *a.Run
 		}
 		return nil
 	})
@@ -669,7 +720,9 @@ func (h *FirecrackerHost) start(ctx context.Context, id string, generation uint6
 			if err := h.checkStartAdmission(ctx, r, id); err != nil {
 				return err
 			}
-			if err := h.recover(ctx, r); err != nil {
+			// Reusing the agent's VM concerns that VM alone. A boot counts
+			// the host's VMs below, once it has checked every one of them.
+			if err := h.recoverOne(ctx, r, id); err != nil {
 				return err
 			}
 			a := r.Agents[id]
@@ -695,6 +748,9 @@ func (h *FirecrackerHost) start(ctx context.Context, id string, generation uint6
 			}
 			if generation <= a.Generation {
 				return ErrGeneration
+			}
+			if err := h.recover(ctx, r); err != nil {
+				return err
 			}
 			active := 0
 			for _, other := range r.Agents {
