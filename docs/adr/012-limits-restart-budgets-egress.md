@@ -3,7 +3,8 @@
 Date: November 16, 2026. **Status: built on November 16, 2026**, with
 defaults pending the product owner (see [Questions](#questions-for-the-product-owner)).
 The KVM tests that prove the ceilings and the budget on a real VM have not
-run yet (see [Tests](#tests)).
+passed yet: their first run, on November 17, 2026, failed on faults of the
+tests, fixed since (see [Tests](#tests)).
 References: RUN-007, RUN-008, RUN-011 and §6 of the
 [product spec](../product.md), CAP-03 and TEN-07 of the
 [roadmap](../../ROADMAP.md), [worker.md](../worker.md),
@@ -179,7 +180,8 @@ Unit tests (`go test -race`):
   `TestGuestsHaveNoNetwork`, `TestBootFailureIsTheGuestsOnlyWhenTheGuestFailed`,
   `TestControlAnswers`.
 - `internal/worker`: `TestRestartBudgetAndDriveLimitsConfiguration`,
-  `TestRetryReasons`, `TestProcIOMovedCountsReadsAndWrites`.
+  `TestRetryReasons`, `TestPassesOfAGuestThatFailsAtBoot`,
+  `TestProcIOMovedCountsReadsAndWrites`.
 - `cmd/capsule-echo`: `TestTestBehaviours`, `TestFloodStaysWithinItsSpan`,
   `TestFloodWritesDirectlyToTheDrive`.
 
@@ -210,7 +212,11 @@ guest build, whose `capsule-echo` floods with direct writes):
   3000 calls in 10 seconds; the run found 3130, against a bound of 2640.
 - `TestProductWorkerStopsBootingAGuestThatCrashesAtBoot`: the wake of a guest
   that crashes at boot ends `FAILED` after a budget of 3; further passes boot
-  nothing while an invocation waits; a wake after the fix answers it.
+  nothing while an invocation waits; a wake after the fix answers it. The
+  passes that boot the crashing guest may fail only with the guest's boot
+  failures, and those over the `FAILED` agent only with its held delivery.
+  Its first run stopped at the first boot failure, which its passes did not
+  accept.
 
 ## Questions for the product owner
 

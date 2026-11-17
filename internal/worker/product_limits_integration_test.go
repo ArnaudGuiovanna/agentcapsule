@@ -3,6 +3,7 @@
 package worker
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -144,6 +145,30 @@ func TestProductWorkerDriveCeilingsHoldAgainstAFloodingGuest(t *testing.T) {
 	})
 }
 
+// awaitPasses is await for stages whose passes fail as the stage expects: a
+// pass may fail only with failures that expected accepts (onlyFailures). It
+// returns how many passes failed so.
+func (l *productPeerLab) awaitPasses(stage string, bound time.Duration, expected func(error) bool, check func() bool) (failed int) {
+	l.t.Helper()
+	ctx, cancel := context.WithTimeout(l.t.Context(), bound)
+	defer cancel()
+	opts := DispatchOptions{Batch: 4, WorkLease: 3 * time.Minute, DeliveryLease: 30 * time.Second, RetryBase: time.Second, RetryMax: 10 * time.Second}
+	for !check() {
+		if err := l.worker.DispatchPass(ctx, opts, 90*time.Second); err != nil {
+			if !expected(err) {
+				l.t.Fatal(stage, "worker dispatch", err)
+			}
+			failed++
+		}
+		select {
+		case <-ctx.Done():
+			l.t.Fatal(stage, "did not reach expected state", ctx.Err())
+		case <-time.After(25 * time.Millisecond):
+		}
+	}
+	return failed
+}
+
 // A guest that crashes at boot is not booted again and again (RUN-011, ADR
 // 012): its wake ends FAILED once the agent spends its budget, the agent is
 // FAILED with the reason, and further passes boot nothing, even with an
@@ -165,7 +190,8 @@ func TestProductWorkerStopsBootingAGuestThatCrashesAtBoot(t *testing.T) {
 	l.lifecycle(agent, "sleep", "sleep-1")
 	var wake controlplane.AgentCreation
 	l.request(l.owner(), "POST", "/v1/agents/"+agent+"/wake", "wake-crash", map[string]any{}, 202, &wake)
-	l.awaitFor("the wake of a guest that crashes at boot", true, 5*time.Minute, func() bool {
+	// Each boot the guest fails is the wake job's failure, and the pass's.
+	l.awaitPasses("the wake of a guest that crashes at boot", 5*time.Minute, onlyBootFailures, func() bool {
 		var op controlplane.PlatformOperation
 		l.request(l.owner(), "GET", "/v1/operations/"+wake.OperationID, "", nil, 200, &op)
 		if op.Status == "SUCCEEDED" || op.Status == "CANCELED" {
@@ -188,15 +214,19 @@ func TestProductWorkerStopsBootingAGuestThatCrashesAtBoot(t *testing.T) {
 	if err := l.db.QueryRow(t.Context(), "SELECT count(*) FROM guest_failures WHERE agent_id=$1", agent).Scan(&failures); err != nil || failures != 3 {
 		t.Fatal("boot failures recorded", failures, err)
 	}
-	// An invocation waits; passes boot nothing.
+	// An invocation waits; passes boot nothing. Its delivery is put back to
+	// wait for the FAILED agent (retry reason agent_failed), without a boot.
 	before := generation()
 	var inv controlplane.Invocation
 	l.request(l.user(), "POST", "/v1/agents/"+agent+"/invocations", "waits", map[string]any{
 		"content": []map[string]string{{"type": "text", "text": "after the fix"}}}, 202, &inv)
 	deadline := time.Now().Add(30 * time.Second)
-	l.await("passes over a FAILED agent", true, func() bool { return time.Now().After(deadline) })
+	held := l.awaitPasses("passes over a FAILED agent", 2*time.Minute, onlyAgentFailed, func() bool { return time.Now().After(deadline) })
 	if after := generation(); after != before {
 		t.Fatal("a FAILED agent was booted", before, after)
+	}
+	if held == 0 {
+		t.Fatal("no delivery waited for the FAILED agent")
 	}
 	l.request(l.user(), "GET", "/v1/invocations/"+inv.ID, "", nil, 200, &inv)
 	if inv.State == "completed" || inv.State == "failed" {
