@@ -1667,9 +1667,11 @@ restore proves those, as the KVM test below does.
   (`internal/controlplane/host_takeovers_test.go`); `-restore-host` with the
   fake host (`internal/worker/host_restore_test.go`); a restore from the
   stores' copies (`verify-archive-shipping.py --restore-from-copies`); and,
-  written for KVM, not yet run,
+  written for KVM, not yet passed,
   `TestProductWorkerRestoresAgentFromShippedArchiveOnAnotherHost`, which needs
-  rclone (`AGENTCAPSULE_KVM_RCLONE` or `PATH`) and the `nobody` account.
+  rclone (`AGENTCAPSULE_KVM_RCLONE` or `PATH`) and the `nobody` account. It
+  runs the shipper of the sources under test, and rclone from its own copy in
+  `/var/tmp`, which `nobody` can reach.
 
 ## Volume archives off the host (REC-02)
 
