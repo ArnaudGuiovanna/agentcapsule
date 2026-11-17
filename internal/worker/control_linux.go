@@ -84,7 +84,9 @@ type preparedDeliveryKey struct{}
 // asynchronous and joins the common shared queue after this turn.
 func (w *Placements) WithPreparedDelivery(ctx context.Context, target string, fn func(context.Context) error) error {
 	return w.host.WithBarrier(ctx, target, func(ctx context.Context) error {
-		runs, err := w.Reconcile(ctx)
+		// The recipient's VM alone: a stopped recipient boots below
+		// (bootForWork), which settles every placement first.
+		runs, err := w.reconcileAgent(ctx, target)
 		if err != nil {
 			return err
 		}
