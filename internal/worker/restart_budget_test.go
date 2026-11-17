@@ -5,8 +5,12 @@ package worker
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -119,5 +123,62 @@ func TestRestartBudgetAndDriveLimitsConfiguration(t *testing.T) {
 	c.DriveLimits = &runtime.DriveLimits{Harness: runtime.DriveRate{IOPS: 5}}
 	if _, _, _, err = c.Settings(); err == nil {
 		t.Fatal("accepted 5 operations a second")
+	}
+}
+
+// procIOMoved sums rchar and wchar in the text of /proc/<pid>/io: the bytes
+// a process moved through read and write system calls.
+func procIOMoved(io string) (int64, error) {
+	var moved int64
+	found := 0
+	for _, line := range strings.Split(io, "\n") {
+		name, value, ok := strings.Cut(line, ": ")
+		if !ok || name != "rchar" && name != "wchar" {
+			continue
+		}
+		n, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+		if err != nil || n < 0 {
+			return 0, fmt.Errorf("invalid /proc/<pid>/io line %q", line)
+		}
+		moved += n
+		found++
+	}
+	if found != 2 {
+		return 0, errors.New("/proc/<pid>/io without rchar and wchar")
+	}
+	return moved, nil
+}
+
+// The drive ceiling KVM test reads what a VMM moved from /proc/<pid>/io; this
+// process's own count grows by what it writes and reads back.
+func TestProcIOMovedCountsReadsAndWrites(t *testing.T) {
+	if _, err := procIOMoved("rchar: 1\nsyscr: 2\n"); err == nil {
+		t.Fatal("accepted a text without wchar")
+	}
+	if _, err := procIOMoved("rchar: 1\nwchar: -2\n"); err == nil {
+		t.Fatal("accepted a negative count")
+	}
+	moved := func() int64 {
+		t.Helper()
+		b, err := os.ReadFile("/proc/self/io")
+		if err != nil {
+			t.Fatal(err)
+		}
+		n, err := procIOMoved(string(b))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	path := filepath.Join(t.TempDir(), "moved")
+	before := moved()
+	if err := os.WriteFile(path, make([]byte, 1<<20), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(path); err != nil || len(b) != 1<<20 {
+		t.Fatal(len(b), err)
+	}
+	if delta := moved() - before; delta < 2<<20 {
+		t.Fatal("1 MiB written and read back, moved", delta)
 	}
 }
