@@ -2,8 +2,8 @@
 
 Date: November 16, 2026. **Status: built on November 16, 2026**, with
 defaults pending the product owner (see [Questions](#7-questions-for-the-product-owner)).
-The KVM tests of the worker's capacity paths have not run yet (see
-[Validation](#6-validation)).
+On KVM, the product tests of the capacity paths passed on November 17, 2026;
+the runtime's have not run yet (see [Validation](#6-validation)).
 References: EVT-002, EVT-005, EVT-006, EVT-007 and RUN-011 of the
 [product spec](../product.md), EVT-02 of the [roadmap](../../ROADMAP.md),
 [ADR 003](003-restore-rpo.md) (reruns), [ADR 007](007-delivery-closure-and-priority.md)
@@ -308,7 +308,11 @@ resident sender now waits for an answer, so it is stopped as before),
 `TestProductWorkerStopsBootingAGuestThatCrashesAtBoot` (wakes go through the
 queue), and a new test still to write: on a one-slot host, a barrier stops an
 agent working on a deferred invocation, and the resume job boots it again so
-that it completes.
+that it completes. On November 17, 2026, with guest v26,
+`TestProductWorkerStopsBootingAGuestThatCrashesAtBoot` passed, and so did
+`TestProductWorkerWakesQueuesAndKeepsAWorkingAgentAwake`: on a one-slot host,
+work for a stopped agent waits `QUEUED` while another computes, then boots
+once the slot frees. The other three have not run.
 
 ## 7. Questions for the product owner
 

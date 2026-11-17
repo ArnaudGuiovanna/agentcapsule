@@ -194,7 +194,8 @@ action.
 The KVM product test `TestProductWorkerRestoresAgentToAgentExchange`
 (`internal/worker/product_restore_integration_test.go`) proves it end to end:
 scenarios 2, then 12 with A's invocation run again, the authority's
-`rerun_confirmed` for the reply. It is written and not yet run.
+`rerun_confirmed` for the reply. It passed on KVM on November 17, 2026, with
+guest v26.
 
 ## Questions for the product owner
 

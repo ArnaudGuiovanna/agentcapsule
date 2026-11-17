@@ -2,9 +2,9 @@
 
 Date: November 16, 2026. **Status: built on November 16, 2026**, with
 defaults pending the product owner (see [Questions](#questions-for-the-product-owner)).
-The KVM tests that prove the ceilings and the budget on a real VM have not
-passed yet: their first run, on November 17, 2026, failed on faults of the
-tests, fixed since (see [Tests](#tests)).
+The KVM tests that prove the drive ceilings and the budget on a real VM
+passed on November 17, 2026, after a first run that day failed on faults of
+the tests (see [Tests](#tests)).
 References: RUN-007, RUN-008, RUN-011 and §6 of the
 [product spec](../product.md), CAP-03 and TEN-07 of the
 [roadmap](../../ROADMAP.md), [worker.md](../worker.md),
@@ -191,8 +191,8 @@ PostgreSQL tests:
   `TestAWakeOfAFailedAgentFails`, `TestAPersonsFailedAgent`.
 - `internal/worker`: `TestGuestFailuresAreCountedAndLogged`.
 
-KVM tests, not passed yet (they need root, and the drive test needs the next
-guest build, whose `capsule-echo` floods with direct writes):
+KVM tests, which need root and a guest whose `capsule-echo` floods with
+direct writes; both passed on November 17, 2026, with guest v26:
 - `TestProductWorkerDriveCeilingsHoldAgainstAFloodingGuest`: a guest writes
   its volume with `O_DIRECT` as fast as it can, so that each write reaches
   the drive as requests of its own bytes, with no flush. Writing 1 MiB at a
@@ -203,7 +203,9 @@ guest build, whose `capsule-echo` floods with direct writes):
   tenth more, and wants half the ceiling at least. Both are measured from the
   VMM's `/proc/<pid>/io`: the bytes it read and wrote (`rchar` and `wchar`),
   divided by 4096 for the operations. Each VMM's network namespace has
-  loopback only.
+  loopback only. On November 17, 2026, the VMM moved 42,032,256 bytes in
+  10 seconds writing 1 MiB at a time (4.0 MiB/s), and 2,000 operations in
+  10 seconds writing 4 KiB at a time.
   Its first run counted the write calls (`syscw`) of a VMM whose guest wrote
   4 KiB through the page cache, each followed by `fdatasync`. That count is
   not the drive's operations: the VMM serves a flush with `fsync`, which is
