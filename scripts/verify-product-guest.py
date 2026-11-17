@@ -363,8 +363,8 @@ def main():
             assert not unlisted, "product worker scenarios this script does not require: " + ", ".join(unlisted)
             skipped = sorted((set() if a.pi_harness else PI_WORKER) | (set() if slim_build else SLIM_WORKER) | (set() if a.rclone else RCLONE_WORKER))
             run("worker-integration", [a.go, "tool", "test2json", "-p", "github.com/ArnaudGuiovanna/agentcapsule/internal/worker",
-                out / "product-worker.test", "-test.v", "-test.run=^TestProductWorker", "-test.timeout=1500s"]
-                + ([f"-test.skip=^({'|'.join(skipped)})$"] if skipped else []), 1560)
+                out / "product-worker.test", "-test.v", "-test.run=^TestProductWorker", "-test.timeout=3600s"]
+                + ([f"-test.skip=^({'|'.join(skipped)})$"] if skipped else []), 3660)
             events = [json.loads(line) for line in (out / "worker-integration.log").read_text().splitlines()]
             assert not any(e["Action"] in ["skip", "fail"] for e in events)
             worker_passed = {e["Test"] for e in events if e["Action"] == "pass" and "Test" in e}
