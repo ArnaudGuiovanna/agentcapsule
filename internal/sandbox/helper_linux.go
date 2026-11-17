@@ -120,6 +120,27 @@ func confine(args []string) error {
 			return fmt.Errorf("limit %d: %w", l.resource, err)
 		}
 	}
+	// One processor, the first this thread may use: e2fsprogs (1.47.4) reads
+	// the bitmaps with a thread per processor, which the filter refuses, and
+	// with the program's own thread on one. /sys and /proc/stat hidden, the C
+	// library counts the processors of this affinity.
+	var cpus unix.CPUSet
+	if err := unix.SchedGetaffinity(0, &cpus); err != nil {
+		return fmt.Errorf("processors: %w", err)
+	}
+	for cpu := 0; ; cpu++ {
+		if cpu == len(cpus)*64 {
+			return errors.New("processors: none")
+		}
+		if cpus.IsSet(cpu) {
+			cpus.Zero()
+			cpus.Set(cpu)
+			break
+		}
+	}
+	if err := unix.SchedSetaffinity(0, &cpus); err != nil {
+		return fmt.Errorf("processors: %w", err)
+	}
 	// Capabilities: none left to the program, nor any it could gain.
 	for c := 0; ; c++ {
 		if err := unix.Prctl(unix.PR_CAPBSET_DROP, uintptr(c), 0, 0, 0); errors.Is(err, unix.EINVAL) {

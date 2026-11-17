@@ -302,6 +302,18 @@ func TestConfinedProgramSeesNoKernelState(t *testing.T) {
 	seesNoKernelState(t, tools)
 }
 
+// REG-01: the program runs on one processor. e2fsprogs 1.47.4 reads an
+// image's bitmaps with one thread per processor it may use, which the
+// filter refuses; on one, it reads them in its own thread. With /sys and
+// /proc/stat hidden, the C library counts the processors of the program's
+// affinity.
+func TestConfinedProgramRunsOnOneProcessor(t *testing.T) {
+	s := status(t, tools)
+	if cpus := s["Cpus_allowed_list"]; cpus == "" || strings.ContainsAny(cpus, ",-") {
+		t.Errorf("the program may run on processors %q", cpus)
+	}
+}
+
 // REG-01: a program that hangs is killed at the time limit, one that spins at
 // the processor limit.
 func TestConfinedProgramIsKilledAtItsLimits(t *testing.T) {
