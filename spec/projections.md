@@ -1,8 +1,8 @@
 # Go projections of the model runs
 
 A Go projection of a run drives the real code (PostgreSQL, the harness store,
-the host's admission queue or the authorities) through the run's steps and
-checks the run's expectation. This table lists every `run` of the models,
+the host's work queue or admission queue, or the authorities) through the
+run's steps and checks the run's expectation. This table lists every `run` of the models,
 every fixed witness schedule (a module with `traceInit`, whose `checked`
 invariant must fail) and every simulation witness (a `val` ending in
 `Witness`), with the Go tests that project it.
@@ -85,7 +85,7 @@ in the ordinary unit tests.
 | `concurrentProtocolTests.foreignMandateTest` | full | `TestForeignMandate` |  |
 | `concurrentProtocolTests.fifoAcrossRequestsTest` | full | `TestFifoAcrossRequests` |  |
 | `concurrentProtocolTests.fifoAfterFirstAckTest` | full | `TestPreimplementationP1ITF/fifo-uses-commit-order` |  |
-| `concurrentProtocolTests.duplicateAfterLostAckTest` | partial | `TestPreimplementationP1ITF/lost-ack-competing-lease`, `TestDeliveryConcurrentClaimsFIFOAndLostAck` | The fixture does not replay the refused late ACK (`acknowledge(0).fail()`). |
+| `concurrentProtocolTests.duplicateAfterLostAckTest` | full | `TestDuplicateAfterLostAck`, `TestPreimplementationP1ITF/lost-ack-competing-lease`, `TestDeliveryConcurrentClaimsFIFOAndLostAck` | `TestDuplicateAfterLostAck` replays the refused late ACK too. |
 | `concurrentProtocolTests.duplicateAcrossGenerationTest` | full | `TestPreimplementationP1ITF/dedup-survives-generation-change` |  |
 | `concurrentProtocolTests.oldChannelTest` | full | `TestPreimplementationP1ITF/old-channel-after-replacement` |  |
 | `concurrentProtocolTests.oldCallerTest` | full | `TestPreimplementationP1ITF/old-caller-after-replacement` |  |
@@ -94,14 +94,14 @@ in the ordinary unit tests.
 | `concurrentProtocolTests.writerBlocksFenceTest` | full | `TestPreimplementationP1ITF/writer-blocks-revocation`, `TestAbortedWriterThenFence` | `TestAbortedWriterThenFence` checks it with the writer in another process. |
 | `concurrentProtocolTests.abortedWriterThenFenceTest` | full | `TestAbortedWriterThenFence`, `TestPreimplementationP1ITF/writer-crash-then-restricted-fencing` | Guest writer crash: the writer process is killed (SIGKILL) inside its open transaction. The fixture cancels the writer instead. |
 | `concurrentProtocolTests.fencedDuplicateRefusedTest` | full | `TestFencedDuplicateRefused` |  |
-| `concurrentProtocolTests.statusAfterReplyRevocationTest` | partial | `TestPreimplementationP1ITF/revoked-reply-gets-fresh-status` | The fixture also delivers the reply, with a lost ACK, before the deletion. |
-| `concurrentProtocolTests.expiredUnsentReplyTest` | partial | `TestExpiredDeliveryDiesWithoutItsRecipient` | Written from ADR 007, not step by step; the P1 fixture pins the model before ADR 007. |
-| `concurrentProtocolTests.expiredSentReplyWaitsForFenceTest` | partial | `TestExpiredDeliveryThatMayHaveReachedWaitsForItsFence` | As above. |
+| `concurrentProtocolTests.statusAfterReplyRevocationTest` | full | `TestStatusAfterReplyRevocation`, `TestPreimplementationP1ITF/revoked-reply-gets-fresh-status` |  |
+| `concurrentProtocolTests.expiredUnsentReplyTest` | full | `TestExpiredUnsentReply`, `TestExpiredDeliveryDiesWithoutItsRecipient` | `retireUnsent` is `RetireDelivery`, which retires a reply no attempt was allowed to carry at once, without a fence. ADR 007; the P1 fixture pins the model before it. |
+| `concurrentProtocolTests.expiredSentReplyWaitsForFenceTest` | full | `TestExpiredSentReplyWaitsForFence`, `TestExpiredDeliveryThatMayHaveReachedWaitsForItsFence` | The refused `retireUnsent`: `RetireDelivery` asks for the stopped destination's fence and leaves the reply pending. |
 | `concurrentProtocolTests.unfencedRetireAllowsLateEffectTest` | model-only | — | Defines a broken action to show why `retireUnsent` needs `not(sent)`; Go has no such path. |
-| `concurrentProtocolTests.expiredSentReplyRetiredAfterFenceTest` | partial | `TestExpiredDeliveryThatMayHaveReachedWaitsForItsFence` | As above. |
-| `concurrentProtocolTests.unsentReplyDiesBehindHeadTest` | partial | `TestExpiredDeliveryBehindAStuckHeadDies` | Written from ADR 007 §7, not step by step. |
-| `concurrentProtocolTests.retirementLeavesDeletionTest` | partial | `TestRetirementLeavesADeletionToCancel` | As above. |
-| `concurrentProtocolTests.deletionCancelsExpiredReplyTest` | partial | `TestRetirementLeavesADeletionToCancel` | As above. |
+| `concurrentProtocolTests.expiredSentReplyRetiredAfterFenceTest` | full | `TestExpiredSentReplyRetiredAfterFence`, `TestExpiredDeliveryThatMayHaveReachedWaitsForItsFence` | `recordFence` and `retire` are `RetireDelivery`'s barrier commit, after the store's fence. |
+| `concurrentProtocolTests.unsentReplyDiesBehindHeadTest` | full | `TestUnsentReplyDiesBehindHead`, `TestExpiredDeliveryBehindAStuckHeadDies` | ADR 007 §7. |
+| `concurrentProtocolTests.retirementLeavesDeletionTest` | full | `TestRetirementLeavesDeletion`, `TestRetirementLeavesADeletionToCancel` | `RetireDelivery` refuses (`ErrUnavailable`) a reply whose author is being deleted. |
+| `concurrentProtocolTests.deletionCancelsExpiredReplyTest` | full | `TestDeletionCancelsExpiredReply`, `TestRetirementLeavesADeletionToCancel` |  |
 | `concurrentProtocolTests.closureFencesOnlyItsPartiesTest` | full | `TestClosureFencesOnlyItsParties`, `TestRequestClosureFencesOnlyItsParties` |  |
 | `concurrentProtocolTests.closureCommitsWithoutOtherStoresTest` | full | `TestClosureCommitsWithoutOtherStores`, `TestRequestClosureFencesOnlyItsParties` |  |
 | `concurrentProtocolTests.closureScopeTest` | model-only | — | Checks the model's own closure scope (`closureScope`) in its initial state. |
@@ -124,8 +124,8 @@ in the ordinary unit tests.
 | `concurrentProtocolManualTests.manualAcceptTest` | full | `TestPreimplementationP1ITF/manual-consent` |  |
 | `concurrentProtocolManualTests.manualAcceptWhileSleepingTest` | full | `TestPreimplementationP1ITF/manual-consent-while-vm-sleeps` |  |
 | `concurrentProtocolManualTests.manualDeclineTest` | full | `TestPreimplementationP1ITF/manual-decline` |  |
-| `concurrentProtocolManualTests.closeBlocksConsentTest` | partial | `TestCancellationIntentBlocksConsentAndSurvivesDeletion` | A cancellation, not an expiry, blocks the consent. |
-| `concurrentProtocolManualTests.abortedAdmissionReleasesLocksTest` | partial | `TestPreimplementationP1ITF/aborted-admission-releases-locks` | The fixture aborts a submission, then requests a deletion; the run aborts an acceptance, then cancels. |
+| `concurrentProtocolManualTests.closeBlocksConsentTest` | full | `TestCloseBlocksConsent`, `TestCancellationIntentBlocksConsentAndSurvivesDeletion` | `TestCloseBlocksConsent` with an expiry, as the run; the other test with a cancellation. |
+| `concurrentProtocolManualTests.abortedAdmissionReleasesLocksTest` | full | `TestAbortedAdmissionReleasesLocks`, `TestPreimplementationP1ITF/aborted-admission-releases-locks` | `TestAbortedAdmissionReleasesLocks` aborts an acceptance, then cancels, as the run; the fixture aborts a submission, then requests a deletion. |
 
 ### `concurrent_witness.qnt`
 
@@ -133,7 +133,7 @@ in the ordinary unit tests.
 |---|---|---|---|
 | `concurrentWitnessStaleCallerGuard.guardTest` | full | `TestSqlRetirementRejectsReceivedCall` |  |
 | `concurrentWitnessStaleCallerBroken` | model-only | — | Broken configuration: Go has no switch that removes the guard. |
-| `concurrentWitnessNoFifoGuard.guardTest` | partial | `TestFifoAcrossRequests` | The same guard with the two requests in the other order. |
+| `concurrentWitnessNoFifoGuard.guardTest` | full | `TestConcurrentWitnessNoFifoGuard`, `TestFifoAcrossRequests` | `TestFifoAcrossRequests` has the two requests in the other order. |
 | `concurrentWitnessNoFifoBroken` | model-only | — | Broken configuration: Go has no switch that removes the guard. |
 | `concurrentWitnessNoDedupGuard.guardTest` | full | `TestPreimplementationP1ITF/lost-ack-competing-lease` |  |
 | `concurrentWitnessNoDedupBroken` | model-only | — | Broken configuration: Go has no switch that removes the guard. |
@@ -191,7 +191,7 @@ in the ordinary unit tests.
 | `protocolCompositionOk.replyAppliedBeforeDeletionTest` | full | `TestProtocolITFMicrosteps/reply-committed-ack-lost-delete` |  |
 | `protocolCompositionOk.transactionDelaysFenceTest` | full | `TestPreimplementationP1ITF/writer-blocks-revocation` |  |
 | `protocolCompositionOk.authorizedEffectDuringQuiescingTest` | full | `TestProtocolITFMicrosteps/transaction-crosses-quiescing` |  |
-| `protocolCompositionOk.expiredLeaseRetryDeduplicatesTest` | partial | `TestProtocolITFMicrosteps/expired-lease-retry`, `TestPreimplementationP1ITF/lost-ack-competing-lease` | Neither replays the refused ACK of the first worker. |
+| `protocolCompositionOk.expiredLeaseRetryDeduplicatesTest` | full | `TestDuplicateAfterLostAck`, `TestProtocolITFMicrosteps/expired-lease-retry`, `TestPreimplementationP1ITF/lost-ack-competing-lease` | `TestDuplicateAfterLostAck` replays the same steps, the first worker's refused ACK included, on the P1 replay. |
 | `protocolCompositionOk.oldGenerationCannotSubmitTest` | full | `TestPreimplementationP1ITF/old-caller-after-replacement` |  |
 | `protocolCompositionOk.oldChannelCannotDeliverTest` | full | `TestPreimplementationP1ITF/old-channel-after-replacement` |  |
 | `protocolCompositionOk.fenceOnlyCannotDeliverTest` | partial | `TestPlacementFenceOnlyAdmission`, `TestCapabilitiesRequireAuthenticationAndRespectFenceOnly` | A fence-only boot is confirmed only as such and refuses application work; no claim is tried. |
@@ -345,20 +345,20 @@ in the ordinary unit tests.
 
 | Run or witness | Status | Go projection | Notes |
 |---|---|---|---|
-| `serviceProgressTests.scenario0Test` | partial | `TestBarrierAdmissionFIFOAndOrdinaryBackpressure` | `retiring-notice-waits-for-capacity`. Capacity half only, on the host's admission queue: the worker's fences take `WithBarrier`, its callbacks `WithApplication` (`internal/worker/control_linux.go`). The SQL replay of the case waits for the capacity adapter (`scope.json`). |
-| `serviceProgressTests.refusal0x0Test` | partial | `TestBarrierAdmissionFIFOAndOrdinaryBackpressure` | `retiring-notice-waits-for-capacity`. Capacity half only, on the host's admission queue: the worker's fences take `WithBarrier`, its callbacks `WithApplication` (`internal/worker/control_linux.go`). The SQL replay of the case waits for the capacity adapter (`scope.json`). |
-| `serviceProgressTests.scenario1Test` | partial | `TestBarrierAdmissionFIFOAndOrdinaryBackpressure`, `TestCommonAdmissionQueueDoesNotLetLaterBarriersOvertakeWork` | `retiring-notice-reserves-capacity`. Capacity half only, on the host's admission queue: the worker's fences take `WithBarrier`, its callbacks `WithApplication` (`internal/worker/control_linux.go`). The SQL replay of the case waits for the capacity adapter (`scope.json`). |
-| `serviceProgressTests.refusal1x0Test` | partial | `TestBarrierAdmissionFIFOAndOrdinaryBackpressure`, `TestCommonAdmissionQueueDoesNotLetLaterBarriersOvertakeWork` | `retiring-notice-reserves-capacity`. Capacity half only, on the host's admission queue: the worker's fences take `WithBarrier`, its callbacks `WithApplication` (`internal/worker/control_linux.go`). The SQL replay of the case waits for the capacity adapter (`scope.json`). |
+| `serviceProgressTests.scenario0Test` | partial | `TestBarrierAdmissionFIFOAndOrdinaryBackpressure` | `retiring-notice-waits-for-capacity`. Not replayed: request 1 (b to a) arrives after notice 0 (to a), and a's mailbox, one FIFO for the requests and notices it gets, refuses admit(1), which P3's separate queues allow. Executed by a third agent, request 1 would not hold the retirement back either: on the host a notification attempt and a barrier both wait for a synchronous callback's admission turn, and neither waits for a computation after it. P3 lets the attempts through and holds the barrier. Capacity half only, on the host's admission queue (`internal/worker/control_linux.go`). |
+| `serviceProgressTests.refusal0x0Test` | partial | `TestBarrierAdmissionFIFOAndOrdinaryBackpressure` | As `scenario0Test`. |
+| `serviceProgressTests.scenario1Test` | full | `TestPreimplementationP3ITF/retiring-notice-reserves-capacity`, `TestBarrierAdmissionFIFOAndOrdinaryBackpressure` | `retiring-notice-reserves-capacity`, through the host's work queue (`scope.json`). |
+| `serviceProgressTests.refusal1x0Test` | full | `TestPreimplementationP3ITF/retiring-notice-reserves-capacity`, `TestCommonAdmissionQueueDoesNotLetLaterBarriersOvertakeWork` | The worker's next job (`ClaimWork`) is notice 0's, whose dispatch retires it; a's mailbox also keeps request 1 behind the notice (`ErrNotHead`). |
 | `serviceProgressTests.scenario2Test` | full | `TestPreimplementationP3ITF/successful-request-observed-and-notified` |  |
 | `serviceProgressTests.scenario3Test` | full | `TestPreimplementationP3ITF/hung-handler-terminated-by-deadline` |  |
 | `serviceProgressTests.scenario4Test` | full | `TestPreimplementationP3ITF/queued-request-deadline` |  |
 | `serviceProgressTests.scenario5Test` | full | `TestPreimplementationP3ITF/terminal-notification-failure-keeps-inbox` |  |
 | `serviceProgressTests.scenario6Test` | full | `TestPreimplementationP3ITF/notification-retry-success` |  |
-| `serviceProgressTests.scenario7Test` | gap | — | `delete-running-agent-preserves-other-work`. Deletion race: needs a binding in which the deleted agent does not execute the other request. |
-| `serviceProgressTests.scenario8Test` | partial | `TestBarrierAdmissionFIFOAndOrdinaryBackpressure`, `TestCommonAdmissionQueueDoesNotLetLaterBarriersOvertakeWork` | `barrier-reserves-capacity`. Capacity half only, on the host's admission queue: the worker's fences take `WithBarrier`, its callbacks `WithApplication` (`internal/worker/control_linux.go`). The SQL replay of the case waits for the capacity adapter (`scope.json`). |
-| `serviceProgressTests.refusal8x0Test` | partial | `TestBarrierAdmissionFIFOAndOrdinaryBackpressure`, `TestCommonAdmissionQueueDoesNotLetLaterBarriersOvertakeWork` | `barrier-reserves-capacity`. Capacity half only, on the host's admission queue: the worker's fences take `WithBarrier`, its callbacks `WithApplication` (`internal/worker/control_linux.go`). The SQL replay of the case waits for the capacity adapter (`scope.json`). |
-| `serviceProgressTests.scenario9Test` | partial | `TestBarrierAdmissionFIFOAndOrdinaryBackpressure` | `fence-waits-for-current-execution`. Capacity half only, on the host's admission queue: the worker's fences take `WithBarrier`, its callbacks `WithApplication` (`internal/worker/control_linux.go`). The SQL replay of the case waits for the capacity adapter (`scope.json`). |
-| `serviceProgressTests.refusal9x0Test` | partial | `TestBarrierAdmissionFIFOAndOrdinaryBackpressure` | `fence-waits-for-current-execution`. Capacity half only, on the host's admission queue: the worker's fences take `WithBarrier`, its callbacks `WithApplication` (`internal/worker/control_linux.go`). The SQL replay of the case waits for the capacity adapter (`scope.json`). |
+| `serviceProgressTests.scenario7Test` | partial | `TestDeletionOfARunningAgentPreservesOtherWork` | `delete-running-agent-preserves-other-work`, with a third agent executing request 1 (b to c). Go closes request 0 at the deletion's tombstone, not by a closure of its own before it: closeDeleted, fence, commitClose, finishDelete, cancelNotification and retireNotification are one `ReconcileRevocation`, after the deletion's fence waited for request 0's open writer. A deleted sender is sent no notice. |
+| `serviceProgressTests.scenario8Test` | full | `TestPreimplementationP3ITF/barrier-reserves-capacity`, `TestCommonAdmissionQueueDoesNotLetLaterBarriersOvertakeWork` | `barrier-reserves-capacity`, through the host's work queue (`scope.json`). |
+| `serviceProgressTests.refusal8x0Test` | full | `TestPreimplementationP3ITF/barrier-reserves-capacity`, `TestCommonAdmissionQueueDoesNotLetLaterBarriersOvertakeWork` | The worker's next job is request 0's closing work, discovered before request 2's delivery: one worker takes the barrier first. On the host, the barrier's exclusive turn then goes ahead of later callbacks. |
+| `serviceProgressTests.scenario9Test` | full | `TestPreimplementationP3ITF/fence-waits-for-current-execution`, `TestBarrierAdmissionFIFOAndOrdinaryBackpressure` | `fence-waits-for-current-execution`, through the host's work queue (`scope.json`). |
+| `serviceProgressTests.refusal9x0Test` | full | `TestPreimplementationP3ITF/fence-waits-for-current-execution`, `TestBarrierAdmissionFIFOAndOrdinaryBackpressure` | The fence waits for request 1's open writer in a's store and leaves none; on the host, a barrier also waits for the callback's admission turn. |
 | `serviceProgressTests.scenario10Test` | full | `TestPreimplementationP3ITF/restore-recovery-before-closing` |  |
 | `serviceProgressTests.scenario11Test` | full | `TestPreimplementationP3ITF/unavailable-store-is-not-a-fence` |  |
 | `serviceProgressTests.refusal11x0Test` | full | `TestPreimplementationP3ITF/unavailable-store-is-not-a-fence` |  |
@@ -368,22 +368,22 @@ in the ordinary unit tests.
 | `serviceProgressTests.scenario14Test` | full | `TestPreimplementationP3ITF/observe-requires-current-authority` |  |
 | `serviceProgressTests.refusal14x0Test` | full | `TestPreimplementationP3ITF/observe-requires-current-authority` |  |
 | `serviceProgressTests.scenario15Test` | full | `TestPreimplementationP3ITF/fifo-shared-notification-queue` |  |
-| `serviceProgressTests.scenario16Test` | gap | — | `cannot-recycle-with-outstanding-notice`. Needs the identity retention contract; there is no recycle method. |
-| `serviceProgressTests.refusal16x0Test` | gap | — | `cannot-recycle-with-outstanding-notice`. Needs the identity retention contract; there is no recycle method. |
+| `serviceProgressTests.scenario16Test` | full | `TestPreimplementationP3ITF/cannot-recycle-with-outstanding-notice` | `cannot-recycle-with-outstanding-notice`. |
+| `serviceProgressTests.refusal16x0Test` | full | `TestPreimplementationP3ITF/cannot-recycle-with-outstanding-notice` | Go has no recycle: a request keeps its identity, and a new arrival takes a fresh UUID. The refusal is checked against what Go releases, the purge (`Transit.PurgeExpired`): seven days on, it purges the delivered request's content and keeps the reply the pending notice carries. |
 | `serviceProgressTests.scenario17Test` | full | `TestPreimplementationP3ITF/two-repeatable-arrivals` |  |
-| `serviceProgressTests.scenario18Test` | gap | — | `fifo-admission-cannot-overtake`. Needs the global admission queue, not one agent's mailbox. |
-| `serviceProgressTests.refusal18x0Test` | gap | — | `fifo-admission-cannot-overtake`. Needs the global admission queue, not one agent's mailbox. |
-| `serviceProgressTests.scenario20Test` | partial | `TestExpiredDeliveryDiesWithoutItsRecipient` | ADR 007; the P3 fixture pins the model before ADR 007. |
-| `serviceProgressTests.refusal20x0Test` | partial | `TestExpiredDeliveryDiesWithoutItsRecipient` | ADR 007; the P3 fixture pins the model before ADR 007. |
-| `serviceProgressTests.scenario21Test` | partial | `TestExpiredDeliveryThatMayHaveReachedWaitsForItsFence` | ADR 007; the P3 fixture pins the model before ADR 007. |
-| `serviceProgressTests.refusal21x0Test` | partial | `TestExpiredDeliveryThatMayHaveReachedWaitsForItsFence` | ADR 007; the P3 fixture pins the model before ADR 007. |
-| `serviceProgressTests.scenario21x1Test` | partial | `TestExpiredDeliveryThatMayHaveReachedWaitsForItsFence` | ADR 007; the P3 fixture pins the model before ADR 007. |
-| `serviceProgressTests.scenario22Test` | partial | `TestExpiredDeliveryBehindAStuckHeadDies` | ADR 007 §7; the P3 fixture pins the model before ADR 007. |
-| `serviceProgressTests.refusal22x0Test` | partial | `TestRetirementLeavesADeletionToCancel` | ADR 007 §7; the P3 fixture pins the model before ADR 007. |
-| `serviceProgressTests.scenario22x1Test` | partial | `TestRetirementLeavesADeletionToCancel` | ADR 007 §7; the P3 fixture pins the model before ADR 007. |
-| `serviceProgressTests.scenario23Test` | partial | `TestRestoreRedeliversALostRequest` | ADR 008, not step by step; the P3 fixture pins the model before ADR 008. |
+| `serviceProgressTests.scenario18Test` | full | `TestPreimplementationP3ITF/fifo-admission-cannot-overtake` | `fifo-admission-cannot-overtake`, through the host's work queue (`scope.json`). |
+| `serviceProgressTests.refusal18x0Test` | full | `TestPreimplementationP3ITF/fifo-admission-cannot-overtake` | The global admission order is the host's work queue: `DiscoverWork` numbers the deliveries of every agent in arrival order, and `ClaimWork` gives request 1's before request 0's, though they go to different agents. One host, one worker. |
+| `serviceProgressTests.scenario20Test` | full | `TestProgressExpiredNotificationDiesWithoutItsStore`, `TestExpiredDeliveryDiesWithoutItsRecipient` | On the P3 replay: `expireNotification` is the deadline aging, then the production dispatcher (`Transit.DispatchMailbox`), which retires the never-attempted reply at once. ADR 007; the P3 fixture pins the model before it. |
+| `serviceProgressTests.refusal20x0Test` | full | `TestProgressExpiredNotificationDiesWithoutItsStore`, `TestExpiredDeliveryDiesWithoutItsRecipient` | The dispatcher's preparation finds the store down before any attempt is spent. |
+| `serviceProgressTests.scenario21Test` | full | `TestProgressExpiredSentNotificationWaitsForItsFence`, `TestExpiredDeliveryThatMayHaveReachedWaitsForItsFence` | The dispatcher marks the reply closing and cannot fence its lost store: P3's `RetiringDead`. |
+| `serviceProgressTests.refusal21x0Test` | full | `TestProgressExpiredSentNotificationWaitsForItsFence`, `TestExpiredDeliveryThatMayHaveReachedWaitsForItsFence` |  |
+| `serviceProgressTests.scenario21x1Test` | full | `TestProgressExpiredSentNotificationWaitsForItsFence`, `TestExpiredDeliveryThatMayHaveReachedWaitsForItsFence` | The retirement also refuses the delayed copy of the attempt. |
+| `serviceProgressTests.scenario22Test` | partial | `TestExpiredDeliveryBehindAStuckHeadDies` | ADR 007 §7, not step by step: on the P3 replay's binding request 1 (b to a) queues behind notice 0 in a's mailbox, so admit(1) is refused before the notices fail. The Go test has the expired delivery behind another to the same agent. |
+| `serviceProgressTests.refusal22x0Test` | full | `TestProgressExpiredNotificationToADeletedStoreIsCanceled`, `TestRetirementLeavesADeletionToCancel` | The dispatcher leaves the reply to an agent being deleted pending (`ErrUnavailable`). |
+| `serviceProgressTests.scenario22x1Test` | partial | `TestProgressExpiredNotificationToADeletedStoreIsCanceled`, `TestRetirementLeavesADeletionToCancel` | Go cancels the reply at the deletion's tombstone: cancelNotification and retireNotification are the deletion's fences and commit, which also complete the deletion the run leaves pending. |
+| `serviceProgressTests.scenario23Test` | full | `TestRestoredStoreGetsItsRequestAgain`, `TestRestoreRedeliversALostRequest` | ADR 008, on the redelivery lab: admit is the delivery (PROCESSING is P3's Executing until complete); redeliverRequest is b's restore from an archive that lacks it. |
 | `serviceProgressTests.scenario23x1Test` | full | `TestRedeliveredRequestEndsAtItsDeadline` |  |
-| `serviceProgressTests.scenario24Test` | partial | `TestRestoreRedeliversALostReplyAndStatus` | ADR 008, not step by step; the P3 fixture pins the model before ADR 008. |
+| `serviceProgressTests.scenario24Test` | full | `TestRestoredStoreGetsItsNotificationAgain`, `TestRestoreRedeliversALostReplyAndStatus` | ADR 008, on the redelivery lab: redeliverNotification is a's restore from an archive that lacks the reply. |
 | `serviceProgressTests.refusal24x0Test` | model-only | — | `stabilize` is the progress proof's assumption that faults stop; it has no Go counterpart. |
 | `serviceProgressTests.scenario19Test` | full | `TestPreimplementationP3ITF/deleted-destination-rejects-new-work` |  |
 | `serviceProgressTests.refusal19x0Test` | full | `TestPreimplementationP3ITF/deleted-destination-rejects-new-work` |  |

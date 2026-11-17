@@ -468,6 +468,16 @@ func (a *p3Replay) compareAvailability(t *testing.T, w p3Observation, index int)
 
 func (a *p3Replay) refuse(t *testing.T, op protocolAction) {
 	t.Helper()
+	if op.Name == "fence" {
+		store := p1Int(op.Args[1])
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		reachable := a.local.boots[store].client.Health(ctx) == nil
+		cancel()
+		if reachable {
+			a.refusedFence(t, op)
+			return
+		}
+	}
 	err := a.step(t, op)
 	switch op.Name {
 	case "commitClose":
@@ -484,6 +494,10 @@ func (a *p3Replay) refuse(t *testing.T, op protocolAction) {
 		}
 	case "arrive":
 		a.refusedArrival(t, op, err)
+	case "admit":
+		a.refusedAdmission(t, op, err)
+	case "recycle":
+		a.refusedRecycle(t, op, err)
 	default:
 		t.Fatal("unsupported P3 refusal", op.Name)
 	}
