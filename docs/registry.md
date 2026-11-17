@@ -94,7 +94,9 @@ dagger call check   # the whole chain against a throwaway registry (run by CI)
 `check` builds both reference harnesses, pushes them to a `registry:2` service (a
 registry without the referrers API, like GHCR), checks that an unsigned package is
 refused when a signature is required, then signs both and verifies them as the
-platform importer would. Set `DO_NOT_TRACK=1` to disable Dagger's anonymous telemetry.
+platform importer would, but for the inspection's sandbox: Dagger's containers cannot
+create it, so `verify` and `check` inspect each image unconfined (`--unconfined`, as
+`nobody`). Set `DO_NOT_TRACK=1` to disable Dagger's anonymous telemetry.
 
 Without Dagger, `scripts/build-python-harness.py` builds the same harness with plain
 Docker. Each path is reproducible on its own; their digests differ because they pack
