@@ -251,6 +251,9 @@ and a decision on which secrets such a guest may still hold. It is **P1**.
   default 30-second delivery lease, and the agent's next delivery boots it
   again. What the held handler wrote is lost with its transaction. A guest
   starved by its host could be counted wrongly; the budget allows 5 an hour.
+  The harness keeps running meanwhile: its background work waits out the
+  held store instead of ending the harness, which would end the guest and
+  count a crash (question 6).
 
 ## Tests
 
@@ -279,7 +282,10 @@ Unit tests (`go test -race`):
   `TestPassesOfAGuestThatNeverAnswers`; `cmd/capsule-echo`:
   `TestNeverReturnsHoldsItsStoreUntilTheHarnessStops` (a real store: a
   fence cannot commit while the handler holds it, past the request's own
-  deadline).
+  deadline); `internal/harnessstore`: `TestBusyTellsAHeldStore`;
+  `internal/referenceharness` and `internal/agentadapter`:
+  `TestRunWaitsOutABusyStore` (the background loop outlives a store held
+  past its busy timeout; it ended there before).
 
 PostgreSQL tests:
 - `internal/controlplane`: `TestAnAgentWhoseGuestKeepsFailingIsFailed`,
@@ -366,9 +372,18 @@ No guest halts in these tests: a console that shows `reboot: System
 halted` fails them, and a VMM that went away must be counted as a crash.
 
 The KVM test of an unresponsive guest (question 7), written on November 18,
-2026, never run (`internal/worker/product_unresponsive_integration_test.go`),
-packs `capsule-echo` with `never-returns`, which holds any invocation whose
-text says "never return" and answers the others:
+2026 (`internal/worker/product_unresponsive_integration_test.go`), packs
+`capsule-echo` with `never-returns`, which holds any invocation whose text
+says "never return" and answers the others. Its first run, that day with
+guest v28, failed: the guest failures were `crash` for three boots, not
+`unresponsive`. Each boot that held the store ended on its own 5 seconds
+later: the reference harness's background loop, refused by the held store
+after SQLite's busy timeout, ended the harness, and the guest ended with it
+(question 6), so the census rightly counted a crash, and the retirement's
+fence went to a new boot that answered it. The harness, not the
+classification, was wrong: a store held by a slow or stuck handler is
+transient, and the background loops of `capsule-echo` and `capsule-adapter`
+now wait it out (`harnessstore.Busy`). Not run again since:
 - `TestProductWorkerStopsAGuestThatNeverAnswersAnInvocation`: the agent
   answers an ordinary invocation, then gets one it holds and one more
   behind it. The passes may fail only with the held invocation's attempts,
