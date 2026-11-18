@@ -346,14 +346,24 @@ with `queue_reason` `capacity`; one whose work waits for room under its
 organization's quotas is `QUEUED` with `queue_reason` `organization_quota`
 ([ADR 021](../adr/021-organization-quotas.md)). A wake past those quotas is
 accepted and waits; it is not refused.
-An agent whose guest failed to boot or crashed 5 times within an hour is
-`FAILED`, with `failure_reason` `boot_failed` or `crashed`, the kind of its
-last failure ([ADR 012](../adr/012-limits-restart-budgets-egress.md)). It is
+A guest whose harness exits or dies, for example killed by the guest's
+kernel for taking all its memory, ends its VM: before the agent is ready,
+the boot failed; after, the guest crashed, and the agent reads `STOPPED`
+once the worker has seen it, until its next work boots it again.
+An agent whose guest failed to boot, crashed, or did not answer, 5 times
+within an hour is `FAILED`, with `failure_reason` `boot_failed`, `crashed`
+or `unresponsive`, the kind of its last failure
+([ADR 012](../adr/012-limits-restart-budgets-egress.md)). It is
 not booted again: its open wake ends `FAILED` with the error
 `restart_budget_exhausted`, and invocations and requests to it wait until a
 wake or their deadline. A new wake (`POST /v1/agents/{id}/wake`) gives it a
 new budget and boots it; so does the operator's
 `agentcapsule-admin clear-agent-failure -agent-id <id>`.
+A guest does not answer when its harness never returns from a delivery and
+holds its store. Once the delivery's three attempts are spent, or its
+deadline passed, the platform stops the agent's VM and counts the failure;
+the invocation fails with `delivery_outcome_unknown`, and the agent's next
+invocation boots it again.
 
 Wake, sleep and deletion are audited (`tenant_agent_audit`:
 `agent.wake_requested`, `agent.sleep_requested`, `agent.delete_requested`), in

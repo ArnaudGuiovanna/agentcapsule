@@ -22,6 +22,11 @@ func init() {
 	if len(os.Args) == 0 || os.Args[0] != HelperName {
 		return
 	}
+	// Go code runs on one processor at a time, which this goroutine keeps from
+	// the address-space limit to the program (see execFiltered): the limit
+	// is the whole process's, and another goroutine that needed memory then
+	// (the finalizer, the collector) would end the helper.
+	runtime.GOMAXPROCS(1)
 	// no_new_privs, the capabilities and the seccomp filter are set on this
 	// thread, which then executes the program.
 	runtime.LockOSThread()
@@ -199,7 +204,9 @@ const execve = unix.SYS_EXECVE
 // allow-list refuses, and the kernel would kill the helper. So everything is
 // prepared first; then every signal is blocked, and the filter and the
 // execution are raw system calls. The program starts with every signal
-// blocked: SIGKILL and its own faults still reach it.
+// blocked: SIGKILL and its own faults still reach it. A raw system call keeps
+// the helper's one processor (GOMAXPROCS 1): no other goroutine runs from the
+// address-space limit, which applies to every thread, to the program.
 func execFiltered(p policy, program string, argv, env []string) error {
 	prog, err := filterProgram(p)
 	if err != nil {

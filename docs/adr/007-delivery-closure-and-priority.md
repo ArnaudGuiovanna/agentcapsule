@@ -292,7 +292,11 @@ that fails without it.
      delayed send could otherwise apply it after its death
      (`leased_delivery.qnt`, `noLateEffect`). It is closing, so never sent
      again, and it dies once A boots for the barrier (a restricted boot that
-     accepts barriers only).
+     accepts barriers only). If A runs and its guest refuses the fence (its
+     harness holds its store), the worker stops A's VM, counts an
+     `unresponsive` guest failure, and the fence goes through that
+     restricted boot ([ADR 012](012-limits-restart-budgets-egress.md),
+     question 7, November 18, 2026).
    - Tests: `TestExpiredDeliveryDiesWithoutItsRecipient` (PostgreSQL; a
      reply, a status and an instruction to an agent that never boots die at
      their deadline without a claim or a fence; the agent reads its dead
@@ -512,6 +516,9 @@ Remaining:
   itself keeps failing, the agent becomes `FAILED` after its restart budget
   ([ADR 012](012-limits-restart-budgets-egress.md)): the boots stop, the
   operator sees `AgentCapsuleAgentFailed`, and the fence waits for a wake.
+  An A that runs but whose harness never releases its store no longer holds
+  the delivery: its VM is stopped and the fence goes through a restricted
+  boot ([ADR 012](012-limits-restart-budgets-egress.md), question 7).
 - **A request to or from an agent that never boots.** Its closure at its
   deadline (the `expiration` job) fenced every store of the installation, so
   any agent that never booted held every request. Since §7 it fences the

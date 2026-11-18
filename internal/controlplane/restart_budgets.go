@@ -13,8 +13,9 @@ import (
 // clears it. Work for it waits, without a boot, until then or its deadline.
 var ErrAgentFailed = errors.New("agent failed: its restart budget is spent")
 
-// RestartBudget is how many failed boots and crashes of an agent's guest,
-// together, a host allows within Window before the agent is FAILED.
+// RestartBudget is how many guest failures of an agent (failed boots,
+// crashes and unresponsive guests, together) a host allows within Window
+// before the agent is FAILED.
 type RestartBudget struct {
 	Failures int
 	Window   time.Duration
@@ -27,14 +28,17 @@ func (b RestartBudget) Valid() bool {
 	return b.Failures >= 1 && b.Failures <= 100 && b.Window >= time.Minute && b.Window <= 24*time.Hour
 }
 
-// Guest failure kinds: a boot whose guest failed before it was ready, and a
-// confirmed guest whose VMM went away without a stop.
+// Guest failure kinds: a boot whose guest failed before it was ready, a
+// confirmed guest whose VMM went away without a stop, and a running guest
+// that did not answer the fence of a delivery past its attempts, whose VM
+// the worker stopped (ADR 012, question 7).
 const (
-	GuestBootFailed = "boot"
-	GuestCrashed    = "crash"
+	GuestBootFailed   = "boot"
+	GuestCrashed      = "crash"
+	GuestUnresponsive = "unresponsive"
 )
 
-// GuestFailure is one failed boot or crash, at its boot generation.
+// GuestFailure is one guest failure, at its boot generation.
 type GuestFailure struct {
 	AgentID, HostID, Kind string
 	Generation            uint64
@@ -47,7 +51,7 @@ type GuestFailure struct {
 // volume is not being restored; a generation counts once, so a retry is
 // harmless. It reports whether this failure made the agent FAILED.
 func (s *Store) ObserveGuestFailure(ctx context.Context, f GuestFailure, budget RestartBudget) (bool, error) {
-	if (f.Kind != GuestBootFailed && f.Kind != GuestCrashed) || f.Generation == 0 || !budget.Valid() {
+	if FailureReason(f.Kind) == "" || f.Generation == 0 || !budget.Valid() {
 		return false, ErrInput
 	}
 	tx, err := s.begin(ctx)
@@ -91,17 +95,28 @@ func (s *Store) ObserveGuestFailure(ctx context.Context, f GuestFailure, budget 
 	}
 	failed := false
 	if failures >= budget.Failures {
-		reason := "boot_failed"
-		if f.Kind == GuestCrashed {
-			reason = "crashed"
-		}
-		tag, err := tx.Exec(ctx, `INSERT INTO failed_agents(agent_id,reason,failures) VALUES($1,$2,$3) ON CONFLICT DO NOTHING`, f.AgentID, reason, failures)
+		tag, err := tx.Exec(ctx, `INSERT INTO failed_agents(agent_id,reason,failures) VALUES($1,$2,$3) ON CONFLICT DO NOTHING`, f.AgentID, FailureReason(f.Kind), failures)
 		if err != nil {
 			return false, err
 		}
 		failed = tag.RowsAffected() == 1
 	}
 	return failed, commit(ctx, tx)
+}
+
+// FailureReason is the failure_reason of an agent whose last guest failure,
+// of that kind, spent its restart budget: boot_failed, crashed or
+// unresponsive. It is empty for an unknown kind.
+func FailureReason(kind string) string {
+	switch kind {
+	case GuestBootFailed:
+		return "boot_failed"
+	case GuestCrashed:
+		return "crashed"
+	case GuestUnresponsive:
+		return "unresponsive"
+	}
+	return ""
 }
 
 func volumeRestoring(ctx context.Context, tx pgx.Tx, id string) (bool, error) {

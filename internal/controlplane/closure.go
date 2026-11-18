@@ -151,7 +151,7 @@ func (s *Store) ReconcileRequestClosure(ctx context.Context, requestID string, r
 		return err
 	}
 	for _, target := range pending {
-		if err := runtime.Fence(ctx, target, "request/"+requestID); err != nil {
+		if err := s.fencePastAttempts(ctx, runtime, target, "request/"+requestID); err != nil {
 			return fmt.Errorf("fence request in store %s: %w", target, err)
 		}
 		if err := s.recordRequestFence(ctx, requestID, target); err != nil {

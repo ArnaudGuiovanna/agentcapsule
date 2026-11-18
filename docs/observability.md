@@ -47,7 +47,7 @@ volume archives and, on the standby host, its replay.
 | `agentcapsule_worker_deliveries_dead_total` | counter | `kind`, `reason` | Deliveries that died ([ADR 007](adr/007-delivery-closure-and-priority.md)): `kind` `reply`, `status` or `instruction`; `reason` `attempts_exhausted` or `expired`, the deadline winning when both hold. A delivery that the deletion of an agent cancels is not counted. Every series is served from zero. It says that deliveries died, not whose. A worker that stops between a death's commit and its count loses that count; the dead delivery in PostgreSQL stays the record |
 | `agentcapsule_worker_vm_starts_total` | counter | `outcome` | VM boots for work: `started` or `failed` |
 | `agentcapsule_worker_vm_start_seconds` | histogram | — | Duration of successful boots |
-| `agentcapsule_worker_guest_failures_total` | counter | `kind` | Guests that failed to boot (`boot`) or went away without a stop (`crash`), counted against restart budgets ([ADR 012](adr/012-limits-restart-budgets-egress.md)). Served from zero |
+| `agentcapsule_worker_guest_failures_total` | counter | `kind` | Guests that failed to boot (`boot`), went away without a stop (`crash`), or did not answer the fence of a delivery past its attempts and were stopped (`unresponsive`), counted against restart budgets ([ADR 012](adr/012-limits-restart-budgets-egress.md)). Served from zero |
 | `agentcapsule_worker_agents_failed_total` | counter | — | Agents that spent their restart budget and became `FAILED`. Served from zero |
 | `agentcapsule_worker_agents_failed` | gauge | — | Live agents of the host that are `FAILED` now: they boot again only when woken or cleared |
 | `agentcapsule_worker_jobs`, `_jobs_due`, `_jobs_failing` | gauge | `kind` | The host's jobs; those due and not held by a worker; those that failed three times or more |
@@ -176,7 +176,7 @@ Each process writes one JSON object per line, with `time` and `event` first:
 | Worker | `maintenance_retry` | `reason` (as above) |
 | Worker | `wake_budget_exhausted`, `harness_import_retry`, `directory_publish_retry`, `slim_callback_stopped` | — |
 | Worker | `job_done` (standard output), `job_retried` (standard error) | `kind`, `request_id` of the API request that started the work, if any, and `reason` for a retry |
-| Worker | `agent_failed` (standard error) | `reason` (`boot_failed`, `crashed`): an agent spent its restart budget; the event never names it |
+| Worker | `agent_failed` (standard error) | `reason` (`boot_failed`, `crashed`, `unresponsive`): an agent spent its restart budget; the event never names it |
 | Worker | `delivery_dead` (standard error) | `kind` (`reply`, `status`, `instruction`), `request_id` of the API request that started the work, if any, `reason` (`attempts_exhausted`, `expired`). The job that retired the delivery still ends with `job_done` |
 | Worker | `volume_archive_captured` (standard output) | `vm` (`asleep`, `running`), `bytes`, `seconds`, `removed` (older archives deleted) |
 | Worker | `volume_archive_retry` (standard error) | `vm`, `reason`: `placement`, `busy`, `disk_full`, `authority`, `timeout`, `retention`, `error`; or, without `vm`, `reason` `purge`: the purge of deleted agents' archives stopped, and runs again an hour later |

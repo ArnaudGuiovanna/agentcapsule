@@ -19,10 +19,11 @@ import (
 var (
 	jobKinds     = []string{"provision", "lifecycle", "delivery", "closure", "deletion", "expiration", "resume"}
 	retryReasons = []string{"wake_budget", "agent_failed", "slim_unavailable", "capacity", "organization_quota", "storage_pressure", "error"}
-	// A guest fails at boot or crashes; an agent that spends its restart
-	// budget is FAILED for the kind of its last failure (ADR 012).
-	guestFailureKinds   = []string{controlplane.GuestBootFailed, controlplane.GuestCrashed}
-	agentFailureReasons = []string{"boot_failed", "crashed"}
+	// A guest fails at boot, crashes, or does not answer the fence of a
+	// delivery past its attempts; an agent that spends its restart budget is
+	// FAILED for the kind of its last failure (ADR 012).
+	guestFailureKinds   = []string{controlplane.GuestBootFailed, controlplane.GuestCrashed, controlplane.GuestUnresponsive}
+	agentFailureReasons = []string{"boot_failed", "crashed", "unresponsive"}
 	// A delivery dies when its attempts are spent or its deadline passes,
 	// the deadline winning when both hold (ADR 007).
 	deadKinds   = []string{"reply", "status", "instruction"}
@@ -59,7 +60,7 @@ type workerTelemetry struct {
 	dead         *telemetry.Counter
 	starts       *telemetry.Counter
 	startSeconds *telemetry.Histogram
-	// guestFailures counts failed boots and crashes of guests;
+	// guestFailures counts failed boots, crashes and unresponsive guests;
 	// agentsFailed, the agents that spent their restart budget.
 	guestFailures *telemetry.Counter
 	agentsFailed  *telemetry.Counter
@@ -83,7 +84,7 @@ func (w *Placements) EnableTelemetry(registry *telemetry.Registry, root string, 
 			telemetry.Label{Name: "outcome", Values: []string{"started", "failed"}}),
 		startSeconds: registry.Histogram("agentcapsule_worker_vm_start_seconds", "Duration of successful VM boots.",
 			[]float64{0.5, 1, 2, 5, 10, 20, 30, 60, 120}),
-		guestFailures: registry.Counter("agentcapsule_worker_guest_failures_total", "Guests that failed to boot (boot) or went away without a stop (crash).",
+		guestFailures: registry.Counter("agentcapsule_worker_guest_failures_total", "Guests that failed to boot (boot), went away without a stop (crash), or did not answer a fence past a delivery's attempts and were stopped (unresponsive).",
 			telemetry.Label{Name: "kind", Values: guestFailureKinds}),
 		agentsFailed: registry.Counter("agentcapsule_worker_agents_failed_total", "Agents that spent their restart budget and are FAILED."),
 	}
@@ -265,11 +266,7 @@ func (w *Placements) countGuestFailure(kind string, failed bool) {
 		}
 	}
 	if e := w.jobEvents.Load(); e != nil && failed {
-		reason := "boot_failed"
-		if kind == controlplane.GuestCrashed {
-			reason = "crashed"
-		}
-		e.problems.Event("agent_failed", telemetry.Code("reason", reason))
+		e.problems.Event("agent_failed", telemetry.Code("reason", controlplane.FailureReason(kind)))
 	}
 }
 

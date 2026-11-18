@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -556,13 +557,25 @@ func (h *FirecrackerHost) identify(a *HostAgent) (int, string, error) {
 // Check the lock on the VMM's actual backing descriptor before exposing RUNNING.
 // A vanilla or incorrectly built Firecracker must not be accepted by this driver.
 func ownedVolumeLock(pid int, volume string) error {
+	_, locked, err := volumeLock(pid, volume)
+	if err == nil && !locked {
+		err = errVolumeLock
+	}
+	return err
+}
+
+var errVolumeLock = errors.New("VMM does not own the required writable-volume flock")
+
+// volumeLock tells whether pid has volume open, and whether it holds the
+// volume's exclusive lock through one of those descriptors.
+func volumeLock(pid int, volume string) (open, locked bool, err error) {
 	want, err := os.Stat(volume)
 	if err != nil {
-		return err
+		return false, false, err
 	}
 	entries, err := os.ReadDir(fmt.Sprintf("/proc/%d/fd", pid))
 	if err != nil {
-		return err
+		return false, false, err
 	}
 	for _, entry := range entries {
 		path := fmt.Sprintf("/proc/%d/fd/%s", pid, entry.Name())
@@ -571,17 +584,21 @@ func ownedVolumeLock(pid int, volume string) error {
 			continue
 		}
 		info, err := os.ReadFile(fmt.Sprintf("/proc/%d/fdinfo/%s", pid, entry.Name()))
-		if err != nil {
-			return err
+		if errors.Is(err, fs.ErrNotExist) {
+			continue // closed since, as by a VMM that exits
 		}
+		if err != nil {
+			return true, false, err
+		}
+		open = true
 		for _, line := range strings.Split(string(info), "\n") {
 			f := strings.Fields(line)
 			if len(f) >= 6 && f[0] == "lock:" && f[2] == "FLOCK" && f[3] == "ADVISORY" && f[4] == "WRITE" {
-				return nil
+				return true, true, nil
 			}
 		}
 	}
-	return errors.New("VMM does not own the required writable-volume flock")
+	return open, false, nil
 }
 
 // recover observes only a fully identified, previously confirmed VMM. Its
@@ -651,7 +668,7 @@ func (h *FirecrackerHost) recoverAgent(ctx context.Context, a *HostAgent) error 
 }
 
 // confirmedVMM tells whether a's confirmed VMM still runs. A live VMM that
-// does not hold its volume's lock is an error, not an absence.
+// has its volume open without its lock is an error, not an absence.
 func (h *FirecrackerHost) confirmedVMM(a *HostAgent) (bool, error) {
 	if h.census != nil {
 		return h.census(a)
@@ -659,7 +676,34 @@ func (h *FirecrackerHost) confirmedVMM(a *HostAgent) (bool, error) {
 	if _, _, err := h.identify(a); err != nil {
 		return false, nil
 	}
-	return true, ownedVolumeLock(a.Run.PID, a.Volume)
+	return vmmWithVolume(a.Run.PID, a.Volume, func() bool { _, _, err := h.identify(a); return err == nil })
+}
+
+// vmmWithVolume tells whether a confirmed VMM, found alive, still runs with
+// its volume; alive identifies it again.
+//
+// A VMM releases its volume as it exits: Firecracker closes its drive, which
+// releases the lock, before its process ends (59 to 110 ms from "Vmm is
+// stopping" to its last line, for guests of 256 MiB; longer for larger
+// guests, whose memory it also unmaps). A guest that restarts ends its VMM
+// so (ADR 012, question 6). A VMM with no descriptor of its volume left can
+// no longer write it: it is gone, and the census's cleanup kills what is left
+// of it and waits until its cgroup is empty before the volume is used again.
+// So is a VMM that ended while it was examined. A VMM that has its volume
+// open without the lock is an error: an unpatched VMM, or another writer.
+func vmmWithVolume(pid int, volume string, alive func() bool) (bool, error) {
+	open, locked, err := volumeLock(pid, volume)
+	switch {
+	case locked:
+		return true, nil
+	case !alive():
+		return false, nil
+	case err != nil:
+		return true, err
+	case !open:
+		return false, nil
+	}
+	return true, errVolumeLock
 }
 
 // Reconcile adopts every confirmed VM of the host, retires the others and
@@ -976,6 +1020,9 @@ func (h *FirecrackerHost) prepare(a *HostAgent) error {
 	}
 	resources := a.resources()
 	// No "network-interfaces": the VM has no network device (ADR 012).
+	// reboot=k: a guest that restarts resets its CPU through the keyboard
+	// controller, and Firecracker exits on that reset, so a guest ends its
+	// VMM (guestinit.EndCommand); panic=1 restarts a guest whose kernel panics.
 	config := map[string]any{"boot-source": map[string]any{"kernel_image_path": "/kernel", "initrd_path": "/initrd", "boot_args": "console=ttyS0 reboot=k panic=1 pci=off"}, "machine-config": map[string]any{"vcpu_count": resources.VCPUs, "mem_size_mib": resources.MemoryMiB}, "drives": drives, "vsock": map[string]any{"guest_cid": 3, "uds_path": "/vsock"}}
 	b, err := json.Marshal(config)
 	if err != nil {
