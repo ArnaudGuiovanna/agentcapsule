@@ -109,7 +109,11 @@ The harness returns ordinary instructions as a private result. For an
 `/ask <agent-id> <text>` instruction, it records a durable send under the
 received mandate, then calls the platform after the SQLite commit. An incoming
 request only prepares an echo reply; an incoming reply remains data and
-provides no mandate. Key, content and deadline are kept across retries. The
+provides no mandate. Key, content and deadline are kept across retries. Its
+background work, like `capsule-adapter`'s, waits out a store that a
+delivery's handler holds past SQLite's 5-second busy timeout, and tries
+again a quarter of a second later: ending there would end the harness, and
+with it the guest, counted as a crash (`harnessstore.Busy`). The
 private return can be read through the request API and through the separate
 message the companion drops in its owner's inbox. An additional test links the
 API, PostgreSQL, mTLS and this real process, with loss of the first result and
