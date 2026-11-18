@@ -253,3 +253,5 @@ guest v26.
   protocol. The owner's read does.
 - **A KVM run** of the new product test, which needs root.
 - **TLC and Apalache** checks of the revised P1 and P3 (no Java runtime here).
+  Run on 2026-11-17 with `scripts/check-models.py`; results in
+  [spec/README.md](../../spec/README.md#bounded-and-exhaustive-checks).

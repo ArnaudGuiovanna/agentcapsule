@@ -58,6 +58,30 @@ the job *Harness packages*. A release runs them again on the tagged commit.
    fails, unless allowlisted.
 5. **Workflows** are linted with actionlint and ShellCheck.
 
+### Model checks (before a release, not in CI)
+
+The bounded and exhaustive checks of the formal models
+(`scripts/check-models.py`, Apalache and TLC) take hours, far more than a CI
+job's budget; CI only typechecks the models and runs the script's unit tests,
+which fail when a witness schedule or a depth wrapper has no check. Before a
+release, a maintainer runs every check on the tagged commit, with the
+toolchain [spec/README.md](../spec/README.md#bounded-and-exhaustive-checks)
+names, and keeps its `summary.json` with the release notes:
+
+```bash
+(cd spec && npm ci)
+python3 scripts/check-models.py --output <out>/models
+```
+
+A check that ends otherwise than expected blocks the release until it is
+explained: a counterexample in a correct configuration is a finding
+(projected into a failing Go test, or the model is fixed). A timeout is a
+check not run, never a pass: the release notes list the checks that did not
+finish. Three do not finish on a 12-core, 15 GB machine
+(`concurrentProtocolDepth8`, `concurrentProtocolLoadedDepth12`,
+`restoreAuthorityTiny`; see [spec/README.md](../spec/README.md#bounded-and-exhaustive-checks));
+releasing with them listed is the default pending the product owner.
+
 ### Pinned tools
 
 Every tool fetched from the network is pinned by digest, in
