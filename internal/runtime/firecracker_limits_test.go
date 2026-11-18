@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -182,6 +183,33 @@ func TestGuestsHaveNoNetwork(t *testing.T) {
 	for _, arg := range cmd.Args {
 		if arg == "--netns" {
 			t.Fatal("the VMM joins an existing network namespace")
+		}
+	}
+}
+
+// A guest that ends ends its VMM (ADR 012, question 6): capsule-init ends
+// the guest with a restart (guestinit.EndCommand), and its kernel, booted
+// with reboot=k, restarts by resetting the CPU through the keyboard
+// controller, on which Firecracker exits. A guest whose kernel panics
+// restarts after one second (panic=1). Without them, the guest would halt
+// or reboot in place and keep its VMM, unseen by the worker.
+func TestAGuestThatEndsEndsItsVMM(t *testing.T) {
+	h, a, _ := limitsFixture(t)
+	raw, _ := preparedConfig(t, h, a)
+	source, ok := raw["boot-source"].(map[string]any)
+	if !ok {
+		t.Fatal("no boot source", raw["boot-source"])
+	}
+	args, _ := source["boot_args"].(string)
+	parameters := strings.Fields(args)
+	for _, want := range []string{"reboot=k", "panic=1"} {
+		if !slices.Contains(parameters, want) {
+			t.Error("the guest's kernel command line lacks", want, ":", args)
+		}
+	}
+	for _, p := range parameters {
+		if strings.HasPrefix(p, "reboot=") && p != "reboot=k" || strings.HasPrefix(p, "panic=") && p != "panic=1" {
+			t.Error("the guest's kernel command line overrides", p, ":", args)
 		}
 	}
 }
