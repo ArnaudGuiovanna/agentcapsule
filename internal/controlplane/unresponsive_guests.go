@@ -27,8 +27,9 @@ func (e *UnresponsiveGuestError) Unwrap() error { return e.Err }
 // StopUnresponsiveGuest stops the agent's VM of that generation if it still
 // runs, booted for work: a quiesce, then a forced stop, as a sleep does. It
 // records a guest failure of kind GuestUnresponsive for that generation,
-// which counts against the agent's restart budget. It does nothing for a VM
-// that is gone or was replaced.
+// which counts against the agent's restart budget while the agent is live
+// (ObserveGuestFailure). It does nothing for a VM that is gone or was
+// replaced.
 type UnresponsiveGuestStopper interface {
 	StopUnresponsiveGuest(ctx context.Context, agentID string, generation uint64) error
 }
@@ -41,17 +42,39 @@ type UnresponsiveGuestStopper interface {
 // boot, which runs no work (ADR 012, question 7, option (b)). Otherwise the
 // failure is returned, and the caller's job tries again later.
 func (s *Store) fencePastAttempts(ctx context.Context, runtime RevocationRuntime, target, subject string) error {
+	return fenceStoppingRefusal(ctx, runtime, target, subject, func() (bool, error) { return s.deliveryStuck(ctx, target) })
+}
+
+// fenceDeletion fences the deletion of agentID in target's store. When
+// target is agentID itself and the guest of its running VM refuses the
+// fence (UnresponsiveGuestError), its harness holds the store: the runtime
+// stops that VM, and the fence is tried again, through a restricted boot
+// (ADR 012, question 7, sub-question 2, option (b)). No delivery need be
+// past its attempts: the deletion cancels all of the agent's work, and no
+// attempt can begin once the deletion is requested. Any other failure, and
+// a refusal by another agent's guest, live, are returned, and the
+// deletion's job tries again later.
+func fenceDeletion(ctx context.Context, runtime RevocationRuntime, agentID, target string) error {
+	return fenceStoppingRefusal(ctx, runtime, target, "agent/"+agentID, func() (bool, error) { return target == agentID, nil })
+}
+
+// fenceStoppingRefusal fences subject in target's store. When target's
+// running guest refuses (UnresponsiveGuestError), the runtime can stop a VM
+// and stoppable allows it, the runtime stops that VM of the refusing
+// generation, and the fence is tried again: with no VM running, it goes
+// through a restricted boot. Otherwise the fence's failure is returned.
+func fenceStoppingRefusal(ctx context.Context, runtime RevocationRuntime, target, subject string, stoppable func() (bool, error)) error {
 	err := runtime.Fence(ctx, target, subject)
 	var refused *UnresponsiveGuestError
 	stopper, ok := runtime.(UnresponsiveGuestStopper)
 	if err == nil || !ok || !errors.As(err, &refused) {
 		return err
 	}
-	stuck, checkErr := s.deliveryStuck(ctx, target)
+	stop, checkErr := stoppable()
 	if checkErr != nil {
 		return errors.Join(err, checkErr)
 	}
-	if !stuck {
+	if !stop {
 		return err
 	}
 	if err = stopper.StopUnresponsiveGuest(ctx, target, refused.Generation); err != nil {

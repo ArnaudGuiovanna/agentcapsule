@@ -30,8 +30,8 @@ func (b RestartBudget) Valid() bool {
 
 // Guest failure kinds: a boot whose guest failed before it was ready, a
 // confirmed guest whose VMM went away without a stop, and a running guest
-// that did not answer the fence of a delivery past its attempts, whose VM
-// the worker stopped (ADR 012, question 7).
+// that did not answer the fence of a delivery past its attempts, or of its
+// agent's deletion, whose VM the worker stopped (ADR 012, question 7).
 const (
 	GuestBootFailed   = "boot"
 	GuestCrashed      = "crash"
