@@ -518,7 +518,10 @@ Remaining:
   operator sees `AgentCapsuleAgentFailed`, and the fence waits for a wake.
   An A that runs but whose harness never releases its store no longer holds
   the delivery: its VM is stopped and the fence goes through a restricted
-  boot ([ADR 012](012-limits-restart-budgets-egress.md), question 7).
+  boot ([ADR 012](012-limits-restart-budgets-egress.md), question 7). Nor
+  does it hold its own deletion, which cancels such a delivery (§7.2 (c)):
+  the deletion's fence stops its VM the same way (question 7, sub-question
+  2).
 - **A request to or from an agent that never boots.** Its closure at its
   deadline (the `expiration` job) fenced every store of the installation, so
   any agent that never booted held every request. Since §7 it fences the

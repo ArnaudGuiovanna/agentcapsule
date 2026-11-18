@@ -363,7 +363,9 @@ A guest does not answer when its harness never returns from a delivery and
 holds its store. Once the delivery's three attempts are spent, or its
 deadline passed, the platform stops the agent's VM and counts the failure;
 the invocation fails with `delivery_outcome_unknown`, and the agent's next
-invocation boots it again.
+invocation boots it again. Such an agent can be deleted at any time: the
+deletion stops its VM, counts no failure, and completes; the held
+invocation ends `canceled` (`agent_unavailable`).
 
 Wake, sleep and deletion are audited (`tenant_agent_audit`:
 `agent.wake_requested`, `agent.sleep_requested`, `agent.delete_requested`), in

@@ -276,7 +276,9 @@ attempt is under way is not stopped, nor one whose failure is the
 platform's: the worker's own deadline, a connection the host could not
 open or that a VMM gone refused, an authority or PostgreSQL. The fence is
 then tried again at the job's next attempt, as before. A `FAILED` agent's
-restricted boot is not claimed: the delivery waits for a wake.
+restricted boot is not claimed: the delivery waits for a wake. The
+deletion of such an agent stops its VM too
+([Deleting a product volume](#deleting-a-product-volume)).
 
 `AgentCapsuleJobsFailing` and `AgentCapsuleVMBootFailures` tell the operator.
 When a delivery dies:
@@ -632,7 +634,8 @@ crash is a confirmed VM gone without a stop. A guest does not answer when
 its harness holds its store past a delivery's attempts (question 7 of ADR
 012): the fence that ends the delivery, refused by the running guest, makes
 the worker stop that VM, a quiesce then a forced stop, and fence through a
-restricted boot (see "What follows a dead delivery" above). A full host, a
+restricted boot (see "What follows a dead delivery" above). The same stop
+for the agent's deletion counts no failure. A full host, a
 refused lease or an authority outage does not count. After 5 such failures
 within an hour, the agent is `FAILED`: no work, barrier or credential replacement boots it, its
 open wake ends `FAILED` (`restart_budget_exhausted`), and its work waits
@@ -739,6 +742,22 @@ The metrics and alerts of the replica are the service's, on its
 
 ## Deleting a product volume
 
+The deletion's barrier fences the subject `agent/<id>` in every store, the
+agent's own among them. An agent whose harness holds its store, because it
+never returns from an invocation, has a guest that refuses that fence
+([ADR 012](adr/012-limits-restart-budgets-egress.md), question 7,
+sub-question 2): the worker stops its VM, a quiesce then the VMM's forced
+removal, and the fence goes through a restricted boot. No delivery need be
+past its attempts, since the deletion cancels all of the agent's work, and
+the stop records no guest failure: the agent is not live, so it spends no
+restart budget and never becomes `FAILED`, while
+`agentcapsule_worker_guest_failures_total{kind="unresponsive"}` counts the
+stop. A platform fault stops nothing: the deletion's job tries again.
+Before, such a deletion waited until something else stopped the VM, and
+`AgentCapsuleDeletionUnfinished` fired after 6 hours. A refusal by another,
+live, agent's guest still makes the deletion wait: that guest is stopped
+only past a delivery's attempts, as above.
+
 After all distributed barriers, the worker seals execution on the host: no new
 boot, no remaining VMM and the file identity verified. With product
 provisioning configured, it then records the seal and destroys the key through
@@ -766,7 +785,9 @@ and SQL publication tests run; the deletion scenarios in a real VM
 `TestProductWorkerDeletionRemovesTheVolumeTheKeyAndTheDirectoryRecord`)
 passed on KVM on 2026-11-17 (26 of 26 worker tests, guest v26), the worker
 reaching its authorities through the authority service, whose seal check
-the second test makes.
+the second test makes. The deletion of an agent whose harness holds its
+store (`TestProductWorkerDeletesAnAgentWhoseHarnessNeverAnswers`) has not
+run on KVM yet.
 
 ## Nightly encrypted archives
 
