@@ -12,7 +12,7 @@
 </p>
 
 <p align="center">
-  <a href="ROADMAP.md"><img alt="Status: pre-MVP" src="https://img.shields.io/badge/status-pre--MVP-5B616C?style=flat-square"></a>
+  <a href="docs/acceptance.md"><img alt="Status: MVP, pre-release" src="https://img.shields.io/badge/status-MVP%2C%20pre--release-5B616C?style=flat-square"></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-1B1E24?style=flat-square"></a>
   <img alt="Go 1.27.4" src="https://img.shields.io/badge/go-1.27.4-1B1E24?style=flat-square&logo=go&logoColor=F3F4F1">
   <img alt="Runs on Linux with KVM" src="https://img.shields.io/badge/runs%20on-Linux%20%2B%20KVM-1B1E24?style=flat-square">
@@ -40,9 +40,12 @@ that keeps provider credentials outside the VM and enforces budgets. The platfor
 hosts and governs; the harness you bring decides what the agent does.
 
 > [!WARNING]
-> **Pre-MVP, not for production.** The core path is implemented and tested on real
-> KVM, but several MVP areas (restore onto another host, release validation, parts
-> of operations) are missing. See [ROADMAP.md](ROADMAP.md).
+> **MVP built, not released and not yet proven on a server.**
+>
+> - 63 of the 65 MVP acceptance criteria are met ([docs/acceptance.md](docs/acceptance.md)). The last two need a live run against GHCR and one against a model provider's own API.
+> - Every KVM campaign has passed, but on a single development machine. No release is published, and no install has run on a production host.
+>
+> Do not run it in production yet. See [ROADMAP.md](ROADMAP.md).
 
 ## Core ideas
 
@@ -68,6 +71,11 @@ hosts and governs; the harness you bring decides what the agent does.
   post their result later.
 - **Attachments**: files up to 8 MiB, encrypted per segment, usable once by their
   uploader, readable from the guest while the invocation runs, purged afterwards.
+- **Limits**:
+  - **Ceilings**: each VM has CPU, memory, process and disk ceilings (cgroups and Firecracker rate limiters), tested against hostile guests on KVM.
+  - **Restart budget**: a guest that crashes, or never answers an invocation, is stopped and the failure counted. An agent that spends its budget (5 failures an hour by default) becomes `FAILED`, with the reason.
+  - **Network**: VMs have no network device. Models and peers are reached only through the platform.
+- **Capacity**: work that finds its host full waits in a per-host queue for a VM slot, within its organization's quotas. Idle agents sleep, and a VM that is computing is never stopped to make room.
 
 **Govern**
 
@@ -81,6 +89,33 @@ hosts and governs; the harness you bring decides what the agent does.
   format), cached read-only and published as immutable releases; agents on a release
   share its image, attached read-only and run chrooted in the guest. Agents can be
   upgraded and rolled back, and unused packages leave the cache.
+
+- **Keys**:
+  - Volume keys and the restore authority are held by a separate authority service, which can be replicated to a standby host.
+  - A deleted agent's key is destroyed only once its store is sealed.
+- **Audit**: an audit trail per organization, with exports. Traces carry no raw identifier.
+
+**Operate**
+
+- **Backups and recovery**:
+  - PostgreSQL WAL is archived continuously.
+  - Each agent's encrypted volume is archived nightly, while it sleeps.
+  - Both are shipped off the host to S3 or SFTP.
+  - An agent can be restored from its archive, or a lost host's agents on a standby. Both kinds of restore are verified against the restore authority.
+  - The objectives are 15 minutes of database loss, 24 hours of volume loss and 1 hour to recover ([ADR 004](docs/adr/004-recovery-objectives.md), [docs/recovery.md](docs/recovery.md)).
+- **Monitoring**:
+  - Prometheus metrics and alerts: hosts, queues, boots, storage pressure, Directory and SLIM.
+  - Garbage collection of unused harness images.
+  - A capacity benchmark ([docs/observability.md](docs/observability.md)).
+- **Supply chain**:
+  - Reproducible release builds with SBOMs, a signed checksums file and build provenance.
+  - Signed harness packages.
+  - Vulnerability scans of everything shipped.
+  - A High or Critical finding fails CI unless a reviewed entry allowlists it until a fixed date ([docs/release.md](docs/release.md)).
+- **Host hardening**:
+  - Harness images are inspected in a sandbox under a dedicated account.
+  - Network hops use TLS, except two that never leave the host. Local hops are Unix sockets that check the peer's account.
+  - The host passes a preflight check before the worker starts ([docs/install.md](docs/install.md)).
 
 **Connect**
 
@@ -121,13 +156,17 @@ hosts and governs; the harness you bring decides what the agent does.
 | `agentcapsule-admin` | Local, trusted installation commands (bootstrap, keys, host configuration). No network listener. |
 | `agentcapsule-authority` | The replica of the key and restore authorities on the standby host ([recovery.md](docs/recovery.md#the-authorities-replica-d-05)). |
 | `agentcapsule-harness` | Builds and publishes harness packages (developer/CI tool). |
+| `agentcapsule-slim-bridge` | Carries deliveries between agents through a private SLIM node ([its own module](runtime/slimbridge), [docs/interop.md](docs/interop.md#the-slim-bridge-int-04)). |
 | `capsule-init` | PID 1 in the guest; holds boot credentials and volume secrets away from the harness and relays its platform calls. |
 | `capsule-adapter` | Runs an unmodified agent as a harness (command per invocation, model endpoint on the guest loopback). |
 | `capsule-echo` | The reference harness used by tests. |
 
 The delivery, messaging, lifecycle, revocation and deferred-result protocols are
 specified as [Quint models](spec/), and traces from those models are replayed
-against the implementation in the test suite.
+against the implementation in the test suite. The models are also checked
+exhaustively, within bounds, with TLC and Apalache: 131 of 134 checks end as
+expected and none finds a counterexample. The other three do not finish on a
+12-core machine ([spec/README.md](spec/README.md)).
 
 ## Requirements
 
@@ -162,12 +201,16 @@ python3 scripts/verify-postgres.py --pg-bin /usr/lib/postgresql/16/bin --native-
   --llm-base-url http://127.0.0.1:11434/v1 --llm-model tinyllama:latest
 ```
 
-KVM campaigns (real jailed VMs, needs root for the jailer and cgroups) are
-described in [scripts/README.md](scripts/README.md).
+KVM campaigns run real jailed VMs and need root for the jailer and cgroups.
+They are described in [scripts/README.md](scripts/README.md):
+- `verify-product-guest.py` runs the product scenarios, conformance and a capacity benchmark at 1, 5, 10 and 20 VMs;
+- `verify-runtime.py` runs the host driver and the worker's control tests.
+
+`scripts/check-models.py` runs the TLC and Apalache checks of the models. It is a release check of about 16 hours. Every MVP requirement is traced to the tests that prove it in [docs/acceptance.md](docs/acceptance.md).
 
 ## Running
 
-Installation is not packaged yet. The building blocks are documented:
+No release is published yet: build from source. A host install is documented step by step, but it has not yet been run on a production host. [docs/install.md](docs/install.md#what-a-real-host-still-has-to-show) says what such a host still has to show. The building blocks:
 
 - [docs/install.md](docs/install.md): TLS on every hop, production and
   development modes, and the host preflight.
@@ -179,6 +222,8 @@ Installation is not packaged yet. The building blocks are documented:
 - [docs/worker.md](docs/worker.md): worker configuration
   ([example](runtime/worker/config.example.json)), maintenance and delivery.
 - [docs/guest/](docs/guest/): guest image, control contract, keys and volumes.
+- [docs/recovery.md](docs/recovery.md) and [deploy/](deploy/): backups, the standby
+  host, systemd units and Prometheus alerts.
 
 Example harnesses live in [examples/](examples/): `python-echo`, `go-echo`, an
 OpenAI SDK agent run unchanged (`adapted-agent`), the Pi coding agent (`pi-agent`)
@@ -190,6 +235,9 @@ and an A2A agent (`a2a-agent`).
 |---|---|
 | Product goals and MVP requirements | [docs/product.md](docs/product.md) |
 | Status and remaining work | [ROADMAP.md](ROADMAP.md) |
+| MVP acceptance, requirement by requirement | [docs/acceptance.md](docs/acceptance.md) |
+| Metrics, alerts, traces and audit | [docs/observability.md](docs/observability.md) |
+| Worker: capacity, limits, adoption, deletion | [docs/worker.md](docs/worker.md) |
 | HTTP API | [openapi/openapi.yaml](openapi/openapi.yaml), [docs/api/](docs/api/) |
 | Agents, assignments, invocations, attachments, deferred results | [docs/api/agents-assignments.md](docs/api/agents-assignments.md) |
 | LLM gateway | [docs/api/llm.md](docs/api/llm.md) |
