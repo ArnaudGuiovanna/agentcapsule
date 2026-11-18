@@ -62,7 +62,8 @@ Do not run `go test ./...` at the repository root with sources outside
 | `test_verify_failover.py` | Unit tests of the failover exercise's loss assessment: what the standby lacks against the announced window |
 | `test_standby_metrics.py` | Unit tests of `deploy/standby/agentcapsule-standby-metrics.py` (the standby's replay for node_exporter) |
 | `verify-alerts.py` | The alert rules: every metric they use is registered by the code or declared by a textfile script (base backups, archive shipping, the standby's replay), with its label values; every rule has a promtool case where it fires and one where it stays silent; with a pinned Prometheus image, `promtool check rules` and `promtool test rules` |
-| `verify-runtime.py` | Real Go host-driver/KVM tests (root orchestration; optional PostgreSQL placement checks) |
+| `verify-runtime.py` | Real Go host-driver/KVM tests (root orchestration; optional PostgreSQL placement checks): the tests of `internal/runtime`, then only the KVM tests of `internal/worker`, each listed by the script; see [below](#kvm-campaigns-root) |
+| `test_verify_runtime.py` | Unit tests of `verify-runtime.py`: every KVM test of `internal/worker` is listed, the selection leaves the ordinary tests out, the evidence goes back to the user who ran `sudo` |
 | `verify-product-guest.py` | Reusable encrypted guest under jailed Firecracker (root, KVM) |
 | `verify-vm-isolation.py` | Disposable jailer isolation tests (root) |
 | `verify-vm-storage.py` | Disposable Firecracker/KVM storage lab |
@@ -248,11 +249,17 @@ process. Run each with `--help` for the full option list.
 ```bash
 # Runtime: Go host-driver tests under KVM. --native-headers is required with
 # the PostgreSQL checks (--pg-bin), because the worker links libcryptsetup.
+# With --pg-bin, the KVM tests of internal/worker: the placement tests, and
+# with --control-guest (build-control-guest.py) the control tests. Only those:
+# the ordinary tests of the package run in verify-postgres.py as an ordinary
+# user. The evidence goes back to the user who ran sudo.
 sudo python3 scripts/verify-runtime.py --go <path-to-go> \
   --firecracker-build <firecracker-build-dir> \
   --upstream-firecracker <upstream-firecracker> \
   --kernel <guest-kernel> --guest <guest-image> \
   --pg-bin <postgres-bin-dir> --pg-user <non-root-user> \
+  [--pg-library-path <postgres-lib-dir>] \
+  --control-guest <control-guest-build-dir>/init \
   --native-headers <tools-dir>/guest-build/usr/include \
   --output <output-dir>/runtime
 

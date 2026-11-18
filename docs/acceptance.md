@@ -75,8 +75,16 @@ Pi on a real model last passed on 2026-11-13: it needs a model server or a
 provider key.
 The control and runtime tests of `verify-runtime.py` last passed on
 2026-11-09, before the delivery closure (ADR 007), the restart budget
-(ADR 012) and the capacity queue (ADR 017). A met row that rests on a KVM
-test holds for the code of that run
+(ADR 012) and the capacity queue (ADR 017). Its run of 2026-11-18, at
+6fc5ae0 with control guest v8 (`quint/results/runtime-20261118T123126Z`),
+passed the 41 runtime tests and 15 of the 24 KVM tests of the worker. The
+other 9 failed at their first statement: a trigger of the Directory named
+its table without a schema, and the labs change agents from a session
+whose search path lacks it (fixed by migration 0048). One of them would
+then have met the capability gate of ADR 016 with an agent that had no
+spec (fixed in the lab). The database recovery did not run. That run also ran the worker's ordinary tests as
+root, and 15 of them failed; the script now runs only the KVM tests. A met
+row that rests on a KVM test holds for the code of the run it cites
 ([below](#kvm-runs-the-mvp-still-needs)).
 
 ## Summary
@@ -428,10 +436,14 @@ The campaign of 2026-11-18 at 5906a12 (guest v27) ran every product test
 RUN-007 on their first run. Still to run:
 - [`TestProductWorkerTenantRunsPiOnARealModel`](../internal/worker/product_adapter_integration_test.go)
   (OUT-2), with a model server or a provider key: last passed 2026-11-13.
-- The control and runtime tests of `verify-runtime.py`: last run
+- The control and runtime tests of `verify-runtime.py`: last passed
   2026-11-09. Among them the capacity tests of ADR 017 and ADR 021
   ([`TestDispatchPreparationAndOneSlotCapacity`](../internal/worker/dispatch_integration_test.go),
   [`TestBarrierCapacityOneSlotThreeStoresAndReplay`](../internal/worker/capacity_integration_test.go)).
+  In the run of 2026-11-18, the second passed; the first was one of the 9
+  KVM tests of the worker that failed at their first statement, on the
+  Directory's trigger fixed since (migration 0048). The database recovery
+  did not run.
 - The worker started by its unit from the install of `verify-install.py`,
   as root (OPS-01).
 - The capacity benchmark on a server, with load on the VMs (DEP-5).
