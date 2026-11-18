@@ -24,6 +24,10 @@ func TestTestBehaviours(t *testing.T) {
 		{[]string{"flood-volume", "1048576"}, behaviour{floodChunk: 1 << 20}},
 		{[]string{"fill-tmp", "104857600"}, behaviour{fillTmp: 100 << 20}},
 		{[]string{"text-only"}, behaviour{textOnly: true}},
+		{[]string{"burn-cpu"}, behaviour{hostile: "burn-cpu"}},
+		{[]string{"eat-memory"}, behaviour{hostile: "eat-memory"}},
+		{[]string{"fork-bomb"}, behaviour{hostile: "fork-bomb"}},
+		{[]string{"never-files"}, behaviour{neverFiles: true}},
 	} {
 		if got, err := parseBehaviour(ok.args); err != nil || got != ok.want {
 			t.Error(ok.args, got, err)
@@ -33,7 +37,8 @@ func TestTestBehaviours(t *testing.T) {
 	for _, bad := range [][]string{{"crash"}, {"crash-at-boot", "now"}, {"flood-volume"}, {"flood-volume", "256"}, {"flood-volume", "3000"},
 		{"flood-volume", "512"}, {"flood-volume", "2048"},
 		{"flood-volume", "16777216"}, {"flood-volume", "x"}, {"fill-tmp"}, {"fill-tmp", "0"}, {"fill-tmp", "4294967296"},
-		{"text-only", "now"}} {
+		{"text-only", "now"}, {"burn-cpu", "2"}, {"eat-memory", "1048576"}, {"fork-bomb", "256"}, {"never-files", "now"},
+		{"burn"}, {"hostile"}} {
 		if _, err := parseBehaviour(bad); err == nil {
 			t.Error("accepted", bad)
 		}

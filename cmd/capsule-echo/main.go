@@ -73,7 +73,13 @@ func run() (result error) {
 	if err != nil {
 		return err
 	}
-	s, err := capsuleprotocol.NewLocalServer(b.Identity, b.PreviousShutdown, store, h.Handle)
+	handle := h.Handle
+	if mode.neverFiles {
+		handle = neverFiles(b.Identity.AgentID, handle, func() { burn(ctx, 1) })
+	} else if act := hostile[mode.hostile]; act != nil {
+		handle = afterFirstAnswer(handle, hostileDelay, func() { act(ctx) })
+	}
+	s, err := capsuleprotocol.NewLocalServer(b.Identity, b.PreviousShutdown, store, handle)
 	if err != nil {
 		return err
 	}

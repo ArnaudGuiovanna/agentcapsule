@@ -4,7 +4,9 @@ Date: November 16, 2026. **Status: built on November 16, 2026**, with
 defaults pending the product owner (see [Questions](#questions-for-the-product-owner)).
 The KVM tests that prove the drive ceilings and the budget on a real VM
 passed on November 17, 2026, after a first run that day failed on faults of
-the tests (see [Tests](#tests)).
+the tests (see [Tests](#tests)). The KVM tests of the CPU, memory, process
+and time ceilings against a hostile guest were written on November 18, 2026
+and have not run.
 References: RUN-007, RUN-008, RUN-011 and §6 of the
 [product spec](../product.md), CAP-03 and TEN-07 of the
 [roadmap](../../ROADMAP.md), [worker.md](../worker.md),
@@ -172,6 +174,17 @@ and a decision on which secrets such a guest may still hold. It is **P1**.
   this record, the same wait happened with a boot every 30 seconds.
 - `FAILED` is a state of a live agent; the placement stays `STOPPED`. A
   restored agent stays `FAILED` until woken or cleared.
+- A guest that stops on its own once ready is not counted. When its harness
+  dies (the guest's kernel kills it for taking all its memory, for
+  example), `capsule-init` powers the guest off, which halts it: Firecracker
+  has no power-off for it, and its VMM keeps running. Reconciliation sees a
+  running VMM, not a crash; the agent reads `READY` until a delivery
+  prepares it, then `STARTING`, and keeps its VM slot (question 6).
+- A harness that never returns from an invocation holds its store's write
+  transaction. Each attempt ends at the host's 20-second timeout, but ending
+  the invocation after its third attempt needs a fence on that store, which
+  the held transaction refuses: the invocation stays open, and the agent's
+  next deliveries wait behind it, until its VM is stopped (question 7).
 
 ## Tests
 
@@ -183,7 +196,14 @@ Unit tests (`go test -race`):
   `TestRetryReasons`, `TestPassesOfAGuestThatFailsAtBoot`,
   `TestProcIOMovedCountsReadsAndWrites`.
 - `cmd/capsule-echo`: `TestTestBehaviours`, `TestFloodStaysWithinItsSpan`,
-  `TestFloodWritesDirectlyToTheDrive`.
+  `TestFloodWritesDirectlyToTheDrive`; for the hostile behaviours,
+  `TestHostileActsStopWithTheirContext`,
+  `TestHostileBehavioursStartAfterTheFirstAnswer`,
+  `TestBurnKeepsItsGoroutinesBusy`, `TestEatMemoryWritesEveryPage`,
+  `TestForkHolderWaitsUntilKilled`, `TestForkBombKeepsTryingWhenRefused`,
+  `TestNeverFilesAnswersWorkingAndLoops`.
+- `internal/worker`, for the hostile-guest KVM tests: `TestCgroupFilesParse`,
+  `TestCPUCeilingOfAWindow`.
 
 PostgreSQL tests:
 - `internal/controlplane`: `TestAnAgentWhoseGuestKeepsFailingIsFailed`,
@@ -220,6 +240,32 @@ direct writes; both passed on November 17, 2026, with guest v26:
   Its first run stopped at the first boot failure, which its passes did not
   accept.
 
+KVM tests of the other ceilings of RUN-007, written on November 18, 2026,
+never run (`internal/worker/product_hostile_integration_test.go`). Each
+packs `capsule-echo` with a hostile behaviour, which turns 2 seconds after
+the harness's first answer, and boots a well-behaved agent beside it, which
+must still answer within 30 seconds from the same VMM:
+- `TestProductWorkerCPUCeilingHoldsAgainstABurningGuest`: a guest burning
+  its 2 vCPUs uses, over 10 seconds, at most its cgroup's `cpu.max` for the
+  window, with one quota and a tenth more allowed, and at least half of it.
+- `TestProductWorkerMemoryCeilingHoldsAgainstAGuestThatEatsMemory`: a guest
+  of 256 MiB that eats memory is stopped by its own kernel ("Out of memory"
+  on its console), and the guest stops. Its VMM's cgroup records no OOM,
+  and peaks under `memory.max` (512 MiB) and above 224 MiB.
+- `TestProductWorkerProcessCeilingsHoldAgainstAForkBomb`: a fork bomb
+  reaches the 256 processes of the guest's harness cgroup (its kernel
+  refuses a fork in `/capsule-harness`), while the VMM's cgroup gets no new
+  task, the agent's UID no new process on the host, and the VMM never
+  reaches its own `pids.max`.
+- `TestProductWorkerWorkTimeoutBoundsAGuestThatNeverFiles`: an invocation
+  acknowledged "working" and never filed, with `work_timeout_seconds` 60,
+  fails with `work_timeout` once its `result_due_at` has passed, not before,
+  and has no result; the guest loops on within its `cpu.max`, and keeps its
+  VM.
+
+A guest that stopped may leave its VMM running, halted (question 6): the
+tests log it, and check that a VMM that went away is counted as a crash.
+
 ## Questions for the product owner
 
 1. **Disk ceilings.** An agent's volume is capped at 64 MiB/s and 2000
@@ -247,3 +293,26 @@ direct writes; both passed on November 17, 2026, with guest v26:
    answers it, as the KVM test shows; the person sees the agent's state.
 5. **Internet profile.** Not built. Recommendation: P1, with a policy per
    organization and per harness, and a proxy outside the guest.
+6. **A guest that stops once ready.** An agent's harness takes all the
+   guest's memory and the guest's kernel kills it. Today the guest halts,
+   its VM keeps its slot and memory, the agent reads `READY` then
+   `STARTING`, its work waits until its deadline, and no failure is counted.
+   Options: (a) as built, until someone puts the agent to sleep; (b) the
+   guest reboots instead of powering off, which ends its VMM: the worker
+   counts a crash, the next work boots it again, and 5 such crashes an hour
+   make it `FAILED`; (c) (b), and the worker also treats a running VM whose
+   control channel stops answering as crashed. Recommendation: (b) now, (c)
+   later.
+7. **A harness that never answers an invocation.** Its three attempts end
+   at the host's timeout, but the invocation then waits for a fence the
+   harness refuses, and the agent's other work waits behind it. Options:
+   (a) as built, until someone puts the agent to sleep; (b) when a fence of
+   a running VM fails past the attempts, the worker stops the VM, counts a
+   guest failure and fences through a restricted boot. Recommendation: (b).
+8. **A VM after its work timeout.** An agent answers "working" and never
+   files. Its invocation fails with `work_timeout`, but its VM keeps
+   running, and computing, until someone puts it to sleep, since no idle
+   timeout is set by default. Options: (a) as built; (b) stop the VM at the
+   work timeout; (c) a default idle timeout for every agent.
+   Recommendation: (a) for the MVP, with the CPU ceiling bounding its cost;
+   (c) later.

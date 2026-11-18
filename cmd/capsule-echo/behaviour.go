@@ -25,11 +25,26 @@ import (
 //	                       serves, otherwise it exits: /tmp is not bounded.
 //	text-only              serves normally but does not accept JSON content,
 //	                       like a harness built before it existed.
+//
+// The hostile behaviours (hostile.go) push against the VM's other ceilings
+// (RUN-007). The first three serve normally until 2 seconds after the
+// harness first answers, then turn, until the guest stops:
+//
+//	burn-cpu               keeps every vCPU busy.
+//	eat-memory             maps memory and writes every page of it, without
+//	                       end: the guest's kernel must kill the harness.
+//	fork-bomb              forks processes that only wait, until the guest
+//	                       refuses, and tries again every 100 ms.
+//	never-files            answers every invocation "working", loops on it,
+//	                       and never files its outcome.
 type behaviour struct {
 	crashAtBoot bool
 	floodChunk  int
 	fillTmp     int64
 	textOnly    bool
+	// hostile names an entry of hostile, started after the first answer.
+	hostile    string
+	neverFiles bool
 }
 
 var errTmpUnbounded = errors.New("/tmp took the whole fill (test behaviour)")
@@ -84,6 +99,10 @@ func parseBehaviour(args []string) (behaviour, error) {
 		return behaviour{fillTmp: n}, nil
 	case len(args) == 1 && args[0] == "text-only":
 		return behaviour{textOnly: true}, nil
+	case len(args) == 1 && hostile[args[0]] != nil:
+		return behaviour{hostile: args[0]}, nil
+	case len(args) == 1 && args[0] == "never-files":
+		return behaviour{neverFiles: true}, nil
 	}
 	return behaviour{}, errors.New("unknown test behaviour")
 }

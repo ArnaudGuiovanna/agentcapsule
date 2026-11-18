@@ -144,7 +144,7 @@ authentication, never from a request body.
 | RUN-004 | No process or RAM left; data kept | met | [`TestProductWorkerProvisioningAndEncryptedWake`](../internal/worker/product_provisioning_integration_test.go) (KVM 2026-11-17): clean stop, no VM left, the stored effect replayed; [`TestQuiesceStopRequiresGuestACKAndPhysicalRetirement`](../internal/worker/quiesce_test.go) (PG) | — (memory is inferred from the VMM census and the cgroup removal) |
 | RUN-005 | Audited; no volume left mounted | met | [`TestProductWorkerTwoOwnersPrivateExchange`](../internal/worker/product_peers_integration_test.go) (KVM 2026-11-17): queued work canceled, key revoked, volume file gone, no VM; [`TestLifecycleCommandsAreAuditedOnceAndRaceSafely`](../internal/controlplane/instruction_queues_test.go) (PG); [`TestConcurrentDeletionAndAdmission`](../internal/controlplane/revocation_test.go) (PG); [`TestVolumeRemovalChecksIdentityAndWriterExclusion`](../internal/volumestore/remove_test.go) (unit) | — (backup expiry "per policy": see OPR-18) |
 | RUN-006 | Reconciled after a worker crash | met | [`TestPostgresKVMWorkerCrashAfterDatabaseConfirmation`](../internal/worker/placements_integration_test.go) (KVM 2026-11-09): after a SIGKILL the next generation starts; [`TestFirecrackerWorkerCrash`](../internal/runtime/firecracker_integration_test.go) (KVM 2026-11-09); [`TestDesiredStateFollowsTheLifecycleLedgerNotTheWish`](../internal/controlplane/instruction_queues_test.go) (PG) | — (an agent that should run is not restarted automatically: CAP-02) |
-| RUN-007 | A hostile agent stays within ceilings | partial | [`TestProductWorkerDriveCeilingsHoldAgainstAFloodingGuest`](../internal/worker/product_limits_integration_test.go) (KVM 2026-11-17): a guest that floods its volume stays under its drive's ceilings, 4 MiB/s writing 1 MiB at a time and 200 operations a second writing 4 KiB at a time; [`TestDrivesHaveIOCeilings`](../internal/runtime/firecracker_limits_test.go), [`TestProvisionedResourcesReachVMConfiguration`](../internal/runtime/firecracker_provisioning_test.go) (unit) | No hostile-guest test for CPU, memory, processes or time: their limits are set (RUN-002), but no guest pushes against them |
+| RUN-007 | A hostile agent stays within ceilings | partial | [`TestProductWorkerDriveCeilingsHoldAgainstAFloodingGuest`](../internal/worker/product_limits_integration_test.go) (KVM 2026-11-17): a guest that floods its volume stays under its drive's ceilings, 4 MiB/s writing 1 MiB at a time and 200 operations a second writing 4 KiB at a time; [`TestProductWorkerCPUCeilingHoldsAgainstABurningGuest`](../internal/worker/product_hostile_integration_test.go) (KVM, never run): a guest burning its 2 vCPUs uses at most its `cpu.max` over 10 s; [`TestProductWorkerMemoryCeilingHoldsAgainstAGuestThatEatsMemory`](../internal/worker/product_hostile_integration_test.go) (KVM, never run): a guest eating memory is stopped by its own kernel, and its VMM's cgroup has no OOM and peaks under `memory.max`; [`TestProductWorkerProcessCeilingsHoldAgainstAForkBomb`](../internal/worker/product_hostile_integration_test.go) (KVM, never run): a fork bomb reaches the guest's 256 processes without a new task or process on the host; [`TestProductWorkerWorkTimeoutBoundsAGuestThatNeverFiles`](../internal/worker/product_hostile_integration_test.go) (KVM, never run): an invocation acknowledged "working" and never filed fails with `work_timeout` at its due time; in each, another agent still answers within 30 s; [`TestDrivesHaveIOCeilings`](../internal/runtime/firecracker_limits_test.go), [`TestProvisionedResourcesReachVMConfiguration`](../internal/runtime/firecracker_provisioning_test.go), [`TestCgroupFilesParse`](../internal/worker/hostile_guest_test.go), [`TestCPUCeilingOfAWindow`](../internal/worker/hostile_guest_test.go) (unit) | The CPU, memory, process and time tests have never run: they need KVM and a guest with the hostile `capsule-echo`. A guest that never answers a delivery is not tested: its held store blocks the fence that ends its invocation ([Findings](#findings)). The neighbour's latency is bounded at 30 s, not compared with a baseline |
 | RUN-008 | Nothing left for another capsule | met | [`TestProductWorkerJailsEachVMAndLeavesNothingBehind`](../internal/worker/product_jail_integration_test.go) (KVM 2026-11-17): after a stop, no process runs as the agent's UID, and no jail, cgroup, socket, platform lock or boot credentials remain; the UID owns the agent's volume alone, and nothing once the agent is deleted; the next agent gets another UID; [`TestProductWorkerTwoOrganizationsStayIsolated`](../internal/worker/product_organizations_integration_test.go) (KVM 2026-11-17): distinct VM, UID and volume; [`TestProductGuestEncryptedPersistenceAndIsolation`](../internal/runtime/product_guest_integration_test.go) (KVM 2026-11-17): a volume alias refused; [`TestRecoverIsolatesAFailingAgent`](../internal/runtime/firecracker_removal_test.go) (unit) | — (the VM's log stays on the host, readable by root alone) |
 | RUN-009 | Write, stop, restart, read the same value | met | [`TestProductWorkerTenantRunsAPythonHarness`](../internal/worker/product_registry_integration_test.go) (KVM 2026-11-17): the harness's counter continues after sleep and wake; [`TestProductWorkerTwoOwnersPrivateExchange`](../internal/worker/product_peers_integration_test.go), [`TestProductGuestEncryptedPersistenceAndIsolation`](../internal/runtime/product_guest_integration_test.go) (KVM 2026-11-17) | — |
 | RUN-010 | Execution observed only in guests | met | [`TestProductWorkerTenantRunsAnImportedHarness`](../internal/worker/product_registry_integration_test.go) (KVM 2026-11-17): the harness exists only on the guest's drive and answers; [`TestAPILinksNoRuntimeWorkerOrGuestCode`](../cmd/agentcapsule-api/imports_test.go), [`TestWorkerLinksNoHarnessCode`](../cmd/agentcapsule-api/imports_test.go) (unit, `go list -deps`): neither the API nor the worker links a harness, the guest's init or any other code that only the guest programs link; they share the protocol, the capability names and the guest's event store format | — (a package is only parsed and handed to Firecracker; that the worker starts no program but the jailer and the archive fetch is read in the code, not checked) |
@@ -374,6 +374,8 @@ What the MVP still needs:
 - the attempts of `verify-vm-isolation.py` (another VM's volume, vsock,
   signals) on the product runtime, and the isolation runs on a real host;
 - noisy neighbours: one agent's load against another's latency (RUN-007).
+  The hostile-guest tests of RUN-007 (KVM, never run) only check that
+  another agent still answers within 30 s.
 
 ### Load tests and benchmarks
 
@@ -417,6 +419,10 @@ all passed. Still to run:
   as root (OPS-01).
 - The capacity benchmark on a server, with load on the VMs (DEP-5).
 - A restore between two real hosts (OPR-12).
+- The hostile-guest tests of RUN-007
+  ([product_hostile_integration_test.go](../internal/worker/product_hostile_integration_test.go)),
+  never run: they need a guest built with the hostile behaviours of
+  `capsule-echo`.
 
 ## Findings
 
@@ -463,6 +469,21 @@ unless said.
     now refuses a product worker test it does not list;
   - [`TestAuditFeedIsCompletePagedAndMetadataOnly`](../internal/controlplane/audit_feed_test.go) has no content check:
     [`TestAuditTrailHoldsNoConversationContent`](../internal/controlplane/audit_content_test.go) now makes it.
+- **A guest that stops after it was ready** (found writing the RUN-007
+  tests, not fixed): when its harness dies once the agent is ready (for
+  example killed by the guest's kernel for taking all its memory),
+  `capsule-init` powers the guest off, which halts it (`reboot: System halted`, as in the
+  crash-at-boot runs of 2026-11-17): its VMM keeps running. The worker
+  counts a crash only when the VMM goes away (ADR 012), so the restart
+  budget does not count it. The agent reads `READY` until a delivery
+  prepares it, then `STARTING`; its work waits until its deadline, and the
+  VM keeps its slot and its memory until someone puts it to sleep.
+- **A guest that never answers a delivery** (found writing the RUN-007
+  tests, not fixed): a harness that never returns from an invocation holds
+  its store's write transaction. Each attempt ends at the host's 20 s
+  timeout, but after the third, ending the invocation needs a fence on that
+  store, which the held transaction refuses: the invocation never ends, and
+  the agent's later deliveries wait behind it, until its VM is stopped.
 - **Tests weaker than their names:**
   - [`TestQueueTenantLimitSpansAgentsAndIsolatesTenants`](../internal/controlplane/instruction_queues_test.go) uses one
     organization.

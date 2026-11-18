@@ -42,6 +42,8 @@ REQUIRED_WORKER = {"TestProductWorkerProvisioningAndEncryptedWake", "TestProduct
     "TestProductWorkerTenantAgentsTalkOverA2A", "TestProductWorkerNightlyVolumeArchives", "TestProductWorkerRestoresAgentFromArchive",
     "TestProductWorkerBoundsTheGuestTmp", "TestProductWorkerDeliversJSONContent", "TestProductWorkerEnforcesCapabilities",
     "TestProductWorkerDriveCeilingsHoldAgainstAFloodingGuest", "TestProductWorkerStopsBootingAGuestThatCrashesAtBoot",
+    "TestProductWorkerCPUCeilingHoldsAgainstABurningGuest", "TestProductWorkerMemoryCeilingHoldsAgainstAGuestThatEatsMemory",
+    "TestProductWorkerProcessCeilingsHoldAgainstAForkBomb", "TestProductWorkerWorkTimeoutBoundsAGuestThatNeverFiles",
     "TestProductWorkerRestoresAgentToAgentExchange", "TestProductWorkerJailsEachVMAndLeavesNothingBehind",
     "TestProductWorkerWakesQueuesAndKeepsAWorkingAgentAwake", "TestProductWorkerSenderWakesForTheReply",
     "TestProductWorkerRefetchesTheHarnessOfARestoredAgent"}
