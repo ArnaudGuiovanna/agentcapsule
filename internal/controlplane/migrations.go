@@ -157,6 +157,9 @@ var garbageCollectionAuditSQL string
 //go:embed migrations/0046_organization_quotas.sql
 var organizationQuotasSQL string
 
+//go:embed migrations/0047_unresponsive_guests.sql
+var unresponsiveGuestsSQL string
+
 // Append migrations; never edit an installed migration. The original schema
 // also upgrades pre-ledger installations, preserving its historical backfills.
 // Later calls validate its checksum without replaying DDL or those backfills.
@@ -207,6 +210,7 @@ var controlPlaneMigrations = []schemaMigration{
 	{version: 44, name: "trace-pseudonym-key", sql: tracePseudonymKeySQL},
 	{version: 45, name: "garbage-collection-audit", sql: garbageCollectionAuditSQL},
 	{version: 46, name: "organization-quotas", sql: organizationQuotasSQL},
+	{version: 47, name: "unresponsive-guests", sql: unresponsiveGuestsSQL},
 }
 
 func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error {

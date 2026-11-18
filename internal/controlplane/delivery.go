@@ -411,7 +411,7 @@ func (s *Store) retireDelivery(ctx context.Context, mailboxID string, runtime Re
 	if err := commit(ctx, tx); err != nil {
 		return err
 	}
-	if err := runtime.Fence(ctx, m.Destination, "event/"+m.ID); err != nil {
+	if err := s.fencePastAttempts(ctx, runtime, m.Destination, "event/"+m.ID); err != nil {
 		return err
 	}
 	var died *DeadDelivery
