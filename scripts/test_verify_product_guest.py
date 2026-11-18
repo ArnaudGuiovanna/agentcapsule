@@ -33,6 +33,9 @@ class WorkerScenarios(unittest.TestCase):
         self.assertEqual(GUEST.PI_WORKER, {"TestProductWorkerTenantRunsPiOnARealModel"})
         self.assertEqual(GUEST.SLIM_WORKER, {"TestProductWorkerTenantAgentsTalkOverSLIM", "TestProductWorkerTenantFlagshipJourney",
                                              "TestProductWorkerDeletionRemovesTheVolumeTheKeyAndTheDirectoryRecord"})
+        # The stuck harness's tests need no optional input: every run requires them.
+        self.assertLessEqual({"TestProductWorkerStopsAGuestThatNeverAnswersAnInvocation",
+                              "TestProductWorkerDeletesAnAgentWhoseHarnessNeverAnswers"}, GUEST.REQUIRED_WORKER)
 
     def test_an_unlisted_test_is_found(self):
         with tempfile.TemporaryDirectory() as tmp:

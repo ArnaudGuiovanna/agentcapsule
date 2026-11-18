@@ -242,3 +242,65 @@ func TestAnUnresponsiveGuestIsStoppedAndCounted(t *testing.T) {
 		t.Fatal("agent_failed event", events)
 	}
 }
+
+// A guest that did not answer its own agent's deletion fence is stopped
+// like any unresponsive guest (ADR 012, question 7, sub-question 2), but
+// the stop records no guest failure: the agent is being deleted, and a
+// restart budget is moot. Even with a budget of one, the agent is not
+// FAILED, and the restricted boot that fences its store for the deletion
+// can be claimed. The operator still sees the stop among the guests that
+// did not answer, with no agent_failed event.
+func TestAGuestStoppedForItsAgentsDeletionSpendsNoBudget(t *testing.T) {
+	l := newDeadLab(t)
+	ctx := t.Context()
+	registry := telemetry.NewRegistry()
+	if err := l.w.EnableTelemetry(registry, t.TempDir(), 2); err != nil {
+		t.Fatal(err)
+	}
+	var progress, problems bytes.Buffer
+	vocabulary := map[string][]string{"event": {"job_done", "job_retried", "agent_failed"},
+		"kind": JobKinds(), "reason": append(RetryReasons(), AgentFailureReasons()...)}
+	if err := l.w.EnableJobEvents(telemetry.NewLogger(&progress, vocabulary), telemetry.NewLogger(&problems, vocabulary)); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.w.SetRestartBudget(controlplane.RestartBudget{Failures: 1, Window: time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	a, err := l.s.ClaimPlacement(ctx, "a", "local", "worker", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = l.s.ConfirmPlacement(ctx, "a", "local", "worker", a.Generation, fmt.Sprintf("%016x", a.Generation)); err != nil {
+		t.Fatal(err)
+	}
+	if err = l.s.RequestDeletion(ctx, "user-a", "a"); err != nil {
+		t.Fatal(err)
+	}
+	if err = l.w.stopPreparedAs(ctx, "a", a.Generation, nil, func(context.Context) error { return nil }, controlplane.GuestUnresponsive); err != nil {
+		t.Fatal("the stop", err)
+	}
+	var state string
+	var unclean bool
+	if err = l.db.QueryRow(ctx, "SELECT state,unclean_stop FROM agent_placements WHERE agent_id='a'").Scan(&state, &unclean); err != nil || state != "STOPPED" || !unclean {
+		t.Fatal("the stopped placement", state, unclean, err)
+	}
+	var failures, failed int
+	if err = l.db.QueryRow(ctx, "SELECT (SELECT count(*) FROM guest_failures),(SELECT count(*) FROM failed_agents)").Scan(&failures, &failed); err != nil ||
+		failures != 0 || failed != 0 {
+		t.Fatal("a failure recorded for an agent being deleted", failures, failed, err)
+	}
+	if _, err = l.s.ClaimFencePlacement(ctx, "a", "local", "worker", time.Minute); err != nil {
+		t.Fatal("the restricted boot of the deletion's fence", err)
+	}
+	rec := httptest.NewRecorder()
+	registry.Handler(5*time.Second).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	for _, series := range []string{`agentcapsule_worker_guest_failures_total{kind="unresponsive"} 1`,
+		`agentcapsule_worker_agents_failed_total 0`, `agentcapsule_worker_agents_failed 0`} {
+		if !strings.Contains(rec.Body.String(), series+"\n") {
+			t.Fatal("missing", series, "\n", rec.Body.String())
+		}
+	}
+	if strings.Contains(problems.String(), "agent_failed") {
+		t.Fatal("agent_failed for an agent being deleted", problems.String())
+	}
+}

@@ -162,7 +162,10 @@ survives only in copies outside the platform:
 
 - 10:00, in the commit of the request: no new work; its messages, results
   and files in the database are purged; it is no longer discoverable.
-- Minutes later, once every agent's store has fenced the deletion: the host
+- Minutes later, once every agent's store has fenced the deletion (if the
+  agent's own harness holds its store and its guest refuses, the worker
+  stops its VM and fences through a restricted boot: ADR 012, question 7,
+  sub-question 2): the host
   stops the VM for good; the restore authority seals the store; the key
   authority destroys the volume key, on the primary and on the replica in
   one write; the volume file goes; the agent is `DELETED`. From this moment

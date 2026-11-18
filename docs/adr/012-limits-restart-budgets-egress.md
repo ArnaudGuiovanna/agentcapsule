@@ -150,9 +150,27 @@ the agent's later deliveries waited behind it. Now:
 - If this failure makes the agent `FAILED`, the restricted boot is not
   claimed either: the invocation waits, closing, until a wake gives the
   agent a new budget, as for any barrier of a `FAILED` agent.
-- A fence of an agent being deleted, and a guest whose control channel no
-  longer answers its health probe, are not covered: the former waits as
-  before, the latter is question 6 (c).
+- *Deleting such an agent* (sub-question 2 of question 7, decided (b) on
+  November 18, 2026, built the same day). The deletion fences the subject
+  `agent/<id>` in every store, the agent's own among them. Before, its
+  guest refused that fence, the deletion's job failed and tried again,
+  forever: the retirement above leaves a delivery to an agent being deleted
+  to the deletion, and nothing else stopped the VM. Now, when the deleted
+  agent's own running guest refuses the deletion's fence, the worker stops
+  its VM in the same way and the fence goes through a restricted boot
+  (`fenceDeletion`, `internal/controlplane/unresponsive_guests.go`). No
+  delivery need be past its attempts: the deletion cancels all of the
+  agent's work, and no attempt begins once it is requested. The deletion
+  then goes on as any other: the seal, the key destroyed, the volume
+  removed, `DELETED`; the held invocation ends `canceled`
+  (`agent_unavailable`). The stop records no guest failure: the agent is
+  not live, so the restart budget is moot, and the agent is never `FAILED`
+  by its deletion; the worker's metric still counts the stop as
+  `unresponsive`. A platform fault stops nothing, and the deletion tries
+  again. The deletion's fence of another agent's store is unchanged: that
+  agent is live, and its guest is stopped only past a delivery's attempts.
+- A guest whose control channel no longer answers its health probe is not
+  covered: it is question 6 (c).
 
 **The budget.** Each failure is recorded once, keyed by its boot generation,
 in the transaction that publishes the retired generation `STOPPED`
@@ -256,7 +274,8 @@ and a decision on which secrets such a guest may still hold. It is **P1**.
   starved by its host could be counted wrongly; the budget allows 5 an hour.
   The harness keeps running meanwhile: its background work waits out the
   held store instead of ending the harness, which would end the guest and
-  count a crash (question 6).
+  count a crash (question 6). Its owner can delete the agent at any time:
+  the deletion stops the VM the same way, without counting a failure.
 
 ## Tests
 
@@ -309,6 +328,21 @@ PostgreSQL tests:
   `TestARequestPastItsAttemptsStopsOnlyTheGuestItHolds`,
   `TestOnlyAFencePastTheAttemptsStopsAGuest`; `internal/worker`:
   `TestAnUnresponsiveGuestIsStoppedAndCounted`.
+- For deleting a stuck agent (sub-question 2), in `internal/controlplane`:
+  `TestDeletingAnAgentWhoseHarnessHoldsItsStoreCompletes` (a handler holds
+  a real SQLite store; a platform fault on the deletion's fence stops
+  nothing; the refused fence stops the VM and fences through a restricted
+  boot; the deletion is tombstoned; the held invocation is canceled; no
+  guest failure, with a budget of one) and
+  `TestADeletionStopsOnlyTheGuestOfTheAgentItDeletes` (another agent's
+  refusal stops nothing and the deletion waits for it), both failing
+  before the change; `TestOnlyTheDeletedAgentsRefusedFenceStopsItsGuest`
+  (unit, new with `fenceDeletion`); `TestAnOrdinaryDeletionStopsNoGuest`
+  (unchanged behaviour, passing before too). In `internal/worker`:
+  `TestAGuestStoppedForItsAgentsDeletionSpendsNoBudget` (the stop of an
+  agent being deleted records no failure, the restricted boot can be
+  claimed, the metric counts it; the rule of `ObserveGuestFailure`, which
+  passed before too).
 
 KVM tests, which need root and a guest whose `capsule-echo` floods with
 direct writes; both passed on November 17, 2026, with guest v26:
@@ -416,6 +450,21 @@ now wait it out (`harnessstore.Busy`). Not run again since:
   it; its VMM is gone; the next invocation is answered by the release
   booted again, after one restricted boot; the agent reads `READY`.
 
+The KVM test of deleting a stuck agent (sub-question 2), written on
+November 18, 2026, never run
+(`internal/worker/product_stuck_deletion_integration_test.go`), uses the
+same behaviour, already in guest v29:
+- `TestProductWorkerDeletesAnAgentWhoseHarnessNeverAnswers`: the agent
+  answers an ordinary invocation, then holds one whose first attempt ends
+  at the host's timeout. The owner deletes it: new work is refused and its
+  Directory record is withdrawn (through the publisher, to records the
+  test keeps; the private Directory is the deletion test's). The passes
+  may fail only with the held delivery, refused for an agent being
+  deleted. Within 2 minutes the deletion completes: one restricted boot
+  after the stop, no VMM, no volume, the key revoked and destroyed under
+  the seal the authority service holds, no record; the held invocation
+  is `canceled` (`agent_unavailable`); no guest failure is recorded.
+
 ## Questions for the product owner
 
 1. **Disk ceilings.** An agent's volume is capped at 64 MiB/s and 2000
@@ -463,6 +512,12 @@ now wait it out (`harnessstore.Busy`). Not run again since:
    guest failure and fences through a restricted boot. Recommendation: (b).
    **Decided: (b), product owner, November 18, 2026**; built the same day
    (§2, "An unresponsive guest"), with the failure kind `unresponsive`.
+   Its sub-question 2, **deleting a stuck agent**: an owner deletes an
+   agent whose harness holds its store. Options: (a) as built then, the
+   deletion waits; (b) the same stop for the deletion's fence.
+   Recommendation: (b) later, with its own test. **Decided: (b), product
+   owner, November 18, 2026** (the product owner asked to follow the
+   recommendations); built the same day (§2, "Deleting such an agent").
 8. **A VM after its work timeout.** An agent answers "working" and never
    files. Its invocation fails with `work_timeout`, but its VM keeps
    running, and computing, until someone puts it to sleep, since no idle

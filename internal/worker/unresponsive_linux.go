@@ -12,10 +12,11 @@ import (
 
 // A harness that never answers an invocation holds its store, and the fence
 // that ends the invocation after its attempts cannot commit; the agent's
-// other work waits behind it (ADR 012, question 7, option (b)). The worker
-// tells the control plane which fences its guest refused, and stops that VM
-// when the control plane asks: the fence then goes through a restricted
-// boot, which runs no work.
+// other work waits behind it (ADR 012, question 7, option (b)), and so did
+// its deletion (sub-question 2, option (b)). The worker tells the control
+// plane which fences its guest refused, and stops that VM when the control
+// plane asks: the fence then goes through a restricted boot, which runs no
+// work.
 
 // unresponsiveGuest returns err, the failure of the fence RPCs to the guest
 // of identity's boot, as that guest's (controlplane.UnresponsiveGuestError)
@@ -57,12 +58,13 @@ func isJoin(err error) bool {
 }
 
 // StopUnresponsiveGuest stops the agent's VM of generation, booted for work,
-// whose guest did not answer the fence of a delivery past its attempts:
-// under the host's exclusive admission for the agent, the way a sleep stops
-// a VM, a quiesce, then the VMM's forced removal. The stop records a guest
-// failure of kind unresponsive for that boot, counted against the agent's
-// restart budget. A VM that is gone (the census counted a crash), was
-// replaced, or boots only for barriers, is left alone.
+// whose guest did not answer the fence of a delivery past its attempts, or
+// of the agent's own deletion: under the host's exclusive admission for the
+// agent, the way a sleep stops a VM, a quiesce, then the VMM's forced
+// removal. The stop records a guest failure of kind unresponsive for that
+// boot, counted against the agent's restart budget while the agent is live;
+// an agent being deleted spends none. A VM that is gone (the census counted
+// a crash), was replaced, or boots only for barriers, is left alone.
 func (w *Placements) StopUnresponsiveGuest(ctx context.Context, target string, generation uint64) error {
 	return w.host.WithBarrier(ctx, target, func(ctx context.Context) error {
 		runs, err := w.reconcileAgent(ctx, target)

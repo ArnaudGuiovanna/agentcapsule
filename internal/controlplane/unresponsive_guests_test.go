@@ -24,7 +24,8 @@ import (
 // fence that the running VM's guest refuses as an UnresponsiveGuestError,
 // stops that VM on StopUnresponsiveGuest and counts a guest failure, and
 // fences a stopped agent through a restricted boot, claimed like the
-// worker's (ClaimFencePlacement).
+// worker's (ClaimFencePlacement). The stores of the lab's other agents (a,
+// b, c), which run no VM here, answer their fences.
 type stuckGuest struct {
 	*vmruntime.MockRuntime
 	t           *testing.T
@@ -49,7 +50,7 @@ type stuckGuest struct {
 }
 
 func newStuckGuest(t *testing.T, s *Store, agent, host string, budget RestartBudget) *stuckGuest {
-	r := &stuckGuest{MockRuntime: mockStores(t, t.TempDir(), agent), t: t, s: s, agent: agent, host: host, budget: budget, halt: make(chan struct{})}
+	r := &stuckGuest{MockRuntime: mockStores(t, t.TempDir(), "a", "b", "c", agent), t: t, s: s, agent: agent, host: host, budget: budget, halt: make(chan struct{})}
 	r.SetHandler(func(ctx context.Context, target string, e harnessstore.Event, tx harnessstore.SQL) ([]byte, error) {
 		i, err := capsuleprotocol.DecodeInvocation(e, target)
 		if err != nil {
@@ -126,6 +127,9 @@ func (r *stuckGuest) Invoke(ctx context.Context, target string, e harnessstore.E
 }
 
 func (r *stuckGuest) Fence(ctx context.Context, target, subject string) error {
+	if target != r.agent {
+		return r.MockRuntime.Fence(ctx, target, subject)
+	}
 	r.mu.Lock()
 	fault, generation := r.fault, r.generation
 	r.fault = nil

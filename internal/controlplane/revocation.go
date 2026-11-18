@@ -175,8 +175,10 @@ func (s *Store) ReconcileRevocation(ctx context.Context, agentID string, runtime
 	if err := rows.Err(); err != nil {
 		return err
 	}
+	// The agent's own store is fenced past a guest whose harness holds it:
+	// that VM is stopped (fenceDeletion).
 	for _, target := range pending {
-		if err := runtime.Fence(ctx, target, "agent/"+agentID); err != nil {
+		if err := fenceDeletion(ctx, runtime, agentID, target); err != nil {
 			return fmt.Errorf("fence store %s: %w", target, err)
 		}
 		if err := s.recordFence(ctx, agentID, target); err != nil {
