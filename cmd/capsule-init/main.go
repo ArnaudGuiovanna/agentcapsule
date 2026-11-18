@@ -8,7 +8,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -175,6 +174,8 @@ func run() error {
 			mu.Lock()
 			intentional := quiescing
 			mu.Unlock()
+			// A harness that exits or dies on its own ends the guest, after
+			// the cleanup below (guestinit.End). A quiesced guest stays up.
 			if !intentional {
 				cancel()
 			}
@@ -209,10 +210,8 @@ func main() {
 	if os.Getpid() != 1 || os.Geteuid() != 0 {
 		os.Exit(1)
 	}
-	if run() != nil {
-		fmt.Println("CAPSULE_INIT_FAILED")
-	}
-	_ = syscall.Reboot(syscall.LINUX_REBOOT_CMD_POWER_OFF)
+	// The guest restarts once run has cleaned up, which ends its VMM.
+	_ = guestinit.End(run, os.Stdout, syscall.Sync, syscall.Reboot)
 	for {
 		_ = syscall.Pause()
 	}
