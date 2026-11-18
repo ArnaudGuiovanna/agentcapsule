@@ -201,7 +201,7 @@ node with its message processing logged
 `slim.yaml` mounted by a compose override), and the test reads the node's log
 through the campaign's control script: it must show a message forwarded to
 the recipient's name (`match and forward message name=agentcapsule/<organization>/<agent>/...`),
-then one to the sender's. A host keeps INFO: with its message processing
+then one to the sender's. This check passed on 2026-11-17. A host keeps INFO: with its message processing
 logged, the node also writes each message's bytes to its log. `TestProductWorkerDeletionRemovesTheVolumeTheKeyAndTheDirectoryRecord`
 uses the campaign's Directory too: a deleted agent's record leaves it.
 

@@ -187,8 +187,27 @@ func (w *Placements) Register(ctx context.Context, id, volume string, uid uint32
 	return w.store.RegisterPlacement(ctx, id, w.hostID)
 }
 
+// Reconcile settles every placement of this host against its VMs: it adopts
+// each confirmed VM again (its binding held with the authorities while
+// PostgreSQL is checked), retires the others, and records the VMs gone.
 func (w *Placements) Reconcile(ctx context.Context) (map[string]runtime.VMRun, error) {
-	runs, err := w.host.Reconcile(ctx)
+	return w.reconcile(ctx, "")
+}
+
+// reconcileAgent is Reconcile for one agent: its VM alone is adopted, its
+// placement alone settled, and only its run is returned. Preparing a delivery
+// to a running agent uses it, so that the delivery's cost does not grow with
+// the VMs that run beside it; they wait for the next Reconcile.
+func (w *Placements) reconcileAgent(ctx context.Context, id string) (map[string]runtime.VMRun, error) {
+	return w.reconcile(ctx, id)
+}
+
+func (w *Placements) reconcile(ctx context.Context, only string) (map[string]runtime.VMRun, error) {
+	census := w.host.Reconcile
+	if only != "" {
+		census = func(ctx context.Context) (map[string]runtime.VMRun, error) { return w.host.ReconcileAgent(ctx, only) }
+	}
+	runs, err := census(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -197,7 +216,7 @@ func (w *Placements) Reconcile(ctx context.Context) (map[string]runtime.VMRun, e
 		return nil, err
 	}
 	for _, p := range placements {
-		if p.State == "STOPPED" {
+		if p.State == "STOPPED" || (only != "" && p.AgentID != only) {
 			continue
 		}
 		if run, ok := runs[p.AgentID]; ok && p.State == "RUNNING" &&
@@ -239,7 +258,7 @@ func (w *Placements) Reconcile(ctx context.Context) (map[string]runtime.VMRun, e
 			return nil, err
 		}
 	}
-	return w.host.Reconcile(ctx)
+	return census(ctx)
 }
 
 func (w *Placements) Start(ctx context.Context, id string) (runtime.VMRun, error) {
@@ -253,8 +272,16 @@ func (w *Placements) start(ctx context.Context, id string, forFence bool) (runti
 }
 
 func (w *Placements) startRenewal(ctx context.Context, id string, forFence bool, renewal *controlplane.CredentialRenewal) (runtime.VMRun, error) {
-	if _, err := w.Reconcile(ctx); err != nil {
+	// Reusing the agent's running VM concerns that VM alone. Before a boot,
+	// which counts the host's VMs, every placement is settled.
+	runs, err := w.reconcileAgent(ctx, id)
+	if err != nil {
 		return runtime.VMRun{}, err
+	}
+	if _, running := runs[id]; !running {
+		if _, err := w.Reconcile(ctx); err != nil {
+			return runtime.VMRun{}, err
+		}
 	}
 	if !forFence {
 		// A release change takes effect at this boot, if the VM is not running.
@@ -263,7 +290,6 @@ func (w *Placements) startRenewal(ctx context.Context, id string, forFence bool,
 		}
 	}
 	var p controlplane.Placement
-	var err error
 	if renewal != nil {
 		p, err = w.store.ClaimRenewalPlacement(ctx, *renewal, w.workerID, w.lease)
 	} else if forFence {

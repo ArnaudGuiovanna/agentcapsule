@@ -160,10 +160,33 @@ func TestAnotherOrganizationsNumbersStayOutOfEveryAnswer(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// Its trail: a member named, and attempts refused.
+	// Its trail: a member named, and attempts refused. Its attempt at the
+	// first organization's agent is recorded as its attempt at an unknown
+	// agent is: the identifier it sent, not_found, nothing more (ADR 014 §10).
 	as("POST", "/v1/members", apiMemberBody(&second, "second-member", "auditor"), 201, nil)
 	as("POST", "/v1/members", `{"role":"nobody"}`, 400, nil)
+	unknown := "agt_" + strings.Repeat("0", 32)
 	as("POST", "/v1/agents/"+f.ids["agent"]+"/sleep", `{}`, 404, nil)
+	as("POST", "/v1/agents/"+unknown+"/sleep", `{}`, 404, nil)
+	var trail controlplane.AuditPage
+	as("GET", "/v1/audit?limit=200", "", 200, &trail)
+	attempts := map[string][]controlplane.AuditEvent{}
+	for _, e := range trail.Items {
+		if e.Target == f.ids["agent"] || e.Target == unknown {
+			attempts[e.Target] = append(attempts[e.Target], e)
+		}
+	}
+	unlinked := func(events []controlplane.AuditEvent) controlplane.AuditEvent {
+		if len(events) != 1 {
+			t.Fatalf("the second organization's trail: %d attempts instead of one: %+v", len(events), events)
+		}
+		e := events[0]
+		e.ID, e.CreatedAt, e.Target = "", time.Time{}, ""
+		return e
+	}
+	if foreign, guessed := unlinked(attempts[f.ids["agent"]]), unlinked(attempts[unknown]); foreign != guessed || foreign.Outcome != "refused" || foreign.Reason != "not_found" {
+		t.Fatalf("an attempt at another organization's agent is recorded unlike one at an unknown agent:\n%+v\n%+v", foreign, guessed)
+	}
 
 	// Its own answers hold its numbers: the test is not vacuous.
 	var usage controlplane.LLMUsageReport

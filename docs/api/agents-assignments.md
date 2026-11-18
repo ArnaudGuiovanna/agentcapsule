@@ -394,8 +394,10 @@ the policy answers for the sleeps (audit `agent.idle_sleep_requested`).
 Limits: "critical task not checkpointed" is known to the platform only through
 what it tracks (operations, inboxes, exchanges, model calls); an internal
 harness computation with no platform-side trace is not seen, and it is the stop
-with acknowledged quiesce that protects its data. The tests drive the clock; the
-worker's real loop has not run under KVM.
+with acknowledged quiesce that protects its data. The tests drive the clock,
+also on KVM (`TestProductWorkerWakesQueuesAndKeepsAWorkingAgentAwake`, passed
+on 2026-11-17); the worker's real loop, on its own timer, has not run under
+KVM.
 
 ## Attachments (EVT-04)
 

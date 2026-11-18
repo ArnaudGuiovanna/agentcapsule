@@ -16,17 +16,25 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"testing"
 	"time"
 )
 
-// statusFD is the helper's descriptor for the reason it could not set the
-// sandbox up. It is closed when the program starts.
-const statusFD = 4
+// The helper's descriptors besides the image (3): the pipe for the reason it
+// could not set the sandbox up, and the reading end of its lifeline, a pipe
+// whose writing end only Run holds. Both are closed when the program starts.
+const (
+	statusFD   = 4
+	lifelineFD = 5
+)
+
+// helperPath is this executable, even if replaced on disk since it started.
+const helperPath = "/proc/self/exe"
 
 // AsRoot reports whether runs here take Options.UID and GID: the caller is
 // root in the initial user namespace. Root of another user namespace (a
-// container, a test under unshare -r) cannot, and runs the program in a user
-// namespace of its own like any other account.
+// container, a test under unshare -r) cannot, and Run refuses it; any other
+// account runs the program in a user namespace of its own.
 func AsRoot() bool {
 	if os.Geteuid() != 0 {
 		return false
@@ -48,8 +56,20 @@ func (o Options) Run(ctx context.Context, image, program string, args ...string)
 		return nil, fmt.Errorf("sandbox: %s is not an absolute path", program)
 	}
 	root := AsRoot()
-	if root && !o.Unconfined && (o.UID == 0 || o.GID == 0) {
-		return nil, fmt.Errorf("%w: as root, a dedicated UID and GID other than 0 are required", ErrUnavailable)
+	if o.Unconfined && os.Geteuid() == 0 {
+		return nil, fmt.Errorf("%w: unconfined as root", ErrUnavailable)
+	}
+	// Root of another user namespace cannot take UID and GID, and would run
+	// the program as that root, owner of every file root owns there.
+	if os.Geteuid() == 0 && !root && !o.Unconfined {
+		return nil, fmt.Errorf("%w: root of a user namespace that is not the host's (a container): "+
+			"run as root of the host, or as another account", ErrUnavailable)
+	}
+	if root && !o.Unconfined && (!Reservable(o.UID) || !Reservable(o.GID)) {
+		return nil, fmt.Errorf("%w: as root, a dedicated UID and GID are required: not 0 or 65535, below 2147483647", ErrUnavailable)
+	}
+	if o.TestTools && !testing.Testing() {
+		return nil, fmt.Errorf("%w: the test tools' filter outside a test binary", ErrUnavailable)
 	}
 	path := "-"
 	if image != "" {
@@ -70,6 +90,14 @@ func (o Options) Run(ctx context.Context, image, program string, args ...string)
 	}
 	defer status.Close()
 	defer report.Close()
+	// The lifeline: this process alone holds its writing end, until the
+	// program has exited.
+	life, lifeline, err := os.Pipe()
+	if err != nil {
+		return nil, err
+	}
+	defer life.Close()
+	defer lifeline.Close()
 	limited, cancel := context.WithTimeout(ctx, o.Timeout)
 	defer cancel()
 
@@ -80,10 +108,14 @@ func (o Options) Run(ctx context.Context, image, program string, args ...string)
 		if !root {
 			uid, gid = 0, 0 // root of the helper's own user namespace: the caller
 		}
-		name = "/proc/self/exe" // this executable, even if replaced on disk since
+		name = helperPath
+		filter := strictFilter
+		if o.TestTools {
+			filter = testToolsFilter
+		}
 		argv = append([]string{strconv.FormatUint(uint64(uid), 10), strconv.FormatUint(uint64(gid), 10),
-			strconv.FormatUint(o.cpuSeconds(), 10), path, program}, args...)
-		files = append(files, report)
+			strconv.FormatUint(o.cpuSeconds(), 10), filter, path, program}, args...)
+		files = append(files, report, life)
 		attributes = namespaces(root)
 	}
 	cmd := exec.CommandContext(limited, name, argv...)
@@ -107,6 +139,7 @@ func (o Options) Run(ctx context.Context, image, program string, args ...string)
 		return nil, fmt.Errorf("%w: %v", ErrUnavailable, err)
 	}
 	report.Close()
+	life.Close()
 	err = cmd.Wait()
 	reason, _ := io.ReadAll(io.LimitReader(status, 4096))
 	var exit *exec.ExitError
@@ -119,8 +152,13 @@ func (o Options) Run(ctx context.Context, image, program string, args ...string)
 		return nil, ctx.Err()
 	case limited.Err() != nil:
 		return nil, fmt.Errorf("%w: %s elapsed", ErrLimit, o.Timeout)
-	case errors.As(err, &exit) && exit.Sys().(syscall.WaitStatus).Signaled() && exit.Sys().(syscall.WaitStatus).Signal() == syscall.SIGKILL:
-		return nil, fmt.Errorf("%w: killed (processor time or memory)", ErrLimit)
+	case errors.As(err, &exit) && exit.Sys().(syscall.WaitStatus).Signaled():
+		switch exit.Sys().(syscall.WaitStatus).Signal() {
+		case syscall.SIGKILL:
+			return nil, fmt.Errorf("%w: killed (processor time or memory)", ErrLimit)
+		case syscall.SIGSYS:
+			return nil, ErrSyscall
+		}
 	}
 	return nil, err
 }

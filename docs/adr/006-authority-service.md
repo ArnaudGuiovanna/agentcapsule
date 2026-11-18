@@ -818,7 +818,7 @@ Not done in wave 2:
   The quiet period still keeps the excluded reservations away (§3, What a
   lost hold can do). Passing the hold's context needs a change to
   `controlplane.BarrierCommitter` and its four callers.
-- The KVM product tests have not run through the service yet.
+- The KVM product tests passed through the service on November 17, 2026.
 - The worker's preflight (ADR 010) checks the authorities through the
   service; the checks of the link to the standby (`authority_replica_tls`,
   `authority_replica`) left with the link and have no home yet: the service
@@ -1050,7 +1050,8 @@ Not done in wave 5:
   (only the service tokens it revokes are), an LLM alias disabled or its
   grant revoked, an agent's deletion (its revocation subject already is),
   and a mandate used up (question 7).
-- The KVM product tests have not run with the event ID recorded.
+- The KVM product tests passed with the event ID recorded on November 17,
+  2026.
 
 November 16, 2026. **Wave 6 is built**: the daily receipt key (§7; ADR 005,
 Decision of November 13 and answer 4(b) here).
@@ -1279,7 +1280,8 @@ Not done in wave 7:
 - **A database restored in place**, at the same epoch, is not detected: the
   operator runs `reconcile` before starting the API (recovery.md).
 - **The API's preflight** does not check the reconciliation.
-- **The KVM product tests** have not run with the heartbeat.
+- **The KVM product tests** have not run with the heartbeat: their service,
+  on November 17, 2026, had no standby.
 
 ## 11. Options considered
 

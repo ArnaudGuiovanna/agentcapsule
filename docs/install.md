@@ -190,7 +190,7 @@ AGENTCAPSULE_DATABASE_URL=... /opt/agentcapsule/agentcapsule-worker -config /etc
 | `metrics_listen` | The address is not loopback, or is in use. |
 | `directory_certificate`, `directory_ca`, `directory_edge` | The client certificate is unusable, expired, not for `clientAuth`, or not named `agentcapsule-control-plane`; the CA file holds no certificate; the edge refuses the client or presents another CA's or another name's certificate. An edge that does not answer is a warning. |
 | `registry` | A rule is `local` (production). |
-| `registry_inspection` | With the `registry` section: `debugfs` cannot run in its sandbox (no e2fsprogs, a kernel without `mount_setattr`, no user namespaces for a worker that is not root), or, as root, `inspection_uid` is missing, 0, in the provisioning range or the SLIM bridge's ([registry.md](registry.md#image-inspection-sandbox)). |
+| `registry_inspection` | With the `registry` section: `debugfs` cannot run in its sandbox (no e2fsprogs, a kernel without `mount_setattr`, no user namespaces for a worker that is not root, a worker that is root of a user namespace other than the host's, as in a container), or, as root, `inspection_uid` is not reserved: missing, 0, 65535, from 2147483647 up, in the provisioning range, the SLIM bridge's, or an account's or a group's ([registry.md](registry.md#image-inspection-sandbox)). |
 | `postgresql` | The connection string may use clear text (production), or the server cannot be reached. The check confirms TLS with the server (`pg_stat_ssl`). |
 
 **At every start**, the worker runs `kvm`, `kernel`, `cgroups`, `namespaces`,
@@ -305,8 +305,10 @@ Not pinned yet:
 The checks are tested on a fake host root, and the KVM probe on this
 development machine's `/dev/kvm`. On this machine, `scripts/verify-install.py`
 runs the worker's preflight with every check passing when it is given the
-artifacts, and shows the worker refusing to start when they are missing. It
-runs them in a user namespace where its account is root, not as root. A KVM
+artifacts, but `registry_inspection`, and shows the worker refusing to start
+when they are missing. It runs them in a user namespace where its account is
+root, not as root: there the image inspection's sandbox refuses to run, as
+for a container's root. A KVM
 host run as root must still show the worker starting with the mandatory
 checks passing. `scripts/verify-runtime.py` with a control guest starts the
 worker binary in `TestMaintenanceServiceRecoversRenewalCrashesWithoutIncomingWork`,

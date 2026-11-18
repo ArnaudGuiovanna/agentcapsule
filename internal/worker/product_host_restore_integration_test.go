@@ -29,23 +29,27 @@ import (
 // (deploy/backup/agentcapsule-archive-ship.py) and rclone 1.60 to two
 // crypt remotes over local directories, which stand for S3 and the
 // standby's disk. rclone runs as nobody, as the shipper runs it as its own
-// account in production. rclone comes from AGENTCAPSULE_KVM_RCLONE, or PATH.
+// account in production. rclone comes from AGENTCAPSULE_KVM_RCLONE, or PATH,
+// and runs from the lab's own copy, as the shipper comes from the sources
+// under test.
 type shippingLab struct {
 	shipper, rclone, config string
 }
 
 func newShippingLab(t *testing.T) shippingLab {
 	t.Helper()
-	rclone := os.Getenv("AGENTCAPSULE_KVM_RCLONE")
-	if rclone == "" {
+	given := os.Getenv("AGENTCAPSULE_KVM_RCLONE")
+	if given == "" {
 		var err error
-		if rclone, err = exec.LookPath("rclone"); err != nil {
+		if given, err = exec.LookPath("rclone"); err != nil {
 			t.Fatal("this test ships archives with rclone 1.60: set AGENTCAPSULE_KVM_RCLONE or put rclone on PATH")
 		}
 	}
-	shipper, err := filepath.Abs(filepath.Join("..", "..", "deploy", "backup", "agentcapsule-archive-ship.py"))
-	if err != nil {
-		t.Fatal(err)
+	// The shipper of the sources under test, whichever directory the test
+	// runs from.
+	shipper := filepath.Join(repositoryRoot(t), "deploy", "backup", "agentcapsule-archive-ship.py")
+	if _, err := os.Stat(shipper); err != nil {
+		t.Fatal("the archive shipper of the sources under test", err)
 	}
 	nobody, err := user.Lookup("nobody")
 	if err != nil {
@@ -53,13 +57,21 @@ func newShippingLab(t *testing.T) shippingLab {
 	}
 	uid, _ := strconv.Atoi(nobody.Uid)
 	gid, _ := strconv.Atoi(nobody.Gid)
-	// rclone, as nobody, reads its configuration and writes both stores.
-	dir, err := os.MkdirTemp("", "acp-ship-")
+	// rclone, as nobody, runs its binary, reads its configuration and writes
+	// both stores: all three must be within nobody's reach. TMPDIR is not:
+	// the KVM campaign puts it in its output directory, of mode 0700, and
+	// rclone may lie in a home directory. /var/tmp is, and is on disk.
+	dir, err := os.MkdirTemp("/var/tmp", "acp-ship-")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	if err = os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rclone := filepath.Join(dir, "rclone")
+	copyExecutable(t, given, rclone)
+	if err = os.Chmod(rclone, 0o755); err != nil { // whatever the umask
 		t.Fatal(err)
 	}
 	var conf strings.Builder
@@ -80,6 +92,9 @@ func newShippingLab(t *testing.T) shippingLab {
 	}
 	path := filepath.Join(dir, "rclone.conf")
 	if err = os.WriteFile(path, []byte(conf.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Chmod(path, 0o644); err != nil { // whatever the umask
 		t.Fatal(err)
 	}
 	for _, store := range []string{"standby", "s3"} {

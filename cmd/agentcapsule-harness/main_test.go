@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/ociregistry"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/ociregistry/registrytest"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/sandbox"
 )
 
 // capture runs the CLI and returns what it printed.
@@ -89,5 +91,42 @@ func TestPublisherSignsWhatThePlatformImports(t *testing.T) {
 	pkg, err := f.Fetch(t.Context(), parsed, t.TempDir())
 	if err != nil || pkg.Signer != key.ID {
 		t.Fatal("the platform did not accept the publisher's signature", err)
+	}
+}
+
+// REG-01: verify inspects the image in the sandbox, or not at all. Where the
+// sandbox cannot be set up, it fails and names --unconfined; with that flag
+// an account that is not root inspects without the sandbox, and root is
+// refused it.
+func TestVerifyNeverFallsBackToAnUnconfinedInspection(t *testing.T) {
+	reg := registrytest.New()
+	defer reg.Close()
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "rootfs/bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "rootfs/bin/harness"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := "schema: agentcapsule.harness/v1\nname: echo\nversion: 1.0.0\nprotocol: capsule.v1\narchitecture: x86_64\nbase: agentcapsule-guest/1\nentrypoint: [/bin/harness]\n"
+	if err := os.WriteFile(filepath.Join(dir, "harness.yaml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	capture(t, "pack", "--manifest", filepath.Join(dir, "harness.yaml"), "--rootfs", filepath.Join(dir, "rootfs"), "--size-mib", "2", "--out", filepath.Join(dir, "package"))
+	ref := capture(t, "push", "--dir", filepath.Join(dir, "package"), "--registry", reg.Host(), "--repository", "acme/echo", "--local")
+
+	// This machine cannot set the sandbox up.
+	check, euid := checkInspection, geteuid
+	defer func() { checkInspection, geteuid = check, euid }()
+	checkInspection = func(context.Context, sandbox.Options) error { return sandbox.ErrUnavailable }
+	if err := run([]string{"verify", "--ref", ref, "--local"}); err == nil || !strings.Contains(err.Error(), "--unconfined") {
+		t.Fatal("verify inspected without its sandbox, unasked:", err)
+	}
+	if report := capture(t, "verify", "--ref", ref, "--local", "--unconfined"); !strings.Contains(report, `"name": "echo"`) {
+		t.Fatal("verify --unconfined did not report the package:", report)
+	}
+	geteuid = func() int { return 0 }
+	if err := run([]string{"verify", "--ref", ref, "--local", "--unconfined"}); err == nil || !strings.Contains(err.Error(), "root") {
+		t.Fatal("verify --unconfined ran as root:", err)
 	}
 }

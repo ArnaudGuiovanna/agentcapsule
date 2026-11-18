@@ -117,6 +117,17 @@ identity must not be relabeled at startup. Only a restore moves a volume to a
 new incarnation, one step up; the guest then moves its marker on the restricted
 boot of the restored image.
 
+**Adoption.** The worker adopts a running VM again before each use of it: a
+delivery, a platform call, a stop, its reuse for new work. Adoption checks the
+VM's placement in PostgreSQL and its volume's incarnation while the authority
+service holds the binding (`hold_binding`). A stale or sealed binding, or an
+obsolete placement, retires the VM there, and the use is refused. An outage
+keeps the VM and fails the use, which is retried. The host's other VMs are
+checked at its next census: each maintenance pass starts with one, and so
+does each boot, archive, sleep, wake and resume. A delivery to a running agent
+thus holds its recipient's binding a fixed number of times, whatever the
+number of VMs on the host.
+
 Creation goes through the durable LUKS2 container, an immutable host
 registration (inode, size and resources), then a restricted boot. The worker
 delivers the key over the authenticated channel after checking the SQL lease and
@@ -489,10 +500,56 @@ AGENTCAPSULE_KVM_CAPACITY_DRY_RUN=1 AGENTCAPSULE_KVM_CAPACITY_REPORT=$PWD/capaci
   AGENTCAPSULE_KVM_CAPACITY_AGENTS=1,5,10,20 /tmp/worker.test -test.run '^TestCapacityBenchmark$'
 ```
 
-No numbers are committed yet: the first KVM run gives them. Then set
-`max_active` so that that many VMs, each taking the memory the benchmark
-measured, leave the host more than 10 % of its memory:
-`AgentCapsuleHostMemoryLow` fires below.
+### Measured on 2026-11-17
+
+One run of `verify-product-guest.py`, at b38980c with guest v26, on the
+development machine: a WSL2 laptop-class host with 12 CPUs and 15.5 GiB
+(kernel 6.18.58.1-microsoft-standard-WSL2), not a server. Other work shared
+it: with every agent asleep it had 6.8 GiB available, and its CPUs were
+46 % busy. These numbers are starting points for a host like it, not limits
+of the platform. Each VM had 1 vCPU and 256 MiB, ran the reference harness,
+and stayed idle once it answered. Local evidence:
+`quint/results/product-guest-kvm-20261117T141155Z/capacity.json`.
+
+| VMs | Boot p50 / p90 | All running | First answer p50 / p90 | From `STOPPED` to an answer p50 / p90 | VMM resident p50 | Host memory used by the VMs | VMMs' CPU while idle |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 2.7 / 2.7 s | 3.0 s | 0.6 / 0.6 s | 3.2 / 3.2 s | 154 MiB | below the noise | 0.01 s/s |
+| 5 | 3.2 / 3.4 s | 18.2 s | 4.2 / 5.2 s | 4.2 / 4.6 s | 154 MiB | 589 MiB | 0.10 s/s |
+| 10 | 3.4 / 4.4 s | 44.7 s | 15.5 / 19.5 s | 5.0 / 6.4 s | 154 MiB | 1,185 MiB | 0.18 s/s |
+| 20 | 3.2 / 3.7 s | 94.0 s | 42.8 / 66.6 s | 4.6 / 6.4 s | 154 MiB | 2,887 MiB | 0.27 s/s |
+
+- A boot takes about 3 s, whatever the number of VMs. The worker boots one
+  VM at a time, so 20 wakes sent at once are all running after 94 s.
+- An idle VM of 256 MiB keeps about 154 MiB resident, and its cgroup is
+  charged about 160 MiB. The host lost about 118 MiB per VM at 5 and 10 VMs,
+  and 144 MiB at 20. A VM that works can use all of its memory, and its
+  cgroup allows 256 MiB more ([ADR 012](adr/012-limits-restart-budgets-egress.md)).
+- Idle VMs cost little CPU: 0.01 to 0.02 CPU-seconds per second each.
+- First answers to invocations sent at once wait for the one dispatch loop,
+  which delivers in turn. A delivery to a running agent took 0.5 s with one
+  VM running and about 3 s with 20: before it, the worker held the binding
+  of every running VM with the authority service, 7 times each
+  (`hold_binding` in `capacity-traces.jsonl`). The worker now adopts the
+  recipient's VM alone (**Adoption** at the top of this page): 7 holds to
+  prepare a delivery and 1 to send it, whatever the number of VMs, where 20
+  VMs took 140 and 20. The benchmark has not run again since that change.
+  The wake of one stopped agent to its answer stays between 3 and 5 s.
+
+**Setting `max_active`.** Count each VM at its cgroup's ceiling, its memory
+plus 256 MiB, so that the host keeps more than 10 % of its memory even when
+every guest fills its own (`AgentCapsuleHostMemoryLow` fires below 10 %):
+
+```text
+max_active = (available memory with every agent asleep - 10 % of the host's memory)
+             / (the VM's memory + 256 MiB), rounded down
+```
+
+On the benchmark's host: (6,807 - 1,590) / 512 = 10 VMs of 256 MiB, the
+starting point of [product.md](product.md) §2. Counted at what idle VMs used,
+about 165 MiB each, the same host would hold about 30: an upper bound for
+idle agents, not a setting. CPU is not in the rule: each VM may use its whole
+vCPU, and the benchmark does not load them. On another host, measure the
+available memory the same way before setting `max_active`.
 
 ## Limits and restart budgets
 
@@ -635,11 +692,12 @@ provisioner/key authority attest only the execution seal.
 These operations apply to the volume and key managed by this installation. They
 do not destroy external copies, backups or the raw blocks of the medium.
 Rollback-resistant restore remains the D5 workstream. The local journal/crash
-and SQL publication tests run; the deletion scenario in a real VM
-(`TestProductWorkerTwoOwnersPrivateExchange`) passed on KVM on 2026-11-15
-(14 of 14 worker tests, guest v20), before the worker reached its
-authorities through the authority service, whose seal check has not run on
-KVM yet.
+and SQL publication tests run; the deletion scenarios in a real VM
+(`TestProductWorkerTwoOwnersPrivateExchange`,
+`TestProductWorkerDeletionRemovesTheVolumeTheKeyAndTheDirectoryRecord`)
+passed on KVM on 2026-11-17 (26 of 26 worker tests, guest v26), the worker
+reaching its authorities through the authority service, whose seal check
+the second test makes.
 
 ## Nightly encrypted archives
 

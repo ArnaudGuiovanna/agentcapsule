@@ -492,17 +492,17 @@ recovery phases; local evidence
 `quint/results/verify-postgres-delivery-reliability`);
 `scripts/verify-alerts.py` with promtool (Prometheus 3.5.0), passed; the
 model checks of §3, passed. The product guest was rebuilt without root
-(`quint/results/product-guest-build-v21`). Not yet run: a KVM campaign with
-that guest, since the guest relays the status read of item 2 (see
-Remaining).
+(`quint/results/product-guest-build-v21`). The KVM product campaign passed
+on November 17, 2026, with a later guest, v26, built from code that holds
+this branch (see Remaining).
 
 Remaining:
 
-- **A KVM run** of the product guest rebuilt from this branch (its
-  `capsule-init` relays the status read) and of the a2a-agent harness
-  rebuilt with the new capsule-adapter: `TestProductWorkerTenantAgentsTalkOverA2A`,
-  and the dispatch tests that retire deliveries through a real worker and
-  guest (`TestDispatchServiceRequestReplyAndNotification`,
+- **A KVM run** of the dispatch tests that retire deliveries through a real
+  worker and guest. The product tests, `TestProductWorkerTenantAgentsTalkOverA2A`
+  among them, passed on November 17, 2026 (the campaign does not record
+  which build of the a2a-agent harness it used); these did not run
+  (`TestDispatchServiceRequestReplyAndNotification`,
   `TestDispatchPreparationAndOneSlotCapacity`,
   `TestDispatchServiceClosureExpirationAndDeletion`,
   `TestDispatchWorkerCrashRecovery`).
