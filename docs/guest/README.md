@@ -107,8 +107,14 @@ Its entrypoint arguments can select a test behaviour, for the KVM tests of
 the platform's limits ([ADR 012](../adr/012-limits-restart-budgets-egress.md)):
 `crash-at-boot` exits before serving, and `flood-volume <bytes>` serves while
 rewriting 32 MiB of its data directory as fast as it can, `<bytes>` per
-direct (`O_DIRECT`) write, a multiple of 4 KiB. Without arguments it behaves
-as above.
+direct (`O_DIRECT`) write, a multiple of 4 KiB. Four hostile behaviours push
+against the VM's other ceilings (RUN-007). `burn-cpu`, `eat-memory` and
+`fork-bomb` serve normally until 2 seconds after the harness first answers,
+then keep every vCPU busy, write memory without end until the guest's
+kernel kills the harness, or fork processes that only wait until the guest
+refuses, and again every 100 ms. `never-files` answers every invocation
+"working", loops on it and never files its outcome. Without arguments it
+behaves as above.
 
 **Harness from the registry.** When the host attaches a harness drive (an agent
 pinned to an imported release, see [../registry.md](../registry.md)), the boot

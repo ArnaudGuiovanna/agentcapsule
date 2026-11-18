@@ -124,9 +124,15 @@ func (l *registryLab) createOn(name, harness, version string) controlplane.Agent
 // createWith is createOn with the VM's memory, for agents that need more.
 func (l *registryLab) createWith(name, harness, version string, memoryMiB int) controlplane.AgentCreation {
 	l.t.Helper()
+	return l.createSized(name, harness, version, 1, memoryMiB)
+}
+
+// createSized is createOn with the VM's vCPUs and memory.
+func (l *registryLab) createSized(name, harness, version string, vcpus, memoryMiB int) controlplane.AgentCreation {
+	l.t.Helper()
 	var created controlplane.AgentCreation
 	in := controlplane.CreateAgentInput{Name: name, Harness: controlplane.HarnessReference{Name: harness, Version: version},
-		Resources: controlplane.AgentResources{VCPUs: 1, MemoryMiB: memoryMiB, DataVolumeMiB: 128}}
+		Resources: controlplane.AgentResources{VCPUs: vcpus, MemoryMiB: memoryMiB, DataVolumeMiB: 128}}
 	l.request(l.owner(), "POST", "/v1/agents", "agent-"+name, in, 202, &created)
 	l.peers = append(l.peers, &productPeer{agent: created})
 	l.awaitOperation(l.owner, created.OperationID)

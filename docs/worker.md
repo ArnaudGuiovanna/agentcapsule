@@ -558,7 +558,15 @@ Each VM's drives have I/O ceilings, enforced by Firecracker's rate limiter
 and 2000 operations a second on the agent's volume, 128 MiB/s and 4000 on a
 registry harness image, which a boot may first read whole at full speed. The
 VM has no network device and its VMM no network namespace but its own: the
-guest's only way out is the platform channel.
+guest's only way out is the platform channel. Each VMM's cgroup bounds its
+CPU to the VM's vCPUs (`cpu.max`), its memory to the VM's and 256 MiB more,
+without swap (`memory.max`), and its tasks to 32 (`pids.max`); inside the
+guest, the harness may run 256 processes. A guest that takes all its memory
+is stopped by its own kernel, and a guest's processes are not the host's
+(KVM tests of RUN-007, [acceptance](acceptance.md), not yet run). A guest
+whose harness dies once it is ready halts, and its VM keeps its slot and
+memory until the agent is put to sleep: no crash is counted
+([ADR 012](adr/012-limits-restart-budgets-egress.md), question 6).
 
 An agent whose guest fails to boot, or crashes, too often stops being booted.
 A boot counts when its VMM ran and then exited, stopped answering, or
