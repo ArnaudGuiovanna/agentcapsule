@@ -78,6 +78,73 @@ func TestBindingHoldSerializesReservation(t *testing.T) {
 	}
 }
 
+// A reservation that waits behind a binding hold until its caller's deadline
+// fails with that deadline, as with the in-process authority, and not
+// before it: the service's deadline is never earlier than the caller's.
+func TestReservationBehindAHoldEndsAtItsCallersDeadline(t *testing.T) {
+	keys, catalog := authorities(t, t.TempDir())
+	l := serve(t, keys, catalog)
+	holder, other := l.client(t), l.client(t)
+	b, err := holder.Register(t.Context(), "store-a", "volume-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A pooled connection: no dial delays the request after the client
+	// reads its deadline.
+	if _, err = other.Status(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	entered, release := make(chan struct{}), make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- holder.HoldBinding(t.Context(), b, func(context.Context) error { close(entered); <-release; return nil })
+	}()
+	<-entered
+	defer func() {
+		close(release)
+		if err := <-done; err != nil {
+			t.Error(err)
+		}
+	}()
+	for i := range 20 {
+		ctx, cancel := context.WithTimeout(t.Context(), 40*time.Millisecond)
+		deadline, _ := ctx.Deadline()
+		_, err := other.ReserveIncarnation(ctx, b, "restore")
+		early := time.Until(deadline)
+		cancel()
+		if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, restoreauthority.ErrUnavailable) || early > 0 {
+			t.Fatal("attempt", i, "ended", early, "before its deadline, with", err)
+		}
+	}
+}
+
+// A context whose deadline has passed may still report no error until its
+// timer runs. The service ends the operation at that deadline: its answer
+// carries the deadline already.
+func TestAnAnswerAtTheDeadlineCarriesIt(t *testing.T) {
+	ctx := pastDeadline{t.Context()}
+	if ctx.Err() != nil {
+		t.Fatal("the fixture's context ended")
+	}
+	for name, err := range map[string]error{
+		"answer": withContext(ctx, svc.ErrorOf(svc.CodeUnavailable)),
+		"outage": outage(ctx, errors.New("connection reset")),
+	} {
+		if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, restoreauthority.ErrUnavailable) {
+			t.Error(name, err)
+		}
+	}
+	if err := withContext(t.Context(), svc.ErrorOf(svc.CodeStale)); errors.Is(err, context.DeadlineExceeded) {
+		t.Error("a live context's answer carries a deadline", err)
+	}
+}
+
+// pastDeadline is a context past its deadline whose timer has not run yet.
+type pastDeadline struct{ context.Context }
+
+func (pastDeadline) Deadline() (time.Time, bool) { return time.Now().Add(-time.Millisecond), true }
+func (pastDeadline) Err() error                  { return nil }
+
 // TestPublicationSerializesConcurrentRevocation, across two connections: a
 // new revocation subject waits for a fences hold, and the receipt is stale
 // once it lands.
