@@ -5,8 +5,11 @@ defaults pending the product owner (see [Questions](#questions-for-the-product-o
 The KVM tests that prove the drive ceilings and the budget on a real VM
 passed on November 17, 2026, after a first run that day failed on faults of
 the tests (see [Tests](#tests)). The KVM tests of the CPU, memory, process
-and time ceilings against a hostile guest were written on November 18, 2026
-and have not run.
+and time ceilings against a hostile guest, written on November 18, 2026,
+passed on KVM that day at 5906a12 with guest v27, on their first run. The
+KVM tests of a guest that keeps crashing (question 6) and of a guest that
+never answers (question 7) failed in their first run, with guest v28, on
+faults fixed since, and have not passed.
 References: RUN-007, RUN-008, RUN-011 and §6 of the
 [product spec](../product.md), CAP-03 and TEN-07 of the
 [roadmap](../../ROADMAP.md), [worker.md](../worker.md),
@@ -336,37 +339,57 @@ direct writes; both passed on November 17, 2026, with guest v26:
   Its first run stopped at the first boot failure, which its passes did not
   accept.
 
-KVM tests of the other ceilings of RUN-007, written on November 18, 2026,
-never run (`internal/worker/product_hostile_integration_test.go`). Each
-packs `capsule-echo` with a hostile behaviour, which turns 2 seconds after
-the harness's first answer, and boots a well-behaved agent beside it, which
+KVM tests of the other ceilings of RUN-007, written on November 18, 2026
+(`internal/worker/product_hostile_integration_test.go`), passed on KVM that
+day, on their first run, at 5906a12 with guest v27
+(`quint/results/product-guest-kvm-20261118T090505Z`). Each packs
+`capsule-echo` with a hostile behaviour, which turns 2 seconds after the
+harness's first answer, and boots a well-behaved agent beside it, which
 must still answer within 30 seconds from the same VMM:
 - `TestProductWorkerCPUCeilingHoldsAgainstABurningGuest`: a guest burning
   its 2 vCPUs uses, over 10 seconds, at most its cgroup's `cpu.max` for the
   window, with one quota and a tenth more allowed, and at least half of it.
+  On November 18, 2026, it used 19.99 s of CPU in 10.0 s against a ceiling
+  of 22.2 s, and 2 periods were throttled; the neighbour answered in 0.72 s
+  beside an idle agent and in 0.58 s beside the burning one.
 - `TestProductWorkerMemoryCeilingHoldsAgainstAGuestThatEatsMemory`: a guest
   of 256 MiB that eats memory is stopped by its own kernel ("Out of memory"
   on its console). Its VMM's cgroup records no OOM, and peaks under
   `memory.max` (512 MiB) and above 224 MiB. The guest then restarts, never
   halts: its VMM exits, the worker counts a crash of that boot, the agent
   reads `STOPPED`, and its next invocation boots it again and is answered.
+  On November 18, 2026, at 5906a12, the cgroup peaked at 263 MiB, with
+  `oom` and `oom_kill` at 0. That version of the test only logged what
+  followed, the behaviour before question 6: the guest halted, its VMM kept
+  running, the agent read `READY`, and no failure was counted. In the run at
+  03eaf46 with guest v28 (`product-guest-kvm-20261118T102825Z`), the test as
+  written here passed: the guest restarted, its VMM exited, one crash was
+  counted, and a new boot answered.
 - `TestProductWorkerProcessCeilingsHoldAgainstAForkBomb`: a fork bomb
   reaches the 256 processes of the guest's harness cgroup (its kernel
   refuses a fork in `/capsule-harness`), while the VMM's cgroup gets no new
   task, the agent's UID no new process on the host, and the VMM never
-  reaches its own `pids.max`.
+  reaches its own `pids.max`. On November 18, 2026, the VMM kept its 3 tasks
+  and the agent's UID its 1 process.
 - `TestProductWorkerWorkTimeoutBoundsAGuestThatNeverFiles`: an invocation
   acknowledged "working" and never filed, with `work_timeout_seconds` 60,
   fails with `work_timeout` once its `result_due_at` has passed, not before,
   and has no result; the guest loops on within its `cpu.max`, and keeps its
-  VM.
+  VM. On November 18, 2026, it failed 47 ms after its `result_due_at`.
 
-For question 6, written on November 18, 2026, never run, in the same file:
+For question 6, written on November 18, 2026, in the same file:
 - `TestProductWorkerFailsAnAgentWhoseGuestKeepsCrashing`: an agent whose
   harness eats memory after each boot's first answer, with a budget of 2
   within an hour, answers, crashes, is booted again by its next invocation,
   answers and crashes again; each crash is counted for its own boot, and
-  the agent is then `FAILED` with `failure_reason` `crashed`.
+  the agent is then `FAILED` with `failure_reason` `crashed`. Its first
+  run, with guest v28 at 03eaf46, failed at a census during the first
+  crash: `VMM does not own the required writable-volume flock`. Firecracker
+  closes the volume, and so releases its lock, 59 to 110 ms before its
+  process ends, and the census took it for a VMM that writes without its
+  lock. A census now finds a VMM with no descriptor of its volume gone
+  (8e61c85, [worker.md](../worker.md#limits-and-restart-budgets)). Not run
+  again since.
 
 No guest halts in these tests: a console that shows `reboot: System
 halted` fails them, and a VMM that went away must be counted as a crash.
