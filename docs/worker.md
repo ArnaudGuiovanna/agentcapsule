@@ -610,7 +610,7 @@ CPU to the VM's vCPUs (`cpu.max`), its memory to the VM's and 256 MiB more,
 without swap (`memory.max`), and its tasks to 32 (`pids.max`); inside the
 guest, the harness may run 256 processes. A guest that takes all its memory
 is stopped by its own kernel, and a guest's processes are not the host's
-(KVM tests of RUN-007, [acceptance](acceptance.md), not yet run). A guest
+(KVM tests of RUN-007, passed on 2026-11-18, [acceptance](acceptance.md)). A guest
 whose harness exits or dies restarts once `capsule-init` has closed the
 agent's store, and its kernel's restart ends its VMM (`reboot=k`), which
 frees the VM's slot and memory. Before the guest is ready, that is a failed
