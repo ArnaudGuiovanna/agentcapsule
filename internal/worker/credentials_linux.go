@@ -118,13 +118,9 @@ func (w *Placements) refreshCredentials(ctx context.Context, attemptTimeout time
 // Caller holds exclusive admission. Rechecking avoids retiring a fresh boot
 // produced by another worker after the initial snapshot.
 func (w *Placements) retireDueCredentials(ctx context.Context, id string) (runtime.VMRun, bool, error) {
-	due, err := w.host.CredentialRotations(ctx, w.credentialTime())
-	if err != nil {
+	run, due, err := w.host.CredentialRotation(ctx, id, w.credentialTime())
+	if err != nil || !due {
 		return runtime.VMRun{}, false, err
-	}
-	run, ok := due[id]
-	if !ok {
-		return runtime.VMRun{}, false, nil
 	}
 	if err = w.stop(ctx, id, run.Generation, true); err != nil {
 		return run, false, err

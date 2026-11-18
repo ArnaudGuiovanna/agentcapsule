@@ -117,6 +117,17 @@ identity must not be relabeled at startup. Only a restore moves a volume to a
 new incarnation, one step up; the guest then moves its marker on the restricted
 boot of the restored image.
 
+**Adoption.** The worker adopts a running VM again before each use of it: a
+delivery, a platform call, a stop, its reuse for new work. Adoption checks the
+VM's placement in PostgreSQL and its volume's incarnation while the authority
+service holds the binding (`hold_binding`). A stale or sealed binding, or an
+obsolete placement, retires the VM there, and the use is refused. An outage
+keeps the VM and fails the use, which is retried. The host's other VMs are
+checked at its next census: each maintenance pass starts with one, and so
+does each boot, archive, sleep, wake and resume. A delivery to a running agent
+thus holds its recipient's binding a fixed number of times, whatever the
+number of VMs on the host.
+
 Creation goes through the durable LUKS2 container, an immutable host
 registration (inode, size and resources), then a restricted boot. The worker
 delivers the key over the authenticated channel after checking the SQL lease and
@@ -516,10 +527,13 @@ and stayed idle once it answered. Local evidence:
 - Idle VMs cost little CPU: 0.01 to 0.02 CPU-seconds per second each.
 - First answers to invocations sent at once wait for the one dispatch loop,
   which delivers in turn. A delivery to a running agent took 0.5 s with one
-  VM running and about 3 s with 20: before it, the worker holds the binding
+  VM running and about 3 s with 20: before it, the worker held the binding
   of every running VM with the authority service, 7 times each
-  (`hold_binding` in `capacity-traces.jsonl`). The wake of one stopped agent
-  to its answer stays between 3 and 5 s.
+  (`hold_binding` in `capacity-traces.jsonl`). The worker now adopts the
+  recipient's VM alone (**Adoption** at the top of this page): 7 holds to
+  prepare a delivery and 1 to send it, whatever the number of VMs, where 20
+  VMs took 140 and 20. The benchmark has not run again since that change.
+  The wake of one stopped agent to its answer stays between 3 and 5 s.
 
 **Setting `max_active`.** Count each VM at its cgroup's ceiling, its memory
 plus 256 MiB, so that the host keeps more than 10 % of its memory even when

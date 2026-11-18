@@ -124,7 +124,7 @@ func TestBootAuthorityAdoptionDistinguishesStaleFromOutage(t *testing.T) {
 }
 
 func testBootAuthorityAdoptionDistinguishesStaleFromOutage(t *testing.T, implementation string) {
-	for _, failure := range []string{"reserved", "unavailable"} {
+	for _, failure := range []string{"reserved", "sealed", "unavailable"} {
 		t.Run(failure, func(t *testing.T) {
 			b := newBootLab(t)
 			a := b.withAuthority(t, implementation, true)
@@ -139,15 +139,24 @@ func testBootAuthorityAdoptionDistinguishesStaleFromOutage(t *testing.T, impleme
 			if err := b.opts.Adopt(t.Context(), b.e.AgentID, run); err != nil {
 				t.Fatal("current boot not adoptable", err)
 			}
-			if failure == "reserved" {
+			switch failure {
+			case "reserved":
 				if _, err := a.ReserveIncarnation(t.Context(), enrollmentBinding(b.e), "restore"); err != nil {
 					t.Fatal(err)
 				}
-			} else if err := a.Close(); err != nil {
-				t.Fatal(err)
+			case "sealed":
+				if err := a.RecordRetiredSeal(t.Context(), enrollmentBinding(b.e)); err != nil {
+					t.Fatal(err)
+				}
+			default:
+				if err := a.Close(); err != nil {
+					t.Fatal(err)
+				}
 			}
+			// A stale or sealed binding makes the VM obsolete: the host
+			// retires it at its next adoption. An outage keeps it.
 			err := b.opts.Adopt(t.Context(), b.e.AgentID, run)
-			if err == nil || errors.Is(err, runtime.ErrGeneration) != (failure == "reserved") {
+			if err == nil || errors.Is(err, runtime.ErrGeneration) != (failure != "unavailable") {
 				t.Fatal("adoption lost failure distinction", err)
 			}
 		})
