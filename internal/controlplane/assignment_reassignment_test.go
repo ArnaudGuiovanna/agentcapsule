@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // allPermissions is sorted, as assignments store their permissions.
@@ -302,11 +303,29 @@ func TestReassignmentWaitsForAnAdmissionAuthorizedBeforeIt(t *testing.T) {
 	}
 }
 
+// sizePool gives the store a pool of exactly n connections. pgxpool's default
+// is the greater of 4 and the host's CPU count: a test that keeps more than
+// four transactions waiting at once must not depend on the host.
+func sizePool(t *testing.T, s *Store, n int32) {
+	t.Helper()
+	config := s.pool.Config()
+	config.MaxConns, config.MinConns = n, 0
+	pool, err := pgxpool.NewWithConfig(t.Context(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.pool.Close()
+	s.pool = pool
+}
+
 // A request that arrived before the reassignment but is authorized after it
 // is judged against the new targets: the old target's admission, replay and
 // result read are refused, the new target's admission is accepted.
 func TestAdmissionWaitingBehindAReassignmentSeesTheNewTarget(t *testing.T) {
 	il := newInvocationLab(t)
+	// The gate, the reassignment and the four requests each hold one
+	// connection while they wait; the observer has its own.
+	sizePool(t, il.s, 6)
 	alice, aliceP := il.person(t, "alice")
 	bob, bobP := il.person(t, "bob")
 	old := assign(t, il.tenantLab, il.owner, il.agent, CreateAssignmentInput{PrincipalID: alice.PrincipalID, Permissions: allPermissions}, "alice")
@@ -326,7 +345,7 @@ func TestAdmissionWaitingBehindAReassignmentSeesTheNewTarget(t *testing.T) {
 		return APIReceipt{}, err
 	})
 	newAdmission := async(func() (APIReceipt, error) { return il.invoke(t, bobP, "bob", "bob arrives with the move") })
-	waitMemberBlock(t, il.s.pool, g.pid, 5)
+	waitTeamBlockers(t, il.s, g.pid, 5)
 	g.open(t)
 
 	if o := wait(t, move); o.err != nil || o.r.Status != 201 {

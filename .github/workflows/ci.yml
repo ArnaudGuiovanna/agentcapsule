@@ -58,6 +58,11 @@ jobs:
           go vet -tags=kvm_integration,kvm_control_integration,kvm_product_integration ./internal/worker ./internal/runtime
           go vet -tags=llmlive ./internal/llmgateway ./internal/controlplane
 
+      - name: go vet without cgo (the packages the interop job and the harness builds compile without it)
+        env:
+          CGO_ENABLED: '0'
+        run: go vet -tags=interop_services ./internal/directory ./cmd/agentcapsule-harness ./examples/a2a-agent
+
       - name: Authorization matrix (every route has a row, docs/api/rbac.md matches it)
         run: go test -count=1 -run '^TestRBACMatrix(IsWellFormed|CoversEveryRoute|IsDocumented)$' ./internal/api
 

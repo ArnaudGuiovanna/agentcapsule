@@ -168,8 +168,11 @@ closed and counted.
   the service, so a wait at the barrier ends at the caller's deadline, and
   `ErrWaitsForReplica` and `_degraded_refused_total` keep their meaning. A
   timeout is at most 10 minutes; a client without a deadline sends that one.
-  The client waits one second past its deadline for the service's answer,
-  which says why the operation ended.
+  The client rounds it up to the next millisecond: the service counts it from
+  its receipt, so it never ends a wait before the caller's deadline. The
+  client waits one second past its deadline for the service's answer, which
+  says why the operation ended; an answer that comes at the deadline also
+  carries `context.DeadlineExceeded`, as with the in-process authority.
 - **Errors** are a closed vocabulary: `input`, `unavailable`, `conflict`,
   `stale`, `revoked`, `sealed`, `history`, `not_declared`, `not_sealed`,
   `waits_for_replica`, `replica_required`, `not_armed`, `diverged`, the key
