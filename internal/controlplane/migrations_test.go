@@ -285,6 +285,63 @@ func TestOrganizationIdentityConstraints(t *testing.T) {
 	}
 }
 
+// A trigger runs with the search path of the session that changes its row:
+// the store's, an operator's psql, a test's administration pool. A trigger
+// function that names another table pins the search path of its migration
+// (SET search_path FROM CURRENT), as preserve_sealed_agent does; otherwise a
+// change made from another session fails, or reaches a table of the same
+// name in another schema.
+func TestTriggerFunctionsFindTheirTablesFromAnySession(t *testing.T) {
+	s := migrationStore(t)
+	if err := s.Migrate(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.pool.Query(t.Context(), `SELECT p.proname FROM pg_proc p JOIN pg_language l ON l.oid=p.prolang
+        WHERE p.pronamespace=current_schema()::regnamespace AND l.lanname='plpgsql'
+          AND NOT EXISTS(SELECT 1 FROM unnest(coalesce(p.proconfig,'{}')) c WHERE c LIKE 'search_path=%')
+          AND EXISTS(SELECT 1 FROM pg_class r WHERE r.relnamespace=p.pronamespace AND r.relkind IN ('r','p','v')
+            AND p.prosrc ~ ('\m'||r.relname||'\M'))
+        ORDER BY p.proname`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unpinned, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unpinned) != 0 {
+		t.Error("trigger functions that name a table without pinning their search path:", unpinned)
+	}
+	var schema string
+	if err = s.pool.QueryRow(t.Context(), "SELECT current_schema()").Scan(&schema); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.pool.Exec(t.Context(), `INSERT INTO organizations(id,name) VALUES ('org-a','A');
+        INSERT INTO agents(id,tenant_id) VALUES ('agent-a','org-a');
+        INSERT INTO agent_directory(agent_id,tenant_id,description,skills) VALUES ('agent-a','org-a','An agent','{1}')`); err != nil {
+		t.Fatal(err)
+	}
+	// An operator's session: the default search path, which does not hold
+	// this schema, and names qualified by it.
+	operator, err := pgxpool.New(t.Context(), databaseURL(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer operator.Close()
+	for _, change := range []string{
+		"UPDATE " + pgx.Identifier{schema, "agents"}.Sanitize() + " SET discoverable=NOT discoverable WHERE id='agent-a'",
+		"UPDATE " + pgx.Identifier{schema, "organizations"}.Sanitize() + " SET status='disabled' WHERE id='org-a'",
+	} {
+		if _, err = operator.Exec(t.Context(), change); err != nil {
+			t.Fatal(change, err)
+		}
+	}
+	var revision int64
+	if err = s.pool.QueryRow(t.Context(), "SELECT revision FROM agent_directory WHERE agent_id='agent-a'").Scan(&revision); err != nil || revision != 3 {
+		t.Fatal("the directory record did not follow both changes:", revision, err)
+	}
+}
+
 func TestReadyChecksInstalledMigrationLedger(t *testing.T) {
 	s := migrationStore(t)
 	if err := s.Migrate(t.Context()); err != nil {
