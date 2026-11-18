@@ -390,7 +390,7 @@ func (t *Transit) RetireInstruction(ctx context.Context, id string, runtime Revo
 	if err = commit(ctx, tx); err != nil {
 		return err
 	}
-	if err = runtime.Fence(ctx, i.Destination, "event/"+id); err != nil {
+	if err = t.store.fencePastAttempts(ctx, runtime, i.Destination, "event/"+id); err != nil {
 		return err
 	}
 	var died *DeadDelivery

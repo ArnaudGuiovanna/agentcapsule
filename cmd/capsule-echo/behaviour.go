@@ -37,14 +37,22 @@ import (
 //	                       refuses, and tries again every 100 ms.
 //	never-files            answers every invocation "working", loops on it,
 //	                       and never files its outcome.
+//
+// One more (never_returns.go) holds its store (ADR 012, question 7):
+//
+//	never-returns          never returns from an invocation whose text says
+//	                       "never return": it holds its store's write
+//	                       transaction until the harness stops. It answers
+//	                       other invocations as usual.
 type behaviour struct {
 	crashAtBoot bool
 	floodChunk  int
 	fillTmp     int64
 	textOnly    bool
 	// hostile names an entry of hostile, started after the first answer.
-	hostile    string
-	neverFiles bool
+	hostile      string
+	neverFiles   bool
+	neverReturns bool
 }
 
 var errTmpUnbounded = errors.New("/tmp took the whole fill (test behaviour)")
@@ -103,6 +111,8 @@ func parseBehaviour(args []string) (behaviour, error) {
 		return behaviour{hostile: args[0]}, nil
 	case len(args) == 1 && args[0] == "never-files":
 		return behaviour{neverFiles: true}, nil
+	case len(args) == 1 && args[0] == "never-returns":
+		return behaviour{neverReturns: true}, nil
 	}
 	return behaviour{}, errors.New("unknown test behaviour")
 }

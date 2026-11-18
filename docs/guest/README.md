@@ -124,7 +124,10 @@ against the VM's other ceilings (RUN-007). `burn-cpu`, `eat-memory` and
 then keep every vCPU busy, write memory without end until the guest's
 kernel kills the harness, or fork processes that only wait until the guest
 refuses, and again every 100 ms. `never-files` answers every invocation
-"working", loops on it and never files its outcome. Without arguments it
+"working", loops on it and never files its outcome. `never-returns` never
+returns from an invocation whose text says "never return": it holds its
+store's write transaction until the harness stops, and answers other
+invocations (ADR 012, question 7). Without arguments it
 behaves as above.
 
 **Harness from the registry.** When the host attaches a harness drive (an agent
