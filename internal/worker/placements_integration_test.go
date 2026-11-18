@@ -107,45 +107,6 @@ func opts(t *testing.T, root string) runtime.FirecrackerOptions {
 		MaxActive: 2, BootTimeout: 12 * time.Second, Ready: probe}
 }
 
-func database(t *testing.T, schema string, create bool) (*controlplane.Store, *pgxpool.Pool) {
-	t.Helper()
-	dsn := os.Getenv("AGENTCAPSULE_TEST_POSTGRES")
-	if dsn == "" {
-		t.Fatal("real PostgreSQL is required")
-	}
-	cfg, err := pgxpool.ParseConfig(dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.ConnConfig.RuntimeParams["search_path"] = schema + ",pg_catalog"
-	scoped := cfg.ConnString() + " search_path=" + schema + ",pg_catalog"
-	admin, err := pgxpool.New(t.Context(), dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if create {
-		if _, err = admin.Exec(t.Context(), "CREATE SCHEMA "+pgx.Identifier{schema}.Sanitize()); err != nil {
-			t.Fatal(err)
-		}
-	}
-	s, err := controlplane.Open(t.Context(), scoped)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = s.Migrate(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if create {
-		for _, id := range []string{"a", "b", "c"} {
-			if _, err = admin.Exec(t.Context(), "INSERT INTO "+pgx.Identifier{schema, "agents"}.Sanitize()+"(id,owner_user_id) VALUES ($1,$2)", id, "user-"+id); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-	t.Cleanup(func() { s.Close(); admin.Close() })
-	return s, admin
-}
-
 func lab(t *testing.T, authenticated ...bool) (*Placements, *pgxpool.Pool, string, runtime.FirecrackerOptions) {
 	return labWithCapacity(t, 0, authenticated...)
 }
