@@ -506,22 +506,22 @@ unless said.
   answering while its VMM runs is still not counted (option (c), later).
 - **A guest that never answers a delivery** (found writing the RUN-007
   tests; fixed on 2026-11-18 by ADR 012 question 7, option (b); its KVM
-  test has not passed): a harness that never returns from an invocation holds its
-  store's write transaction. Each attempt ends at the host's 20 s timeout,
-  but after the third, ending the invocation needs a fence on that store,
-  which the held transaction refused: the invocation never ended, and the
-  agent's later deliveries waited behind it. Now the worker stops the VM,
-  counts an `unresponsive` guest failure, and fences through a restricted
-  boot; the invocation fails with `delivery_outcome_unknown`.
+  test has not passed): a harness that never returns from an invocation
+  holds its store's write transaction. Each attempt ends at the host's 20 s
+  timeout, but after the third, ending the invocation needs a fence on that
+  store, which the held transaction refused: the invocation never ended,
+  and the agent's later deliveries waited behind it. Now the worker stops
+  the VM, counts an `unresponsive` guest failure, and fences through a
+  restricted boot; the invocation fails with `delivery_outcome_unknown`.
 - **A harness that ended itself on a busy store** (found by the first KVM
   run of the unresponsive-guest test, 2026-11-18, guest v28; fixed in
-  6fc5ae0, not run again): the background loops of the reference harness (`capsule-echo`)
-  and of `capsule-adapter` ended when their store refused them after
-  SQLite's 5-second busy timeout, so a handler that held the store longer,
-  slow or stuck, ended the harness. Since question 6 the guest then ends
-  and a crash is counted: in that run, three boots that each held the store
-  crashed 5 seconds later, and no `unresponsive` failure was recorded. The
-  loops now wait out a busy store
+  6fc5ae0, not run again): the background loops of the reference harness
+  (`capsule-echo`) and of `capsule-adapter` ended when their store refused
+  them after SQLite's 5-second busy timeout, so a handler that held the
+  store longer, slow or stuck, ended the harness. Since question 6 the
+  guest then ends and a crash is counted: in that run, three boots that
+  each held the store crashed 5 seconds later, and no `unresponsive`
+  failure was recorded. The loops now wait out a busy store
   ([`TestRunWaitsOutABusyStore`](../internal/referenceharness/busy_test.go)).
 - **A census that failed on a VMM that was exiting** (found by the same
   run, guest v28; fixed in 8e61c85, not run again):
