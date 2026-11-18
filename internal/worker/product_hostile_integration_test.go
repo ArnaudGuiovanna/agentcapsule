@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -19,7 +20,8 @@ import (
 // memory and process ceilings, or never files the outcome of its work. Each
 // test reads what the host enforces from the hostile VMM's cgroup and the
 // guest's console, and checks that a well-behaved agent beside it still
-// answers.
+// answers. A guest whose harness dies crashes: it restarts, which ends its
+// VMM, and its crashes spend its agent's restart budget (RUN-011).
 
 const (
 	// neighbourBound bounds how long the well-behaved agent may take to
@@ -30,10 +32,13 @@ const (
 	// hostileTurn is how long after its first answer a hostile harness
 	// turns (capsule-echo's hostileDelay).
 	hostileTurn = 2 * time.Second
-	// guestHalted is what the guest's kernel prints when capsule-init stops
-	// the guest after its harness died: the guest halts, which leaves its
-	// VMM running.
+	// guestHalted is what a guest's kernel prints when it halts, which leaves
+	// its VMM running. capsule-init never halts a guest: it restarts it,
+	// which ends its VMM (guestinit.EndCommand, ADR 012 question 6). A
+	// console that shows it fails the test.
 	guestHalted = "reboot: System halted"
+	// guestRestarted is what it prints when capsule-init restarts it.
+	guestRestarted = "reboot: Restarting system"
 )
 
 // hostileScene is a registry lab with two agents, each in its own VM: a
@@ -210,33 +215,52 @@ func (s *hostileScene) awaitConsole(text string, bound time.Duration, sample fun
 	}
 }
 
-// awaitGuestStop waits until the hostile guest stopped: it halted, or its
-// VMM exited.
-func (s *hostileScene) awaitGuestStop(bound time.Duration, sample func()) {
+// refuseHalt fails the test if a guest's console shows that it halted.
+func refuseHalt(t *testing.T, console []byte) {
+	t.Helper()
+	if strings.Contains(string(console), guestHalted) {
+		t.Fatalf("the guest halted, which leaves its VMM running; its output ends with:\n%s", tail(console, 30))
+	}
+}
+
+// awaitVMMExit waits until the hostile VMM exits, for at most bound: its
+// guest restarted, which ends the VMM. A guest that halts fails at once.
+func (s *hostileScene) awaitVMMExit(bound time.Duration, sample func()) {
 	s.t.Helper()
-	for deadline := time.Now().Add(bound); sameProcess(s.run.PID, s.run.StartTicks) && !strings.Contains(s.output(), guestHalted); {
+	for deadline := time.Now().Add(bound); sameProcess(s.run.PID, s.run.StartTicks); {
+		out := []byte(s.output())
+		refuseHalt(s.t, out)
 		if time.Now().After(deadline) {
-			s.t.Fatalf("the hostile guest did not stop within %s; its output ends with:\n%s", bound, tail([]byte(s.output()), 30))
+			s.t.Fatalf("the hostile VMM did not exit within %s; its output ends with:\n%s", bound, tail(out, 30))
 		}
 		if sample != nil {
 			sample()
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+	out := s.output()
+	s.t.Logf("the hostile VMM exited; its guest restarted: %v; capsule-init reported a failure: %v; its output ends with:\n%s",
+		strings.Contains(out, guestRestarted), strings.Contains(out, "CAPSULE_INIT_FAILED"), tail([]byte(out), 12))
 }
 
 // aftermath checks what became of a hostile VM whose guest may have stopped.
-// A VMM that went away is a crash, which the worker counts against the
-// agent's restart budget, and the agent is STOPPED (ADR 012). A guest that
-// halted leaves its VMM running, which no document covers yet: it is
-// logged, not judged.
+// No guest halts: one that stops restarts, which ends its VMM, and a VMM
+// that went away is a crash (crashed).
 func (s *hostileScene) aftermath() {
 	s.t.Helper()
+	refuseHalt(s.t, []byte(s.output()))
 	if sameProcess(s.run.PID, s.run.StartTicks) {
-		s.t.Log("the hostile VMM still runs; its guest halted:", strings.Contains(s.output(), guestHalted),
-			"; agent state:", s.agentState(s.hostile), "; guest failures recorded:", s.guestFailures(s.hostile))
+		s.t.Log("the hostile VMM still runs; agent state:", s.agentState(s.hostile), "; guest failures recorded:", s.guestFailures(s.hostile))
 		return
 	}
+	s.crashed()
+}
+
+// crashed checks that the worker, at its next census, counts the exit of
+// the hostile VMM as a crash of its boot, against the agent's restart
+// budget, and that the agent is STOPPED (ADR 012).
+func (s *hostileScene) crashed() {
+	s.t.Helper()
 	if _, err := s.worker.Reconcile(s.t.Context()); err != nil {
 		s.t.Fatal(err)
 	}
@@ -286,11 +310,15 @@ func TestProductWorkerCPUCeilingHoldsAgainstABurningGuest(t *testing.T) {
 // A guest that takes memory without end cannot take the host's (RUN-007):
 // its VM has its plan's memory, and its VMM's cgroup allows 256 MiB more
 // for the VMM, with no swap (memory.max, ADR 012). The guest's own kernel
-// kills the harness (its console shows "Out of memory"), and capsule-init
-// stops the guest (docs/guest/README.md). The host's ceiling never acts:
-// the cgroup records no OOM, and its peak stays under memory.max while
-// reaching 7/8 of the VM's memory, so that a guest that does not fill its
-// memory fails. A well-behaved agent beside it answers, from the same VMM.
+// kills the harness (its console shows "Out of memory"). The host's ceiling
+// never acts: the cgroup records no OOM, and its peak stays under
+// memory.max while reaching 7/8 of the VM's memory, so that a guest that
+// does not fill its memory fails. A well-behaved agent beside it answers,
+// from the same VMM.
+//
+// The guest then crashes (ADR 012, question 6): capsule-init restarts it,
+// which ends its VMM, never halts it. The worker counts a crash of that
+// boot, the agent is STOPPED, and its next work boots it again: it answers.
 func TestProductWorkerMemoryCeilingHoldsAgainstAGuestThatEatsMemory(t *testing.T) {
 	const memoryMiB = 256
 	s := newHostileScene(t, "eat-memory", 1, memoryMiB)
@@ -310,7 +338,9 @@ func TestProductWorkerMemoryCeilingHoldsAgainstAGuestThatEatsMemory(t *testing.T
 	}
 	s.turn()
 	s.awaitConsole("Out of memory", 90*time.Second, sample)
-	s.awaitGuestStop(60*time.Second, sample)
+	s.awaitVMMExit(60*time.Second, sample)
+	// The VMM's cgroup stays until the worker retires its boot, at its next
+	// census, which no step has run yet.
 	peak := sampled
 	if raw, err := os.ReadFile(filepath.Join(s.group, "memory.peak")); err == nil {
 		if n, err := cgroupNumber(string(raw)); err == nil {
@@ -325,8 +355,64 @@ func TestProductWorkerMemoryCeilingHoldsAgainstAGuestThatEatsMemory(t *testing.T
 	if peak > ceiling || peak < (memoryMiB<<20)*7/8 {
 		t.Fatalf("the VMM's cgroup peaked at %d MiB; expected between %d MiB and its memory.max, %d MiB", peak>>20, memoryMiB*7/8, ceiling>>20)
 	}
-	s.neighbourAnswers("beside-a-stopped-agent")
-	s.aftermath()
+	s.neighbourAnswers("beside-a-crashed-agent")
+	s.crashed()
+	// The next work boots the agent again, and it answers from a new boot.
+	s.answers(s.hostile, "after-the-crash", "booted again")
+	if g := s.placementGeneration(s.hostile); g <= s.run.Generation {
+		t.Fatal("the agent answered from the boot that crashed", g, s.run.Generation)
+	}
+}
+
+// A guest whose harness dies each time it is ready crashes each time (ADR
+// 012, question 6): capsule-init restarts the guest, which ends its VMM, the
+// worker counts a crash of that boot at its next census, and the next work
+// boots the agent again. Once its crashes spend the agent's restart budget,
+// here 2 within an hour, the agent is FAILED with failure_reason crashed.
+// The harness eats memory 2 seconds after each boot's first answer, until
+// the guest's kernel kills it.
+func TestProductWorkerFailsAnAgentWhoseGuestKeepsCrashing(t *testing.T) {
+	l := newRegistryLab(t)
+	if err := l.worker.SetRestartBudget(controlplane.RestartBudget{Failures: 2, Window: time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	l.publishBehaviour("1.0.0", "opt/hostile", "eat-memory")
+	agent := l.create("crashing", "1.0.0").AgentID
+	var crashes []string
+	for i := range 2 {
+		// The first boot is the agent's wake; the second, this work's.
+		l.answers(agent, fmt.Sprintf("before-crash-%d", i), "answers before its harness dies")
+		var generation int64
+		var vm string
+		if err := l.db.QueryRow(t.Context(), "SELECT generation,vm_id FROM agent_placements WHERE agent_id=$1 AND state='RUNNING'",
+			agent).Scan(&generation, &vm); err != nil {
+			t.Fatal("the boot that answered", err)
+		}
+		crashes = append(crashes, fmt.Sprintf("%s/%d", controlplane.GuestCrashed, generation))
+		console := filepath.Join(l.root, "logs", vm+".log")
+		for deadline := time.Now().Add(2 * time.Minute); ; time.Sleep(250 * time.Millisecond) {
+			if _, err := l.worker.Reconcile(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			got := l.guestFailures(agent)
+			if slices.Equal(got, crashes) {
+				break
+			}
+			out, _ := os.ReadFile(console)
+			refuseHalt(t, out)
+			if len(got) >= len(crashes) || time.Now().After(deadline) {
+				t.Fatalf("guest failures recorded %v, expected %v; the guest's output ends with:\n%s", got, crashes, tail(out, 30))
+			}
+		}
+		if state := l.agentState(agent); i == 0 && state != "STOPPED" {
+			t.Fatal("the agent after its first crash reads", state)
+		}
+	}
+	var v controlplane.TenantAgent
+	l.request(l.owner(), "GET", "/v1/agents/"+agent, "", nil, 200, &v)
+	if v.State != "FAILED" || v.FailureReason == nil || *v.FailureReason != "crashed" {
+		t.Fatal("the agent after its budget", v.State, v.FailureReason)
+	}
 }
 
 // A fork bomb inside a guest creates no process on the host (RUN-007): the

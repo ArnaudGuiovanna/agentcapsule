@@ -44,6 +44,7 @@ REQUIRED_WORKER = {"TestProductWorkerProvisioningAndEncryptedWake", "TestProduct
     "TestProductWorkerDriveCeilingsHoldAgainstAFloodingGuest", "TestProductWorkerStopsBootingAGuestThatCrashesAtBoot",
     "TestProductWorkerCPUCeilingHoldsAgainstABurningGuest", "TestProductWorkerMemoryCeilingHoldsAgainstAGuestThatEatsMemory",
     "TestProductWorkerProcessCeilingsHoldAgainstAForkBomb", "TestProductWorkerWorkTimeoutBoundsAGuestThatNeverFiles",
+    "TestProductWorkerFailsAnAgentWhoseGuestKeepsCrashing",
     "TestProductWorkerRestoresAgentToAgentExchange", "TestProductWorkerJailsEachVMAndLeavesNothingBehind",
     "TestProductWorkerWakesQueuesAndKeepsAWorkingAgentAwake", "TestProductWorkerSenderWakesForTheReply",
     "TestProductWorkerRefetchesTheHarnessOfARestoredAgent"}

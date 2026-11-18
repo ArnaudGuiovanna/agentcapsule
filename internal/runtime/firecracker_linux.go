@@ -976,6 +976,9 @@ func (h *FirecrackerHost) prepare(a *HostAgent) error {
 	}
 	resources := a.resources()
 	// No "network-interfaces": the VM has no network device (ADR 012).
+	// reboot=k: a guest that restarts resets its CPU through the keyboard
+	// controller, and Firecracker exits on that reset, so a guest ends its
+	// VMM (guestinit.EndCommand); panic=1 restarts a guest whose kernel panics.
 	config := map[string]any{"boot-source": map[string]any{"kernel_image_path": "/kernel", "initrd_path": "/initrd", "boot_args": "console=ttyS0 reboot=k panic=1 pci=off"}, "machine-config": map[string]any{"vcpu_count": resources.VCPUs, "mem_size_mib": resources.MemoryMiB}, "drives": drives, "vsock": map[string]any{"guest_cid": 3, "uds_path": "/vsock"}}
 	b, err := json.Marshal(config)
 	if err != nil {
