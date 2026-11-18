@@ -152,14 +152,27 @@ func (c *Client) SeparateFrom(dataRoot string) error {
 
 // outage is the error of a connection that failed or ended.
 func outage(ctx context.Context, errs ...error) error {
-	return errors.Join(append(append([]error{restoreauthority.ErrUnavailable}, errs...), ctx.Err())...)
+	return errors.Join(append(append([]error{restoreauthority.ErrUnavailable}, errs...), ended(ctx))...)
 }
 
 func withContext(ctx context.Context, err error) error {
-	if ctx.Err() == nil {
+	if end := ended(ctx); end != nil {
+		return errors.Join(err, end)
+	}
+	return err
+}
+
+// ended is ctx's error, and context.DeadlineExceeded as soon as its deadline
+// has passed: the service ends an operation at that deadline, and its answer
+// can arrive before ctx's own timer has run.
+func ended(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return errors.Join(err, ctx.Err())
+	if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+		return context.DeadlineExceeded
+	}
+	return nil
 }
 
 func strictJSON(b []byte, v any) error {
@@ -277,7 +290,10 @@ func (c *Client) send(ctx context.Context, op string, args any) (*net.UnixConn, 
 			return nil, deadline, err
 		}
 		conn.SetWriteDeadline(time.Now().Add(writeTimeout))
-		err = authoritylog.WriteFrame(conn, svc.Request{Op: op, TimeoutMS: left.Milliseconds(), Args: raw})
+		// Rounded up: the service counts from its receipt, so its deadline
+		// is never before the caller's.
+		timeout := (left + time.Millisecond - 1).Milliseconds()
+		err = authoritylog.WriteFrame(conn, svc.Request{Op: op, TimeoutMS: timeout, Args: raw})
 		if err == nil {
 			return conn, deadline, nil
 		}
