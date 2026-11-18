@@ -93,14 +93,57 @@ caller gave up, or the VMM never started (a jailer or host fault): a guest
 that still answers was refused by the platform. Only failures of a live
 agent whose volume is not being restored count.
 
+**An unresponsive guest** is a third guest failure (question 7, decided on
+November 18, 2026, option (b), built the same day). A harness that never
+returns from an invocation holds its store's write transaction: each of the
+invocation's three attempts ends at the host's 20-second timeout, or when
+the guest answers that its store is busy, and the fence that must precede
+the invocation's death cannot commit. Before, the invocation never ended and
+the agent's later deliveries waited behind it. Now:
+- *Past the attempts* means that the agent's mailbox is held by its head
+  delivery: pending, an attempt may have reached it, no attempt is under way
+  (no live lease), and it can no longer be attempted (its three attempts are
+  spent, its deadline passed, or its retirement began). These are the
+  delivery's own counters (`attempts`, `attempt_limit`, `expires_at`,
+  `may_have_reached`, `closing`); no timer is added
+  (`deliveryStuck`, `internal/controlplane/unresponsive_guests.go`).
+- When the retirement of such a delivery (an invocation, a reply or a
+  status), or the closure of a request, fences that agent's store and the
+  guest of its running VM refuses, the worker stops that VM the way a sleep
+  does: a quiesce, then the VMM's forced removal
+  (`StopUnresponsiveGuest`, `internal/worker/unresponsive_linux.go`). It
+  records a guest failure of kind `unresponsive` for that boot, which counts
+  against the restart budget like the others. The fence is then tried
+  again: with no VM running, it goes through a restricted boot, whose
+  harness serves fences and refuses work. The invocation ends with its
+  documented state, `failed`, `delivery_outcome_unknown`, and the agent's
+  next delivery boots it again for work.
+- *The guest refuses* only when, while the worker still waits, the guest
+  answered that it could not fence (its error codes, a busy store's
+  `unavailable` among them) or nothing answered before the RPC's own
+  20-second timeout. A refusal is never inferred from the platform: the
+  worker's own deadline, a connection the host could not open or that a VMM
+  gone refused (reconciliation counts that as a crash), an authority or
+  PostgreSQL, which fail with other errors, nor a restricted boot
+  (`unresponsiveGuest`). A guest that refuses while an attempt is under way,
+  or while its mailbox holds nothing past its attempts, is not stopped: the
+  fence is tried again later, as before.
+- If this failure makes the agent `FAILED`, the restricted boot is not
+  claimed either: the invocation waits, closing, until a wake gives the
+  agent a new budget, as for any barrier of a `FAILED` agent.
+- A fence of an agent being deleted, and a guest whose control channel no
+  longer answers its health probe, are not covered: the former waits as
+  before, the latter is question 6 (c).
+
 **The budget.** Each failure is recorded once, keyed by its boot generation,
 in the transaction that publishes the retired generation `STOPPED`
 (migration 0031, `ObserveGuestFailure`). When an agent has had **5 failures
 within an hour** (default, **pending the product owner**; `restart_budget`
 in the worker's configuration, 1 to 100 within 1 minute to 24 hours), it is
-**`FAILED`**. Boot failures and crashes count together. The reason is the
-kind of the last failure: `boot_failed` or `crashed`. The agent views show
-`state: FAILED` and `failure_reason`.
+**`FAILED`**. Boot failures, crashes and unresponsive guests count
+together. The reason is the kind of the last failure: `boot_failed`,
+`crashed` or `unresponsive` (migration 0047 adds the third). The agent
+views show `state: FAILED` and `failure_reason`.
 
 **What a FAILED agent does.** Nothing boots it: no work boot, no credential
 replacement, no barrier boot is claimed (`bootAllowed` in `claimPlacement`).
@@ -181,10 +224,14 @@ and a decision on which secrets such a guest may still hold. It is **P1**.
   running VMM, not a crash; the agent reads `READY` until a delivery
   prepares it, then `STARTING`, and keeps its VM slot (question 6).
 - A harness that never returns from an invocation holds its store's write
-  transaction. Each attempt ends at the host's 20-second timeout, but ending
-  the invocation after its third attempt needs a fence on that store, which
-  the held transaction refuses: the invocation stays open, and the agent's
-  next deliveries wait behind it, until its VM is stopped (question 7).
+  transaction. Each attempt ends at the host's 20-second timeout, and the
+  fence that ends the invocation after its third attempt is refused: the
+  worker stops the VM, counts an `unresponsive` failure, and fences through
+  a restricted boot (question 7, option (b)). The invocation fails with
+  `delivery_outcome_unknown` about two minutes after it was sent, with the
+  default 30-second delivery lease, and the agent's next delivery boots it
+  again. What the held handler wrote is lost with its transaction. A guest
+  starved by its host could be counted wrongly; the budget allows 5 an hour.
 
 ## Tests
 
@@ -204,12 +251,32 @@ Unit tests (`go test -race`):
   `TestNeverFilesAnswersWorkingAndLoops`.
 - `internal/worker`, for the hostile-guest KVM tests: `TestCgroupFilesParse`,
   `TestCPUCeilingOfAWindow`.
+- For an unresponsive guest (question 7): `internal/worker`:
+  `TestOnlyAGuestThatDoesNotAnswerItsFenceIsUnresponsive`,
+  `TestPassesOfAGuestThatNeverAnswers`; `cmd/capsule-echo`:
+  `TestNeverReturnsHoldsItsStoreUntilTheHarnessStops` (a real store: a
+  fence cannot commit while the handler holds it, past the request's own
+  deadline).
 
 PostgreSQL tests:
 - `internal/controlplane`: `TestAnAgentWhoseGuestKeepsFailingIsFailed`,
   `TestCrashesSpendTheRestartBudget`, `TestRestoresAndDeletionsAreNotHeld`,
   `TestAWakeOfAFailedAgentFails`, `TestAPersonsFailedAgent`.
 - `internal/worker`: `TestGuestFailuresAreCountedAndLogged`.
+- For an unresponsive guest (question 7), each failing before the change:
+  `internal/controlplane`:
+  `TestAHarnessThatNeverAnswersIsStoppedAndItsInvocationEnds` (a handler
+  holds a real SQLite store; three attempts; the invocation behind waits; a
+  platform fault on the fence stops nothing; the refused fence stops the
+  VM, records `unresponsive` for its generation, fences through a
+  restricted boot; the invocation fails with `delivery_outcome_unknown`;
+  the held effect never committed; the next invocation is answered by a
+  new boot), `TestAnUnresponsiveGuestSpendsTheRestartBudget` (`FAILED`,
+  reason `unresponsive`, the invocation waits for a wake),
+  `TestAReplyPastItsAttemptsStopsTheGuestThatRefusesItsFence`,
+  `TestARequestPastItsAttemptsStopsOnlyTheGuestItHolds`,
+  `TestOnlyAFencePastTheAttemptsStopsAGuest`; `internal/worker`:
+  `TestAnUnresponsiveGuestIsStoppedAndCounted`.
 
 KVM tests, which need root and a guest whose `capsule-echo` floods with
 direct writes; both passed on November 17, 2026, with guest v26:
@@ -263,6 +330,19 @@ must still answer within 30 seconds from the same VMM:
   and has no result; the guest loops on within its `cpu.max`, and keeps its
   VM.
 
+The KVM test of an unresponsive guest (question 7), written on November 18,
+2026, never run (`internal/worker/product_unresponsive_integration_test.go`),
+packs `capsule-echo` with `never-returns`, which holds any invocation whose
+text says "never return" and answers the others:
+- `TestProductWorkerStopsAGuestThatNeverAnswersAnInvocation`: the agent
+  answers an ordinary invocation, then gets one it holds and one more
+  behind it. The passes may fail only with the held invocation's attempts,
+  its live lease and the invocation waiting behind it. The held invocation
+  fails with `delivery_outcome_unknown` and `attempts_exhausted` within 4
+  minutes; one `unresponsive` failure is recorded for the boot that held
+  it; its VMM is gone; the next invocation is answered by the release
+  booted again, after one restricted boot; the agent reads `READY`.
+
 A guest that stopped may leave its VMM running, halted (question 6): the
 tests log it, and check that a VMM that went away is counted as a crash.
 
@@ -309,6 +389,8 @@ tests log it, and check that a VMM that went away is counted as a crash.
    (a) as built, until someone puts the agent to sleep; (b) when a fence of
    a running VM fails past the attempts, the worker stops the VM, counts a
    guest failure and fences through a restricted boot. Recommendation: (b).
+   **Decided: (b), product owner, November 18, 2026**; built the same day
+   (§2, "An unresponsive guest"), with the failure kind `unresponsive`.
 8. **A VM after its work timeout.** An agent answers "working" and never
    files. Its invocation fails with `work_timeout`, but its VM keeps
    running, and computing, until someone puts it to sleep, since no idle

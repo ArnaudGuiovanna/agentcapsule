@@ -259,6 +259,25 @@ what still waits is:
   then: the deliveries behind it wait, except those that die out of order as
   above.
 
+An agent that runs but whose harness never returns from a delivery holds
+its store: its attempts end at the host's 20-second timeout, or when the
+guest answers that its store is busy, and the fence that ends the delivery
+cannot commit ([ADR 012](adr/012-limits-restart-budgets-egress.md),
+question 7). When the retirement of a delivery past its attempts, or a
+request's closure, fences that agent and its running guest answers that it
+cannot, or does not answer within the RPC's timeout, the worker stops the
+VM: a quiesce, then the VMM's forced removal. It records a guest failure
+`unresponsive` for that boot, against the agent's restart budget, and the
+fence goes through a restricted boot. *Past its attempts* means that the
+agent's mailbox head, which an attempt may have reached, has no attempt
+under way and can no longer be attempted: its three attempts spent, its
+deadline passed, or its retirement begun. A guest that refuses while an
+attempt is under way is not stopped, nor one whose failure is the
+platform's: the worker's own deadline, a connection the host could not
+open or that a VMM gone refused, an authority or PostgreSQL. The fence is
+then tried again at the job's next attempt, as before. A `FAILED` agent's
+restricted boot is not claimed: the delivery waits for a wake.
+
 `AgentCapsuleJobsFailing` and `AgentCapsuleVMBootFailures` tell the operator.
 When a delivery dies:
 - the request keeps its state: a replied request stays `REPLIED`;
@@ -568,11 +587,16 @@ whose harness dies once it is ready halts, and its VM keeps its slot and
 memory until the agent is put to sleep: no crash is counted
 ([ADR 012](adr/012-limits-restart-budgets-egress.md), question 6).
 
-An agent whose guest fails to boot, or crashes, too often stops being booted.
-A boot counts when its VMM ran and then exited, stopped answering, or
-answered with an incompatible contract before it was ready; a crash is a
-confirmed VM gone without a stop. A full host, a refused lease or an
-authority outage does not count. After 5 such failures within an hour, the
+An agent whose guest fails to boot, crashes, or does not answer, too often
+stops being booted. A boot counts when its VMM ran and then exited, stopped
+answering, or answered with an incompatible contract before it was ready; a
+crash is a confirmed VM gone without a stop. A guest does not answer when
+its harness holds its store past a delivery's attempts (question 7 of ADR
+012): the fence that ends the delivery, refused by the running guest, makes
+the worker stop that VM, a quiesce then a forced stop, and fence through a
+restricted boot (see "What follows a dead delivery" above).
+A full host, a refused lease or an authority outage does not count. After 5
+such failures within an hour, the
 agent is `FAILED`: no work, barrier or credential replacement boots it, its
 open wake ends `FAILED` (`restart_budget_exhausted`), and its work waits
 until a wake or its deadline. A wake requested for the agent gives it a new
