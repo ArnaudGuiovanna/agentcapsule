@@ -188,15 +188,17 @@ func (w *Placements) fence(ctx context.Context, target, subject string) (result 
 	if err != nil {
 		return err
 	}
+	// A running guest that does not answer its fence is reported as such: past
+	// a delivery's attempts, the control plane has its VM stopped.
 	if w.authority != nil {
 		e, err := w.store.VolumeEnrollment(ctx, target, w.hostID)
 		if err != nil {
 			return err
 		}
 		_, err = w.synchronizeAuthority(ctx, e, c)
-		return err
+		return unresponsiveGuest(ctx, c.Identity(), err)
 	}
-	return c.Fence(ctx, subject)
+	return unresponsiveGuest(ctx, c.Identity(), c.Fence(ctx, subject))
 }
 
 // bootForWork boots target for work (a delivery, a wake, a resume) in the
