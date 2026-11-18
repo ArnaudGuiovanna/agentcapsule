@@ -28,7 +28,7 @@ npm ci
 npx quint typecheck delivery.qnt
 npx quint run --main=invocationCompletion --init=init --step=step \
   --invariant=safety --max-steps=12 --max-samples=20000 invocation_completion.qnt
-# Bounded model checking needs a Java runtime for Apalache:
+# Bounded model checking needs a Java runtime for Apalache (see below):
 npx quint verify --main=invocationCompletion --init=init --step=step \
   --invariant=safety --max-steps=10 invocation_completion.qnt
 ```
@@ -37,7 +37,8 @@ npx quint verify --main=invocationCompletion --init=init --step=step \
 `scripts/check-repo-hygiene.py` checks [projections.md](projections.md).
 
 The concurrent protocol (P1) and service progress (P3) models are checked by
-their runs and by simulation of `safety`:
+their runs, by simulation of `safety`, and by the bounded and exhaustive
+checks [below](#bounded-and-exhaustive-checks):
 
 ```bash
 npx quint test --main=concurrentProtocolTests concurrent_protocol_test.qnt
@@ -64,6 +65,110 @@ npx quint run --main=restoreAuthorityFailover --step=focusedStep \
   --invariant=safety --max-steps=80 --max-samples=100000 \
   --witnesses promotedWitness windowRestoredWitness restore_authority.qnt
 ```
+
+### Bounded and exhaustive checks
+
+`quint test` and `quint run` explore samples. Apalache (`quint verify`) checks
+every execution up to a number of steps, and TLC (`quint verify
+--backend=tlc`) every reachable state of a finite instance; both need a Java
+runtime. `scripts/check-models.py` runs every such check the models declare,
+one at a time, and fails unless each ends as the repository expects:
+
+- the fixed witness schedules (`traceInit`, `traceStep`) of
+  `concurrent_witness.qnt` and `restore_witness.qnt`: `checked` must fail at
+  the schedule's last step, not before (Apalache); in `protocol_witness.qnt`
+  the broken instances must fail within their schedule and the conforming one
+  must not;
+- the depth wrappers of `concurrent_bounded.qnt`, `concurrent_focused.qnt` and
+  `bounded.qnt`: `safety` (or `checked`) holds in every state up to the depth
+  (TLC; the frontier is a deadlock, which TLC's `-deadlock` ignores);
+- P3's temporal properties (`progress`, `observed`, `deletionCompletes`,
+  `successfulDelivery`) hold, and fail without priority, without the outbox,
+  for endless arrivals and in the two controls of
+  `service_progress_controls.qnt` (TLC);
+- `liveness.qnt` (TLC), the inductive invariants of `induction.qnt` and the
+  three obligations of `protocol_induction.qnt` (Apalache);
+- each other model: every reachable state of its correct instance (TLC), and
+  a counterexample from each broken configuration within a stated number of
+  steps (Apalache).
+
+`python3 scripts/check-models.py --list` prints each check with its bounds,
+backend, expected result and time limit. `scripts/test_check_models.py`, run
+by CI, fails when a witness schedule or a module of the checkers' files has no
+check.
+
+**Tested toolchain** (installed without root, recorded with these digests in
+`~/.local/share/agentcapsule-tools/model-checkers.json`, which the script
+checks before any run):
+
+| Tool | Version | Where | SHA-256 |
+|---|---|---|---|
+| Quint | 0.33.1 | `spec/node_modules` (`npm ci`) | `spec/package-lock.json` |
+| Eclipse Temurin JDK | 21.0.13+9 (LTS) | `jdk/jdk-21.0.13+9` | `OpenJDK21U-jdk_x64_linux_hotspot_21.0.13_9.tar.gz`: `d7f5d5cf865a2902b70ff549b97586a7d3f234e016f041ab447ea740c7d66d1c` |
+| Apalache | 0.62.4, the version Quint 0.33.1 pins | `apalache/apalache-dist-0.62.4/apalache` | `apalache.tgz`: `8ac8488422c30d552735bae11b92a2d014d8e02e8608702acc08f9a2d8a9abb2`; `lib/apalache.jar`: `e5223915507b65cc5f1638bd037ede60f8a4fc1644aff46355779f9b05df9262` |
+| TLC | the one inside `apalache.jar` | | Quint runs `java -cp apalache.jar tlc2.TLC`; it never uses a separate `tla2tools.jar` |
+
+The JDK is the Temurin tarball of the Adoptium API, the Apalache archive the
+`apalache.tgz` of its GitHub release; each digest above matches the one its
+publisher lists. Quint finds Apalache under `QUINT_HOME`
+(`apalache/` here) instead of downloading it into `~/.quint`. The script sets
+`QUINT_HOME`, puts the JDK first on `PATH`, and keeps TLC's files under the
+check's own directory, never in `/tmp`.
+
+Each check reads only the modules it needs, copied alone into files of the
+same names (`src/` in its directory). `quint verify` sends Apalache the typed
+spec of every module it loaded as one string: the whole of
+`restore_witness.qnt` with `restore_authority.qnt` makes 446 MB of it for one
+witness, and Quint 0.33.1 then fails (`RangeError: Invalid string length`) or
+exits 0 without a result. The script never counts an exit without Quint's
+`[ok]` (and, for TLC, its completion line) as a pass.
+
+**Last run, 2026-11-17 and 18** (12 cores and 15 GB shared with other work,
+TLC with four workers; evidence kept locally under
+`quint/results/check-models-full-*`):
+
+| Result | Checks |
+|---|---|
+| As expected | 131 of 134: every correct configuration holds within its bounds, every witness schedule and broken configuration fails |
+| Counterexample in a correct configuration | none |
+| Bound not reached, no counterexample among the states explored (not a pass) | `restoreAuthorityTiny`: 245.7 million states to depth 20, 112 million queued, 2-hour limit. `concurrentProtocolLoadedDepth12`: 35.3 million states to depth 9 of 13, 31.9 million queued, 1-hour limit. `concurrentProtocolDepth8`: 56.8 million states, its last level reached with 39.6 million states still queued, stopped after 1 hour 56 minutes |
+
+- No invariant or temporal property fails in a correct configuration, and
+  every witness schedule and broken configuration fails as it must, each
+  witness of `concurrent_witness.qnt` and `restore_witness.qnt` at its last
+  step.
+- **P1.** Every execution of up to 7 steps from the initial state keeps
+  `checked` (28,878,324 states, 72 minutes). That graph is the one of
+  November 7: within 7 steps no reply exists and no closure commits, so
+  none of the actions ADR 007 and ADR 008 added is reached; nor from the
+  loaded and closing prefixes (1,836,022 and 1,716,076 states, unchanged).
+  Three more prefixes of `concurrent_focused.qnt`, each reachable by a run,
+  start where those actions do, and every 6-step continuation keeps
+  `checked`: a reply not yet sent (16,490,756 states: its deadline, its
+  death unsent or behind its fence, the loss of the request's delivery), the
+  reply delivered (6,990,594 states: its loss and redelivery), and a request
+  expiring with its delivery under way and a bystander stopped (16,211,600
+  states: the closure of its two parties only). The 12-step continuations
+  of the four-request prefix do not fit this machine: after an hour, 35.3
+  million states to depth 9 of 13, all keeping `safety`, 31.9 million
+  queued; nor do the 8-step executions from the initial state, stopped
+  after 1 hour 56 minutes with 56.8 million states explored and 39.6
+  million queued (they would not reach those actions either).
+- **P3.** `safety` holds in all 973,632 reachable states of
+  `serviceProgressSmall`, and so do `progress`, `observed` and
+  `deletionCompletes`; `successfulDelivery` holds on
+  `serviceProgressReliable` (45,120 states). The negative property and the
+  four broken or control configurations each yield a counterexample.
+- **P2.** `restoreAuthorityTiny` did not finish within two hours: 245.7
+  million distinct states to depth 20, all keeping `safety`, with 112
+  million still queued. Since D-05 its state space is beyond this machine;
+  the November 7 model, without the replica and the failover, completed.
+  The restore witnesses and simulations remain its checks.
+- **The other models.** The depth wrappers of `bounded.qnt` hold, among them
+  `messagingDepth10` (34,486,031 states) and `deliveryLargeDepth12`
+  (46,714,801 states), and so does every reachable state of `deliveryLarge`
+  (45,176,641 states); the liveness, induction and protocol-induction
+  checks pass, `protocolInductive.preserved` in 12 minutes.
 
 ## Models
 
