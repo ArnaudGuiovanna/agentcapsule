@@ -61,20 +61,36 @@ func TestContractHarnessChild(t *testing.T) {
 	if err = server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		t.Fatal(err)
 	}
+	if mode == "contract-child-slow-stop" {
+		// As a harness whose main function returns: SIGTERM has its default
+		// action again, and the process still has work before it exits.
+		cancel()
+		lingerUntilReleased(t, boot.DataDirectory)
+	}
 	if err = os.WriteFile(filepath.Join(boot.DataDirectory, "terminated"), []byte("stopped"), 0600); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestSupervisorRejectsHealthyButIncompatibleHarnessBeforeProxy(t *testing.T) {
-	root, err := os.MkdirTemp("", "acp-contract-")
-	if err != nil {
+// lingerUntilReleased says it is stopping, in dir, and waits until the test
+// releases it, 30 seconds at most.
+func lingerUntilReleased(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, "stopping"), nil, 0600); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.RemoveAll(root) })
-	if err = os.Chmod(root, 0711); err != nil {
-		t.Fatal(err)
+	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		if _, err := os.Stat(filepath.Join(dir, "released")); err == nil {
+			return
+		}
 	}
+	t.Fatal("never released")
+}
+
+// harnessFixture copies this test binary into root, where the harness's
+// account may execute it, to run TestContractHarnessChild.
+func harnessFixture(t *testing.T, root string) string {
+	t.Helper()
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
@@ -90,10 +106,22 @@ func TestSupervisorRejectsHealthyButIncompatibleHarnessBeforeProxy(t *testing.T)
 		t.Fatal(err)
 	}
 	_, copied := io.Copy(out, in)
-	err = errors.Join(copied, in.Close(), out.Close())
+	if err = errors.Join(copied, in.Close(), out.Close()); err != nil {
+		t.Fatal(err)
+	}
+	return binary
+}
+
+func TestSupervisorRejectsHealthyButIncompatibleHarnessBeforeProxy(t *testing.T) {
+	root, err := os.MkdirTemp("", "acp-contract-")
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { os.RemoveAll(root) })
+	if err = os.Chmod(root, 0711); err != nil {
+		t.Fatal(err)
+	}
+	binary := harnessFixture(t, root)
 	uid, gid := uint32(os.Geteuid()), uint32(os.Getegid())
 	if uid == 0 {
 		uid, gid = 1000, 1000

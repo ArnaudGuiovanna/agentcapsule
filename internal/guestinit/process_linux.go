@@ -43,8 +43,11 @@ type Process struct {
 	mu     sync.Mutex
 	err    error
 	forced bool
-	opts   ProcessOptions
-	proxy  http.Handler
+	// terminated: Stop sent SIGTERM; a second could reach the harness after
+	// it restored the signal's default action, and end its graceful stop.
+	terminated bool
+	opts       ProcessOptions
+	proxy      http.Handler
 }
 
 func (p *Process) Done() <-chan struct{} { return p.done }
@@ -96,14 +99,22 @@ func (p *Process) drainGroup(ctx context.Context) error {
 	}
 }
 
+// Stop asks the harness to stop (SIGTERM, once whoever calls) and waits for
+// it to exit; at ctx's end it kills the harness and its descendants.
 func (p *Process) Stop(ctx context.Context) error {
 	select {
 	case <-p.done:
 		return p.Err()
 	default:
 	}
-	if err := p.cmd.Process.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
-		return err
+	p.mu.Lock()
+	first := !p.terminated
+	p.terminated = true
+	p.mu.Unlock()
+	if first {
+		if err := p.cmd.Process.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			return err
+		}
 	}
 	select {
 	case <-p.done:
