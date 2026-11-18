@@ -79,7 +79,9 @@ receives its non-secret configuration on FD 3 and its Unix listener on FD 4.
 credentials and the LUKS key stay in `capsule-init`. When the harness exits,
 its descendants are removed and the guest stops, except during a requested
 quiesce. `POST /v1/lifecycle/quiesce` closes admission, waits for calls already
-admitted, then asks the harness to terminate. A successful exit with no
+admitted, then asks the harness to terminate. The harness gets `SIGTERM` once,
+however many stops are requested, and is killed with its descendants if it
+has not exited by the stop's deadline. A successful exit with no
 remaining descendant precedes `syncfs`, the normal unmounts and the closing of
 dm-crypt. The supervisor then stays alive to acknowledge this sequence on the
 mTLS channel of the current boot. The receipt is replayable; a failure is final
