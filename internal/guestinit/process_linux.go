@@ -46,11 +46,29 @@ type Process struct {
 	// terminated: Stop sent SIGTERM; a second could reach the harness after
 	// it restored the signal's default action, and end its graceful stop.
 	terminated bool
-	opts       ProcessOptions
-	proxy      http.Handler
+	// gone: once done, the harness's processes are confirmed gone, its
+	// cgroup drained, whatever its exit status.
+	gone  bool
+	opts  ProcessOptions
+	proxy http.Handler
 }
 
 func (p *Process) Done() <-chan struct{} { return p.done }
+
+// Gone reports whether the harness's processes are confirmed gone: it
+// exited and its cgroup drained, whatever its exit status. Nothing of it can
+// write to the store any more. False while it runs, and when its cgroup did
+// not drain.
+func (p *Process) Gone() bool {
+	select {
+	case <-p.done:
+	default:
+		return false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.gone
+}
 func (p *Process) Err() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -238,6 +256,8 @@ func StartHarness(lifetime, readiness context.Context, opts ProcessOptions) (*Pr
 	go func() {
 		err := cmd.Wait()
 		err = errors.Join(err, bridge.close())
+		// Without a cgroup (unit tests), the reaped child was the only process.
+		gone := true
 		if opts.Cgroup != "" {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			empty, observed := p.groupEmpty()
@@ -247,7 +267,9 @@ func StartHarness(lifetime, readiness context.Context, opts ProcessOptions) (*Pr
 				// Retire them, but preserve the forced-exit classification.
 				err = errors.Join(err, p.killGroup())
 			}
-			err = errors.Join(err, p.drainGroup(ctx))
+			drained := p.drainGroup(ctx)
+			err = errors.Join(err, drained)
+			gone = drained == nil
 			cancel()
 		}
 		_ = os.Remove(opts.SocketPath)
@@ -256,7 +278,7 @@ func StartHarness(lifetime, readiness context.Context, opts ProcessOptions) (*Pr
 			err = errors.Join(err, unbind(dataBind))
 		}
 		p.mu.Lock()
-		p.err = err
+		p.err, p.gone = err, gone
 		p.mu.Unlock()
 		close(p.done)
 	}()

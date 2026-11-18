@@ -89,9 +89,10 @@ Not done:
 
 A guest whose harness exits or dies, at any time, ends its VMM (question 6,
 decided on November 18, 2026). `capsule-init` stops the harness's
-descendants and closes the agent's store as before (`syncfs`, unmounts,
-dm-crypt), synchronizes what is left, then restarts the guest
-(`guestinit.End`). The guest's kernel is booted with `reboot=k`, so it
+descendants and, once none remains, whatever the harness's exit status,
+closes the agent's store (`syncfs`, unmounts, dm-crypt); a harness whose
+processes cannot be confirmed gone leaves the store mounted. It then
+synchronizes what is left and restarts the guest (`guestinit.End`). The guest's kernel is booted with `reboot=k`, so it
 restarts by resetting the CPU through the keyboard controller, and
 Firecracker exits on that reset (its `docs/api_requests/actions.md`:
 "Firecracker exits on CPU reset"). Before the guest is ready, the start

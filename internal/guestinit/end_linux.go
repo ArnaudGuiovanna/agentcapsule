@@ -24,12 +24,12 @@ import (
 const EndCommand = syscall.LINUX_REBOOT_CMD_RESTART
 
 // End runs the supervisor (run), then ends the guest. run returns only after
-// its own cleanup: the harness and its descendants are gone, and the agent's
-// store is synchronized (syncfs), unmounted and closed (dm-crypt), as far as
-// that succeeded. A failed run is reported on the console. reboot(2) does not
-// write back what the page cache still holds, so End synchronizes every
-// filesystem first; it matters only when that cleanup did not finish. End
-// returns only if reboot fails.
+// its own cleanup: the harness is stopped and, once its processes are
+// confirmed gone, the agent's store is synchronized (syncfs), unmounted and
+// closed (dm-crypt) (StopHarnessAndCloseStore). A failed run is reported on
+// the console. reboot(2) does not write back what the page cache still
+// holds, so End synchronizes every filesystem first; it matters only when
+// the store could not be closed. End returns only if reboot fails.
 func End(run func() error, console io.Writer, sync func(), reboot func(cmd int) error) error {
 	if run() != nil {
 		_, _ = fmt.Fprintln(console, "CAPSULE_INIT_FAILED")
