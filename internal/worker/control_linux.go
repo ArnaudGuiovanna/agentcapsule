@@ -189,7 +189,8 @@ func (w *Placements) fence(ctx context.Context, target, subject string) (result 
 		return err
 	}
 	// A running guest that does not answer its fence is reported as such: past
-	// a delivery's attempts, the control plane has its VM stopped.
+	// a delivery's attempts, or for its agent's deletion, the control plane
+	// has its VM stopped.
 	if w.authority != nil {
 		e, err := w.store.VolumeEnrollment(ctx, target, w.hostID)
 		if err != nil {
