@@ -289,3 +289,54 @@ func TestHelperSurvivesSignalsUnderTheFilter(t *testing.T) {
 		}
 	}
 }
+
+// mapsWithoutPause, in a helper started with it in its environment, maps and
+// unmaps memory without pause on other goroutines, as the runtime's
+// finalizer, collector or scheduler may at any time. A map that fails ends
+// the helper with status unmapped. It runs as this package's variables are
+// set, before the helper's init.
+const mapsWithoutPause = "AGENTCAPSULE_SANDBOX_MAPS_WITHOUT_PAUSE"
+
+const unmapped = 86
+
+var _ = func() bool {
+	if len(os.Args) == 0 || os.Args[0] != HelperName || os.Getenv(mapsWithoutPause) == "" {
+		return false
+	}
+	for range 4 {
+		go func() {
+			for {
+				b, err := unix.Mmap(-1, 0, 1<<16, unix.PROT_READ|unix.PROT_WRITE, unix.MAP_PRIVATE|unix.MAP_ANONYMOUS)
+				if err != nil {
+					os.Exit(unmapped)
+				}
+				_ = unix.Munmap(b)
+			}
+		}()
+	}
+	return true
+}()
+
+// REG-01: the address-space limit is the whole helper's, set before the
+// program starts, while the helper's other threads may still run Go code; one
+// that maps memory then fails, and the runtime ends the helper (status 2,
+// "runtime: cannot allocate memory"): a loaded host saw it. So the helper runs
+// Go code on one processor at a time, which its own thread keeps from the
+// limit to the program. In a helper whose other goroutines map memory without
+// pause, the probe, an allowed call, must run every time.
+func TestHelperSurvivesOtherThreadsThatMapMemory(t *testing.T) {
+	path := probe(t, unix.SYS_GETUID, false)
+	for i := range 20 {
+		cmd, _, done := helperCommand(t, "0", "0", "1", strictFilter, "-", path)
+		cmd.Env = append(cmd.Env, mapsWithoutPause+"=1")
+		err := cmd.Run()
+		reason := done()
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && exit.ExitCode() == unmapped {
+			t.Fatalf("run %d: another thread of the helper could not map memory", i)
+		}
+		if err != nil {
+			t.Fatalf("run %d: %v %s", i, err, reason)
+		}
+	}
+}
