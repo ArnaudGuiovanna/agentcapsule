@@ -25,8 +25,12 @@ func assertLocalBarrier(t *testing.T, local *harnessstore.Store, subject string)
 }
 
 func TestBootSynchronizesIndependentAndSQLRevocationsBeforeConfirmation(t *testing.T) {
+	forEachAuthority(t, testBootSynchronizesIndependentAndSQLRevocationsBeforeConfirmation)
+}
+
+func testBootSynchronizesIndependentAndSQLRevocationsBeforeConfirmation(t *testing.T, implementation string) {
 	b := newBootLab(t)
-	a := b.withAuthority(t, true)
+	a := b.withAuthority(t, implementation, true)
 	// Independent history remains present even if the SQL snapshot omits it.
 	if _, err := a.BeginRevocation(t.Context(), "agent/old-decision"); err != nil {
 		t.Fatal(err)
@@ -65,8 +69,12 @@ func TestBootSynchronizesIndependentAndSQLRevocationsBeforeConfirmation(t *testi
 }
 
 func TestLostGuestFenceACKDoesNotBecomeIndependentReceipt(t *testing.T) {
+	forEachAuthority(t, testLostGuestFenceACKDoesNotBecomeIndependentReceipt)
+}
+
+func testLostGuestFenceACKDoesNotBecomeIndependentReceipt(t *testing.T, implementation string) {
 	b := newBootLab(t)
-	a := b.withAuthority(t, true)
+	a := b.withAuthority(t, implementation, true)
 	subject := "agent/revoked"
 	if _, err := a.BeginRevocation(t.Context(), subject); err != nil {
 		t.Fatal(err)

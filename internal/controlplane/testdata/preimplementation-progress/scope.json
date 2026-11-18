@@ -9,16 +9,17 @@
     },
     "request_0": "a -> b; terminal notice returns to a",
     "request_1_and_2": "b -> a; terminal notices share b FIFO",
-    "capacity": "excluded; local callback execution is not physical VMM occupancy",
+    "capacity": "In retiring-notice-reserves-capacity, barrier-reserves-capacity, fence-waits-for-current-execution and fifo-admission-cannot-overtake: the host's work queue (worker_jobs). Each step is followed by the worker's DiscoverWork; admit(i) is the worker's ClaimWork, which must give request i's delivery job, and complete(i) ends that job. A refused admit(i) is ClaimWork giving older work: a notification to retire, a closing request's work, or a request ahead in the admission queue. A fence waits for the effect transaction open in its store. Local callback execution is not physical VMM occupancy; VM slots and the host's admission locks are outside this replay.",
     "initial_environment": "Two seeded agents/mandates/current SQL placements; real accounts/tokens and encrypted Transit. Private-schema attempt_limit default is 2.",
     "time": "Model deadlines and lease expiration age the corresponding SQL timestamps; production guards and commits still execute.",
     "complete": "Real local SQLite writer commits, production request ACK then authenticated VM-bound encrypted reply transaction.",
     "observe": "Authenticated production owner Request lookup returns terminal state and, for success, decrypted private result. Observation flag records a successful read, not a new persisted Go state.",
-    "recycle": "Only model-slot binding is released. Old request UUIDs, results, notification reception and SQLite effects must remain; next arrival allocates a fresh UUID.",
+    "recycle": "Only model-slot binding is released. Old request UUIDs, results, notification reception and SQLite effects must remain; next arrival allocates a fresh UUID. A refused recycle (notice outstanding) is checked against the production purge (Transit.PurgeExpired, seven days aged): the delivered request's content goes, the reply the pending notice carries stays, and its owner still reads it.",
     "notification_failure": "Actual TCP ECONNREFUSED after SQL dispatch authorization; lease expiry permits retry. Final retirement uses production event fence and rejects delayed copies.",
     "store_availability": "Stop/drain real local mTLS server and close SQLite; actual Health/Fence failures mark it unavailable. Recovery reopens the same current SQLite file with authenticated local transport. This is not rollback restore or a VMM reboot.",
     "authority_availability": "The production owner lookup has its own real PostgreSQL pool through a loopback proxy. Closing listener and active connections causes actual lookup failure; reopening the endpoint restores lookup of the same encrypted outcome. This is read-path SQL authority availability, not D5 independent key-root recovery.",
-    "worker_availability": "A dedicated Go subprocess executes DiscoverWork, ClaimWork, ClaimDelivery, AuthorizeDispatch, encrypted resolution, delivery ACK/CompleteWork and private reply transactions. SIGKILL is observed after request acceptance/discovery; a fresh process consumes the retained ticket. mTLS/SQLite callback driving remains in the parent. This is not the full Firecracker worker service."
+    "worker_availability": "A dedicated Go subprocess executes DiscoverWork, ClaimWork, ClaimDelivery, AuthorizeDispatch, encrypted resolution, delivery ACK/CompleteWork and private reply transactions. SIGKILL is observed after request acceptance/discovery; a fresh process consumes the retained ticket. mTLS/SQLite callback driving remains in the parent. This is not the full Firecracker worker service.",
+    "deletion": "Only in deleted-destination-rejects-new-work, with no request in flight: requestDelete is the owner's production deletion request for agent a (store 0), finishDelete the production fence of agent/a in both local stores, their SQL receipts and the tombstone commit. Pending is agent a QUIESCING, complete is DELETING or DELETED. The refused arrival is a production submission from a's still-running VM, refused for its placement."
   },
   "compared": [
     "request stage/result projected from SQL",
@@ -33,23 +34,18 @@
     "Actual local store Health availability",
     "Actual owner-lookup PostgreSQL connection availability and failed production reads",
     "Owned SQL worker SIGKILL/Wait, replacement PID, live ping and durable queued work",
-    "Refused terminal commit without all fences; refused fence on disconnected store; refused owner lookup while disconnected"
+    "Refused terminal commit without all fences; refused fence on disconnected store; refused owner lookup while disconnected",
+    "Refused admission: the host work queue's next job (ClaimWork) is older work; refused fence: it waits for the store's open writer; refused recycle: the purge keeps the pending notice's reply"
   ],
   "not_established": [
-    "global admission ordering or scheduler fairness",
+    "admission order across hosts, with several workers, or scheduler fairness",
     "physical capacity, lifecycle and VMM isolation",
     "selective deletion mapping (request peers differ from abstract job destinations)",
     "a refinement proof or unbounded temporal liveness of Go",
     "D5 independent key/history authority, restoration of an old backup, full Firecracker worker recovery"
   ],
   "remaining_case_requirements": {
-    "retiring-notice-waits-for-capacity": "Physical/shared admission maintenance-capacity adapter",
-    "retiring-notice-reserves-capacity": "Physical/shared admission maintenance-capacity adapter",
-    "delete-running-agent-preserves-other-work": "Explicit binding for affected participant sets and physical cancellation; simple reciprocal two-agent binding is insufficient",
-    "barrier-reserves-capacity": "Production maintenance admission/capacity adapter",
-    "fence-waits-for-current-execution": "Production admission/capacity adapter with competing request",
-    "cannot-recycle-with-outstanding-notice": "Production identity retention/cleanup contract; do not invent an application recycle method",
-    "fifo-admission-cannot-overtake": "Global runtime/work admission correspondence, not per-agent mailbox FIFO alone",
-    "deleted-destination-rejects-new-work": "Deletion/retirement binding with real refusal"
+    "retiring-notice-waits-for-capacity": "Not replayable as Go stands: request 1 (b -> a) arrives after notice 0 (to a), and a's mailbox, FIFO over requests and notices, refuses admit(1). With a third agent executing request 1, Go would not refuse the retirement: a notification attempt and a barrier both take the host's exclusive turn behind a synchronous callback, and neither waits for an asynchronous computation. P3 lets the attempts through and holds the barrier.",
+    "delete-running-agent-preserves-other-work": "Three agents (request 1 executed by c) and a deletion that closes request 0 at its tombstone, not by its own closure: TestDeletionOfARunningAgentPreservesOtherWork, outside this replay"
   }
 }

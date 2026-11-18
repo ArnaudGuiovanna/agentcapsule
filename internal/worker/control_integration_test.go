@@ -96,9 +96,10 @@ func TestControlVMDeliveryAndRevocation(t *testing.T) {
 	if err = w.store.ReconcileRequestClosure(t.Context(), req.RequestID, w); err != nil {
 		t.Fatal(err)
 	}
-	// All three real guest stores acknowledged the request barrier before PG closed it.
+	// The real guest stores of both parties acknowledged the request barrier
+	// before PG closed it; no other store is a target (ADR 007 §7).
 	var acked int
-	if err = db.QueryRow(t.Context(), "SELECT count(*) FROM "+pgx.Identifier{schema, "request_closure_targets"}.Sanitize()+" WHERE request_id=$1 AND acknowledged", req.RequestID).Scan(&acked); err != nil || acked != 3 {
+	if err = db.QueryRow(t.Context(), "SELECT count(*) FROM "+pgx.Identifier{schema, "request_closure_targets"}.Sanitize()+" WHERE request_id=$1 AND acknowledged", req.RequestID).Scan(&acked); err != nil || acked != 2 {
 		t.Fatalf("barrier census: %d %v", acked, err)
 	}
 	if _, err = oldClient.Send(t.Context(), attempt.Envelope); !errors.Is(err, harnessstore.ErrFenced) {

@@ -11,6 +11,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import tempfile
 import unittest
 from unittest import mock
@@ -20,6 +21,10 @@ CHECK = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(CHECK)
 MODULE = "example.invalid/capsule"
 PACKAGE = MODULE + "/internal/controlplane"
+SCRIPTS = Path(__file__).resolve().parent
+ROOT = SCRIPTS.parent
+# Go 1.27.4 refuses "-l:<file>" in #cgo LDFLAGS unless $CGO_LDFLAGS_ALLOW allows it.
+LINK_FLAG_ALLOW = r"-l:libcryptsetup\.so\.12"
 
 
 def successful_events(with_pg_skip=False):
@@ -107,6 +112,10 @@ class LocalCheckTests(unittest.TestCase):
         self.assertFalse(any(key.startswith(("PG", "AC_", "AGENTCAPSULE_", "CAPSULE_CRASH_")) for key in env))
         self.assertEqual(original["PGHOST"], "db")
 
+    def test_environment_allows_the_libcryptsetup_link_flag_only(self):
+        env = CHECK.local_environment({"PATH": "/usr/bin", "CGO_LDFLAGS_ALLOW": ".*"}, Path("/tools/go/bin/go"))
+        self.assertEqual(env["CGO_LDFLAGS_ALLOW"], LINK_FLAG_ALLOW)
+
     def test_expected_postgres_skip_is_separate_from_pass(self):
         result = CHECK.analyze_events(successful_events(True), MODULE)
         self.assertEqual(len(result["passed_tests"]), 1)
@@ -184,6 +193,37 @@ class LocalCheckTests(unittest.TestCase):
     def test_archive_package_event_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "outside cmd/internal"):
             CHECK.analyze_events([{"Action": "pass", "Package": MODULE + "/evidence/old"}], MODULE)
+
+
+class LinkFlagTests(unittest.TestCase):
+    """internal/volumestore links "-l:libcryptsetup.so.12": the shared library,
+    without the development symlink. Every runner that compiles it allows that
+    one flag itself: sudo and the release build do not pass the caller's
+    environment on."""
+
+    COMPILERS = ("audit-dependencies.py", "build-release.py", "check-go.py", "load-test.py",
+                 "verify-archive-shipping.py", "verify-install.py", "verify-postgres.py",
+                 "verify-product-guest.py", "verify-runtime.py")
+
+    def test_the_pattern_allows_the_directive_and_nothing_else(self):
+        source = (ROOT / "internal/volumestore/luks_linux.go").read_text()
+        flags = [flag for line in re.findall(r"^#cgo LDFLAGS: (.+)$", source, re.M) for flag in line.split()]
+        self.assertEqual(flags, ["-l:libcryptsetup.so.12"])
+        self.assertIsNotNone(re.fullmatch(LINK_FLAG_ALLOW, flags[0]))
+        for other in ("-l:libcryptsetup.so.120", "-l:libcryptsetupXso.12", "-l:/tmp/libcryptsetup.so.12", "-l:script.ld"):
+            self.assertIsNone(re.fullmatch(LINK_FLAG_ALLOW, other), other)
+
+    def test_every_runner_that_compiles_the_library_allows_the_flag(self):
+        for name in self.COMPILERS:
+            text = (SCRIPTS / name).read_text()
+            self.assertTrue("CGO_LDFLAGS_ALLOW" in text and 'r"' + LINK_FLAG_ALLOW + '"' in text,
+                            f"{name} does not allow {LINK_FLAG_ALLOW}")
+
+    def test_the_workflows_allow_the_flag(self):
+        for name in ("ci.yml", "release.yml"):
+            text = (ROOT / ".github/workflows" / name).read_text()
+            self.assertTrue("  CGO_LDFLAGS_ALLOW: '" + LINK_FLAG_ALLOW + "'\n" in text,
+                            f"{name} does not allow {LINK_FLAG_ALLOW}")
 
 
 if __name__ == "__main__":

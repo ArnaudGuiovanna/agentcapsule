@@ -31,7 +31,25 @@ type Server struct {
 	// routes are the registered patterns, the vocabulary of telemetry.
 	routes    []string
 	telemetry *apiTelemetry
+	// tracing records spans (OPR-3); nil without traces.
+	tracing *apiTracing
+	// authority reports the authority service to the readiness probe; nil
+	// without the service (development mode only).
+	authority AuthorityStatus
 }
+
+// AuthorityStatus gives the authority service's mode: standalone,
+// synchronous, degraded or waiting. It fails when the service does not
+// answer with the identities the API pins (ADR 006, wave 4).
+type AuthorityStatus func(context.Context) (string, error)
+
+// authorityProbe bounds the readiness probe's question to the authority
+// service, well within the request's own deadline.
+const authorityProbe = 2 * time.Second
+
+// ReportAuthority makes the readiness probe report the authority service.
+// Call it before serving.
+func (s *Server) ReportAuthority(status AuthorityStatus) { s.authority = status }
 
 func (s *Server) handle(pattern string, h func(http.ResponseWriter, *http.Request)) {
 	s.routes = append(s.routes, pattern)
@@ -62,6 +80,7 @@ func NewForHost(store *controlplane.Store, accounts *controlplane.Accounts, host
 	s.handle("/v1/queue/limits", s.queueLimits)
 	s.handle("/v1/invocations/{id}/result", s.instructionResult)
 	s.handle("/v1/invocations/{id}/cancel", s.cancelInvocation)
+	s.handle("/v1/invocations/{id}/replay", s.replayInvocation)
 	s.handle("/v1/agents/{id}/idle-policy", s.idlePolicy)
 	s.handle("/v1/agents/{id}/release", s.agentRelease)
 	s.handle("/v1/agents/{id}/directory", s.agentDirectory)
@@ -71,6 +90,10 @@ func NewForHost(store *controlplane.Store, accounts *controlplane.Accounts, host
 	s.handle("/v1/agents/{id}/held-requests/{request_id}/decline", s.declineHeldRequest)
 	s.handle("/v1/agents/{id}/attachments", s.attachments)
 	s.handle("/v1/attachments/{id}", s.attachment)
+	s.handle("/v1/agents/{id}/capabilities", s.agentCapabilities)
+	s.handle("/v1/attachments/{id}/link", s.attachmentLink)
+	s.handle("/v1/invocations/{id}/result/link", s.resultLink)
+	s.handle("/v1/downloads/{token}", s.downloadLink)
 	s.handle("/v1/me/messaging-settings", s.messagingSettings)
 	s.handle("/v1/me/inbox", s.inbox)
 	s.handle("/v1/me/inbox/messages/{id}", s.ownerMessage)
@@ -106,7 +129,10 @@ func New(store *controlplane.Store, accounts *controlplane.Accounts) (*Server, e
 	s.handle("/v1/agents/{id}/assignments", s.assignments)
 	s.handle("/v1/agents/{id}/assignments/{assignment_id}/revoke", s.revokeAssignment)
 	s.handle("/v1/agents/{id}/assignments/{assignment_id}/replace", s.replaceAssignment)
+	s.handle("/v1/agents/{id}/assignments/{assignment_id}/reassign", s.reassignAssignment)
 	s.handle("/v1/audit", s.audit)
+	s.handle("/v1/audit/export", s.auditExport)
+	s.handle("/v1/access-revocations/{id}", s.accessRevocation)
 	s.handle("/v1/llm/providers", s.llmProviders)
 	s.handle("/v1/llm/providers/{id}/rotate", s.rotateLLMProvider)
 	s.handle("/v1/llm/providers/{id}/disable", s.disableLLMProvider)
@@ -115,6 +141,13 @@ func New(store *controlplane.Store, accounts *controlplane.Accounts) (*Server, e
 	s.handle("/v1/llm/budgets/{id}/disable", s.disableLLMBudget)
 	s.handle("/v1/llm/usage", s.llmUsage)
 	s.handle("/v1/llm/aliases/{alias}/disable", s.disableLLMAlias)
+	s.handle("/v1/llm/aliases/{alias}/access", s.setLLMAliasAccess)
+	s.handle("/v1/llm/aliases/{alias}/prices", s.setLLMAliasPrices)
+	s.handle("/v1/llm/aliases/{alias}/grants", s.llmAliasGrants)
+	s.handle("/v1/llm/aliases/{alias}/grants/{id}/revoke", s.revokeLLMAliasGrant)
+	s.handle("/v1/llm/calls/unresolved", s.unresolvedLLMCalls)
+	s.handle("/v1/llm/calls/{id}/settle", s.settleLLMCall)
+	s.handle("/v1/llm/calls/{id}/release", s.releaseLLMCall)
 	s.handle("/v1/service-accounts", s.serviceAccounts)
 	s.handle("/v1/service-accounts/{id}/disable", s.disableServiceAccount)
 	s.handle("/v1/service-accounts/{id}/tokens", s.serviceTokens)
@@ -128,6 +161,9 @@ func New(store *controlplane.Store, accounts *controlplane.Accounts) (*Server, e
 	s.handle("/v1/organizations/current", s.currentOrganization)
 	s.handle("/v1/organizations/{id}", s.organization)
 	s.handle("/v1/organizations/{id}/disable", s.disableOrganization)
+	s.handle("/v1/organizations/{id}/quotas", s.organizationQuotas)
+	s.handle("/v1/organizations/current/quotas", s.currentOrganizationQuotas)
+	s.handle("/v1/organizations/current/capabilities", s.organizationCapabilities)
 	s.handle("/v1/harness-imports", s.harnessImports)
 	s.handle("/v1/harness-imports/{id}", s.harnessImport)
 	s.handle("/v1/harness-releases", s.harnessReleases)
@@ -143,25 +179,41 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Request-ID", requestID)
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	if s.telemetry != nil {
-		recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-		route, start := invalidRoute, time.Now()
-		defer func() { s.telemetry.record(route, r.Method, recorder, requestID, time.Since(start)) }()
-		w = recorder
-		if path.Clean(r.URL.Path) == r.URL.Path {
-			_, route = s.mux.Handler(r)
-		}
+	recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+	w = recorder
+	route := invalidRoute
+	if (s.telemetry != nil || s.tracing != nil) && path.Clean(r.URL.Path) == r.URL.Path {
+		_, route = s.mux.Handler(r)
 	}
+	if s.telemetry != nil {
+		start := time.Now()
+		defer func() { s.telemetry.record(route, r.Method, recorder, requestID, time.Since(start)) }()
+	}
+	// The request's span is the root of its trace, whose ID is requestID.
+	traced, span := s.tracing.start(r.Context(), requestID)
+	var served *http.Request
+	defer func() { s.tracing.finish(span, route, r.Method, served, recorder) }()
 	if path.Clean(r.URL.Path) != r.URL.Path || strings.Contains(strings.ToLower(r.URL.EscapedPath()), "%2f") {
 		problem(w, 400, "invalid_path")
 		return
 	}
-	ctx, cancel := context.WithTimeout(telemetry.WithRequestID(r.Context(), requestID), 10*time.Second)
+	ctx, attempt := withAttempt(telemetry.WithRequestID(traced, requestID))
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	s.mux.ServeHTTP(w, r.WithContext(ctx))
+	served = r.WithContext(ctx)
+	s.mux.ServeHTTP(w, served)
+	// A refused administrative attempt joins its organization's trail
+	// (TEN-009); the mux has set the route and its path values on served.
+	s.recordRefusal(served, recorder, attempt)
 }
 
 func problem(w http.ResponseWriter, status int, code string) {
+	quotaProblem(w, status, code, "")
+}
+
+// quotaProblem is a problem that also names, as quota, the organization's
+// quota concerned (TEN-007); problem omits it.
+func quotaProblem(w http.ResponseWriter, status int, code, quota string) {
 	if recorder, ok := w.(*statusRecorder); ok {
 		recorder.problem = code
 	}
@@ -175,22 +227,38 @@ func problem(w http.ResponseWriter, status int, code string) {
 		Title  string `json:"title"`
 		Status int    `json:"status"`
 		Code   string `json:"code"`
-	}{"about:blank", http.StatusText(status), status, code})
+		Quota  string `json:"quota,omitempty"`
+	}{"about:blank", http.StatusText(status), status, code, quota})
 }
 func failure(w http.ResponseWriter, err error) {
+	var refusal *controlplane.ReplayRefusal
+	var quota *controlplane.OrganizationQuotaError
+	var below *controlplane.QuotaBelowAgentError
 	switch {
+	case errors.As(err, &quota):
+		// Waiting does not help: an agent must go, or the operator raise
+		// the quota.
+		quotaProblem(w, 409, "organization_quota_exceeded", quota.Quota)
+	case errors.As(err, &below):
+		quotaProblem(w, 409, "quota_below_agent", below.Quota)
 	case errors.Is(err, controlplane.ErrAuthentication):
 		problem(w, 401, "authentication_required")
 	case errors.Is(err, controlplane.ErrForbidden):
 		problem(w, 403, "forbidden")
 	case errors.Is(err, controlplane.ErrNotFound):
 		problem(w, 404, "not_found")
+	case errors.Is(err, controlplane.ErrProviderAddress):
+		problem(w, 400, "provider_address_not_allowed")
 	case errors.Is(err, controlplane.ErrInput):
 		problem(w, 400, "invalid_request")
 	case errors.Is(err, controlplane.ErrConflict):
 		problem(w, 422, "idempotency_key_reused")
 	case errors.Is(err, controlplane.ErrInProgress):
 		problem(w, 409, "idempotency_key_in_progress")
+	case errors.Is(err, controlplane.ErrReceiptUnreadable):
+		// The request took effect, and its receipt's daily key is gone (ADR
+		// 006 §7): it does not run again.
+		problem(w, 409, "idempotency_receipt_unreadable")
 	case errors.Is(err, controlplane.ErrUnavailable):
 		problem(w, 409, "agent_unavailable")
 	case errors.Is(err, controlplane.ErrTransition):
@@ -206,14 +274,37 @@ func failure(w http.ResponseWriter, err error) {
 		problem(w, 409, "attachment_unavailable")
 	case errors.Is(err, controlplane.ErrExpired):
 		problem(w, 409, "expired")
+	case errors.As(err, &refusal):
+		switch refusal.Reason {
+		case controlplane.ReplayOutcomeUnknown:
+			problem(w, 409, "outcome_unknown")
+		case controlplane.SkipRequesterRevoked:
+			problem(w, 409, "requester_revoked")
+		case controlplane.SkipInputPurged:
+			problem(w, 409, "input_purged")
+		default:
+			problem(w, 409, "attachments_purged")
+		}
 	case errors.Is(err, controlplane.ErrClosurePending):
 		problem(w, 409, "closure_pending")
 	case errors.Is(err, controlplane.ErrAgentExists):
 		problem(w, 409, "agent_already_exists")
+	case errors.Is(err, controlplane.ErrOrganizationNameTaken):
+		problem(w, 409, "organization_name_taken")
 	case errors.Is(err, controlplane.ErrRelease):
 		problem(w, 422, "harness_unavailable")
 	case errors.Is(err, controlplane.ErrStorageCapacity):
 		problem(w, 503, "storage_capacity_unavailable")
+	case errors.Is(err, controlplane.ErrAuthorityUnavailable):
+		// The authority service did not record a revocation: nothing was
+		// committed. Try again in a moment (ADR 006 §7, answer 2(a)).
+		w.Header().Set("Retry-After", "5")
+		problem(w, 503, "authority_unavailable")
+	case errors.Is(err, controlplane.ErrStoragePressure):
+		w.Header().Set("Retry-After", "300")
+		problem(w, 503, "storage_pressure")
+	case errors.Is(err, controlplane.ErrAuditExportTooLarge):
+		problem(w, 413, "audit_export_too_large")
 	default:
 		problem(w, 503, "temporarily_unavailable")
 	}
@@ -305,6 +396,8 @@ func (s *Server) principal(w http.ResponseWriter, r *http.Request) (controlplane
 		failure(w, err)
 		return p, false
 	}
+	noteAttempt(r, p)
+	identify(r.Context(), p)
 	return p, true
 }
 func (s *Server) live(w http.ResponseWriter, r *http.Request) {
@@ -325,7 +418,27 @@ func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 		failure(w, err)
 		return
 	}
-	jsonResponse(w, 200, map[string]string{"status": "ready"})
+	body := map[string]string{"status": "ready"}
+	if s.authority != nil {
+		// Its mode is reported: degraded mode and the wait for the replica
+		// do not stop the API. A service that does not answer with the
+		// pinned identities does.
+		probe, cancel := context.WithTimeout(r.Context(), authorityProbe)
+		mode, err := s.authority(probe)
+		cancel()
+		if errors.Is(err, controlplane.ErrNotReconciled) {
+			// After a failover, until agentcapsule-admin reconcile has run
+			// for the service's epoch (ADR 006 §7, REPLAY_FIRST).
+			problem(w, 503, "authority_not_reconciled")
+			return
+		}
+		if err != nil {
+			problem(w, 503, "authority_unavailable")
+			return
+		}
+		body["authority"] = mode
+	}
+	jsonResponse(w, 200, body)
 }
 func (s *Server) users(w http.ResponseWriter, r *http.Request) {
 	if !method(w, r, "GET", "POST") {

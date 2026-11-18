@@ -403,7 +403,7 @@ def supervise_units(units, deploy, bridge_binary, example, certs, compose, docke
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--go", default="go", help="Go 1.27.3 executable")
+    parser.add_argument("--go", default="go", help="Go 1.27.4 executable")
     parser.add_argument("--output", required=True, type=Path, help="new evidence directory")
     parser.add_argument("--services", action="store_true", help="also start and test the private services (Docker Compose)")
     parser.add_argument("--systemd", nargs="?", const="full", choices=["static", "full"],

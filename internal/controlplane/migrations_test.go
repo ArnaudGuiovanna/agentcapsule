@@ -285,6 +285,63 @@ func TestOrganizationIdentityConstraints(t *testing.T) {
 	}
 }
 
+// A trigger runs with the search path of the session that changes its row:
+// the store's, an operator's psql, a test's administration pool. A trigger
+// function that names another table pins the search path of its migration
+// (SET search_path FROM CURRENT), as preserve_sealed_agent does; otherwise a
+// change made from another session fails, or reaches a table of the same
+// name in another schema.
+func TestTriggerFunctionsFindTheirTablesFromAnySession(t *testing.T) {
+	s := migrationStore(t)
+	if err := s.Migrate(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.pool.Query(t.Context(), `SELECT p.proname FROM pg_proc p JOIN pg_language l ON l.oid=p.prolang
+        WHERE p.pronamespace=current_schema()::regnamespace AND l.lanname='plpgsql'
+          AND NOT EXISTS(SELECT 1 FROM unnest(coalesce(p.proconfig,'{}')) c WHERE c LIKE 'search_path=%')
+          AND EXISTS(SELECT 1 FROM pg_class r WHERE r.relnamespace=p.pronamespace AND r.relkind IN ('r','p','v')
+            AND p.prosrc ~ ('\m'||r.relname||'\M'))
+        ORDER BY p.proname`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unpinned, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unpinned) != 0 {
+		t.Error("trigger functions that name a table without pinning their search path:", unpinned)
+	}
+	var schema string
+	if err = s.pool.QueryRow(t.Context(), "SELECT current_schema()").Scan(&schema); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = s.pool.Exec(t.Context(), `INSERT INTO organizations(id,name) VALUES ('org-a','A');
+        INSERT INTO agents(id,tenant_id) VALUES ('agent-a','org-a');
+        INSERT INTO agent_directory(agent_id,tenant_id,description,skills) VALUES ('agent-a','org-a','An agent','{1}')`); err != nil {
+		t.Fatal(err)
+	}
+	// An operator's session: the default search path, which does not hold
+	// this schema, and names qualified by it.
+	operator, err := pgxpool.New(t.Context(), databaseURL(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer operator.Close()
+	for _, change := range []string{
+		"UPDATE " + pgx.Identifier{schema, "agents"}.Sanitize() + " SET discoverable=NOT discoverable WHERE id='agent-a'",
+		"UPDATE " + pgx.Identifier{schema, "organizations"}.Sanitize() + " SET status='disabled' WHERE id='org-a'",
+	} {
+		if _, err = operator.Exec(t.Context(), change); err != nil {
+			t.Fatal(change, err)
+		}
+	}
+	var revision int64
+	if err = s.pool.QueryRow(t.Context(), "SELECT revision FROM agent_directory WHERE agent_id='agent-a'").Scan(&revision); err != nil || revision != 3 {
+		t.Fatal("the directory record did not follow both changes:", revision, err)
+	}
+}
+
 func TestReadyChecksInstalledMigrationLedger(t *testing.T) {
 	s := migrationStore(t)
 	if err := s.Migrate(t.Context()); err != nil {
@@ -319,6 +376,41 @@ func TestReadyChecksInstalledMigrationLedger(t *testing.T) {
 func revertTenantAgents(t *testing.T, s *Store) {
 	t.Helper()
 	if _, err := s.pool.Exec(t.Context(), `
+        DROP TABLE IF EXISTS organization_quotas;
+        ALTER TABLE IF EXISTS organization_audit DROP CONSTRAINT IF EXISTS organization_audit_action_check;
+        ALTER TABLE IF EXISTS organization_audit ADD CONSTRAINT organization_audit_action_check
+          CHECK (action IN ('organization.created','organization.disabled'));
+        DROP TABLE IF EXISTS trace_pseudonym_key;
+        DROP TABLE IF EXISTS tenant_refusal_audit;
+        DROP INDEX IF EXISTS instruction_replays_tenant;
+        DROP TABLE IF EXISTS authority_reconciliations;
+        ALTER TABLE http_receipts DROP COLUMN IF EXISTS key_day;
+        ALTER TABLE tenant_http_receipts DROP COLUMN IF EXISTS key_day;
+        DROP TABLE IF EXISTS access_revocations;
+        DROP FUNCTION IF EXISTS preserve_access_revocation();
+        DROP TABLE IF EXISTS volume_relocations, host_takeovers;
+        DROP FUNCTION IF EXISTS preserve_volume_relocation(), preserve_host_takeover();
+        DROP TABLE IF EXISTS operator_audit, audit_retention;
+        ALTER TABLE worker_hosts DROP COLUMN IF EXISTS data_pressure, DROP COLUMN IF EXISTS image_pressure,
+          DROP COLUMN IF EXISTS pressure_observed_at;
+        DROP INDEX IF EXISTS organization_audit_created, delegation_audit_created, tenant_member_audit_created,
+          tenant_team_audit_created, tenant_agent_audit_created, tenant_service_audit_created, llm_audit_created,
+          queue_audit_created, harness_audit_created;
+        DROP TABLE IF EXISTS capability_audit, agent_capability_policies, organization_capability_policies;
+        ALTER TABLE harness_releases DROP COLUMN IF EXISTS capabilities;
+        DROP TABLE IF EXISTS instruction_replays, capacity_waits;
+        ALTER TABLE worker_jobs DROP CONSTRAINT IF EXISTS worker_jobs_kind_check;
+        ALTER TABLE worker_jobs ADD CONSTRAINT worker_jobs_kind_check
+          CHECK (kind IN ('delivery','closure','deletion','expiration','provision','lifecycle'));
+        DROP TABLE IF EXISTS platform_audit, delegation_keys;
+        DROP INDEX IF EXISTS organizations_active_name, delegation_trusts_issuer_audience;
+        ALTER TABLE IF EXISTS delegation_audit DROP COLUMN IF EXISTS key_id, DROP CONSTRAINT IF EXISTS delegation_audit_action_check;
+        ALTER TABLE IF EXISTS delegation_audit ADD CONSTRAINT delegation_audit_action_check CHECK (action IN ('install','rotate','revoke-trust','revoke-token'));
+        ALTER TABLE IF EXISTS delegation_trusts DROP COLUMN IF EXISTS allowed_scopes, DROP COLUMN IF EXISTS max_ttl_nanoseconds;
+        DROP TABLE IF EXISTS peer_redeliveries;
+        DROP FUNCTION IF EXISTS preserve_peer_redelivery();
+        DROP TABLE IF EXISTS failed_agents, guest_failures;
+        DROP TABLE IF EXISTS llm_alias_grants;
         DROP TABLE IF EXISTS invocation_reruns;
         DROP FUNCTION IF EXISTS preserve_invocation_rerun();
         DROP TABLE IF EXISTS volume_restore_losses, volume_restores;

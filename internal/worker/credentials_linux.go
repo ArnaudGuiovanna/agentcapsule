@@ -101,7 +101,10 @@ func (w *Placements) refreshCredentials(ctx context.Context, attemptTimeout time
 		err := step(func(ctx context.Context) error {
 			return w.host.WithBarrier(ctx, renewal.AgentID, func(ctx context.Context) error {
 				_, err := w.startRenewal(ctx, renewal.AgentID, false, &renewal)
-				if errors.Is(err, controlplane.ErrNoRenewal) {
+				// A FAILED agent's replacement waits for its next wake (ADR 012);
+				// one its organization's quotas refuse, for room (ADR 021).
+				if errors.Is(err, controlplane.ErrNoRenewal) || errors.Is(err, controlplane.ErrAgentFailed) ||
+					errors.Is(err, controlplane.ErrOrganizationQuota) {
 					return nil
 				}
 				return err
@@ -115,13 +118,9 @@ func (w *Placements) refreshCredentials(ctx context.Context, attemptTimeout time
 // Caller holds exclusive admission. Rechecking avoids retiring a fresh boot
 // produced by another worker after the initial snapshot.
 func (w *Placements) retireDueCredentials(ctx context.Context, id string) (runtime.VMRun, bool, error) {
-	due, err := w.host.CredentialRotations(ctx, w.credentialTime())
-	if err != nil {
+	run, due, err := w.host.CredentialRotation(ctx, id, w.credentialTime())
+	if err != nil || !due {
 		return runtime.VMRun{}, false, err
-	}
-	run, ok := due[id]
-	if !ok {
-		return runtime.VMRun{}, false, nil
 	}
 	if err = w.stop(ctx, id, run.Generation, true); err != nil {
 		return run, false, err

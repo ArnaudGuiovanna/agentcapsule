@@ -20,6 +20,13 @@ import (
 )
 
 func run() (result error) {
+	mode, err := parseBehaviour(os.Args[1:])
+	if err != nil {
+		return err
+	}
+	if mode.crashAtBoot {
+		return errCrashAtBoot
+	}
 	config := os.NewFile(3, "harness-configuration")
 	if config == nil {
 		return guestinit.ErrGuest
@@ -28,6 +35,11 @@ func run() (result error) {
 	config.Close()
 	if err != nil {
 		return err
+	}
+	if mode.fillTmp != 0 && !b.Identity.FenceOnly {
+		if err = fillTmp("/tmp", mode.fillTmp); err != nil {
+			return err
+		}
 	}
 	f := os.NewFile(4, "harness-control")
 	if f == nil {
@@ -61,15 +73,31 @@ func run() (result error) {
 	if err != nil {
 		return err
 	}
-	s, err := capsuleprotocol.NewLocalServer(b.Identity, b.PreviousShutdown, store, h.Handle)
+	handle := h.Handle
+	if mode.neverFiles {
+		handle = neverFiles(b.Identity.AgentID, handle, func() { burn(ctx, 1) })
+	} else if mode.neverReturns {
+		handle = neverReturns(b.Identity.AgentID, handle, ctx)
+	} else if act := hostile[mode.hostile]; act != nil {
+		handle = afterFirstAnswer(handle, hostileDelay, func() { act(ctx) })
+	}
+	s, err := capsuleprotocol.NewLocalServer(b.Identity, b.PreviousShutdown, store, handle)
 	if err != nil {
 		return err
+	}
+	// The echo keeps JSON parts as they came (ADR 016); text-only plays a
+	// harness built before JSON content.
+	if !mode.textOnly {
+		s.AcceptJSONContent()
 	}
 	background := make(chan error, 1)
 	go func() {
 		background <- h.Run(ctx)
 		cancel()
 	}()
+	if mode.floodChunk != 0 && !b.Identity.FenceOnly {
+		go func() { _ = flood(ctx, filepath.Join(b.DataDirectory, "flood"), mode.floodChunk) }()
+	}
 	err = s.ServeLocal(ctx, unix, b.SupervisorUID)
 	cancel()
 	workerErr := <-background // no SQLite close while an outgoing call is active

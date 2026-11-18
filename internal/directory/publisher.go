@@ -34,6 +34,10 @@ type Publisher struct {
 	Batch     int           // work items per claim (default 16)
 	Lease     time.Duration // time to finish one claim (default 1 minute)
 	Timeout   time.Duration // per Directory call (default 10 seconds)
+	// Deferred, when set, learns of each publication deferred because the
+	// Directory could not be reached or refused it, so that an outage shows
+	// in metrics. A step another worker won is not reported.
+	Deferred func(error)
 }
 
 func (p *Publisher) batch() int {
@@ -79,6 +83,9 @@ func (p *Publisher) RunOnce(ctx context.Context) (int, error) {
 			delay := time.Second // another step won the race: retry soon
 			if !errors.Is(err, controlplane.ErrConflict) {
 				delay = backoff(w.Attempt)
+				if p.Deferred != nil {
+					p.Deferred(err)
+				}
 			}
 			if deferErr := p.Store.DeferDirectoryWork(ctx, w.AgentID, delay); deferErr != nil {
 				return len(work), deferErr

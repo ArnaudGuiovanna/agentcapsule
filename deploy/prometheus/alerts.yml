@@ -1,7 +1,9 @@
 # Alerts of one Agent Capsule host (OPS-02, OPS-03, REC-03), on the metrics the
-# API and the worker serve at /metrics (agentcapsule-api -metrics-listen, the
-# worker's "metrics_listen") and on node_exporter's. The scrape jobs are named
-# agentcapsule-api, agentcapsule-worker and node (prometheus.yml). Annotations
+# API, the worker and the authority service serve at /metrics
+# (agentcapsule-api -metrics-listen, the worker's and the service's
+# "metrics_listen") and on node_exporter's. The scrape jobs are named
+# agentcapsule-api, agentcapsule-worker, agentcapsule-authority and node
+# (prometheus.yml). Annotations
 # are fixed text: metrics carry no organization, agent or member, so neither do
 # alerts.
 groups:
@@ -33,6 +35,16 @@ groups:
         annotations:
           summary: A due worker job has waited more than 5 minutes past its time.
 
+      # The invocations' own wait (OPS-03): an agent's deliveries share one
+      # job, so a growing backlog does not show in the jobs' delay above.
+      - alert: AgentCapsuleInvocationsDelayed
+        expr: agentcapsule_worker_invocation_oldest_waiting_seconds > 900
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: An invocation has waited more than 15 minutes to be delivered to its agent.
+
       - alert: AgentCapsuleJobsFailing
         expr: agentcapsule_worker_jobs_failing > 0
         for: 15m
@@ -41,6 +53,17 @@ groups:
         annotations:
           summary: Worker jobs keep failing (three attempts or more).
 
+      # A reply or status that dies (ADR 007): the request keeps its outcome
+      # and the sender's agent can still read a reply, but the operator is
+      # told. An instruction's death is its requester's dead letter
+      # (?state=failed|expired), so it is counted but does not alert.
+      - alert: AgentCapsuleDeliveryDead
+        expr: increase(agentcapsule_worker_deliveries_dead_total{kind=~"reply|status"}[15m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: A reply or status could not be delivered to the agent that sent the request; the request keeps its outcome.
+
       - alert: AgentCapsuleVMBootFailures
         expr: increase(agentcapsule_worker_vm_starts_total{outcome="failed"}[15m]) > 3
         labels:
@@ -48,13 +71,32 @@ groups:
         annotations:
           summary: VMs failed to boot more than 3 times in 15 minutes.
 
+      # An agent whose guest kept failing to boot or crashing (ADR 012): it is
+      # FAILED and boots again only when woken or cleared by the operator.
+      - alert: AgentCapsuleAgentFailed
+        expr: increase(agentcapsule_worker_agents_failed_total[15m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: An agent spent its restart budget and is FAILED until it is woken.
+
       - alert: AgentCapsuleCapacityExhausted
         expr: agentcapsule_worker_vms_running >= agentcapsule_worker_vm_capacity
         for: 15m
         labels:
           severity: warning
         annotations:
-          summary: The host runs as many VMs as max_active allows; waking an agent stops another.
+          summary: The host runs as many VMs as max_active allows; new work stops an idle VM or waits.
+
+      # Work waits for a VM slot (ADR 017): every VM of the host is computing.
+      # It boots in arrival order as slots free, or expires with
+      # capacity_unavailable.
+      - alert: AgentCapsuleWorkWaitingForCapacity
+        expr: agentcapsule_worker_capacity_oldest_wait_seconds > 600
+        labels:
+          severity: warning
+        annotations:
+          summary: Work has waited more than 10 minutes for a VM slot; raise max_active or add a host.
 
       - alert: AgentCapsuleDiskPressure
         expr: agentcapsule_worker_root_disk_used_ratio > 0.70
@@ -71,6 +113,34 @@ groups:
           severity: critical
         annotations:
           summary: The runtime root's file system is more than 80 % full.
+
+      # The harness images may have a file system of their own (the
+      # registry's cache); the same 70 % and 80 % levels apply (OPS-03).
+      - alert: AgentCapsuleImageDiskPressure
+        expr: agentcapsule_worker_image_disk_used_ratio > 0.70
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: The file system of the harness images is more than 70 % full.
+
+      - alert: AgentCapsuleImageDiskCritical
+        expr: agentcapsule_worker_image_disk_used_ratio > 0.80
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: The file system of the harness images is more than 80 % full.
+
+      # Past storage_pressure (0.80 by default), the API refuses new agents
+      # (data) or imports (images) with storage_pressure (ADR 014).
+      - alert: AgentCapsuleStoragePressure
+        expr: agentcapsule_worker_storage_pressure == 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: A file system of the host is past its storage pressure threshold; new agents or harness imports are refused.
 
       - alert: AgentCapsuleSLIMUnavailable
         expr: increase(agentcapsule_worker_job_retries_total{reason="slim_unavailable"}[10m]) > 0
@@ -188,6 +258,17 @@ groups:
         annotations:
           summary: An agent of this host has no volume archive from the last 26 hours.
 
+      # ADR 018: deleting an agent destroys its volume key within minutes;
+      # until then its archives still open. Six hours leaves room for a store
+      # that is slow to fence the deletion, or a short degraded period.
+      - alert: AgentCapsuleDeletionUnfinished
+        expr: agentcapsule_worker_deletion_oldest_seconds > 6 * 3600
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: An agent's deletion on this host has not finished for 6 hours; its volume key still exists.
+
       # The volume archives off the host (REC-02): every hour,
       # deploy/backup/agentcapsule-archive-ship.py ships them to the stores s3
       # and standby, then writes these for node_exporter's textfile collector.
@@ -268,20 +349,31 @@ groups:
         annotations:
           summary: The standby's replay has not been collected for 10 minutes, or never was (agentcapsule-standby-metrics.timer or node_exporter's textfile collector).
 
-  # The authorities' replica (D-05, ADR 005), from the worker. Its
-  # authorities write to the replica on the standby. After degraded_after
-  # (30 seconds) without it, they enter degraded mode: outcome records and
-  # fence revisions continue without the replica; creating, deleting and
-  # restoring agents wait. Losing the primary then loses what continued.
+  # The authorities' replica (D-05, ADR 005), from the authority service
+  # (ADR 006). Its authorities write to the replica on the standby. After
+  # degraded_after (30 seconds) without it, they enter degraded mode: outcome
+  # records and fence revisions continue without the replica; creating,
+  # deleting and restoring agents wait. Losing the primary then loses what
+  # continued.
   - name: agentcapsule-authorities
     rules:
+      # Without the service, no agent boots, platform calls fail, deliveries
+      # wait, and a restore pauses.
+      - alert: AgentCapsuleAuthorityServiceDown
+        expr: up{job="agentcapsule-authority"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: The authority service does not answer its metrics scrape; no agent boots and authority operations fail until it returns.
+
       - alert: AgentCapsuleAuthorityDegraded
         expr: agentcapsule_authority_replication_degraded_since_timestamp_seconds > 0
         for: 1m
         labels:
           severity: critical
         annotations:
-          summary: The worker's authorities run in degraded mode without the standby; creating, deleting and restoring agents wait, and losing this host would lose the outcomes recorded since.
+          summary: The authority service runs in degraded mode without the standby; creating, deleting and restoring agents wait, and losing this host would lose the outcomes recorded since.
 
       - alert: AgentCapsuleAuthorityOperationsRefused
         expr: increase(agentcapsule_authority_replication_degraded_refused_total[15m]) > 0
@@ -291,8 +383,8 @@ groups:
           summary: Authority operations gave up waiting for the standby in degraded mode; creating, deleting or restoring agents fails until it returns.
 
       # Outside degraded mode, failures that go on mean that every authority
-      # operation waits: a worker restarted without the standby, which
-      # never enters degraded mode, or a replica that refuses this host.
+      # operation waits: an authority service restarted without the standby,
+      # which never enters degraded mode, or a replica that refuses this host.
       - alert: AgentCapsuleAuthorityReplicationStopped
         expr: |
           sum by (job, instance) (increase(agentcapsule_authority_replication_errors_total[2m])) > 0
@@ -301,7 +393,29 @@ groups:
         labels:
           severity: critical
         annotations:
-          summary: The worker's authorities keep failing to reach their replica outside degraded mode; every authority operation waits or fails.
+          summary: The authority service keeps failing to reach the replica outside degraded mode; every authority operation waits or fails.
+      # The daily receipt keys (ADR 006 wave 6, docs/recovery.md).
+      - alert: AgentCapsuleReceiptKeyMissing
+        expr: agentcapsule_authority_receipt_key_ready{day="today"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: The authority service holds no receipt key of the day; the API refuses every request that takes an idempotency key.
+      - alert: AgentCapsuleNextReceiptKeyMissing
+        expr: agentcapsule_authority_receipt_key_ready{day="tomorrow"} == 0
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: Tomorrow's receipt key is missing; if the standby does not return by midnight UTC, the next day's key will be created on the primary alone.
+      - alert: AgentCapsuleReceiptKeyNotDestroyed
+        expr: agentcapsule_authority_receipt_keys_overdue > 0
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: A daily receipt key outlives its destruction time; its destruction waits for the standby or fails, and backups of its day stay readable.
 
   # Host resources, from node_exporter on the same host.
   - name: agentcapsule-host

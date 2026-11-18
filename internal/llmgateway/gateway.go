@@ -1,7 +1,9 @@
 // Package llmgateway calls tenant-configured LLM providers on behalf of agents.
 // It never logs prompts, completions or credentials, never promises an external
 // call happened exactly once, and reports provider failures as typed errors so a
-// caller can decide without restarting a VM.
+// caller can decide without restarting a VM. It connects only to public
+// addresses, checked after DNS resolution, unless the operator allows an
+// internal one, and never follows a redirect.
 package llmgateway
 
 import (
@@ -15,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/telemetry"
 )
 
 type Message struct {
@@ -62,7 +66,6 @@ var (
 )
 
 type Config struct {
-	HTTP         *http.Client
 	Timeout      time.Duration // per attempt
 	MaxAttempts  int           // total, >= 1
 	Backoff      time.Duration // base, doubled per retry
@@ -71,10 +74,18 @@ type Config struct {
 	MaxResponse  int64
 	Now          func() time.Time
 	Sleep        func(context.Context, time.Duration) error
+	// RequireHTTPS refuses a provider whose URL is not https, before any
+	// request (production, docs/adr/010-transport-security-and-preflight.md).
+	RequireHTTPS bool
+	// AllowInternal lists the internal provider addresses the operator
+	// allows. Empty, the default: the gateway connects to public addresses
+	// only, checked after DNS resolution (ADR 010).
+	AllowInternal Allowlist
 }
 
 type Gateway struct {
 	cfg      Config
+	http     *http.Client
 	mu       sync.Mutex
 	breakers map[string]*breaker
 }
@@ -85,10 +96,9 @@ type breaker struct {
 	probing   bool
 }
 
-func New(c Config) *Gateway {
-	if c.HTTP == nil {
-		c.HTTP = &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	}
+func New(c Config) *Gateway { return newGateway(c, TestOptions{}) }
+
+func newGateway(c Config, t TestOptions) *Gateway {
 	if c.Timeout <= 0 {
 		c.Timeout = 60 * time.Second
 	}
@@ -122,7 +132,7 @@ func New(c Config) *Gateway {
 			}
 		}
 	}
-	return &Gateway{cfg: c, breakers: map[string]*breaker{}}
+	return &Gateway{cfg: c, http: newClient(c.AllowInternal, t), breakers: map[string]*breaker{}}
 }
 
 func (g *Gateway) admit(key string) error {
@@ -177,7 +187,9 @@ func (r Request) valid() bool {
 // retrying only before the provider has accepted work (connection failure, 429,
 // 5xx). A timeout after the request was sent is reported as ErrOutcomeUnknown
 // and is not retried, since a retry could be billed twice.
-func (g *Gateway) Complete(ctx context.Context, route Route, req Request) (Response, error) {
+func (g *Gateway) Complete(ctx context.Context, route Route, req Request) (out Response, err error) {
+	ctx, span := startCall(ctx, "complete", route)
+	defer func() { endCall(span, out.Usage, err) }()
 	if !req.valid() || route.Secret == "" || route.UpstreamModel == "" {
 		return Response{}, ErrInvalid
 	}
@@ -195,21 +207,24 @@ func (g *Gateway) Complete(ctx context.Context, route Route, req Request) (Respo
 	if err != nil {
 		return Response{}, err
 	}
-	var out Response
+	var parsed Response
 	err = g.exchange(ctx, route.Key, target, body, headers, func(raw []byte) (err error) {
-		out, err = parse(raw)
+		parsed, err = parse(raw)
 		return err
 	})
 	if err != nil {
 		return Response{}, err
 	}
-	return out, nil
+	return parsed, nil
 }
 
 // exchange is one logical upstream call with the bounded retries and the
 // breaker of Complete. parse runs on a 2xx body; its failure means the provider
 // did work the gateway cannot account for, hence ErrOutcomeUnknown.
 func (g *Gateway) exchange(ctx context.Context, breakerKey, target string, body []byte, headers map[string]string, parse func([]byte) error) error {
+	if g.cfg.RequireHTTPS && !strings.HasPrefix(target, "https://") {
+		return ErrRejected // the configuration is wrong; nothing is sent
+	}
 	if err := g.admit(breakerKey); err != nil {
 		return err
 	}
@@ -221,6 +236,7 @@ func (g *Gateway) exchange(ctx context.Context, breakerKey, target string, body 
 				return err
 			}
 		}
+		telemetry.SpanFrom(ctx).Int("agentcapsule.llm.attempts", int64(attempt+1))
 		retry, err := g.once(ctx, target, body, headers, parse)
 		switch {
 		case err == nil:
@@ -250,8 +266,11 @@ func (g *Gateway) once(ctx context.Context, target string, body []byte, headers 
 	for k, v := range headers {
 		hr.Header.Set(k, v)
 	}
-	resp, err := g.cfg.HTTP.Do(hr)
+	resp, err := g.http.Do(hr)
 	if err != nil {
+		if errors.Is(err, ErrAddressRefused) {
+			return false, ErrAddressRefused // nothing was sent
+		}
 		if ctx.Err() != nil || isTimeout(err) {
 			// Sent, answer never seen: do not retry, do not claim zero cost.
 			return false, ErrOutcomeUnknown
@@ -268,7 +287,9 @@ func (g *Gateway) once(ctx context.Context, target string, body []byte, headers 
 		return true, ErrRateLimited
 	case resp.StatusCode >= 500:
 		return true, ErrUnavailable
-	case resp.StatusCode >= 400:
+	case resp.StatusCode >= 300:
+		// A redirect is never followed: the provider's key would go to
+		// another address. It is not an answer either, so the URL is wrong.
 		return false, fmt.Errorf("%w: status %d", ErrRejected, resp.StatusCode)
 	}
 	if err = parse(raw); err != nil {

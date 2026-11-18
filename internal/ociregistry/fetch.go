@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/harnesspkg"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/sandbox"
 )
 
 const (
@@ -58,6 +59,10 @@ type Fetcher struct {
 	policy    Policy
 	maxRootfs int64
 	clients   map[string]*client
+	// Sandbox confines the e2fsprogs programs that inspect a downloaded
+	// image (harnesspkg.InspectRootfs). As root, its UID and GID are
+	// required: a worker sets them from its configuration.
+	Sandbox sandbox.Options
 }
 
 func NewFetcher(policy Policy, maxRootfs int64) (*Fetcher, error) {
@@ -122,7 +127,7 @@ func (f *Fetcher) Fetch(ctx context.Context, ref Reference, dir string) (Package
 			return Package{}, err
 		}
 	}
-	pkg, err := verifyFiles(ctx, ref, dir, layers, f.maxRootfs)
+	pkg, err := verifyFiles(ctx, ref, dir, layers, f.maxRootfs, f.Sandbox)
 	pkg.Signer = signer
 	return pkg, err
 }
@@ -201,7 +206,7 @@ func (f *Fetcher) blob(ctx context.Context, c *client, repo, scope string, l des
 }
 
 // verifyFiles checks the package content after every blob matched its digest.
-func verifyFiles(ctx context.Context, ref Reference, dir string, layers []descriptor, maxRootfs int64) (Package, error) {
+func verifyFiles(ctx context.Context, ref Reference, dir string, layers []descriptor, maxRootfs int64, sb sandbox.Options) (Package, error) {
 	manifestBytes, err := os.ReadFile(filepath.Join(dir, harnesspkg.ManifestFile))
 	if err != nil {
 		return Package{}, err
@@ -229,7 +234,7 @@ func verifyFiles(ctx context.Context, ref Reference, dir string, layers []descri
 	if err = harnesspkg.CheckRootfs(rootfs, layers[2].Size, maxRootfs); err != nil {
 		return Package{}, fmt.Errorf("%w: %v", ErrIntegrity, err)
 	}
-	if err = harnesspkg.InspectRootfs(ctx, filepath.Join(dir, harnesspkg.RootfsFile), m); err != nil {
+	if err = harnesspkg.InspectRootfs(ctx, filepath.Join(dir, harnesspkg.RootfsFile), m, sb); err != nil {
 		if errors.Is(err, harnesspkg.ErrInvalid) {
 			return Package{}, fmt.Errorf("%w: %v", ErrIntegrity, err)
 		}

@@ -38,7 +38,17 @@ architecture: x86_64
 base: agentcapsule-guest/1      # guest ABI: kernel, capsule-init, mount layout
 entrypoint: [/bin/harness, --serve]   # clean absolute path inside harness.ext4
 description: Reference echo harness   # optional
+capabilities: [llm.invoke]            # optional; see below
 ```
+
+`capabilities` lists what the harness asks the platform for over its
+platform channel: `llm.invoke`, `agents.delegate`, `agents.discover`
+([ADR 016](adr/016-content-links-capabilities.md)). The importer records the
+list on the release; an unknown name rejects the package. An empty list asks
+for nothing. A manifest without the field predates it and is treated as
+asking for every capability. The agent gets the intersection of this list and
+its organization's and its own policies
+([agents-assignments.md](api/agents-assignments.md#capabilities-cap-01-ext-003)).
 
 `checksums.json` lists the sha256 of `harness.yaml` and `harness.ext4`, so a package
 copied out of a registry can still be checked. `harness.ext4` is the read-only root
@@ -84,7 +94,9 @@ dagger call check   # the whole chain against a throwaway registry (run by CI)
 `check` builds both reference harnesses, pushes them to a `registry:2` service (a
 registry without the referrers API, like GHCR), checks that an unsigned package is
 refused when a signature is required, then signs both and verifies them as the
-platform importer would. Set `DO_NOT_TRACK=1` to disable Dagger's anonymous telemetry.
+platform importer would, but for the inspection's sandbox: Dagger's containers cannot
+create it, so `verify` and `check` inspect each image unconfined (`--unconfined`, as
+`nobody`). Set `DO_NOT_TRACK=1` to disable Dagger's anonymous telemetry.
 
 Without Dagger, `scripts/build-python-harness.py` builds the same harness with plain
 Docker. Each path is reproducible on its own; their digests differ because they pack
@@ -117,7 +129,13 @@ agentcapsule-harness verify --ref ghcr.io/acme/echo:1.0.0@sha256:... --key ./acm
 
 `verify` downloads the package and runs the importer's checks (digests, layout,
 `harness.yaml`, image inspection, and the signature when keys are given), so a
-publisher or an operator can check a package before it is imported.
+publisher or an operator can check a package before it is imported. It runs
+`debugfs` in the importer's sandbox ([below](#image-inspection-sandbox)), as the
+`nobody` account (65534) when run as root. Where the machine cannot create the
+sandbox (a container without user namespaces, as in CI), `verify` fails. With
+`--unconfined`, it inspects the image without the sandbox and prints a warning;
+it refuses that flag as root. The Dagger check runs it so, as `nobody`. The
+platform host never inspects unconfined: the sandbox refuses it to root.
 
 The signature is an in-toto statement naming the package manifest digest, in a DSSE
 envelope signed with the key (ECDSA P-256/P-384/P-521, Ed25519 or RSA of at least
@@ -150,13 +168,17 @@ The import is `IMPORTING` until a worker processes it:
 4. Each blob is streamed to a private staging directory with a size limit and checked
    against its digest.
 5. `harness.yaml`, `checksums.json` and the ext4 superblock are validated, and the
-   image is inspected read-only with `debugfs`: the mount points must be directories
-   and the entrypoint an executable file.
+   image is inspected read-only with `debugfs`, confined
+   ([Image inspection sandbox](#image-inspection-sandbox)): the mount points must be
+   directories and the entrypoint an executable file.
 6. The package moves to `<cache>/sha256/<digest>/`, read-only, and the release is
    published, with the ID of the key that signed it (`signer`) if any.
 
 Outcomes: `READY` with a release, or `REJECTED` with `policy`, `not_found`,
-`access_denied`, `signature`, `integrity`, `version_conflict` or `unavailable`. `access_denied`
+`access_denied`, `signature`, `integrity`, `version_conflict`, `unavailable` or
+`storage_pressure`. `storage_pressure` means the file system of the worker's cache
+stayed past its threshold for every attempt ([worker.md](worker.md#storage-pressure));
+while one is, new import requests are refused with `503 storage_pressure`. `access_denied`
 means the registry refused access: the repository is private and the worker has no
 valid credentials for it, or it does not exist (registries often do not say which).
 Network failures are retried with backoff up to 5 attempts. A rejected package can be
@@ -166,8 +188,32 @@ Releases are immutable: `name:version` maps to one package digest forever; anoth
 package claiming it is rejected (`version_conflict`). Requesting a package that is
 already released answers with that release and downloads nothing.
 `POST /v1/harness-releases/{id}/deprecate` stops new agents from using a release;
-agents already pinned to it keep running. Organization members with `agent:read` can
+agents already pinned to it keep running. Organization members with `agent:read` and
+a role that reads every agent's metadata (owner, administrator, operator, auditor) can
 list releases (`GET /v1/harness-releases`).
+
+### Live test on GHCR
+
+REG-002 asks that the import test pass on GHCR as on a local registry. The
+tests of the worker run on a local registry; `-tags ghcrlive` adds two tests
+that reach GHCR, never run by CI or the PostgreSQL campaign:
+
+```bash
+AGENTCAPSULE_TEST_POSTGRES='host=/path/to/socket user=... dbname=postgres' \
+AGENTCAPSULE_TEST_GHCR_REFERENCE=ghcr.io/<owner>/<name>:<version>@sha256:<digest> \
+go test -tags ghcrlive -run TestLiveGHCR ./internal/worker
+```
+
+`TestLiveGHCRImport` imports the public harness package that the variable
+names, with the assertions of the local-registry test: `READY` with a
+release, read-only files in the cache, nothing left to do.
+`TestLiveGHCRRejectsAnImageThatIsNotAHarness` needs no variable: it gets an
+anonymous token from GHCR, fetches the manifest of a public image that is not a
+harness package, and checks that it is rejected as `integrity` before any
+layer. The rule for GHCR names its blob CDN,
+`pkg-containers.githubusercontent.com`. On 2026-11-16 the second test passed;
+the first needs a harness package published publicly on GHCR, which the
+project does not publish yet.
 
 ## Running an imported release
 
@@ -250,6 +296,18 @@ own hard link to their image. To free the space of a release, deprecate it. A de
 package cannot be imported again (the release already exists), so evict only what you
 will not roll back to.
 
+## Refilling the cache
+
+A host rebuilt from its backups has its releases in PostgreSQL, each with the reference
+and digest of its package, but not its cache (OPR-10). In the same loop, at most once a
+minute when idle, the worker fetches again each package that an agent of its host, not
+deleted, pins and that the cache lacks. It fetches the release's reference by digest,
+under the same registry rules, verifies the package as at its import, and keeps it only
+if it holds the release's root file system. Until then the agent does not boot. A
+package that its registry no longer serves leaves its agents stopped: copy it into the
+cache ([recovery.md](recovery.md#prepare)). A one-shot `-restore-agent` or
+`-restore-host` does not refill: run the worker service first, or copy the cache.
+
 ## Worker trust policy
 
 In the worker configuration ([example](../runtime/worker/config.example.json)):
@@ -257,6 +315,7 @@ In the worker configuration ([example](../runtime/worker/config.example.json)):
 ```json
 "registry": {
   "max_harness_mib": 1024,
+  "inspection_uid": 61999,
   "rules": [
     {"host": "ghcr.io", "repositories": ["acme/"],
      "blob_hosts": ["pkg-containers.githubusercontent.com"]}
@@ -264,15 +323,39 @@ In the worker configuration ([example](../runtime/worker/config.example.json)):
 }
 ```
 
+- `inspection_uid`: the UID, and the GID of the same number, that `debugfs` runs as
+  when it inspects a downloaded image ([below](#image-inspection-sandbox)). Reserve it
+  for this use, as the provisioning range is reserved: no account or group uses it, it
+  owns no file, it lies outside the provisioning range and is not the SLIM bridge's
+  user. It needs no entry in `/etc/passwd`. It must lie between 1 and 2147483646, and
+  not be 65535: the kernel takes -1 (4294967295) as "unchanged", and some interfaces
+  take 65535 the same way. Required when the worker runs as root. The worker refuses a
+  value outside that range, in the provisioning range, the SLIM bridge's, or one that
+  an account or a group of the host has (as a GID, 6 would be `disk` on Debian); it
+  then does not start (`registry_configuration_invalid`).
 - `repositories`: `"org/"` allows every repository under `org`; `"org/name"` exactly one.
 - The worker connects only to the rule's host, its `token_hosts` (bearer token realm)
-  and `blob_hosts` (redirected blob downloads, such as a CDN). Redirects elsewhere are
-  refused.
-- Connections to loopback, private, link-local, carrier-grade NAT and other
-  non-public addresses are refused at dial time, after DNS resolution, so a public
-  name cannot be pointed at an internal address. `"local": true` lifts this and
-  allows plain HTTP for a registry on the operator's own network; never use it for a
-  public registry.
+  and `blob_hosts` (redirected blob downloads, such as a CDN). It follows a redirect to
+  one of these, at most three times; redirects elsewhere are refused.
+- The worker checks each address when it connects, after DNS resolution, so a public
+  name cannot be pointed at an internal address. This holds for the registry, its token
+  service and its blob hosts, redirects included. The address classes are the model
+  gateway's ([ADR 010](adr/010-transport-security-and-preflight.md) §4):
+  - public addresses are allowed;
+  - internal addresses are refused: loopback, private (RFC 1918, RFC 4193),
+    carrier-grade NAT (`100.64.0.0/10`) and the other reserved ranges;
+  - always refused, whatever the rule: unspecified, multicast and link-local addresses,
+    `0.0.0.0/8`, and the cloud metadata addresses (`169.254.169.254` and the rest of
+    `169.254.0.0/16`, `100.100.100.200`, `168.63.129.16`, `fd00:ec2::254`,
+    `fd00:ec2::23`, `fd20:ce::254`);
+  - IPv4-mapped and NAT64 (`64:ff9b::/96`) addresses count as the IPv4 address they
+    carry.
+- `"local": true` allows internal addresses and plain HTTP, for a registry on the
+  operator's own network; never use it for a public registry. It does not open the
+  always-refused addresses: write `127.0.0.1` or `localhost`, not `0.0.0.0`. In
+  production the worker refuses to start with such a rule
+  ([ADR 010](adr/010-transport-security-and-preflight.md)); it is for development.
+- A refused address fails the import with the code `policy`.
 - Environment proxy settings are ignored.
 
 ### Publisher signatures
@@ -335,6 +418,91 @@ A rule may name a credentials file; the configuration never holds the secret its
 
 Imports run in their own loop beside maintenance, so a large download never delays
 deliveries or VM lifecycle work.
+
+### Image inspection sandbox
+
+`debugfs` (e2fsprogs) parses each downloaded image before the import accepts it. The
+worker runs as root, and the image comes from outside: a flaw of e2fsprogs must not
+reach the host. So every `debugfs` run on a downloaded image is confined
+(`internal/sandbox`, REG-01):
+
+- The worker starts itself again as a helper, in new mount, network, PID, IPC and UTS
+  namespaces, and the helper executes `debugfs`. Its network namespace has only an
+  unconfigured loopback interface.
+- Every mount is read-only, `nosuid` and `nodev`: no device node opens. `/proc` is the
+  namespace's own and shows its process only (`subset=pid`); `/sys` is empty. The
+  image is opened read-only, then reopened through those read-only mounts, and
+  `debugfs` reads it as its descriptor 3 (`/proc/self/fd/3`). It inherits no other
+  descriptor than 0 to 3: every other one is closed when it starts, whatever the
+  worker's C code left open.
+- `debugfs` runs as `inspection_uid` and its GID, without supplementary groups or
+  capabilities, with `no_new_privs`; the helper checks its UIDs, GIDs and groups
+  before it starts `debugfs`. It runs on one processor, with every signal blocked.
+- A seccomp filter allows the system calls `debugfs` makes and nothing else
+  ([below](#the-allow-list)). Any other call kills it; it cannot start a process or a
+  thread, open a socket, mount, change namespaces or credentials, or trace.
+- Limits: 30 seconds of processor time, one minute in all, 256 MiB of address space,
+  no byte written to any file, no core dump, 64 open files, and the first victim under
+  memory pressure. The worker kills it at its limits, and with itself; the helper
+  checks that the worker still lives before it starts `debugfs`.
+
+A worker that is not root (a test, a laboratory) runs the helper in a user namespace of
+its own instead: `debugfs` keeps the worker's account, without capabilities, and
+`inspection_uid` is not used. Such an account cannot drop its supplementary groups;
+`nodev` keeps the devices they open closed. A worker that is root of a user namespace
+other than the host's, as in a container, is refused: it can take no reserved UID. At
+start, the worker runs `debugfs -V` in the sandbox, and does not start if that fails
+(`registry_inspection_unavailable`): it needs a kernel with `mount_setattr` (5.12,
+below the 5.14 the worker requires), a service manager that lets it create namespaces
+(no `RestrictNamespaces=` in its unit) and, when not root, user namespaces. The
+preflight reports it as `registry_inspection` ([install.md](install.md#preflight)).
+
+What remains: `debugfs` can read the host's files that any account may read, through
+the read-only mounts. It can send them nowhere but its standard output, which the
+inspection reduces to a type and a mode. A filesystem allow-list (Landlock) or a
+minimal root would remove that; neither is done.
+
+#### The allow-list
+
+The filter's list is what `debugfs -V` and `debugfs -R 'stat "PATH"' /proc/self/fd/3`,
+run as the inspection runs them, call on 72 images: the reference harnesses, ext2,
+ext3 and ext4 with unusual features (1 KiB and 64 KiB blocks, inline data, bigalloc,
+casefold, MMP, quota, encryption and verity, 32-bit, meta_bg, large directories,
+special files where the entrypoint is expected, a journal to recover), damaged images
+(no superblock, truncated, garbage, empty, a damaged group descriptor or inode table)
+and fuzzed ones. Each call was traced with ptrace, with e2fsprogs 1.47.0 to 1.47.4,
+glibc 2.36, 2.39 and 2.43, and musl:
+
+- reading and writing: `read`, `pread64`, `lseek`, `write`, `writev`, `open`, `openat`,
+  `close`, `fsync`, `fadvise64`, `fstat`, `newfstatat`, `stat`, `lstat`, `access`,
+  `readlink`;
+- memory: `brk`, `mmap`, `munmap`, `mprotect`, and, not measured, `mremap` (glibc's
+  `realloc` of a large block) and `madvise` (musl's allocator);
+- the program's start and end: `execve`, `arch_prctl`, `set_tid_address`,
+  `set_robust_list`, `rseq`, `prlimit64`, `getrandom`, `sched_getaffinity`,
+  `rt_sigaction`, `exit_group`, `getuid`, `geteuid`, `getgid`, `getegid`;
+- clocks, which the vDSO answers unless the clock source does not allow it (not
+  measured): `clock_gettime`, `gettimeofday`, `time`;
+- with some arguments only: `prctl(PR_GET_DUMPABLE)`, `fcntl` to read or set a
+  descriptor's flags, `futex` to wait and wake. The filter answers `ioctl` itself with
+  `ENOTTY`, as the kernel does on the image, a pipe and `/dev/null`, another `prctl` or
+  `fcntl` with `EINVAL`.
+
+Any other call kills `debugfs` (`SECCOMP_RET_KILL_PROCESS`): `debugfs` never makes one,
+so a call outside the list means an image led it astray, or a C library that calls one
+the list lacks. Killing ends the first at once and makes the second visible: the
+import fails with "a system call outside its allow-list". A call numbered above the
+newest of Linux 6.18 gets `ENOSYS`, as an older kernel answers, so that the C library
+falls back to an older call. Another architecture and the x32 calls kill. e2fsprogs
+1.47.4 reads an image's bitmaps with one thread per processor; on its one processor,
+it reads them in its own thread, which the filter requires.
+
+`internal/sandbox`'s tests run a static program of a few instructions per call, under
+exactly that filter, and evaluate the filter for every call number; `internal/harnesspkg`'s
+tests compare `debugfs`'s output confined and direct on images of each kind above.
+
+`pack` runs `mkfs.ext4` and `debugfs -w` unconfined: it builds the publisher's own
+package, on the publisher's machine.
 
 ## Limits
 

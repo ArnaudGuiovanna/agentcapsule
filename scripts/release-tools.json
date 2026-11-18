@@ -1,0 +1,38 @@
+{
+  "comment": "Tools of the release audit (docs/release.md), each pinned by the SHA-256 of its release file. The SHA-256 is the one in the publisher's signed checksums file, checked against GitHub's own digest of the asset when pinned. Each version was at least two weeks old when pinned. Change a pin only with the new SHA-256 checked the same way; scripts/release_tools.py refuses any other file.",
+  "syft": {
+    "version": "1.55.0",
+    "license": "Apache-2.0",
+    "url": "https://github.com/anchore/syft/releases/download/v1.55.0/syft_1.55.0_linux_amd64.tar.gz",
+    "sha256": "bb65249542db5fedeeb4d3f9b018b75e7264dbfbbb10486f044581a92f90490d",
+    "member": "syft",
+    "version_command": ["version"],
+    "version_output": "1.55.0"
+  },
+  "grype": {
+    "version": "0.121.0",
+    "license": "Apache-2.0",
+    "url": "https://github.com/anchore/grype/releases/download/v0.121.0/grype_0.121.0_linux_amd64.tar.gz",
+    "sha256": "64e07133d3486115de647a66581461dccf5c732748a0a3119077395565f15519",
+    "member": "grype",
+    "version_command": ["version"],
+    "version_output": "0.121.0"
+  },
+  "cosign": {
+    "version": "3.1.4",
+    "license": "Apache-2.0",
+    "url": "https://github.com/sigstore/cosign/releases/download/v3.1.4/cosign-linux-amd64",
+    "sha256": "424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa",
+    "version_command": ["version"],
+    "version_output": "v3.1.4"
+  },
+  "actionlint": {
+    "version": "1.7.12",
+    "license": "MIT",
+    "url": "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz",
+    "sha256": "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8",
+    "member": "actionlint",
+    "version_command": ["-version"],
+    "version_output": "1.7.12"
+  }
+}

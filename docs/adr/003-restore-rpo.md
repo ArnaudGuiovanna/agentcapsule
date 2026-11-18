@@ -4,8 +4,9 @@ Date: November 8, 2026. **Status: option B chosen on November 8, 2026**
 (announced loss within the RPO window). The P2 model was revised on November 13,
 2026 (see [Model revision (option B)](#model-revision-option-b)). The
 implementation session reviewed that contract diff and reran its checks before
-the restore authority's code changed (REC-02). The product owner has not
-reviewed it yet; the defaults at the end await confirmation.
+the restore authority's code changed (REC-02). The product owner confirmed
+the defaults at the end on November 16, 2026
+([Defaults confirmed](#defaults-confirmed-by-the-product-owner)).
 The failure domains and the numbers (RPO, RTO, storage) were set on November 13
 in [004-recovery-objectives.md](004-recovery-objectives.md).
 References: product spec §10.4 ([product.md](../product.md)), REC-01 to REC-04,
@@ -473,11 +474,10 @@ under the same mailbox ID, or is skipped with a reason. Code:
   too. Both become `canceled` and keep `lost_at`. A rerun being delivered is
   not interrupted (409). A rerun acknowledged "working" is canceled like any
   working invocation.
-- **Agent-to-agent requests, replies and statuses** are not run again. Their
-  losses stay recorded, with their mailbox and no invocation. Running them
-  again is neither cheap nor safe: it reopens requests whose final states are
-  immutable, their payloads may be purged, and the other agent's side was not
-  lost. See "What remains".
+- **Agent-to-agent requests, replies and statuses** were not run again at
+  first: their losses stayed recorded, with their mailbox and no invocation.
+  [ADR 008](008-redelivering-lost-agent-requests.md) now delivers them again
+  to the restored agent, without reopening a request in a final state.
 
 #### Done: the API
 
@@ -519,10 +519,12 @@ November 15, 2026, with the other 13 worker tests (guest v20).
 
 #### What remains
 
-1. **Agent-to-agent losses.** A lost request, reply or status is recorded but
-   not delivered again. It needs its own design: which side runs again, how a
-   request in a final state reopens, and what happens when its payload is
-   purged.
+1. **Agent-to-agent losses.** Designed and built in
+   [ADR 008](008-redelivering-lost-agent-requests.md) on November 16, 2026:
+   the restored agent gets its lost request, reply or status again under the
+   same mailbox ID; a request in a final state never reopens; purged content,
+   a revoked requester and a party being deleted are skipped with a reason.
+   Its defaults wait for the product owner, and its KVM test for a run.
 2. **Restores before migration 0030.** A restore that completed earlier made
    no decision: its invocations keep their state. No deployment has one.
 3. **Another host.** A restore onto another host needs D-05: the keys,
@@ -538,6 +540,11 @@ November 15, 2026, with the other 13 worker tests (guest v20).
    standby.
 
 ### Questions for the product owner
+
+Answered on November 16, 2026. Question 1 is settled by D-05: the authority's
+records reach the standby synchronously
+([ADR 005](005-keys-outside-restored-domain.md), option (a)). Questions 2 to 5
+take the defaults below, which the product owner confirmed.
 
 1. Declarations come from the authority's outcome records, which the model
    assumes survive a disaster. ADR 004 gives PostgreSQL a 15-minute RPO. If
@@ -555,16 +562,16 @@ November 15, 2026, with the other 13 worker tests (guest v20).
    it was. Should it run again without its files, wait for the requester to
    send them again, or end?
 
-### Defaults pending the product owner's confirmation
+### Defaults confirmed by the product owner
 
-The code and the plan above use these defaults until the product owner
-answers. None is confirmed yet. Each one lives in one place, so that a change
+The product owner confirmed these defaults on November 16, 2026. The code
+already follows them. Each one lives in one place, so that a later change
 stays small.
 
 1. A loss is declared result by result for the outcomes that the authority
    recorded but the restored image lacks: the volume window, up to 24 hours.
    The database window, up to 15 minutes, is announced as a time window. The
-   catalogue is assumed to survive a disaster; where it lives is D-05.
+   catalogue survives a disaster on the standby's synchronous replica (D-05).
 2. In the API, a declared loss whose rerun has not ended has the state
    `lost`. A rerun that ends has the state of its end, such as `completed`,
    and keeps `lost_at` as its marker. Code: `lostCondition` and
@@ -574,8 +581,12 @@ stays small.
    `mayInvokeAgain`, used at the restore and before the claim.
 4. The rerun is automatic and keeps the event ID, so the agent can
    deduplicate it. A caller cannot refuse it in advance. It can only cancel it
-   before it reaches the agent. An opt-out for jobs that act outside the agent
-   is a follow-up. Code: `decideRerun`, `cancelLost`.
+   before it reaches the agent. Code: `decideRerun`, `cancelLost`. The
+   agent's own memory is restored from before the loss, so it cannot tell
+   that a lost job already acted outside the agent (an email, a payment).
+   Such a job must pass its identifier to the outside service as an
+   idempotency key; [adapter.md](../adapter.md#guarantees-and-limits) says
+   so. After the MVP, an agent setting asks before an automatic rerun.
 5. A lost invocation whose files are purged stays `lost`, with `error_code`
    `attachments_purged`, and does not run again. Its input is kept until a
    decision or a cancel. Code: `attachmentsGone`, `decideRerun`.

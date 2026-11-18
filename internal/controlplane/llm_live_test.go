@@ -60,7 +60,7 @@ func newLiveLab(t *testing.T) *liveLab {
 		t.Fatal("create provider", err)
 	}
 	for _, a := range []CreateLLMAliasInput{
-		{Alias: "local", ProviderID: p.ID, UpstreamModel: model, InputMicroPerMTok: 1_000_000, OutputMicroPerMTok: 3_000_000},
+		{Alias: "local", ProviderID: p.ID, UpstreamModel: model, InputMicroPerMTok: price(1_000_000), OutputMicroPerMTok: price(3_000_000)},
 		{Alias: "ghost", ProviderID: p.ID, UpstreamModel: "agentcapsule-no-such-model"},
 	} {
 		if _, err = l.a.CreateLLMAlias(t.Context(), owner, "alias-"+a.Alias, a); err != nil {
@@ -84,7 +84,7 @@ func newLiveLab(t *testing.T) *liveLab {
 
 func (l *liveLab) service(t *testing.T, timeout time.Duration) *LLMService {
 	t.Helper()
-	svc, err := NewLLMService(l.a, llmgateway.New(llmgateway.Config{Timeout: timeout, MaxAttempts: 1}))
+	svc, err := NewLLMService(l.a, llmgateway.NewForTests(llmgateway.Config{Timeout: timeout, MaxAttempts: 1}, llmgateway.TestOptions{Loopback: true}))
 	if err != nil {
 		t.Fatal(err)
 	}

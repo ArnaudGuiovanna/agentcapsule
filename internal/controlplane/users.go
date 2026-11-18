@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -27,6 +28,11 @@ type Accounts struct {
 	// Purpose-bound key for LLM provider credentials, derived from the
 	// installation key so that no extra operator file is required.
 	llm cipher.AEAD
+	// Purpose-bound key that seals temporary download links (ADR 016).
+	links cipher.AEAD
+	// days encrypts new receipts with the key of their day, from the
+	// authority service (receipt_keys.go); nil without the service.
+	days atomic.Pointer[receiptKeyRing]
 }
 
 func NewAccounts(store *Store, receiptKey []byte) (*Accounts, error) {
@@ -51,7 +57,17 @@ func NewAccounts(store *Store, receiptKey []byte) (*Accounts, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Accounts{store: store, cipher: aead, keyHash: sha256.Sum256(receiptKey), llm: llmAEAD}, nil
+	links := hmac.New(sha256.New, receiptKey)
+	links.Write([]byte("agentcapsule.download-link.v1"))
+	linkBlock, err := aes.NewCipher(links.Sum(nil))
+	if err != nil {
+		return nil, err
+	}
+	linkAEAD, err := cipher.NewGCM(linkBlock)
+	if err != nil {
+		return nil, err
+	}
+	return &Accounts{store: store, cipher: aead, keyHash: sha256.Sum256(receiptKey), llm: llmAEAD, links: linkAEAD}, nil
 }
 
 var ErrReceiptKey = errors.New("receipt key does not match this installation")
@@ -164,25 +180,30 @@ func (a *Accounts) withReceipt(ctx context.Context, tx pgx.Tx, s receiptScope, i
 		return APIReceipt{}, err
 	}
 	var original, ciphertext []byte
+	var day *time.Time
 	var result APIReceipt
-	err = tx.QueryRow(ctx, `SELECT request_hash,response_status,response_ciphertext FROM http_receipts
-        WHERE actor_kind=$1 AND actor_id=$2 AND method=$3 AND route=$4 AND key=$5`, args...).Scan(&original, &result.Status, &ciphertext)
+	err = tx.QueryRow(ctx, `SELECT request_hash,response_status,response_ciphertext,key_day FROM http_receipts
+        WHERE actor_kind=$1 AND actor_id=$2 AND method=$3 AND route=$4 AND key=$5`, args...).Scan(&original, &result.Status, &ciphertext, &day)
 	if err == nil {
 		if len(original) != 32 || string(original) != string(hash[:]) {
 			return APIReceipt{}, ErrConflict
 		}
-		if len(ciphertext) < a.cipher.NonceSize()+a.cipher.Overhead() {
-			return APIReceipt{}, errors.New("invalid encrypted API receipt")
-		}
-		plain, err := a.cipher.Open(nil, ciphertext[:a.cipher.NonceSize()], ciphertext[a.cipher.NonceSize():], aad)
+		plain, err := a.openReceipt(ctx, ciphertext, day, aad, "API")
 		if err != nil {
-			return APIReceipt{}, errors.New("API receipt cannot be decrypted")
+			return APIReceipt{}, err
+		}
+		if plain, err = currentRevocations(ctx, tx, plain); err != nil {
+			return APIReceipt{}, err
 		}
 		result.Body = plain
 		result.Replayed = true
 		return result, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
+		return APIReceipt{}, err
+	}
+	sealer, day, err := a.receiptSealer(ctx)
+	if err != nil {
 		return APIReceipt{}, err
 	}
 	status, body, err := fn()
@@ -193,11 +214,11 @@ func (a *Accounts) withReceipt(ctx context.Context, tx pgx.Tx, s receiptScope, i
 	if err != nil {
 		return APIReceipt{}, err
 	}
-	nonce := make([]byte, a.cipher.NonceSize())
+	nonce := make([]byte, sealer.NonceSize())
 	_, _ = rand.Read(nonce)
-	ciphertext = a.cipher.Seal(nonce, nonce, plain, aad)
-	_, err = tx.Exec(ctx, `INSERT INTO http_receipts(actor_kind,actor_id,method,route,key,request_hash,response_status,response_ciphertext)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, s.Kind, s.Actor, s.Method, s.Route, s.Key, hash[:], status, ciphertext)
+	ciphertext = sealer.Seal(nonce, nonce, plain, aad)
+	_, err = tx.Exec(ctx, `INSERT INTO http_receipts(actor_kind,actor_id,method,route,key,request_hash,response_status,response_ciphertext,key_day)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, s.Kind, s.Actor, s.Method, s.Route, s.Key, hash[:], status, ciphertext, day)
 	return APIReceipt{Status: status, Body: plain}, err
 }
 

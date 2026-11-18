@@ -19,7 +19,12 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmgateway"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/ociregistry"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/ociregistry/registrytest"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/sandbox"
 )
+
+// labInspectionUID is the UID and GID debugfs runs as in the labs run as
+// root.
+const labInspectionUID = 61999
 
 // registryLab is a product lab with an in-process OCI registry, an importer
 // attached to the worker, one organization (owner alice) and member bob.
@@ -43,6 +48,9 @@ func newRegistryLab(t *testing.T) *registryLab {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// As root, debugfs inspects each image as a reserved UID (REG-01),
+	// outside the labs' provisioning ranges.
+	fetcher.Sandbox = sandbox.Options{UID: labInspectionUID, GID: labInspectionUID}
 	importer, err := NewHarnessImporter(lab.store, fetcher, filepath.Join(lab.root, "releases"), "kvm-importer")
 	if err != nil {
 		t.Fatal(err)
@@ -116,9 +124,15 @@ func (l *registryLab) createOn(name, harness, version string) controlplane.Agent
 // createWith is createOn with the VM's memory, for agents that need more.
 func (l *registryLab) createWith(name, harness, version string, memoryMiB int) controlplane.AgentCreation {
 	l.t.Helper()
+	return l.createSized(name, harness, version, 1, memoryMiB)
+}
+
+// createSized is createOn with the VM's vCPUs and memory.
+func (l *registryLab) createSized(name, harness, version string, vcpus, memoryMiB int) controlplane.AgentCreation {
+	l.t.Helper()
 	var created controlplane.AgentCreation
 	in := controlplane.CreateAgentInput{Name: name, Harness: controlplane.HarnessReference{Name: harness, Version: version},
-		Resources: controlplane.AgentResources{VCPUs: 1, MemoryMiB: memoryMiB, DataVolumeMiB: 128}}
+		Resources: controlplane.AgentResources{VCPUs: vcpus, MemoryMiB: memoryMiB, DataVolumeMiB: 128}}
 	l.request(l.owner(), "POST", "/v1/agents", "agent-"+name, in, 202, &created)
 	l.peers = append(l.peers, &productPeer{agent: created})
 	l.awaitOperation(l.owner, created.OperationID)
@@ -284,7 +298,7 @@ func TestProductWorkerTenantRunsAPythonHarness(t *testing.T) {
 		_, _ = fmt.Fprintf(w, `{"choices":[{"message":{"content":%s},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":4}}`, answer)
 	}))
 	t.Cleanup(provider.Close)
-	svc, err := controlplane.NewLLMService(l.accounts, llmgateway.New(llmgateway.Config{Timeout: 10 * time.Second, MaxAttempts: 1}))
+	svc, err := controlplane.NewLLMService(l.accounts, llmgateway.NewForTests(llmgateway.Config{Timeout: 10 * time.Second, MaxAttempts: 1}, llmgateway.TestOptions{Loopback: true}))
 	if err != nil {
 		t.Fatal(err)
 	}

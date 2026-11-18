@@ -7,11 +7,15 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/authoritylog"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorization"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmgateway"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -34,9 +38,15 @@ type LLMAlias struct {
 	UpstreamModel string    `json:"upstream_model"`
 	Status        string    `json:"status"`
 	CreatedAt     time.Time `json:"created_at"`
-	// Estimation prices; zero when not set.
+	// Estimation prices, in micro-units of the organization's currency per
+	// million tokens. Priced is false until the organization sets them; zero
+	// prices are then a free model.
 	InputMicroPerMTok  int64 `json:"input_micro_per_mtok"`
 	OutputMicroPerMTok int64 `json:"output_micro_per_mtok"`
+	Priced             bool  `json:"priced"`
+	// Access is "organization" (every agent of the organization) or "listed"
+	// (only the agents the alias's grants name, directly or through a team).
+	Access string `json:"access"`
 }
 
 type CreateLLMProviderInput struct {
@@ -50,11 +60,21 @@ type CreateLLMAliasInput struct {
 	Alias         string `json:"alias"`
 	ProviderID    string `json:"provider_id"`
 	UpstreamModel string `json:"upstream_model"`
-	// Optional price used only to ESTIMATE cost, in micro-units of the tenant's
-	// currency per million tokens. Zero means "no estimate".
-	InputMicroPerMTok  int64 `json:"input_micro_per_mtok,omitempty"`
-	OutputMicroPerMTok int64 `json:"output_micro_per_mtok,omitempty"`
+	// Optional prices used only to ESTIMATE cost, in micro-units of the
+	// tenant's currency per million tokens. Either one makes the alias priced;
+	// the other is then zero. Neither leaves the alias unpriced.
+	InputMicroPerMTok  *int64 `json:"input_micro_per_mtok,omitempty"`
+	OutputMicroPerMTok *int64 `json:"output_micro_per_mtok,omitempty"`
+	// Access is "organization" (default) or "listed".
+	Access string `json:"access,omitempty"`
 }
+
+// ErrProviderAddress: an https provider URL names an internal address
+// directly (a loopback, private, link-local or cloud metadata address, or
+// localhost). The worker would refuse to call it. A model server on the
+// operator's network is registered by its name, and the operator must allow it
+// in the worker's configuration (ADR 010).
+var ErrProviderAddress = fmt.Errorf("%w: the provider URL names an internal address", ErrInput)
 
 // LLMRoute is what the gateway needs for one call. It holds a decrypted
 // credential and must stay in the gateway process memory.
@@ -63,20 +83,28 @@ type LLMRoute struct {
 	Secret                       string
 }
 
-func validProviderURL(raw string) bool {
+// checkProviderURL accepts https to a host that is not an internal address
+// written out, and plain HTTP to a model server on the worker's host, for
+// development: production refuses plain HTTP before anything is sent. The
+// worker checks every address again when it connects, after DNS resolution.
+func checkProviderURL(raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil || len(raw) > 300 || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-		return false
+		return ErrInput
 	}
-	switch u.Scheme {
+	switch h := u.Hostname(); u.Scheme {
 	case "https":
-		return true
+		if llmgateway.InternalHost(h) {
+			return ErrProviderAddress
+		}
+		return nil
 	case "http":
 		// Plain HTTP only to a local model server; never across a network.
-		h := u.Hostname()
-		return h == "localhost" || h == "127.0.0.1" || h == "::1"
+		if h == "localhost" || h == "127.0.0.1" || h == "::1" {
+			return nil
+		}
 	}
-	return false
+	return ErrInput
 }
 
 func validProviderSecret(s string) bool {
@@ -126,8 +154,11 @@ func auditLLM(ctx context.Context, tx pgx.Tx, p Principal, provider string, alia
 }
 
 func (a *Accounts) CreateLLMProvider(ctx context.Context, p Principal, key string, in CreateLLMProviderInput) (APIReceipt, error) {
-	if !validOrganizationText(in.Name, 100) || (in.Kind != "openai_compatible" && in.Kind != "anthropic") || !validProviderURL(in.BaseURL) || !validProviderSecret(in.Secret) {
+	if !validOrganizationText(in.Name, 100) || (in.Kind != "openai_compatible" && in.Kind != "anthropic") || !validProviderSecret(in.Secret) {
 		return APIReceipt{}, ErrInput
+	}
+	if err := checkProviderURL(in.BaseURL); err != nil {
+		return APIReceipt{}, err
 	}
 	tx, err := a.store.begin(ctx)
 	if err != nil {
@@ -192,7 +223,13 @@ func (a *Accounts) RotateLLMProviderSecret(ctx context.Context, p Principal, id,
 		if err = auditLLM(ctx, tx, p, id, nil, "provider.rotated"); err != nil {
 			return 0, nil, err
 		}
-		return 200, v, nil
+		// The previous credential is revoked: a rollback would bring it back.
+		revoked := a.store.revocations(tx, p.TenantID)
+		if err = revoked.add(ctx, authoritylog.AccessLLMProvider, p.TenantID, [][]string{{id, "generation", strconv.FormatInt(generation, 10)}}); err != nil {
+			return 0, nil, err
+		}
+		body, err := revoked.body(v)
+		return 200, body, err
 	})
 	if err != nil {
 		return APIReceipt{}, err
@@ -242,7 +279,12 @@ func (a *Accounts) DisableLLMProvider(ctx context.Context, p Principal, id, key 
 		if err = auditLLM(ctx, tx, p, id, nil, "provider.disabled"); err != nil {
 			return 0, nil, err
 		}
-		return 200, v, nil
+		revoked := a.store.revocations(tx, p.TenantID)
+		if err = revoked.add(ctx, authoritylog.AccessLLMProvider, p.TenantID, [][]string{{id}}); err != nil {
+			return 0, nil, err
+		}
+		body, err := revoked.body(v)
+		return 200, body, err
 	})
 	if err != nil {
 		return APIReceipt{}, err
@@ -250,10 +292,30 @@ func (a *Accounts) DisableLLMProvider(ctx context.Context, p Principal, id, key 
 	return r, commit(ctx, tx)
 }
 
+// maxPriceMicroPerMTok bounds a price: a million currency units per million
+// tokens. Costs stay exact far beyond it (see costMicro).
+const maxPriceMicroPerMTok = 1e12
+
+func validPrice(v *int64) bool { return v == nil || (*v >= 0 && *v <= maxPriceMicroPerMTok) }
+
+func validAliasAccess(access string) bool { return access == "organization" || access == "listed" }
+
 func (a *Accounts) CreateLLMAlias(ctx context.Context, p Principal, key string, in CreateLLMAliasInput) (APIReceipt, error) {
 	if !validOrganizationText(in.Alias, 100) || !validOrganizationText(in.ProviderID, 100) || !validOrganizationText(in.UpstreamModel, 200) ||
-		in.InputMicroPerMTok < 0 || in.OutputMicroPerMTok < 0 || in.InputMicroPerMTok > 1e12 || in.OutputMicroPerMTok > 1e12 {
+		!validPrice(in.InputMicroPerMTok) || !validPrice(in.OutputMicroPerMTok) || (in.Access != "" && !validAliasAccess(in.Access)) {
 		return APIReceipt{}, ErrInput
+	}
+	access := in.Access
+	if access == "" {
+		access = "organization"
+	}
+	priced := in.InputMicroPerMTok != nil || in.OutputMicroPerMTok != nil
+	var inputPrice, outputPrice int64
+	if in.InputMicroPerMTok != nil {
+		inputPrice = *in.InputMicroPerMTok
+	}
+	if in.OutputMicroPerMTok != nil {
+		outputPrice = *in.OutputMicroPerMTok
 	}
 	tx, err := a.store.begin(ctx)
 	if err != nil {
@@ -280,8 +342,8 @@ func (a *Accounts) CreateLLMAlias(ctx context.Context, p Principal, key string, 
 		if taken {
 			return 0, nil, ErrConflict
 		}
-		v, err := scanAlias(tx.QueryRow(ctx, `INSERT INTO llm_model_aliases(tenant_id,alias,provider_id,upstream_model,created_by,input_micro_per_mtok,output_micro_per_mtok) VALUES($1,$2,$3,$4,$5,$6,$7)
-            RETURNING `+aliasColumns, p.TenantID, in.Alias, in.ProviderID, in.UpstreamModel, p.ID, in.InputMicroPerMTok, in.OutputMicroPerMTok))
+		v, err := scanAlias(tx.QueryRow(ctx, `INSERT INTO llm_model_aliases(tenant_id,alias,provider_id,upstream_model,created_by,input_micro_per_mtok,output_micro_per_mtok,priced,access)
+            VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING `+aliasColumns, p.TenantID, in.Alias, in.ProviderID, in.UpstreamModel, p.ID, inputPrice, outputPrice, priced, access))
 		if err != nil {
 			return 0, nil, err
 		}
@@ -296,11 +358,11 @@ func (a *Accounts) CreateLLMAlias(ctx context.Context, p Principal, key string, 
 	return r, commit(ctx, tx)
 }
 
-const aliasColumns = `alias,provider_id,upstream_model,status,created_at,input_micro_per_mtok,output_micro_per_mtok`
+const aliasColumns = `alias,provider_id,upstream_model,status,created_at,input_micro_per_mtok,output_micro_per_mtok,priced,access`
 
 func scanAlias(row pgx.Row) (LLMAlias, error) {
 	var v LLMAlias
-	err := row.Scan(&v.Alias, &v.ProviderID, &v.UpstreamModel, &v.Status, &v.CreatedAt, &v.InputMicroPerMTok, &v.OutputMicroPerMTok)
+	err := row.Scan(&v.Alias, &v.ProviderID, &v.UpstreamModel, &v.Status, &v.CreatedAt, &v.InputMicroPerMTok, &v.OutputMicroPerMTok, &v.Priced, &v.Access)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = ErrNotFound
 	}

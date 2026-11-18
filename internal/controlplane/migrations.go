@@ -109,6 +109,60 @@ var volumeRestoresSQL string
 //go:embed migrations/0030_invocation_reruns.sql
 var invocationRerunsSQL string
 
+//go:embed migrations/0031_restart_budgets.sql
+var restartBudgetsSQL string
+
+//go:embed migrations/0032_llm_access_and_cost.sql
+var llmAccessAndCostSQL string
+
+//go:embed migrations/0033_peer_redeliveries.sql
+var peerRedeliveriesSQL string
+
+//go:embed migrations/0034_operator_bootstrap.sql
+var operatorBootstrapSQL string
+
+//go:embed migrations/0035_capacity_queue_and_replays.sql
+var capacityQueueAndReplaysSQL string
+
+//go:embed migrations/0036_capabilities.sql
+var capabilitiesSQL string
+
+//go:embed migrations/0037_operations.sql
+var operationsSQL string
+
+//go:embed migrations/0038_host_takeovers.sql
+var hostTakeoversSQL string
+
+//go:embed migrations/0039_audit_retention_indexes.sql
+var auditRetentionIndexesSQL string
+
+//go:embed migrations/0040_access_revocations.sql
+var accessRevocationsSQL string
+
+//go:embed migrations/0041_receipt_key_days.sql
+var receiptKeyDaysSQL string
+
+//go:embed migrations/0042_authority_reconciliations.sql
+var authorityReconciliationsSQL string
+
+//go:embed migrations/0043_tenant_refusal_audit.sql
+var tenantRefusalAuditSQL string
+
+//go:embed migrations/0044_trace_pseudonym_key.sql
+var tracePseudonymKeySQL string
+
+//go:embed migrations/0045_garbage_collection_audit.sql
+var garbageCollectionAuditSQL string
+
+//go:embed migrations/0046_organization_quotas.sql
+var organizationQuotasSQL string
+
+//go:embed migrations/0047_unresponsive_guests.sql
+var unresponsiveGuestsSQL string
+
+//go:embed migrations/0048_directory_trigger_search_path.sql
+var directoryTriggerSearchPathSQL string
+
 // Append migrations; never edit an installed migration. The original schema
 // also upgrades pre-ledger installations, preserving its historical backfills.
 // Later calls validate its checksum without replaying DDL or those backfills.
@@ -143,6 +197,24 @@ var controlPlaneMigrations = []schemaMigration{
 	{version: 28, name: "volume-archives", sql: volumeArchivesSQL},
 	{version: 29, name: "volume-restores", sql: volumeRestoresSQL},
 	{version: 30, name: "invocation-reruns", sql: invocationRerunsSQL},
+	{version: 31, name: "restart-budgets", sql: restartBudgetsSQL},
+	{version: 32, name: "llm-access-and-cost", sql: llmAccessAndCostSQL},
+	{version: 33, name: "peer-redeliveries", sql: peerRedeliveriesSQL},
+	{version: 34, name: "operator-bootstrap", sql: operatorBootstrapSQL},
+	{version: 35, name: "capacity-queue-and-replays", sql: capacityQueueAndReplaysSQL},
+	{version: 36, name: "capabilities", sql: capabilitiesSQL},
+	{version: 37, name: "operations", sql: operationsSQL},
+	{version: 38, name: "host-takeovers", sql: hostTakeoversSQL},
+	{version: 39, name: "audit-retention-indexes", sql: auditRetentionIndexesSQL},
+	{version: 40, name: "access-revocations", sql: accessRevocationsSQL},
+	{version: 41, name: "receipt-key-days", sql: receiptKeyDaysSQL},
+	{version: 42, name: "authority-reconciliations", sql: authorityReconciliationsSQL},
+	{version: 43, name: "tenant-refusal-audit", sql: tenantRefusalAuditSQL},
+	{version: 44, name: "trace-pseudonym-key", sql: tracePseudonymKeySQL},
+	{version: 45, name: "garbage-collection-audit", sql: garbageCollectionAuditSQL},
+	{version: 46, name: "organization-quotas", sql: organizationQuotasSQL},
+	{version: 47, name: "unresponsive-guests", sql: unresponsiveGuestsSQL},
+	{version: 48, name: "directory-trigger-search-path", sql: directoryTriggerSearchPathSQL},
 }
 
 func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error {

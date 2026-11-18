@@ -1,6 +1,6 @@
 module github.com/ArnaudGuiovanna/agentcapsule
 
-go 1.27.2
+go 1.27.4
 
 require (
 	github.com/a2aproject/a2a-go/v2 v2.8.0
@@ -8,6 +8,7 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/jackc/pgx/v5 v5.12.0
 	github.com/mattn/go-sqlite3 v1.14.53
+	golang.org/x/sys v0.49.0
 	google.golang.org/grpc v1.84.0
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -33,12 +34,11 @@ require (
 	github.com/multiformats/go-varint v0.1.0 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/spaolacci/murmur3 v1.1.0 // indirect
-	golang.org/x/crypto v0.57.0 // indirect
+	golang.org/x/crypto v0.58.0 // indirect
 	golang.org/x/mod v0.41.0 // indirect
-	golang.org/x/net v0.60.0 // indirect
-	golang.org/x/sync v0.23.0 // indirect
-	golang.org/x/sys v0.48.0 // indirect
-	golang.org/x/text v0.42.0 // indirect
+	golang.org/x/net v0.62.0 // indirect
+	golang.org/x/sync v0.24.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260918162117-cecb64721679 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 	lukechampine.com/blake3 v1.4.1 // indirect

@@ -1,5 +1,8 @@
 module dagger/agentcapsule
 
+// The Go SDK of Dagger v0.21.11 builds this module and refuses a go line
+// above 1.27.3. The module's code runs in the Dagger engine and does not
+// ship; goImage in main.go, which builds the harness tools, is Go 1.27.4.
 go 1.27.3
 
 require (

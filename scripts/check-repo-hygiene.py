@@ -11,6 +11,11 @@ The baseline (scripts/hygiene-baseline.json) lists the offenders that predate
 the rules. Fixing one is welcome and never fails the check. A file that is not
 in the baseline fails. Regenerate the baseline with --update only to record a
 deliberate, reviewed decision, never to silence a new offender.
+
+It also runs scripts/check-model-projections.py: every run and witness of the
+formal models must be listed in spec/projections.md, with no baseline; and
+scripts/check-acceptance.py: every MVP requirement of docs/product.md must
+have a row in docs/acceptance.md, and every test it cites must exist.
 """
 import argparse
 import json
@@ -66,8 +71,10 @@ def main():
         print(f"FAIL Go source committed under _evidence/: {name}")
     fixed = (len(base["home_paths"]) - len(set(home) & set(base["home_paths"]))) + (
         len(base["evidence_go"]) - len(set(evidence_go) & set(base["evidence_go"])))
-    print(f"hygiene: {len(new_home) + len(new_go)} new offender(s); {fixed} baseline entr(ies) already fixed")
-    return 1 if new_home or new_go else 0
+    print(f"hygiene: {len(new_home) + len(new_go)} new offender(s); {fixed} baseline entr(ies) already fixed", flush=True)
+    projections = subprocess.run([sys.executable, str(ROOT / "scripts" / "check-model-projections.py")], cwd=ROOT)
+    acceptance = subprocess.run([sys.executable, str(ROOT / "scripts" / "check-acceptance.py")], cwd=ROOT)
+    return 1 if new_home or new_go or projections.returncode or acceptance.returncode else 0
 
 
 if __name__ == "__main__":

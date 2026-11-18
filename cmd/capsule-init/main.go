@@ -8,7 +8,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -59,18 +58,8 @@ func run() error {
 	if err := syscall.Setrlimit(syscall.RLIMIT_CORE, &syscall.Rlimit{}); err != nil {
 		return err
 	}
-	for _, m := range []struct {
-		source, target, kind, data string
-		flags                      uintptr
-	}{
-		{"proc", "/proc", "proc", "", syscall.MS_NOSUID | syscall.MS_NODEV | syscall.MS_NOEXEC},
-		{"sysfs", "/sys", "sysfs", "", syscall.MS_NOSUID | syscall.MS_NODEV | syscall.MS_NOEXEC},
-		{"devtmpfs", "/dev", "devtmpfs", "mode=0755", syscall.MS_NOSUID},
-		{"tmpfs", "/run", "tmpfs", "mode=0711", syscall.MS_NOSUID | syscall.MS_NODEV | syscall.MS_NOEXEC},
-		{"tmpfs", "/tmp", "tmpfs", "mode=1777", syscall.MS_NOSUID | syscall.MS_NODEV},
-		{"cgroup2", "/sys/fs/cgroup", "cgroup2", "", syscall.MS_NOSUID | syscall.MS_NODEV | syscall.MS_NOEXEC},
-	} {
-		if err := mount(m.source, m.target, m.kind, m.flags, m.data); err != nil {
+	for _, m := range guestinit.BootMounts() {
+		if err := mount(m.Source, m.Target, m.Kind, m.Flags, m.Data); err != nil {
 			return err
 		}
 	}
@@ -149,15 +138,11 @@ func run() error {
 		quiescing = true
 		p, m := process, volume
 		mu.Unlock()
-		if p != nil {
-			if err := p.Stop(ctx); err != nil {
-				return err
-			}
-		}
+		var closeStore func(context.Context) error
 		if m != nil {
-			return m.Close(ctx)
+			closeStore = m.Close
 		}
-		return nil
+		return guestinit.StopHarnessAndCloseStore(ctx, p, closeStore)
 	}
 	server, err := capsuleprotocol.NewQuiescingVolumeServer(credentials, func(ready context.Context, v capsuleprotocol.VolumeBoot, key []byte) (http.Handler, error) {
 		m, err := guestinit.OpenVolume(ready, v, key)
@@ -185,6 +170,8 @@ func run() error {
 			mu.Lock()
 			intentional := quiescing
 			mu.Unlock()
+			// A harness that exits or dies on its own ends the guest, after
+			// the cleanup below (guestinit.End). A quiesced guest stays up.
 			if !intentional {
 				cancel()
 			}
@@ -219,10 +206,8 @@ func main() {
 	if os.Getpid() != 1 || os.Geteuid() != 0 {
 		os.Exit(1)
 	}
-	if run() != nil {
-		fmt.Println("CAPSULE_INIT_FAILED")
-	}
-	_ = syscall.Reboot(syscall.LINUX_REBOOT_CMD_POWER_OFF)
+	// The guest restarts once run has cleaned up, which ends its VMM.
+	_ = guestinit.End(run, os.Stdout, syscall.Sync, syscall.Reboot)
 	for {
 		_ = syscall.Pause()
 	}

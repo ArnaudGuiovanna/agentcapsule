@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/capability"
 )
 
 // These payloads intentionally have no caller/sender/owner identity. The handler
@@ -44,6 +46,13 @@ type PlatformAPI interface {
 	Search(context.Context, []string) ([]string, error)
 }
 
+// CapabilityAPI is optional on a PlatformAPI: the host checks that the calling
+// agent holds the capability a route needs (capability.ForRoute) and answers
+// &PlatformError{Code: "capability_denied"} when it does not.
+type CapabilityAPI interface {
+	RequireCapability(context.Context, string) error
+}
+
 // PlatformError exposes only an enumerated code, never a database/transport error
 // string. The trusted adapter translates its domain errors into these codes.
 type PlatformError struct{ Code string }
@@ -54,7 +63,7 @@ func safePlatformCode(err error) string {
 	if errors.As(err, &remote) {
 		switch remote.Code {
 		case "unauthorized", "not_found", "unavailable", "mandate", "conflict", "expired", "transition", "commit_unknown", "invalid",
-			"quota_exceeded", "rate_limited", "rejected", "outcome_unknown", "dialect":
+			"quota_exceeded", "rate_limited", "rejected", "outcome_unknown", "dialect", "capability_denied":
 			return remote.Code
 		}
 	}
@@ -185,6 +194,20 @@ func (p *platformHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		in.AgentID != "" && r.URL.Path != "/v1/directory/agent" {
 		write(http.StatusBadRequest, "invalid")
 		return
+	}
+	// The host refuses a call whose capability the agent does not hold, before
+	// it reaches the effect (ADR 016). The guest's own bridge has no gate.
+	if name := capability.ForRoute(r.URL.Path); name != "" {
+		if gate, ok := p.api.(CapabilityAPI); ok {
+			if err := gate.RequireCapability(ctx, name); err != nil {
+				status, code := http.StatusServiceUnavailable, safePlatformCode(err)
+				if code == "capability_denied" {
+					status = http.StatusForbidden
+				}
+				write(status, code)
+				return
+			}
+		}
 	}
 	// Validate is performed INSIDE each mutating API transaction, not as an
 	// earlier authorization check that could race with generation replacement.

@@ -6,10 +6,9 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -17,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorityservice"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/keyauthority"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/operatorconfig"
@@ -31,6 +31,12 @@ func run() int {
 	if len(os.Args) > 1 && os.Args[1] == "abandon-provisioning" {
 		return abandonProvisioning(os.Args[2:])
 	}
+	if len(os.Args) > 1 && os.Args[1] == "clear-agent-failure" {
+		return clearAgentFailure(os.Args[2:])
+	}
+	if len(os.Args) > 1 && os.Args[1] == "replay-dead-letter" {
+		return replayDeadLetter(os.Args[2:])
+	}
 	if len(os.Args) > 1 && os.Args[1] == "list-credentials" {
 		return listCredentials(os.Args[2:])
 	}
@@ -39,6 +45,12 @@ func run() int {
 	}
 	if len(os.Args) > 1 && os.Args[1] == "configure-delegation" {
 		return configureDelegation(os.Args[2:])
+	}
+	if len(os.Args) > 1 && os.Args[1] == "set-audit-retention" {
+		return setAuditRetention(os.Args[2:])
+	}
+	if len(os.Args) > 1 && os.Args[1] == "diagnostics" {
+		return diagnostics(os.Args[2:])
 	}
 	if len(os.Args) > 1 && os.Args[1] == "init-key-authority" {
 		return initializeKeyAuthority(os.Args[2:])
@@ -49,61 +61,30 @@ func run() int {
 	if len(os.Args) > 1 && os.Args[1] == "activate-transit-keys" {
 		return activateTransitKeys(os.Args[2:])
 	}
+	if len(os.Args) > 1 && os.Args[1] == "transit-key-usage" {
+		return transitKeyUsage(os.Args[2:])
+	}
 	if len(os.Args) > 1 && (os.Args[1] == "configure-host" || os.Args[1] == "approve-local-harness") {
 		return configureCatalog(os.Args[1], os.Args[2:])
 	}
-	if len(os.Args) < 2 || os.Args[1] != "bootstrap" {
-		return fail("usage: agentcapsule-admin bootstrap | bootstrap-platform | list-credentials | revoke-credential | abandon-provisioning | configure-delegation | init-key-authority | init-restore-authority | configure-host | approve-local-harness | activate-transit-keys")
+	if len(os.Args) > 1 && os.Args[1] == "migrate" {
+		return migrate(os.Args[2:])
 	}
-	f := flag.NewFlagSet("bootstrap", flag.ContinueOnError)
-	keyPath := f.String("receipt-key-file", "", "private 32-byte receipt encryption key")
-	tokenPath := f.String("token-file", "", "private bootstrap service token file")
-	account := f.String("service-account", "installation-admin", "bootstrap service account")
-	lifetime := f.Duration("token-lifetime", 30*24*time.Hour, "bootstrap token lifetime")
-	if err := f.Parse(os.Args[2:]); err != nil {
-		return 1
+	if len(os.Args) > 1 && os.Args[1] == "list-audit" {
+		return listAudit(os.Args[2:])
 	}
-	if f.NArg() != 0 || *keyPath == "" || *tokenPath == "" || *keyPath == *tokenPath {
-		return fail("configuration_required")
+	if len(os.Args) > 1 && os.Args[1] == "take-over-host" {
+		return takeOverHost(os.Args[2:])
 	}
-	dsn := os.Getenv("AGENTCAPSULE_DATABASE_URL")
-	if dsn == "" {
-		return fail("database_configuration_required")
+	if len(os.Args) > 1 && os.Args[1] == "reconcile" {
+		return reconcile(os.Args[2:])
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	s, err := controlplane.Open(ctx, dsn)
-	if err != nil {
-		return fail("database_initialization_failed")
+	if len(os.Args) > 1 && os.Args[1] == "bootstrap" {
+		// The legacy owner domain's service credential (D-01, ADR 001): an
+		// installation starts with bootstrap-platform (docs/bootstrap.md).
+		return fail("bootstrap_removed_use_bootstrap_platform")
 	}
-	defer s.Close()
-	if err = s.Migrate(ctx); err != nil {
-		return fail("database_migration_failed")
-	}
-	key, err := operatorconfig.EnsurePrivate(*keyPath, 32, func() []byte { b := make([]byte, 32); _, _ = rand.Read(b); return b })
-	if err != nil {
-		return fail("receipt_key_file_invalid")
-	}
-	accounts, err := controlplane.NewAccounts(s, key)
-	if err != nil || accounts.InitializeReceiptKey(ctx) != nil {
-		return fail("receipt_key_does_not_match_installation")
-	}
-	token, err := operatorconfig.EnsurePrivate(*tokenPath, 47, func() []byte {
-		b := make([]byte, 32)
-		_, _ = rand.Read(b)
-		return []byte("acp_" + base64.RawURLEncoding.EncodeToString(b))
-	})
-	if err != nil {
-		return fail("token_file_invalid")
-	}
-	if err = s.BootstrapServiceToken(ctx, *account, string(token), *lifetime); err != nil {
-		if reason, definite := definiteRefusal(err); definite {
-			return fail("bootstrap_rejected_" + reason)
-		}
-		return fail("bootstrap_unconfirmed_retry_with_same_files")
-	}
-	fmt.Fprintln(os.Stdout, "bootstrap_complete")
-	return 0
+	return fail("usage: agentcapsule-admin migrate | bootstrap-platform | list-credentials | revoke-credential | configure-delegation | list-audit | abandon-provisioning | clear-agent-failure | replay-dead-letter | init-key-authority | init-restore-authority | configure-host | approve-local-harness | activate-transit-keys | transit-key-usage | set-audit-retention | diagnostics | take-over-host | reconcile")
 }
 
 func configureCatalog(command string, args []string) int {
@@ -142,9 +123,9 @@ func configureCatalog(command string, args []string) int {
 		}
 		digest = fmt.Sprintf("sha256:%x", h.Sum(nil))
 	}
-	dsn := os.Getenv("AGENTCAPSULE_DATABASE_URL")
-	if dsn == "" {
-		return fail("database_configuration_required")
+	dsn, code := databaseURL()
+	if code != "" {
+		return fail(code)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -165,6 +146,20 @@ func configureCatalog(command string, args []string) int {
 	return 0
 }
 
+// ownAuthorities takes the lock of the authority directories an init
+// command opens: it refuses with authority_in_use while the authority
+// service, or another command, runs on one (docs/adr/006-authority-service.md §1).
+func ownAuthorities(dirs ...string) (*authorityservice.Owner, string) {
+	owner, err := authorityservice.Own(dirs...)
+	switch {
+	case errors.Is(err, authorityservice.ErrInUse):
+		return nil, "authority_in_use"
+	case err != nil:
+		return nil, "authority_directory_unavailable"
+	}
+	return owner, ""
+}
+
 func initializeKeyAuthority(args []string) int {
 	fail := func(code string) int { fmt.Fprintln(os.Stderr, code); return 1 }
 	f := flag.NewFlagSet("init-key-authority", flag.ContinueOnError)
@@ -175,6 +170,11 @@ func initializeKeyAuthority(args []string) int {
 	if f.NArg() != 0 || *root == "" {
 		return fail("configuration_required")
 	}
+	owner, code := ownAuthorities(*root)
+	if code != "" {
+		return fail(code)
+	}
+	defer owner.Release()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	s, err := keyauthority.Initialize(ctx, *root)
@@ -191,6 +191,21 @@ func initializeKeyAuthority(args []string) int {
 }
 func main() { os.Exit(run()) }
 
+// databaseURL returns AGENTCAPSULE_DATABASE_URL once it satisfies the mode:
+// in production, a Unix socket or verified TLS
+// (docs/adr/010-transport-security-and-preflight.md). Otherwise it returns
+// the code to print.
+func databaseURL() (string, string) {
+	mode, err := operatorconfig.ModeFromEnvironment()
+	if err != nil {
+		return "", "mode_invalid"
+	}
+	if mode == operatorconfig.Development {
+		fmt.Fprintln(os.Stderr, operatorconfig.DevelopmentWarning)
+	}
+	return operatorconfig.DatabaseURL(mode)
+}
+
 func initializeRestoreAuthority(args []string) int {
 	fail := func(code string) int { fmt.Fprintln(os.Stderr, code); return 1 }
 	f := flag.NewFlagSet("init-restore-authority", flag.ContinueOnError)
@@ -204,6 +219,11 @@ func initializeRestoreAuthority(args []string) int {
 	if f.NArg() != 0 || *root == "" || *data == "" || *keyRoot == "" || *keyID == "" {
 		return fail("configuration_required")
 	}
+	owner, code := ownAuthorities(*root, *keyRoot)
+	if code != "" {
+		return fail(code)
+	}
+	defer owner.Release()
 	keys, err := keyauthority.Open(*keyRoot, *keyID)
 	if err != nil {
 		return fail("key_authority_unavailable")

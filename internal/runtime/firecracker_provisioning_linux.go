@@ -218,3 +218,23 @@ func (h *FirecrackerHost) HarnessImagesInUse(ctx context.Context) (map[string]bo
 	})
 	return paths, err
 }
+
+// HarnessImagesInUseAt is HarnessImagesInUse for the runtime root root, read
+// without a host driver: for a command that runs beside the worker
+// (agentcapsule-worker -collect-garbage). It takes the host's lock, as the
+// worker does. A root without a registry has no agent.
+func HarnessImagesInUseAt(ctx context.Context, root string) (map[string]bool, error) {
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return nil, err
+	}
+	if _, err = os.Lstat(filepath.Join(abs, "registry.json")); errors.Is(err, os.ErrNotExist) {
+		return map[string]bool{}, nil
+	} else if err != nil {
+		return nil, err
+	}
+	if real, err := filepath.EvalSymlinks(abs); err != nil || real != abs {
+		return nil, errors.New("runtime root must not contain symlinks")
+	}
+	return (&FirecrackerHost{root: abs}).HarnessImagesInUse(ctx)
+}

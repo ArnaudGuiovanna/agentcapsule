@@ -26,8 +26,16 @@ func (a *platformFake) DescribeAgent(_ context.Context, id string) (DirectoryAge
 
 func (a *platformFake) RequestStatus(_ context.Context, id string) (RequestStatus, error) {
 	a.calls.Add(1)
-	if id == "foreign" {
+	switch id {
+	case "foreign":
 		return RequestStatus{}, &PlatformError{Code: "not_found"}
+	case "arq_replied":
+		return RequestStatus{RequestID: id, RecipientAgentID: "b", State: "REPLIED", ExpiresAt: statusDeadline,
+			Reply: &PeerPayload{Content: []TextContent{{Type: "text", Text: "the answer"}}}}, nil
+	case "arq_purged":
+		return RequestStatus{RequestID: id, RecipientAgentID: "b", State: "REPLIED", ExpiresAt: statusDeadline, Reason: "content_purged"}, nil
+	case "arq_malformed":
+		return RequestStatus{RequestID: id, RecipientAgentID: "b", State: "REPLIED", ExpiresAt: statusDeadline, Reply: &PeerPayload{}}, nil
 	}
 	return RequestStatus{RequestID: id, RecipientAgentID: "b", State: "PROCESSING", ExpiresAt: statusDeadline}, nil
 }
@@ -53,6 +61,17 @@ func TestPeerReadsCarryOnlyTheirIDAndTypedOutcomes(t *testing.T) {
 	}
 	if _, err = c.RequestStatus(t.Context(), "foreign"); !errors.As(err, &pe) || pe.Code != "not_found" {
 		t.Fatal(err)
+	}
+	// A replied request carries its reply while it is kept, or why it is not
+	// (ADR 007); a malformed reply is refused.
+	if s, err = c.RequestStatus(t.Context(), "arq_replied"); err != nil || s.Reply == nil || s.Reply.Content[0].Text != "the answer" || s.Reason != "" {
+		t.Fatal(s, err)
+	}
+	if s, err = c.RequestStatus(t.Context(), "arq_purged"); err != nil || s.Reply != nil || s.Reason != "content_purged" {
+		t.Fatal(s, err)
+	}
+	if _, err = c.RequestStatus(t.Context(), "arq_malformed"); !errors.Is(err, ErrProtocol) {
+		t.Fatal("malformed reply accepted", err)
 	}
 
 	calls := api.calls.Load()

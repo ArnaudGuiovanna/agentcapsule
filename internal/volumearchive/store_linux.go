@@ -27,6 +27,13 @@ import (
 
 var ErrArchive = errors.New("encrypted archive is missing, inconsistent or incomplete")
 
+// Authority signs and validates manifests: the restore authority, in process
+// or through the authority service (restoreauthority.Authority).
+type Authority interface {
+	SignArchive(context.Context, restoreauthority.Archive) (restoreauthority.Archive, error)
+	ValidateArchive(context.Context, restoreauthority.Archive) error
+}
+
 type Store struct {
 	root          string
 	device, inode uint64
@@ -218,17 +225,27 @@ const (
 // touches its file), and archives already renamed for removal. It never
 // touches a published archive.
 func (s *Store) Sweep(staleAfter time.Duration) error {
+	names, result := s.Leftovers(staleAfter)
+	for _, name := range names {
+		result = errors.Join(result, os.RemoveAll(filepath.Join(s.root, name)))
+	}
+	return result
+}
+
+// Leftovers names what Sweep would delete now, and deletes nothing.
+func (s *Store) Leftovers(staleAfter time.Duration) ([]string, error) {
 	if staleAfter <= 0 {
-		return ErrArchive
+		return nil, ErrArchive
 	}
 	if err := s.check(); err != nil {
-		return err
+		return nil, err
 	}
 	entries, err := os.ReadDir(s.root)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var result error
+	names := []string{}
 	for _, e := range entries {
 		path := filepath.Join(s.root, e.Name())
 		switch {
@@ -241,9 +258,52 @@ func (s *Store) Sweep(staleAfter time.Duration) error {
 		default:
 			continue
 		}
-		result = errors.Join(result, os.RemoveAll(path))
+		names = append(names, e.Name())
 	}
-	return result
+	return names, result
+}
+
+// Size is the number of bytes of a published archive: its container and
+// its manifest. A missing archive has none.
+func (s *Store) Size(id string) (int64, error) {
+	if !ValidID(id) {
+		return 0, ErrArchive
+	}
+	if err := s.check(); err != nil {
+		return 0, err
+	}
+	return treeSize(filepath.Join(s.root, id))
+}
+
+// LeftoverSize is the number of bytes under a leftover Leftovers named.
+func (s *Store) LeftoverSize(name string) (int64, error) {
+	if !strings.HasPrefix(name, pendingPrefix) && !strings.HasPrefix(name, removedPrefix) || strings.ContainsRune(name, '/') {
+		return 0, ErrArchive
+	}
+	return treeSize(filepath.Join(s.root, name))
+}
+
+// treeSize sums the regular files under path, without following links; a
+// missing path has none.
+func treeSize(path string) (int64, error) {
+	var total int64
+	err := filepath.WalkDir(path, func(_ string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.Type().IsRegular() {
+			info, err := d.Info()
+			if err != nil {
+				return err
+			}
+			total += info.Size()
+		}
+		return nil
+	})
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	return total, err
 }
 
 // newest is the latest modification time of a directory and its entries.
@@ -268,7 +328,7 @@ func newest(dir string) (time.Time, error) {
 // Open authenticates metadata and hashes the actual immutable local ciphertext.
 // Its file descriptor remains on this inode. Untrusted remote objects must first
 // be staged privately and verified; this is not a mutable remote-stream API.
-func (s *Store) Open(ctx context.Context, id string, authority *restoreauthority.Catalog) (*os.File, restoreauthority.Archive, error) {
+func (s *Store) Open(ctx context.Context, id string, authority Authority) (*os.File, restoreauthority.Archive, error) {
 	if authority == nil {
 		return nil, restoreauthority.Archive{}, ErrArchive
 	}
@@ -318,7 +378,7 @@ func (s *Store) Open(ctx context.Context, id string, authority *restoreauthority
 // Capture requires a reader of a coherent, physically excluded ciphertext
 // image. A stable ID makes a lost publication ACK retryable. Pending directories
 // are never accepted as archives, and an existing complete archive is immutable.
-func (s *Store) Capture(ctx context.Context, spec Spec, source io.Reader, authority *restoreauthority.Catalog) (restoreauthority.Archive, error) {
+func (s *Store) Capture(ctx context.Context, spec Spec, source io.Reader, authority Authority) (restoreauthority.Archive, error) {
 	var zero restoreauthority.Archive
 	if !ValidID(spec.ID) || source == nil || authority == nil || spec.Size <= 0 || spec.Size > 32<<30 {
 		return zero, ErrArchive

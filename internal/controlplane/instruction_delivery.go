@@ -326,15 +326,17 @@ func (t *Transit) RetireInstruction(ctx context.Context, id string, runtime Revo
 		return err
 	}
 	defer rollback(tx)
-	i, _, err := lockInstruction(ctx, tx, id)
+	i, a, err := lockInstruction(ctx, tx, id)
 	if err != nil {
 		return err
 	}
 	if i.State != "PENDING" {
 		return commit(ctx, tx)
 	}
-	if err = isHead(ctx, tx, i.mailboxRow); err != nil {
-		return err
+	// Checked under the agent's lock, whatever the caller saw: the deletion
+	// of the agent cancels its instructions; they do not die.
+	if a.Phase != "LIVE" {
+		return ErrUnavailable
 	}
 	var due bool
 	err = tx.QueryRow(ctx, `SELECT closing OR expires_at<=clock_timestamp() OR
@@ -344,6 +346,37 @@ func (t *Transit) RetireInstruction(ctx context.Context, id string, runtime Revo
 	}
 	if !due {
 		return ErrTransition
+	}
+	// Never allowed to reach the agent, and unable to now (AuthorizeInstruction
+	// needs a current lease on an open instruction before its deadline): there
+	// is nothing to fence, and the instruction dies without its agent, which
+	// may never boot (ADR 007), even behind another delivery to that agent:
+	// what never reached it leaves the queue out of order. A rerun its
+	// requester may no longer send is skipped, as ClaimInstruction would.
+	if !i.MayHaveReached {
+		skipped, err := t.skipRevokedRerun(ctx, tx, i, a)
+		if err != nil {
+			return err
+		}
+		var died *DeadDelivery
+		if !skipped {
+			if _, err = tx.Exec(ctx, "UPDATE mandates SET valid=false WHERE id=$1", i.Mandate); err != nil {
+				return err
+			}
+			dead, err := t.markInstructionDead(ctx, tx, i)
+			if err != nil {
+				return err
+			}
+			died = &dead
+		}
+		if err = commit(ctx, tx); err != nil {
+			return err
+		}
+		reportDeath(ctx, runtime, died)
+		return nil
+	}
+	if err = isHead(ctx, tx, i.mailboxRow); err != nil {
+		return err
 	}
 	if _, err = tx.Exec(ctx, "UPDATE agent_mailboxes SET closing=true WHERE id=$1", id); err != nil {
 		return err
@@ -357,45 +390,77 @@ func (t *Transit) RetireInstruction(ctx context.Context, id string, runtime Revo
 	if err = commit(ctx, tx); err != nil {
 		return err
 	}
-	if err = runtime.Fence(ctx, i.Destination, "event/"+id); err != nil {
+	if err = t.store.fencePastAttempts(ctx, runtime, i.Destination, "event/"+id); err != nil {
 		return err
 	}
-	return commitBarrier(ctx, runtime, "event/"+id, []string{i.Destination}, func() error {
+	var died *DeadDelivery
+	err = commitBarrier(ctx, runtime, "event/"+id, []string{i.Destination}, func() error {
 		finish, err := t.store.begin(ctx)
 		if err != nil {
 			return err
 		}
 		defer rollback(finish)
-		i, _, err = lockInstruction(ctx, finish, id)
+		var current agent
+		i, current, err = lockInstruction(ctx, finish, id)
 		if err != nil {
 			return err
 		}
-		if i.State == "PENDING" && i.Closing {
-			code := "delivery_failed"
-			if i.MayHaveReached {
-				code = "delivery_outcome_unknown"
-			}
-			if _, err = finish.Exec(ctx, "UPDATE platform_operations SET status='FAILED',error_code=$2,completed_at=clock_timestamp() WHERE id=$1 AND status IN ('PENDING','RUNNING')", i.Operation, code); err != nil {
-				return err
-			}
-			// Expiry wins when both hold: time is what the requester chose.
-			if _, err = finish.Exec(ctx, `UPDATE owner_instructions SET close_reason=(SELECT CASE
-                WHEN expires_at<=clock_timestamp() THEN 'expired' WHEN attempts>=attempt_limit THEN 'attempts_exhausted' ELSE 'closed' END
-                FROM agent_mailboxes WHERE id=$2) WHERE operation_id=$1`, i.Operation, id); err != nil {
-				return err
-			}
-			if _, err = finish.Exec(ctx, "UPDATE agent_mailboxes SET delivery_state='DEAD',lease_token='',lease_until=NULL WHERE id=$1", id); err != nil {
-				return err
-			}
-			if _, err = finish.Exec(ctx, "DELETE FROM outbox WHERE mailbox_id=$1", id); err != nil {
-				return err
-			}
-			if err = t.delivered(ctx, finish, i.Input); err != nil {
-				return err
-			}
+		if i.State != "PENDING" || !i.Closing {
+			return commit(ctx, finish)
 		}
-		return commit(ctx, finish)
+		if current.Phase != "LIVE" {
+			return ErrUnavailable
+		}
+		dead, err := t.markInstructionDead(ctx, finish, i)
+		if err != nil {
+			return err
+		}
+		if err = commit(ctx, finish); err != nil {
+			return err
+		}
+		died = &dead
+		return nil
 	})
+	reportDeath(ctx, runtime, died)
+	return err
+}
+
+// markInstructionDead fails an instruction that will not reach its agent, and
+// starts its input's retention.
+func (t *Transit) markInstructionDead(ctx context.Context, tx pgx.Tx, i instructionRow) (DeadDelivery, error) {
+	d := DeadDelivery{ID: i.ID, Kind: "instruction"}
+	code := "delivery_failed"
+	if i.MayHaveReached {
+		code = "delivery_outcome_unknown"
+	} else {
+		// Never sent, and its deadline passed while its agent waited for a VM
+		// slot: say so (ADR 017).
+		var queued bool
+		if err := tx.QueryRow(ctx, `SELECT m.expires_at<=clock_timestamp() AND EXISTS(SELECT 1 FROM capacity_waits q WHERE q.agent_id=m.dest_agent_id)
+            FROM agent_mailboxes m WHERE m.id=$1`, i.ID).Scan(&queued); err != nil {
+			return d, err
+		}
+		if queued {
+			code = "capacity_unavailable"
+		}
+	}
+	if _, err := tx.Exec(ctx, "UPDATE platform_operations SET status='FAILED',error_code=$2,completed_at=clock_timestamp() WHERE id=$1 AND status IN ('PENDING','RUNNING')", i.Operation, code); err != nil {
+		return d, err
+	}
+	// Expiry wins when both hold: time is what the requester chose.
+	if _, err := tx.Exec(ctx, `UPDATE owner_instructions SET close_reason=(SELECT CASE
+        WHEN expires_at<=clock_timestamp() THEN 'expired' WHEN attempts>=attempt_limit THEN 'attempts_exhausted' ELSE 'closed' END
+        FROM agent_mailboxes WHERE id=$2) WHERE operation_id=$1`, i.Operation, i.ID); err != nil {
+		return d, err
+	}
+	if err := tx.QueryRow(ctx, `UPDATE agent_mailboxes SET delivery_state='DEAD',lease_token='',lease_until=NULL WHERE id=$1
+        RETURNING CASE WHEN expires_at<=clock_timestamp() THEN 'expired' ELSE 'attempts_exhausted' END`, i.ID).Scan(&d.Reason); err != nil {
+		return d, err
+	}
+	if _, err := tx.Exec(ctx, "DELETE FROM outbox WHERE mailbox_id=$1", i.ID); err != nil {
+		return d, err
+	}
+	return d, t.delivered(ctx, tx, i.Input)
 }
 
 // DispatchMailbox routes the exact durable job, preserving the shared FIFO with
@@ -417,6 +482,12 @@ func (t *Transit) DispatchMailbox(ctx context.Context, id string, lease time.Dur
 	}
 	if kind != "instruction" {
 		return t.store.dispatchMailboxWithTransit(ctx, destination, id, lease, runtime, t)
+	}
+	// Due to die: no prepared agent is needed (see dispatchMailboxWithTransit).
+	if due, err := t.store.retirementDue(ctx, id); err != nil {
+		return err
+	} else if due {
+		return t.RetireInstruction(ctx, id, runtime)
 	}
 	retire := false
 	dispatch := func(ctx context.Context) error {

@@ -131,13 +131,18 @@ func newProductPeerLab(t *testing.T) *productPeerLab {
 	}
 	options := opts(t, root)
 	options.AuthenticatedControl, options.Ready, options.BootTimeout = true, nil, time.Minute
-	authorityRoot := filepath.Join(t.TempDir(), "restore-authority")
-	authority, err := restoreauthority.Initialize(t.Context(), authorityRoot, keys.Identity())
-	if err != nil {
-		t.Fatal(err)
+	if labRuntimeOptions != nil {
+		labRuntimeOptions(&options)
 	}
-	t.Cleanup(func() { authority.Close() })
-	w, err := NewProvisioningPlacements(store, "local", "product-peers-worker", 2*time.Minute, options, keys, authority, ProvisioningConfig{FirstUID: 62300, LastUID: 62309})
+	// The worker reaches the authorities through the authority service, as
+	// in production; the service runs in this test's process.
+	authorityRoot := filepath.Join(t.TempDir(), "restore-authority")
+	authority := openAuthority(t, throughService, keys, authorityRoot)
+	provisioning := ProvisioningConfig{FirstUID: 62300, LastUID: 62309}
+	if labProvisioning != nil {
+		labProvisioning(&provisioning)
+	}
+	w, err := NewProvisioningPlacements(store, "local", "product-peers-worker", 2*time.Minute, options, authority.provider(), authority, provisioning)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +166,8 @@ func newProductPeerLab(t *testing.T) *productPeerLab {
 		t.Fatal(err)
 	}
 	lab.handler = handler
-	lab.server = httptest.NewServer(handler)
+	// HTTPS, as clients reach the API (product.md, the MVP outcome).
+	lab.server = httptest.NewTLSServer(handler)
 	lab.server.Client().Timeout = 15 * time.Second
 	t.Cleanup(lab.server.Close)
 	return lab

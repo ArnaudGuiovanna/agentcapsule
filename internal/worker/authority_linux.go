@@ -34,8 +34,16 @@ func (w *Placements) deliverToGuest(ctx context.Context, target string, client *
 			return harnessstore.Receipt{}, restoreauthority.ErrStale
 		}
 		binding = enrollmentBinding(e)
-		if err = w.authority.WithBinding(ctx, binding, func() error { return nil }); err != nil {
+		if err = w.authority.CheckBinding(ctx, binding); err != nil {
 			return harnessstore.Receipt{}, err
+		}
+	}
+	if !client.Accepts(capsuleprotocol.ControlContentJSON) {
+		// A harness that did not negotiate JSON content receives each JSON
+		// part as text (ADR 016). The same boot always gets the same bytes,
+		// and the outcome below is recorded for the event it received.
+		if downgraded, err := capsuleprotocol.TextOnlyEvent(event); err == nil {
+			event = downgraded
 		}
 	}
 	var result harnessstore.Receipt
@@ -46,7 +54,10 @@ func (w *Placements) deliverToGuest(ctx context.Context, target string, client *
 		result, err = client.Send(ctx, event)
 	}
 	if err == nil && w.authority != nil {
-		var outcome restoreauthority.Outcome
+		// The outcome keeps the event's ID (ADR 005 item 8): a loss declared
+		// after a failover names the delivery even when the restored
+		// database lost it.
+		outcome := restoreauthority.Outcome{Event: event.ID}
 		outcome.ID, outcome.Digest, err = harnessstore.OutcomeFingerprint(target, event, result.Result)
 		if err == nil {
 			err = w.authority.RecordOutcome(ctx, binding, outcome)
@@ -122,17 +133,18 @@ func (w *Placements) CommitBarrier(ctx context.Context, subject string, targets 
 		}
 		bindings = append(bindings, b)
 	}
-	return w.authority.WithRevocation(ctx, subject, bindings, publish)
+	// publish comes from internal/controlplane, in its caller's context: a
+	// lost hold does not cancel it (ADR 006 §3, What a lost hold can do).
+	return w.authority.HoldRevocation(ctx, subject, bindings, func(context.Context) error { return publish() })
 }
 
-// NewPlacementsWithAuthority is the encrypted product path. Catalog lifetime is
-// owned by the caller; ordinary boot/adoption never enrolls a missing store.
-func NewPlacementsWithAuthority(store *controlplane.Store, hostID, workerID string, lease time.Duration, opts runtime.FirecrackerOptions, keys *keyauthority.Files, authority *restoreauthority.Catalog) (*Placements, error) {
-	if keys == nil || authority == nil || authority.KeyAuthorityIdentity() != keys.Identity() {
+// NewPlacementsWithAuthority is the encrypted product path. In production
+// keys and authority are both the authority service's client, which pinned
+// both identities at its hello; the caller owns its lifetime. Ordinary
+// boot/adoption never enrolls a missing store.
+func NewPlacementsWithAuthority(store *controlplane.Store, hostID, workerID string, lease time.Duration, opts runtime.FirecrackerOptions, keys keyauthority.Provider, authority restoreauthority.Authority) (*Placements, error) {
+	if keys == nil || authority == nil {
 		return nil, restoreauthority.ErrInput
-	}
-	if err := keys.SeparateFrom(opts.Root); err != nil {
-		return nil, err
 	}
 	if err := authority.SeparateFrom(opts.Root); err != nil {
 		return nil, err

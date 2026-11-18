@@ -4,29 +4,41 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/sandbox"
 )
 
 var statLine = regexp.MustCompile(`Type: (\S+)\s+Mode:\s+([0-7]+)`)
 
+// debugfs is the absolute path of debugfs on PATH.
+func debugfs() (string, error) {
+	p, err := exec.LookPath("debugfs")
+	if err != nil {
+		return "", fmt.Errorf("debugfs (e2fsprogs) is required to inspect harness images: %w", err)
+	}
+	return filepath.Abs(p)
+}
+
 // InspectRootfs checks, without mounting, that the image can start under the
 // guest base: every mount point is a directory and the entrypoint is an
 // executable regular file (or a symlink, resolved by the guest kernel). It
-// reads the image with debugfs (e2fsprogs) in read-only mode.
-func InspectRootfs(ctx context.Context, image string, m HarnessManifest) error {
-	debugfs, err := exec.LookPath("debugfs")
+// reads the image with debugfs (e2fsprogs), read-only, confined by sb:
+// debugfs parses an image downloaded from a registry, and a flaw of
+// e2fsprogs must not reach the host (package sandbox).
+func InspectRootfs(ctx context.Context, image string, m HarnessManifest, sb sandbox.Options) error {
+	debugfs, err := debugfs()
 	if err != nil {
-		return fmt.Errorf("debugfs (e2fsprogs) is required to inspect harness images: %w", err)
+		return err
 	}
 	stat := func(p string) (string, int64, error) {
 		if strings.ContainsAny(p, "\"\n") {
 			return "", 0, invalid("path %q", p)
 		}
-		cmd := exec.CommandContext(ctx, debugfs, "-R", "stat \""+p+"\"", image)
-		cmd.Env = []string{"LC_ALL=C"}
-		out, err := cmd.Output()
+		out, err := sb.Run(ctx, image, debugfs, "-R", "stat \""+p+"\"", sandbox.ImagePath)
 		if err != nil {
 			return "", 0, fmt.Errorf("debugfs: %w", err)
 		}
@@ -54,4 +66,17 @@ func InspectRootfs(ctx context.Context, image string, m HarnessManifest) error {
 		return nil
 	}
 	return invalid("entrypoint %s is not an executable file", m.Entrypoint[0])
+}
+
+// CheckInspection runs debugfs -V as InspectRootfs runs debugfs, confined by
+// sb: whether this host can inspect images, before any is downloaded.
+func CheckInspection(ctx context.Context, sb sandbox.Options) error {
+	debugfs, err := debugfs()
+	if err != nil {
+		return err
+	}
+	if _, err = sb.Run(ctx, "", debugfs, "-V"); err != nil {
+		return fmt.Errorf("debugfs: %w", err)
+	}
+	return nil
 }

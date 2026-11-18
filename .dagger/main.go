@@ -25,9 +25,9 @@ import (
 )
 
 const (
-	// Go 1.27.3 on Alpine 3.24: builds agentcapsule-harness and capsule-echo,
+	// Go 1.27.4 on Alpine 3.24: builds agentcapsule-harness and capsule-echo,
 	// and packs images with e2fsprogs.
-	goImage = "golang:1.27-alpine@sha256:fa3d596898d9f126af7c01d14ee7597bab3f39cccf392ef36b69fe77cd681f18"
+	goImage = "golang:1.27-alpine@sha256:70bd7ddea8b6cbe5d6943cde279d6b67feb10cc924fb9100d1d8757c1575b280"
 	// Same base as examples/python-echo/Dockerfile.
 	pythonImage = "python:3.13-alpine@sha256:1e1f6334529d1fb26a2ef619d7cffb30a7c7d7cc1cc7338ebee283a58d1aeaca"
 	// OCI distribution registry for the end-to-end check.
@@ -234,6 +234,14 @@ func (m *Agentcapsule) Sign(ctx context.Context,
 	return strings.TrimSpace(out), err
 }
 
+// verifier runs agentcapsule-harness verify in c. Dagger's containers have
+// neither the capabilities that the sandbox of debugfs needs as root nor
+// user namespaces: verify inspects the image without it (--unconfined),
+// which it refuses as root, so it runs as nobody.
+func verifier(c *dagger.Container, args ...string) *dagger.Container {
+	return c.WithUser("nobody").WithExec(append([]string{"agentcapsule-harness", "verify", "--unconfined"}, args...))
+}
+
 // Verify downloads a package and checks it as the platform's importer would;
 // with a key, it also requires a signature by that key. It prints a report.
 func (m *Agentcapsule) Verify(ctx context.Context,
@@ -249,13 +257,13 @@ func (m *Agentcapsule) Verify(ctx context.Context,
 	local bool,
 ) (string, error) {
 	c := m.toolbox()
-	args := []string{"agentcapsule-harness", "verify", "--ref", ref}
+	args := []string{"--ref", ref}
 	if key != nil {
 		c = c.WithFile("/publisher.pub", key)
 		args = append(args, "--key", "/publisher.pub")
 	}
 	c, args = registryArgs(c, args, username, password, local)
-	return c.WithExec(args).Stdout(ctx)
+	return verifier(c, args...).Stdout(ctx)
 }
 
 // Check runs the whole supply chain against a throwaway registry: builds the
@@ -281,16 +289,16 @@ func (m *Agentcapsule) Check(ctx context.Context) (string, error) {
 		}
 		ref = strings.TrimSpace(ref)
 		// Unsigned, it must be refused when a signature is required.
-		unsigned, err := c.WithExec([]string{"agentcapsule-harness", "verify", "--ref", ref, "--key", "/keys/publisher.pub", "--local"},
-			dagger.ContainerWithExecOpts{Expect: dagger.ReturnTypeFailure}).Stderr(ctx)
+		unsigned, err := c.WithUser("nobody").WithExec([]string{"agentcapsule-harness", "verify", "--unconfined", "--ref", ref,
+			"--key", "/keys/publisher.pub", "--local"}, dagger.ContainerWithExecOpts{Expect: dagger.ReturnTypeFailure}).Stderr(ctx)
 		if err != nil {
 			return "", fmt.Errorf("%s: an unsigned package passed verification: %w", name, err)
 		}
 		if !strings.Contains(unsigned, "signature") {
 			return "", fmt.Errorf("%s: unexpected refusal: %s", name, unsigned)
 		}
-		out, err := c.WithExec([]string{"sh", "-c", "agentcapsule-harness sign --key /keys/publisher.key --ref " + ref + " --local" +
-			" && agentcapsule-harness verify --ref " + ref + " --key /keys/publisher.pub --local"}).Stdout(ctx)
+		signed := c.WithExec([]string{"agentcapsule-harness", "sign", "--key", "/keys/publisher.key", "--ref", ref, "--local"})
+		out, err := verifier(signed, "--ref", ref, "--key", "/keys/publisher.pub", "--local").Stdout(ctx)
 		if err != nil {
 			return "", err
 		}

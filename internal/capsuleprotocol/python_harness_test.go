@@ -205,6 +205,9 @@ func TestPythonHarnessSpeaksTheGuestProtocol(t *testing.T) {
 	if err = h.control.RequireControlContract(call); err != nil {
 		t.Fatal("capabilities", err)
 	}
+	if !h.control.Accepts(ControlContentJSON) {
+		t.Fatal("python-echo does not accept JSON content")
+	}
 	status, err := h.control.HealthStatus(call)
 	if err != nil || status.PreviousShutdown != ShutdownClean || status.Identity != id {
 		t.Fatal("health", status, err)
@@ -308,6 +311,25 @@ func TestPythonHarnessSpeaksTheGuestProtocol(t *testing.T) {
 	fourth := invocationEvent(t, id.AgentID, "evt-4", "op-4", "after restart")
 	if r, err = h.control.Invoke(call, fourth); err != nil || answer(t, r) != "python echo #3: after restart" {
 		t.Fatal("state did not survive the restart", err)
+	}
+	// JSON parts reach the Python handler as values and come back as they were.
+	structured := invocationEvent(t, id.AgentID, "evt-json", "op-json", "rows")
+	var in Invocation
+	_ = json.Unmarshal(structured.Body, &in)
+	in.Content = append(in.Content, ContentPart{Type: "json", JSON: `{"n": [1, 2], "s": "é"}`})
+	structured.Body, _ = json.Marshal(in)
+	jr, err := h.control.Invoke(call, structured)
+	if err != nil {
+		t.Fatal("JSON invocation", err)
+	}
+	var echoed OwnerMessage
+	if err = json.Unmarshal(jr.Result, &echoed); err != nil || echoed.Validate() != nil || len(echoed.Content) != 2 ||
+		echoed.Content[0].Text != "python echo #4: rows" || echoed.Content[1].Type != "json" {
+		t.Fatal("JSON echo", string(jr.Result), err)
+	}
+	var value, sent any
+	if json.Unmarshal([]byte(echoed.Content[1].JSON), &value) != nil || json.Unmarshal([]byte(in.Content[1].JSON), &sent) != nil || !reflect.DeepEqual(value, sent) {
+		t.Fatal("JSON value changed", echoed.Content[1].JSON)
 	}
 	// A restore inspects the outcomes the store holds, with Go's fingerprints.
 	contract, err := h.control.Negotiate(call, []string{Version})

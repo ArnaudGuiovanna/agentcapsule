@@ -122,6 +122,10 @@ func platformStatus(w http.ResponseWriter, err error) {
 		plainError(w, http.StatusNotFound, "no such agent")
 		return
 	}
+	if errors.As(err, &remote) && remote.Code == "capability_denied" {
+		plainError(w, http.StatusForbidden, "this agent's harness or its policies do not allow it (agents.discover, agents.delegate)")
+		return
+	}
 	plainError(w, http.StatusServiceUnavailable, "the platform is unavailable; try again")
 }
 
@@ -195,8 +199,8 @@ func (e *A2AEndpoint) agentCard(d capsuleprotocol.DirectoryAgent) *a2a.AgentCard
 		Version:             "1",
 		SupportedInterfaces: []*a2a.AgentInterface{a2a.NewAgentInterface(e.base+"/agents/"+d.AgentID, a2a.TransportProtocolJSONRPC)},
 		Capabilities:        a2a.AgentCapabilities{},
-		DefaultInputModes:   []string{"text/plain"},
-		DefaultOutputModes:  []string{"text/plain"},
+		DefaultInputModes:   []string{"text/plain", "application/json"},
+		DefaultOutputModes:  []string{"text/plain", "application/json"},
 		Skills:              skills,
 	}
 }
@@ -214,21 +218,29 @@ func peerFrom(ctx context.Context) string {
 
 func invalid(message string) error { return a2a.NewError(a2a.ErrInvalidParams, message) }
 
-// textContent keeps a message's text parts; anything else is refused.
-func textContent(parts a2a.ContentParts) ([]capsuleprotocol.TextContent, error) {
+// messageContent keeps a message's text parts, and its data parts as JSON
+// parts; files are refused.
+func messageContent(parts a2a.ContentParts) ([]capsuleprotocol.ContentPart, error) {
 	if len(parts) == 0 {
 		return nil, invalid("the message has no part")
 	}
-	content := make([]capsuleprotocol.TextContent, 0, len(parts))
+	content := make([]capsuleprotocol.ContentPart, 0, len(parts))
 	for _, p := range parts {
-		text, ok := p.Content.(a2a.Text)
-		if !ok {
-			return nil, a2a.NewError(a2a.ErrUnsupportedContentType, "only text parts are supported")
+		switch v := p.Content.(type) {
+		case a2a.Text:
+			content = append(content, capsuleprotocol.ContentPart{Type: "text", Text: string(v)})
+		case a2a.Data:
+			b, err := json.Marshal(v.Value)
+			if err != nil {
+				return nil, invalid("a data part must hold a JSON value")
+			}
+			content = append(content, capsuleprotocol.ContentPart{Type: "json", JSON: capsuleprotocol.JSONValue(b)})
+		default:
+			return nil, a2a.NewError(a2a.ErrUnsupportedContentType, "only text and data parts are supported")
 		}
-		content = append(content, capsuleprotocol.TextContent{Type: "text", Text: string(text)})
 	}
 	if (capsuleprotocol.PeerPayload{Content: content}).Validate() != nil {
-		return nil, invalid("a message is 1 to 32 non-empty text parts, at most 64 KiB in all")
+		return nil, invalid("a message is 1 to 32 non-empty text or data parts (no null, 32 levels at most), at most 64 KiB in all")
 	}
 	return content, nil
 }
@@ -259,6 +271,8 @@ func sendError(err error) error {
 		return invalid("the platform refused this request")
 	case "unauthorized":
 		return a2a.NewError(a2a.ErrUnauthorized, "this agent may not send requests now")
+	case "capability_denied":
+		return a2a.NewError(a2a.ErrUnauthorized, "this agent's harness or its policies do not allow requests to other agents (agents.delegate)")
 	case "quota_exceeded", "rate_limited":
 		return a2a.NewError(a2a.ErrServerError, "a platform limit refused this request; try again later")
 	}
@@ -274,8 +288,9 @@ func (h peerHandler) SendMessage(ctx context.Context, req *a2a.SendMessageReques
 	if req.Config != nil && req.Config.PushConfig != nil {
 		return nil, a2a.ErrPushNotificationNotSupported
 	}
-	if req.Config != nil && len(req.Config.AcceptedOutputModes) > 0 && !slices.Contains(req.Config.AcceptedOutputModes, "text/plain") {
-		return nil, a2a.NewError(a2a.ErrUnsupportedContentType, "answers are text/plain")
+	if req.Config != nil && len(req.Config.AcceptedOutputModes) > 0 && !slices.Contains(req.Config.AcceptedOutputModes, "text/plain") &&
+		!slices.Contains(req.Config.AcceptedOutputModes, "application/json") {
+		return nil, a2a.NewError(a2a.ErrUnsupportedContentType, "answers are text/plain or application/json")
 	}
 	m := req.Message
 	if m.Role != a2a.MessageRoleUser {
@@ -287,7 +302,7 @@ func (h peerHandler) SendMessage(ctx context.Context, req *a2a.SendMessageReques
 	if m.TaskID != "" {
 		return nil, invalid("a task takes one message: send a new message instead of continuing a task")
 	}
-	content, err := textContent(m.Parts)
+	content, err := messageContent(m.Parts)
 	if err != nil {
 		return nil, err
 	}
@@ -419,19 +434,40 @@ func (e *A2AEndpoint) load(ctx context.Context, requestID string) (taskRow, erro
 }
 
 // refresh asks the platform where a request without an outcome stands. A
-// refusal leaves the last known state: the platform's notifications remain
-// the outcome's source.
+// refusal leaves the last known state. A REPLIED request's status carries its
+// reply, or why it has none (ADR 007): the reply event remains the way a reply
+// arrives, and this read catches up on one whose event never came.
 func (e *A2AEndpoint) refresh(ctx context.Context, requestID string, t *taskRow) {
 	ask, cancel := context.WithTimeout(ctx, 5*time.Second)
 	s, err := e.platform.RequestStatus(ask, requestID)
 	cancel()
-	if err != nil || s.RequestID != requestID || s.State == t.state {
+	if err != nil || s.RequestID != requestID {
 		return
 	}
 	now := time.Now().UnixNano()
+	if s.State == "REPLIED" && (s.Reply != nil || s.Reason != "") {
+		var reply []byte
+		if s.Reply != nil {
+			if reply, err = json.Marshal(s.Reply.Content); err != nil {
+				return
+			}
+			t.reply = s.Reply.Content
+		}
+		t.result, t.reason, t.updated = "REPLIED", truncate(s.Reason, 100), now
+		_ = e.engine.store.Local(ctx, []string{"agent/" + e.engine.agent}, func(tx harnessstore.SQL) error {
+			_, err := tx.ExecContext(ctx, `INSERT INTO adapter_a2a_results(request_id,state,reply,reason,received_ns) VALUES(?,'REPLIED',?,?,?)
+                ON CONFLICT(request_id) DO NOTHING`, requestID, reply, t.reason, now)
+			return err
+		})
+		return
+	}
+	if s.State == t.state {
+		return
+	}
 	switch s.State {
 	case "PENDING_APPROVAL", "DELIVERING", "PROCESSING", "REPLIED":
-		// The reply itself arrives as an event; until then the task is working.
+		// A host that does not carry the reply here: until its event arrives,
+		// the task is working.
 		t.state, t.updated = s.State, now
 		_ = e.engine.store.Local(ctx, []string{"agent/" + e.engine.agent}, func(tx harnessstore.SQL) error {
 			_, err := tx.ExecContext(ctx, `UPDATE adapter_a2a_tasks SET state=?,updated_ns=? WHERE request_id=?`, s.State, now, requestID)
@@ -470,10 +506,12 @@ var failure = map[string]string{
 	"FAILED":   "The request could not be delivered or answered.",
 }
 
-func parts(content []capsuleprotocol.TextContent) a2a.ContentParts {
-	out := make(a2a.ContentParts, 0, len(content))
-	for _, c := range content {
-		out = append(out, a2a.NewTextPart(c.Text))
+// parts gives a reply's text parts as A2A text parts and its JSON parts as
+// data parts. A value that does not decode is given as its text.
+func parts(content []capsuleprotocol.ContentPart) a2a.ContentParts {
+	out, err := toParts(content)
+	if err != nil {
+		out, _ = toParts(capsuleprotocol.TextOnly(content))
 	}
 	return out
 }
@@ -514,7 +552,9 @@ func taskView(requestID string, t taskRow) *a2a.Task {
 		view.Status.Message = &a2a.Message{ID: "status-" + requestID, ContextID: t.contextID, TaskID: id, Role: a2a.MessageRoleAgent,
 			Parts: a2a.ContentParts{a2a.NewTextPart(note)}}
 	}
-	if t.result == "REPLIED" {
+	// A reply no longer kept ends the task without an artifact; its reason
+	// (content_purged, content_revoked) is in the metadata.
+	if t.result == "REPLIED" && len(t.reply) > 0 {
 		view.Artifacts = []*a2a.Artifact{{ID: "reply", Name: "reply", Parts: parts(t.reply)}}
 	}
 	return view

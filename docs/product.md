@@ -92,7 +92,7 @@ integrators building on the API, and contributors.
 ### Invocations, events and attachments
 
 - An invocation is admitted only when identity, current authorization, the durable job and its idempotency receipt commit together; the API returns `202` and an `operation_id`, and the work wakes a stopped agent. A harness may answer `working` and post its result before a deadline; every invocation ends with exactly one outcome.
-- Events are durable external events or simple scheduled events. Queues have TTL, priority and depth limits, bounded retries and dead letters; an idle agent stops after a timeout, never mid-work.
+- Events are durable external events or simple scheduled events. Queues have TTL and depth limits, bounded retries and dead letters; each agent handles its work in arrival order. An idle agent stops after a timeout, never mid-work.
 - Delivery is **at least once** with deduplication; exactly-once is never promised for external effects such as LLM calls, emails or payments. Harnesses checkpoint and deduplicate in their volume.
 - **Attachments** are opaque references with MIME type, size, hash and access control, bound to organization, agent and sender, read over the platform channel and purged on expiry. The platform carries files; interpreting them is the harness's job.
 
@@ -143,7 +143,7 @@ possible), and data migration is the harness's job.
 - **Observability.** Health and readiness endpoints, Prometheus/OpenTelemetry metrics, traces with pseudonymized IDs, redacted logs, and an operator CLI for queues, boot errors, redacted diagnostics, restore tests and garbage collection.
 - **Capacity protection.** Disk alerts at 70% and 80%; imports and new volumes refused past a pressure threshold; alerts on CPU, memory, queue age, boot failures and Directory or SLIM outages.
 - **Backups.** Off-host, encrypted, versioned backups of PostgreSQL, agent volumes and harness digests, taken consistently (quiesce first), with freshness alerts.
-- **Restore.** Tested regularly on another KVM host. RPO and RTO are documented and measured ([ADR 004](adr/004-recovery-objectives.md): database 15 minutes, agent volumes 24 hours, RTO 1 hour on a standby host); after a full disaster, work acknowledged inside the announced RPO window can be lost. A lost invocation is shown as `lost`, with the time of the loss, and runs again under the same identifier unless its requester was revoked. A restore never revives memberships, assignments, tokens, delegations or keys revoked since the backup.
+- **Restore.** Tested regularly on another KVM host. RPO and RTO are documented and measured ([ADR 004](adr/004-recovery-objectives.md): database 15 minutes, agent volumes 24 hours, RTO 1 hour on a standby host); after a full disaster, work acknowledged inside the announced RPO window can be lost. A lost invocation is shown as `lost`, with the time of the loss, and runs again under the same identifier unless its requester was revoked. A lost request, reply or status between agents is delivered again to the restored agent under the same identifier; a request in a final state never reopens ([ADR 008](adr/008-redelivering-lost-agent-requests.md)). A restore never revives memberships, assignments, tokens, delegations or keys revoked since the backup.
 - **Revocation.** Deactivating a member revokes their tokens, sessions and delegations; no later call succeeds, not even reading a result or replaying a receipt. Work accepted earlier may finish for the organization, which keeps the agents.
 - **Deletion.** Blocks new work, stops the VM, destroys the volume, its key and temporary credentials, and removes the Directory record. Backups expire per policy, not instantly.
 
@@ -208,7 +208,7 @@ request body.
 | EVT-003 | Idempotency key per client and event | One key, one business operation |
 | EVT-004 | Unique lease and generation per agent | Never two writable copies |
 | EVT-005 | Bounded retries, backoff, dead letter | No unbounded loop |
-| EVT-006 | TTL, priority, queue limits per tenant and agent | Expired tasks never run |
+| EVT-006 | TTL, queue limits per tenant and agent | Expired tasks never run |
 | EVT-007 | Work waits through resource shortage | Resumes, or expires with a clear error |
 | EVT-008 | Event scheduled at a fixed time | Runs no earlier than due |
 | EVT-009 | Results available by polling | `GET /v1/operations/{id}` gives state and result or error |
@@ -264,7 +264,7 @@ forwards a raw Firecracker or shell command to the host.
 
 ## 5. Out of scope for P0
 
-- **P1:** advanced OIDC/SSO; installable signed skills (EXT-004); SSE streaming (EXT-005); outbound webhooks and notifications (EXT-007); calendar connectors; consistent memory snapshots and warm restore; automatic harness migration and canary rollout; LLM routing and fallback; web console and more SDKs.
+- **P1:** advanced OIDC/SSO; installable signed skills (EXT-004); SSE streaming (EXT-005); outbound webhooks and notifications (EXT-007); priority within an agent's queue ([ADR 007](adr/007-delivery-closure-and-priority.md)); calendar connectors; consistent memory snapshots and warm restore; automatic harness migration and canary rollout; LLM routing and fallback; web console and more SDKs.
 - **P1/P2:** large or real-time audio and video (EXT-006).
 - **P2:** multi-node pools and migration; public cross-organization federation; harness marketplace; multi-source event orchestration; advanced cost optimization.
 - **Never in the core:** tutoring or other business logic; a managed SaaS offer; a mandatory graphical client.

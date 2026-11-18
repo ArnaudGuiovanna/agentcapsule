@@ -13,10 +13,11 @@ import (
 // problemCodes lists every code the API answers with (application/problem+json);
 // TestEveryProblemCodeIsDeclared keeps it complete.
 var problemCodes = []string{"agent_already_exists", "agent_unavailable", "attachment_quota_exceeded", "attachment_too_large",
-	"attachment_unavailable", "authentication_required", "closure_pending", "expired", "forbidden", "harness_unavailable",
-	"idempotency_key_in_progress", "idempotency_key_required", "idempotency_key_reused", "incomplete_body", "invalid_json",
-	"invalid_path", "invalid_request", "invalid_transition", "json_required", "media_type_required", "method_not_allowed",
-	"not_found", "queue_full", "request_too_large", "storage_capacity_unavailable", "temporarily_unavailable"}
+	"attachment_unavailable", "attachments_purged", "audit_export_too_large", "authentication_required", "authority_not_reconciled", "authority_unavailable", "closure_pending", "expired", "forbidden",
+	"harness_unavailable", "idempotency_key_in_progress", "idempotency_key_required", "idempotency_key_reused", "idempotency_receipt_unreadable", "incomplete_body", "input_purged", "invalid_json",
+	"invalid_path", "invalid_request", "invalid_transition", "json_required", "media_type_required", "method_not_allowed", "not_found",
+	"organization_name_taken", "organization_quota_exceeded", "outcome_unknown", "provider_address_not_allowed", "queue_full", "quota_below_agent", "request_too_large", "requester_revoked", "storage_capacity_unavailable",
+	"storage_pressure", "temporarily_unavailable"}
 
 var (
 	httpMethods   = []string{"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}
@@ -44,9 +45,10 @@ func (s *Server) EnableTelemetry(registry *telemetry.Registry, events io.Writer)
 			route, telemetry.Label{Name: "method", Values: httpMethods}, telemetry.Label{Name: "status_class", Values: statusClasses}),
 		latency: registry.Histogram("agentcapsule_api_request_duration_seconds", "API request latency by route pattern.",
 			[]float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10}, route),
-		log: telemetry.NewLogger(events, map[string][]string{"event": {"http_request"}, "route": routes, "method": httpMethods,
+		log: telemetry.NewLogger(events, map[string][]string{"event": {"http_request", "audit_refusal_unrecorded"}, "route": routes, "method": httpMethods,
 			"problem": problemCodes}),
 	}
+	s.observeRevocations(registry)
 }
 
 func (t *apiTelemetry) record(route, method string, w *statusRecorder, requestID string, elapsed time.Duration) {
@@ -59,6 +61,13 @@ func (t *apiTelemetry) record(route, method string, w *statusRecorder, requestID
 		fields = append(fields, telemetry.Code("problem", w.problem))
 	}
 	t.log.Event("http_request", append(fields, telemetry.Seconds("duration", elapsed))...)
+}
+
+// refusalUnrecorded reports a refused administrative attempt that its
+// organization's trail could not record (TEN-009): the answer went out, the
+// record did not.
+func (t *apiTelemetry) refusalUnrecorded() {
+	t.log.Event("audit_refusal_unrecorded")
 }
 
 // statusRecorder keeps the status and problem code a handler answered with.

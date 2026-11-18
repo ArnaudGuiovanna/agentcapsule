@@ -180,6 +180,27 @@ func TestPublisherFollowsTheAgentsRevisions(t *testing.T) {
 	}
 }
 
+// A Directory outage defers the publication and is reported (OPS-03), so
+// that the worker counts it and the outage alerts; a step another worker won
+// is not an outage.
+func TestDirectoryOutageIsReported(t *testing.T) {
+	store := &memoryStore{row: controlplane.DirectoryWork{AgentID: "agt_1", TenantID: "org_1", Revision: 1, Publish: true,
+		Description: "first", Skills: []int{10302}, CreatedAt: time.Now()}}
+	dir := &memoryDirectory{records: map[string]string{}, down: true}
+	var reported []error
+	p := &Publisher{Store: store, Directory: dir, Deferred: func(err error) { reported = append(reported, err) }}
+	if _, err := p.RunOnce(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if len(reported) != 1 || !errors.Is(reported[0], ErrUnavailable) || !store.due() {
+		t.Fatal("outage not reported", reported)
+	}
+	dir.down = false
+	if _, err := p.RunOnce(t.Context()); err != nil || len(reported) != 1 {
+		t.Fatal("a publication reported as an outage", reported, err)
+	}
+}
+
 func TestBackoffIsBounded(t *testing.T) {
 	for attempt, want := range map[int64]time.Duration{0: 5 * time.Second, 1: 5 * time.Second, 2: 10 * time.Second, 4: 40 * time.Second, 7: 5 * time.Minute, 60: 5 * time.Minute} {
 		if got := backoff(attempt); got != want {

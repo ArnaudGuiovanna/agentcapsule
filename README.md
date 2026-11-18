@@ -14,7 +14,7 @@
 <p align="center">
   <a href="ROADMAP.md"><img alt="Status: pre-MVP" src="https://img.shields.io/badge/status-pre--MVP-5B616C?style=flat-square"></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-1B1E24?style=flat-square"></a>
-  <img alt="Go 1.27.3" src="https://img.shields.io/badge/go-1.27.3-1B1E24?style=flat-square&logo=go&logoColor=F3F4F1">
+  <img alt="Go 1.27.4" src="https://img.shields.io/badge/go-1.27.4-1B1E24?style=flat-square&logo=go&logoColor=F3F4F1">
   <img alt="Runs on Linux with KVM" src="https://img.shields.io/badge/runs%20on-Linux%20%2B%20KVM-1B1E24?style=flat-square">
 </p>
 
@@ -131,7 +131,8 @@ against the implementation in the test suite.
 
 ## Requirements
 
-- Linux amd64 with KVM (for running capsules), Go **1.27.3**, a C compiler and the
+- Linux amd64 with KVM, a kernel 5.14 or later (6.1 or 6.18 preferred) and cgroup v2
+  (for running capsules; `agentcapsule-worker -preflight` checks the host), Go **1.27.4**, a C compiler and the
   `libcryptsetup` headers (cgo), PostgreSQL 16 or newer.
 - Firecracker 1.17.0 with the volume-lock patch in [runtime/firecracker](runtime/firecracker),
   a guest kernel built from [runtime/guest](runtime/guest), and the guest image built
@@ -139,7 +140,12 @@ against the implementation in the test suite.
 
 ## Building and testing
 
+The worker links `libcryptsetup.so.12` by its file name, a flag Go refuses
+unless `CGO_LDFLAGS_ALLOW` allows it. Allow it once; the scripts set it
+themselves.
+
 ```bash
+go env -w CGO_LDFLAGS_ALLOW='-l:libcryptsetup\.so\.12'
 go build ./cmd/...
 go test -race ./...            # PostgreSQL-backed tests skip without a database
 ```
@@ -163,7 +169,11 @@ described in [scripts/README.md](scripts/README.md).
 
 Installation is not packaged yet. The building blocks are documented:
 
-- [docs/api/README.md](docs/api/README.md): API server, bootstrap and accounts.
+- [docs/install.md](docs/install.md): TLS on every hop, production and
+  development modes, and the host preflight.
+- [docs/bootstrap.md](docs/bootstrap.md): from an empty database to an
+  organization whose first owner signs in.
+- [docs/api/README.md](docs/api/README.md): API server and its routes.
 - [docs/api/tenant-identity.md](docs/api/tenant-identity.md): trusting an
   organization's identity provider.
 - [docs/worker.md](docs/worker.md): worker configuration
@@ -187,10 +197,12 @@ and an A2A agent (`a2a-agent`).
 | Running an existing agent unchanged | [docs/adapter.md](docs/adapter.md) |
 | Guest runtime and the `capsule.v1` contract | [docs/guest/](docs/guest/) |
 | Interoperability profile (A2A, OASF, Directory, SLIM) | [docs/interop.md](docs/interop.md) |
+| Installing a host: TLS, modes, preflight | [docs/install.md](docs/install.md) |
 | Backup, restore and recovery | [docs/recovery.md](docs/recovery.md) |
 | Architecture decisions | [docs/adr/](docs/adr/) |
 | Formal models | [spec/](spec/) |
 | Build, test and verification scripts | [scripts/README.md](scripts/README.md) |
+| Releases: audit, signing, SBOMs, verification | [docs/release.md](docs/release.md) |
 
 <details>
 <summary><strong>Repository layout</strong></summary>

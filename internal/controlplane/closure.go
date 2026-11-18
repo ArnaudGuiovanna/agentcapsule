@@ -63,9 +63,12 @@ func beginClosure(ctx context.Context, tx pgx.Tx, r requestRow, final, reason st
 	if err := publishRevocation(ctx, tx, "request/"+r.ID); err != nil {
 		return err
 	}
-	// Stores in creation catch up before activation; existing stores remain in
-	// the manifest even when stopped or permanently sealed.
-	_, err = tx.Exec(ctx, "INSERT INTO request_closure_targets(request_id,store_agent_id) SELECT $1,id FROM agents WHERE phase<>'PROVISIONING'", r.ID)
+	// The fence targets are the request's two parties, stopped or sealed
+	// alike: an event carrying request/<id> goes only to them, the request to
+	// its recipient and the reply to its sender, so no other store can hold an
+	// effect of it (P1 closedSafe, ADR 007 §7). An agent that is not a party
+	// cannot hold this closure.
+	_, err = tx.Exec(ctx, "INSERT INTO request_closure_targets(request_id,store_agent_id) VALUES ($1,$2),($1,$3)", r.ID, r.Sender, r.Recipient)
 	return err
 }
 
@@ -148,7 +151,7 @@ func (s *Store) ReconcileRequestClosure(ctx context.Context, requestID string, r
 		return err
 	}
 	for _, target := range pending {
-		if err := runtime.Fence(ctx, target, "request/"+requestID); err != nil {
+		if err := s.fencePastAttempts(ctx, runtime, target, "request/"+requestID); err != nil {
 			return fmt.Errorf("fence request in store %s: %w", target, err)
 		}
 		if err := s.recordRequestFence(ctx, requestID, target); err != nil {
@@ -243,7 +246,8 @@ func enqueueTerminal(ctx context.Context, tx pgx.Tx, id, sender, recipient, kind
 		}
 	}
 	for _, peer := range []string{sender, recipient} {
-		if agents[peer].Phase == "LIVE" {
+		// An organization's agent has no owner, so no inbox to write to.
+		if agents[peer].Phase == "LIVE" && agents[peer].Owner != "" {
 			if _, err := tx.Exec(ctx, "INSERT INTO inbox_items(id,user_id,kind,ref_id) VALUES ($1,$2,'request_update',$3)", newID("inb"), agents[peer].Owner, id); err != nil {
 				return err
 			}

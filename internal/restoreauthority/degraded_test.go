@@ -267,7 +267,8 @@ func TestWritesThatWaitForTheReplicaInDegradedMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gone := Binding{Store: "store-z", Volume: "volume-z", Incarnation: 1}
+	// The deleted agent: the seal, then the key's destruction, both held.
+	gone := Binding{Store: streamAgent, Volume: streamVolume, Incarnation: 1}
 	if _, err = p.catalog.Register(ctx, gone.Store, gone.Volume); err != nil {
 		t.Fatal(err)
 	}

@@ -67,18 +67,34 @@ its automatic mode covers; codes requiring intervention or a reboot are
 refused before mounting.
 
 The mount code refuses to run outside the guest's root PID 1. At boot,
-`capsule-init` also sets the loopback interface up. The VM has no other
+`capsule-init` mounts `/tmp` as a tmpfs of a quarter of the guest's memory
+(the agent's `memory_mib`: 64 MiB for 256 MiB) and `/run` as one of 8 MiB;
+without a size the kernel lets each grow to half of the memory
+(`guestinit.BootMounts`). It also sets the loopback interface up. The VM has no other
 interface, so this opens no route out: it only lets an adapted agent reach the
 model endpoint of [capsule-adapter](../adapter.md) on 127.0.0.1. The supervisor
 starts the harness under UID/GID 1000 in a dedicated cgroup. The harness
 receives its non-secret configuration on FD 3 and its Unix listener on FD 4.
 `SO_PEERCRED` authorizes only the supervisor to use this local server; the mTLS
-credentials and the LUKS key stay in `capsule-init`. When the harness exits,
-its descendants are removed and the guest stops, except during a requested
-quiesce. `POST /v1/lifecycle/quiesce` closes admission, waits for calls already
-admitted, then asks the harness to terminate. A successful exit with no
-remaining descendant precedes `syncfs`, the normal unmounts and the closing of
-dm-crypt. The supervisor then stays alive to acknowledge this sequence on the
+credentials and the LUKS key stay in `capsule-init`. When the harness exits
+or dies, except during a requested quiesce, its descendants are removed.
+Once no process of the harness remains (its cgroup drained), whatever its
+exit status, `capsule-init` closes the store: `syncfs`, the unmounts and
+the closing of dm-crypt. A harness killed by the guest's kernel, or one
+that exits with an error, leaves a closed store too, and its error is
+still reported. If its processes cannot be confirmed gone (the cgroup did
+not drain), the store stays mounted: nothing is unmounted under a writer
+that may still live (`guestinit.StopHarnessAndCloseStore`). `capsule-init`
+then synchronizes what is left and restarts the guest (`guestinit.End`).
+The kernel, booted with `reboot=k`, restarts by resetting the CPU through
+the keyboard controller, and Firecracker exits on that reset: the guest's
+end is its VMM's, which the worker counts as a failed boot or a crash
+([ADR 012](../adr/012-limits-restart-budgets-egress.md), question 6).
+`POST /v1/lifecycle/quiesce` closes admission, waits for calls already
+admitted, then asks the harness to terminate. The harness gets `SIGTERM` once,
+however many stops are requested, and is killed with its descendants if it
+has not exited by the stop's deadline. The store is then closed by the same
+rule. The supervisor then stays alive to acknowledge this sequence on the
 mTLS channel of the current boot. The receipt is replayable; a failure is final
 for that boot. A timeout, a killed process or a sync/unmount error never
 produces a clean acknowledgment.
@@ -93,11 +109,30 @@ The harness returns ordinary instructions as a private result. For an
 `/ask <agent-id> <text>` instruction, it records a durable send under the
 received mandate, then calls the platform after the SQLite commit. An incoming
 request only prepares an echo reply; an incoming reply remains data and
-provides no mandate. Key, content and deadline are kept across retries. The
+provides no mandate. Key, content and deadline are kept across retries. Its
+background work, like `capsule-adapter`'s, waits out a store that a
+delivery's handler holds past SQLite's 5-second busy timeout, and tries
+again a quarter of a second later: ending there would end the harness, and
+with it the guest, counted as a crash (`harnessstore.Busy`). The
 private return can be read through the request API and through the separate
 message the companion drops in its owner's inbox. An additional test links the
 API, PostgreSQL, mTLS and this real process, with loss of the first result and
 then a replay. This does not by itself validate execution in an encrypted VM.
+Its entrypoint arguments can select a test behaviour, for the KVM tests of
+the platform's limits ([ADR 012](../adr/012-limits-restart-budgets-egress.md)):
+`crash-at-boot` exits before serving, and `flood-volume <bytes>` serves while
+rewriting 32 MiB of its data directory as fast as it can, `<bytes>` per
+direct (`O_DIRECT`) write, a multiple of 4 KiB. Four hostile behaviours push
+against the VM's other ceilings (RUN-007). `burn-cpu`, `eat-memory` and
+`fork-bomb` serve normally until 2 seconds after the harness first answers,
+then keep every vCPU busy, write memory without end until the guest's
+kernel kills the harness, or fork processes that only wait until the guest
+refuses, and again every 100 ms. `never-files` answers every invocation
+"working", loops on it and never files its outcome. `never-returns` never
+returns from an invocation whose text says "never return": it holds its
+store's write transaction until the harness stops, and answers other
+invocations (ADR 012, question 7). Without arguments it
+behaves as above.
 
 **Harness from the registry.** When the host attaches a harness drive (an agent
 pinned to an imported release, see [../registry.md](../registry.md)), the boot

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/authoritylog"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/keyauthority"
 )
 
@@ -18,8 +19,8 @@ import (
 // degrade is the standby stopping and the delay passing (degrade in
 // degraded_test.go); restoreLink then resync is the standby answering again
 // and the replica catching up; failover is Promote on the replica as it
-// stands, as far as it is built: the announcement of the window and the
-// revocation of every bearer token come with the promotion command. As in
+// stands; promoteAt promotes it at a given time, which decides what it
+// announces (announcement_linux.go). As in
 // key_runs_test.go, the model's store 0 is the offboarded agent "agt_b…" with
 // its volume key, and store 1 is "agt_a…".
 
@@ -208,13 +209,15 @@ func TestResyncEndsDegradedMode(t *testing.T) {
 	}
 }
 
-// degradedOutcomeIsAnnouncedAsWindowTest, in part. An outcome acknowledged in
-// degraded mode is lost with the primary: the promoted authority never
-// recorded it, so a restored image that lacks it activates without a
-// declared loss, and the job may run again. The promotion must announce the
-// degraded period as a time window (ADR 005, item 14); that is the promotion
-// command's, not built yet.
-func TestDegradedOutcomeIsLostWithThePrimary(t *testing.T) {
+// degradedOutcomeIsAnnouncedAsWindowTest:
+// applied.then(degrade).then(recordOutcome(0)).then(failover)... An outcome
+// acknowledged in degraded mode is lost with the primary: the promoted
+// authority never recorded it, so a restored image that lacks it activates
+// without a declared loss, and the job may run again. The promotion, later
+// than the degraded delay after the standby's last contact, announces the
+// window from that contact to the failover, and the outcome falls in it
+// (ADR 005, item 14).
+func TestDegradedOutcomeIsAnnouncedAsWindow(t *testing.T) {
 	p := replicated(t)
 	k := useClock(p.catalog)
 	b, err := p.catalog.Register(t.Context(), keyRunAgent, keyRunVolume)
@@ -222,14 +225,23 @@ func TestDegradedOutcomeIsLostWithThePrimary(t *testing.T) {
 		t.Fatal(err)
 	}
 	degrade(t, p, k, b)
+	acknowledged := time.Now()
 	if err = p.catalog.RecordOutcome(t.Context(), b, Outcome{ID: "event-0", Digest: digest("job")}); err != nil {
 		t.Fatal(err)
 	}
-	// The primary is lost before the standby returns.
-	_, promoted := promote(t, p)
+	contact := lastContactOf(t, p)
+	// The primary is lost before the standby returns; the operator
+	// promotes the standby later than the delay.
+	failover := time.Now().Add(authoritylog.DefaultDegradedAfter)
+	_, promoted, result := promoteAt(t, p, failover)
 	ctx := t.Context()
 	if status, _, err := promoted.OutcomeStatus(ctx, "event-0"); err != nil || status != StatusUnrecorded {
 		t.Fatal("the degraded outcome survived the primary", status, err)
+	}
+	window, err := promoted.Announcement(ctx)
+	if err != nil || !window.Degraded || window.Blanket != result.Announcement.Blanket || !window.Failover.Equal(result.Announcement.Failover) ||
+		!window.LastContact.Equal(contact) || window.LastContact.After(acknowledged) || window.Failover.Before(acknowledged) {
+		t.Fatal("the window does not cover the lost outcome", window, acknowledged, err)
 	}
 	restored, err := promoted.ReserveIncarnation(ctx, b, "restore-after-failover")
 	if err != nil {

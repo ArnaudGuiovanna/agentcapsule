@@ -14,12 +14,15 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  GO_VERSION: '1.27.3'
+  GO_VERSION: '1.27.4'
   GOTOOLCHAIN: local
   GOENV: 'off'
   GOWORK: 'off'
   GOFLAGS: -mod=readonly
   CGO_ENABLED: '1'
+  # internal/volumestore links -l:libcryptsetup.so.12, which Go refuses in a
+  # #cgo directive unless this pattern allows it.
+  CGO_LDFLAGS_ALLOW: '-l:libcryptsetup\.so\.12'
 
 jobs:
   checks:
@@ -55,6 +58,9 @@ jobs:
           go vet -tags=kvm_integration,kvm_control_integration,kvm_product_integration ./internal/worker ./internal/runtime
           go vet -tags=llmlive ./internal/llmgateway ./internal/controlplane
 
+      - name: Authorization matrix (every route has a row, docs/api/rbac.md matches it)
+        run: go test -count=1 -run '^TestRBACMatrix(IsWellFormed|CoversEveryRoute|IsDocumented)$' ./internal/api
+
       - name: Script unit tests (the check runner, the textfile scripts, the archive shipper, the backup tools' fetch)
         run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
 
@@ -87,6 +93,8 @@ jobs:
     timeout-minutes: 10
     env:
       GITLEAKS_VERSION: '8.21.2'
+      # Pinned here, not read from the release's own checksums file.
+      GITLEAKS_SHA256: 5bc41815076e6ed6ef8fbecc9d9b75bcae31f39029ceb55da08086315316e3ba
     steps:
       - name: Check out full history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -101,8 +109,7 @@ jobs:
           archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
           cd "$RUNNER_TEMP"
           curl -sSfL -o "$archive" "$base/$archive"
-          curl -sSfL -o checksums.txt "$base/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
-          grep " ${archive}\$" checksums.txt | sha256sum -c -
+          echo "${GITLEAKS_SHA256}  ${archive}" | sha256sum -c -
           tar xzf "$archive" gitleaks
           ./gitleaks version
 
@@ -110,6 +117,111 @@ jobs:
         run: |
           "$RUNNER_TEMP/gitleaks" git --config .gitleaks.toml --redact --no-banner \
             --log-opts="--all" --exit-code 1 .
+
+  release-audit:
+    name: Release audit (dependencies, reproducible build, SBOMs, scans)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up pinned Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: false
+          cache-dependency-path: |
+            go.sum
+            runtime/slimbridge/go.sum
+            scripts/tools/go.sum
+
+      - name: Install native headers and the guest image's tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential libcryptsetup-dev cryptsetup-bin e2fsprogs
+
+      - name: Lint the workflows (actionlint and shellcheck, pinned)
+        run: |
+          set -euo pipefail
+          actionlint="$(python3 scripts/release_tools.py actionlint | awk '{print $3}')"
+          # The workflows' scripts are checked by ShellCheck v0.11.0, pinned by
+          # digest; the runner's own ShellCheck and pyflakes are not pinned.
+          printf '#!/bin/sh\nexec docker run --rm -i --network none %s "$@"\n' \
+            koalaman/shellcheck@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d \
+            > "$RUNNER_TEMP/shellcheck"
+          chmod +x "$RUNNER_TEMP/shellcheck"
+          "$actionlint" -shellcheck="$RUNNER_TEMP/shellcheck" -pyflakes= -color
+
+      - name: Dependency audit (govulncheck on every Go module, licenses)
+        run: |
+          # Fails on a vulnerability the code calls, or a license outside
+          # scripts/license-policy.json; see docs/release.md.
+          python3 scripts/audit-dependencies.py --go "$(command -v go)" \
+            --output "$RUNNER_TEMP/ci/audit"
+
+      - name: Build the release binaries and the guest image twice, and compare
+        run: |
+          python3 scripts/build-release.py --go "$(command -v go)" --twice \
+            --guest-cryptsetup /usr/sbin/cryptsetup --output "$RUNNER_TEMP/ci/release"
+
+      - name: Build the a2a-agent harness package (no Docker)
+        run: |
+          python3 scripts/build-a2a-harness.py --go "$(command -v go)" \
+            --output "$RUNNER_TEMP/ci/a2a-harness"
+
+      - name: SBOMs of the binaries, the guest image and the a2a-agent package
+        run: |
+          set -euo pipefail
+          dist="$RUNNER_TEMP/ci/release/dist"
+          binaries=()
+          for name in agentcapsule-api agentcapsule-worker agentcapsule-admin agentcapsule-authority \
+              agentcapsule-harness capsule-adapter agentcapsule-slim-bridge; do
+            binaries+=(--binary "$dist/$name")
+          done
+          python3 scripts/release-sbom.py --go "$(command -v go)" --output "$RUNNER_TEMP/ci/sbom" \
+            "${binaries[@]}" --guest-build "$dist" \
+            --harness-package "$RUNNER_TEMP/ci/a2a-harness/package"
+
+      - name: Vulnerability scan (SBOMs, deploy images, Python and npm lock files)
+        run: |
+          set -euo pipefail
+          sboms=("$RUNNER_TEMP"/ci/sbom/*.spdx.json)
+          python3 scripts/scan-artifacts.py --output "$RUNNER_TEMP/ci/scan" \
+            "${sboms[@]/#/--sbom=}" --deploy-images \
+            --manifest examples/adapted-agent/requirements.txt \
+            --dev-manifest spec/package-lock.json \
+            --dev-manifest scripts/openapi-requirements.txt \
+            --dev-manifest scripts/adapter-sdk-requirements.txt
+
+      - name: Preserve the audit reports and SBOMs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-audit-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/ci/audit/summary.json
+            ${{ runner.temp }}/ci/audit/licenses.json
+            ${{ runner.temp }}/ci/release/build.json
+            ${{ runner.temp }}/ci/sbom/
+            ${{ runner.temp }}/ci/scan/summary.json
+
+      - name: State what this job does not validate
+        if: always()
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          This job audits the dependencies (govulncheck, licenses), builds the release
+          binaries and the guest image twice in clean clones and compares their digests,
+          writes their SBOMs and scans them and the deploy images. Both builds run on this
+          runner: the digests are reproducible with the same Go and the same Ubuntu
+          packages, not across hosts. It signs nothing and publishes nothing: the release
+          workflow (.github/workflows/release.yml) does, on a version tag only.
+          EOF
 
   harness-supply-chain:
     name: Harness packages (Dagger), signing and verification
@@ -142,6 +254,35 @@ jobs:
           # throwaway registry, checks that an unsigned package is refused,
           # signs both and verifies them as the platform importer would.
           "$RUNNER_TEMP/dagger" call check
+
+      - name: SBOMs and vulnerability scan of the reference harness packages
+        run: |
+          # The packages the check just built (Dagger's cache), unpacked with
+          # debugfs and cataloged by the pinned syft, then scanned by the
+          # pinned grype: High and Critical findings fail unless allowlisted
+          # (scripts/vulnerability-allowlist.json). See docs/release.md.
+          set -euo pipefail
+          for name in python-echo go-echo adapted-agent; do
+            "$RUNNER_TEMP/dagger" call "$name" export --path "$RUNNER_TEMP/packages/$name"
+          done
+          python3 scripts/release-sbom.py --output "$RUNNER_TEMP/ci/harness-sbom" \
+            --harness-package "$RUNNER_TEMP/packages/python-echo" \
+            --harness-package "$RUNNER_TEMP/packages/go-echo" \
+            --harness-package "$RUNNER_TEMP/packages/adapted-agent"
+          sboms=("$RUNNER_TEMP"/ci/harness-sbom/*.spdx.json)
+          python3 scripts/scan-artifacts.py --output "$RUNNER_TEMP/ci/harness-scan" \
+            "${sboms[@]/#/--sbom=}"
+
+      - name: Preserve the harness SBOMs and scan reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: harness-audit-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/ci/harness-sbom/
+            ${{ runner.temp }}/ci/harness-scan/summary.json
 
   interop:
     name: Interoperability services (OASF, Directory, SLIM, A2A)
@@ -204,7 +345,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends \
-            build-essential libcryptsetup-dev postgresql-16 postgresql-client-16
+            build-essential libcryptsetup-dev postgresql-16 postgresql-client-16 iproute2 nftables
+
+      - name: Allow unprivileged user namespaces
+        run: |
+          # TestWorkerFlowsDialOnlyTheirConfiguredEndpoints runs the worker's
+          # flows in a network namespace of their own (unshare -rn, DEP-1).
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
 
       - name: Real PostgreSQL, Go race and crash recovery
         shell: bash
@@ -388,4 +537,70 @@ jobs:
           provider, without object lock. The failover of the database and the API runs
           on one machine, with archive_timeout scaled to 30 seconds; no failover between
           real hosts is run, and the agents are not part of it (D-05, KVM).
+          EOF
+
+  install:
+    name: Install from scratch (bootstrap.md and install.md, without root)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up pinned Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: false
+          cache-dependency-path: go.sum
+
+      - name: Install native and database dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential libcryptsetup-dev postgresql-16 postgresql-client-16 iproute2 nftables
+          postgres_executable="$(dpkg-query -L postgresql-16 | awk '/\/bin\/postgres$/ {print; exit}')"
+          test -x "$postgres_executable"
+          echo "PG_BIN=$(dirname "$postgres_executable")" >> "$GITHUB_ENV"
+
+      - name: Allow unprivileged user namespaces
+        run: |
+          # Ubuntu 24.04 restricts them with AppArmor. The run starts the
+          # worker's preflight and the authority service in a user namespace
+          # where its account is root (unshare -r), and runs in a network
+          # namespace of its own (unshare -rn, DEP-1); see verify-install.py.
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
+      - name: Install from scratch, then sign in as the organization's owner
+        run: |
+          python3 scripts/verify-install.py --go "$(command -v go)" --pg-bin "$PG_BIN" \
+            --output "$RUNNER_TEMP/ci/install"
+
+      - name: Preserve the install's evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: install-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 7
+          if-no-files-found: warn
+          path: ${{ runner.temp }}/ci/install/
+
+      - name: State what this job does not validate
+        if: always()
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          This job builds every binary and installs a host from an empty directory as
+          docs/bootstrap.md and docs/install.md say, without root: PostgreSQL, the
+          migration, the platform credential, the API over HTTPS, an organization with
+          its trust, the authority service (standalone) and the worker's preflight. It
+          starts no VM: the runner gives no KVM device to this account, and no
+          Firecracker, guest kernel or guest image is built, so the preflight reports
+          those checks as failed and the worker refuses to start. The Directory and
+          the SLIM node (Docker) and the authorities' replica are not installed.
           EOF

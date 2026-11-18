@@ -6,3 +6,4 @@ architecture: x86_64
 base: agentcapsule-guest/1
 entrypoint: [/opt/echo/harness]
 description: Reference Go harness (capsule-echo), a single static binary
+capabilities: [llm.invoke, agents.delegate]

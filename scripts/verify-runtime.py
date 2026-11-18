@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import pwd
+import re
 import shlex
 import shutil
 import signal
@@ -19,10 +20,137 @@ import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
+# internal/volumestore links "-l:libcryptsetup.so.12", which Go refuses in a
+# #cgo directive unless this pattern allows it.
+CGO_LDFLAGS_ALLOW = r"-l:libcryptsetup\.so\.12"
+
+# The worker phase runs the KVM tests of internal/worker and only them: the
+# tests of the files that its build tags compile and that need those tags. The
+# ordinary unit and PostgreSQL tests run in the PostgreSQL campaign as an
+# ordinary user; run here as root, they would test this harness, not the
+# worker. Every KVM test is listed, so that one that stops running, or a new
+# one, fails the run. Placement tests: kvm_integration (PostgreSQL leases and
+# real VMMs, a test guest probe).
+PLACEMENT_TESTS = {"TestPostgresKVMConcurrentStartAdoptionAndFencedStop", "TestPostgresKVMExpiredBootAndDelayedWorker",
+                   "TestPostgresKVMQuiesceAndDatabaseTimeout", "TestPostgresKVMWorkerCrashAfterDatabaseConfirmation"}
+# Run by their parent test in a child process, or, for the database recovery,
+# by phases of their own around a crash of PostgreSQL.
+PLACEMENT_HELPERS = {"TestPostgresKVMWorkerChild", "TestPostgresKVMDatabaseRecovery"}
+# Control tests: kvm_control_integration, with --control-guest (the
+# authenticated control channel, the worker binary, the capacity tests of
+# ADR 017 and ADR 021).
+CONTROL_TESTS = {"TestBarrierCapacityOneSlotThreeStoresAndReplay", "TestControlVMDeliveryAndRevocation",
+                 "TestControlVMStoppedDeletionUsesFenceOnlyBoot", "TestCredentialRotationPreservesEffectsFencesAndAdmission",
+                 "TestConcurrentCredentialRotationDrainsAdmittedWork", "TestExpiredQuiescingBootRotatesOnlyForFence",
+                 "TestCredentialRotationWorkerCrash", "TestDispatchServiceRequestReplyAndNotification",
+                 "TestDispatchPreparationAndOneSlotCapacity", "TestDispatchServiceClosureExpirationAndDeletion",
+                 "TestDispatchWorkerCrashRecovery", "TestMaintenanceLoopDiscoversExpiryOnLaterPoll",
+                 "TestMaintenanceServiceRecoversRenewalCrashesWithoutIncomingWork",
+                 "TestMaintenanceDefersAtCapacityAndResumesWithoutDemand", "TestMaintenanceDoesNotReviveCanceledOrDeletedAgent",
+                 "TestPlatformListenerOwnerSIGKILL", "TestPlatformAdmittedTransactionAcrossPhysicalDeath",
+                 "TestPlatformVMIdentityMandatesRepliesAndWorkerHandover", "TestSealedStoreAllowsLaterRevocationAndClosure",
+                 "TestStoreSealWorkerCrashBeforeDatabaseReceipt"}
+CONTROL_HELPERS = {"TestDispatchWorkerChild", "TestCredentialRotationChild", "TestPlatformListenerChild",
+                   "TestStoreSealWorkerChild"}
+# The tags the toolchain sets on this host; any other tag is false unless the
+# build sets it.
+BASE_TAGS = {"linux", "unix", "amd64", "cgo", "gc"}
 
 
 def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def build_satisfied(expression, tags):
+    """Whether a //go:build expression holds when exactly tags are set."""
+    tokens = re.findall(r"\(|\)|!|&&|\|\||[A-Za-z0-9_.]+|\S", expression)
+    position = 0
+
+    def peek():
+        return tokens[position] if position < len(tokens) else None
+
+    def take():
+        nonlocal position
+        if position >= len(tokens):
+            raise ValueError(f"incomplete build constraint: {expression!r}")
+        position += 1
+        return tokens[position - 1]
+
+    def alternative():
+        value = conjunction()
+        while peek() == "||":
+            take()
+            value = conjunction() or value
+        return value
+
+    def conjunction():
+        value = unary()
+        while peek() == "&&":
+            take()
+            value = unary() and value
+        return value
+
+    def unary():
+        token = take()
+        if token == "!":
+            return not unary()
+        if token == "(":
+            value = alternative()
+            if take() != ")":
+                raise ValueError(f"unbalanced build constraint: {expression!r}")
+            return value
+        if not re.fullmatch(r"[A-Za-z0-9_.]+", token):
+            raise ValueError(f"unexpected {token!r} in build constraint {expression!r}")
+        return token in tags
+
+    value = alternative()
+    if position != len(tokens):
+        raise ValueError(f"unexpected {tokens[position]!r} in build constraint {expression!r}")
+    return value
+
+
+def kvm_worker_tests(worker_dir, tags):
+    """The Test functions of the test files that tags compile and that need them."""
+    tests = set()
+    for path in sorted(worker_dir.glob("*_test.go")):
+        text = path.read_text()
+        constraint = re.search(r"^//go:build (.+)$", text, re.M)
+        if not constraint:
+            continue
+        if build_satisfied(constraint.group(1), BASE_TAGS | tags) and not build_satisfied(constraint.group(1), BASE_TAGS):
+            tests.update(re.findall(r"^func (Test\w+)\(t \*testing\.T\)", text, re.M))
+    return tests
+
+
+def worker_tests(worker_dir, tags):
+    """The KVM tests the worker phase runs; refuses an unlisted or a missing one."""
+    declared = kvm_worker_tests(worker_dir, tags)
+    listed = PLACEMENT_TESTS | PLACEMENT_HELPERS
+    if "kvm_control_integration" in tags:
+        listed |= CONTROL_TESTS | CONTROL_HELPERS
+    unlisted, missing = sorted(declared - listed), sorted(listed - declared)
+    if unlisted or missing:
+        raise ValueError(f"KVM worker tests this script does not list: {unlisted}; listed but not declared: {missing}")
+    return declared - PLACEMENT_HELPERS - CONTROL_HELPERS
+
+
+def run_pattern(tests):
+    """A -test.run pattern that matches exactly these top-level tests."""
+    return "^(" + "|".join(sorted(tests)) + ")$"
+
+
+def hand_back(out, environ):
+    """Give the evidence directory to the user who ran this script with sudo.
+
+    It holds no credential or disk of the private runtime roots. Links are
+    changed themselves, never what they point to.
+    """
+    uid, gid = environ.get("SUDO_UID", ""), environ.get("SUDO_GID", "")
+    if not (uid.isdigit() and gid.isdigit()) or int(uid) == 0:
+        return
+    for path in out.rglob("*"):
+        os.chown(path, int(uid), int(gid), follow_symlinks=False)
+    os.chown(out, int(uid), int(gid), follow_symlinks=False)
 
 
 def main():
@@ -56,6 +184,15 @@ def main():
         assert sha(a.firecracker_build / name) == expected, name
     out = a.output
     out.mkdir(parents=True, exist_ok=False, mode=0o700)
+    try:
+        campaign(a, manifest, out)
+    finally:
+        # Let the invoking user read this new evidence after sudo, whatever
+        # the outcome.
+        hand_back(out, os.environ)
+
+
+def campaign(a, manifest, out):
     sources = out / "sources"
     sources.mkdir()
     for name in ("go.mod", "go.sum"):
@@ -98,7 +235,8 @@ def main():
             env.pop(name)
     cache = a.cache or out
     env.update(AGENTCAPSULE_KVM_CONFIG=str(out / "config.json"), GOPATH=str(cache / "go-path"),
-               GOCACHE=str(cache / "go-cache"), TMPDIR=str(out / "tmp"), CGO_ENABLED="1")
+               GOCACHE=str(cache / "go-cache"), TMPDIR=str(out / "tmp"), CGO_ENABLED="1",
+               CGO_LDFLAGS_ALLOW=CGO_LDFLAGS_ALLOW)
     if native:
         env["CPATH"] = str(native)
     (out / "tmp").mkdir()
@@ -166,11 +304,13 @@ def main():
         assert len(passed) >= 9, "incomplete test evidence"
         (out / "tests.json").write_text(json.dumps(passed, indent=2) + "\n")
         if a.pg_bin:
-            tags = "kvm_integration" + (",kvm_control_integration" if a.control_guest else "")
-            run("worker-compile", [a.go, "test", "-c", "-race", "-tags=" + tags, "-o", out / "worker.test", "./internal/worker"], 300)
+            tags = ["kvm_integration"] + (["kvm_control_integration"] if a.control_guest else [])
+            selected = worker_tests(sources / "internal/worker", set(tags))
+            run("worker-compile", [a.go, "test", "-c", "-race", "-tags=" + ",".join(tags), "-o", out / "worker.test", "./internal/worker"], 300)
             worker = [a.go, "tool", "test2json", "-p", "github.com/ArnaudGuiovanna/agentcapsule/internal/worker",
-                      out / "worker.test", "-test.v", "-test.timeout=360s"]
-            run("worker-integration", worker, 390)
+                      out / "worker.test", "-test.v"]
+            run("worker-integration", worker + ["-test.run=" + run_pattern(selected), "-test.timeout=600s"], 630)
+            worker.append("-test.timeout=80s")
             env["AGENTCAPSULE_VM_PG_RECOVERY"] = "prepare"
             run("worker-recovery-prepare", worker + ["-test.run=^TestPostgresKVMDatabaseRecovery$"], 90)
             run("pg-crash", pgcommand + ["-m", "immediate", "-w", "stop"], 60)
@@ -185,20 +325,13 @@ def main():
             env.pop("AGENTCAPSULE_VM_PG_RECOVERY")
             assert "automatic recovery in progress" in (pgroot / "server.log").read_text(), "no PostgreSQL crash recovery evidence"
             worker_passes = {}
-            for label in ("worker-integration", "worker-recovery-prepare", "worker-recovery-verify"):
+            for label, required in (("worker-integration", selected), ("worker-recovery-prepare", {"TestPostgresKVMDatabaseRecovery"}),
+                                    ("worker-recovery-verify", {"TestPostgresKVMDatabaseRecovery"})):
                 events = [json.loads(line) for line in (out / (label + ".log")).read_text().splitlines()]
                 assert not any(e["Action"] in ("skip", "fail") for e in events), "skipped or failed worker checks"
                 worker_passes[label] = [e["Test"] for e in events if e["Action"] == "pass" and "Test" in e]
-                minimum = (13 if a.control_guest else 6) if label == "worker-integration" else 1
-                assert len(worker_passes[label]) >= minimum, "incomplete worker evidence"
-                if a.control_guest and label == "worker-integration":
-                    required = {"TestControlVMDeliveryAndRevocation", "TestControlVMStoppedDeletionUsesFenceOnlyBoot"}
-                    required.add("TestPlatformVMIdentityMandatesRepliesAndWorkerHandover")
-                    required.update({"TestSealedStoreAllowsLaterRevocationAndClosure", "TestStoreSealWorkerCrashBeforeDatabaseReceipt"})
-                    required.add("TestBarrierCapacityOneSlotThreeStoresAndReplay")
-                    required.update({"TestDispatchServiceRequestReplyAndNotification", "TestDispatchPreparationAndOneSlotCapacity",
-                                     "TestDispatchServiceClosureExpirationAndDeletion", "TestDispatchWorkerCrashRecovery"})
-                    assert required <= set(worker_passes[label]), "missing authenticated control checks"
+                missing = sorted(required - set(worker_passes[label]))
+                assert not missing, "missing KVM worker tests: " + ", ".join(missing)
             (out / "worker-tests.json").write_text(json.dumps(worker_passes, indent=2) + "\n")
     finally:
         if pgroot is not None:

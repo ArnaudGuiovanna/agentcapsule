@@ -54,7 +54,7 @@ authorization.
 | Organizations, members and teams | `organizations`, `principals`, `memberships`, `teams`, `team_memberships`, `users` |
 | Assignments | `agent_assignments` |
 | Bearer tokens (hashes; the secrets stay with the clients) | `api_tokens`, `service_tokens`, `platform_credentials` |
-| Delegations | `delegation_trusts` (public key fingerprint, status, `minimum_iat`), `delegation_revocations` (revoked token IDs) ([0004_delegated_identity.sql](../../internal/controlplane/migrations/0004_delegated_identity.sql)) |
+| Delegations | `delegation_trusts` (public key fingerprint, status, `minimum_iat`), `delegation_revocations` (revoked token IDs) ([0004_delegated_identity.sql](../../internal/controlplane/migrations/0004_delegated_identity.sql)); `delegation_keys` (public keys, their end and retirement) ([0033_operator_bootstrap.sql](../../internal/controlplane/migrations/0033_operator_bootstrap.sql)) |
 | Mandates | `mandates.valid` |
 | LLM providers and aliases | `llm_providers` (credential ciphertext, status, generation), `llm_model_aliases` |
 | Revocation subjects, PostgreSQL's copy | `revocation_catalogue` ([schema.sql](../../internal/controlplane/schema.sql)) |
@@ -95,9 +95,10 @@ operator to invalidate or rotate tokens by hand before reopening.
 Notes on the code:
 
 - The platform holds **no delegation signing key**. Trusted clients sign; the
-  platform keeps their public Ed25519 keys
-  (`internal/delegatedidentity/verifier.go`, read from a file by
-  `internal/operatorconfig/delegation_linux.go`).
+  platform keeps their public Ed25519 keys in PostgreSQL (`delegation_keys`,
+  registered by `agentcapsule-admin configure-delegation`; ADR 001, D-01) and
+  verifies with `internal/delegatedidentity/verifier.go`. A retired key is a
+  revocation of access, like a revoked trust.
 - The key authority **does not wrap** the volume keys. They are in clear in
   its directory. The only wrapping is LUKS's key slot in the volume.
 - The model has **one root**. The code has **two authorities**, written
@@ -560,13 +561,77 @@ November 15, 2026. Two more waves are built: items 9 to 13 and 16 to 18 of
   journal's deletion, which is the commit. A power loss could then undo a
   record that the replica had already acknowledged.
 
-Later waves: the announcement and token revocation after a degraded period
-(item 14), revocation records for access (§5.4, finding 1 decided: option (a)),
-reconciliation with PostgreSQL (item 15, §5.5), the daily receipt key, and
-the authority service on a local socket (§5.3).
-[ADR 006](006-authority-service.md) designs the authority service
-(accepted November 16, 2026). [recovery.md](../recovery.md#the-authorities-replica-d-05)
-installs the replica.
+November 16, 2026. **The authority service** (§5.3, item 5 in part):
+[ADR 006](006-authority-service.md), accepted that day, waves 1 and 2. One
+process per host, `agentcapsule-authority serve` as the account
+`agentcapsule-authority`, owns both directories, the link to the standby,
+degraded mode and its metrics. The worker reaches it through a local socket
+and no longer opens the directories; a worker restart no longer forces a
+wait for the standby. Wave 3 completes item 5: the service refuses to
+destroy the key of a store the restore authority has not sealed, and armed,
+the check runs in the catalogue transaction that records the destruction.
+
+ADR 006 wave 4 puts the API on the authority service. Wave 5 builds the
+revocation records for access (§5 item 4; items 6 to 8 of
+[What the code must do](#what-the-code-must-do), finding 1 decided: option
+(a)): every transaction that revokes access, in the API and
+`agentcapsule-admin`, appends a record of its kind to the authorities before
+its PostgreSQL commit, or fails with "try again" and commits nothing. The
+record continues in degraded mode; the API confirms a standing grant's
+revocation only once the replica holds its record, a bearer token's at once
+in degraded mode, and reports the others as pending until then. Outcome
+records keep the event ID. See
+[ADR 006](006-authority-service.md#implementation-status).
+
+ADR 006 wave 6 builds the decision on **the token secrets in idempotency
+receipts**: the API encrypts each new receipt with a daily key kept in the
+key authority, replicated wrapped and promoted like a volume key, and
+destroyed at 01:00 UTC two days after its day began, 24 hours after the
+last receipt it can have encrypted expired. A backup holds no readable
+token secret once that time has passed: between 25 and 49 hours after it
+was taken, not "older than a day" as the decision says, since a day's key
+serves a whole day of receipts that live 24 hours each. The replay of a
+request keeps its behaviour while its day's key exists; a replay whose key
+was lost with a primary that created it alone in degraded mode (ADR 006,
+answer 4(b)) answers 409 `idempotency_receipt_unreadable` and does not run
+again. The installation's receipt key stays: it reads the receipts written
+before, and still derives the LLM credential key, which does not rotate
+(§5 item 10, later).
+
+ADR 006 wave 7 builds items 14 and 15 (§5.5): the announcement after a
+degraded period and the reconciliation with PostgreSQL.
+- **The last contact.** The replica writes the arrival of each request it
+  answers before answering, at most once a second; the primary reaches it
+  every sixth of the degraded delay while nothing is written. No degraded
+  period begins less than the delay after that contact.
+- **The announcement** (item 14). `agentcapsule-authority promote` compares
+  the replica's last contact with its own time, the failover's, against
+  `-degraded-after` (the old primary's delay, 30 seconds by default).
+  Beyond it, the promoted catalogue gets one access revocation record of a
+  new kind, `blanket`, with the failover's time and the window from the last
+  contact: every bearer token issued before the failover is revoked, and
+  every delegation trust's `minimum_iat` moves past it. The decision is
+  written with the replica's promotion mark: a repeated promotion keeps it.
+  A replica its primary never reached announces nothing: that primary never
+  entered degraded mode. Within the delay nothing is announced either, as
+  the item says; a promotion after a real disaster runs minutes after the
+  last contact, so it assumes a degraded period almost always.
+- **The reconciliation** (item 15). `agentcapsule-admin reconcile`, as the
+  API's account on the API socket, keeps PostgreSQL's own access revocation
+  records and revocation subjects in the authority, replays every record
+  PostgreSQL lacks with its effect (a record PostgreSQL holds committed with
+  its effect, so a later grant is never undone), copies the subjects into
+  `revocation_catalogue`, resumes the deletion of every agent the authority
+  sealed or holds an `agent/` subject of, reports the stores whose
+  registration or incarnation differs, and records the epoch in
+  `authority_reconciliations` (migration 0042; epoch 1 counts as reconciled
+  from the start). The API refuses to start, and its readiness answers 503
+  `authority_not_reconciled`, until the service's epoch is there
+  (`REPLAY_FIRST`).
+See [ADR 006](006-authority-service.md#implementation-status).
+[recovery.md](../recovery.md#the-authorities-replica-d-05) installs the
+service and the replica, and
+[reconciles the database](../recovery.md#reconcile-the-database).
 
 ## Model revision (D-05, option (a))
 
@@ -776,7 +841,7 @@ files only.
 | `liveKeyDecryptsBackupTest` | `TestLiveKeyDecryptsBackup` (`internal/keyauthority/model_runs_test.go`) | Full. A backup is symbolic: the master key sealed under the volume key, as in a LUKS header. |
 | `destructionWaitsForAllCachedCopiesTest` | `TestDestructionWaitsForAllCachedCopies` (same file) | In part. `Revoke` waits for every active `WithKey` holder and publishes no tombstone meanwhile. A guest's copy after the callback is the worker's obligation (physical retirement before `Revoke`). |
 | `destroyedKeyCannotDecryptOldBackupTest` | `TestDestroyedKeyCannotDecryptOldBackup` (same file) | Full on the primary: the backup no longer opens, no second key is made, and no file of the authority still holds the key. The same check on the replica waits for the replica. |
-| `destructionRequiresPermanentSealTest` | `TestDestructionRequiresPermanentSeal` (`internal/restoreauthority/key_runs_test.go`) | In part. The catalogue gives the evidence (acknowledged, not sealed; sealed for good after `RecordRetiredSeal`). The refusal is not in these packages: `keyauthority.Revoke` takes no seal, and only the worker orders the seal first. It needs the authority service, which owns both directories. |
+| `destructionRequiresPermanentSealTest` | `TestDestructionRequiresPermanentSeal` (`internal/restoreauthority/key_runs_test.go`, in process, standalone and armed; `internal/authorityclient/key_runs_test.go`, in process and through the authority service) | Full since ADR 006 wave 3. The revoked, unsealed store's key is refused (`ErrNotSealed`), and so is a destruction without the store's binding; armed, the key authority's own `Revoke` is refused in the catalogue transaction that would record it, and nothing reaches the stream. After `RecordRetiredSeal` the destruction runs, and the seal outlives the key. |
 | `oldImageDoesNotReviveDestroyedKeyTest` | `TestOldImageDoesNotReviveDestroyedKey` (same file) | Full, on both authorities: the old image declares its loss and activates; the revocation, the seal and the key stay. |
 
 The runs of the replica, the promotion and degraded mode, projected once
@@ -793,9 +858,21 @@ that code was built (November 15, 2026):
 | `restoreWitnessDegradedDestructionGuard` | `TestDegradedModeHoldsKeyDestruction` (same file) | Full. |
 | `subjectRevocationCompletesAfterResyncTest` | `TestSubjectRevocationCompletesAfterResync` (same file) | Full for the restore authority's subjects; access revocations wait for their records. |
 | `resyncEndsDegradedModeTest` | `TestResyncEndsDegradedMode` (same file) | Full. |
-| `degradedOutcomeIsAnnouncedAsWindowTest` | `TestDegradedOutcomeIsLostWithThePrimary` (same file) | In part: the loss is shown; its announcement is the promotion's (item 14), not built. |
+| `degradedOutcomeIsAnnouncedAsWindowTest` | `TestDegradedOutcomeIsAnnouncedAsWindow` (same file) | Full since ADR 006 wave 7: the lost outcome falls in the window the promotion announces. |
+| `grantRevocationWaitsForReplicaTest` | `TestGrantRevocationWaitsForReplica` (`internal/api/revocation_runs_test.go`, ADR 006 wave 5) | Full: a member's revocation in degraded mode takes effect at once and stays pending; the replica lacks its record. |
+| `grantRevocationResumesAfterResyncTest` | `TestGrantRevocationResumesAfterResync` (same file) | Full: after the resync the replica holds the record and the API confirms the revocation. |
 
-The reconciliation runs (`REPLAY_FIRST`) have none yet: item 15 is not built.
+The reconciliation runs (`REPLAY_FIRST`) and the blanket revocation, projected
+once ADR 006 wave 7 built items 14 and 15 (November 16, 2026), on PostgreSQL,
+the authority service, its replica and the promotion:
+
+| Quint run | Go test | Coverage |
+| --- | --- | --- |
+| `reconciliationReplaysRootTest` | `TestReconciliationReplaysRoot`, `TestReconciliationReplaysEveryRevokingRoute` (`internal/api/reconciliation_runs_test.go`, `reconciliation_kinds_test.go`) | Full. The writes the WAL did not ship are taken back from the database by hand. |
+| `shippedDatabaseNeedsNoReportTest` | `TestShippedDatabaseNeedsNoReport` (same file) | Full. |
+| `shippedGrantRevocationSurvivesTest` | `TestShippedGrantRevocationSurvives` (same file) | Full: PostgreSQL's own record reaches the promoted authority. |
+| `tokenRevocationCoveredByBlanketTest` | `TestTokenRevocationCoveredByBlanket` (same file), `TestPromotionAnnouncesADegradedPeriodBeyondTheDelay` (`internal/restoreauthority/announcement_test.go`) | Full. |
+| `restoreWitnessEarlyOpenGuard` | `TestEarlyOpenGuard` (same file), `TestAPIRefusesToOpenBeforeTheReconciliation` (`cmd/agentcapsule-api`) | Full: readiness and start refuse until the epoch is reconciled. |
 
 ### Findings for the product owner
 
@@ -879,20 +956,21 @@ For the replication core (being built):
    replica needs the check of `TestDestroyedKeyCannotDecryptOldBackup`: no
    file still holds the key.
 5. One authority service owns both directories and checks the seal in the
-   write that destroys a key (`destructionRequiresPermanentSealTest`, now
-   only in the worker).
+   write that destroys a key (`destructionRequiresPermanentSealTest`; built
+   in ADR 006 wave 3).
 
 For revocation records:
 
 6. Each access revocation appends a record before its PostgreSQL commit
-   (§5 item 4). The record names its kind: bearer token (API token, service
+   (§5 item 4). Built in ADR 006 wave 5. The record names its kind: bearer token (API token, service
    token, platform credential, delegated token ID) or standing grant (member,
    principal, organization, team membership, assignment, mandate, delegation
    trust, LLM provider).
 7. The API confirms a revocation only once its record is on the replica,
    except a bearer token's in degraded mode (finding 1, option (a), decided
    November 15, 2026). Until then it reports the revocation as pending.
-8. Outcome records keep the event ID (§5 item 4).
+   Built in ADR 006 wave 5.
+8. Outcome records keep the event ID (§5 item 4). Built in ADR 006 wave 5.
 
 For promotion and reconciliation:
 
@@ -915,7 +993,8 @@ For promotion and reconciliation:
     announces the window from that contact to the failover, revokes every
     bearer token issued before the failover, and moves every delegation
     trust's `minimum_iat` to the failover time. The token revocation is an
-    authority record, so the reconciliation replays it.
+    authority record, so the reconciliation replays it. Built in ADR 006
+    wave 7.
 15. `agentcapsule-admin` reconciles before the API opens, and the API refuses
     to start until it has, for the current epoch (`REPLAY_FIRST`,
     `restoreWitnessEarlyOpenBroken`):
@@ -927,6 +1006,8 @@ For promotion and reconciliation:
     - resume the deletion of every store the authority has sealed;
     - report every store whose registration or incarnation in
       `store_enrollments` differs from the authority's.
+
+    Built in ADR 006 wave 7.
 
 For degraded mode:
 

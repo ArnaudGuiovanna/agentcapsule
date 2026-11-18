@@ -62,38 +62,40 @@ func (w *Placements) withVolumeBoot(opts runtime.FirecrackerOptions, keys keyaut
 		if err != nil || client == nil || run.Incarnation != plan.Enrollment.Incarnation || ((plan.Initialize || plan.Restore) && !run.FenceOnly) {
 			return capsuleprotocol.ErrVolumeBoot
 		}
-		unlock := func() error {
-			return keys.WithKey(ctx, id, plan.Enrollment.VolumeID, func(key []byte) error {
-				for {
-					// WithKey may have waited on a revocation/creation lock. A lost
-					// response can also require a retry. Recheck current SQL authority
-					// before each transmission, without retaining a SQL transaction.
-					current, err := w.store.PrepareVolumeBoot(ctx, proof, w.workerID)
-					if err != nil {
-						return err
-					}
-					if current != plan {
-						return controlplane.ErrStoreEnrollment
-					}
-					err = client.OpenVolume(ctx, command, key)
-					if !errors.Is(err, capsuleprotocol.ErrTransport) {
-						return err
-					}
-					timer := time.NewTimer(20 * time.Millisecond)
-					select {
-					case <-ctx.Done():
-						timer.Stop()
-						return ctx.Err()
-					case <-timer.C:
-					}
+		// send runs while the key is held: under its binding, through the
+		// authorities, or alone on a laboratory host without them.
+		send := func(ctx context.Context, key []byte) error {
+			for {
+				// The key hold may have waited on a revocation/creation lock. A lost
+				// response can also require a retry. Recheck current SQL authority
+				// before each transmission, without retaining a SQL transaction.
+				current, err := w.store.PrepareVolumeBoot(ctx, proof, w.workerID)
+				if err != nil {
+					return err
 				}
-			})
+				if current != plan {
+					return controlplane.ErrStoreEnrollment
+				}
+				err = client.OpenVolume(ctx, command, key)
+				if !errors.Is(err, capsuleprotocol.ErrTransport) {
+					return err
+				}
+				timer := time.NewTimer(20 * time.Millisecond)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return ctx.Err()
+				case <-timer.C:
+				}
+			}
 		}
 		if w.authority != nil {
-			err = w.authority.WithBinding(ctx, enrollmentBinding(plan.Enrollment), unlock)
+			// One hold: the binding, then the key; the key's destruction waits.
+			err = w.authority.HoldKey(ctx, enrollmentBinding(plan.Enrollment), send)
 		} else {
-			err = unlock()
-		} // explicit preprovisioned/laboratory path
+			// Explicit preprovisioned/laboratory path.
+			err = keys.WithKey(ctx, id, plan.Enrollment.VolumeID, func(key []byte) error { return send(ctx, key) })
+		}
 		if err != nil {
 			return err
 		}
@@ -127,7 +129,7 @@ func (w *Placements) withVolumeBoot(opts runtime.FirecrackerOptions, keys keyaut
 		if ack == nil || ack.caller != caller(id, run) || ack.plan.Enrollment.Incarnation != run.Incarnation || (ack.plan.AcknowledgeInitialization && !run.FenceOnly) {
 			return capsuleprotocol.ErrVolumeBoot
 		}
-		publish := func() error {
+		publish := func(ctx context.Context) error {
 			if err := confirm(ctx, id, run); err != nil {
 				return err
 			}
@@ -143,9 +145,9 @@ func (w *Placements) withVolumeBoot(opts runtime.FirecrackerOptions, keys keyaut
 			return nil
 		}
 		if w.authority != nil {
-			return w.authority.WithCurrentFences(ctx, ack.rootReceipt, publish)
+			return w.authority.HoldFences(ctx, ack.rootReceipt, publish)
 		}
-		return publish()
+		return publish(ctx)
 	}
 	return opts, nil
 }

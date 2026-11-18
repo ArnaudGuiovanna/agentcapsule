@@ -76,8 +76,11 @@ func (t *Transit) checkKey(ctx context.Context, tx pgx.Tx, id string) (transitKe
 	return k, err
 }
 
+// checkCoverage requires the key of every live content: a payload not purged,
+// and an attachment not purged, which is sealed with a transit key too.
 func (t *Transit) checkCoverage(ctx context.Context, tx pgx.Tx) error {
-	rows, err := tx.Query(ctx, "SELECT DISTINCT key_id FROM transit_payloads WHERE purged_at IS NULL ORDER BY key_id")
+	rows, err := tx.Query(ctx, `SELECT key_id FROM transit_payloads WHERE purged_at IS NULL
+        UNION SELECT key_id FROM attachments WHERE status<>'purged' ORDER BY key_id`)
 	if err != nil {
 		return err
 	}
@@ -169,6 +172,49 @@ func (t *Transit) CheckKeys(ctx context.Context) error {
 		return err
 	}
 	return commit(ctx, tx)
+}
+
+// TransitKeyUse is what still needs one transit key: content not purged yet
+// that it sealed. A key that seals nothing live can leave the configuration of
+// the API and the worker; activation and startup refuse to drop any other.
+type TransitKeyUse struct {
+	ID     string `json:"id"`
+	Active bool   `json:"active"`
+	// Payloads and Attachments count the live content sealed with the key.
+	Payloads    int64 `json:"payloads"`
+	Attachments int64 `json:"attachments"`
+	// Undated counts the live content whose purge has no date yet: a payload
+	// not delivered, an attachment of an invocation still running.
+	Undated int64 `json:"undated"`
+	// PurgeBy is the latest purge date of the dated content; nil when none.
+	// The worker's purge passes remove the content shortly after.
+	PurgeBy *time.Time `json:"purge_by"`
+}
+
+// TransitKeyUsage lists every activated transit key, in ID order, with what
+// still needs it. It reads metadata only, never a key or a ciphertext.
+func (s *Store) TransitKeyUsage(ctx context.Context) ([]TransitKeyUse, error) {
+	rows, err := s.pool.Query(ctx, `SELECT k.id, coalesce(c.active_key_id=k.id,false),
+          (SELECT count(*) FROM transit_payloads p WHERE p.key_id=k.id AND p.purged_at IS NULL),
+          (SELECT count(*) FROM attachments a WHERE a.key_id=k.id AND a.status<>'purged'),
+          (SELECT count(*) FROM transit_payloads p WHERE p.key_id=k.id AND p.purged_at IS NULL AND p.purge_after IS NULL)
+            + (SELECT count(*) FROM attachments a WHERE a.key_id=k.id AND a.status='attached'),
+          greatest((SELECT max(p.purge_after) FROM transit_payloads p WHERE p.key_id=k.id AND p.purged_at IS NULL),
+            (SELECT max(a.expires_at) FROM attachments a WHERE a.key_id=k.id AND a.status='pending'))
+        FROM transit_keys k LEFT JOIN transit_configuration c ON c.singleton ORDER BY k.id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	keys := make([]TransitKeyUse, 0)
+	for rows.Next() {
+		var k TransitKeyUse
+		if err = rows.Scan(&k.ID, &k.Active, &k.Payloads, &k.Attachments, &k.Undated, &k.PurgeBy); err != nil {
+			return nil, err
+		}
+		keys = append(keys, k)
+	}
+	return keys, rows.Err()
 }
 
 type transitParty struct{ Agent, Owner string }
@@ -440,6 +486,14 @@ func (t *Transit) delivered(ctx context.Context, tx pgx.Tx, id string) error {
 
 // PurgeExpired clears current SQL ciphertext only. Metadata tombstones remain;
 // retaining an old backup/key is outside this operation's erasure guarantees.
+//
+// It first starts the retention of request content that ended without one:
+// a reply whose delivery died before ADR 007, or through a retirement without
+// the transit, and a request closed before it was delivered (declined,
+// canceled, expired or failed). That end is not recorded, so the retention
+// starts at the first pass that finds it: never before the end, and within
+// one pass of it from then on. Same length as a delivered request's or reply's
+// (ADR 007 §7; for a closed request, a default pending the product owner).
 func (t *Transit) PurgeExpired(ctx context.Context, limit int) (int64, error) {
 	if limit < 1 || limit > 1000 {
 		return 0, ErrInput
@@ -449,6 +503,16 @@ func (t *Transit) PurgeExpired(ctx context.Context, limit int) (int64, error) {
 		return 0, err
 	}
 	defer rollback(tx)
+	if _, err = tx.Exec(ctx, `UPDATE transit_payloads SET delivered_at=clock_timestamp(),
+        purge_after=clock_timestamp()+$2::bigint*interval '1 microsecond' WHERE id IN
+        (SELECT p.id FROM transit_payloads p JOIN agent_requests r ON r.id=p.ref_id
+          WHERE p.purged_at IS NULL AND p.purge_after IS NULL
+            AND (p.kind='reply' AND r.reply_ref=p.id AND EXISTS(SELECT 1 FROM agent_mailboxes m
+                  WHERE m.ref_id=r.id AND m.kind='reply' AND m.delivery_state='DEAD')
+              OR p.kind='request' AND r.payload_ref=p.id AND r.state IN ('DECLINED','EXPIRED','CANCELED','FAILED'))
+          ORDER BY p.id LIMIT $1 FOR UPDATE OF p SKIP LOCKED)`, limit, t.retention.Microseconds()); err != nil {
+		return 0, err
+	}
 	tag, err := tx.Exec(ctx, `UPDATE transit_payloads SET ciphertext=NULL,purged_at=clock_timestamp() WHERE id IN
         (SELECT id FROM transit_payloads WHERE purged_at IS NULL AND purge_after<=clock_timestamp() ORDER BY purge_after,id LIMIT $1 FOR UPDATE SKIP LOCKED)`, limit)
 	if err != nil {

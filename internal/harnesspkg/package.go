@@ -25,6 +25,8 @@ import (
 	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/capability"
 )
 
 const (
@@ -72,6 +74,11 @@ type HarnessManifest struct {
 	Base         string   `yaml:"base" json:"base"`
 	Entrypoint   []string `yaml:"entrypoint" json:"entrypoint"`
 	Description  string   `yaml:"description,omitempty" json:"description,omitempty"`
+	// Capabilities the harness requests (package capability), such as
+	// llm.invoke. nil: the manifest predates the field, and the release is
+	// treated as requesting every capability (ADR 016); an empty list
+	// requests none.
+	Capabilities *[]string `yaml:"capabilities,omitempty" json:"capabilities,omitempty"`
 }
 
 // CatalogName is the rule shared with the control plane for harness names and
@@ -123,6 +130,8 @@ func (m HarnessManifest) Validate() error {
 		return invalid("entrypoint")
 	case len(m.Description) > 300 || strings.ContainsAny(m.Description, "\x00\r"):
 		return invalid("description")
+	case m.Capabilities != nil && capability.ValidSet(*m.Capabilities) != nil:
+		return invalid("capabilities must be known, each at most once")
 	}
 	exe := m.Entrypoint[0]
 	if !strings.HasPrefix(exe, "/") || path.Clean(exe) != exe || exe == "/" {

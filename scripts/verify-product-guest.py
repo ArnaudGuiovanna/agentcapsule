@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import pwd
+import re
 from pathlib import Path
 import shlex
 import shutil
@@ -28,10 +29,99 @@ import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
+# internal/volumestore links "-l:libcryptsetup.so.12", which Go refuses in a
+# #cgo directive unless this pattern allows it.
+CGO_LDFLAGS_ALLOW = r"-l:libcryptsetup\.so\.12"
+
+# Every TestProductWorker* test under internal/worker is required; the Pi and
+# SLIM scenarios only when their optional input is given.
+REQUIRED_WORKER = {"TestProductWorkerProvisioningAndEncryptedWake", "TestProductWorkerTwoOwnersPrivateExchange",
+    "TestProductWorkerContractOutagePreservesCensusAndMaintenance", "TestProductWorkerTenantAsyncInvocationWithFileAndModel",
+    "TestProductWorkerTenantRunsAnImportedHarness", "TestProductWorkerTenantUpgradesAndRollsBackAnImportedHarness",
+    "TestProductWorkerTenantRunsAPythonHarness", "TestProductWorkerTenantRunsAnAdaptedAgent", "TestProductWorkerTwoOrganizationsStayIsolated",
+    "TestProductWorkerTenantAgentsTalkOverA2A", "TestProductWorkerNightlyVolumeArchives", "TestProductWorkerRestoresAgentFromArchive",
+    "TestProductWorkerBoundsTheGuestTmp", "TestProductWorkerDeliversJSONContent", "TestProductWorkerEnforcesCapabilities",
+    "TestProductWorkerDriveCeilingsHoldAgainstAFloodingGuest", "TestProductWorkerStopsBootingAGuestThatCrashesAtBoot",
+    "TestProductWorkerCPUCeilingHoldsAgainstABurningGuest", "TestProductWorkerMemoryCeilingHoldsAgainstAGuestThatEatsMemory",
+    "TestProductWorkerProcessCeilingsHoldAgainstAForkBomb", "TestProductWorkerWorkTimeoutBoundsAGuestThatNeverFiles",
+    "TestProductWorkerFailsAnAgentWhoseGuestKeepsCrashing",
+    "TestProductWorkerRestoresAgentToAgentExchange", "TestProductWorkerJailsEachVMAndLeavesNothingBehind",
+    "TestProductWorkerWakesQueuesAndKeepsAWorkingAgentAwake", "TestProductWorkerSenderWakesForTheReply",
+    "TestProductWorkerRefetchesTheHarnessOfARestoredAgent", "TestProductWorkerStopsAGuestThatNeverAnswersAnInvocation",
+    "TestProductWorkerDeletesAnAgentWhoseHarnessNeverAnswers"}
+PI_WORKER = {"TestProductWorkerTenantRunsPiOnARealModel"}
+# The private services of deploy/interop (Directory, SLIM node) and the SLIM
+# bridge: run when --slim-bridge-build is given.
+SLIM_WORKER = {"TestProductWorkerTenantAgentsTalkOverSLIM", "TestProductWorkerTenantFlagshipJourney",
+               "TestProductWorkerDeletionRemovesTheVolumeTheKeyAndTheDirectoryRecord"}
+# Ships archives to stores with rclone before restoring them on another host (ADR 020): run when --rclone is given.
+RCLONE_WORKER = {"TestProductWorkerRestoresAgentFromShippedArchiveOnAnotherHost"}
+
+
+def declared_worker_tests(worker_dir):
+    """The TestProductWorker* functions the worker's test files declare."""
+    return {name for path in sorted(worker_dir.glob("*_test.go"))
+            for name in re.findall(r"^func (TestProductWorker\w+)\(", path.read_text(), re.M)}
 
 
 def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+# The capacity benchmark (DEP-5): TestCapacityBenchmark in internal/worker,
+# run with --capacity-agents; its report's format.
+CAPACITY_SCHEMA = "agentcapsule-capacity-benchmark/1"
+CAPACITY_MEASURED = ("boot_seconds", "wake_to_running_seconds", "vmm_rss_mib", "first_answer_seconds",
+                     "wake_from_stopped_answer_seconds")
+
+
+def capacity_sizes(text):
+    """The numbers of agents of --capacity-agents: 1 to 64 each, sorted, once each."""
+    sizes = set()
+    for part in text.split(","):
+        part = part.strip()
+        if not part.isdigit() or not 1 <= int(part) <= 64:
+            raise ValueError(f"--capacity-agents: {part!r} is not a number from 1 to 64")
+        sizes.add(int(part))
+    return sorted(sizes)
+
+
+def check_capacity_report(report, sizes):
+    """Check the benchmark's report and return its summary for verification.json.
+
+    Every requested number of agents has a step, in order. A measured step
+    has each measurement, for as many VMs as agents, and the host's memory
+    and CPU; a step not run says why.
+    """
+    if report.get("schema") != CAPACITY_SCHEMA:
+        raise ValueError("capacity report: unknown schema")
+    if report.get("config", {}).get("agents") != sizes or not report.get("finished_at"):
+        raise ValueError("capacity report: not the requested agents, or unfinished")
+    steps = report.get("steps", [])
+    if [s.get("agents") for s in steps] != sizes:
+        raise ValueError("capacity report: a step is missing")
+    summary = []
+    for s in steps:
+        n = s["agents"]
+        if s.get("status") == "not_run":
+            if not s.get("reason"):
+                raise ValueError(f"capacity report: the step of {n} agents was not run and says not why")
+            summary.append({"agents": n, "status": "not_run", "reason": s["reason"]})
+            continue
+        if s.get("status") != "measured":
+            raise ValueError(f"capacity report: the step of {n} agents has no status")
+        for name in CAPACITY_MEASURED:
+            counted = (s.get(name) or {}).get("count", 0)
+            if counted < n and not (name == "boot_seconds" and counted >= 1):
+                raise ValueError(f"capacity report: {name} of {n} agents has {counted} values")
+        for name in ("host_used_by_vms_mib", "host_cpu_busy_ratio_idle", "vmm_cpu_seconds_per_second_idle", "all_running_seconds"):
+            if not isinstance(s.get(name), (int, float)):
+                raise ValueError(f"capacity report: the step of {n} agents lacks {name}")
+        summary.append({"agents": n, "status": "measured", "boot_p50_seconds": s["boot_seconds"]["p50"],
+                        "first_answer_p50_seconds": s["first_answer_seconds"]["p50"],
+                        "wake_from_stopped_p50_seconds": s["wake_from_stopped_answer_seconds"]["p50"],
+                        "vmm_rss_p50_mib": s["vmm_rss_mib"]["p50"], "host_used_by_vms_mib": s["host_used_by_vms_mib"]})
+    return summary
 
 
 def main():
@@ -54,6 +144,13 @@ def main():
     p.add_argument("--slim-bridge-build", type=Path,
                    help="optional directory written by scripts/build-slim-bridge.py: also start the private services of deploy/interop (Docker: "
                         "OASF, Directory, SLIM node), carry deliveries between agents through a real SLIM bridge, and run the flagship journey (INT-05)")
+    p.add_argument("--rclone", type=Path,
+                   help="optional rclone 1.60 binary: also restore an agent from a shipped archive on another host (ADR 020)")
+    p.add_argument("--capacity-agents",
+                   help="optional numbers of agents, such as 1,5,10,20: also run the capacity benchmark (DEP-5), which boots that many VMs "
+                        "in turn and writes capacity.json: boot time, each VMM's memory, the host's memory and CPU, the time to a first "
+                        "answer and the wake from STOPPED. Needs --pg-bin; a step that does not fit in the host's memory is not run")
+    p.add_argument("--capacity-memory-mib", type=int, default=256, help="memory of each VM of the capacity benchmark (128 to 8192)")
     p.add_argument("--pg-bin", type=Path)
     p.add_argument("--pg-library-path", type=Path)
     p.add_argument("--pg-user", help="Non-root owner of the temporary PostgreSQL cluster")
@@ -87,6 +184,16 @@ def main():
                     f"(a terminal paste may add ESC[200~ and ESC[201~ around it); it holds {len(pi_api_key.encode())} bytes")
     if bool(a.pg_bin) != bool(a.pg_user):
         p.error("--pg-bin and --pg-user must be supplied together")
+    capacity = None
+    if a.capacity_agents:
+        if not a.pg_bin:
+            p.error("--capacity-agents needs the worker scenarios (--pg-bin and --pg-user)")
+        try:
+            capacity = capacity_sizes(a.capacity_agents)
+        except ValueError as e:
+            p.error(str(e))
+        if not 128 <= a.capacity_memory_mib <= 8192:
+            p.error("--capacity-memory-mib: 128 to 8192")
     slim_build = None
     if a.slim_bridge_build:
         if not a.pg_bin:
@@ -144,8 +251,10 @@ def main():
     env = {k: v for k, v in os.environ.items() if not k.startswith(("AGENTCAPSULE_", "AC_RUNTIME_CHILD_", "CAPSULE_CRASH_"))}
     env.update(AGENTCAPSULE_KVM_CONFIG=str(out / "config.json"), AGENTCAPSULE_KVM_PYTHON_HARNESS=str(a.python_harness),
                AGENTCAPSULE_KVM_ADAPTED_HARNESS=str(a.adapted_harness), AGENTCAPSULE_KVM_A2A_HARNESS=str(a.a2a_harness),
-               CPATH=str(native), CGO_ENABLED="1",
+               CPATH=str(native), CGO_ENABLED="1", CGO_LDFLAGS_ALLOW=CGO_LDFLAGS_ALLOW,
                GOPATH=str(out / "go-path"), GOCACHE=str(out / "go-cache"), TMPDIR=str(out / "tmp"))
+    if a.rclone:
+        env.update(AGENTCAPSULE_KVM_RCLONE=str(a.rclone.resolve()))
     if a.pi_harness:
         env.update(AGENTCAPSULE_KVM_PI_HARNESS=str(a.pi_harness), AGENTCAPSULE_KVM_PI_MODEL_URL=a.pi_model_url, AGENTCAPSULE_KVM_PI_MODEL=a.pi_model)
         if pi_api_key:
@@ -192,6 +301,7 @@ def main():
         assert required <= passed
         worker_passed = set()
         conformance_passed = set()
+        capacity_summary = None
         if a.pg_bin:
             account = pwd.getpwnam(a.pg_user)
             pgroot = Path(tempfile.mkdtemp(prefix="acpg-db-", dir="/var/tmp"))
@@ -221,43 +331,51 @@ def main():
                     free.bind(("127.0.0.1", 0))
                     port = free.getsockname()[1]
                 slim_env = {**os.environ, "INTEROP_CERTS": str(certs), "INTEROP_SLIM_PORT": str(port), "INTEROP_DIRECTORY_PORT": "0"}
-                slim_compose = ["docker", "compose", "-p", f"acp-kvm-slim-{os.getpid()}", "-f", str(src / "deploy/interop/compose.yml")]
+                # The lab's node also logs its message processing, so that the
+                # SLIM test reads in the node's own log that the exchange
+                # crossed it (A2A-005). A host keeps deploy/interop/slim.yaml:
+                # INFO, which logs the node's start only.
+                lab = out / "slim-lab"
+                lab.mkdir()
+                node = (src / "deploy/interop/slim.yaml").read_text()
+                assert "  log_level: info\n" in node, "the SLIM node's log level moved in deploy/interop/slim.yaml"
+                (lab / "slim.yaml").write_text(node.replace("  log_level: info\n", '  log_level: "info,slim_datapath::message_processing=debug"\n', 1))
+                (lab / "slim.yaml").chmod(0o644)
+                (lab / "compose.yml").write_text("services:\n  slim:\n    volumes:\n      - " + json.dumps(str(lab / "slim.yaml") + ":/etc/slim/config.yaml:ro") + "\n")
+                slim_compose = ["docker", "compose", "-p", f"acp-kvm-slim-{os.getpid()}", "-f", str(src / "deploy/interop/compose.yml"),
+                                "-f", str(lab / "compose.yml")]
                 with (out / "slim-node-up.log").open("w") as log:
                     subprocess.run([*slim_compose, "up", "-d", "--wait", "--quiet-pull"], env=slim_env, stdout=log, stderr=subprocess.STDOUT, timeout=900, check=True)
                 edge = subprocess.check_output([*slim_compose, "port", "directory-edge", "8443"], env=slim_env, text=True, timeout=60).strip()
                 if not edge.startswith("127.0.0.1:"):
                     raise RuntimeError("the Directory edge is published beyond loopback: " + edge)
                 # The flagship journey stops and starts the Directory and the
-                # SLIM node, and nothing else, through this script.
+                # SLIM node, and the SLIM test reads the node's log, and
+                # nothing else, through this script.
                 control = out / "interop-control"
                 kept = {k: v for k, v in slim_env.items() if k in ("PATH", "HOME", "XDG_RUNTIME_DIR") or k.startswith(("DOCKER_", "INTEROP_"))}
                 control.write_text("#!/bin/sh\nset -e\n"
-                                   'case "$1" in stop|start) ;; *) echo "usage: $0 stop|start directory|slim" >&2; exit 2;; esac\n'
-                                   'case "$2" in directory|slim) ;; *) echo "usage: $0 stop|start directory|slim" >&2; exit 2;; esac\n'
+                                   'case "$1" in stop|start|logs) ;; *) echo "usage: $0 stop|start|logs directory|slim" >&2; exit 2;; esac\n'
+                                   'case "$2" in directory|slim) ;; *) echo "usage: $0 stop|start|logs directory|slim" >&2; exit 2;; esac\n'
                                    + shlex.join(["exec", "env", "-i", *(f"{k}={v}" for k, v in kept.items()), *slim_compose]) + ' "$1" "$2"\n')
                 control.chmod(0o700)
                 env.update(AGENTCAPSULE_KVM_SLIM_BRIDGE=str(a.slim_bridge_build / slim_build["binary"]),
                            AGENTCAPSULE_KVM_SLIM_ENDPOINT=f"https://127.0.0.1:{port}", AGENTCAPSULE_KVM_SLIM_CERTS=str(certs),
                            AGENTCAPSULE_KVM_INTEROP_CERTS=str(certs), AGENTCAPSULE_KVM_DIRECTORY_ADDR=edge,
                            AGENTCAPSULE_KVM_INTEROP_CONTROL=str(control))
-            skipped = (([] if a.pi_harness else ["TestProductWorkerTenantRunsPiOnARealModel"])
-                       + ([] if slim_build else ["TestProductWorkerTenantAgentsTalkOverSLIM", "TestProductWorkerTenantFlagshipJourney"]))
+            unlisted = sorted(declared_worker_tests(src / "internal/worker") - REQUIRED_WORKER - PI_WORKER - SLIM_WORKER - RCLONE_WORKER)
+            assert not unlisted, "product worker scenarios this script does not require: " + ", ".join(unlisted)
+            skipped = sorted((set() if a.pi_harness else PI_WORKER) | (set() if slim_build else SLIM_WORKER) | (set() if a.rclone else RCLONE_WORKER))
             run("worker-integration", [a.go, "tool", "test2json", "-p", "github.com/ArnaudGuiovanna/agentcapsule/internal/worker",
-                out / "product-worker.test", "-test.v", "-test.run=^TestProductWorker", "-test.timeout=1500s"]
-                + ([f"-test.skip=^({'|'.join(skipped)})$"] if skipped else []), 1560)
+                out / "product-worker.test", "-test.v", "-test.run=^TestProductWorker", "-test.timeout=3600s"]
+                + ([f"-test.skip=^({'|'.join(skipped)})$"] if skipped else []), 3660)
             events = [json.loads(line) for line in (out / "worker-integration.log").read_text().splitlines()]
             assert not any(e["Action"] in ["skip", "fail"] for e in events)
             worker_passed = {e["Test"] for e in events if e["Action"] == "pass" and "Test" in e}
-            required_worker = {"TestProductWorkerProvisioningAndEncryptedWake", "TestProductWorkerTwoOwnersPrivateExchange",
-                "TestProductWorkerContractOutagePreservesCensusAndMaintenance", "TestProductWorkerTenantAsyncInvocationWithFileAndModel",
-                "TestProductWorkerTenantRunsAnImportedHarness", "TestProductWorkerTenantUpgradesAndRollsBackAnImportedHarness",
-                "TestProductWorkerTenantRunsAPythonHarness", "TestProductWorkerTenantRunsAnAdaptedAgent", "TestProductWorkerTwoOrganizationsStayIsolated",
-                "TestProductWorkerTenantAgentsTalkOverA2A", "TestProductWorkerNightlyVolumeArchives", "TestProductWorkerRestoresAgentFromArchive"}
-            if a.pi_harness:
-                required_worker.add("TestProductWorkerTenantRunsPiOnARealModel")
-            if slim_build:
-                required_worker.update({"TestProductWorkerTenantAgentsTalkOverSLIM", "TestProductWorkerTenantFlagshipJourney"})
-            assert required_worker <= worker_passed, "missing required product worker scenario"
+            required_worker = (REQUIRED_WORKER | (PI_WORKER if a.pi_harness else set()) | (SLIM_WORKER if slim_build else set())
+                               | (RCLONE_WORKER if a.rclone else set()))
+            missing = sorted(required_worker - worker_passed)
+            assert not missing, "missing required product worker scenarios: " + ", ".join(missing)
             run("conformance-compile", [a.go, "test", "-c", "-buildvcs=false", "-race", "-tags=kvm_integration,kvm_product_integration",
                 "-o", out / "product-conformance.test", "./internal/controlplane"], 300)
             run("conformance-integration", [a.go, "tool", "test2json", "-p", "github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane",
@@ -269,6 +387,17 @@ def main():
             required_conformance = {"TestPreimplementationP1HostSealITF",
                 "TestPreimplementationP1HostSealITF/sealed-store-satisfies-future-barrier"}
             assert required_conformance <= conformance_passed, "missing P1 host seal projection"
+            if capacity:
+                # The capacity benchmark, last: its VMs never overlap a scenario.
+                env.update(AGENTCAPSULE_KVM_CAPACITY_AGENTS=",".join(map(str, capacity)),
+                           AGENTCAPSULE_KVM_CAPACITY_MEMORY_MIB=str(a.capacity_memory_mib),
+                           AGENTCAPSULE_KVM_CAPACITY_REPORT=str(out / "capacity.json"))
+                run("capacity-benchmark", [a.go, "tool", "test2json", "-p", "github.com/ArnaudGuiovanna/agentcapsule/internal/worker",
+                    out / "product-worker.test", "-test.v", "-test.run=^TestCapacityBenchmark$", "-test.timeout=5400s"], 5520)
+                events = [json.loads(line) for line in (out / "capacity-benchmark.log").read_text().splitlines()]
+                assert not any(e["Action"] in ["skip", "fail"] for e in events)
+                assert any(e["Action"] == "pass" and e.get("Test") == "TestCapacityBenchmark" for e in events), "capacity benchmark did not pass"
+                capacity_summary = check_capacity_report(json.loads((out / "capacity.json").read_text()), capacity)
         (out / "verification.json").write_text(json.dumps({"status": "passed", "executed_tests": sorted(passed),
             "worker_tests": sorted(worker_passed),
             "conformance_tests": sorted(conformance_passed),
@@ -286,7 +415,14 @@ def main():
             "two_organizations_isolated": "passed" if "TestProductWorkerTwoOrganizationsStayIsolated" in worker_passed else "not_run",
             "nightly_volume_archives": "passed" if "TestProductWorkerNightlyVolumeArchives" in worker_passed else "not_run",
             "restore_from_archive": "passed" if "TestProductWorkerRestoresAgentFromArchive" in worker_passed else "not_run",
-            "scope": "Real jailed encrypted guests and separate unprivileged harness processes. When worker_tests is nonempty, all mandatory worker scenarios passed: contract outage/recovery while preserving the physical census, credential replacement and forced retirement after a blocked quiesce; provisioning and encrypted wake; two owners/agents created via HTTP, manual consent while recipient sleeps, private reply and owner inbox, distinct persistent guest stores across clean sleep/wake, stale control rejection, queued-request cancellation and physical deletion; a tenant agent (delegated identity) acknowledging an invocation as working, then reading its encrypted attachment and calling its model over the platform channel and posting the answer; two tenant agents running a harness imported from an OCI registry, sharing one read-only cached image attached as a second drive and run chrooted by capsule-init; a tenant agent upgraded to another imported release and rolled back across sleep/wake with its encrypted volume, each change applied at the next boot, then the unused deprecated package evicted from the cache while the running release stays; a harness written in Python (built off-host from a pinned base image) imported and run in the guest, answering from its own SQLite state kept across sleep/wake and posting a deferred model answer over the platform channel; an ordinary agent image (Python, the official OpenAI SDK, a tool loop) adapted without change by capsule-adapter, answering invocations by running the agent, whose SDK reached the organization's model through the endpoint on the guest loopback and the platform channel (tools forwarded, every call metered), reading an attached file with its own tool call and answering again after sleep/wake; two agents of one organization, each an A2A server written with the official A2A Go SDK and run unchanged by capsule-adapter, one asking the other over A2A through the adapter's endpoint on its guest loopback (Agent Card, a peer request under the invocation's mandate, the answer as the task's artifact), refused while the recipient is not discoverable, delivered at once under the auto inbound policy, waking the recipient when it sleeps, and holding a request that would wake it beyond the organization's wake budget until the organization allows one more wake; when a2a_over_slim passed, the same two agents on a host that carries deliveries between agents through a real SLIM bridge process (its own unprivileged user, the layout of deploy/systemd) and a private SLIM node: the request and the reply crossing the node, a request waiting without spending an attempt while the bridge is away and delivered once it is back, and a request waking the sleeping recipient through SLIM; when flagship_journey passed, the flagship journey of gate G2 with the private services of deploy/interop: an agent finding another by its skill in the Directory from its own VM while the other sleeps, and getting its answer over A2A and SLIM, the other waking for it; with the Directory down, the search failing and saying so while a request to the known agent still succeeds, and the search succeeding again once the Directory is back; with the SLIM node down, the bridge ending with slim_node_lost, the request waiting, and the bridge started again delivering it once the node is back; when pi_on_real_model passed, Pi (the coding agent, unmodified, packed from an installed release) running in a microVM on a real model (the host's model server or a hosted provider), reading an attached file with its own read tool and answering from its session in the next invocation and again after sleep/wake; two organizations, each trusting its own identity provider, running agents at the same time in separate jailed VMs (distinct users, volumes and keys), with every resource of the other organization answering 404, its model alias unusable and its files impossible to attach, and lists and audit trails limited to one organization; the maintenance loop archiving a sleeping agent's encrypted volume while it keeps delivering to a running agent, which is not interrupted, the archive verified with the restore authority and recorded in PostgreSQL, then, a day later on the scheduler's clock, an overdue running agent stopped for its archive, retention keeping one archive per agent, and the agent waking on its next invocation; when restore_from_archive passed, an agent restored on its own host from an archive taken on demand: the restore stopped twice like a crash and resumed, the volume holding exactly the archive's bytes before the restricted boot at the new incarnation, the two invocations answered after the archive declared lost and mapped to their invocations and only those, the agent answering again from a VM of the new incarnation, and the old incarnation's fence receipt, identity and control observation refused. Direct setup covers installation only. Nonempty conformance_tests separately establish the P1 permanent-seal projection on local mTLS/SQLite, PostgreSQL and a real host registry: same inode, future seal revalidation, missing-file/busy-lock/restart refusals. Its initial placements and VMM retirement are fixtures, not a physical replay of the trace. No concurrent in-flight writer crash, restore onto another host or complete MVP validation is claimed."}, indent=2) + "\n")
+            "jail_and_cleanup": "passed" if "TestProductWorkerJailsEachVMAndLeavesNothingBehind" in worker_passed else "not_run",
+            "wake_queue_and_idle": "passed" if "TestProductWorkerWakesQueuesAndKeepsAWorkingAgentAwake" in worker_passed else "not_run",
+            "sender_wakes_for_reply": "passed" if "TestProductWorkerSenderWakesForTheReply" in worker_passed else "not_run",
+            "harness_refetched_after_restore": "passed" if "TestProductWorkerRefetchesTheHarnessOfARestoredAgent" in worker_passed else "not_run",
+            "deletion_with_directory": "passed" if "TestProductWorkerDeletionRemovesTheVolumeTheKeyAndTheDirectoryRecord" in worker_passed else "not_run",
+            "restore_on_another_host": "passed" if "TestProductWorkerRestoresAgentFromShippedArchiveOnAnotherHost" in worker_passed else "not_run",
+            "capacity_benchmark": {"report": "capacity.json", "steps": capacity_summary} if capacity_summary is not None else "not_run",
+            "scope":"Real jailed encrypted guests and separate unprivileged harness processes. When worker_tests is nonempty, all mandatory worker scenarios passed: contract outage/recovery while preserving the physical census, credential replacement and forced retirement after a blocked quiesce; provisioning and encrypted wake; two owners/agents created via HTTP, manual consent while recipient sleeps, private reply and owner inbox, distinct persistent guest stores across clean sleep/wake, stale control rejection, queued-request cancellation and physical deletion; a tenant agent (delegated identity) acknowledging an invocation as working, then reading its encrypted attachment and calling its model over the platform channel and posting the answer; two tenant agents running a harness imported from an OCI registry, sharing one read-only cached image attached as a second drive and run chrooted by capsule-init; a tenant agent upgraded to another imported release and rolled back across sleep/wake with its encrypted volume, each change applied at the next boot, then the unused deprecated package evicted from the cache while the running release stays; a harness written in Python (built off-host from a pinned base image) imported and run in the guest, answering from its own SQLite state kept across sleep/wake and posting a deferred model answer over the platform channel; an ordinary agent image (Python, the official OpenAI SDK, a tool loop) adapted without change by capsule-adapter, answering invocations by running the agent, whose SDK reached the organization's model through the endpoint on the guest loopback and the platform channel (tools forwarded, every call metered), reading an attached file with its own tool call and answering again after sleep/wake; two agents of one organization, each an A2A server written with the official A2A Go SDK and run unchanged by capsule-adapter, one asking the other over A2A through the adapter's endpoint on its guest loopback (Agent Card, a peer request under the invocation's mandate, the answer as the task's artifact), refused while the recipient is not discoverable, delivered at once under the auto inbound policy, waking the recipient when it sleeps, and holding a request that would wake it beyond the organization's wake budget until the organization allows one more wake; when a2a_over_slim passed, the same two agents on a host that carries deliveries between agents through a real SLIM bridge process (its own unprivileged user, the layout of deploy/systemd) and a private SLIM node: the request and the reply crossing the node, a request waiting without spending an attempt while the bridge is away and delivered once it is back, and a request waking the sleeping recipient through SLIM; when flagship_journey passed, the flagship journey of gate G2 with the private services of deploy/interop: an agent finding another by its skill in the Directory from its own VM while the other sleeps, and getting its answer over A2A and SLIM, the other waking for it; with the Directory down, the search failing and saying so while a request to the known agent still succeeds, and the search succeeding again once the Directory is back; with the SLIM node down, the bridge ending with slim_node_lost, the request waiting, and the bridge started again delivering it once the node is back; when pi_on_real_model passed, Pi (the coding agent, unmodified, packed from an installed release) running in a microVM on a real model (the host's model server or a hosted provider), reading an attached file with its own read tool and answering from its session in the next invocation and again after sleep/wake; two organizations, each trusting its own identity provider, running agents at the same time in separate jailed VMs (distinct users, volumes and keys), with every resource of the other organization answering 404, its model alias unusable and its files impossible to attach, and lists and audit trails limited to one organization; the maintenance loop archiving a sleeping agent's encrypted volume while it keeps delivering to a running agent, which is not interrupted, the archive verified with the restore authority and recorded in PostgreSQL, then, a day later on the scheduler's clock, an overdue running agent stopped for its archive, retention keeping one archive per agent, and the agent waking on its next invocation; when restore_from_archive passed, an agent restored on its own host from an archive taken on demand: the restore stopped twice like a crash and resumed, the volume holding exactly the archive's bytes before the restricted boot at the new incarnation, the two invocations answered after the archive declared lost and mapped to their invocations and only those, the agent answering again from a VM of the new incarnation, and the old incarnation's fence receipt, identity and control observation refused. Direct setup covers installation only. Nonempty conformance_tests separately establish the P1 permanent-seal projection on local mTLS/SQLite, PostgreSQL and a real host registry: same inode, future seal revalidation, missing-file/busy-lock/restart refusals. Its initial placements and VMM retirement are fixtures, not a physical replay of the trace. When restore_on_another_host passed, an agent archived, shipped and fetched back was restored by a second worker host, which runs on the same machine. No concurrent in-flight writer crash, restore between two machines or complete MVP validation is claimed."}, indent=2) + "\n")
     finally:
         cleanup_errors = []
         if slim_compose is not None:

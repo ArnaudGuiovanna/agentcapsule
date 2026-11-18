@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -45,9 +46,17 @@ func TestLLMProviderSecretsStayWriteOnlyAndEncrypted(t *testing.T) {
 	if err = l.s.pool.QueryRow(t.Context(), `SELECT secret_ciphertext FROM llm_providers WHERE id=$1`, v.ID).Scan(&raw); err != nil || bytes.Contains(raw, []byte(providerSecret)) || len(raw) < 28 {
 		t.Fatal("credential stored in clear", err)
 	}
+	// The audit records the creation once, by its actor, without the
+	// credential; the stored receipt does not carry it either.
+	var created int
 	var dump string
-	if err = l.s.pool.QueryRow(t.Context(), `SELECT string_agg(t::text,' ') FROM (SELECT * FROM llm_audit UNION ALL SELECT id,tenant_id,'','','',now(),'' FROM tenant_http_receipts LIMIT 0) t`).Scan(&dump); err == nil && strings.Contains(dump, providerSecret) {
-		t.Fatal("credential in audit")
+	if err = l.s.pool.QueryRow(t.Context(), `SELECT count(*) FILTER (WHERE action='provider.created' AND provider_id=$2 AND actor_principal_id=$3), coalesce(string_agg(a::text,' '),'')
+        FROM llm_audit a WHERE tenant_id=$1`, owner.TenantID, v.ID, owner.ID).Scan(&created, &dump); err != nil || created != 1 || strings.Contains(dump, providerSecret) {
+		t.Fatal("creation not audited once, or credential in audit", err, created)
+	}
+	var receipt []byte
+	if err = l.s.pool.QueryRow(t.Context(), `SELECT response_ciphertext FROM tenant_http_receipts WHERE tenant_id=$1 AND operation='llm.provider.create' AND key='p1'`, owner.TenantID).Scan(&receipt); err != nil || bytes.Contains(receipt, []byte(providerSecret)) {
+		t.Fatal("receipt missing or carries the credential", err)
 	}
 	// Invalid inputs.
 	for _, bad := range []CreateLLMProviderInput{
@@ -62,6 +71,30 @@ func TestLLMProviderSecretsStayWriteOnlyAndEncrypted(t *testing.T) {
 	}
 	if _, err = l.a.CreateLLMProvider(t.Context(), owner, "local", CreateLLMProviderInput{Name: "ollama", Kind: "openai_compatible", BaseURL: "http://127.0.0.1:11434/v1", Secret: providerSecret}); err != nil {
 		t.Fatal("loopback http refused", err)
+	}
+}
+
+// An https URL that names an internal address directly is refused at
+// registration with its own error: the worker would refuse to call it. A
+// model server on the operator's network is registered by its name.
+func TestLLMProviderURLNamingAnInternalAddressIsRefused(t *testing.T) {
+	l, _, owner := agentLab(t)
+	for _, base := range []string{"https://127.0.0.1:11434/v1", "https://[::1]/v1", "https://10.0.0.7/v1", "https://172.16.4.4", "https://192.168.1.20:8443",
+		"https://[fd12::7]/v1", "https://100.64.0.9", "https://169.254.169.254/latest", "https://[fd00:ec2::254]", "https://168.63.129.16",
+		"https://0.0.0.0", "https://[::ffff:10.0.0.7]", "https://localhost:11434/v1", "https://models.localhost", "https://127.1", "https://2130706433"} {
+		_, err := l.a.CreateLLMProvider(t.Context(), owner, newID("k"), CreateLLMProviderInput{Name: newID("internal"), Kind: "openai_compatible", BaseURL: base, Secret: providerSecret})
+		if !errors.Is(err, ErrProviderAddress) || !errors.Is(err, ErrInput) {
+			t.Error(base, "accepted or mistyped:", err)
+		}
+	}
+	for i, base := range []string{"https://models.corp.example:11434/v1", "https://1.1.1.1/v1", "https://api.anthropic.com"} {
+		if _, err := l.a.CreateLLMProvider(t.Context(), owner, newID("k"), CreateLLMProviderInput{Name: "public-" + strconv.Itoa(i), Kind: "anthropic", BaseURL: base, Secret: providerSecret}); err != nil {
+			t.Error(base, "refused:", err)
+		}
+	}
+	items, err := l.a.ListLLMProviders(t.Context(), owner, "", 50)
+	if err != nil || len(items) != 3 {
+		t.Fatal("a refused provider was stored", err, len(items))
 	}
 }
 

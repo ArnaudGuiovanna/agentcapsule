@@ -61,6 +61,55 @@ func (s *Server) organization(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, 200, o)
 }
 
+// organizationQuotas reads or replaces an organization's quotas: the
+// platform operator's (TEN-007, ADR 021).
+func (s *Server) organizationQuotas(w http.ResponseWriter, r *http.Request) {
+	if !method(w, r, "GET", "PUT") {
+		return
+	}
+	p, ok := s.principal(w, r)
+	if !ok {
+		return
+	}
+	if r.Method == "GET" {
+		out, err := s.accounts.OrganizationQuotaStatus(r.Context(), p, r.PathValue("id"))
+		if err != nil {
+			failure(w, err)
+			return
+		}
+		jsonResponse(w, 200, out)
+		return
+	}
+	key, ok := idempotency(w, r)
+	if !ok {
+		return
+	}
+	var input controlplane.OrganizationQuotas
+	if !decode(w, r, &input) {
+		return
+	}
+	out, err := s.accounts.SetOrganizationQuotas(r.Context(), p, r.PathValue("id"), key, input)
+	receipt(w, out, err)
+}
+
+// currentOrganizationQuotas gives the caller's organization its quotas and
+// usage (usage:read).
+func (s *Server) currentOrganizationQuotas(w http.ResponseWriter, r *http.Request) {
+	if !method(w, r, "GET") {
+		return
+	}
+	p, ok := s.principal(w, r)
+	if !ok {
+		return
+	}
+	out, err := s.accounts.CurrentOrganizationQuotas(r.Context(), p)
+	if err != nil {
+		failure(w, err)
+		return
+	}
+	jsonResponse(w, 200, out)
+}
+
 func (s *Server) disableOrganization(w http.ResponseWriter, r *http.Request) {
 	if !method(w, r, "POST") {
 		return

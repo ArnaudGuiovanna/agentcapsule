@@ -313,6 +313,9 @@ func TestPlatformVMIdentityMandatesRepliesAndWorkerHandover(t *testing.T) {
 	if _, err := db.Exec(t.Context(), "UPDATE "+pgx.Identifier{schema, "agents"}.Sanitize()+" SET inbound_mode='auto',discoverable=(id<>'c')"); err != nil {
 		t.Fatal(err)
 	}
+	// a submits and searches over its platform channel: routes gated by its
+	// capabilities (ADR 016), which only an agent with a spec holds.
+	specifyAgent(t, db, schema, "host", "a")
 	mandate, err := w.store.GrantMandate(t.Context(), "user-a", "a", "instruction-a", 5, time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
