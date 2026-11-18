@@ -138,15 +138,11 @@ func run() error {
 		quiescing = true
 		p, m := process, volume
 		mu.Unlock()
-		if p != nil {
-			if err := p.Stop(ctx); err != nil {
-				return err
-			}
-		}
+		var closeStore func(context.Context) error
 		if m != nil {
-			return m.Close(ctx)
+			closeStore = m.Close
 		}
-		return nil
+		return guestinit.StopHarnessAndCloseStore(ctx, p, closeStore)
 	}
 	server, err := capsuleprotocol.NewQuiescingVolumeServer(credentials, func(ready context.Context, v capsuleprotocol.VolumeBoot, key []byte) (http.Handler, error) {
 		m, err := guestinit.OpenVolume(ready, v, key)
