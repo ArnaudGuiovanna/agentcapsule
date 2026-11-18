@@ -217,7 +217,10 @@ packages, and the platform's binaries, which are not signed yet.
 
 - A KVM run: the worker binary with the mandatory checks
   (`verify-runtime.py --control-guest` starts it in
-  `TestMaintenanceServiceRecoversRenewalCrashesWithoutIncomingWork`).
+  `TestMaintenanceServiceRecoversRenewalCrashesWithoutIncomingWork`). Done
+  on November 18, 2026, at 1b4a7c3: the worker binary, started as root in
+  production mode, passed its mandatory checks and ran, on the development
+  machine (WSL2).
 - A preflight on a production server, with PostgreSQL over `verify-full`
   across hosts and a public certificate.
 - A metric and an alert for the API certificate's expiry.

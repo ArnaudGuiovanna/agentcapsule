@@ -2,8 +2,8 @@
 
 Date: November 16, 2026. **Status: built on November 16, 2026**, with
 defaults pending the product owner (see [Questions](#7-questions-for-the-product-owner)).
-On KVM, the product tests of the capacity paths passed on November 17, 2026;
-the runtime's have not run yet (see [Validation](#6-validation)).
+On KVM, the product tests of the capacity paths passed on November 17, 2026,
+and the runtime's on November 18, 2026 (see [Validation](#6-validation)).
 References: EVT-002, EVT-005, EVT-006, EVT-007 and RUN-011 of the
 [product spec](../product.md), EVT-02 of the [roadmap](../../ROADMAP.md),
 [ADR 003](003-restore-rpo.md) (reruns), [ADR 007](007-delivery-closure-and-priority.md)
@@ -312,7 +312,10 @@ that it completes. On November 17, 2026, with guest v26,
 `TestProductWorkerStopsBootingAGuestThatCrashesAtBoot` passed, and so did
 `TestProductWorkerWakesQueuesAndKeepsAWorkingAgentAwake`: on a one-slot host,
 work for a stopped agent waits `QUEUED` while another computes, then boots
-once the slot frees. The other three have not run.
+once the slot frees. The other three passed on November 18, 2026, in
+`scripts/verify-runtime.py` at 1b4a7c3, with control guest v8
+(`quint/results/runtime-20261118T131446Z`). The test of the resume is not
+written.
 
 ## 7. Questions for the product owner
 

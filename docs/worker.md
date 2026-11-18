@@ -523,19 +523,22 @@ AGENTCAPSULE_KVM_CAPACITY_DRY_RUN=1 AGENTCAPSULE_KVM_CAPACITY_REPORT=$PWD/capaci
 
 ### Measured on 2026-11-17 and 2026-11-18
 
-Two runs of `verify-product-guest.py` on the same development machine: a
-WSL2 laptop-class host with 12 CPUs and 15.5 GiB
+Three runs of `verify-product-guest.py` on the same development machine:
+a WSL2 laptop-class host with 12 CPUs and 15.5 GiB
 (kernel 6.18.58.1-microsoft-standard-WSL2), not a server, shared with other
 work. On 2026-11-17, at b38980c with guest v26, it had 6.8 GiB available
 with every agent asleep, and its CPUs were 46 % busy. On 2026-11-18, at
 5906a12 with guest v27, after the change that adopts a delivery's recipient
 VM alone, it had 6.3 to 8.1 GiB available as other work came and went, and
-its CPUs were 54 % to 67 % busy. These numbers are starting points for a host
-like it, not limits of the platform. Each VM had 1 vCPU and 256 MiB, ran the
+its CPUs were 54 % to 67 % busy. Later on 2026-11-18, at 0ff9ec2 with guest
+v29, with less other work, it had 11.1 to 11.2 GiB available, and its CPUs
+were 2 % to 6 % busy. These numbers are starting points for a host like it,
+not limits of the platform. Each VM had 1 vCPU and 256 MiB, ran the
 reference harness, and stayed idle once it answered. Local evidence:
 `capacity.json` and `capacity-traces.jsonl` in
-`quint/results/product-guest-kvm-20261117T141155Z` and
-`quint/results/product-guest-kvm-20261118T090505Z`.
+`quint/results/product-guest-kvm-20261117T141155Z`,
+`quint/results/product-guest-kvm-20261118T090505Z` and
+`quint/results/product-guest-kvm-20261118T134036Z`.
 
 On 2026-11-17:
 
@@ -546,7 +549,7 @@ On 2026-11-17:
 | 10 | 3.4 / 4.4 s | 44.7 s | 15.5 / 19.5 s | 5.0 / 6.4 s | 154 MiB | 1,185 MiB | 0.18 s/s |
 | 20 | 3.2 / 3.7 s | 94.0 s | 42.8 / 66.6 s | 4.6 / 6.4 s | 154 MiB | 2,887 MiB | 0.27 s/s |
 
-On 2026-11-18:
+On 2026-11-18, at 5906a12:
 
 | VMs | Boot p50 / p90 | All running | First answer p50 / p90 | From `STOPPED` to an answer p50 / p90 | VMM resident p50 | Host memory used by the VMs | VMMs' CPU while idle |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -555,32 +558,49 @@ On 2026-11-18:
 | 10 | 3.4 / 4.0 s | 45.4 s | 9.0 / 11.0 s | 4.6 / 5.1 s | 154 MiB | 1,206 MiB | 0.15 s/s |
 | 20 | 3.6 / 4.2 s | 101.6 s | 12.9 / 21.1 s | 3.8 / 5.1 s | 154 MiB | 2,439 MiB | 0.29 s/s |
 
-- A boot takes 3 to 4 s, whatever the number of VMs. The worker boots one
-  VM at a time, so 20 wakes sent at once were all running after 94 s, and
-  102 s in the second run.
+Later on 2026-11-18, at 0ff9ec2:
+
+| VMs | Boot p50 / p90 | All running | First answer p50 / p90 | From `STOPPED` to an answer p50 / p90 | VMM resident p50 | Host memory used by the VMs | VMMs' CPU while idle |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 2.1 / 2.1 s | 2.4 s | 0.4 / 0.4 s | 2.0 / 2.0 s | 154 MiB | 158 MiB | 0.01 s/s |
+| 5 | 1.8 / 3.8 s | 12.2 s | 1.7 / 2.0 s | 2.2 / 2.3 s | 154 MiB | 246 MiB | 0.03 s/s |
+| 10 | 1.8 / 1.9 s | 21.8 s | 3.3 / 4.0 s | 2.2 / 2.4 s | 154 MiB | 1,041 MiB | 0.07 s/s |
+| 20 | 1.8 / 2.1 s | 51.6 s | 5.9 / 9.4 s | 2.4 / 3.1 s | 154 MiB | 2,435 MiB | 0.14 s/s |
+
+- A boot takes 3 to 4 s in the first two runs, about 2 s in the third,
+  whatever the number of VMs; the third had far less other work on the
+  machine (its CPUs 2 % to 6 % busy, against 46 % to 67 %). The worker boots
+  one VM at a time, so 20 wakes sent at once were all running after 94 s,
+  102 s and 52 s.
 - An idle VM of 256 MiB keeps about 154 MiB resident, and its cgroup is
-  charged about 160 MiB, in both runs. The host lost about 118 MiB per VM
-  at 5 and 10 VMs, and 144 MiB at 20, on 2026-11-17; about 121 MiB at 10 and
-  20 VMs on 2026-11-18, where the 191 MiB per VM at 5 is noise: the host's
-  available memory rose by 1.8 GiB between the first two steps. A VM that
+  charged about 160 MiB, in all three runs. The host lost about 118 MiB per
+  VM at 5 and 10 VMs, and 144 MiB at 20, on 2026-11-17; about 121 MiB at 10
+  and 20 VMs in the second run, where the 191 MiB per VM at 5 is noise: the
+  host's available memory rose by 1.8 GiB between the first two steps;
+  about 104 MiB at 10 VMs and 122 MiB at 20 in the third, where the 49 MiB
+  per VM at 5, less than each VMM holds resident, is noise again. A VM that
   works can use all of its memory, and its cgroup allows 256 MiB more
   ([ADR 012](adr/012-limits-restart-budgets-egress.md)).
-- Idle VMs cost little CPU: 0.01 to 0.03 CPU-seconds per second each.
+- Idle VMs cost little CPU: 0.01 to 0.03 CPU-seconds per second each in the
+  first two runs, under 0.01 in the third.
 - First answers to invocations sent at once wait for the one dispatch loop,
   which delivers in turn. On 2026-11-17, a delivery to a running agent took
   0.5 s with one VM running and 3.1 s with 20 (p50 of its `delivery` job):
   the worker held the binding of every running VM with the authority
   service, 8 times each (`hold_binding` spans in `capacity-traces.jsonl`:
   7 to prepare the delivery, 1 to send it). It now adopts the recipient's VM
-  alone (**Adoption** at the top of this page). On 2026-11-18, each such
-  delivery held 8 bindings at every step and took 0.7 to 1.0 s (p50),
+  alone (**Adoption** at the top of this page). In the second run, each
+  such delivery held 8 bindings at every step and took 0.7 to 1.0 s (p50),
   whatever the number of VMs: the first answers at 20 VMs came after 12.9 s
   (p50) and 21.2 s at most, against 42.8 s and 66.7 s, and the benchmark's
-  trace held 6,208 spans, against 12,203.
+  trace held 6,208 spans, against 12,203. In the third run, each such
+  delivery held the same 8 bindings and took 0.3 to 0.4 s (p50): the first
+  answers at 20 VMs came after 5.9 s (p50) and 9.5 s at most, and the trace
+  held 6,208 spans again.
 - A wake still holds the binding of every running VM, 5 times each (4 in
   the wake's census, 1 in the boot's), since a census starts each wake and
   each boot. The wake of one stopped agent to its answer stays between 3
-  and 5 s (p50).
+  and 5 s (p50) in the first two runs, and about 2 s in the third.
 
 **Setting `max_active`.** Count each VM at its cgroup's ceiling, its memory
 plus 256 MiB, so that the host keeps more than 10 % of its memory even when
@@ -594,9 +614,10 @@ max_active = (available memory with every agent asleep - 10 % of the host's memo
 On the benchmark's host on 2026-11-17: (6,807 - 1,590) / 512 = 10 VMs of
 256 MiB, the starting point of [product.md](product.md) §2. On 2026-11-18,
 other work left it 6,307 to 8,131 MiB available, 9 to 12 VMs by the same
-rule. Counted at what idle VMs used, about 165 MiB each, the same host
-would hold about 30: an upper bound for idle agents, not a setting. CPU is
-not in the rule: each VM may use its whole vCPU, and the benchmark does not
+rule, and later that day 11,118 to 11,244 MiB, 18 VMs: on a shared
+machine, the result follows what else runs. Counted at what idle VMs used,
+about 165 MiB each, the same host would have held about 30 on 2026-11-17:
+an upper bound for idle agents, not a setting. CPU is not in the rule: each VM may use its whole vCPU, and the benchmark does not
 load them. On another host, measure the available memory the same way
 before setting `max_active`.
 
@@ -786,8 +807,9 @@ and SQL publication tests run; the deletion scenarios in a real VM
 passed on KVM on 2026-11-17 (26 of 26 worker tests, guest v26), the worker
 reaching its authorities through the authority service, whose seal check
 the second test makes. The deletion of an agent whose harness holds its
-store (`TestProductWorkerDeletesAnAgentWhoseHarnessNeverAnswers`) has not
-run on KVM yet.
+store (`TestProductWorkerDeletesAnAgentWhoseHarnessNeverAnswers`) passed on
+KVM on 2026-11-18 (0ff9ec2, guest v29): it completed 7.8 s after its
+request, through one restricted boot, with no guest failure counted.
 
 ## Nightly encrypted archives
 
