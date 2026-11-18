@@ -591,7 +591,11 @@ maintenance pass or the next work for the agent. The agent reads `READY`
 until then, then `STOPPED`, and its next work boots it again
 ([ADR 012](adr/012-limits-restart-budgets-egress.md), question 6). A sleep
 is never counted: its guest quiesces and stays up until the worker removes
-the VMM.
+the VMM. Firecracker closes the volume, and so releases its lock, a moment
+before its process ends (up to about 110 ms for a guest of 256 MiB): a
+census in that moment finds the VMM gone, since it can no longer write the
+volume, and kills what is left of it. A VMM that still has the volume open
+without its lock fails the census, as an unpatched VMM or another writer.
 
 An agent whose guest fails to boot, crashes, or does not answer, too often
 stops being booted. A boot counts when its VMM ran and then exited, stopped
