@@ -583,9 +583,15 @@ without swap (`memory.max`), and its tasks to 32 (`pids.max`); inside the
 guest, the harness may run 256 processes. A guest that takes all its memory
 is stopped by its own kernel, and a guest's processes are not the host's
 (KVM tests of RUN-007, [acceptance](acceptance.md), not yet run). A guest
-whose harness dies once it is ready halts, and its VM keeps its slot and
-memory until the agent is put to sleep: no crash is counted
-([ADR 012](adr/012-limits-restart-budgets-egress.md), question 6).
+whose harness exits or dies restarts once `capsule-init` has closed the
+agent's store, and its kernel's restart ends its VMM (`reboot=k`), which
+frees the VM's slot and memory. Before the guest is ready, that is a failed
+boot; once it is ready, a crash, counted at the next census: the next
+maintenance pass or the next work for the agent. The agent reads `READY`
+until then, then `STOPPED`, and its next work boots it again
+([ADR 012](adr/012-limits-restart-budgets-egress.md), question 6). A sleep
+is never counted: its guest quiesces and stays up until the worker removes
+the VMM.
 
 An agent whose guest fails to boot, crashes, or does not answer, too often
 stops being booted. A boot counts when its VMM ran and then exited, stopped
@@ -594,10 +600,9 @@ crash is a confirmed VM gone without a stop. A guest does not answer when
 its harness holds its store past a delivery's attempts (question 7 of ADR
 012): the fence that ends the delivery, refused by the running guest, makes
 the worker stop that VM, a quiesce then a forced stop, and fence through a
-restricted boot (see "What follows a dead delivery" above).
-A full host, a refused lease or an authority outage does not count. After 5
-such failures within an hour, the
-agent is `FAILED`: no work, barrier or credential replacement boots it, its
+restricted boot (see "What follows a dead delivery" above). A full host, a
+refused lease or an authority outage does not count. After 5 such failures
+within an hour, the agent is `FAILED`: no work, barrier or credential replacement boots it, its
 open wake ends `FAILED` (`restart_budget_exhausted`), and its work waits
 until a wake or its deadline. A wake requested for the agent gives it a new
 budget, and so does:

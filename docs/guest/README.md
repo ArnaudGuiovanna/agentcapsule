@@ -76,9 +76,17 @@ model endpoint of [capsule-adapter](../adapter.md) on 127.0.0.1. The supervisor
 starts the harness under UID/GID 1000 in a dedicated cgroup. The harness
 receives its non-secret configuration on FD 3 and its Unix listener on FD 4.
 `SO_PEERCRED` authorizes only the supervisor to use this local server; the mTLS
-credentials and the LUKS key stay in `capsule-init`. When the harness exits,
-its descendants are removed and the guest stops, except during a requested
-quiesce. `POST /v1/lifecycle/quiesce` closes admission, waits for calls already
+credentials and the LUKS key stay in `capsule-init`. When the harness exits
+or dies, except during a requested quiesce, its descendants are removed,
+the store is closed as far as it can be (`syncfs`, unmounts, dm-crypt), and
+`capsule-init` synchronizes what is left and restarts the guest
+(`guestinit.End`). The kernel, booted with `reboot=k`, restarts by
+resetting the CPU through the keyboard controller, and Firecracker exits on
+that reset: the guest's end is its VMM's, which the worker counts as a
+failed boot or a crash ([ADR 012](../adr/012-limits-restart-budgets-egress.md),
+question 6). A harness that died with an error (killed, or a non-zero exit)
+leaves the store mounted: only the sync writes it back, and the next boot
+is marked unclean. `POST /v1/lifecycle/quiesce` closes admission, waits for calls already
 admitted, then asks the harness to terminate. The harness gets `SIGTERM` once,
 however many stops are requested, and is killed with its descendants if it
 has not exited by the stop's deadline. A successful exit with no

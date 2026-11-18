@@ -346,6 +346,10 @@ with `queue_reason` `capacity`; one whose work waits for room under its
 organization's quotas is `QUEUED` with `queue_reason` `organization_quota`
 ([ADR 021](../adr/021-organization-quotas.md)). A wake past those quotas is
 accepted and waits; it is not refused.
+A guest whose harness exits or dies, for example killed by the guest's
+kernel for taking all its memory, ends its VM: before the agent is ready,
+the boot failed; after, the guest crashed, and the agent reads `STOPPED`
+once the worker has seen it, until its next work boots it again.
 An agent whose guest failed to boot, crashed, or did not answer, 5 times
 within an hour is `FAILED`, with `failure_reason` `boot_failed`, `crashed`
 or `unresponsive`, the kind of its last failure

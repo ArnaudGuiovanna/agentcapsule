@@ -87,6 +87,21 @@ Not done:
 - a **crash**: a confirmed VM whose VMM went away without a stop, found by
   reconciliation.
 
+A guest whose harness exits or dies, at any time, ends its VMM (question 6,
+decided on November 18, 2026). `capsule-init` stops the harness's
+descendants and closes the agent's store as before (`syncfs`, unmounts,
+dm-crypt), synchronizes what is left, then restarts the guest
+(`guestinit.End`). The guest's kernel is booted with `reboot=k`, so it
+restarts by resetting the CPU through the keyboard controller, and
+Firecracker exits on that reset (its `docs/api_requests/actions.md`:
+"Firecracker exits on CPU reset"). Before the guest is ready, the start
+finds the VMM gone: a failed boot. Once it is ready, the next
+census finds the VMM gone: a crash. The census is the next maintenance
+pass, or the next work for that agent, whichever comes first. A stop the
+platform asks for (sleep, eviction) is not counted: the placement is
+`STOPPING` before the guest quiesces, the guest stays up to acknowledge,
+and the host removes the VMM.
+
 A failed start is *not* the guest's failure when the host is full, the volume
 is busy, a lease is refused, an authority or the database is unavailable, the
 caller gave up, or the VMM never started (a jailer or host fault): a guest
@@ -217,12 +232,15 @@ and a decision on which secrets such a guest may still hold. It is **P1**.
   this record, the same wait happened with a boot every 30 seconds.
 - `FAILED` is a state of a live agent; the placement stays `STOPPED`. A
   restored agent stays `FAILED` until woken or cleared.
-- A guest that stops on its own once ready is not counted. When its harness
-  dies (the guest's kernel kills it for taking all its memory, for
-  example), `capsule-init` powers the guest off, which halts it: Firecracker
-  has no power-off for it, and its VMM keeps running. Reconciliation sees a
-  running VMM, not a crash; the agent reads `READY` until a delivery
-  prepares it, then `STARTING`, and keeps its VM slot (question 6).
+- A guest that stops on its own once ready crashes (question 6). When its
+  harness dies (the guest's kernel kills it for taking all its memory, for
+  example), the guest restarts, which ends its VMM and frees its VM slot and
+  memory. The agent reads `READY` until the next census counts the crash,
+  then `STOPPED`; its next work boots it again, and 5 such crashes within an
+  hour make it `FAILED` with `failure_reason` `crashed`. A guest that stays
+  up but whose control channel stops answering is still not counted: it
+  keeps its VM until it is put to sleep (option (c) of question 6, a later
+  item).
 - A harness that never returns from an invocation holds its store's write
   transaction. Each attempt ends at the host's 20-second timeout, and the
   fence that ends the invocation after its third attempt is refused: the
@@ -251,6 +269,10 @@ Unit tests (`go test -race`):
   `TestNeverFilesAnswersWorkingAndLoops`.
 - `internal/worker`, for the hostile-guest KVM tests: `TestCgroupFilesParse`,
   `TestCPUCeilingOfAWindow`.
+- For question 6: `internal/guestinit`:
+  `TestTheGuestEndsWithARestartAfterItsCleanup` (the guest ends with a
+  restart, after `capsule-init`'s cleanup and a sync); `internal/runtime`:
+  `TestAGuestThatEndsEndsItsVMM` (the kernel's `reboot=k` and `panic=1`).
 - For an unresponsive guest (question 7): `internal/worker`:
   `TestOnlyAGuestThatDoesNotAnswerItsFenceIsUnresponsive`,
   `TestPassesOfAGuestThatNeverAnswers`; `cmd/capsule-echo`:
@@ -317,8 +339,10 @@ must still answer within 30 seconds from the same VMM:
   window, with one quota and a tenth more allowed, and at least half of it.
 - `TestProductWorkerMemoryCeilingHoldsAgainstAGuestThatEatsMemory`: a guest
   of 256 MiB that eats memory is stopped by its own kernel ("Out of memory"
-  on its console), and the guest stops. Its VMM's cgroup records no OOM,
-  and peaks under `memory.max` (512 MiB) and above 224 MiB.
+  on its console). Its VMM's cgroup records no OOM, and peaks under
+  `memory.max` (512 MiB) and above 224 MiB. The guest then restarts, never
+  halts: its VMM exits, the worker counts a crash of that boot, the agent
+  reads `STOPPED`, and its next invocation boots it again and is answered.
 - `TestProductWorkerProcessCeilingsHoldAgainstAForkBomb`: a fork bomb
   reaches the 256 processes of the guest's harness cgroup (its kernel
   refuses a fork in `/capsule-harness`), while the VMM's cgroup gets no new
@@ -329,6 +353,16 @@ must still answer within 30 seconds from the same VMM:
   fails with `work_timeout` once its `result_due_at` has passed, not before,
   and has no result; the guest loops on within its `cpu.max`, and keeps its
   VM.
+
+For question 6, written on November 18, 2026, never run, in the same file:
+- `TestProductWorkerFailsAnAgentWhoseGuestKeepsCrashing`: an agent whose
+  harness eats memory after each boot's first answer, with a budget of 2
+  within an hour, answers, crashes, is booted again by its next invocation,
+  answers and crashes again; each crash is counted for its own boot, and
+  the agent is then `FAILED` with `failure_reason` `crashed`.
+
+No guest halts in these tests: a console that shows `reboot: System
+halted` fails them, and a VMM that went away must be counted as a crash.
 
 The KVM test of an unresponsive guest (question 7), written on November 18,
 2026, never run (`internal/worker/product_unresponsive_integration_test.go`),
@@ -342,9 +376,6 @@ text says "never return" and answers the others:
   minutes; one `unresponsive` failure is recorded for the boot that held
   it; its VMM is gone; the next invocation is answered by the release
   booted again, after one restricted boot; the agent reads `READY`.
-
-A guest that stopped may leave its VMM running, halted (question 6): the
-tests log it, and check that a VMM that went away is counted as a crash.
 
 ## Questions for the product owner
 
@@ -374,15 +405,17 @@ tests log it, and check that a VMM that went away is counted as a crash.
 5. **Internet profile.** Not built. Recommendation: P1, with a policy per
    organization and per harness, and a proxy outside the guest.
 6. **A guest that stops once ready.** An agent's harness takes all the
-   guest's memory and the guest's kernel kills it. Today the guest halts,
-   its VM keeps its slot and memory, the agent reads `READY` then
-   `STARTING`, its work waits until its deadline, and no failure is counted.
-   Options: (a) as built, until someone puts the agent to sleep; (b) the
-   guest reboots instead of powering off, which ends its VMM: the worker
-   counts a crash, the next work boots it again, and 5 such crashes an hour
-   make it `FAILED`; (c) (b), and the worker also treats a running VM whose
-   control channel stops answering as crashed. Recommendation: (b) now, (c)
-   later.
+   guest's memory and the guest's kernel kills it. Before the decision the
+   guest halted, its VM kept its slot and memory, the agent read `READY`
+   then `STARTING`, its work waited until its deadline, and no failure was
+   counted. Options: (a) as built, until someone puts the agent to sleep;
+   (b) the guest reboots instead of powering off, which ends its VMM: the
+   worker counts a crash, the next work boots it again, and 5 such crashes
+   an hour make it `FAILED`; (c) (b), and the worker also treats a running
+   VM whose control channel stops answering as crashed. Recommendation: (b)
+   now, (c) later. **Decided: (b), product owner, November 18, 2026; built
+   the same day** (see [What counts](#2-restart-budgets)). (c) stays a later
+   item.
 7. **A harness that never answers an invocation.** Its three attempts end
    at the host's timeout, but the invocation then waits for a fence the
    harness refuses, and the agent's other work waits behind it. Options:
