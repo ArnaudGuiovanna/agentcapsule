@@ -9,7 +9,9 @@ and time ceilings against a hostile guest, written on November 18, 2026,
 passed on KVM that day at 5906a12 with guest v27, on their first run. The
 KVM tests of a guest that keeps crashing (question 6) and of a guest that
 never answers (question 7) failed in their first run, with guest v28, on
-faults fixed since, and have not passed.
+faults fixed since; they passed on KVM later that day at 0ff9ec2 with guest
+v29, and so did the test of deleting an agent whose harness never answers
+(question 7, sub-question 2), on its first run.
 References: RUN-007, RUN-008, RUN-011 and §6 of the
 [product spec](../product.md), CAP-03 and TEN-07 of the
 [roadmap](../../ROADMAP.md), [worker.md](../worker.md),
@@ -422,8 +424,8 @@ For question 6, written on November 18, 2026, in the same file:
   closes the volume, and so releases its lock, 59 to 110 ms before its
   process ends, and the census took it for a VMM that writes without its
   lock. A census now finds a VMM with no descriptor of its volume gone
-  (8e61c85, [worker.md](../worker.md#limits-and-restart-budgets)). Not run
-  again since.
+  (8e61c85, [worker.md](../worker.md#limits-and-restart-budgets)). Passed
+  on KVM on November 18, 2026, at 0ff9ec2 with guest v29.
 
 No guest halts in these tests: a console that shows `reboot: System
 halted` fails them, and a VMM that went away must be counted as a crash.
@@ -440,7 +442,8 @@ after SQLite's busy timeout, ended the harness, and the guest ended with it
 fence went to a new boot that answered it. The harness, not the
 classification, was wrong: a store held by a slow or stuck handler is
 transient, and the background loops of `capsule-echo` and `capsule-adapter`
-now wait it out (`harnessstore.Busy`). Not run again since:
+now wait it out (`harnessstore.Busy`). Passed on KVM on November 18,
+2026, at 0ff9ec2 with guest v29:
 - `TestProductWorkerStopsAGuestThatNeverAnswersAnInvocation`: the agent
   answers an ordinary invocation, then gets one it holds and one more
   behind it. The passes may fail only with the held invocation's attempts,
@@ -449,11 +452,14 @@ now wait it out (`harnessstore.Busy`). Not run again since:
   minutes; one `unresponsive` failure is recorded for the boot that held
   it; its VMM is gone; the next invocation is answered by the release
   booted again, after one restricted boot; the agent reads `READY`.
+  At 0ff9ec2, the held invocation failed after 1 min 55 s, and 10 passes
+  failed on its attempts.
 
 The KVM test of deleting a stuck agent (sub-question 2), written on
-November 18, 2026, never run
+November 18, 2026
 (`internal/worker/product_stuck_deletion_integration_test.go`), uses the
-same behaviour, already in guest v29:
+same behaviour, already in guest v29. It passed on KVM on its first run,
+on November 18, 2026, at 0ff9ec2 with guest v29:
 - `TestProductWorkerDeletesAnAgentWhoseHarnessNeverAnswers`: the agent
   answers an ordinary invocation, then holds one whose first attempt ends
   at the host's timeout. The owner deletes it: new work is refused and its
@@ -464,6 +470,20 @@ same behaviour, already in guest v29:
   after the stop, no VMM, no volume, the key revoked and destroyed under
   the seal the authority service holds, no record; the held invocation
   is `canceled` (`agent_unavailable`); no guest failure is recorded.
+  At 0ff9ec2, the deletion completed 7.8 s after its request.
+
+The campaign at 0ff9ec2 with guest v29
+(`quint/results/product-guest-kvm-20261118T134036Z`) passed every KVM test
+of this section, on the development machine (WSL2). Its numbers for the tests
+of the other ceilings: the burning guest used 19.99 s of CPU in 10.0 s
+against a ceiling of 22.2 s, 9 periods throttled, and the neighbour
+answered in 0.42 s beside an idle agent and 0.41 s beside the burning one;
+the memory test's cgroup peaked at 262 MiB, with `oom` and `oom_kill` at 0,
+then its guest restarted, its VMM exited, one crash was counted and a new
+boot answered; the fork bomb left the VMM its 3 tasks and the agent's UID
+its 1 process; the invocation never filed failed 27 ms after its
+`result_due_at`; the agent whose guest keeps crashing was `FAILED`
+(`crashed`) after its two crashes.
 
 ## Questions for the product owner
 
@@ -502,7 +522,8 @@ same behaviour, already in guest v29:
    an hour make it `FAILED`; (c) (b), and the worker also treats a running
    VM whose control channel stops answering as crashed. Recommendation: (b)
    now, (c) later. **Decided: (b), product owner, November 18, 2026; built
-   the same day** (see [What counts](#2-restart-budgets)). (c) stays a later
+   the same day** (see [What counts](#2-restart-budgets)); passed on KVM the
+   same day, at 0ff9ec2 with guest v29 ([Tests](#tests)). (c) stays a later
    item.
 7. **A harness that never answers an invocation.** Its three attempts end
    at the host's timeout, but the invocation then waits for a fence the
@@ -511,13 +532,15 @@ same behaviour, already in guest v29:
    a running VM fails past the attempts, the worker stops the VM, counts a
    guest failure and fences through a restricted boot. Recommendation: (b).
    **Decided: (b), product owner, November 18, 2026**; built the same day
-   (§2, "An unresponsive guest"), with the failure kind `unresponsive`.
+   (§2, "An unresponsive guest"), with the failure kind `unresponsive`;
+   passed on KVM the same day, at 0ff9ec2 with guest v29.
    Its sub-question 2, **deleting a stuck agent**: an owner deletes an
    agent whose harness holds its store. Options: (a) as built then, the
    deletion waits; (b) the same stop for the deletion's fence.
    Recommendation: (b) later, with its own test. **Decided: (b), product
    owner, November 18, 2026** (the product owner asked to follow the
-   recommendations); built the same day (§2, "Deleting such an agent").
+   recommendations); built the same day (§2, "Deleting such an agent");
+   passed on KVM the same day, at 0ff9ec2 with guest v29.
 8. **A VM after its work timeout.** An agent answers "working" and never
    files. Its invocation fails with `work_timeout`, but its VM keeps
    running, and computing, until someone puts it to sleep, since no idle

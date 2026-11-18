@@ -509,7 +509,9 @@ Remaining:
   (`TestDispatchServiceRequestReplyAndNotification`,
   `TestDispatchPreparationAndOneSlotCapacity`,
   `TestDispatchServiceClosureExpirationAndDeletion`,
-  `TestDispatchWorkerCrashRecovery`).
+  `TestDispatchWorkerCrashRecovery`). Done on November 18, 2026: all four
+  passed in `scripts/verify-runtime.py` at 1b4a7c3, with control guest v8
+  (`quint/results/runtime-20261118T131446Z`).
 - **A delivery an attempt may have reached, to an A that never boots again,**
   stays closing until A boots for its fence (item 5). Dying without it
   could let a delayed send apply it (`noLateEffect`). If the fence boot
@@ -735,4 +737,5 @@ the upgrade.
   tests, which need root: `TestControlVMDeliveryAndRevocation`,
   `TestSealedStoreAllowsLaterRevocationAndClosure` and
   `TestDispatchServiceClosureExpirationAndDeletion`, whose closure counts
-  changed, with the other dispatch tests listed in §6.
+  changed, with the other dispatch tests listed in §6. These KVM tests
+  passed on November 18, 2026, in `scripts/verify-runtime.py` at 1b4a7c3.

@@ -234,9 +234,10 @@ KVM tests to run (root): those of ADR 017 §6, since `bootForWork` changed:
 `TestBarrierCapacityOneSlotThreeStoresAndReplay`,
 `TestDispatchServiceClosureExpirationAndDeletion`,
 `TestProductWorkerStopsBootingAGuestThatCrashesAtBoot`. The last passed on
-November 17, 2026, with this code; the other three have not run. A KVM test
-of a wake waiting for its organization's quota, then booting once the
-organization's other VM sleeps, is not written.
+November 17, 2026, with this code; the other three passed on November 18,
+2026, in `scripts/verify-runtime.py` at 1b4a7c3. A KVM test of a wake
+waiting for its organization's quota, then booting once the organization's
+other VM sleeps, is not written.
 
 ## Questions for the product owner
 
