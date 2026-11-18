@@ -432,12 +432,15 @@ func (h *Engine) finish(ctx context.Context, id string, receipt []byte, reason s
 	return err
 }
 
+// Run does the background work until ctx ends or the store fails. A store
+// that a delivery's handler holds past its busy timeout is waited out: the
+// work is tried again at the next tick.
 func (h *Engine) Run(ctx context.Context) error {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		worked, err := h.Step(ctx)
-		if err != nil {
+		if err != nil && !harnessstore.Busy(err) {
 			return err
 		}
 		if worked {
