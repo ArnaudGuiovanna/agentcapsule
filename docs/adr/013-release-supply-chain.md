@@ -189,6 +189,45 @@ database of November 16:
 - **The guest and the harness packages** embed Go binaries built with 1.27.3
   until they are rebuilt with 1.27.4 and the KVM campaigns rerun on them.
 
+## OpenSSL 3.5.9 (amended on November 18, 2026)
+
+The first CI run of the merged MVP on main (grype's database of November 18)
+failed in the harness packages job and the release audit, as question 1 (a)
+intends: four High findings with no fix, in upstream images, until someone
+reads the advisory.
+
+- **The advisory.** OpenSSL's advisory of November 10 rates them Low; NVD's
+  CVSS rates them High. CVE-2026-88823 and CVE-2026-95692 (AES-GCM-SIV
+  drops the AAD before an empty update, and takes an IV of the wrong
+  length), CVE-2026-95691 (the QUIC client reads freed memory after a
+  retransmitted CRYPTO frame), CVE-2026-107496 (`CMS_encrypt()` loops on an
+  EC certificate of group order 1). grype matches all four by CPE to every
+  OpenSSL package, 3.5.9-r0, in the reference harness packages
+  (python:3.13-alpine, Alpine 3.24: libssl3, libcrypto3), the Directory edge
+  (haproxy:3.2-alpine, Alpine 3.24: the same two) and the OASF server
+  (Alpine 3.23: the same two and the `openssl` command).
+- **No fix to pin.** OpenSSL 3.5.10 is due on December 1. Alpine edge
+  carries the patches (3.5.9-r1, November 11); Alpine 3.24, 3.23 and 3.22
+  do not, and neither do the current python:3.13-alpine and
+  haproxy:3.2-alpine digests or the OASF server's v2.0.0 tag.
+- **Not reached.** The harnesses use OpenSSL only through Python's `ssl` and
+  `hashlib`, which offer no AES-GCM-SIV, QUIC or CMS, and open no TLS
+  session: the VM has no network, and the platform and the adapter's model
+  API are plain HTTP. HAProxy is a TLS server over TCP (no QUIC listener),
+  behind a client certificate, on loopback. The OASF server's Erlang crypto
+  library links libcrypto only and imports none of these functions; the
+  programs that link libssl never run.
+- **The allowlist.** One entry per package and component, until December
+  16, with the entries of the first run. The Critical findings of these
+  targets are the allowlisted zlib CVE-2026-4738 and Erlang CVE-2026-89422.
+  The current python:3.13-alpine and haproxy:3.2-alpine digests still carry
+  zlib 1.3.2-r1, although Alpine 3.24 has 1.4-r0.
+- **What removes them.** When the python:3.13-alpine digest carries the
+  fix: re-pin it (`.dagger/main.go`, `examples/*/Dockerfile`), rebuild the
+  Python and adapted harness packages and rerun the KVM campaigns that use
+  them; the same re-pin can remove the zlib entry. The haproxy re-pin needs
+  `verify-interop.py --services`; the OASF server needs an upstream image.
+
 ## Validation
 
 Run locally, on Ubuntu 26.04: the four scripts end to end (the dependency
