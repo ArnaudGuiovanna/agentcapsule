@@ -134,7 +134,7 @@ PostgreSQL campaign.
 python3 scripts/check-models.py --list            # the checks, their bounds and time limits
 python3 scripts/check-models.py --quick            # those limited to 15 minutes (about 1 hour)
 python3 scripts/check-models.py --only 'concurrentProtocol|serviceProgress'
-python3 scripts/check-models.py                    # all of them (several hours)
+python3 scripts/check-models.py                    # all of them (about 16 hours here, 7 in the three that do not finish)
 ```
 
 It needs a Java runtime and Apalache, installed without root as

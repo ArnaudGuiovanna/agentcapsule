@@ -123,6 +123,53 @@ witness, and Quint 0.33.1 then fails (`RangeError: Invalid string length`) or
 exits 0 without a result. The script never counts an exit without Quint's
 `[ok]` (and, for TLC, its completion line) as a pass.
 
+**Last run, 2026-11-17 and 18** (12 cores and 15 GB shared with other work,
+TLC with four workers; evidence kept locally under
+`quint/results/check-models-full-*`):
+
+| Result | Checks |
+|---|---|
+| As expected | 131 of 134: every correct configuration holds within its bounds, every witness schedule and broken configuration fails |
+| Counterexample in a correct configuration | none |
+| Bound not reached, no counterexample among the states explored (not a pass) | `restoreAuthorityTiny`: 245.7 million states to depth 20, 112 million queued, 2-hour limit. `concurrentProtocolLoadedDepth12`: 35.3 million states to depth 9 of 13, 31.9 million queued, 1-hour limit. `concurrentProtocolDepth8`: 56.8 million states, its last level reached with 39.6 million states still queued, stopped after 1 hour 56 minutes |
+
+- No invariant or temporal property fails in a correct configuration, and
+  every witness schedule and broken configuration fails as it must, each
+  witness of `concurrent_witness.qnt` and `restore_witness.qnt` at its last
+  step.
+- **P1.** Every execution of up to 7 steps from the initial state keeps
+  `checked` (28,878,324 states, 72 minutes). That graph is the one of
+  November 7: within 7 steps no reply exists and no closure commits, so
+  none of the actions ADR 007 and ADR 008 added is reached; nor from the
+  loaded and closing prefixes (1,836,022 and 1,716,076 states, unchanged).
+  Three more prefixes of `concurrent_focused.qnt`, each reachable by a run,
+  start where those actions do, and every 6-step continuation keeps
+  `checked`: a reply not yet sent (16,490,756 states: its deadline, its
+  death unsent or behind its fence, the loss of the request's delivery), the
+  reply delivered (6,990,594 states: its loss and redelivery), and a request
+  expiring with its delivery under way and a bystander stopped (16,211,600
+  states: the closure of its two parties only). The 12-step continuations
+  of the four-request prefix do not fit this machine: after an hour, 35.3
+  million states to depth 9 of 13, all keeping `safety`, 31.9 million
+  queued; nor do the 8-step executions from the initial state, stopped
+  after 1 hour 56 minutes with 56.8 million states explored and 39.6
+  million queued (they would not reach those actions either).
+- **P3.** `safety` holds in all 973,632 reachable states of
+  `serviceProgressSmall`, and so do `progress`, `observed` and
+  `deletionCompletes`; `successfulDelivery` holds on
+  `serviceProgressReliable` (45,120 states). The negative property and the
+  four broken or control configurations each yield a counterexample.
+- **P2.** `restoreAuthorityTiny` did not finish within two hours: 245.7
+  million distinct states to depth 20, all keeping `safety`, with 112
+  million still queued. Since D-05 its state space is beyond this machine;
+  the November 7 model, without the replica and the failover, completed.
+  The restore witnesses and simulations remain its checks.
+- **The other models.** The depth wrappers of `bounded.qnt` hold, among them
+  `messagingDepth10` (34,486,031 states) and `deliveryLargeDepth12`
+  (46,714,801 states), and so does every reachable state of `deliveryLarge`
+  (45,176,641 states); the liveness, induction and protocol-induction
+  checks pass, `protocolInductive.preserved` in 12 minutes.
+
 ## Models
 
 | Model | What it covers |

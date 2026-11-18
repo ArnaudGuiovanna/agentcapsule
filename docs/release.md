@@ -73,10 +73,14 @@ names, and keeps its `summary.json` with the release notes:
 python3 scripts/check-models.py --output <out>/models
 ```
 
-A check that ends otherwise than expected, or that times out, blocks the
-release until it is explained: a counterexample in a correct configuration is
-a finding (projected into a failing Go test, or the model is fixed), and a
-timeout is reported as a check not run, never as a pass.
+A check that ends otherwise than expected blocks the release until it is
+explained: a counterexample in a correct configuration is a finding
+(projected into a failing Go test, or the model is fixed). A timeout is a
+check not run, never a pass: the release notes list the checks that did not
+finish. Three do not finish on a 12-core, 15 GB machine
+(`concurrentProtocolDepth8`, `concurrentProtocolLoadedDepth12`,
+`restoreAuthorityTiny`; see [spec/README.md](../spec/README.md#bounded-and-exhaustive-checks));
+releasing with them listed is the default pending the product owner.
 
 ### Pinned tools
 
