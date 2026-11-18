@@ -401,25 +401,157 @@ standby host; S3 is its repository 2, with a read-only credential. It checks:
 The key authority and the restore authority must never go back in time, and
 must survive the primary. [ADR 005](adr/005-keys-outside-restored-domain.md)
 keeps a synchronous replica of both on the standby: every write of the
-worker's authorities returns only once the standby holds it on disk. Volume
-keys and the catalogue's signing secret reach the standby only wrapped to the
-operator's **unlock key**, which stays off both hosts.
+authorities returns only once the standby holds it on disk. Volume keys, the
+API's daily receipt keys and the catalogue's signing secret reach the
+standby only wrapped to the operator's **unlock key**, which stays off both
+hosts.
 
 Without the replica, the authorities are standalone: losing the primary loses
 every volume key, so every archive. Install the replica before any agent
 holds data that matters.
 
 `agentcapsule-authority` does every step. Build it like the worker, on the
-same release, and install it on both hosts.
+same release, and install it on both hosts. On each host, one process owns
+the authorities: the **authority service**, `agentcapsule-authority serve`
+([ADR 006](adr/006-authority-service.md)), as the account
+`agentcapsule-authority`. On the primary it serves the worker's socket and
+the API's, and holds the link to the standby; on the standby it holds the
+replica. While it runs, every other command that opens its directories refuses
+(`authority_in_use`): stop it first where a step says so. Run the commands
+that open the directories (`snapshot`, `init-replica`, `promote`,
+`agentcapsule-admin init-key-authority` and `init-restore-authority`) as its
+account, `runuser -u agentcapsule-authority -- …`: the directories belong to
+it, and the commands refuse files of another owner.
+
+### Install the authority service
+
+Files of [deploy/systemd](../deploy/systemd), the same on both hosts:
+
+| File | Install as | Role |
+| --- | --- | --- |
+| `agentcapsule-authority.service` | `/etc/systemd/system/` | The service, as `agentcapsule-authority`, `Restart=always` after 1 second, no core dump, no privilege; it writes only the authority directories and `/run/agentcapsule-authority` |
+| `agentcapsule-authority.sysusers` | `/usr/lib/sysusers.d/agentcapsule-authority.conf` | The account `agentcapsule-authority`, and the group `agentcapsule-authority-clients` for the API's socket |
+| `agentcapsule-authority.tmpfiles` | `/usr/lib/tmpfiles.d/agentcapsule-authority.conf` | `/run/agentcapsule-authority`, mode 2750: the sockets' directory |
+| `agentcapsule-authority-client.conf` | `/etc/systemd/system/agentcapsule-worker.service.d/authority.conf` and `/etc/systemd/system/agentcapsule-api.service.d/authority.conf` | The worker's and the API's units start after the service (`Wants=`, `After=`), and do not restart with it |
+
+**A new install**, on the primary, as root:
+1. Install `/opt/agentcapsule/agentcapsule-authority` and the files above,
+   then run `systemd-sysusers`, `systemd-tmpfiles --create` and
+   `systemctl daemon-reload`.
+2. **Initialize both authorities** as the service's account:
+   ```sh
+   install -d -o agentcapsule-authority -g agentcapsule-authority -m 0700 /var/lib/agentcapsule-key-authority /var/lib/agentcapsule-restore-authority
+   runuser -u agentcapsule-authority -- agentcapsule-admin init-key-authority -root /var/lib/agentcapsule-key-authority
+   runuser -u agentcapsule-authority -- agentcapsule-admin init-restore-authority -root /var/lib/agentcapsule-restore-authority \
+     -data-root /var/lib/agentcapsule/host -key-authority-root /var/lib/agentcapsule-key-authority -key-authority-id <keyauth_…>
+   ```
+   Each prints the identity to pin.
+3. **Configure** `/etc/agentcapsule/authority.json`, owned by root, not
+   writable by others, from
+   [primary.example.json](../runtime/authority/primary.example.json):
+   - `role` is `primary`;
+   - the two directories, with their identities;
+   - `worker_socket` and `api_socket` in `/run/agentcapsule-authority`;
+   - `api_uid` is the UID of the API's account (`id -u <account>`), not 0.
+     Add that account to the group `agentcapsule-authority-clients`, which
+     may open `api.sock`: the sysusers file's `m` line names it. Then run
+     `systemd-sysusers` again;
+   - `max_key_hold`: how long the worker may hold a key, for a boot or the
+     format of a volume. `2m` by default, from `30s` to `10m`;
+   - `authority_replica` once the replica is installed
+     ([below](#install-the-replica)); without it, the authorities are
+     standalone;
+   - `metrics_listen`: `127.0.0.1:9466`. Add the `agentcapsule-authority`
+     scrape job ([prometheus.yml](../deploy/prometheus/prometheus.yml)).
+4. **Start it**: `systemctl enable --now agentcapsule-authority`. It logs
+   `service_started` with its epoch and mode. Then give the worker its
+   `authority` section ([worker.md](worker.md)) and start it, and give the
+   API its flags ([docs/api](api/README.md#the-authority-service)):
+   ```sh
+   -authority-socket /run/agentcapsule-authority/api.sock \
+     -restore-authority-id <restoreauth_…> -key-authority-id <keyauth_…>
+   ```
+   In production the API refuses to start without them
+   (`authority_required_in_production`). Install the drop-in for both units.
+
+**An existing install**, where the worker opened the authorities itself:
+1. Install the new binaries, the files above, and run `systemd-sysusers`,
+   `systemd-tmpfiles --create` and `systemctl daemon-reload`.
+2. **Stop the worker**, and any archive or restore command.
+3. **Give both authority directories to the service's account**:
+   `chown -R agentcapsule-authority:agentcapsule-authority` on each, and on
+   the link's private key `authority-primary.key` (mode 0600) if the replica
+   is installed. The old worker can no longer open them: their owner is not
+   its account.
+4. **Write `/etc/agentcapsule/authority.json`** from the worker's sections:
+   `key_authority` and `restore_authority` become the two directories,
+   `authority_replica` moves unchanged. In `worker.json`, replace the three
+   sections with `authority`: the worker refuses them now
+   (`authority_service_required`).
+5. **Start the service.** With the replica, check
+   `agentcapsule_authority_replication_enabled 1` on port 9466, and that
+   `_acknowledged_sequence` follows `_committed_sequence`. Install the
+   worker's drop-in, start the worker, and add the scrape job.
+6. **The API.** Add its account to `agentcapsule-authority-clients`, give it
+   the three flags of a new install (step 4 above), install the drop-in for
+   its unit, and restart it. A new release of the API refuses to start
+   without them in production.
+
+On the standby, the replica's `authority-replica.json` becomes
+`/etc/agentcapsule/authority.json` with `"version": 2` and
+`"role": "replica"` ([replica.example.json](../runtime/authority/replica.example.json)),
+and runs under the same unit. The directory and the key already belong to
+`agentcapsule-authority`.
+
+**Rollback**, until the catalogue's version 4 (ADR 006, wave 5, which adds
+the access revocation records): stop both, give the directories back to
+root, restore the old `worker.json`, the old binaries, and the API's flags
+without the authority service. A catalogue of version 4 does not go back.
+
+**The service restarts** (an upgrade, a crash): for a few seconds no agent
+boots, platform calls fail with an error the guest retries, deliveries wait,
+and a restore pauses. Running VMs stay. The API keeps serving, but its
+readiness probe answers 503 (`authority_unavailable`) until the service
+answers again. Then restoring or deleting an agent waits up to
+`max_key_hold` before it starts. An API that starts while the service does
+not answer waits for it, and logs `authority_service_waiting` once. Upgrade
+the service before the worker and the API; on a release that adds a record
+to the stream, upgrade the standby's service first. Run `init-restore-authority` for a schema
+upgrade with the service stopped. `AgentCapsuleAuthorityServiceDown`
+(critical) fires when it does not answer for 2 minutes.
+
+**The upgrade to wave 5** (the access revocation records, ADR 006) adds a
+table and two statements to the stream. In this order:
+
+1. On the standby, install the new binary and restart
+   `agentcapsule-authority serve`. It adds the new tables to its replica
+   when it opens it, and changes nothing recorded.
+2. On the primary, stop the authority service, run
+   `agentcapsule-admin init-restore-authority` again as
+   `agentcapsule-authority` (it upgrades the catalogue to version 4 and
+   keeps the identity), install the new binary, and start the service. A
+   new service refuses an older catalogue
+   (`restore_authority_upgrade_required`).
+3. Then the worker and the API.
+
+A standby left on the previous release refuses the first access revocation
+record (`conflict` in `agentcapsule_authority_replica_refusals_total`), and
+that refusal stops the primary: no authority operation runs until the
+standby runs the new release
+(`AgentCapsuleAuthorityReplicationStopped`). The revocation that met the
+refusal took effect, and stays pending until the upgraded standby holds
+its record.
 
 ### Install the replica
 
-1. **On the primary, stop the worker** (and any archive or restore command).
-   The first snapshot must not run beside a worker that writes without the
-   replica.
+1. **On the primary, stop the authority service**:
+   `systemctl stop agentcapsule-authority`. The worker waits for it, and
+   keeps its VMs. The snapshot takes the directories' lock, and refuses
+   while the service runs (`authority_in_use`).
 2. **Upgrade the catalogue** to version 3, which adds the log: run
-   `agentcapsule-admin init-restore-authority` again, with the same flags as
-   at installation. It keeps the identity.
+   `agentcapsule-admin init-restore-authority` again as
+   `agentcapsule-authority`, with the same flags as at installation. It
+   keeps the identity.
 3. **Create the unlock key**, on a workstation if possible, or on the
    primary, then move it off:
    ```sh
@@ -429,41 +561,49 @@ same release, and install it on both hosts.
    that holds the backup passphrases ([below](#secrets-to-keep-off-the-hosts)),
    then delete it from the host (`shred -u`). Neither host keeps it.
 4. **Create the link's certificates**, one per host. Each names the two
-   authorities; use the identities pinned in the worker's configuration:
+   authorities; use the identities pinned in `authority.json`:
    ```sh
    agentcapsule-authority certificate -role primary \
      -restore-authority-id <restoreauth_…> -key-authority-id <keyauth_…> \
      -certificate /etc/agentcapsule/authority-primary.crt -key /etc/agentcapsule/authority-primary.key
    ```
-   Run it on the standby with `-role replica` and `authority-replica.*`. Once
-   the replica's account exists (step 6), give it its key file
-   (`chown agentcapsule-authority`, mode 0600). Copy each `.crt` file, never a
-   `.key`, to the other host. The certificates are pinned: replacing one means
+   Run it on the standby with `-role replica` and `authority-replica.*`. On
+   each host, give the key file to `agentcapsule-authority` (mode 0600).
+   Copy each `.crt` file, never a `.key`, to the other host. The certificates are pinned: replacing one means
    copying it again.
-5. **Take the snapshot** on the primary, outside both authorities:
+5. **Take the snapshot** on the primary, outside both authorities, the
+   service stopped:
    ```sh
-   agentcapsule-authority snapshot \
+   runuser -u agentcapsule-authority -- agentcapsule-authority snapshot \
      -key-authority-root <key_authority.root> -key-authority-id <keyauth_…> \
      -restore-authority-root <restore_authority.root> -restore-authority-id <restoreauth_…> \
-     -recipient <recipient> -out /root/authority-snapshot.sqlite
+     -recipient <recipient> -out /var/lib/agentcapsule-authority-snapshot/authority-snapshot.sqlite
    ```
-   This **arms** both authorities: from now on the worker refuses to start
+   Create that directory first, for the service's account:
+   `install -d -o agentcapsule-authority -g agentcapsule-authority -m 0700 /var/lib/agentcapsule-authority-snapshot`.
+   This **arms** both authorities: from now on the service refuses to start
    without `authority_replica`. The file holds the catalogue, the secret and
    every live key wrapped to the unlock key, and no secret in clear. It still
    lists agents, stores and revocations: copy it over SSH, then delete it.
-6. **On the standby, create the replica** as a dedicated account, for example
-   `agentcapsule-authority`, which owns only its directory:
+6. **On the standby, create the replica** as `agentcapsule-authority`, which
+   owns only its directory. Install the files of
+   [Install the authority service](#install-the-authority-service) first:
    ```sh
-   useradd --system --user-group --home-dir /var/lib/agentcapsule-authority-replica --shell /usr/sbin/nologin agentcapsule-authority
    install -d -o agentcapsule-authority -g agentcapsule-authority -m 0700 /var/lib/agentcapsule-authority-replica
    runuser -u agentcapsule-authority -- agentcapsule-authority init-replica \
      -root /var/lib/agentcapsule-authority-replica/replica -snapshot /tmp/authority-snapshot.sqlite
    ```
-7. **Configure and start the replica.** `/etc/agentcapsule/authority-replica.json`,
-   owned by root, not writable by others:
+   Then delete the snapshot on both hosts: `shred -u /tmp/authority-snapshot.sqlite`.
+   It keeps a wrapped copy of every key it holds, so a key destroyed later
+   would come back from it with the unlock key
+   ([Deleting an agent](#deleting-an-agent-its-keys-and-its-archives-adr-018)).
+7. **Configure and start the replica.** `/etc/agentcapsule/authority.json`,
+   owned by root, not writable by others
+   ([replica.example.json](../runtime/authority/replica.example.json)):
    ```json
    {
-     "version": 1,
+     "version": 2,
+     "role": "replica",
      "root": "/var/lib/agentcapsule-authority-replica/replica",
      "restore_authority_id": "<restoreauth_…>",
      "key_authority_id": "<keyauth_…>",
@@ -474,20 +614,25 @@ same release, and install it on both hosts.
      "metrics_listen": "127.0.0.1:9466"
    }
    ```
-   Run `agentcapsule-authority serve -config /etc/agentcapsule/authority-replica.json`
-   under systemd, as `agentcapsule-authority`, with `Restart=always`. Let only
-   the primary's address reach the port. It logs JSON events
+   Run `systemctl enable --now agentcapsule-authority`: the shipped unit runs
+   `serve -config /etc/agentcapsule/authority.json` as
+   `agentcapsule-authority`. Add the primary's address to its
+   `IPAddressAllow=` in a drop-in, and let only that address reach the port.
+   A version 1 file without `role` is read as the replica's too. It logs JSON events
    (`replica_started`, `replica_refused` with its kind, `replica_stopped`) and
    serves `agentcapsule_authority_replica_applied_sequence`, `_epoch`,
    `_last_apply_timestamp_seconds` and `_refusals_total{kind}`.
-8. **On the primary, add `authority_replica`** to the worker's configuration
-   ([worker.md](worker.md#replica-of-the-authorities)), then start the
-   worker. Check `agentcapsule_authority_replication_enabled 1`, and that
-   `_acknowledged_sequence` follows `_committed_sequence`.
+8. **On the primary, add `authority_replica`** to `authority.json`
+   ([primary.example.json](../runtime/authority/primary.example.json)): the
+   standby's address, this host's certificate and key, the standby's
+   certificate, and `degraded_after` (`30s` by default, from `5s` to `10m`).
+   Add the standby's address to the unit's `IPAddressAllow=` in a drop-in.
+   Start the service. Check `agentcapsule_authority_replication_enabled 1`,
+   and that `_acknowledged_sequence` follows `_committed_sequence`.
 
-To **rebuild** the replica (a new standby, a lost disk): stop the worker,
-take a new snapshot with the same recipient, create the replica in a new
-directory, start both. The snapshot keeps the epoch. A snapshot with another
+To **rebuild** the replica (a new standby, a lost disk): stop the authority
+service, take a new snapshot with the same recipient, create the replica in
+a new directory, start both. The snapshot keeps the epoch. A snapshot with another
 recipient is refused: changing the unlock key is a later step.
 
 ### Secrets to keep off the hosts
@@ -498,7 +643,9 @@ failover needs each of them, and no host can give them back:
   not open, and every agent's memory is lost with the primary. With it and a
   copy of the replica, anyone can open them: keep it like the backup
   passphrases;
-- the API's receipt key and transit keys ([Prepare](#prepare));
+- the API's receipt key and transit keys ([Prepare](#prepare)). Keep a
+  retired transit key 4 weeks after it sealed its last content: an older
+  database backup still needs it ([rotation](api/README.md#private-instructions));
 - pgBackRest's cipher passphrases and the archive shipper's
   ([Volume archives off the host](#volume-archives-off-the-host-rec-02)).
 
@@ -508,17 +655,19 @@ certificate and a new pin.
 ### Degraded mode
 
 When the standby does not answer for `degraded_after` (30 seconds by
-default, [worker.md](worker.md#degraded-mode)), the worker's authorities
-enter degraded mode, as ADR 005 (question 2) decides:
+default, [worker.md](worker.md#degraded-mode)), the authority service enters
+degraded mode, as ADR 005 (question 2) decides:
 
 - **What continues**, without the standby: deliveries (their outcome
   records, reruns included), boots (fence revisions), the start of a
-  revocation, and reads. These writes are on the primary only until the
-  standby returns.
+  revocation, the creation of a new day's receipt key
+  ([below](#the-daily-receipt-keys)), and reads. These writes are on the
+  primary only until the standby returns.
 - **What waits** for the standby: creating an agent (registration, new
   volume key), deleting one (seal, key destruction), restoring one
-  (reservation, declared losses, activation), and the completion of a
-  revocation. Each attempt fails at its deadline, and its job retries.
+  (reservation, declared losses, activation), the completion of a
+  revocation, and the destruction of an old receipt key. Each attempt fails
+  at its deadline, and its job retries.
 
 **What the operator sees.** `AgentCapsuleAuthorityDegraded` (critical)
 after a minute in degraded mode;
@@ -526,29 +675,116 @@ after a minute in degraded mode;
 its start, and `_lag_records` how many writes the standby lacks.
 `AgentCapsuleAuthorityOperationsRefused` (warning) when an operation gave up
 waiting: users then see agent creation, deletion or restores fail. The
-worker's job events report those retries with the reason `error`.
+worker's job events report those retries with the reason `error`. The API's
+readiness probe reports `"authority": "degraded"`, and stays ready.
 
 **What to do.** Bring the standby, or the link, back: check
 `agentcapsule-authority serve` on the standby
 ([Install the replica](#install-the-replica), step 7) and the network
-between the hosts. The worker resends the degraded writes first, then
-leaves degraded mode by itself; the alert clears. Nothing is to be replayed
-by hand. If the standby is lost for good, build a new replica
+between the hosts. The authority service resends the degraded writes first,
+then leaves degraded mode by itself; the alert clears. Nothing is to be
+replayed by hand. If the standby is lost for good, build a new replica
 ([Install the replica](#install-the-replica), "To rebuild"): the snapshot
-needs the worker stopped, which ends degraded mode too.
+needs the service stopped, which ends degraded mode too.
+
+**Revocations of access** continue too: a member removed, a token revoked
+takes effect at once on the primary. The API confirms a bearer token's
+revocation at once, and reports a standing grant's (a member, an
+assignment, a team, ...) as `pending` until the standby holds its record
+([api/README.md](api/README.md#revocations-pending-and-confirmed)). In the
+first `degraded_after` of an outage, before degraded mode begins,
+revocations answer 503 `authority_unavailable`: try again. They do so for
+the whole outage when a write that waits for the standby (an agent's
+creation or deletion) was committed on the primary just as the standby went
+away: nothing runs behind such a write until the standby holds it (ADR 006,
+wave 5, Not done).
 
 **If the primary is lost during degraded mode**, the outcomes recorded since
-its start exist nowhere else. The failover must announce that period as a
-time window, from the standby's last contact to the failover, and revoke
-every bearer token issued before it (ADR 005, item 14). A revocation started
-in that period was never confirmed, since its completion waited.
+its start exist nowhere else. The standby cannot know whether degraded mode
+ran: by definition it did not hear from the primary. It knows its **last
+contact**, the last request of the primary it answered: the replica writes
+that time on disk before it answers, and the primary reaches it every sixth
+of `degraded_after` (5 seconds by default) even when nothing is written. No
+degraded period can begin less than `degraded_after` after the last
+contact. So the promotion compares the two
+([Promote the replica](#promote-the-replica), step 5): when the last contact
+is older than `degraded_after` at the failover, it assumes a degraded period
+ran (ADR 005, item 14). It then revokes every bearer token issued before the
+failover, moves every delegation trust's `minimum_iat` to the failover, and
+the failover announces the window from the last contact to the failover. A
+revocation started in that period was never confirmed, since its completion
+waited. An access revocation still pending then must be made again: the
+announcement lists that window.
 
-**Do not restart the worker to clear it.** A worker that restarts cannot
-tell a standby that is down from one that was promoted (ADR 005, finding 2):
-it runs no authority operation at all, reads and deliveries included, until
-it reaches the standby again. `AgentCapsuleAuthorityReplicationStopped`
-(critical) fires after 5 minutes of such failures. It also fires when the
-replica refuses the worker, after a promotion for instance.
+An idle primary also learns at once, at its next heartbeat, that its standby
+went away: it enters degraded mode after `degraded_after` without an
+operation, and `AgentCapsuleAuthorityDegraded` fires.
+
+#### Pending revocations
+
+`agentcapsule_api_access_revocations_pending` counts the revocations the
+API reports as `pending`, and
+`agentcapsule_api_access_revocation_oldest_pending_seconds` gives how long
+the oldest has waited ([observability.md](observability.md)). In degraded
+mode they grow; once the standby catches up, the API confirms them within
+seconds and both fall to 0. Pending revocations long after degraded mode
+ended mean that the standby does not take their records: a standby of an
+older release, which refuses them (see the upgrade above). Each one took
+effect on the primary already; nothing is to be revoked again while the
+primary lives. `GET /v1/access-revocations/{id}` gives one revocation's
+state.
+
+**Do not restart the authority service to clear it.** A service that
+restarts cannot tell a standby that is down from one that was promoted
+(ADR 005, finding 2): it runs no authority operation at all, reads and
+deliveries included, until it reaches the standby again. Meanwhile the API's
+readiness probe reports `"authority": "waiting"`. The service tries to reach
+the standby as soon as it starts, without waiting for an operation.
+`AgentCapsuleAuthorityReplicationStopped` (critical) fires after 5 minutes
+of such failures. It also fires when the replica refuses the service, after
+a promotion for instance. Restarting the worker is harmless: degraded mode
+belongs to the service, and goes on.
+
+### The daily receipt keys
+
+The API encrypts each idempotency receipt, the secrets of the tokens it
+issues included, with the key of its day, UTC
+([api/README.md](api/README.md#the-daily-receipt-keys)). The authority
+service keeps these keys in the key authority, as it keeps volume keys:
+each reaches the standby wrapped to the unlock key, a snapshot carries
+them, and the promotion installs them. The service, every minute:
+- creates tomorrow's key a day ahead, while the standby answers;
+- creates today's if it is missing, and gives the API yesterday's, today's
+  and tomorrow's;
+- destroys each day's key at 01:00 UTC two days after its day began: 24
+  hours after the last receipt it can have encrypted expired, and an hour
+  for the clocks. A database backup then holds no token secret anyone can
+  read once that time has passed: at most 49 hours after it was taken.
+
+Nothing is to be done by hand. **In degraded mode**, tomorrow's key waits
+for the standby. If the standby is still away when the day comes, the
+service creates the day's key on the primary alone, and the API goes on
+(ADR 006, answer 4(b)). The destruction of an old key waits for the
+standby: the key then lives longer than its two days on the primary,
+`agentcapsule_authority_receipt_keys_overdue` counts it, and
+`AgentCapsuleReceiptKeyNotDestroyed` (warning) fires after an hour. If the
+primary is lost before the standby holds a key created alone, a replay of a
+request of that day answers 409 `idempotency_receipt_unreadable` after the
+failover: the request took effect, and does not run again. The bearer tokens
+issued in that period are revoked at the failover: a key is created on the
+primary alone only after `degraded_after` without the standby, so the
+promotion finds a last contact older than that, and revokes every bearer
+token issued before the failover ([Degraded mode](#degraded-mode)).
+
+`AgentCapsuleReceiptKeyMissing` (critical) fires when the service has held
+no usable key of the day for 5 minutes: the API then refuses every request
+that takes an `Idempotency-Key`, with 503 `authority_unavailable`. It happens when a day starts
+while a restarted service waits for its standby (it creates nothing then),
+and tomorrow's key was not created ahead. Bring the standby back, as for
+`AgentCapsuleAuthorityReplicationStopped`. `AgentCapsuleNextReceiptKeyMissing`
+(warning) fires when tomorrow's key has been missing for an hour: the
+standby has been away that long, and the next day's key will be created on
+the primary alone if it does not return by midnight UTC.
 
 ### Promote the replica
 
@@ -568,59 +804,93 @@ the standby, as root. Follow this order.
 2. **Stop the replica's listener**, and keep it stopped:
    `systemctl disable --now` its unit. `serve` also stops by itself once its
    replica is promoted, and refuses to start again (`replica_promoted`).
-3. **Give the replica's directory to root**, the worker's account:
-   `chown -R root:root /var/lib/agentcapsule-authority-replica`. The
-   promotion writes the volume keys in clear into the new authorities. They
-   belong to the worker's account, never to the replica's.
-4. **Fetch the unlock key** from the safe into a file only root can read
-   (mode 0600).
-5. **Promote**, into the directories the worker will use on this host:
+3. **Fetch the unlock key** from the safe into a file owned by
+   `agentcapsule-authority`, mode 0600, for example
+   `/var/lib/agentcapsule-authority-replica/unlock.key`.
+4. **Prepare the target directories**, empty, owned by
+   `agentcapsule-authority`: `install -d -o agentcapsule-authority -g
+   agentcapsule-authority -m 0700` on their parent if it is not writable by
+   that account. The promotion writes the volume keys in clear into the new
+   authorities, which belong to the service's account, as on the primary.
+5. **Promote**, into the directories the service will own on this host, as
+   `agentcapsule-authority`:
    ```sh
-   agentcapsule-authority promote \
+   runuser -u agentcapsule-authority -- agentcapsule-authority promote \
      -replica-root /var/lib/agentcapsule-authority-replica/replica \
      -key-authority-root /var/lib/agentcapsule-key-authority -key-authority-id <keyauth_…> \
      -restore-authority-root /var/lib/agentcapsule-restore-authority -restore-authority-id <restoreauth_…> \
-     -unlock-key-file /root/agentcapsule-unlock.key
+     -unlock-key-file /var/lib/agentcapsule-authority-replica/unlock.key
    ```
+   Add `-degraded-after <duration>` if the old primary's
+   `authority_replica.degraded_after` was not the default 30 seconds.
    It checks both identities against the replica and that every wrapped
    secret opens, before it writes anything. Then it marks the replica
    promoted: from then on the replica refuses every record. It writes both
    authorities, with the next epoch on disk before their first write, and
    deletes the replica's wrapped copies. It prints:
    ```json
-   {"restore_authority_id":"restoreauth_…","key_authority_id":"keyauth_…","epoch":2,"previous_epoch":1,"sequence":4182}
+   {"restore_authority_id":"restoreauth_…","key_authority_id":"keyauth_…","epoch":2,"previous_epoch":1,"sequence":4182,
+    "announcement":{"failover":"2026-11-16T10:12:40.512Z","last_contact":"2026-11-16T10:02:03.120Z","degraded":true,
+    "window":{"from":"2026-11-16T10:02:03.120Z","to":"2026-11-16T10:12:40.512Z"},"blanket_revocation_id":"arv_…"}}
    ```
    `epoch` is the new primary's. `sequence` is the last record the replica
    applied: every write the old primary acknowledged is at or before it.
-   Run the command again after any failure, **before starting the worker**:
+   `announcement` is what the failover announces
+   ([Degraded mode](#degraded-mode)). `last_contact` is the replica's last
+   contact with the old primary; absent when the old primary never reached
+   it. When it is older than `degraded_after` at the failover, `degraded` is
+   true: a degraded period may have run. The promoted authorities then hold
+   the **blanket revocation** (`blanket_revocation_id`): every bearer token
+   issued before `failover` (API tokens, service tokens, platform
+   credentials) is revoked, and every delegated token too, by moving each
+   delegation trust's `minimum_iat` past `failover`. The reconciliation
+   writes it into the database ([the procedure](#the-procedure), step 7).
+   `window` is the period to announce. After a disaster the promotion runs
+   minutes after the last contact: expect `degraded` to be true, unless the
+   standby heard from the primary less than `degraded_after` before you
+   promote.
+   Run the command again after any failure, **before starting the
+   service in the primary role**:
    it completes an interrupted promotion, or prints the same result. Until it
    succeeds, the replica's directory still holds wrapped copies of the keys.
    A key that a worker destroyed meanwhile is not published again. Its
    errors:
    - `unlock_key_file_must_be_private`: the file must be a regular file of
-     mode 0600, owned by root;
+     mode 0600, owned by `agentcapsule-authority`;
    - `unlock_key_does_not_open_replica`: another unlock key. Nothing was
      written;
    - `replica_identity_mismatch`: these identities are not the replica's;
-   - `replica_unavailable`: the directory is missing, or not owned by root
-     (step 3);
+   - `replica_unavailable`: the directory is missing, or not owned by
+     `agentcapsule-authority`;
    - `old_primary_still_replicating`: a record reached the replica during
      the promotion. The old primary still runs: go back to step 1;
    - `promoted_authority_conflict`: a target directory holds other
-     authorities.
+     authorities;
+   - `authority_in_use`: another process holds a directory: the replica's
+     service still runs (step 2), or another command. Nothing was written.
 
-   Then delete the key file: `shred -u /root/agentcapsule-unlock.key`.
-6. **Start the worker**, once the database runs here
-   ([the procedure](#the-procedure), step 11). Its configuration names the
-   promoted directories with the same identities, **without
-   `authority_replica`**. The authorities run alone: no standby exists, so
-   nothing can set them back, and every write proceeds, seals, new keys and
-   key destruction included. A fence receipt carries the epoch that signed
-   it: nothing the old primary signed binds here, and every boot and
-   restore scans under the new epoch. Until step 7, losing this host loses
-   both authorities.
-   With `authority_replica`, the worker refuses to start
-   (`authority_replica_not_armed`) until step 7 arms the authorities.
+   Then delete the key file: `shred -u` it.
+6. **Switch the service to the primary role** and start it: write
+   `/etc/agentcapsule/authority.json` from
+   [primary.example.json](../runtime/authority/primary.example.json), with
+   the promoted directories and the same identities, **without
+   `authority_replica`**, then `systemctl enable --now agentcapsule-authority`.
+   The authorities run alone: no standby exists, so nothing can set them
+   back, and every write proceeds, seals, new keys and key destruction
+   included. A fence receipt carries the epoch that signed it: nothing the
+   old primary signed binds here, and every boot and restore scans under the
+   new epoch. Until step 7, losing this host loses both authorities. With
+   `authority_replica`, the service refuses to start
+   (`authority_replica_not_armed`) until step 7 arms the authorities. After a
+   restart, the service delays the first reservations and key destructions
+   by `max_key_hold`. The daily receipt keys came with the promotion: a
+   receipt the promoted database holds is replayed as before, except one
+   whose key the old primary created alone in degraded mode
+   ([The daily receipt keys](#the-daily-receipt-keys)). The service goes on
+   creating and destroying them. Once the database runs here, reconcile it
+   with the promoted authorities, then start the API with the same
+   identities; then restore the lost host's agents and start the worker
+   ([the procedure](#the-procedure), steps 7, 8, 13 and 14).
 7. **Seed a new standby** as soon as possible: a new host, or the old one
    once **wiped**. The old host's authority directories hold the old epoch,
    and keys destroyed since the failover: delete them before the host serves
@@ -632,35 +902,111 @@ the standby, as root. Follow this order.
      one;
    - new certificates for both sides (step 4 there): this host now takes
      the `primary` role;
-   - the worker stops for the snapshot (step 1 there), as for the first
-     one, then restarts with `authority_replica`.
+   - the authority service stops for the snapshot (step 1 there), as for
+     the first one, then restarts with `authority_replica`.
 
    The snapshot keeps the new epoch. The new standby refuses the old
    primary's records (`older_epoch`), and the pins refuse its certificate.
 
-### What is not built yet
+### Reconcile the database
 
-- **The promotion after a degraded period** (ADR 005, item 14): announcing
-  the window and revoking the bearer tokens issued before the failover. Until
-  it is built, the operator announces that window by hand
-  ([Degraded mode](#degraded-mode)), and the bearer tokens issued before the
-  failover are not revoked.
-- **Revocations of access** in the authority, and their replay into
-  PostgreSQL after a promotion.
-- **The daily receipt key** of ADR 005's decision.
-- **An authority service** owning both directories, serving the worker and
-  the API over a local socket. Today each worker process opens the
-  authorities and holds its own link.
+The promoted database is older than the promoted authorities by its loss
+window: a member removed, a token revoked, an agent deleted or restored in
+the last minutes before the disaster is in the authorities and not in the
+database. `agentcapsule-admin reconcile` brings the database up to the
+authorities ([ADR 006](adr/006-authority-service.md), wave 7). The API
+refuses to start until it has run for the authorities' epoch
+(`authority_not_reconciled`), and its readiness probe answers 503
+`authority_not_reconciled`. Run it as the API's account, with the API's
+database and its three authority flags:
+
+```sh
+runuser -u <the API's account> -- env AGENTCAPSULE_DATABASE_URL=<the API's> agentcapsule-admin reconcile \
+  -authority-socket /run/agentcapsule-authority/api.sock \
+  -restore-authority-id <restoreauth_…> -key-authority-id <keyauth_…>
+```
+
+It:
+1. writes into the authorities each access revocation the database holds
+   and they lack, and each revocation subject (`agent/…`, `request/…`,
+   `event/…`): the WAL shipped them, the old primary's authorities lost
+   them;
+2. replays into the database each access revocation record it lacks, with
+   its effect, in the order they were recorded. A record the database holds
+   is not replayed: its row committed with the revocation, so a grant made
+   after it is never undone. A rotated LLM provider whose new credential the
+   database lost is disabled: its administrator creates it again. A
+   rotated delegation trust whose new keys it lost is revoked: run
+   `configure-delegation -action rotate` again;
+3. copies the authorities' revocation subjects into
+   `revocation_catalogue`;
+4. resumes the deletion of each agent whose store the authorities sealed,
+   or whose `agent/` subject they hold: the deletion was requested before
+   the disaster;
+5. reports each store whose registration or incarnation differs;
+6. records that it reconciled the epoch.
+
+It prints one JSON object:
+
+```json
+{"epoch":2,"restore_authority_id":"restoreauth_…",
+ "announcement":{"from":"2026-11-16T10:02:03.12Z","to":"2026-11-16T10:12:40.512Z","blanket_revocation_id":"arv_…"},
+ "records_replayed":3,"records_kept":0,"subjects_kept":0,"subjects_copied":1,
+ "deletions_resumed":["agt_…"],"deletions_not_resumed":[],
+ "divergent_stores":[{"store":"agt_…","reason":"incarnation","authority_incarnation":2,"database_incarnation":1}],
+ "reconciled_at":"…"}
+```
+
+- `announcement` is there when the promotion assumed a degraded period:
+  announce its window, and issue new bearer tokens (below).
+- `deletions_not_resumed`: an agent the database does not know
+  (`unknown_agent`: created and deleted in the window), or in a phase no
+  deletion starts from (`phase`). Nothing serves it.
+- `divergent_stores`: `incarnation`, the agent was restored in the window,
+  and its restore on this host starts again from the authorities' state;
+  `not_enrolled`, the agent was created in the window and the database
+  lost it; `not_registered`, the database enrolled a store the authorities
+  never registered; `volume`, their volumes differ. A restore of the lost
+  host's agents ([the procedure](#the-procedure), step 13) refuses such an
+  agent (`authority`): it stays out of service. The report is kept in
+  `authority_reconciliations`.
+
+Every step can be run again: a later run replays nothing more, and prints
+the same report. Run it again after any failure: `authority_unavailable_try_again`
+and `reconcile_failed_try_again` mean exactly that; `reconcile_conflict_try_again`
+that the authorities changed epoch during the run; `reconcile_record_invalid`
+that an authority holds a record this release cannot replay. Errors of the
+authority flags are those of the API (`authority_identity_mismatch`, …).
+
+**After a degraded period** (the promotion printed `"degraded": true`),
+every bearer token issued before the failover is revoked, the platform
+operator's credential included:
+- issue a new platform credential: `agentcapsule-admin bootstrap-platform`
+  with the same receipt key file and a new token file
+  ([bootstrap.md](bootstrap.md#2-create-the-platform-operators-credential));
+- organizations issue new service tokens, and their identity providers new
+  delegated tokens: those issued before the failover are refused;
+- announce the window: outcomes confirmed in it may be lost, and the
+  revocations still pending in it must be made again
+  ([Pending revocations](#pending-revocations)).
+
+A database restored in place, on the same host, from an older backup is
+behind the authorities in the same way, with the same epoch: run
+`reconcile` before starting the API again. The API cannot tell such a
+restore apart, and does not refuse to start.
 
 ## Failover (REC-03)
 
 When the primary host is lost, the standby takes over: first the database,
 then the API, then the agents and the address clients use. ADR 004 sets the
 objectives: the service answers on the standby within an hour of the
-decision, and the database loses at most 15 minutes. Today the database, the
-API and the authorities can fail over; the authorities' promotion is tested
-in Go, not yet between two hosts. The agents have not been restored on a
-standby yet: that needs a run under KVM.
+decision, and the database loses at most 15 minutes. The database, the API
+and the authorities fail over; the authorities' promotion is tested in Go and
+by `verify-failover.py` on one machine, not yet between two hosts. The
+standby takes the lost host's agents over and restores each from its newest
+archive ([ADR 020](adr/020-restoring-a-lost-hosts-agents.md)): tested with a
+fake host and the real stores, and on KVM on 2026-11-17 with a second worker
+host on the same machine, not yet between two hosts.
 
 ### Who decides
 
@@ -682,20 +1028,35 @@ This must be ready before any disaster, so that the failover takes minutes:
   ([the standby](#the-standby-rec-03)), with its alerts.
 - **The same release** of `agentcapsule-api` and `agentcapsule-admin` as on
   the primary, installed on the standby and not started. The same for
-  `agentcapsule-worker`, with its configuration for the standby: the
-  directories the authorities will be promoted into, the same identities,
-  and no `authority_replica` ([Promote the replica](#promote-the-replica)).
+  `agentcapsule-worker`, with its configuration for the standby: the same
+  `authority` section, and a `host_id`, a runtime root, a provisioning UID
+  range and an archive root of its own. Prepare the primary role's
+  `authority.json` for the standby's service too: the directories the
+  authorities will be promoted into, the same identities, and no
+  `authority_replica` ([Promote the replica](#promote-the-replica)).
+- **The agents' harness packages.** The standby's worker boots each agent's
+  release from its own cache. Copy the primary's harness cache (the
+  registry's `cache`, `<runtime root>/releases` by default) to the standby's
+  whenever a release is imported: the worker checks each image against its
+  digest before it boots it. The platform's built-in harness needs nothing.
+  The worker service also fetches again, from its registry and by digest, a
+  package that an agent of its host pins and its cache lacks
+  ([registry.md](registry.md#refilling-the-cache)); the copy spares the wait
+  and a registry outage.
+- **Fetching archives**: rclone, the shipper and the standby's
+  `rclone.conf` ([Install on the standby](#install-on-the-standby), step 2).
 - **The new primary's repository**: the S3 path (`/agentcapsule-2`), a
   credential that can write there, and a new passphrase. Prepare them in
   advance, and keep them off the standby until the promotion.
 - **The API's configuration and keys.** The operator copies them at
   installation, and again at each rotation, to a safe off both hosts:
   - the receipt key (`-receipt-key-file`). The installation is bound to it,
-    and it also seals the LLM providers' credentials;
+    and it also seals the LLM providers' credentials. It no longer encrypts
+    new receipts: the daily keys of the authority service do, and the
+    promotion brings them ([The daily receipt keys](#the-daily-receipt-keys));
   - the transit keys (`-transit-key`): every one still needed;
-  - the delegated-identity trust file (`-delegated-identity-file`). It
-    holds public keys only;
-  - the TLS certificate and key, when the API listens beyond loopback;
+  - the TLS certificate and key (`-tls-cert`, `-tls-key`): the API serves
+    HTTPS only;
   - the API's flags and environment, except the database's address.
 
   They must be the same bytes. The API refuses another receipt key
@@ -711,10 +1072,15 @@ these files by hand, out of band.
 
 ### The procedure
 
-On the standby host, as root unless said otherwise. Follow this order.
+On the standby host, as root unless said otherwise. Follow this order. Each
+step gives its time: measured on one machine where it says so, estimated
+otherwise ([ADR 020](adr/020-restoring-a-lost-hosts-agents.md#the-procedure-and-its-time)).
+Steps 1 to 10 are the RTO: about 20 to 25 minutes. The agents come back after,
+one by one (step 13).
 
-1. **Decide**, and write down the time.
-2. **Fence the old primary.** It must accept no more writes, and reach
+1. **Decide**, and write down the time. Fetch the unlock key and the API's
+   keys from the safe. *About 10 minutes, estimated.*
+2. **Fence the old primary** (*2 to 5 minutes, estimated*). It must accept no more writes, and reach
    neither store:
    - power it off through the provider, and check that the provider reports
      it stopped. Cutting it off the network is not enough: the old primary
@@ -728,8 +1094,11 @@ On the standby host, as root unless said otherwise. Follow this order.
    - revoke its S3 credentials at the provider: pgBackRest's and the archive
      shipper's.
 3. **Promote the authorities**: [Promote the replica](#promote-the-replica),
-   steps 2 to 5. They need neither the database nor the API.
-4. **Promote** the standby's PostgreSQL, as `postgres`:
+   steps 2 to 6: the promotion, then the authority service in the primary
+   role. They need neither the database nor the API. The API needs the
+   service: it does not start before it answers. *Under a minute.*
+4. **Promote** the standby's PostgreSQL, as `postgres` (*0.5 s measured;
+   with step 5, 1 to 2 minutes on real hosts*):
    ```sh
    pg_ctlcluster 18 main promote
    psql -Atc 'SELECT pg_is_in_recovery(), pg_last_xact_replay_timestamp()'
@@ -738,41 +1107,100 @@ On the standby host, as root unless said otherwise. Follow this order.
    there ([below](#announce-the-databases-loss)).
 5. **Give it a repository of its own**: [Promote](#promote), step 3, up to
    `pgbackrest check`. The checkpoint and the full backup are not needed to
-   serve: take them right after step 8. Disable
+   serve: take them right after step 9. Disable
    `agentcapsule-standby-metrics.timer`.
 6. **Install the API's configuration and keys** from the safe, with the modes
    the API requires: the directory and the key files readable by the API's
-   account only (0700 and 0600), the trust file writable by its owner only.
+   account only (0700 and 0600). The organizations' identity trusts are in
+   PostgreSQL: the promoted database brings them.
    Set `AGENTCAPSULE_DATABASE_URL` to the standby's own PostgreSQL.
-7. **Start the API** with the same flags as on the primary
-   ([docs/api](api/README.md)). It checks the schema and the keys before it
-   listens.
-8. **Check it** on the standby:
+7. **Reconcile the database** with the promoted authorities:
+   [Reconcile the database](#reconcile-the-database). It replays the access
+   revocations the database lost, the blanket revocation of bearer tokens
+   when the promotion assumed a degraded period, the revocation subjects
+   and the deletions, and reports the stores that differ. Until it has run,
+   the API refuses to start (`authority_not_reconciled`). *Under a second
+   measured; a minute typed.*
+8. **Start the API** with the same flags as on the primary
+   ([docs/api](api/README.md)): the same authority socket and identities,
+   except `-host-id`: the standby's worker `host_id`, where new agents go. On
+   the lost host's, reservations fail with 503. Before it listens, it checks
+   that the authority service holds those identities, then the schema, the
+   keys, and that step 7 reconciled the authorities' epoch. *Steps 6 to 9:
+   0.1 s measured; 1 to 2 minutes typed.*
+9. **Check it** on the standby:
    ```sh
-   curl -fsS http://127.0.0.1:8080/v1/health/ready
+   curl -fsS --cacert <the CA of the API's certificate> \
+     --resolve api.example.net:8443:127.0.0.1 https://api.example.net:8443/v1/health/ready
    ```
-   Then make an authenticated read and an authenticated write with the
-   platform operator's token. List the organizations
+   It answers `{"status":"ready","authority":"standalone"}`: the promoted
+   authorities run alone until a new standby is seeded. Then make an
+   authenticated read and an authenticated write with the platform
+   operator's token. List the organizations
    (`GET /v1/organizations?limit=1`). Create one named for the check
    (`POST /v1/organizations`, with an `Idempotency-Key`). An organization
    cannot be deleted, so disable it after
    (`POST /v1/organizations/{id}/disable`). If tenants sign in with a
-   delegated identity, have one read `GET /v1/organizations/current`.
-9. **Move the address** that clients use to the standby: DNS, a floating
+   delegated identity, have one read `GET /v1/organizations/current`. After a
+   degraded period the platform operator's token was revoked with every
+   bearer token issued before the failover: make these checks with the new
+   one ([Reconcile the database](#reconcile-the-database)), and tenants with
+   tokens issued after the failover.
+10. **Move the address** that clients use to the standby: DNS, a floating
    address or the load balancer. The RTO ends when clients reach the API
-   there.
-10. **Announce** the database's loss window
-    ([below](#announce-the-databases-loss)).
-11. **Start the worker** on the promoted authorities:
-    [Promote the replica](#promote-the-replica), step 6. Restoring the
-    agents from their archives on the standby
-    ([Restoring an agent](#restoring-an-agent-from-an-archive)) has not been
-    run under KVM yet.
-12. **Protect the new primary**: the checkpoint and the full backup of
-    [Promote](#promote), step 3, then its freshness timer. Build a new
+   there. *About 5 minutes, estimated.*
+11. **Announce** the database's loss window
+    ([below](#announce-the-databases-loss)), and the window of a degraded
+    period when step 7 printed one.
+12. **Take the lost host over** (*seconds*), with the `host_id` of each
+    worker's configuration:
+    ```sh
+    agentcapsule-admin take-over-host -lost-host <the lost host's host_id> -host <this host's host_id> \
+      -confirm <the lost host's host_id>
+    agentcapsule-admin configure-host -host-id <this host's host_id> -storage-mib <the lost host's limit>
+    ```
+    It is final: the lost host's worker gets no work again, and refuses to
+    start. It is an audited operator command: `-dry-run` checks it and
+    records nothing. It prints its outcome and the number of agents to
+    restore. The second command gives this host the storage that new agents
+    may reserve.
+13. **Restore the agents**, the maintenance worker stopped:
+    ```sh
+    /opt/agentcapsule/agentcapsule-worker -config /etc/agentcapsule/worker.json \
+      -restore-host <the lost host's host_id> \
+      -archive-root /var/lib/agentcapsule-archives \
+      -archive-fetch /opt/agentcapsule/agentcapsule-archive-ship.py
+    ```
+    Each agent of the lost host moves here and is restored from its newest
+    archive that a store holds: the standby's copy, or S3's
+    ([ADR 020](adr/020-restoring-a-lost-hosts-agents.md)). Its losses after
+    that archive are declared, and its lost invocations and agent-to-agent
+    events queued again. It prints a line per agent, then the totals. *About
+    5 seconds per agent, plus 15 seconds per GiB of volume from the standby's
+    disk, estimated; more from S3.* Read the report:
+    - `restored`: done.
+    - `failed`: run the same command again; it resumes. `archive_unavailable`:
+      no store holds a complete, valid copy of any of its archives. `state`
+      with an imported harness: copy its package into the cache
+      ([Prepare](#prepare)), then run again.
+    - `skipped`: nothing here can restore it. `no_archive`: never archived;
+      `provisioning`: `agentcapsule-admin abandon-provisioning -agent-id <id>
+      -confirm <id>` ends its reservation if it obtained no volume;
+      `deleting`: its deletion does not end yet. Each stays out of service
+      on the lost host.
+14. **Start the maintenance worker** on the promoted authorities, through
+    the authority service started at step 3: `systemctl enable --now
+    agentcapsule-worker`. The reruns start at once, and so do the deletions
+    the reconciliation resumed. *Seconds.*
+15. **Protect the new primary**: the checkpoint and the full backup of
+    [Promote](#promote), step 3, then its freshness timer, and the archive
+    shipper to stores of its own ([Promote](#promote), step 5). Build a new
     standby as soon as possible: its PostgreSQL ([the standby](#the-standby-rec-03))
     and the authorities' replica
     ([Promote the replica](#promote-the-replica), step 7).
+
+What the failover still leaves undone is in
+[ADR 020](adr/020-restoring-a-lost-hosts-agents.md#what-stays-undone).
 
 ### Announce the database's loss
 
@@ -801,12 +1229,16 @@ the callers ([ADR 003](adr/003-restore-rpo.md), option B).
 
 ### Not measured yet
 
-- **The agents**: restoring them on the standby needs a run under KVM. So
-  does the worker, with its promoted authorities and its own copies of the
-  receipt and transit keys.
+- **The agents**: their restore on another host runs with a fake host and
+  the real stores (2.6 s for a 64 MiB volume from S3); with real VMs it needs
+  a run under KVM (`TestProductWorkerRestoresAgentFromShippedArchiveOnAnotherHost`,
+  written). So does the worker, with its promoted authorities and its own
+  copies of the receipt and transit keys. The time per GiB of volume is an
+  estimate.
 - **The authorities' promotion between two hosts**: the Go tests run the
   replica, the promotion and the seeding of a new standby on one machine,
-  in one or two processes.
+  in one or two processes; `verify-failover.py` runs the replica and the
+  promotion with the shipped binaries, on one machine.
 - **Moving the address** that clients use.
 - **The network between real hosts**: the qualification below runs on one
   machine.
@@ -817,12 +1249,14 @@ the callers ([ADR 003](adr/003-restore-rpo.md), option B).
 
 ### Qualify the failover
 
-`scripts/verify-failover.py` runs this procedure for the database and the API
-on one machine. Containers and local processes stand for the hosts. The
-stores, the primary and the standby are those of `verify-backups.py`, with
-`archive_timeout` and `checkpoint_timeout` scaled down to 30 seconds. It
-builds the API and the admin tool from the sources (`--go`), needs no root,
-and runs in about 2.5 minutes:
+`scripts/verify-failover.py` runs this procedure for the database, the
+authorities and the API on one machine. Containers and local processes stand
+for the hosts. The stores, the primary and the standby are those of
+`verify-backups.py`, with `archive_timeout` and `checkpoint_timeout` scaled
+down to 30 seconds. It builds the API, the admin tool and
+`agentcapsule-authority` from the sources (`--go`), starts both APIs in
+production mode over HTTPS with a certificate from a CA of its own, each on
+its host's authority service, needs no root, and runs in about 3 minutes:
 
 ```sh
 python3 scripts/verify-failover.py --pg-bin <postgres-bin-dir> --pgbackrest <pgbackrest> \
@@ -831,69 +1265,112 @@ python3 scripts/verify-failover.py --pg-bin <postgres-bin-dir> --pgbackrest <pgb
 
 The run:
 1. **Installs the primary**: the schema, the receipt key and a platform token
-   (`bootstrap-platform`), a transit key, a tenant whose member signs in with
-   a delegated identity, base backups, and the API. A directory stands for
-   the operator's safe, where the API's keys and trust file are copied.
+   (`bootstrap-platform`), a transit key, the authority service with its
+   replica on the standby ([Install the replica](#install-the-replica): both
+   authorities, the unlock key, the link's certificates, the snapshot), a
+   tenant whose members sign in with a delegated identity, base backups, and
+   the API on the authority service. The API's readiness reports the service
+   `synchronous`. A directory stands for the operator's safe, where the
+   unlock key and the API's keys are kept. The identity trust is in
+   PostgreSQL, and reaches the standby with it.
 2. **A client writes** through the API: it creates an organization every 0.2
    seconds with the platform token, and records each ID it is given, and
    when.
 3. **The standby** is built from its own disk, and replays.
 4. **The disaster** comes one and a half `archive_timeout` after a segment
-   switch: halfway through a segment. The primary's PostgreSQL and API are
-   killed with SIGKILL, with any push in progress. Its data directory and the
-   WAL that pgBackRest had not pushed are deleted.
-5. **The failover**, steps 2 and 4 to 8 above, timed from the decision. The old
+   switch: halfway through a segment. Three seconds before it, in the
+   segment that never ships, the tenant's owner removes its second member:
+   the standby's replica holds the revocation's record before PostgreSQL
+   commits it. The primary's PostgreSQL, authority service and API are
+   killed with SIGKILL, with any push in progress. Its data directory, its
+   authorities and the WAL that pgBackRest had not pushed are deleted.
+5. **The failover**, steps 2 to 9 above, timed from the decision. The old
    primary's S3 credential is revoked in the store's configuration (SeaweedFS
    reloads it on SIGHUP), and its key is removed from the SFTP account. Then
-   the promotion, the new repository, the keys installed from the safe, the
-   API started, readiness, and the first authenticated read and write. The
-   read is made twice: with the platform token, and with a delegated identity
-   (a JWT signed by the client's Ed25519 key).
-6. **The checks.**
+   the authorities' promotion, with the unlock key from the safe, at epoch 2:
+   the standby heard from the primary seconds before, so it announces no
+   degraded period; the standby's authority service in the primary role; the
+   database's promotion, the new repository, the keys installed from the
+   safe. The API, started then, refuses (`authority_not_reconciled`), and the
+   promoted database still holds the removed member's membership.
+   `agentcapsule-admin reconcile` replays the revocation; then the API
+   starts on the promoted authorities with the same identities and the
+   standby's host ID, readiness (`"authority": "standalone"`), and the first
+   authenticated read and write. The read is made twice: with the platform
+   token, and with a delegated identity (a JWT signed by the client's Ed25519
+   key). The removed member's JWT gets 401.
+6. **The takeover**, step 12 above: `take-over-host` on the promoted
+   database, a dry run first, then `configure-host` for the standby. Without
+   `-confirm` it is refused. Repeated, it prints the same record,
+   `unchanged`; another successor is refused (`conflict`), and so is the
+   lost host as a successor (`host_lost`). The agents' restore (step 13)
+   needs KVM: it is not run here. The KVM campaign runs it, in process,
+   without this failover
+   (`TestProductWorkerRestoresAgentFromShippedArchiveOnAnotherHost`, passed
+   on 2026-11-17).
+7. **The checks.**
    - Every write acknowledged before the window is on the standby, and every
      missing one is inside it. The survivors are a prefix of the writes.
    - A lost ID reads 404, and its retry with the same key creates it again,
      under a new ID.
+   - A kept write, retried with the same key, replays its first answer: its
+     receipt names the daily receipt key of its day, which the authorities'
+     promotion brought ([The daily receipt keys](#the-daily-receipt-keys)).
    - After the fence, the old primary's credential gets 403 from S3, and SFTP
      refuses its key. The standby's credential still reads.
    - A checkpoint, then a full backup into the new repository.
-7. **No secret of the run is in the evidence**: the S3 credentials, the
+8. **No secret of the run is in the evidence**: the S3 credentials, the
    passphrases, the platform token, the receipt and transit keys, the
-   client's private key and its JWTs.
+   unlock key, the link's private keys, the client's private key and its
+   JWTs.
 
-Results of two runs on 2026-11-13, PostgreSQL 18.6 and pgBackRest 2.58:
+Results of two runs on 2026-11-16, PostgreSQL 18.6 and pgBackRest 2.58,
+with the reconciliation (ADR 006 wave 7):
 
 | | Run 1 | Run 2 |
 | --- | --- | --- |
-| **RTO**: from the decision to the first authenticated write | 1.60 s | 1.60 s |
-| fence, promote, own repository | 0.23, 0.53 and 0.74 s | 0.23, 0.53 and 0.74 s |
-| install the keys, start the API, ready, read, write | 0.00, 0.00, 0.05, 0.02 and 0.01 s | the same |
-| Acknowledged writes lost, of those made | 78 of 393 | 79 of 394 |
-| **RPO**: age of the oldest lost write at the disaster | 15.53 s | 15.78 s |
-| Window to announce: last replayed commit to the disaster | 15.73 s | 15.98 s |
-| Full backup into the new repository, after the RTO | 3.64 s | 4.04 s |
+| **RTO**: from the decision to the first authenticated write | 1.90 s | 1.74 s |
+| fence, promote the authorities, start their service | 0.28, 0.01 and 0.05 s | 0.23, 0.01 and 0.05 s |
+| promote the database, own repository | 0.53 and 0.74 s | 0.52 and 0.74 s |
+| install the keys; the API refused before the reconciliation; reconcile | 0.00, 0.07 and 0.06 s | 0.00, 0.03 and 0.03 s |
+| start the API, ready, read, write | 0.00, 0.06, 0.04 and 0.02 s | 0.00, 0.06, 0.02 and 0.01 s |
+| The member removed 3 s before the disaster: in the promoted database, after the reconciliation, its JWT | active, revoked, 401 | active, revoked, 401 |
+| The standby's last contact before the failover; degraded period announced | 3.3 s; no | 3.3 s; no |
+| Acknowledged writes lost, of those made | 79 of 393 | 77 of 393 |
+| **RPO**: age of the oldest lost write at the disaster | 15.77 s | 15.33 s |
+| Window to announce: last replayed commit to the disaster | 15.97 s | 15.53 s |
+| Full backup into the new repository, after the RTO | 4.49 s | 3.89 s |
+
+The runs before the reconciliation, on the same day, measured an RTO of
+2.12 and 1.74 s.
+
+No worker runs, so the authorities hold no agent: their promotion opens no
+volume key here, only the daily receipt keys. On a host with agents it unwraps each one, and takes
+longer. The runs of 2026-11-13, before the API needed the authority service,
+measured an RTO of 1.60 s without the authorities' steps.
 
 **How the numbers scale to production.** The loss follows `archive_timeout`.
-Halfway through a 30-second segment, each run lost about half of it: 15.5 to
-16 seconds. With 300 seconds, the same moment loses about 2.5 minutes. The
+Halfway through a 30-second segment, each run lost about half of it: 15 to
+15.5 seconds. With 300 seconds, the same moment loses about 2.5 minutes. The
 worst case, a disaster just before a segment closes or while it is pushed,
 loses `archive_timeout` plus the push: about 5 minutes, 6 with the standby's
 SFTP server silent. The RTO measured here does not depend on `archive_timeout`.
-It is the commands and the API's start, in seconds. On real hosts, the push
-to S3 and pgBackRest's check cross a network, the operator types the
-commands, and the steps above that are not measured add to it.
+It is the commands, the authorities' promotion and the API's start, in
+seconds. On real hosts, the push to S3 and pgBackRest's check cross a
+network, the operator types the commands, and the steps above that are not
+measured add to it.
 
 CI runs this qualification in the `backups` job, with PostgreSQL 16.
 
 ## Volume archives (REC-02)
 
-> **Not yet true after a disaster.** The keys that open these archives stay
-> in the key authority, on the primary host: nothing copies them yet. If the
-> host is lost, the archives on S3 and on the standby cannot be opened, and
-> the agents' memory is lost, not just its last 24 hours. The restore
-> authority's catalogue is lost too. This waits for D-05
-> ([ADR 005](adr/005-keys-outside-restored-domain.md)). A restore on the same
-> host, from a local archive, is not affected.
+> **After a disaster**, the keys that open these archives and the restore
+> authority's catalogue come from the authorities' replica on the standby
+> ([D-05](#the-authorities-replica-d-05)), once promoted. Without the
+> replica, they are lost with the primary, and so is every agent's memory, not
+> just its last 24 hours. The standby restores the lost host's agents from
+> the stores' copies ([ADR 020](adr/020-restoring-a-lost-hosts-agents.md),
+> [the procedure](#the-procedure), step 13).
 
 The maintenance worker archives each agent's encrypted volume about once a day,
 without being stopped. The volume RPO is 24 hours. Configure the `archives`
@@ -912,7 +1389,10 @@ section of the worker ([worker.md](worker.md#nightly-encrypted-archives)):
   published in one step: a crash leaves no partial archive.
 - **Where.** In the worker's archive root, on this host. The worker keeps the
   `keep` newest archives of each agent (7 by default) and never deletes an
-  agent's only archive.
+  agent's only archive. It applies retention after each capture of an agent;
+  `agentcapsule-worker -collect-garbage` applies it to every agent at once,
+  with the purge of deleted agents' archives
+  ([worker.md](worker.md#collecting-garbage-on-demand)).
 - **Records.** PostgreSQL records each capture (`volume_archives`): times,
   size, volume, no content. They decide which agents are due, and give the
   metric `agentcapsule_worker_volume_archive_oldest_seconds`.
@@ -925,8 +1405,8 @@ The selection, the records and retention are tested on PostgreSQL. The KVM test
 archived by the running maintenance loop while it delivers to another agent,
 then an overdue running agent stopped for its archive and woken by its next
 invocation. Each archive is opened with the restore authority (manifest, size,
-digest). This test is compiled and remains to be run under KVM. Restoring an
-agent from one of these archives is the next section.
+digest). It passed on KVM on 2026-11-13 (13 of 13 worker tests, guest v19).
+Restoring an agent from one of these archives is the next section.
 
 ## Restoring an agent from an archive
 
@@ -934,18 +1414,19 @@ The worker restores one agent, on its own host, from one of its archives
 (REC-02). The agent gets a **new incarnation** of the same volume, and every
 outcome the archive lacks is **declared lost**, as
 [ADR 003](adr/003-restore-rpo.md#model-revision-option-b) requires. This is the
-building block of a disaster restore. A restore onto another host needs the
-keys, secrets and revocations outside the restored domain
-([D-05](adr/005-keys-outside-restored-domain.md)): it is not possible yet.
+building block of a disaster restore: on the host that takes a lost host over,
+the same restore moves the agent there first
+([ADR 020](adr/020-restoring-a-lost-hosts-agents.md),
+[the procedure](#the-procedure), step 13).
 
 ### Run it
 
 The restore is a mode of the worker, like the archive on demand
-([worker.md](worker.md#restoring-an-agent)). It needs product provisioning, both
-authorities, and a restore authority catalogue at version 2: run
-`agentcapsule-admin init-restore-authority` again on an older one. Stop the
-maintenance worker first, so that it releases its listeners, and restart it
-after.
+([worker.md](worker.md#restoring-an-agent)). It needs product provisioning, the
+authority service, and a restore authority catalogue at version 2: run
+`agentcapsule-admin init-restore-authority` again on an older one, the service
+stopped. Stop the maintenance worker first, so that it releases its listeners,
+and restart it after. The authority service keeps running.
 
 ```sh
 /opt/agentcapsule/agentcapsule-worker \
@@ -982,12 +1463,18 @@ On success, the worker prints a receipt and exits:
 {"restore_id":"rst_…","agent_id":"…","archive_id":"arc_…","incarnation":2,"losses":2,"unmatched_losses":0,"reruns_queued":2,"reruns_skipped":0}
 ```
 
-`reruns_queued` and `reruns_skipped` count the lost invocations that run
-again and those that do not ([The losses](#the-losses)).
+`reruns_queued` and `reruns_skipped` count the lost invocations and
+agent-to-agent events that run again and those that do not
+([The losses](#the-losses)).
 
 On failure, it prints `restore_failed_<reason>` on standard error. The reasons
 are `archive`, `newer_archive`, `busy`, `authority`, `unsupported_harness`,
-`state` and `error`.
+`state` and `error`. `authority` is a refusal of the authorities. While they
+do not answer (the service restarts, or waits for the standby in degraded
+mode), the restore does not fail: it logs `restore_paused` with the reason
+`authority_unavailable` or `waits_for_replica`, waits (1 second, then twice as
+long each time, up to 30 seconds), and resumes from its last durable step.
+`SIGINT` or `SIGTERM` stops it; the same command resumes it later.
 
 ### What it does
 
@@ -1011,8 +1498,9 @@ The steps follow the restore model:
    Then it declares lost, for the new incarnation, each recorded outcome still
    missing, and only then publishes the activation in PostgreSQL.
 7. **Back in service.** The restricted boot is removed. One transaction copies
-   the declared losses into PostgreSQL, puts each lost invocation back in the
-   queue or skips it, and makes the volume `READY` again. The agent wakes on
+   the declared losses into PostgreSQL, puts each lost invocation and each
+   lost agent-to-agent event back in the queue or skips it, and makes the
+   volume `READY` again. The agent wakes on
    its next delivery, at the new incarnation: the first one is usually a
    rerun.
 
@@ -1041,14 +1529,18 @@ and, when the database still knows it, the delivery whose outcome it is: its
 mailbox, and its invocation for an owner instruction. The worker finds them by
 computing the outcome ID of each of the agent's mailboxes. A loss without a
 mailbox is work that the restored database lost too, within its own window.
-The rows are never changed or deleted.
+The rows are never changed or deleted. The restore authority keeps each
+outcome's event ID, the mailbox's, with the outcome (ADR 005 item 8, since
+ADR 006 wave 5): a loss names it even when the database lost the mailbox.
+The announcement after a failover (wave 7) will list them; the
+`volume_restore_losses` rows do not carry it yet.
 
 ### The lost invocations
 
 In the same transaction, each lost invocation runs again or is skipped
 (`invocation_reruns`, migration 0030). The rules are the defaults of
 [ADR 003](adr/003-restore-rpo.md#done-running-the-lost-invocations-again),
-which the product owner has not confirmed yet.
+which the product owner confirmed on November 16, 2026.
 - **A rerun is queued** for an invocation whose delivery PostgreSQL recorded,
   unless its requester canceled it. It goes back to the agent's queue under
   the same mailbox ID, at its place: the lost work runs first. It gets fresh
@@ -1071,14 +1563,83 @@ which the product owner has not confirmed yet.
 - **The authority** records the rerun when it is delivered: the outcome's
   status becomes `rerun_confirmed`.
 
-Agent-to-agent requests, replies and statuses that a restore lost are
-recorded with their mailbox, and are not delivered again.
+### The lost agent-to-agent events
+
+In the same transaction, each lost request, reply or status that PostgreSQL
+recorded as delivered is delivered again to the restored agent, or is skipped
+(`peer_redeliveries`, migration 0033). The rules are
+[ADR 008](adr/008-redelivering-lost-agent-requests.md)'s, with defaults
+pending the product owner.
+- **Only the restored agent runs again.** The event goes back to its queue
+  under the same mailbox ID, at its place, with fresh attempts. The other
+  agent's side was not lost.
+- **A request never reopens.** A request event is delivered again only while
+  the request is `PROCESSING`, with no closure under way and before its
+  deadline. The request goes back to `DELIVERING` and keeps its deadline; its
+  sender reads `DELIVERING`, then `PROCESSING` once the recipient has it
+  again. A request in a final state (`REPLIED`, `DECLINED`, `EXPIRED`,
+  `CANCELED`, `FAILED`) keeps it: its event is skipped with
+  `request_closed`.
+- **A reply or a status** is delivered again to the sender, with a fresh
+  7-day window. Its request keeps its final state. `sender_notified` is false
+  until it arrives again.
+- **Skipped**, with a reason: `agent_unavailable` (a party is being deleted),
+  `requester_revoked` (the person the request was sent for can no longer
+  invoke the sender), `content_purged` (the content is no longer kept). An
+  active request that is not delivered again fails at once, with the reason
+  `lost_in_restore`, and its sender gets the `FAILED` status.
+- **Content** waits, without a retention, while its redelivery is queued.
+- **Cancel.** The sender's owner cancels a request delivered again like any
+  active request (`POST /v1/agent-requests/{id}/cancel`).
+- **The API.** `GET /v1/agent-requests/{id}` gives `lost_at`. The sender's
+  status read and its A2A task follow the request's state.
+- **The authority** records the redelivery when it is delivered: the
+  outcome's status becomes `rerun_confirmed`.
+
+### Test a restore
+
+A restore takes the agent out of service. To learn that it would work, without
+it, run the restore test (OPR-5, [worker.md](worker.md#testing-a-restore)),
+beside the maintenance worker:
+
+```sh
+/opt/agentcapsule/agentcapsule-worker \
+  -config /etc/agentcapsule/worker.json \
+  -test-restore "$AGENT_ID" \
+  -archive-root /var/lib/agentcapsule-archives \
+  -scratch /var/lib/agentcapsule-restore-tests \
+  -archive-fetch /opt/agentcapsule/agentcapsule-archive-ship.py
+```
+
+It takes the archive a restore after the host's loss would take: the newest
+that PostgreSQL records for the agent's current volume ([ADR 020](adr/020-restoring-a-lost-hosts-agents.md#3-which-archive)).
+It checks what a restore checks before it stops anything: the manifest the
+restore authority signed, a store that is not sealed, the size and the
+SHA-256 digest, the agent's volume and its size. Then it copies the archive
+into its own directory under `-scratch` and checks that the key the key
+authority lends for the agent opens the copy's key slot: the key and the
+archive belong together. It unlocks no payload, mounts nothing and boots
+nothing, and changes no row, no authority record, no archive and no volume.
+It prints what it checked and removes its copy.
+
+Run it for an agent after its first nightly archive, after a change of the
+authorities (a promotion, a migration to the authority service), and from
+time to time on a few agents. With `-archive-fetch` and the archive removed
+from the archive root by retention, it tests the copy of a store instead:
+the standby's, or S3's. What it does not prove: that the guest's file system
+inside the volume is sound and that the harness boots and answers. Only a
+restore proves those, as the KVM test below does.
 
 ### Tests
 
 - PostgreSQL: the incarnation changes only through a restore, the steps of the
   operation, the atomic steps, the mapping of the losses
   (`internal/controlplane/volume_restores_test.go`).
+- PostgreSQL: the restore test checks the newest recorded archive, refuses
+  another key's container, altered bytes, a missing archive, and changes no
+  table, no authority record and no file of the archive or runtime roots
+  (`TestRestoreTestChecksTheNewestArchiveAndChangesNothing`, in process and
+  through the authority service).
 - The coordinator, with a fake host and a real guest protocol over a harness
   database: only the outcomes after the archive declared lost, a stop after
   each step and resumption, a copy cut half way, a failure after the
@@ -1088,13 +1649,35 @@ recorded with their mailbox, and are not delivered again.
   the filters, failures injected before and after the decisions, a crash
   during a rerun's delivery, a revoked requester, purged content, and cancel
   (`internal/controlplane/invocation_reruns_test.go`).
+- PostgreSQL: the redeliveries of lost agent-to-agent events: a request its
+  recipient lost, final requests that do not reopen, a reply and a status the
+  sender lost, both parties restored, a revoked requester, purged content, a
+  party being deleted, and cancel
+  (`internal/controlplane/peer_redeliveries_test.go`).
 - KVM: `TestProductWorkerRestoresAgentFromArchive` restores a real agent from
   an archive taken on demand, stopped twice and resumed. It checks the
   installed bytes, the losses and their invocations, the two invocations
   `lost` then run again to `completed` with `lost_at`, the authority's
   `rerun_confirmed`, the agent answering at the new incarnation, and the old
-  incarnation refused. It passed on KVM on November 15, 2026
-  (`scripts/verify-product-guest.py`, guest v20, 14 of 14 worker tests).
+  incarnation refused. It passed on KVM on November 15, 2026, and again on
+  November 17 (`scripts/verify-product-guest.py`, guest v26, 26 of 26 worker
+  tests).
+- KVM: `TestProductWorkerRestoresAgentToAgentExchange` restores two agents
+  of an organization after an A2A exchange: the recipient's answered request
+  is not delivered again, the sender's invocation runs again and its reply is
+  delivered again, and the authority records both reruns. It passed on KVM
+  on November 17, 2026.
+- On another host ([ADR 020](adr/020-restoring-a-lost-hosts-agents.md#tests)):
+  the takeover and the move in PostgreSQL
+  (`internal/controlplane/host_takeovers_test.go`); `-restore-host` with the
+  fake host (`internal/worker/host_restore_test.go`); a restore from the
+  stores' copies (`verify-archive-shipping.py --restore-from-copies`); and,
+  on KVM, passed on November 17, 2026 with a second worker host on the same
+  machine,
+  `TestProductWorkerRestoresAgentFromShippedArchiveOnAnotherHost`, which needs
+  rclone (`AGENTCAPSULE_KVM_RCLONE` or `PATH`) and the `nobody` account. It
+  runs the shipper of the sources under test, and rclone from its own copy in
+  `/var/tmp`, which `nobody` can reach.
 
 ## Volume archives off the host (REC-02)
 
@@ -1269,7 +1852,10 @@ The first run uploads every archive: until it ends, the 2-hour alert may fire.
 
 ### Fetch an archive back
 
-On the standby, or any host that takes over, as root:
+The worker does this itself: `-restore-host` for every agent of a lost host,
+and `-restore-agent … -archive-fetch` for one
+([worker.md](worker.md#restoring-a-lost-hosts-agents)). By hand, on the
+standby or any host that takes over, as root:
 1. **Choose the archive**: the agent's newest in `volume_archives`, in the
    restored database, that a store holds. To list the archives of a store:
    ```sh
@@ -1285,8 +1871,8 @@ On the standby, or any host that takes over, as root:
    copy is complete (manifest, size, SHA-256 digest), then renames it into the
    root: files 0600 and directories 0700, as the worker writes them.
 3. The restore authority authenticates the manifest when the archive is
-   opened. Installing the volume and declaring the loss is the restore
-   coordinator's job, still to do.
+   opened. The restore installs the volume and declares the loss
+   ([Restoring an agent](#restoring-an-agent-from-an-archive)).
 
 ### Qualify the shipping
 
@@ -1362,21 +1948,81 @@ It checks:
 The run takes about 7 minutes. It searches its evidence for every secret it
 generated, and finds none. Passed on 2026-11-13.
 
+With `--restore-from-copies --native-tools <dir>`, it also restores a lost
+host's agent from these stores' copies (`TestRestoreFromShippedCopies`, with
+a PostgreSQL of its own and a fake host, [ADR 020](adr/020-restoring-a-lost-hosts-agents.md)):
+the agent's two archives shipped with the host's configuration, the newest
+removed from the standby's copy, the host's archive root deleted; the
+standby takes the host over and restores the agent with its own
+configuration. The newest archive comes from S3, is verified against the
+restore authority, installed into a volume created on the new host, and only
+the outcome after it is declared lost; the older one comes from the
+standby's disk, unchanged. Its archives leave the stores again before the
+next stage.
+
+## Deleting an agent: its keys and its archives (ADR 018)
+
+Deleting an agent is final. There is no undo
+([ADR 018](adr/018-key-lifecycle-and-archive-deletion.md)). Stopping an agent
+is the reversible action.
+
+What goes, and when:
+
+| What | When |
+| --- | --- |
+| New work; its messages, results and files in the database | In the commit of the deletion request |
+| Its VM and boot credentials | Once every agent's store has fenced the deletion: the host stops the VM for good |
+| The seal of its store (restore authority) | Then. It never lifts: no restore, no archive and no boot of this store from then on |
+| Its volume key | Right after the seal, on the primary and the standby's replica in one write. In degraded mode the deletion waits for the standby |
+| Its volume | Right after the key |
+| Its archives on this host | Within an hour after the key ([worker.md](worker.md#nightly-encrypted-archives)) |
+| Its archives on S3 | 30 days after their upload, by age; a locked version up to a day more |
+| Its archives on the standby | 7 days after their upload, by age |
+| Its content in the database backups | Their retention: 4 weeks on S3, 2 on the standby |
+
+From the destruction of its key, **none of its archives opens anywhere**: an
+archive is the LUKS container, and its only key slot opens with that key. The
+copies that wait for their age on the stores are ciphertext that nothing can
+read. Until then they still open: `AgentCapsuleDeletionUnfinished` fires when
+a deletion has not finished 6 hours after its request
+([observability.md](observability.md#alerts)).
+
+A destroyed key comes back only from a copy kept outside the platform. Keep
+none:
+- **Turn off the provider's disk snapshots and backups** of both hosts. The
+  primary keeps the volume keys in clear on its disk, the standby wrapped to
+  the unlock key. A provider's copy of either disk would bring back every key
+  destroyed since, for the copy's retention.
+- **Never back up the authority directories** or the replica's, by any tool.
+  The backups of this page never include them.
+- **Delete the authority snapshot** on both hosts once the replica is created
+  ([Install the replica](#install-the-replica), step 6).
+- **Wipe the old primary** after a failover before it serves again
+  ([Promote the replica](#promote-the-replica), step 7).
+- **Keep the unlock key off both hosts**: with it, a copy of the replica opens.
+
+The platform does not scrub freed disk blocks, nor a guest's memory: these
+rules are about copies, not about forensic erasure.
+
 ## Still to do (ADR 004)
 
-1. **Lost requests between agents.** A restore queues the lost invocations
-   again and shows them as `lost` (above). The requests and messages between
-   agents that it lost stay recorded, without a rerun
-   ([ADR 003](adr/003-restore-rpo.md#what-remains)).
-2. **Restoring onto the standby.** A fetch of an archive is qualified
-   ([above](#fetch-an-archive-back)). Installing it there and restoring the
-   agent needs the authorities on the standby: their replica is built
-   ([D-05](#the-authorities-replica-d-05)); its promotion command is not.
+1. **Lost requests between agents, on KVM.** A restore delivers again the
+   agent-to-agent events it lost
+   ([above](#the-lost-agent-to-agent-events), ADR 008).
+   `TestProductWorkerRestoresAgentToAgentExchange` is written and not yet
+   run.
+2. **Restoring onto the standby.** Built: the takeover, the fetch from the
+   stores, the move and the restore of each agent
+   ([ADR 020](adr/020-restoring-a-lost-hosts-agents.md)). Not yet: its KVM
+   run, parallel restores, the harness packages imported on the standby, the
+   agents still provisioning or being deleted, and what ADR 006 waves 5 to 7
+   add ([ADR 020](adr/020-restoring-a-lost-hosts-agents.md#what-stays-undone)).
 3. **A failover exercise** that measures the RPO and the RTO of the whole
-   platform, on real hosts. The database and the API fail over on one
-   machine, with their configuration and keys
-   ([Qualify the failover](#qualify-the-failover)). The agents (D-05 and
-   KVM), the address clients use, and the network between real hosts are not
+   platform, on real hosts. The database, the authorities and the API fail
+   over on one machine, with their configuration and keys, and the standby
+   takes the lost host over ([Qualify the failover](#qualify-the-failover)).
+   The agents (KVM), the address clients use, and the network between real
+   hosts are not
    measured. The API's keys reach the standby by an operator's copy, a
    stand-in until D-05 is decided.
 4. **The standby's copy of the volume archives against the host.** The host's

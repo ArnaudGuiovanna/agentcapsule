@@ -7,7 +7,8 @@ scripts for node_exporter (TEXTFILE_SCRIPTS: base-backup freshness, volume
 archive shipping, the standby's replay), so that a renamed metric cannot
 leave an alert that never fires. For the scripts' metrics, every label the
 rules and tests match must be one the script declares, with one of its
-declared values. With --promtool (a promtool
+declared values. Every rule has a case in alerts_test.yml where it fires and
+one where it stays silent. With --promtool (a promtool
 executable) or --promtool-image (a Prometheus image pinned by digest, run
 with Docker): promtool check rules, then promtool test rules on
 alerts_test.yml.
@@ -61,6 +62,25 @@ def label_errors(declared):
     return errors
 
 
+def untested_rules(rules, tests):
+    """Rules without a promtool case where they fire and one where they stay silent, and cases of no rule."""
+    names = re.findall(r"^\s*- alert:\s*(\S+)", rules, re.M)
+    fires, silent = set(), set()
+    for case in re.split(r"^\s*- eval_time:", tests, flags=re.M)[1:]:
+        name = re.search(r"^\s*alertname:\s*(\S+)", case, re.M)
+        expected = re.search(r"^\s*exp_alerts:\s*(\S*)", case, re.M)
+        if name and expected:
+            (silent if expected.group(1) == "[]" else fires).add(name.group(1))
+    errors = []
+    for name in names:
+        if name not in fires:
+            errors.append(f"{name} has no promtool case where it fires")
+        if name not in silent:
+            errors.append(f"{name} has no promtool case where it stays silent")
+    errors += [f"{name} is tested but is not a rule" for name in sorted((fires | silent) - set(names))]
+    return errors
+
+
 def registered_metrics():
     """Metric names registered in Go code: string literals passed to Counter, Gauge or Histogram."""
     names = set()
@@ -97,7 +117,7 @@ def main():
     if unknown:
         print("metrics used by the alerts but registered nowhere:", ", ".join(unknown), file=sys.stderr)
         return 1
-    errors = label_errors(textfile)
+    errors = label_errors(textfile) + untested_rules((RULES / "alerts.yml").read_text(), (RULES / "alerts_test.yml").read_text())
     if errors:
         print("\n".join(errors), file=sys.stderr)
         return 1

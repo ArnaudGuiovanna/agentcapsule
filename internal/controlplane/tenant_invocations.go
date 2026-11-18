@@ -37,6 +37,9 @@ type Invocation struct {
 	// 003). It stays after the rerun: a completed invocation with LostAt was
 	// run again, and CompletedAt is the rerun's.
 	LostAt *time.Time `json:"lost_at,omitempty"`
+	// ReplayedAt is when the newest replay put this dead letter back in its
+	// agent's queue (ADR 017). It stays once the replay ends.
+	ReplayedAt *time.Time `json:"replayed_at,omitempty"`
 }
 
 // InvocationInput is the body of a new invocation. TTLSeconds bounds how long
@@ -120,7 +123,8 @@ const invocationSelect = `SELECT o.id,o.agent_id,o.status,
         ((o.status='SUCCEEDED' OR ` + lostCondition + `) AND i.result_payload_id IS NOT NULL),m.expires_at,i.close_reason,i.run_at,
         (i.run_at IS NOT NULL AND i.released_at IS NULL),
         array(SELECT f.id FROM attachments f WHERE f.operation_id=o.id ORDER BY f.position),i.result_due_at,
-        ` + lostCondition + `,loss.lost_at
+        ` + lostCondition + `,loss.lost_at,
+        (SELECT max(rp.replayed_at) FROM instruction_replays rp WHERE rp.operation_id=o.id)
     FROM platform_operations o JOIN owner_instructions i ON i.operation_id=o.id JOIN agents a ON a.id=o.agent_id
     LEFT JOIN agent_mailboxes m ON m.instruction_id=o.id ` + rerunJoins
 
@@ -130,7 +134,7 @@ func scanInvocation(row pgx.Row, administrative bool) (Invocation, error) {
 	var expires *time.Time
 	var waiting, lost bool
 	if err := row.Scan(&v.ID, &v.AgentID, &status, &v.ErrorCode, &v.RequestedBy, &v.CreatedAt, &v.CompletedAt, &v.ResultAvailable, &expires,
-		&v.CloseReason, &v.RunAt, &waiting, &v.Attachments, &v.ResultDueAt, &lost, &v.LostAt); err != nil {
+		&v.CloseReason, &v.RunAt, &waiting, &v.Attachments, &v.ResultDueAt, &lost, &v.LostAt, &v.ReplayedAt); err != nil {
 		return Invocation{}, err
 	}
 	if expires != nil {
@@ -143,8 +147,9 @@ func scanInvocation(row pgx.Row, administrative bool) (Invocation, error) {
 	return v, nil
 }
 
-// GetInvocation shows metadata to the requester, or to a role allowed to read
-// agent metadata. Neither path exposes content (D-02).
+// GetInvocation shows metadata to the requester while it still sees the agent,
+// or to a role allowed to read agent metadata. Neither path exposes content
+// (D-02).
 func (c *AgentCatalog) GetInvocation(ctx context.Context, p Principal, id string) (Invocation, error) {
 	if p.Kind != "tenant" || !validOrganizationText(id, 100) {
 		return Invocation{}, ErrNotFound
@@ -167,11 +172,17 @@ func (c *AgentCatalog) GetInvocation(ctx context.Context, p Principal, id string
 	if err != nil {
 		return Invocation{}, err
 	}
+	if !administrative {
+		if err = hideUnlessStillSeen(ctx, tx, p, current.Role, v.AgentID); err != nil {
+			return Invocation{}, err
+		}
+	}
 	return v, commit(ctx, tx)
 }
 
-// ListInvocations returns the newest first. A requester sees only their own;
-// an administrative reader sees every invocation of the agent.
+// ListInvocations returns the newest first. A requester sees only their own,
+// and only while it still sees the agent; an administrative reader sees every
+// invocation of the agent. An agent the caller cannot see is not found.
 func (c *AgentCatalog) ListInvocations(ctx context.Context, p Principal, agentID, after, state string, limit int) ([]Invocation, error) {
 	if p.Kind != "tenant" || !validOrganizationText(agentID, 100) || len(after) > 100 || limit < 1 || limit > 200 {
 		return nil, ErrInput
@@ -196,6 +207,11 @@ func (c *AgentCatalog) ListInvocations(ctx context.Context, p Principal, agentID
 	}
 	if !exists {
 		return nil, ErrNotFound
+	}
+	if !administrative {
+		if err = hideUnlessStillSeen(ctx, tx, p, current.Role, agentID); err != nil {
+			return nil, err
+		}
 	}
 	rows, err := tx.Query(ctx, invocationSelect+`WHERE a.tenant_id=$1 AND o.agent_id=$2 AND o.kind='instruction'
         AND ($3 OR o.requested_by_principal_id=$4)

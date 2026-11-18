@@ -112,18 +112,19 @@ func writeEveryKind(t *testing.T, keys *keyauthority.Files, c *Catalog, tag stri
 	if err = c.RecordOutcome(ctx, next, Outcome{ID: "kind-event-" + tag, Digest: sha256.Sum256([]byte("rerun"))}); err != nil {
 		t.Fatal("rerun", err)
 	}
-	if err = keys.Ensure(ctx, agent, destroyed); err == nil {
-		err = keys.Revoke(ctx, agent, destroyed)
-	}
-	if err != nil {
-		t.Fatal("key destruction", err)
-	}
-	sealed := Binding{Store: "kind-sealed-" + tag, Volume: "kind-sealed-volume-" + tag, Incarnation: 1}
+	// A deleted agent: its store sealed, then its key destroyed.
+	sealed := Binding{Store: agent, Volume: destroyed, Incarnation: 1}
 	if _, err = c.Register(ctx, sealed.Store, sealed.Volume); err == nil {
 		err = c.RecordRetiredSeal(ctx, sealed)
 	}
 	if err != nil {
 		t.Fatal("seal", err)
+	}
+	if err = keys.Ensure(ctx, agent, destroyed); err == nil {
+		err = keys.Revoke(ctx, agent, destroyed)
+	}
+	if err != nil {
+		t.Fatal("key destruction", err)
 	}
 	if status, _, err := c.OutcomeStatus(ctx, "kind-event-"+tag); err != nil || status != StatusRerunConfirmed {
 		t.Fatal("outcome status", status, err)
@@ -366,7 +367,7 @@ func TestOldPrimaryCannotResendAfterPromotion(t *testing.T) {
 func TestAcknowledgedWritesSurviveTheFailover(t *testing.T) {
 	p := replicated(t)
 	ctx := t.Context()
-	b, err := p.catalog.Register(ctx, "store-a", "volume-a")
+	b, err := p.catalog.Register(ctx, streamAgent, streamVolume)
 	if err != nil {
 		t.Fatal(err)
 	}

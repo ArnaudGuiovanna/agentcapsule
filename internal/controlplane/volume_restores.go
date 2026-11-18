@@ -52,14 +52,20 @@ type VolumeRestorePlan struct {
 	Enrollment    Enrollment
 	Placement     Placement
 	Device, Inode uint64
+	// RelocatedFrom is the lost host whose volume file Device and Inode
+	// still name, while the agent's relocation is pending (ADR 020): this
+	// host has yet to create the volume (RecordRelocatedVolume).
+	RelocatedFrom string
 }
 
 // RestoreLoss is a loss that a restore copied from the restore authority.
 // MailboxID is empty when the outcome matches no delivery this database knows:
 // it lost that work too. InvocationID is set for an owner instruction. Rerun
-// is the restore's decision for that invocation (RerunQueued, or RerunSkipped
-// with SkipReason), or empty when it made none: the invocation's delivery was
-// still open, it was canceled, or the authority had recorded its rerun.
+// is the restore's decision for that invocation, or for the redelivery of an
+// agent-to-agent event (RerunQueued, or RerunSkipped with SkipReason), or
+// empty when it made none: the delivery was still open or closed without
+// delivery, the invocation was canceled, or the authority had recorded its
+// rerun.
 type RestoreLoss struct {
 	OutcomeID, MailboxID, InvocationID string
 	Incarnation                        uint64
@@ -116,7 +122,9 @@ func restorePlan(ctx context.Context, tx pgx.Tx, restoreID, host string) (Volume
 		return plan, a, ErrStoreEnrollment
 	}
 	var device, inode string
-	if err = tx.QueryRow(ctx, "SELECT volume_device,volume_inode FROM store_enrollments WHERE agent_id=$1", r.AgentID).Scan(&device, &inode); err != nil {
+	if err = tx.QueryRow(ctx, `SELECT volume_device,volume_inode,coalesce((SELECT from_host_id FROM volume_relocations
+            WHERE agent_id=$1 AND recorded_at IS NULL ORDER BY relocated_at DESC LIMIT 1),'')
+        FROM store_enrollments WHERE agent_id=$1`, r.AgentID).Scan(&device, &inode, &plan.RelocatedFrom); err != nil {
 		return plan, a, err
 	}
 	if plan.Device, err = strconv.ParseUint(device, 16, 64); err != nil {
@@ -151,6 +159,10 @@ func (s *Store) OpenVolumeRestore(ctx context.Context, agentID string) (*VolumeR
 // yet: this restore then supersedes it, one incarnation further. Repeating it
 // with the same restore ID returns the recorded restore, whatever its step.
 // The worker reserves the same incarnation in the restore authority next.
+//
+// An agent whose host was lost, and taken over by host (TakeOverHost), moves
+// to host in the same transaction (relocateAgent, ADR 020), and its
+// relocation is pending until host records the volume file it creates.
 func (s *Store) BeginVolumeRestore(ctx context.Context, restoreID, agentID, host, archiveID string) (VolumeRestorePlan, error) {
 	var plan VolumeRestorePlan
 	if !ValidRestoreID(restoreID) || !archiveIDPattern.MatchString(archiveID) || agentID == "" || host == "" {
@@ -162,6 +174,12 @@ func (s *Store) BeginVolumeRestore(ctx context.Context, restoreID, agentID, host
 	}
 	defer rollback(tx)
 	a, _, err := placementLock(ctx, tx, agentID, host)
+	from := ""
+	if errors.Is(err, ErrPlacement) {
+		if from, err = takenOverBy(ctx, tx, agentID, host); err == nil {
+			a, _, err = placementLock(ctx, tx, agentID, from)
+		}
+	}
 	if err != nil {
 		return plan, err
 	}
@@ -178,6 +196,11 @@ func (s *Store) BeginVolumeRestore(ctx context.Context, restoreID, agentID, host
 	}
 	if a.Phase != "LIVE" {
 		return plan, ErrRestore
+	}
+	if from != "" {
+		if err = relocateAgent(ctx, tx, agentID, from, host); err != nil {
+			return plan, err
+		}
 	}
 	e, err := enrollment(ctx, tx, agentID, host)
 	if err != nil {
@@ -204,6 +227,12 @@ func (s *Store) BeginVolumeRestore(ctx context.Context, restoreID, agentID, host
 	if _, err = tx.Exec(ctx, `INSERT INTO volume_restores(restore_id,agent_id,host_id,volume_id,archive_id,from_incarnation,incarnation)
         VALUES($1,$2,$3,$4,$5,$6::bigint,$6::bigint+1)`, restoreID, agentID, host, e.VolumeID, archiveID, int64(e.Incarnation)); err != nil {
 		return plan, err
+	}
+	if from != "" {
+		if _, err = tx.Exec(ctx, `INSERT INTO volume_relocations(restore_id,agent_id,from_host_id,host_id,from_volume_device,from_volume_inode)
+            SELECT $1,$2,$3,$4,volume_device,volume_inode FROM store_enrollments WHERE agent_id=$2`, restoreID, agentID, from, host); err != nil {
+			return plan, err
+		}
 	}
 	if _, err = tx.Exec(ctx, `UPDATE store_enrollments SET stage='RESTORING',incarnation=incarnation+1 WHERE agent_id=$1`, agentID); err != nil {
 		return plan, err
@@ -307,15 +336,19 @@ func outcomeID(agentID, eventID string) (string, error) {
 // lost invocation (scheduleReruns), and puts the volume back in service:
 // READY at that incarnation. Each loss is mapped to the delivery whose
 // outcome it is, by computing the outcome ID of each of the agent's
-// mailboxes; an owner instruction's mailbox gives its invocation. Repeating
-// it after success returns the recorded losses and ignores declared: it
-// decides nothing again.
+// mailboxes; an owner instruction's mailbox gives its invocation. It also
+// decides the redelivery of each lost agent-to-agent event
+// (scheduleRedeliveries, ADR 008). Repeating it after success returns the
+// recorded losses and ignores declared: it decides nothing again.
 func (s *Store) CompleteVolumeRestore(ctx context.Context, restoreID, host string, declared []DeclaredLoss) ([]RestoreLoss, error) {
 	tx, err := s.begin(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer rollback(tx)
+	if err = lockRestorePeers(ctx, tx, restoreID, declared); err != nil {
+		return nil, err
+	}
 	plan, a, err := restorePlan(ctx, tx, restoreID, host)
 	if err != nil {
 		return nil, err
@@ -367,6 +400,9 @@ func (s *Store) CompleteVolumeRestore(ctx context.Context, restoreID, host strin
 	if err = scheduleReruns(ctx, tx, restoreID, a, recorded); err != nil {
 		return nil, err
 	}
+	if err = scheduleRedeliveries(ctx, tx, restoreID, recorded); err != nil {
+		return nil, err
+	}
 	if _, err = tx.Exec(ctx, "UPDATE store_enrollments SET stage='READY' WHERE agent_id=$1", r.AgentID); err != nil {
 		return nil, err
 	}
@@ -382,8 +418,9 @@ func (s *Store) CompleteVolumeRestore(ctx context.Context, restoreID, host strin
 
 func restoreLosses(ctx context.Context, tx pgx.Tx, restoreID string) ([]RestoreLoss, error) {
 	rows, err := tx.Query(ctx, `SELECT l.outcome_id,coalesce(l.mailbox_id,''),coalesce(l.invocation_id,''),l.incarnation,l.declared_at,
-            coalesce(r.state,''),coalesce(r.skip_reason,'')
+            coalesce(r.state,p.state,''),coalesce(r.skip_reason,p.skip_reason,'')
         FROM volume_restore_losses l LEFT JOIN invocation_reruns r ON (r.restore_id,r.outcome_id)=(l.restore_id,l.outcome_id)
+        LEFT JOIN peer_redeliveries p ON (p.restore_id,p.outcome_id)=(l.restore_id,l.outcome_id)
         WHERE l.restore_id=$1 ORDER BY l.outcome_id`, restoreID)
 	if err != nil {
 		return nil, err
@@ -412,12 +449,13 @@ func (s *Store) VolumeRestoreLosses(ctx context.Context, restoreID string) ([]Re
 	return restoreLosses(ctx, tx, restoreID)
 }
 
-// NewerVolumeArchives lists the agent's archives on host, kept and published,
-// that were captured after archiveID. An archive that PostgreSQL does not
-// record, such as one taken on demand, has none.
+// NewerVolumeArchives lists the agent's archives on host, or on archiveID's
+// own host (a lost one, ADR 020), kept and published, that were captured
+// after archiveID. An archive that PostgreSQL does not record, such as one
+// taken on demand, has none.
 func (s *Store) NewerVolumeArchives(ctx context.Context, agentID, host, archiveID string) ([]string, error) {
-	return s.archiveIDs(ctx, `SELECT n.archive_id FROM volume_archives n JOIN volume_archives o ON o.agent_id=n.agent_id AND o.host_id=n.host_id
-        WHERE n.agent_id=$1 AND n.host_id=$2 AND o.archive_id=$3 AND n.archive_id<>o.archive_id
+	return s.archiveIDs(ctx, `SELECT n.archive_id FROM volume_archives n JOIN volume_archives o ON o.agent_id=n.agent_id
+        WHERE n.agent_id=$1 AND (n.host_id=$2 OR n.host_id=o.host_id) AND o.archive_id=$3 AND n.archive_id<>o.archive_id
         AND n.captured_at IS NOT NULL AND n.removed_at IS NULL AND o.captured_at IS NOT NULL AND n.captured_at>o.captured_at
         ORDER BY n.captured_at DESC,n.archive_id`, agentID, host, archiveID)
 }

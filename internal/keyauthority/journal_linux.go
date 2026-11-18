@@ -27,7 +27,10 @@ import (
 //     records the same key again.
 //   - Revoke publishes the tombstone at once: it only denies. The journal
 //     records the destruction, and the replica deletes its wrapped copy in the
-//     same transaction. Only then does Revoke remove the key file.
+//     same transaction. Only then does Revoke remove the key file. The
+//     journal checks the destruction in that transaction first: the restore
+//     authority refuses it unless it holds the store sealed with that volume
+//     (docs/adr/006-authority-service.md §3), and nothing is published.
 
 // Change is a write of this authority, handed to the journal. Key is the key
 // of a creation; the journal clears it once it has wrapped it.
@@ -41,11 +44,14 @@ type Change struct {
 type Journal interface {
 	// Append runs write while it holds the stream's write lock, records the
 	// change that write returns, if any, and returns only once the replica
-	// holds that record, and every one before it, durably. revoke tells,
-	// before write runs, whether the change destroys a key or creates one:
-	// both wait for the replica in degraded mode. write must not re-enter the
-	// journal.
-	Append(ctx context.Context, revoke bool, write func() (*Change, error)) error
+	// holds that record, and every one before it, durably. intent names the
+	// change before write runs, without its key: the agent, the volume, and
+	// whether it destroys a key or creates one. Both wait for the replica in
+	// degraded mode. The journal may refuse the change before write runs:
+	// the restore authority refuses to destroy the key of a store it has not
+	// sealed. write returns intent's change or none, and must not re-enter
+	// the journal.
+	Append(ctx context.Context, intent Change, write func() (*Change, error)) error
 }
 
 // SetJournal makes every later Ensure and Revoke replicate through j. The
@@ -98,7 +104,7 @@ func (s *Files) ensureJournaled(ctx context.Context, agent, volume string) error
 		return ErrInput
 	}
 	path := filepath.Join(s.root, "records", volume)
-	err := s.journal.Append(ctx, false, func() (*Change, error) {
+	err := s.journal.Append(ctx, Change{Agent: agent, Volume: volume}, func() (*Change, error) {
 		var change *Change
 		err := s.withLock(ctx, agent, volume, true, func() error {
 			if err := s.revoked(agent, volume); err != nil {
@@ -160,7 +166,9 @@ func (s *Files) revokeJournaled(ctx context.Context, agent, volume string) error
 		return ErrInput
 	}
 	path := filepath.Join(s.root, "records", volume)
-	err := s.journal.Append(ctx, true, func() (*Change, error) {
+	// The journal checks the intent before the tombstone: a destruction it
+	// refuses leaves the key usable.
+	err := s.journal.Append(ctx, Change{Revoke: true, Agent: agent, Volume: volume}, func() (*Change, error) {
 		err := s.withLock(ctx, agent, volume, true, func() error {
 			err := s.revoked(agent, volume)
 			if err != nil && !errors.Is(err, ErrRevoked) {

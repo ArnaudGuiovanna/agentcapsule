@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authoritylog"
 	"github.com/mattn/go-sqlite3"
@@ -61,7 +62,11 @@ PRAGMA user_version=3;
 const replicaWindow = 4096
 
 // catalogueTables are copied, in this order, by a snapshot and a promotion.
-var catalogueTables = []string{"stores", "reservations", "revocations", "outcomes", "losses", "reruns"}
+var catalogueTables = []string{"stores", "reservations", "revocations", "outcomes", "losses", "reruns", "access_revocations", "outcome_events"}
+
+// fullReplicaSchema is a new replica's: the catalogue's tables, then the
+// replica's own, then those of schema version 4.
+const fullReplicaSchema = schema + lossSchema + replicaSchema + accessSchema
 
 func sqliteDSN(path string) string {
 	u := url.URL{Scheme: "file", Path: path}
@@ -109,7 +114,7 @@ func createReplicaFile(ctx context.Context, path string) error {
 		return err
 	}
 	defer db.Close()
-	_, err = db.ExecContext(ctx, schema+lossSchema+replicaSchema)
+	_, err = db.ExecContext(ctx, fullReplicaSchema)
 	return err
 }
 
@@ -170,6 +175,14 @@ type Replica struct {
 	lock    chan struct{}
 	hook    func(string) // tests interrupt the actual transaction boundary
 	metrics atomic.Pointer[authoritylog.ReplicaMetrics]
+	// knows is the last statement this replica runs; 0 runs them all. Tests
+	// set it to stand for the replica of an older release, which refuses a
+	// statement it does not know (docs/adr/006-authority-service.md §4).
+	knows statement
+	// The standby's last contact with the primary (contact_linux.go): the
+	// clock, which tests replace, and the last contact written, under lock.
+	now       func() time.Time
+	contacted time.Time
 }
 
 var _ authoritylog.Link = (*Replica)(nil)
@@ -251,7 +264,7 @@ func checkSnapshot(ctx context.Context, path string) error {
 	}
 	defer reference.Close()
 	reference.SetMaxOpenConns(1)
-	if _, err = reference.ExecContext(ctx, schema+lossSchema+replicaSchema); err != nil {
+	if _, err = reference.ExecContext(ctx, fullReplicaSchema); err != nil {
 		return err
 	}
 	want, err := schemaOf(ctx, reference)
@@ -347,12 +360,46 @@ func openReplica(ctx context.Context, root string) (*Replica, replicaState, erro
 	if err != nil {
 		return nil, replicaState{}, err
 	}
+	if err = upgradeReplica(ctx, db); err != nil {
+		db.Close()
+		return nil, replicaState{}, err
+	}
 	s, err := readReplicaState(ctx, db)
 	if err != nil {
 		db.Close()
 		return nil, s, err
 	}
 	return &Replica{db: db, path: path, lock: make(chan struct{}, 1)}, s, nil
+}
+
+// upgradeReplica brings a replica of schema version 3 to version 4: it adds
+// the empty tables of the access revocation records and of the outcomes'
+// event IDs, and changes nothing recorded. The standby is upgraded first
+// (docs/adr/006-authority-service.md §4): its replica then takes the new
+// statements before the upgraded primary sends any. Only the processes that
+// hold the replica's owner lock open it: serve, promote, and the status of
+// promote.
+func upgradeReplica(ctx context.Context, db *sql.DB) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return errors.Join(ErrUnavailable, err)
+	}
+	defer tx.Rollback()
+	var v int
+	if err = tx.QueryRowContext(ctx, "PRAGMA user_version").Scan(&v); err != nil {
+		return errors.Join(ErrUnavailable, err)
+	}
+	switch v {
+	case schemaVersion:
+		return nil
+	case 3:
+	default:
+		return ErrUnavailable
+	}
+	if _, err = tx.ExecContext(ctx, accessSchema); err != nil {
+		return errors.Join(ErrUnavailable, err)
+	}
+	return tx.Commit()
 }
 
 // Close closes the replica.
@@ -374,6 +421,9 @@ func refuse(kind string, s replicaState) error {
 // Sync applies the request's records in order, then returns the replica's
 // position. A refusal leaves every record before the refused one applied.
 func (r *Replica) Sync(ctx context.Context, req authoritylog.Request) (authoritylog.Position, error) {
+	// Before the lock: a request that waits behind another counts from its
+	// arrival.
+	received := r.clock()
 	select {
 	case r.lock <- struct{}{}:
 	case <-ctx.Done():
@@ -408,6 +458,11 @@ func (r *Replica) Sync(ctx context.Context, req authoritylog.Request) (authority
 		}
 		applied = applied || next.seq != s.seq
 		s = next
+	}
+	// The primary has reached the replica at its epoch: the last contact,
+	// on disk before the answer.
+	if err = r.contact(ctx, received); err != nil {
+		return s.position(), r.refused(refuse(authoritylog.RefusedUnavailable, s))
 	}
 	r.metrics.Load().Position(s.position(), applied)
 	return s.position(), nil
@@ -500,7 +555,7 @@ func (r *Replica) applyOp(ctx context.Context, tx *sql.Tx, op authoritylog.Op) e
 	switch op.Kind {
 	case authoritylog.OpStatement:
 		text, ok := statements[statement(op.Statement)]
-		if !ok {
+		if !ok || (r.knows != 0 && statement(op.Statement) > r.knows) {
 			return ErrConflict
 		}
 		args := make([]any, len(op.Args))

@@ -14,19 +14,32 @@ import (
 // Capture the current boot session BEFORE STOPPING: the census reconciles against
 // SQL and must not be used to adopt that boot again after its authority closes.
 func (w *Placements) quiesceStop(ctx context.Context, id string, generation uint64) error {
+	return w.quiesceStopAs(ctx, id, generation, "")
+}
+
+// quiesceStopAs is quiesceStop. With a guest failure kind, the stop is the
+// worker's answer to that failure of the guest, recorded with it and counted
+// against the agent's restart budget (ADR 012).
+func (w *Placements) quiesceStopAs(ctx context.Context, id string, generation uint64, failure string) error {
 	client, err := w.host.ControlForRetirement(ctx, id)
 	if err != nil {
 		client = nil // unavailable/expired control requires a forced stop
 	}
-	return w.stopPrepared(ctx, id, generation, client, func(ctx context.Context) error {
+	return w.stopPreparedAs(ctx, id, generation, client, func(ctx context.Context) error {
 		return w.host.Retire(ctx, id, generation)
-	})
+	}, failure)
 }
 
 // retire is the trusted host's physical retirement operation, not a database
 // observation. Keeping this boundary explicit permits transaction/RPC failure
 // tests without claiming those tests execute a real VMM.
 func (w *Placements) stopPrepared(ctx context.Context, id string, generation uint64, client runtime.RetirementControl, retire func(context.Context) error) error {
+	return w.stopPreparedAs(ctx, id, generation, client, retire, "")
+}
+
+// stopPreparedAs is stopPrepared; with a guest failure kind, the generation
+// is published STOPPED with that failure (observeGuestFailure).
+func (w *Placements) stopPreparedAs(ctx context.Context, id string, generation uint64, client runtime.RetirementControl, retire func(context.Context) error, failure string) error {
 	if client != nil && (client.Identity().AgentID != id || client.Identity().Generation != generation) {
 		return controlplane.ErrPlacement
 	}
@@ -47,6 +60,9 @@ func (w *Placements) stopPrepared(ctx context.Context, id string, generation uin
 	defer cancel()
 	if err := retire(cleanup); err != nil {
 		return err // never publish STOPPED or infer absence from the guest ACK
+	}
+	if failure != "" {
+		return w.observeGuestFailure(cleanup, id, generation, failure)
 	}
 	return w.store.ObservePlacementStopped(cleanup, id, w.hostID, generation, unclean)
 }

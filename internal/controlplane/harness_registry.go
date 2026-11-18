@@ -6,7 +6,8 @@ import (
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorization"
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/ociregistry"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/capability"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/ociregistry/reference"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -39,10 +40,16 @@ type HarnessRelease struct {
 	RootfsBytes  int64  `json:"rootfs_bytes,omitempty"`
 	// Signer is the ID of the publisher key whose signature was verified at
 	// import, absent for a release imported without signature policy.
-	Signer       string     `json:"signer,omitempty"`
-	State        string     `json:"state"`
-	CreatedAt    time.Time  `json:"created_at"`
-	DeprecatedAt *time.Time `json:"deprecated_at,omitempty"`
+	Signer string `json:"signer,omitempty"`
+	// Capabilities is what the release's harness.yaml requests (ADR 016).
+	// CapabilitiesDeclared is false for a manifest that predates the field
+	// (and a release approved locally): it is treated as requesting every
+	// capability.
+	Capabilities         []string   `json:"capabilities"`
+	CapabilitiesDeclared bool       `json:"capabilities_declared"`
+	State                string     `json:"state"`
+	CreatedAt            time.Time  `json:"created_at"`
+	DeprecatedAt         *time.Time `json:"deprecated_at,omitempty"`
 }
 
 type HarnessImportInput struct {
@@ -61,14 +68,16 @@ func scanImport(row pgx.Row) (HarnessImport, error) {
 }
 
 const releaseColumns = `id,name,version,artifact_digest,source,coalesce(reference,''),coalesce(rootfs_digest,''),coalesce(rootfs_bytes,0),coalesce(signer,''),
-    CASE WHEN enabled THEN 'READY' ELSE 'DEPRECATED' END,created_at,deprecated_at`
+    capabilities,CASE WHEN enabled THEN 'READY' ELSE 'DEPRECATED' END,created_at,deprecated_at`
 
 func scanRelease(row pgx.Row) (HarnessRelease, error) {
 	var v HarnessRelease
-	err := row.Scan(&v.ID, &v.Name, &v.Version, &v.Digest, &v.Source, &v.Reference, &v.RootfsDigest, &v.RootfsBytes, &v.Signer, &v.State, &v.CreatedAt, &v.DeprecatedAt)
+	var capabilities []string
+	err := row.Scan(&v.ID, &v.Name, &v.Version, &v.Digest, &v.Source, &v.Reference, &v.RootfsDigest, &v.RootfsBytes, &v.Signer, &capabilities, &v.State, &v.CreatedAt, &v.DeprecatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = ErrNotFound
 	}
+	v.Capabilities, v.CapabilitiesDeclared = releaseCapabilities(capabilities)
 	return v, err
 }
 
@@ -83,7 +92,7 @@ func auditHarness(ctx context.Context, tx pgx.Tx, p Principal, action string, im
 // any connection. A package already released, or already being imported, is
 // answered with that record instead of a new download.
 func (a *Accounts) RequestHarnessImport(ctx context.Context, p Principal, key string, in HarnessImportInput) (APIReceipt, error) {
-	ref, err := ociregistry.ParseReference(in.Reference)
+	ref, err := reference.Parse(in.Reference)
 	if err != nil {
 		return APIReceipt{}, ErrInput
 	}
@@ -114,6 +123,10 @@ func (a *Accounts) RequestHarnessImport(ctx context.Context, p Principal, key st
 			return 202, v, nil
 		}
 		if !errors.Is(err, ErrNotFound) {
+			return 0, nil, err
+		}
+		// A new import needs room for its image (OPS-03).
+		if err = refuseUnderImagePressure(ctx, tx); err != nil {
 			return 0, nil, err
 		}
 		id := newID("imp")
@@ -153,7 +166,9 @@ func (a *Accounts) GetHarnessImport(ctx context.Context, p Principal, id string)
 }
 
 // ListHarnessReleases is open to the platform operator and to organization
-// members who can read agents: releases carry no tenant data.
+// members whose role reads every agent's metadata (owner, administrator,
+// operator, auditor): releases carry no tenant data, but an agent_user knows
+// only the agents assigned to it.
 func (a *Accounts) ListHarnessReleases(ctx context.Context, p Principal, includeDeprecated bool) ([]HarnessRelease, error) {
 	tx, err := a.store.begin(ctx)
 	if err != nil {
@@ -163,7 +178,11 @@ func (a *Accounts) ListHarnessReleases(ctx context.Context, p Principal, include
 	if p.Kind == "platform" {
 		err = authorizePlatform(ctx, tx, p)
 	} else {
-		_, err = authorizeTenant(ctx, tx, p, authorization.ScopeAgentRead)
+		var current CurrentOrganization
+		if current, err = authorizeTenant(ctx, tx, p, authorization.ScopeAgentRead); err == nil &&
+			!authorization.CanAdminister(tenantAccess(p), authorization.Role(current.Role), authorization.ReadAgentMetadata) {
+			err = ErrForbidden
+		}
 	}
 	if err != nil {
 		return nil, err
@@ -264,14 +283,20 @@ type ImportedRelease struct {
 	RootfsBytes                 int64
 	// Signer is the verified publisher key ID, or empty.
 	Signer string
+	// Capabilities is what harness.yaml requests; nil when it does not say.
+	Capabilities *[]string
 }
 
 // CompleteHarnessImport publishes the release. name:version is immutable: if
 // it already belongs to another digest, the import is rejected instead.
 func (s *Store) CompleteHarnessImport(ctx context.Context, job ImportJob, r ImportedRelease) (HarnessImport, error) {
 	if !catalogName(r.Name) || !catalogName(r.Version) || r.RootfsBytes < 1 || len(r.RootfsDigest) != 71 ||
-		(r.Signer != "" && len(r.Signer) != 71) {
+		(r.Signer != "" && len(r.Signer) != 71) || (r.Capabilities != nil && capability.ValidSet(*r.Capabilities) != nil) {
 		return HarnessImport{}, ErrInput
+	}
+	var requested []string // NULL: not declared
+	if r.Capabilities != nil {
+		requested = capability.Intersect(*r.Capabilities)
 	}
 	tx, err := s.begin(ctx)
 	if err != nil {
@@ -291,8 +316,8 @@ func (s *Store) CompleteHarnessImport(ctx context.Context, job ImportJob, r Impo
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		releaseID = newID("rel")
-		if _, err = tx.Exec(ctx, `INSERT INTO harness_releases(id,name,version,artifact_digest,source,reference,rootfs_digest,rootfs_bytes,signer)
-            VALUES($1,$2,$3,$4,'oci',$5,$6,$7,nullif($8,''))`, releaseID, r.Name, r.Version, job.Digest, job.Reference, r.RootfsDigest, r.RootfsBytes, r.Signer); err != nil {
+		if _, err = tx.Exec(ctx, `INSERT INTO harness_releases(id,name,version,artifact_digest,source,reference,rootfs_digest,rootfs_bytes,signer,capabilities)
+            VALUES($1,$2,$3,$4,'oci',$5,$6,$7,nullif($8,''),$9)`, releaseID, r.Name, r.Version, job.Digest, job.Reference, r.RootfsDigest, r.RootfsBytes, r.Signer, requested); err != nil {
 			return HarnessImport{}, err
 		}
 	case err != nil:
@@ -307,7 +332,7 @@ func (s *Store) CompleteHarnessImport(ctx context.Context, job ImportJob, r Impo
 // import; a transient one schedules a retry, and the last attempt rejects it.
 func (s *Store) FailHarnessImport(ctx context.Context, job ImportJob, code string, transient bool, retryAfter time.Duration) (HarnessImport, error) {
 	switch code {
-	case "policy", "not_found", "access_denied", "signature", "integrity", "unavailable":
+	case "policy", "not_found", "access_denied", "signature", "integrity", "unavailable", "storage_pressure":
 	default:
 		return HarnessImport{}, ErrInput
 	}
@@ -379,4 +404,29 @@ func (s *Store) RetainedHarnessDigests(ctx context.Context, host string) (map[st
 		keep[d] = true
 	}
 	return keep, rows.Err()
+}
+
+// PinnedHarnessReleases lists the imported releases that an agent of host,
+// not deleted, is pinned to: the packages its worker needs to boot them. A
+// host rebuilt from its backups fetches them again by digest (OPR-10).
+func (s *Store) PinnedHarnessReleases(ctx context.Context, host string) ([]HarnessRelease, error) {
+	if !catalogName(host) {
+		return nil, ErrInput
+	}
+	rows, err := s.pool.Query(ctx, `SELECT `+releaseColumns+` FROM harness_releases r WHERE r.source='oci' AND EXISTS(
+            SELECT 1 FROM agent_specs x JOIN agents a ON a.id=x.agent_id WHERE x.release_id=r.id AND x.host_id=$1 AND a.phase<>'DELETED')
+        ORDER BY r.name,r.version`, host)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []HarnessRelease
+	for rows.Next() {
+		v, err := scanRelease(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
 }

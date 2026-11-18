@@ -3,6 +3,7 @@ package controlplane
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmgateway"
 )
@@ -17,13 +18,51 @@ var ErrLLMAlreadyProcessed = errors.New("llm request key already used")
 type LLMService struct {
 	accounts *Accounts
 	gateway  *llmgateway.Gateway
+	observer atomic.Pointer[observerBox]
 }
+
+type observerBox struct{ LLMObserver }
+
+// LLMCallEvent is what the operator learns of one metered call: closed codes
+// and counts, never an organization, agent, alias, model, key or content.
+type LLMCallEvent struct {
+	// Provider is the provider's kind (openai_compatible, anthropic); empty
+	// when the alias did not resolve.
+	Provider string
+	// Outcome is settled, released, unknown or refused.
+	Outcome string
+	// Reason, Period and Scope describe a refusal (see LLMRefusal).
+	Reason, Period, Scope string
+	// Settled usage and its estimated cost (micro-units; 0 when unpriced).
+	InputTokens, OutputTokens, CostMicro int64
+	// SoftBudgets are the soft budgets this call went past.
+	SoftBudgets []LLMBudgetHit
+}
+
+// LLMObserver receives one event per call that reached a reservation or was
+// refused by policy. It must not block.
+type LLMObserver interface{ ObserveLLM(LLMCallEvent) }
 
 func NewLLMService(a *Accounts, g *llmgateway.Gateway) (*LLMService, error) {
 	if a == nil || g == nil {
 		return nil, ErrInput
 	}
 	return &LLMService{accounts: a, gateway: g}, nil
+}
+
+// Observe sets the operator's observer (metrics and logs).
+func (s *LLMService) Observe(o LLMObserver) {
+	if o == nil {
+		s.observer.Store(nil)
+		return
+	}
+	s.observer.Store(&observerBox{o})
+}
+
+func (s *LLMService) observe(e LLMCallEvent) {
+	if o := s.observer.Load(); o != nil {
+		o.ObserveLLM(e)
+	}
 }
 
 type LLMResult struct {
@@ -33,22 +72,23 @@ type LLMResult struct {
 
 // estimateTokens is a deliberately pessimistic upper bound used only to reserve
 // budget: about one token per three bytes of input, plus the output cap.
-func estimateTokens(q llmgateway.Request) int64 {
+func estimateTokens(q llmgateway.Request) (input, output int64) {
 	var bytes int64
 	for _, m := range q.Messages {
 		bytes += int64(len(m.Content))
 	}
-	out := int64(q.MaxTokens)
-	if out == 0 {
-		out = 1024
+	output = int64(q.MaxTokens)
+	if output == 0 {
+		output = 1024
 	}
-	return bytes/3 + 1 + out
+	return bytes/3 + 1, output
 }
 
 // Call is keyed by requestKey, unique per agent. tenantID and agentID must come
 // from the authenticated channel, never from the request body.
 func (s *LLMService) Call(ctx context.Context, tenantID, agentID, alias, requestKey string, q llmgateway.Request) (LLMResult, error) {
-	h, err := s.admit(ctx, tenantID, agentID, alias, requestKey, estimateTokens(q))
+	input, output := estimateTokens(q)
+	h, err := s.admit(ctx, tenantID, agentID, alias, requestKey, input, output)
 	if err != nil {
 		return LLMResult{}, err
 	}
@@ -62,13 +102,18 @@ type llmHold struct {
 	res             LLMReservation
 }
 
-// admit resolves the alias and reserves budget. Nothing has reached the provider.
-func (s *LLMService) admit(ctx context.Context, tenantID, agentID, alias, requestKey string, estimate int64) (llmHold, error) {
+// admit resolves the alias and reserves budget. Nothing has reached the
+// provider. A refusal by policy (alias access, hard budget) is observed.
+func (s *LLMService) admit(ctx context.Context, tenantID, agentID, alias, requestKey string, input, output int64) (llmHold, error) {
 	route, err := s.accounts.ResolveLLMRoute(ctx, tenantID, alias)
 	if err != nil {
 		return llmHold{}, err
 	}
-	res, err := s.accounts.ReserveLLM(ctx, tenantID, agentID, alias, requestKey, estimate)
+	res, err := s.accounts.ReserveLLM(ctx, tenantID, agentID, alias, requestKey, input, output)
+	var refused *LLMRefusal
+	if errors.As(err, &refused) {
+		s.observe(LLMCallEvent{Provider: route.Kind, Outcome: "refused", Reason: refused.Reason, Period: refused.Period, Scope: refused.Scope})
+	}
 	if err != nil {
 		return llmHold{}, err
 	}
@@ -104,16 +149,27 @@ func (s *LLMService) settle(ctx context.Context, h llmHold, call func(llmgateway
 	usage, callErr := call(llmgateway.Route{Kind: route.Kind, BaseURL: route.BaseURL, UpstreamModel: route.UpstreamModel, Secret: route.Secret, Key: h.tenantID + "/" + h.alias})
 	// Bookkeeping must survive a cancelled caller context.
 	bk := context.WithoutCancel(ctx)
+	event := LLMCallEvent{Provider: route.Kind, SoftBudgets: h.res.SoftBudgets}
 	switch {
 	case callErr == nil:
-		return s.accounts.SettleLLM(bk, h.tenantID, h.res.ID, usage.InputTokens, usage.OutputTokens)
+		cost, err := s.accounts.settleLLM(bk, h.tenantID, h.res.ID, usage.InputTokens, usage.OutputTokens)
+		if err != nil {
+			return err
+		}
+		event.Outcome, event.InputTokens, event.OutputTokens = "settled", usage.InputTokens, usage.OutputTokens
+		if cost != nil {
+			event.CostMicro = *cost
+		}
 	case errors.Is(callErr, llmgateway.ErrOutcomeUnknown):
 		_ = s.accounts.MarkLLMUnknown(bk, h.tenantID, h.res.ID)
+		event.Outcome = "unknown"
 	default:
 		// Refused, rate limited, unreachable or invalid: the provider did no
 		// billable work, so the reservation is given back.
 		_ = s.accounts.ReleaseLLM(bk, h.tenantID, h.res.ID)
+		event.Outcome = "released"
 	}
+	s.observe(event)
 	return callErr
 }
 
@@ -124,7 +180,8 @@ func (s *LLMService) settle(ctx context.Context, h llmHold, call func(llmgateway
 // OUTSIDE it so a model call never holds up a wake, sleep or delete.
 func (s *LLMService) CallFromVM(ctx context.Context, caller VMCaller, requestKey, alias string, q llmgateway.Request,
 	admission func(context.Context, func(context.Context) error) error) (LLMResult, error) {
-	hold, err := s.admitFromVM(ctx, caller, requestKey, alias, estimateTokens(q), admission)
+	input, output := estimateTokens(q)
+	hold, err := s.admitFromVM(ctx, caller, requestKey, alias, input, output, admission)
 	if err != nil {
 		return LLMResult{}, err
 	}
@@ -132,7 +189,7 @@ func (s *LLMService) CallFromVM(ctx context.Context, caller VMCaller, requestKey
 }
 
 // admitFromVM runs the placement check and the reservation in one guarded section.
-func (s *LLMService) admitFromVM(ctx context.Context, caller VMCaller, requestKey, alias string, estimate int64,
+func (s *LLMService) admitFromVM(ctx context.Context, caller VMCaller, requestKey, alias string, input, output int64,
 	admission func(context.Context, func(context.Context) error) error) (llmHold, error) {
 	if requireIdentity(caller.AgentID, requestKey) != nil || len(requestKey) > 200 {
 		return llmHold{}, ErrInput
@@ -143,7 +200,7 @@ func (s *LLMService) admitFromVM(ctx context.Context, caller VMCaller, requestKe
 		if err != nil {
 			return err
 		}
-		hold, err = s.admit(ctx, tenant, caller.AgentID, alias, requestKey, estimate)
+		hold, err = s.admit(ctx, tenant, caller.AgentID, alias, requestKey, input, output)
 		return err
 	}
 	var err error
@@ -179,7 +236,7 @@ func (s *LLMService) ForwardFromVM(ctx context.Context, caller VMCaller, request
 	if max == 0 {
 		max = forwardDefaultOutput
 	}
-	hold, err := s.admitFromVM(ctx, caller, requestKey, alias, int64(len(body))/3+1+int64(max), admission)
+	hold, err := s.admitFromVM(ctx, caller, requestKey, alias, int64(len(body))/3+1, int64(max), admission)
 	if err != nil {
 		return ForwardResult{}, err
 	}

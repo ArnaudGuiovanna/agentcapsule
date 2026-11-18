@@ -80,3 +80,24 @@ func (s *Server) replaceAssignment(w http.ResponseWriter, r *http.Request) {
 	out, err := s.accounts.ReplaceAgentAssignment(r.Context(), p, r.PathValue("id"), r.PathValue("assignment_id"), key, in.Permissions)
 	receipt(w, out, err)
 }
+
+// reassignAssignment moves an active assignment to another member or team.
+func (s *Server) reassignAssignment(w http.ResponseWriter, r *http.Request) {
+	if !method(w, r, "POST") {
+		return
+	}
+	p, ok := s.principal(w, r)
+	if !ok {
+		return
+	}
+	key, ok := idempotency(w, r)
+	if !ok {
+		return
+	}
+	var in controlplane.ReassignAssignmentInput
+	if !decode(w, r, &in) {
+		return
+	}
+	out, err := s.accounts.ReassignAgentAssignment(r.Context(), p, r.PathValue("id"), r.PathValue("assignment_id"), key, in)
+	receipt(w, out, err)
+}

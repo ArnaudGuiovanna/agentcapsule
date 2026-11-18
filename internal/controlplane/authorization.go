@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/authoritylog"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -167,8 +168,14 @@ func (s *Store) RevokeMandate(ctx context.Context, ownerUserID, mandateID string
 	if ownerUserID == "" || agents[agentID].Owner != ownerUserID {
 		return ErrNotFound
 	}
-	if _, err := tx.Exec(ctx, "UPDATE mandates SET valid=false WHERE id=$1", mandateID); err != nil {
+	tag, err := tx.Exec(ctx, "UPDATE mandates SET valid=false WHERE id=$1 AND valid", mandateID)
+	if err != nil {
 		return err
+	}
+	if tag.RowsAffected() == 1 {
+		if err = s.revocations(tx, "").add(ctx, authoritylog.AccessMandate, "", [][]string{{mandateID}}); err != nil {
+			return err
+		}
 	}
 	return commit(ctx, tx)
 }

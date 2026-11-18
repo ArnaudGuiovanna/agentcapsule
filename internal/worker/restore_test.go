@@ -42,7 +42,7 @@ type restoreLab struct {
 	w         *Placements
 	store     *controlplane.Store
 	db        *pgxpool.Pool
-	authority *restoreauthority.Catalog
+	authority *testAuthority
 	archives  *volumearchive.Store
 	opts      runtime.FirecrackerOptions
 	e         controlplane.Enrollment
@@ -57,6 +57,19 @@ type restoreLab struct {
 	// probeWithoutOutcomes, the harness checked before the agent stops.
 	withoutOutcomes, probeWithoutOutcomes bool
 	steps                                 []string
+	// paused receives the pauses of l.restore; none is expected when nil.
+	paused func(error)
+	// relocations counts the volumes created for a relocated agent;
+	// installedOn is the volume identity of the last install.
+	relocations int
+	installedOn [2]uint64
+	// registered holds host/agent for each agent a host registered.
+	registered map[string]bool
+	// What creates more agents (host_restore_test.go).
+	keys     *keyauthority.Files
+	accounts *controlplane.Accounts
+	catalog  *controlplane.AgentCatalog
+	admin    controlplane.Principal
 }
 
 type restoreGuest struct {
@@ -68,7 +81,7 @@ type restoreGuest struct {
 
 const restoreVolumeSize = 64 << 20
 
-func newRestoreLab(t *testing.T) *restoreLab {
+func newRestoreLab(t *testing.T, implementation string) *restoreLab {
 	t.Helper()
 	dsn := os.Getenv("AGENTCAPSULE_TEST_POSTGRES")
 	if dsn == "" {
@@ -185,11 +198,7 @@ func newRestoreLab(t *testing.T) *restoreLab {
 	if err = keys.Ensure(t.Context(), e.AgentID, e.VolumeID); err != nil {
 		t.Fatal(err)
 	}
-	authority, err := restoreauthority.Initialize(t.Context(), filepath.Join(parent, "authority"), keys.Identity())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { authority.Close() })
+	authority := openAuthority(t, implementation, keys, filepath.Join(parent, "authority"))
 	if _, err = authority.Register(t.Context(), e.AgentID, e.VolumeID); err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +211,8 @@ func newRestoreLab(t *testing.T) *restoreLab {
 	if err != nil {
 		t.Fatal(err)
 	}
-	l := &restoreLab{t: t, w: w, store: s, db: db, authority: authority, archives: archives, opts: opts, e: e,
+	l := &restoreLab{t: t, w: w, store: s, db: db, authority: authority, archives: archives, opts: opts, e: e, keys: keys,
+		accounts: accounts, catalog: catalog, admin: p, registered: map[string]bool{"local/" + e.AgentID: true},
 		volume: filepath.Join(parent, "volume"), state: filepath.Join(t.TempDir(), "harness.db")}
 	t.Cleanup(l.stopGuest)
 	// The agent's first boot: an empty harness database.
@@ -253,7 +263,7 @@ func (l *restoreLab) unpack(path string) {
 
 func (l *restoreLab) binding() restoreauthority.Binding {
 	l.t.Helper()
-	e, err := l.store.VolumeEnrollment(l.t.Context(), l.e.AgentID, "local")
+	e, err := l.store.VolumeEnrollment(l.t.Context(), l.e.AgentID, l.w.hostID)
 	if err != nil {
 		l.t.Fatal(err)
 	}
@@ -321,17 +331,23 @@ func (l *restoreLab) stopGuest() {
 
 func (l *restoreLab) host() restoreHost {
 	return restoreHost{
-		barrier: func(ctx context.Context, _ string, fn func(context.Context) error) error { return fn(ctx) },
+		// As the host does, a barrier only for an agent registered here.
+		barrier: func(ctx context.Context, id string, fn func(context.Context) error) error {
+			if !l.registered[l.w.hostID+"/"+id] {
+				return errors.New("unregistered barrier target")
+			}
+			return fn(ctx)
+		},
 		retire: func(ctx context.Context, id string) error {
 			l.stopGuest()
 			p, err := l.w.placement(ctx, id)
 			if err != nil || p.State == "STOPPED" {
 				return err
 			}
-			if err = l.store.BeginPlacementStop(ctx, id, "local", p.Generation); err != nil {
+			if err = l.store.BeginPlacementStop(ctx, id, l.w.hostID, p.Generation); err != nil {
 				return err
 			}
-			return l.store.ObservePlacementStopped(ctx, id, "local", p.Generation, true)
+			return l.store.ObservePlacementStopped(ctx, id, l.w.hostID, p.Generation, true)
 		},
 		install: func(_ context.Context, plan controlplane.VolumeRestorePlan, image io.Reader, a restoreauthority.Archive) error {
 			if l.guest != nil || plan.Placement.State != "STOPPED" {
@@ -352,6 +368,7 @@ func (l *restoreLab) host() restoreHost {
 				return runtime.ErrVolumeImage
 			}
 			l.installs++
+			l.installedOn = [2]uint64{plan.Device, plan.Inode}
 			return os.WriteFile(l.volume, data, 0600)
 		},
 		probe: func(context.Context, string) error {
@@ -359,6 +376,24 @@ func (l *restoreLab) host() restoreHost {
 				return capsuleprotocol.ErrUnsupportedProtocol
 			}
 			return nil
+		},
+		// The new host's volume of a relocated agent: an empty container of
+		// the volume's size, under another identity, registered on the host
+		// once. The key authority must give its key.
+		relocate: func(ctx context.Context, e controlplane.Enrollment) (uint64, uint64, error) {
+			if l.registered[l.w.hostID+"/"+e.AgentID] {
+				return 2, 200, nil
+			}
+			b, err := l.authority.Lookup(ctx, e.AgentID)
+			if err != nil {
+				return 0, 0, err
+			}
+			if err = l.authority.HoldKey(ctx, b, func(context.Context, []byte) error { return nil }); err != nil {
+				return 0, 0, err
+			}
+			l.relocations++
+			l.registered[l.w.hostID+"/"+e.AgentID] = true
+			return 2, 200, os.WriteFile(l.volume, make([]byte, restoreVolumeSize), 0600)
 		},
 		boot: l.boot,
 		after: func(step string) error {
@@ -372,11 +407,11 @@ func (l *restoreLab) host() restoreHost {
 // volume preparation and confirmation, against a real guest server whose
 // harness database comes from the volume.
 func (l *restoreLab) boot(ctx context.Context, id string) (runtime.VMRun, *capsuleprotocol.Client, error) {
-	p, err := l.store.ClaimFencePlacement(ctx, id, "local", l.w.workerID, l.w.lease)
+	p, err := l.store.ClaimFencePlacement(ctx, id, l.w.hostID, l.w.workerID, l.w.lease)
 	if err != nil {
 		return runtime.VMRun{}, nil, err
 	}
-	e, err := l.store.VolumeEnrollment(ctx, id, "local")
+	e, err := l.store.VolumeEnrollment(ctx, id, l.w.hostID)
 	if err != nil {
 		return runtime.VMRun{}, nil, err
 	}
@@ -443,8 +478,14 @@ func (l *restoreLab) boot(ctx context.Context, id string) (runtime.VMRun, *capsu
 	return run, client, err
 }
 
+// restore runs the restore as the command does: it pauses while the
+// authorities do not answer, and a refusal ends it.
 func (l *restoreLab) restore(id, archive string) (VolumeRestoreResult, error) {
-	return l.w.restore(l.t.Context(), l.host(), id, l.e.AgentID, archive, l.archives)
+	paused := l.paused
+	if paused == nil {
+		paused = func(err error) { l.t.Error("the restore paused", err) }
+	}
+	return l.w.restorePausing(l.t.Context(), l.host(), id, l.e.AgentID, archive, l.archives, paused)
 }
 
 // heldOutcomes reads the volume's harness database: the outcomes it holds.
@@ -466,7 +507,7 @@ func (l *restoreLab) heldOutcomes(ids []string) map[string][32]byte {
 
 func (l *restoreLab) enrollment() controlplane.Enrollment {
 	l.t.Helper()
-	e, err := l.store.VolumeEnrollment(l.t.Context(), l.e.AgentID, "local")
+	e, err := l.store.VolumeEnrollment(l.t.Context(), l.e.AgentID, l.w.hostID)
 	if err != nil {
 		l.t.Fatal(err)
 	}
@@ -482,7 +523,11 @@ func restoreIDFor(n int) string { return fmt.Sprintf("rst_%032x", n) }
 // serves before the end. The new incarnation is held in both stores, and the
 // old one's receipts, fences and outcomes are refused.
 func TestRestoreDeclaresOnlyTheLossesAfterTheArchiveAndResumes(t *testing.T) {
-	l := newRestoreLab(t)
+	forEachAuthority(t, testRestoreDeclaresOnlyTheLossesAfterTheArchiveAndResumes)
+}
+
+func testRestoreDeclaresOnlyTheLossesAfterTheArchiveAndResumes(t *testing.T, implementation string) {
+	l := newRestoreLab(t, implementation)
 	kept := l.deliver("before-archive")
 	archive := l.capture("arc_" + strings.Repeat("1", 32))
 	lost := l.deliver("after-archive-1", "after-archive-2")
@@ -577,7 +622,7 @@ func TestRestoreDeclaresOnlyTheLossesAfterTheArchiveAndResumes(t *testing.T) {
 	if err = l.authority.RecordVerifiedFence(t.Context(), oldReceipt); !errors.Is(err, restoreauthority.ErrStale) {
 		t.Fatal("a fence of the old incarnation was recorded", err)
 	}
-	if err = l.authority.WithBinding(t.Context(), oldBinding, func() error { return nil }); !errors.Is(err, restoreauthority.ErrStale) {
+	if err = l.authority.CheckBinding(t.Context(), oldBinding); !errors.Is(err, restoreauthority.ErrStale) {
 		t.Fatal("the old incarnation is still admitted", err)
 	}
 	if err = l.authority.RecordOutcome(t.Context(), oldBinding, restoreauthority.Outcome{ID: lost[0]}); !errors.Is(err, restoreauthority.ErrStale) {
@@ -606,7 +651,11 @@ func TestRestoreDeclaresOnlyTheLossesAfterTheArchiveAndResumes(t *testing.T) {
 // another volume, or older than another archive of the agent on this host:
 // nothing changes.
 func TestRestoreRefusesAnArchiveBeforeStopping(t *testing.T) {
-	l := newRestoreLab(t)
+	forEachAuthority(t, testRestoreRefusesAnArchiveBeforeStopping)
+}
+
+func testRestoreRefusesAnArchiveBeforeStopping(t *testing.T, implementation string) {
+	l := newRestoreLab(t, implementation)
 	l.deliver("first")
 	older := l.capture("arc_" + strings.Repeat("1", 32))
 	l.deliver("second")
@@ -652,7 +701,11 @@ func TestRestoreRefusesAnArchiveBeforeStopping(t *testing.T) {
 // activated: the restore stops before any declaration and the volume stays
 // out of service until a resumed restore can inspect it.
 func TestRestoreFailsClosedWhenTheImageCannotBeInspected(t *testing.T) {
-	l := newRestoreLab(t)
+	forEachAuthority(t, testRestoreFailsClosedWhenTheImageCannotBeInspected)
+}
+
+func testRestoreFailsClosedWhenTheImageCannotBeInspected(t *testing.T, implementation string) {
+	l := newRestoreLab(t, implementation)
 	l.deliver("first")
 	archive := l.capture("arc_" + strings.Repeat("1", 32))
 	l.deliver("second")
@@ -688,7 +741,11 @@ func TestRestoreFailsClosedWhenTheImageCannotBeInspected(t *testing.T) {
 // SQL record and its reservation in the restore authority: both stores then
 // move one incarnation at a time, to the same one.
 func TestRestoreSupersedesAnUnfinishedRestore(t *testing.T) {
-	l := newRestoreLab(t)
+	forEachAuthority(t, testRestoreSupersedesAnUnfinishedRestore)
+}
+
+func testRestoreSupersedesAnUnfinishedRestore(t *testing.T, implementation string) {
+	l := newRestoreLab(t, implementation)
 	l.deliver("first")
 	archive := l.capture("arc_" + strings.Repeat("1", 32))
 	lost := l.deliver("second")
@@ -716,6 +773,60 @@ func TestRestoreSupersedesAnUnfinishedRestore(t *testing.T) {
 	losses, err := l.authority.Losses(t.Context(), l.e.AgentID)
 	if err != nil || len(losses) != 1 || losses[0].Incarnation != 3 {
 		t.Fatal("authority losses", losses, err)
+	}
+}
+
+// While the authority service is down, a restore pauses and resumes from its
+// last durable step once the service is back (ADR 006 §4). Before the
+// service, an authority error ended the command (restore_failed_authority).
+func TestRestorePausesWhileTheServiceIsDown(t *testing.T) {
+	first, longest := restorePause.first, restorePause.max
+	restorePause.first, restorePause.max = 50*time.Millisecond, 200*time.Millisecond
+	t.Cleanup(func() { restorePause.first, restorePause.max = first, longest })
+	l := newRestoreLab(t, throughService)
+	l.deliver("before-archive")
+	archive := l.capture("arc_" + strings.Repeat("1", 32))
+	lost := l.deliver("after-archive")
+	var reasons []string
+	l.paused = func(err error) {
+		if !errors.Is(err, restoreauthority.ErrUnavailable) {
+			t.Error("paused on", err)
+		}
+		reasons = append(reasons, RestorePause(err))
+		if len(reasons) == 2 {
+			// Still down at the second attempt: the service comes back.
+			l.authority.restart(t)
+		}
+	}
+	h := l.host()
+	h.after = func(step string) error {
+		l.steps = append(l.steps, step)
+		if step == controlplane.RestoreInstalling && len(reasons) == 0 {
+			// The agent is out of service and its incarnation reserved: the
+			// service stops.
+			if err := l.authority.Close(); err != nil {
+				t.Error(err)
+			}
+		}
+		return nil
+	}
+	result, err := l.w.restorePausing(t.Context(), h, restoreIDFor(1), l.e.AgentID, archive.ID, l.archives, l.paused)
+	if err != nil {
+		t.Fatal("the restore did not resume", err)
+	}
+	if !slices.Equal(reasons, []string{"authority_unavailable", "authority_unavailable"}) {
+		t.Fatal("pauses", reasons)
+	}
+	if result.Incarnation != 2 || len(result.Losses) != 1 || result.Losses[0].OutcomeID != lost[0] {
+		t.Fatal("the resumed restore", result)
+	}
+	if e := l.enrollment(); e.Stage != "READY" || e.Incarnation != 2 {
+		t.Fatal("volume after the restore", e)
+	}
+	// A refusal still ends it: the same ID for another archive.
+	l.paused = nil
+	if _, err = l.restore(restoreIDFor(1), "arc_"+strings.Repeat("2", 32)); !errors.Is(err, controlplane.ErrConflict) {
+		t.Fatal("a refused restore", err)
 	}
 }
 

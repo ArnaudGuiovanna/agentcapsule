@@ -84,7 +84,8 @@ against the implementation in the test suite.
 
 ## Requirements
 
-- Linux amd64 with KVM (for running capsules), Go **1.27.3**, a C compiler and the
+- Linux amd64 with KVM, a kernel 5.14 or later (6.1 or 6.18 preferred) and cgroup v2
+  (for running capsules; `agentcapsule-worker -preflight` checks the host), Go **1.27.4**, a C compiler and the
   `libcryptsetup` headers (cgo), PostgreSQL 16 or newer.
 - Firecracker 1.17.0 with the volume-lock patch in [runtime/firecracker](runtime/firecracker),
   a guest kernel built from [runtime/guest](runtime/guest), and the guest image built
@@ -92,7 +93,12 @@ against the implementation in the test suite.
 
 ## Building and testing
 
+The worker links `libcryptsetup.so.12` by its file name, a flag Go refuses
+unless `CGO_LDFLAGS_ALLOW` allows it. Allow it once; the scripts set it
+themselves.
+
 ```bash
+go env -w CGO_LDFLAGS_ALLOW='-l:libcryptsetup\.so\.12'
 go build ./cmd/...
 go test -race ./...            # PostgreSQL-backed tests skip without a database
 ```
@@ -116,7 +122,11 @@ described in [scripts/README.md](scripts/README.md).
 
 Installation is not packaged yet. The building blocks are documented:
 
-- [docs/api/README.md](docs/api/README.md): API server, bootstrap and accounts.
+- [docs/install.md](docs/install.md): TLS on every hop, production and
+  development modes, and the host preflight.
+- [docs/bootstrap.md](docs/bootstrap.md): from an empty database to an
+  organization whose first owner signs in.
+- [docs/api/README.md](docs/api/README.md): API server and its routes.
 - [docs/api/tenant-identity.md](docs/api/tenant-identity.md): trusting an
   organization's identity provider.
 - [docs/worker.md](docs/worker.md): worker configuration
@@ -136,9 +146,11 @@ Installation is not packaged yet. The building blocks are documented:
 | Running an existing agent unchanged | [docs/adapter.md](docs/adapter.md) |
 | Guest runtime and the `capsule.v1` contract | [docs/guest/](docs/guest/) |
 | Interoperability profile (A2A, OASF, Directory, SLIM) | [docs/interop.md](docs/interop.md) |
+| Installing a host: TLS, modes, preflight | [docs/install.md](docs/install.md) |
 | Architecture decisions | [docs/adr/](docs/adr/) |
 | Formal models | [spec/](spec/) |
 | Build, test and verification scripts | [scripts/README.md](scripts/README.md) |
+| Releases: audit, signing, SBOMs, verification | [docs/release.md](docs/release.md) |
 
 ## Repository layout
 

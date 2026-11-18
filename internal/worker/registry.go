@@ -3,8 +3,11 @@ package worker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -12,6 +15,7 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/harnesspkg"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/ociregistry"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/sandbox"
 )
 
 // ServiceRegistry enables harness imports on this host.
@@ -24,6 +28,58 @@ type ServiceRegistry struct {
 	// RequireSignatures is strict mode: every rule must list publisher keys,
 	// so no unsigned package can be imported.
 	RequireSignatures bool `json:"require_signatures,omitempty"`
+	// InspectionUID is the UID, and the GID of the same number, that debugfs
+	// runs as when it inspects a downloaded image (package sandbox):
+	// reserved for this use, owning no file, outside the provisioning range,
+	// no account's or group's, not 65535 and below 2^31-1. Required when the
+	// worker runs as root; a worker that is not root inspects as its own
+	// account, in a user namespace, and ignores it.
+	InspectionUID uint32 `json:"inspection_uid,omitempty"`
+}
+
+var (
+	// ErrInspectionUID: a worker run as root needs registry.inspection_uid,
+	// not root's, an agent's, the SLIM bridge's, nor any account's or
+	// group's.
+	ErrInspectionUID = errors.New("registry.inspection_uid must be a UID reserved for image inspection: " +
+		"not 0 or 65535, below 2147483647, outside the provisioning range, not the SLIM bridge's, no account's or group's")
+	// ErrInspection: debugfs cannot run confined on this host.
+	ErrInspection = errors.New("image inspection cannot run confined on this host")
+)
+
+// inspection returns the sandbox of image inspections: as root, the
+// configured inspection UID and GID, checked against the values setresuid
+// may take as "unchanged" (sandbox.Reservable), the agents' range, the SLIM
+// bridge's user, and the host's accounts and groups: the program must own
+// nothing and belong to no group (6 is disk on Debian, with /dev/sd*).
+func (c ServiceConfig) inspection(asRoot bool) (sandbox.Options, error) {
+	uid := c.Registry.InspectionUID
+	if !asRoot {
+		return sandbox.Options{}, nil
+	}
+	p, slim := c.Provisioning, c.SLIM
+	switch id := strconv.FormatUint(uint64(uid), 10); {
+	case !sandbox.Reservable(uid):
+		return sandbox.Options{}, fmt.Errorf("%w: %d", ErrInspectionUID, uid)
+	case p != nil && uid >= p.FirstUID && uid <= p.LastUID:
+		return sandbox.Options{}, fmt.Errorf("%w: %d is in the provisioning range", ErrInspectionUID, uid)
+	case slim != nil && int64(slim.BridgeUID) == int64(uid):
+		return sandbox.Options{}, fmt.Errorf("%w: %d is the SLIM bridge's", ErrInspectionUID, uid)
+	default:
+		var account user.UnknownUserIdError
+		var group user.UnknownGroupIdError
+		if u, err := user.LookupId(id); err == nil {
+			return sandbox.Options{}, fmt.Errorf("%w: %d is the account %s's", ErrInspectionUID, uid, u.Username)
+		} else if !errors.As(err, &account) {
+			return sandbox.Options{}, fmt.Errorf("look up UID %d: %w", uid, err)
+		}
+		if g, err := user.LookupGroupId(id); err == nil {
+			return sandbox.Options{}, fmt.Errorf("%w: %d is the group %s's", ErrInspectionUID, uid, g.Name)
+		} else if !errors.As(err, &group) {
+			return sandbox.Options{}, fmt.Errorf("look up GID %d: %w", uid, err)
+		}
+	}
+	return sandbox.Options{UID: uid, GID: uid}, nil
 }
 
 // RegistryRule is one approved registry. CredentialsFile, for a private
@@ -49,6 +105,13 @@ type HarnessImporter struct {
 	Lease, Timeout time.Duration
 	// EvictEvery spaces cache evictions in Run (default one hour).
 	EvictEvery time.Duration
+	// RefillEvery spaces the refills of missing pinned packages in Run
+	// (default one minute).
+	RefillEvery time.Duration
+	// Pressure, when set, refuses an import while the cache's file system is
+	// past the storage pressure threshold (OPS-03): the import is tried
+	// again later, and rejected as storage_pressure after its last attempt.
+	Pressure func(dir string) error
 	// inUse lists the image paths this host's agents may boot from. Without
 	// it (no runtime attached) nothing is ever evicted.
 	inUse atomic.Pointer[func(context.Context) (map[string]bool, error)]
@@ -97,6 +160,15 @@ func (c ServiceConfig) OpenRegistry(s *controlplane.Store, workerID string) (*Ha
 	if err != nil {
 		return nil, err
 	}
+	if f.Sandbox, err = c.inspection(sandbox.AsRoot()); err != nil {
+		return nil, err
+	}
+	// Before any download: debugfs runs confined here, or no import does.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	if err = harnesspkg.CheckInspection(ctx, f.Sandbox); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInspection, err)
+	}
 	return NewHarnessImporter(s, f, cache, workerID)
 }
 
@@ -110,7 +182,7 @@ func NewHarnessImporter(s *controlplane.Store, f *ociregistry.Fetcher, cache, wo
 		}
 	}
 	return &HarnessImporter{store: s, fetcher: f, cache: cache, worker: workerID, Lease: 35 * time.Minute, Timeout: 30 * time.Minute,
-		EvictEvery: time.Hour}, nil
+		EvictEvery: time.Hour, RefillEvery: time.Minute}, nil
 }
 
 // PackageDir is where a verified package of this digest lives.
@@ -119,10 +191,12 @@ func (h *HarnessImporter) PackageDir(digest string) string {
 }
 
 // Run imports until ctx ends, polling when there is nothing to do. When idle,
-// it evicts unused packages at most every EvictEvery. Imports and evictions run
-// in this one loop, so an eviction never races with a download on this host.
+// it fetches again the pinned packages the cache lacks at most every
+// RefillEvery, and evicts unused packages at most every EvictEvery. Imports,
+// refills and evictions run in this one loop, so an eviction never races with
+// a download on this host.
 func (h *HarnessImporter) Run(ctx context.Context, poll time.Duration, report func(error)) error {
-	var lastEviction time.Time
+	var lastEviction, lastRefill time.Time
 	for {
 		worked, err := h.ImportOne(ctx)
 		if report != nil && err != nil {
@@ -130,6 +204,12 @@ func (h *HarnessImporter) Run(ctx context.Context, poll time.Duration, report fu
 		}
 		if worked && err == nil {
 			continue
+		}
+		if !worked && time.Since(lastRefill) >= h.RefillEvery {
+			lastRefill = time.Now()
+			if _, err = h.Refill(ctx); report != nil && err != nil {
+				report(err)
+			}
 		}
 		if !worked && time.Since(lastEviction) >= h.EvictEvery {
 			lastEviction = time.Now()
@@ -154,24 +234,75 @@ func (h *HarnessImporter) ImportOne(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	pkg, err := h.fetch(ctx, job)
+	pkg, err := h.fetch(ctx, job, nil)
 	if err != nil {
 		code, transient := classifyImport(err)
 		_, ferr := h.store.FailHarnessImport(ctx, job, code, transient, backoff(job.Attempt))
 		return true, ferr
 	}
 	_, err = h.store.CompleteHarnessImport(ctx, job, controlplane.ImportedRelease{Name: pkg.Manifest.Name, Version: pkg.Manifest.Version,
-		RootfsDigest: pkg.RootfsDigest, RootfsBytes: pkg.RootfsSize, Signer: pkg.Signer})
+		RootfsDigest: pkg.RootfsDigest, RootfsBytes: pkg.RootfsSize, Signer: pkg.Signer, Capabilities: pkg.Manifest.Capabilities})
 	return true, err
 }
 
+// Refill fetches again each package that an agent of this host pins and that
+// the cache lacks, by the reference and digest its release recorded at import
+// (OPR-10): a host rebuilt from its backups has its releases in PostgreSQL,
+// not its cache. Each package is verified as at its import, under the same
+// registry policy, and must hold the release's root file system. It returns
+// the digests fetched; a package it cannot fetch leaves its agents unable to
+// boot, as before. It must not run concurrently with ImportOne or Evict; Run
+// serializes them.
+func (h *HarnessImporter) Refill(ctx context.Context) ([]string, error) {
+	if h.host == "" {
+		return nil, nil
+	}
+	pinned, err := h.store.PinnedHarnessReleases(ctx, h.host)
+	if err != nil {
+		return nil, err
+	}
+	var refilled []string
+	var failures error
+	for _, r := range pinned {
+		dir := h.PackageDir(r.Digest)
+		_, err := os.Stat(filepath.Join(dir, harnesspkg.ManifestFile))
+		if err == nil {
+			continue
+		}
+		if errors.Is(err, os.ErrNotExist) {
+			// Not a package: whatever holds its name goes first.
+			err = removeTree(dir)
+		}
+		if err == nil {
+			_, err = h.fetch(ctx, controlplane.ImportJob{ID: "refill", Reference: r.Reference}, func(pkg ociregistry.Package) error {
+				if pkg.RootfsDigest != r.RootfsDigest {
+					return fmt.Errorf("%w: the package does not hold the release's root file system", ociregistry.ErrIntegrity)
+				}
+				return nil
+			})
+		}
+		if err != nil {
+			failures = errors.Join(failures, fmt.Errorf("refill %s:%s: %w", r.Name, r.Version, err))
+			continue
+		}
+		refilled = append(refilled, r.Digest)
+	}
+	return refilled, failures
+}
+
 // fetch downloads into a private staging directory, then moves the verified
-// package into the content-addressed cache. A package already cached under its
-// digest was verified before and is kept.
-func (h *HarnessImporter) fetch(ctx context.Context, job controlplane.ImportJob) (ociregistry.Package, error) {
+// package into the content-addressed cache; accept, when given, may refuse it
+// first. A package already cached under its digest was verified before and is
+// kept.
+func (h *HarnessImporter) fetch(ctx context.Context, job controlplane.ImportJob, accept func(ociregistry.Package) error) (ociregistry.Package, error) {
 	ref, err := ociregistry.ParseReference(job.Reference)
 	if err != nil {
 		return ociregistry.Package{}, err
+	}
+	if h.Pressure != nil {
+		if err = h.Pressure(h.cache); err != nil {
+			return ociregistry.Package{}, err
+		}
 	}
 	ctx, cancel := context.WithTimeout(ctx, h.Timeout)
 	defer cancel()
@@ -179,8 +310,11 @@ func (h *HarnessImporter) fetch(ctx context.Context, job controlplane.ImportJob)
 	if err != nil {
 		return ociregistry.Package{}, err
 	}
-	defer os.RemoveAll(staging)
+	defer removeTree(staging)
 	pkg, err := h.fetcher.Fetch(ctx, ref, staging)
+	if err == nil && accept != nil {
+		err = accept(pkg)
+	}
 	if err != nil {
 		return ociregistry.Package{}, err
 	}
@@ -209,53 +343,132 @@ func (h *HarnessImporter) Evict(ctx context.Context) ([]string, error) {
 	if inUse == nil || h.host == "" {
 		return nil, nil
 	}
-	keep, err := h.store.RetainedHarnessDigests(ctx, h.host)
-	if err != nil {
-		return nil, err
-	}
-	booting, err := (*inUse)(ctx)
-	if err != nil {
-		return nil, err
-	}
+	g, err := h.collect(ctx, h.host, *inUse, 0, false)
+	return g.Unused, err
+}
+
+// ImageGarbage is what a collection of the image cache removed, or would
+// remove in a dry run: the packages no agent of the host can boot, by
+// digest, the leftovers of interrupted downloads, and their bytes.
+type ImageGarbage struct {
+	Unused    []string `json:"unused"`
+	Leftovers int      `json:"leftovers"`
+	Bytes     int64    `json:"bytes"`
+}
+
+// collect is Evict for host. With staleAfter, it removes only the download
+// leftovers untouched for that long: a collection that runs beside the
+// worker's own imports (GarbageCollection) leaves a download in progress
+// alone. It lists the cache before it reads what to keep: a package that an
+// import moves into the cache meanwhile belongs to an import that is
+// IMPORTING by then, or READY, and is kept. A dry run removes nothing.
+func (h *HarnessImporter) collect(ctx context.Context, host string, inUse func(context.Context) (map[string]bool, error), staleAfter time.Duration, dryRun bool) (ImageGarbage, error) {
+	g := ImageGarbage{Unused: []string{}}
 	staging := filepath.Join(h.cache, ".staging")
 	leftovers, err := os.ReadDir(staging)
-	if err != nil {
-		return nil, err
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return g, err
 	}
 	for _, e := range leftovers {
-		if err = removeTree(filepath.Join(staging, e.Name())); err != nil {
-			return nil, err
+		path := filepath.Join(staging, e.Name())
+		size, latest, err := treeUsage(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return g, err
+		}
+		if staleAfter > 0 && time.Since(latest) < staleAfter {
+			continue
+		}
+		g.Leftovers++
+		g.Bytes += size
+		if !dryRun {
+			if err = removeTree(path); err != nil {
+				return g, err
+			}
 		}
 	}
 	entries, err := os.ReadDir(filepath.Join(h.cache, "sha256"))
-	if err != nil {
-		return nil, err
+	if errors.Is(err, os.ErrNotExist) {
+		return g, nil
 	}
-	var evicted []string
+	if err != nil {
+		return g, err
+	}
+	keep, err := h.store.RetainedHarnessDigests(ctx, host)
+	if err != nil {
+		return g, err
+	}
+	booting, err := inUse(ctx)
+	if err != nil {
+		return g, err
+	}
 	for _, e := range entries {
 		digest := "sha256:" + e.Name()
 		dir := h.PackageDir(digest)
 		if !harnesspkg.ValidDigest(digest) || keep[digest] || booting[filepath.Join(dir, harnesspkg.RootfsFile)] {
 			continue
 		}
+		size, _, err := treeUsage(dir)
+		if errors.Is(err, os.ErrNotExist) {
+			continue // evicted meanwhile, by the worker or another collection
+		}
+		if err != nil {
+			return g, err
+		}
+		if dryRun {
+			g.Unused, g.Bytes = append(g.Unused, digest), g.Bytes+size
+			continue
+		}
 		// Leave the content-addressed path atomically, then delete.
 		doomed, err := os.MkdirTemp(staging, "evict-")
 		if err != nil {
-			return evicted, err
+			return g, err
 		}
 		// Moving a directory to another parent needs write access to it.
 		if err = os.Chmod(dir, 0o755); err == nil {
 			err = os.Rename(dir, filepath.Join(doomed, "pkg"))
 		}
+		if errors.Is(err, os.ErrNotExist) {
+			if err = os.Remove(doomed); err != nil {
+				return g, err
+			}
+			continue
+		}
 		if err != nil {
-			return evicted, errors.Join(err, os.Remove(doomed))
+			return g, errors.Join(err, os.Remove(doomed))
 		}
 		if err = removeTree(doomed); err != nil {
-			return evicted, err
+			return g, err
 		}
-		evicted = append(evicted, digest)
+		g.Unused, g.Bytes = append(g.Unused, digest), g.Bytes+size
 	}
-	return evicted, nil
+	return g, nil
+}
+
+// treeUsage is the bytes of the regular files under path and the latest
+// modification of path or of anything under it. It follows no link.
+func treeUsage(path string) (int64, time.Time, error) {
+	var size int64
+	var latest time.Time
+	err := filepath.WalkDir(path, func(_ string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if info.ModTime().After(latest) {
+			latest = info.ModTime()
+		}
+		if info.Mode().IsRegular() {
+			size += info.Size()
+		}
+		return nil
+	})
+	return size, latest, err
 }
 
 // removeTree deletes a directory whose subdirectories were sealed read-only.
@@ -281,6 +494,8 @@ func classifyImport(err error) (string, bool) {
 		return "signature", false
 	case errors.Is(err, ociregistry.ErrIntegrity), errors.Is(err, harnesspkg.ErrInvalid):
 		return "integrity", false
+	case errors.Is(err, controlplane.ErrStoragePressure):
+		return "storage_pressure", true
 	default:
 		return "unavailable", true
 	}

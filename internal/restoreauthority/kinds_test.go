@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authoritylog"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/keyauthority"
 )
 
 // Every statement of the stream, and both key writes, have a kind, and the
@@ -30,7 +32,7 @@ func TestEveryStatementAndKeyWriteIsClassified(t *testing.T) {
 	want := map[string]bool{
 		authoritylog.WriteOutcome: true, authoritylog.WriteRerun: true, authoritylog.WriteFence: true,
 		authoritylog.WriteRevocationStart: true, authoritylog.WriteRegistration: false,
-		authoritylog.WriteReservation: false, authoritylog.WriteLoss: false, authoritylog.WriteSeal: false,
+		authoritylog.WriteReservation: false, authoritylog.WriteLoss: false, authoritylog.WriteSeal: false, authoritylog.WriteAccess: true,
 	}
 	if fmt.Sprint(continuing) != fmt.Sprint(want) {
 		t.Fatal("statements continue in degraded mode:", continuing)
@@ -43,6 +45,17 @@ func TestEveryStatementAndKeyWriteIsClassified(t *testing.T) {
 		if opKind(op) != kind || authoritylog.ContinuesDegraded(opKind(op)) {
 			t.Fatal("key write", op.Kind, opKind(op))
 		}
+	}
+	// A daily receipt key's writes have their own kinds (ADR 006, answer
+	// 4(b)): its creation continues in degraded mode, its destruction
+	// waits; the receipt keys' agent with any other volume has no kind.
+	day := keyauthority.ReceiptKeyVolume(time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC))
+	created := authoritylog.Op{Kind: authoritylog.OpKeyCreate, Agent: keyauthority.ReceiptKeyAgent, Volume: day}
+	destroyed := authoritylog.Op{Kind: authoritylog.OpKeyRevoke, Agent: keyauthority.ReceiptKeyAgent, Volume: day}
+	if opKind(created) != authoritylog.WriteReceiptKeyCreate || !continues(authoritylog.Record{Ops: []authoritylog.Op{created}}) ||
+		opKind(destroyed) != authoritylog.WriteReceiptKeyDestroy || continues(authoritylog.Record{Ops: []authoritylog.Op{destroyed}}) ||
+		opKind(authoritylog.Op{Kind: authoritylog.OpKeyCreate, Agent: keyauthority.ReceiptKeyAgent, Volume: streamVolume}) != "" {
+		t.Fatal("receipt key writes", opKind(created), opKind(destroyed))
 	}
 	outcome := authoritylog.Op{Kind: authoritylog.OpStatement, Statement: int(stmtOutcome)}
 	seal := authoritylog.Op{Kind: authoritylog.OpStatement, Statement: int(stmtSeal)}

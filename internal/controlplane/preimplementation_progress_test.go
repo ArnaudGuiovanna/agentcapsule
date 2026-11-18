@@ -25,7 +25,18 @@ import (
 // This is a projection of P3's macrosteps, not a refinement proof or a test of
 // physical capacity/fairness. P3 destination is the outcome recipient (the Go
 // request sender). The opposite agent executes the request. This binding does
-// not implement P3's selective deletion semantics and must not be used for it.
+// not implement P3's selective deletion semantics and must not be used for it,
+// except in deleted-destination-rejects-new-work, which deletes agent a with
+// no request in flight (preimplementation_progress_deletion_test.go). The
+// capacity cases also go through the host's work queue
+// (preimplementation_progress_capacity_test.go).
+//
+// Two cases are not replayed. In retiring-notice-waits-for-capacity, request 1
+// (b to a) arrives after notice 0 (to a): a's mailbox queues it behind the
+// notice, and Go refuses admit(1) where P3, with separate admission and
+// notification queues, allows it. delete-running-agent-preserves-other-work
+// needs a third agent and a deletion that closes request 0 at its tombstone:
+// TestDeletionOfARunningAgentPreservesOtherWork projects it.
 var p3Cases = map[string]bool{
 	"successful-request-observed-and-notified":  true,
 	"hung-handler-terminated-by-deadline":       true,
@@ -39,6 +50,12 @@ var p3Cases = map[string]bool{
 	"worker-crash-recovery":                     true,
 	"authority-recovery-enables-observation":    true,
 	"observe-requires-current-authority":        true,
+	"deleted-destination-rejects-new-work":      true,
+	"retiring-notice-reserves-capacity":         true,
+	"barrier-reserves-capacity":                 true,
+	"fence-waits-for-current-execution":         true,
+	"cannot-recycle-with-outstanding-notice":    true,
+	"fifo-admission-cannot-overtake":            true,
 }
 
 type p3Binding struct {
@@ -54,7 +71,7 @@ type p3Replay struct {
 	local       *p1Replay
 	transit     *Transit
 	catalog     *AgentCatalog
-	principals  [2]Principal
+	principals  [3]Principal
 	bound       [3]p3Binding
 	history     []p3Binding
 	serial      int
@@ -62,6 +79,10 @@ type p3Replay struct {
 	lookup      *Store
 	lookupProxy *p3SQLProxy
 	sqlWorker   *p3SQLWorker
+	// work is the host's work queue, in the capacity cases only.
+	work *p3WorkQueue
+	// model is the state last compared: the refusals are checked against it.
+	model p3Observation
 }
 
 func p3Sender(slot int) int {
@@ -76,7 +97,15 @@ func newP3Replay(t *testing.T, scenario string) *p3Replay {
 	s, dsn := freshStore(t, "auto", 10)
 	// Initial environment: exactly two stores and a two-attempt notification
 	// budget, matching this finite instance. No requests/results are seeded.
-	if _, err := s.pool.Exec(t.Context(), `DELETE FROM mandates WHERE agent_id='c'; DELETE FROM agents WHERE id='c'; ALTER TABLE agent_mailboxes ALTER COLUMN attempt_limit SET DEFAULT 2`); err != nil {
+	// The deletion of a running agent keeps a third agent, c, to execute the
+	// other work (TestDeletionOfARunningAgentPreservesOtherWork).
+	agents := 2
+	if scenario == p3ThreeAgents {
+		agents = 3
+	} else if _, err := s.pool.Exec(t.Context(), `DELETE FROM mandates WHERE agent_id='c'; DELETE FROM agents WHERE id='c'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.pool.Exec(t.Context(), `ALTER TABLE agent_mailboxes ALTER COLUMN attempt_limit SET DEFAULT 2`); err != nil {
 		t.Fatal(err)
 	}
 	a := &p3Replay{s: s, dsn: dsn, lookup: s}
@@ -93,7 +122,7 @@ func newP3Replay(t *testing.T, scenario string) *p3Replay {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := range 2 {
+	for i := range agents {
 		u := createAccount(t, accounts, admin, "owner-"+p1Agent(i), "Progress owner "+p1Agent(i))
 		token := issueAccountToken(t, accounts, admin, u, "token-"+p1Agent(i))
 		a.principals[i], err = s.Authenticate(t.Context(), token.Token)
@@ -123,13 +152,16 @@ func newP3Replay(t *testing.T, scenario string) *p3Replay {
 	if scenario == "worker-crash-recovery" {
 		a.sqlWorker = startP3SQLWorker(t, dsn)
 	}
+	if p3Queued[scenario] {
+		a.work = &p3WorkQueue{jobs: map[int]WorkerJob{}}
+	}
 	t.Cleanup(func() {
 		for _, r := range a.local.rpc {
 			if r != nil && r.cancel != nil {
 				r.cancel()
 			}
 		}
-		for i := range 2 {
+		for i := range agents {
 			a.local.stopLocal(t, i)
 		}
 	})
@@ -188,12 +220,26 @@ func (f p3Fences) Fence(ctx context.Context, target, subject string) error {
 	return f.replay.local.boots[p1AgentNumber(target)].client.Fence(ctx, subject)
 }
 
+// step applies one P3 transition. In the capacity cases, the worker then
+// discovers the work it made, as each of its passes does.
 func (a *p3Replay) step(t *testing.T, op protocolAction) error {
+	t.Helper()
+	err := a.transition(t, op)
+	if err == nil {
+		a.discover(t)
+	}
+	return err
+}
+
+func (a *p3Replay) transition(t *testing.T, op protocolAction) error {
 	t.Helper()
 	if op.Name == "stabilize" {
 		return nil
 	} // environment assumption; no Go assertion
 	if handled, err := a.availabilityStep(t, op); handled {
+		return err
+	}
+	if handled, err := a.deletionStep(t, op); handled {
 		return err
 	}
 	i := p1Int(op.Args[0])
@@ -223,6 +269,9 @@ func (a *p3Replay) step(t *testing.T, op protocolAction) error {
 			a.sqlWorker.exchange(t, &p3WorkerCommand{Op: "discover"})
 		}
 	case "admit":
+		if err := a.claimWork(t, i); err != nil {
+			return err
+		}
 		r, err := a.claim(t, b.incoming)
 		if err != nil {
 			return err
@@ -230,6 +279,9 @@ func (a *p3Replay) step(t *testing.T, op protocolAction) error {
 		return a.begin(t, r)
 	case "complete":
 		if err := a.commit(t); err != nil {
+			return err
+		}
+		if err := a.completeWork(t, i); err != nil {
 			return err
 		}
 		reply := capsuleprotocol.Reply{
@@ -322,7 +374,7 @@ func (a *p3Replay) step(t *testing.T, op protocolAction) error {
 			return err
 		}
 		if !b.observed || !notified {
-			t.Fatal("cannot recycle this projection before observation and ACK")
+			return errNoticeOutstanding
 		}
 		a.history = append(a.history, *b)
 		*b = p3Binding{}
@@ -350,6 +402,7 @@ type p3Observation struct {
 		WorkerUp    bool  `json:"worker_up"`
 		AuthorityUp bool  `json:"authority_up"`
 	}
+	Deletion struct{ Pending, Complete bool }
 }
 
 func (a *p3Replay) sqliteCount(t *testing.T, agent int, table, column, id string) int {
@@ -376,6 +429,8 @@ func (a *p3Replay) sqliteCount(t *testing.T, agent int, table, column, id string
 
 func (a *p3Replay) compare(t *testing.T, w p3Observation, index int) {
 	t.Helper()
+	a.model = w
+	a.compareDeletion(t, w, index)
 	eq := func(label string, got, want any) {
 		t.Helper()
 		if !reflect.DeepEqual(got, want) {
@@ -550,6 +605,13 @@ func (a *p3Replay) compare(t *testing.T, w p3Observation, index int) {
 				break
 			}
 		}
+		if head != a.bound[first].notice && a.openRequestAhead(w, head) {
+			// An agent's mailbox keeps the requests it receives and the
+			// notices it is sent in one FIFO; P3 keeps them in two queues. A
+			// request to the same agent, queued before the notice and still
+			// open (accepted, executing or closing), heads the mailbox.
+			continue
+		}
 		eq("terminal FIFO head", head, a.bound[first].notice)
 	}
 	eq("tagged acceptance", a.bound[0].id != "", w.Watched.Accepted)
@@ -596,7 +658,7 @@ func TestPreimplementationP3ITF(t *testing.T) {
 		t.Fatal(err)
 	}
 	read("sources/service_progress.qnt", manifest.ModelSHA)
-	if len(manifest.Cases) != 20 || len(p3Cases) != 12 {
+	if len(manifest.Cases) != 20 || len(p3Cases) != 18 {
 		t.Fatal("P3 coverage inventory changed")
 	}
 	executed := []string{}

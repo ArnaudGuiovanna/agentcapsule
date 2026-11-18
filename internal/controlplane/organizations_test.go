@@ -30,9 +30,13 @@ func organizationInput() CreateOrganizationInput {
 		Issuer: "https://issuer.example", Subject: "initial-owner", DisplayName: "Initial Owner"}}
 }
 
+// createTestOrganization names each organization after its key: two active
+// organizations cannot share a name.
 func createTestOrganization(t *testing.T, a *Accounts, p Principal, key string) CreateOrganizationResponse {
 	t.Helper()
-	r, err := a.CreateOrganization(t.Context(), p, key, organizationInput())
+	in := organizationInput()
+	in.Name += " " + key
+	r, err := a.CreateOrganization(t.Context(), p, key, in)
 	if err != nil || r.Status != 201 {
 		t.Fatal("create organization", err)
 	}
@@ -403,10 +407,10 @@ func TestPlatformCredentialCanBeReplacedAfterRevocationOrExpiry(t *testing.T) {
 	if err := s.BootstrapPlatformToken(t.Context(), "platform-test", fresh(), time.Hour); !errors.Is(err, ErrConflict) {
 		t.Fatal("second active platform credential accepted", err)
 	}
-	if err := s.RevokeOperatorCredential(t.Context(), "platform", p.TokenID); err != nil {
+	if _, err := s.RevokeOperatorCredential(t.Context(), testOperator, "platform", p.TokenID); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RevokeOperatorCredential(t.Context(), "platform", p.TokenID); err != nil {
+	if _, err := s.RevokeOperatorCredential(t.Context(), testOperator, "platform", p.TokenID); err != nil {
 		t.Fatal("revocation is not idempotent", err)
 	}
 	if _, err := s.Authenticate(t.Context(), old); !errors.Is(err, ErrAuthentication) {
@@ -429,10 +433,10 @@ func TestPlatformCredentialCanBeReplacedAfterRevocationOrExpiry(t *testing.T) {
 	if err := s.BootstrapPlatformToken(t.Context(), "platform-test", fresh(), time.Hour); err != nil {
 		t.Fatal("operator locked out after expiry:", err)
 	}
-	if err := s.RevokeOperatorCredential(t.Context(), "platform", "ptok_missing"); !errors.Is(err, ErrNotFound) {
+	if _, err := s.RevokeOperatorCredential(t.Context(), testOperator, "platform", "ptok_missing"); !errors.Is(err, ErrNotFound) {
 		t.Fatal("unknown credential reported as revoked", err)
 	}
-	if err := s.RevokeOperatorCredential(t.Context(), "other", "x"); !errors.Is(err, ErrInput) {
+	if _, err := s.RevokeOperatorCredential(t.Context(), testOperator, "other", "x"); !errors.Is(err, ErrInput) {
 		t.Fatal("unknown kind accepted", err)
 	}
 	list, err := s.ListOperatorCredentials(t.Context())

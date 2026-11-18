@@ -1,24 +1,47 @@
 # Local volume key authority
 
 `internal/keyauthority` keeps one random LUKS open key per volume, bound to its
-agent. The directory must be private, owned by the worker account and kept out
-of data backups/restores. For the current host pilot, this account is root. Two
-different paths do not guarantee two failure domains or two independent backup
-policies.
+agent. The directory must be private, owned by the account of the authority
+service, `agentcapsule-authority` ([ADR 006](../adr/006-authority-service.md)),
+and kept out of data backups/restores. Root can still read it; the worker,
+which runs as root, never opens it. Two different paths do not guarantee two
+failure domains or two independent backup policies.
 
-The administrator explicitly initializes a new directory:
+The administrator explicitly initializes a new directory, as the service's
+account:
 
 ```sh
-agentcapsule-admin init-key-authority -root /srv/agentcapsule-authority
+runuser -u agentcapsule-authority -- agentcapsule-admin init-key-authority -root /var/lib/agentcapsule-key-authority
 ```
 
 The command returns a public `authority_id` to keep in the installation
 configuration. It returns no key. Repeating it keeps the same identity. The
-worker opens the authority with `keyauthority.Open(root, expectedIdentity)`: it
-refuses an absent authority, a different one, or one with incorrect permissions,
-without creating a replacement. Every operation re-verifies this identity.
-The worker service opens this authority through `ServiceConfig.OpenVolumeKeys`
-(`internal/worker/service_config_linux.go`) and passes it to provisioning.
+authority service opens the authority with
+`keyauthority.Open(root, expectedIdentity)`: it refuses an absent authority, a
+different one, or one with incorrect permissions or another owner, without
+creating a replacement. Every operation re-verifies this identity. Nothing
+else opens the directory while the service runs: it holds the directory's
+owner lock, and the commands that open it refuse with `authority_in_use`.
+
+**The worker borrows a key through a hold.** It reaches the service on its
+worker socket, which admits root only, and pins both authorities' identities
+(its `authority` section, [worker.md](../worker.md)). To format a new volume
+or unlock it at boot, it asks for a key hold under the volume's binding
+{agent, volume, incarnation}: the service holds the restore authority's
+binding, then the key's shared lock, and sends the key as 32 raw bytes after
+its `held` frame, never inside JSON. The worker uses the key, clears its
+buffer, and releases the hold; the end of its connection releases it too. A
+hold lasts at most `max_key_hold` (2 minutes by default). The service refuses
+a key without its binding. Creation and destruction go through the service
+too (`ensure_key`, `destroy_key`). The service's unit disables core dumps,
+and the service never logs or exports a key.
+
+**Destruction checks the seal.** `destroy_key` names the binding too. The
+service refuses it unless the restore authority holds the store sealed with
+that volume (`not_sealed`), and refuses it without the incarnation. An
+agent's deletion seals its store first. A seal is permanent, so checking it
+and then destroying the key needs no transaction across both authorities.
+The worker keeps that order, but the service does not rely on it.
 
 A created key keeps its identity after an interruption. A permanent allocation
 marker prevents generating another key if the published file disappears.
@@ -38,6 +61,35 @@ The tests cover process interruptions and a key restore that keeps the
 independent tombstones. They are not yet the complete P2 restore path, nor a
 validation of an external HSM or KMS.
 
+## Lifecycle of a volume key
+
+[ADR 018](../adr/018-key-lifecycle-and-archive-deletion.md) states the policy.
+
+- **Created** when the agent is provisioned, after its store is registered in
+  the restore authority (`ensure_key`, from
+  `internal/worker/provisioning_linux.go`).
+- **Used** to format the volume on the host, and at each boot to open it in
+  the guest, through a key hold. A restore installs an archive into the same
+  volume: the key stays the same.
+- **Never rotated.** It lives as long as the volume. It opens the volume's
+  only LUKS key slot, and the LUKS volume key under that slot never changes:
+  a new key for the slot would still leave every archive openable with the
+  old one.
+- **Destroyed** when the agent is deleted, right after the restore authority
+  seals its store, and before the volume file is removed (`destroy_key`, from
+  `internal/worker/removals_linux.go`). From then on no archive of the agent
+  opens anywhere; the worker deletes those of its host within an hour, and
+  the stores' copies expire by age
+  ([recovery.md](../recovery.md#deleting-an-agent-its-keys-and-its-archives-adr-018)).
+
+The authority service refuses to destroy the key of a store that is not
+sealed ([ADR 006](../adr/006-authority-service.md), wave 3): `destroy_key`
+takes the store's binding and answers `not_sealed` otherwise. The worker keeps
+its order, seal then key.
+
+"Kept out of data backups" includes the provider's snapshots of the host's
+disk: such a copy holds every key in clear, and brings back a destroyed one.
+
 ## The replica on the standby
 
 D-05 ([ADR 005](../adr/005-keys-outside-restored-domain.md)) adds a replica of
@@ -48,16 +100,19 @@ both authorities on the standby host. There are two modes.
   **This mode gives no disaster protection.**
 - **Synchronous.** The key authority and the restore authority share one
   stream of records. Each write returns only once the replica holds it on
-  disk. The worker enables it with `authority_replica`
-  ([worker.md](../worker.md#replica-of-the-authorities)).
+  disk. The authority service enables it with `authority_replica`
+  ([recovery.md](../recovery.md#install-the-replica)).
 
 In synchronous mode:
 - `Ensure` publishes the key file first. Nobody can use the key yet: its
   allocation marker is missing. The stream records the key, wrapped, and
   waits for the replica. Only then does `Ensure` publish the marker.
-- `Revoke` publishes the tombstone at once, which only denies. The stream
-  records the destruction. The replica deletes its wrapped copy in the same
-  transaction. Only then does `Revoke` remove the key file.
+- `Revoke` first checks, in the catalogue transaction that will record the
+  destruction, that the store is sealed with that volume; otherwise it
+  publishes nothing. Then it publishes the tombstone at once, which only
+  denies. The stream records the destruction after the seal. The replica
+  deletes its wrapped copy in the same transaction. Only then does `Revoke`
+  remove the key file.
 - After a crash at any step, no caller can use a key that the replica lacks.
   A retry records the same key again. The replica keeps one key per volume,
   and a destroyed key never comes back.
@@ -80,8 +135,10 @@ without the replica cannot write behind its back. `WithKey` still works.
 **Promotion.** When the primary is lost, `agentcapsule-authority promote`
 opens the replica's copies with the unlock key, checks each key against its
 commitment, and writes a new key authority on the standby with the same
-identity: every live key, every allocation marker and every tombstone. A
-destroyed key stays destroyed: the replica holds its tombstone and no copy.
+identity: every live key, every allocation marker and every tombstone. It
+runs as `agentcapsule-authority`, so the new directories belong to the
+service's account. A destroyed key stays destroyed: the replica holds its
+tombstone and no copy.
 The new authority is standalone, without a `replicated` file, until a
 snapshot arms it for a new standby. The old host's key directory must be
 deleted before that host serves again: it holds keys destroyed since the

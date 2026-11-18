@@ -11,11 +11,14 @@ Thanks for your interest in Agent Capsule. The project is pre-MVP; the
 
 ## Development setup
 
-You need Linux amd64, Go 1.27.3, a C compiler, the `libcryptsetup` development
+You need Linux amd64, Go 1.27.4, a C compiler, the `libcryptsetup` development
 headers and PostgreSQL 16 or newer. KVM, Firecracker and root access are only needed
-for the VM campaigns.
+for the VM campaigns. The worker links `libcryptsetup.so.12` by its file name,
+a flag Go refuses unless `CGO_LDFLAGS_ALLOW` allows it: allow it once with the
+first command below.
 
 ```bash
+go env -w CGO_LDFLAGS_ALLOW='-l:libcryptsetup\.so\.12'
 go build ./cmd/...
 go test -race ./...
 python3 scripts/verify-postgres.py --pg-bin /usr/lib/postgresql/16/bin --native-tools /
@@ -45,8 +48,13 @@ See [scripts/README.md](scripts/README.md) for every runner.
 - Keep each pull request focused, with a description of the behavior change and how
   it was tested.
 - CI must pass: formatting and vet, unit and race tests, the PostgreSQL integration
-  runner, the OpenAPI validation, the Quint typecheck, repository hygiene and the
-  secret scan.
+  runner, the OpenAPI validation, the Quint typecheck, repository hygiene, the
+  secret scan and the release audit (vulnerabilities, licenses, reproducible build,
+  SBOMs, scans; see [docs/release.md](docs/release.md)).
+- **New dependencies and images.** A new Go module, Python package or container
+  image must carry an allowed license (`scripts/license-policy.json`) and an image
+  must be pinned by digest. Accept a vulnerability only with a reviewed entry of
+  `scripts/vulnerability-allowlist.json`.
 - Never commit credentials, keys, tokens, personal paths or generated evidence
   (`_evidence/` is ignored). Fake secrets in tests must be obviously fake and marked
   `gitleaks:allow`.

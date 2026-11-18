@@ -55,6 +55,9 @@ import threading
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
+# internal/volumestore links "-l:libcryptsetup.so.12", which Go refuses in a
+# #cgo directive unless this pattern allows it.
+CGO_LDFLAGS_ALLOW = r"-l:libcryptsetup\.so\.12"
 SPEC = importlib.util.spec_from_file_location("verify_backups", ROOT / "scripts/verify-backups.py")
 BACKUPS = importlib.util.module_from_spec(SPEC)
 sys.dont_write_bytecode = True
@@ -183,7 +186,12 @@ def main():
     p.add_argument("--pg-bin", type=Path, required=True, help="PostgreSQL bin directory (initdb, pg_ctl, psql, pg_basebackup)")
     p.add_argument("--pg-library-path", type=Path, help="library directory for PostgreSQL's programs")
     p.add_argument("--output", type=Path, required=True, help="new evidence directory")
+    p.add_argument("--restore-from-copies", action="store_true",
+                   help="also restore a lost host's agent from these stores' copies (TestRestoreFromShippedCopies, ADR 020)")
+    p.add_argument("--native-tools", type=Path, help="native development headers, with libcryptsetup-dev: needed by --restore-from-copies")
     a = p.parse_args()
+    if a.restore_from_copies and not a.native_tools:
+        p.error("--restore-from-copies needs --native-tools")
     for tool in ("docker", "openssl", "ssh-keygen", "systemd-analyze", "systemd-sysusers"):
         if not shutil.which(tool):
             p.error(tool + " is required")
@@ -613,6 +621,16 @@ def main():
         fetched["standby_s3_credential"] = {"write_refused": write.returncode != 0, "delete_refused": delete.returncode != 0}
         expect(write.returncode and delete.returncode and "A" in complete_on("s3"), "the standby's S3 credential could write or delete")
 
+        # ---- 6b. A lost host's agent restored from these copies (ADR 020).
+        if a.restore_from_copies:
+            held = {s: {p.split("/")[0] for p in listing(host_conf, f"{s}:")} for s in ("s3", "standby")}
+            report["restore_from_copies"] = restore_from_copies(a, out, work, env, run, expect, clusters, rclone, host_conf, standby_conf,
+                                                                [ca_flag, "--contimeout=10s"])
+            # Its archives leave the stores again: the stages below count what they hold.
+            for s in ("s3", "standby"):
+                for archive_id in sorted({p.split("/")[0] for p in listing(host_conf, f"{s}:")} - held[s]):
+                    rc(host_conf, "purge", f"{s}:{archive_id}")
+
         # ---- 7. No clear text in either store; a copy in clear is found.
         decoy = {"agent": hex_id("agt"), "marker": "acp-decoy-marker-" + secrets.token_hex(8)}
         decoy_dir = work / "decoy" / ("decoy-" + decoy["agent"])
@@ -725,6 +743,52 @@ def main():
 
 def pg_env(a, env):
     return {**env, "LD_LIBRARY_PATH": str(a.pg_library_path)} if a.pg_library_path else env
+
+
+def restore_from_copies(a, out, work, env, run, expect, clusters, rclone, host_conf, standby_conf, flags):
+    """TestRestoreFromShippedCopies against these stores, with a PostgreSQL of its own.
+
+    The test captures an agent's archives with the platform's code, ships them
+    with the shipper and the host's configuration, removes the newest from the
+    standby's copy, loses the host, and restores the agent on the standby
+    from the copies with the standby's configuration: the newest from S3.
+    """
+    pgenv = pg_env(a, env)
+    data, sock = work / "pg-restore", work / "r"
+    sock.mkdir()
+    run("restore-from-copies", [a.pg_bin / "initdb", "-D", data, "--auth-local=trust", "--auth-host=reject", "--no-locale", "--encoding=UTF8"],
+        environment=pgenv)
+    with (data / "postgresql.conf").open("a") as f:
+        f.write(f"listen_addresses = ''\nunix_socket_directories = '{sock}'\nmax_connections = 50\n")
+    run("restore-from-copies", [a.pg_bin / "pg_ctl", "-D", data, "-l", out / "pg-restore.log", "-w", "start"], environment=pgenv)
+    clusters.append(data)
+    config = work / "shipped-stores.json"
+    config.write_text(json.dumps({"python": sys.executable, "shipper": str(SHIPPER), "rclone": str(rclone), "host_config": str(host_conf),
+                                  "standby_config": str(standby_conf), "rclone_flags": flags}))
+    native = work / "native"
+    native.mkdir()
+    shutil.copy2(a.native_tools.resolve() / "usr/include/libcryptsetup.h", native / "libcryptsetup.h")
+    test_env = {**env, "CPATH": str(native), "CGO_ENABLED": "1", "CGO_LDFLAGS_ALLOW": CGO_LDFLAGS_ALLOW,
+                "GOTOOLCHAIN": "local", "GOFLAGS": "-mod=readonly",
+                "AGENTCAPSULE_TEST_POSTGRES": f"host={sock} dbname=postgres", "AGENTCAPSULE_REQUIRE_POSTGRES": "1",
+                "AGENTCAPSULE_SHIPPED_STORES": str(config)}
+    # The test's volumes and archives, a few hundred MiB: on the evidence's
+    # disk, not in /tmp, and removed after.
+    scratch = out / "restore-scratch"
+    scratch.mkdir()
+    test_env["TMPDIR"] = str(scratch)
+    started = time.monotonic()
+    try:
+        code = run("restore-from-copies", [a.go.resolve(), "test", "-count=1", "-v", "-run", "^TestRestoreFromShippedCopies$", "./internal/worker"],
+                   timeout=1200, check=False, cwd=ROOT, environment=test_env)
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+    log = (out / "restore-from-copies.log").read_text()
+    restored = re.search(r"restored in (\S+)", log)
+    result = {"exit_code": code, "passed": code == 0 and "--- PASS: TestRestoreFromShippedCopies" in log,
+              "restore_seconds": restored[1] if restored else None, "seconds": round(time.monotonic() - started, 1)}
+    expect(result["passed"], "the restore from the stores' copies failed; see restore-from-copies.log")
+    return result
 
 
 def standby_phase(a, out, work, env, run, output, expect, clusters):

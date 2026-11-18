@@ -16,7 +16,7 @@ passed on KVM on 2026-11-13, with the Directory and SLIM each down in turn.
 
 | Component | Pinned version | Role in Agent Capsule |
 | --- | --- | --- |
-| A2A | [Specification v1.0.1](https://github.com/a2aproject/A2A/releases/tag/v1.0.1), wire `1.0`, [Go SDK v2.8.0](https://github.com/a2aproject/a2a-go/releases/tag/v2.8.0) | Agent Cards and tasks between agents. Supported: JSON-RPC binding, `SendMessage`, `GetTask`, text parts and artifacts. Not advertised: REST, gRPC, streaming, push notifications, resubscription, signed cards. |
+| A2A | [Specification v1.0.1](https://github.com/a2aproject/A2A/releases/tag/v1.0.1), wire `1.0`, [Go SDK v2.8.0](https://github.com/a2aproject/a2a-go/releases/tag/v2.8.0) | Agent Cards and tasks between agents. Supported: JSON-RPC binding, `SendMessage`, `GetTask`, text and data parts and artifacts (data parts are JSON content, ADR 016). Not advertised: REST, gRPC, streaming, push notifications, resubscription, signed cards. |
 | A2A over SLIM | [slim-a2a-go v0.5.2](https://github.com/agntcy/slim-a2a-go/tree/v0.5.2), binding `a2aslimrpc/v1` | The same A2A tasks carried over SLIM. Compiles only with A2A Go SDK v2.1.0–v2.2.0, so it lives in its own module ([a2aslim](../runtime/interop/a2aslim)), as does the platform's [SLIM bridge](../runtime/slimbridge); the platform keeps v2.8.0. |
 | OASF | Schema 1.1.0 ([source v1.1.3](https://github.com/agntcy/oasf/releases/tag/v1.1.0)), [schema server v2.0.0](https://github.com/agntcy/oasf-server/releases/tag/v2.0.0) | Describes each visible agent. Skills `10301` (text completion) and `10302` (summarization), domain `111` (artificial intelligence). Validated by a private schema server, never the public one. |
 | Directory | [v1.8.0](https://github.com/agntcy/dir/releases/tag/v1.8.0) API server, Go API v1.8.0 | Private search of agent records, including stopped agents. |
@@ -30,8 +30,10 @@ published build metadata has an empty commit field.
 ## Decisions
 
 **The platform stays the authority.** An OASF record, a Directory search
-result, an Agent Card or a SLIM name grants no right. Every search result is
-filtered again in PostgreSQL by organization, assignment and caller, and every
+result, an Agent Card or a SLIM name grants no right. A search needs the
+`agents.discover` capability, and every result is filtered again in
+PostgreSQL: agents of the caller's organization that are visible and live,
+never the caller itself. Every
 request goes through the existing consent, mandate, quota and cross-organization
 checks. Records hold only what the organization chose to publish: a
 description and skill and domain IDs, under an opaque name (A2A-011).
@@ -111,7 +113,7 @@ metadata of its own.
 | `PENDING_APPROVAL` | `TASK_STATE_SUBMITTED` | Waiting for the recipient side's consent; nothing delivered |
 | `DELIVERING` | `TASK_STATE_SUBMITTED` | Stored; waking or delivering. Delivery is not success |
 | `PROCESSING` | `TASK_STATE_WORKING` | Delivered to the recipient's harness |
-| `REPLIED` | `TASK_STATE_COMPLETED` | The reply is the task's artifact; until the reply event reaches the sender, the task stays `WORKING` |
+| `REPLIED` | `TASK_STATE_COMPLETED` | The reply is the task's artifact, from its event or, if that never comes, from the request's status read ([ADR 007](adr/007-delivery-closure-and-priority.md)). A reply no longer kept ends the task without an artifact, with `reason` in the metadata. Until either, the task stays `WORKING` |
 | `DECLINED` | `TASK_STATE_REJECTED` | Refused by the recipient side |
 | `CANCELED` | `TASK_STATE_CANCELED` | Canceled before an outcome |
 | `EXPIRED`, `FAILED` | `TASK_STATE_FAILED` | A2A has no expired state; the metadata says which |
@@ -193,10 +195,21 @@ start only. The traffic shows on the bridge's side: it served both agents'
 names, and deliveries stopped while it was away. Since the bridge sends and
 answers through two SLIM services, every delivery crosses the node.
 
+To see the exchange in the node itself (A2A-005), the campaign now runs its
+node with its message processing logged
+(`log_level: "info,slim_datapath::message_processing=debug"`, a copy of
+`slim.yaml` mounted by a compose override), and the test reads the node's log
+through the campaign's control script: it must show a message forwarded to
+the recipient's name (`match and forward message name=agentcapsule/<organization>/<agent>/...`),
+then one to the sender's. This check passed on 2026-11-17. A host keeps INFO: with its message processing
+logged, the node also writes each message's bytes to its log. `TestProductWorkerDeletionRemovesTheVolumeTheKeyAndTheDirectoryRecord`
+uses the campaign's Directory too: a deleted agent's record leaves it.
+
 ## Running on a host
 
 [deploy/systemd](../deploy/systemd) holds the units of one host. The worker and
-the control plane have none yet.
+the control plane have none yet. The authority service's files are described
+in [recovery.md](recovery.md#install-the-authority-service).
 
 | File | Install as | Role |
 | --- | --- | --- |
@@ -347,7 +360,7 @@ About 150 MiB in total. In separate runs:
 
 Prerequisites:
 - Linux amd64 with glibc 2.39 or later;
-- Go 1.27.3 and a C compiler;
+- Go 1.27.4 and a C compiler;
 - Python 3.11 or later;
 - for `--services`, Docker with Compose v2 and `openssl`.
 
@@ -356,12 +369,12 @@ verified by SHA256) and the images (about 400 MB).
 
 ```sh
 # Libraries only (no Docker): status passed_libraries_only.
-python3 scripts/verify-interop.py --go /path/to/go1.27.3/bin/go --output <new-dir>
+python3 scripts/verify-interop.py --go /path/to/go1.27.4/bin/go --output <new-dir>
 # With the private services: status passed, int01_complete true.
-python3 scripts/verify-interop.py --go /path/to/go1.27.3/bin/go --services --output <new-dir>
+python3 scripts/verify-interop.py --go /path/to/go1.27.4/bin/go --services --output <new-dir>
 # Also the systemd units, run under the caller's user manager
 # ("--systemd static": only the checks that need no user manager, as in CI).
-python3 scripts/verify-interop.py --go /path/to/go1.27.3/bin/go --services --systemd --output <new-dir>
+python3 scripts/verify-interop.py --go /path/to/go1.27.4/bin/go --services --systemd --output <new-dir>
 ```
 
 The output directory keeps for every run:

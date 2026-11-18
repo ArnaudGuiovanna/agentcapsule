@@ -11,8 +11,10 @@
 // imports with POST /v1/harness-imports. sign attaches a signature in the
 // cosign v3 format ("cosign sign --key" works as well); the operator trusts the
 // matching public key. verify downloads a package and checks it as the
-// platform's importer would. The registry password, if any, is read from
-// AGENTCAPSULE_REGISTRY_PASSWORD, never from the command line.
+// platform's importer would, debugfs confined as on the platform; where this
+// machine cannot confine it (no user namespaces), verify fails, unless it is
+// given --unconfined and does not run as root. The registry password, if any,
+// is read from AGENTCAPSULE_REGISTRY_PASSWORD, never from the command line.
 package main
 
 import (
@@ -35,7 +37,38 @@ import (
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/harnesspkg"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/ociregistry"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/sandbox"
 )
+
+// nobody is the account debugfs runs as when verify runs as root.
+const nobody = 65534
+
+// checkInspection and geteuid are replaced by the tests.
+var (
+	checkInspection = harnesspkg.CheckInspection
+	geteuid         = os.Geteuid
+)
+
+// inspection confines debugfs as the platform's worker does (package
+// sandbox), or fails when this machine cannot. unconfined (--unconfined)
+// inspects without the sandbox instead, for a machine without it (a
+// container without user namespaces, as in CI); never as root, where a flaw
+// of e2fsprogs would act as root. The platform's worker has no such option.
+func inspection(ctx context.Context, unconfined bool) (sandbox.Options, error) {
+	if unconfined {
+		if geteuid() == 0 {
+			return sandbox.Options{}, errors.New("--unconfined is refused as root: run verify as another account, or confined")
+		}
+		fmt.Fprintln(os.Stderr, "warning: debugfs inspects the image unconfined (--unconfined)")
+		return sandbox.Options{Unconfined: true}, nil
+	}
+	sb := sandbox.Options{UID: nobody, GID: nobody}
+	if err := checkInspection(ctx, sb); err != nil {
+		return sb, fmt.Errorf("debugfs cannot run confined on this machine: %w; "+
+			"run verify as an account that is not root with --unconfined to inspect the image without the sandbox", err)
+	}
+	return sb, nil
+}
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -244,6 +277,7 @@ func verifyPackage(ctx context.Context, args []string) error {
 	username := fs.String("username", "", "registry user; password from AGENTCAPSULE_REGISTRY_PASSWORD")
 	local := fs.Bool("local", false, "plain HTTP registry on a private network (development only)")
 	maxMiB := fs.Int("max-mib", 1024, "largest harness.ext4 accepted")
+	unconfined := fs.Bool("unconfined", false, "inspect the image without the sandbox, where this machine cannot set it up (never as root)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -269,6 +303,9 @@ func verifyPackage(ctx context.Context, args []string) error {
 	}
 	f, err := ociregistry.NewFetcher(ociregistry.Policy{Rules: []ociregistry.Rule{rule}, RequireSignatures: len(keys) > 0}, int64(*maxMiB)<<20)
 	if err != nil {
+		return err
+	}
+	if f.Sandbox, err = inspection(ctx, *unconfined); err != nil {
 		return err
 	}
 	dir, err := os.MkdirTemp("", "agentcapsule-verify-")

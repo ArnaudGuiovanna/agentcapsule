@@ -18,6 +18,9 @@ import (
 // it cannot detect rollback of an authority backup carrying the same identity.
 func (s *Files) Identity() string { return s.identity }
 
+// Root is the authority's directory.
+func (s *Files) Root() string { return s.root }
+
 func readIdentity(root string) (string, error) {
 	f, err := os.OpenFile(filepath.Join(root, "identity"), os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {

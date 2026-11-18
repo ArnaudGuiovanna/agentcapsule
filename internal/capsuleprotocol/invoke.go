@@ -5,36 +5,19 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
-	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/harnessstore"
 )
 
-type TextContent struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
-}
 type OwnerMessage struct {
-	Content []TextContent `json:"content"`
+	Content []ContentPart `json:"content"`
 }
 
+// Validate accepts 1 to 32 text or JSON parts, at most 32 KiB of text and
+// compact JSON in all.
 func (m OwnerMessage) Validate() error {
-	if len(m.Content) < 1 || len(m.Content) > 32 {
-		return ErrProtocol
-	}
-	n := 0
-	for _, c := range m.Content {
-		if c.Type != "text" || !utf8.ValidString(c.Text) || strings.TrimSpace(c.Text) == "" || strings.ContainsRune(c.Text, 0) {
-			return ErrProtocol
-		}
-		n += len(c.Text)
-	}
-	if n > 32*1024 {
-		return ErrProtocol
-	}
-	return nil
+	return validParts(m.Content, MaxMessageContentBytes)
 }
 
 type InstructionMandate struct {
@@ -46,7 +29,7 @@ type Invocation struct {
 	Kind        string             `json:"kind"`
 	OperationID string             `json:"operation_id"`
 	Mandate     InstructionMandate `json:"mandate"`
-	Content     []TextContent      `json:"content"`
+	Content     []ContentPart      `json:"content"`
 	// Attachments are opaque references to files the requester uploaded for this
 	// invocation. The guest reads them through the platform bridge, only while the
 	// invocation runs. Absent when there are none.

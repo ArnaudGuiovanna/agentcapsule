@@ -44,7 +44,10 @@ func (w *Placements) DispatchPass(ctx context.Context, o DispatchOptions, attemp
 		_, releaseErr := w.store.ReleaseDueInstructions(step, nil, o.Batch)
 		_, idleErr := w.store.ScheduleIdleSleeps(step, w.hostID, nil, o.Batch)
 		_, workErr := w.store.ExpireWorkingInvocations(step, nil, o.Batch)
-		result = errors.Join(releaseErr, idleErr, workErr)
+		// A slot freed by a sleep, a deletion or a crash goes to the oldest
+		// work waiting for capacity (ADR 017).
+		queueErr := w.store.PromoteCapacityHead(step, w.hostID)
+		result = errors.Join(releaseErr, idleErr, workErr, queueErr)
 		cancel()
 	}
 	step, cancel := context.WithTimeout(ctx, attemptTimeout)
@@ -73,6 +76,7 @@ func (w *Placements) DispatchPass(ctx context.Context, o DispatchOptions, attemp
 		result = errors.Join(result, attachmentErr)
 		cancel()
 	}
+	result = errors.Join(result, w.purgeAudit(ctx, attemptTimeout))
 	for range o.Batch {
 		if ctx.Err() != nil {
 			return errors.Join(result, ctx.Err())
@@ -90,9 +94,13 @@ func (w *Placements) DispatchPass(ctx context.Context, o DispatchOptions, attemp
 		if w.afterWorkClaim != nil {
 			w.afterWorkClaim(job)
 		}
-		err = w.executeWork(attempt, job, o.DeliveryLease)
+		// The API request behind the job, for its event and its span.
+		origin := w.jobOrigin(attempt, job)
+		traced, span := w.startJob(attempt, job, origin)
+		err = w.executeWork(traced, job, o.DeliveryLease)
+		endJob(span, err)
 		w.countJob(job.Kind, err)
-		w.logJob(job, err)
+		w.logJob(job, origin, err)
 		if err == nil && w.afterWork != nil {
 			w.afterWork(job)
 		}
@@ -109,18 +117,45 @@ func (w *Placements) DispatchPass(ctx context.Context, o DispatchOptions, attemp
 	return result
 }
 
+// auditPurgeEvery spaces the purges of the audit trail: its retention is
+// counted in days.
+const auditPurgeEvery = 10 * time.Minute
+
+// purgeAudit deletes, at most every auditPurgeEvery, a batch of the audit
+// events older than the retention the operator set (TEN-06); none without
+// one. A full batch is followed by another at the next pass.
+func (w *Placements) purgeAudit(ctx context.Context, timeout time.Duration) error {
+	last := time.Unix(0, w.auditPurgedAt.Load())
+	if time.Since(last) < auditPurgeEvery {
+		return nil
+	}
+	purge, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	n, err := w.store.PurgeAudit(purge, 1000)
+	if err == nil && n == 0 {
+		w.auditPurgedAt.Store(time.Now().UnixNano())
+	}
+	return err
+}
+
 func (w *Placements) executeWork(ctx context.Context, j controlplane.WorkerJob, deliveryLease time.Duration) error {
 	switch j.Kind {
 	case "provision":
 		return w.provision(ctx, j)
 	case "lifecycle":
 		return w.lifecycleOperation(ctx, j)
+	case "resume":
+		return w.resume(ctx, j)
 	case "delivery":
+		var runtime controlplane.InstructionRuntime = w
+		if w.deliveries != nil {
+			runtime = w.deliveries
+		}
 		var err error
 		if transit := w.transit.Load(); transit != nil {
-			err = transit.DispatchMailbox(ctx, j.ID, deliveryLease, w)
+			err = transit.DispatchMailbox(ctx, j.ID, deliveryLease, runtime)
 		} else {
-			err = w.store.DispatchMailbox(ctx, j.ID, deliveryLease, w)
+			err = w.store.DispatchMailbox(ctx, j.ID, deliveryLease, runtime)
 		}
 		if errors.Is(err, controlplane.ErrNoDelivery) {
 			return nil

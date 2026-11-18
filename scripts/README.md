@@ -9,12 +9,17 @@ placeholders below with paths from your environment.
 ## Prerequisites
 
 - Linux amd64.
-- **Go 1.27.3**, Python 3.10+ (3.11+ for `verify-interop.py`) and a C compiler
+- **Go 1.27.4**, Python 3.10+ (3.11+ for `verify-interop.py`) and a C compiler
   (CGO and the race detector are on).
 - libcryptsetup headers (`libcryptsetup-dev`) and the shared library
   `libcryptsetup.so.12`. If the headers are not installed system-wide, extract
   them into a private tools directory and pass it with `--native-tools`
-  (`<tools-dir>` below).
+  (`<tools-dir>` below). `internal/volumestore` links the library by file name
+  (`-l:libcryptsetup.so.12`), a flag Go refuses in a `#cgo` directive unless
+  `CGO_LDFLAGS_ALLOW` allows it. The scripts that compile it set
+  `CGO_LDFLAGS_ALLOW='-l:libcryptsetup\.so\.12'` themselves, since `sudo` drops
+  the caller's environment; for your own `go` commands, run
+  `go env -w CGO_LDFLAGS_ALLOW='-l:libcryptsetup\.so\.12'` once.
 - PostgreSQL (server binaries), for `verify-postgres.py` and the PostgreSQL
   phases of the KVM runners.
 - For the backup qualifications: Docker, OpenSSL, OpenSSH's client,
@@ -36,19 +41,29 @@ Do not run `go test ./...` at the repository root with sources outside
 |---|---|
 | `check-go.py` | Go tests with race detector, no PostgreSQL or KVM |
 | `test_check_go.py` | Unit tests of `check-go.py` |
-| `check-repo-hygiene.py` | Rejects new tracked files with a personal absolute path or Go sources committed under `_evidence/` (baseline: `hygiene-baseline.json`) |
+| `check-repo-hygiene.py` | Rejects new tracked files with a personal absolute path or Go sources committed under `_evidence/` (baseline: `hygiene-baseline.json`); runs `check-model-projections.py` and `check-acceptance.py` |
+| `check-model-projections.py` | Fails when a run or witness of `spec/*.qnt` is missing from [spec/projections.md](../spec/projections.md), or when the table names a Go test that does not exist |
+| `test_check_model_projections.py` | Unit tests of `check-model-projections.py` |
+| `check-models.py` | The bounded and exhaustive checks of the formal models, one at a time: Apalache and TLC through `quint verify`, each against the result the repository expects (a witness schedule and a broken configuration must fail); refuses to pass on a timeout or a missing tool; see [spec/README.md](../spec/README.md#bounded-and-exhaustive-checks) |
+| `test_check_models.py` | Unit tests of `check-models.py`: every witness schedule and every module of the checkers' files has a check, the reading of Quint's output, the refusal of a missing or changed tool |
+| `check-acceptance.py` | Fails when an MVP requirement of [docs/product.md](../docs/product.md) has no row in [docs/acceptance.md](../docs/acceptance.md), when a met row cites no test, or when a cited test or file does not exist |
+| `test_check_acceptance.py` | Unit tests of `check-acceptance.py` |
+| `verify-install.py` | The install from scratch, without root: builds every binary, installs them into a throwaway prefix, then follows [docs/bootstrap.md](../docs/bootstrap.md) and [docs/install.md](../docs/install.md) (PostgreSQL, migration, platform credential, the API over HTTPS, an organization and its trust, the authority service, the worker's preflight) and ends with a call by the organization's owner; see [below](#install-from-scratch) |
+| `test_verify_install.py` | Unit tests of `verify-install.py`'s reading of the worker's preflight |
 | `verify-postgres.py` | Go/race tests against a private, owned PostgreSQL cluster, with crash/WAL recovery; optional live LLM phase |
+| `load-test.py` | Load test of the API and the worker against a private PostgreSQL (or `--dsn`), without KVM or root: invocations at each rate in turn, delivered by real worker passes to the mock runtime; admission latency, queue age, backlog, dead letters, refusals and the limit observed; see [docs/worker.md](../docs/worker.md#load-test) |
 | `fetch-backup-tools.py` | Fetches pgBackRest 2.58 and rclone 1.60.1, Ubuntu 26.04's packages, from a fixed snapshot of the Ubuntu archive; checks each SHA-256, extracts them without root or apt and runs each once; see [below](#backup-qualifications) |
 | `test_fetch_backup_tools.py` | Unit tests of `fetch-backup-tools.py`, with small packages built on the spot and no network |
 | `verify-backups.py` | Continuous WAL archiving with pgBackRest to S3 and SFTP (Docker, pinned images): loss bound, restore from each store, no clear text, and the base-backup freshness written for node_exporter; then the standby: replay from the SFTP directory and from S3, a disaster and a promotion (rows lost, promotion time), the new primary's own repository |
 | `test_backup_metrics.py` | Unit tests of `deploy/backup/agentcapsule-backup-metrics.py` (base-backup freshness for node_exporter) |
-| `verify-archive-shipping.py` | Shipping the volume archives with rclone 1.60.1 to S3 and SFTP (Docker, the images of `verify-backups.py`), archives captured by the platform's code (`--go`): first ship, a second run that writes nothing, a killed upload and a network cut, a changed archive, the metrics with a store stopped, a fetch from each store alone (byte-identical, opened by the restore authority), no clear text in either store (with a control), retention by age; then the standby's replay metric on a real standby (`--pg-bin`), and `systemd-analyze verify` of the units; see [docs/recovery.md](../docs/recovery.md#qualify-the-shipping) |
+| `verify-archive-shipping.py` | Shipping the volume archives with rclone 1.60.1 to S3 and SFTP (Docker, the images of `verify-backups.py`), archives captured by the platform's code (`--go`): first ship, a second run that writes nothing, a killed upload and a network cut, a changed archive, the metrics with a store stopped, a fetch from each store alone (byte-identical, opened by the restore authority), no clear text in either store (with a control), retention by age; then the standby's replay metric on a real standby (`--pg-bin`), and `systemd-analyze verify` of the units; with `--restore-from-copies --native-tools <dir>`, a lost host's agent restored from the stores' copies (ADR 020); see [docs/recovery.md](../docs/recovery.md#qualify-the-shipping) |
 | `test_archive_ship.py` | Unit tests of `deploy/backup/agentcapsule-archive-ship.py`, with a fake rclone standing for the stores |
-| `verify-failover.py` | The failover exercise of ADR 004 for the database and the API, on one machine (Docker, the images and the stores of `verify-backups.py`, which it shares): a client writes through `agentcapsule-api` (`--go`), the primary is killed, then the failover is timed from the decision to the first authenticated write on the standby (RTO), and the acknowledged writes lost are measured against the window to announce (RPO); see [docs/recovery.md](../docs/recovery.md#qualify-the-failover) |
+| `verify-failover.py` | The failover exercise of ADR 004 for the database and the API, on one machine (Docker, the images and the stores of `verify-backups.py`, which it shares): a client writes through `agentcapsule-api` (`--go`, production mode over HTTPS), the primary is killed, then the failover is timed from the decision to the first authenticated write on the standby (RTO), and the acknowledged writes lost are measured against the window to announce (RPO); then the standby takes the lost host over (`take-over-host`, ADR 020); see [docs/recovery.md](../docs/recovery.md#qualify-the-failover) |
 | `test_verify_failover.py` | Unit tests of the failover exercise's loss assessment: what the standby lacks against the announced window |
 | `test_standby_metrics.py` | Unit tests of `deploy/standby/agentcapsule-standby-metrics.py` (the standby's replay for node_exporter) |
-| `verify-alerts.py` | The alert rules: every metric they use is registered by the code or declared by a textfile script (base backups, archive shipping, the standby's replay), with its label values; with a pinned Prometheus image, `promtool check rules` and `promtool test rules` |
-| `verify-runtime.py` | Real Go host-driver/KVM tests (root orchestration; optional PostgreSQL placement checks) |
+| `verify-alerts.py` | The alert rules: every metric they use is registered by the code or declared by a textfile script (base backups, archive shipping, the standby's replay), with its label values; every rule has a promtool case where it fires and one where it stays silent; with a pinned Prometheus image, `promtool check rules` and `promtool test rules` |
+| `verify-runtime.py` | Real Go host-driver/KVM tests (root orchestration; optional PostgreSQL placement checks): the tests of `internal/runtime`, then only the KVM tests of `internal/worker`, each listed by the script; see [below](#kvm-campaigns-root) |
+| `test_verify_runtime.py` | Unit tests of `verify-runtime.py`: every KVM test of `internal/worker` is listed, the selection leaves the ordinary tests out, the evidence goes back to the user who ran `sudo` |
 | `verify-product-guest.py` | Reusable encrypted guest under jailed Firecracker (root, KVM) |
 | `verify-vm-isolation.py` | Disposable jailer isolation tests (root) |
 | `verify-vm-storage.py` | Disposable Firecracker/KVM storage lab |
@@ -62,6 +77,13 @@ Do not run `go test ./...` at the repository root with sources outside
 | `build-adapted-harness.py` | Packs an ordinary agent image (examples/adapted-agent by default) with `capsule-adapter`, using plain Docker; the reference build is `dagger call adapted-agent` (any image: `dagger call adapt`). Its `package/` directory is required by `verify-product-guest.py --adapted-harness` |
 | `build-a2a-harness.py` | Packs examples/a2a-agent (an A2A server agent written with the official A2A Go SDK) with `capsule-adapter`, without Docker: two static binaries and the adapter's configuration. Its `package/` directory is required by `verify-product-guest.py --a2a-harness` |
 | `build-pi-harness.py` | Packs an installed Pi release and the Node.js it runs on as examples/pi-agent (Debian base, then `build-adapted-harness.py`); a test build that depends on the local installation. Its `adapted/package` directory feeds `verify-product-guest.py --pi-harness` |
+| `audit-dependencies.py` | Release audit: govulncheck on every Go module (fails on a vulnerability the code calls), the licenses of every shipped dependency against `license-policy.json`, and `third-party-licenses.txt`; see [docs/release.md](../docs/release.md) |
+| `build-release.py` | The release binaries (and with `--guest-cryptsetup` the guest image) of one commit, from a clean clone, reproducibly; `--twice` builds again in a second clean environment and compares every digest |
+| `release-sbom.py` | One SPDX SBOM per binary, guest image or harness package (syft, pinned); the guest's native files attributed to their Debian packages |
+| `scan-artifacts.py` | grype (pinned) on SBOMs, the deploy images (by digest) and lock files: fails on High or Critical unless `vulnerability-allowlist.json` covers it |
+| `release_tools.py`, `release-tools.json`, `tools/` | The audit's tools, pinned by SHA-256 (syft, grype, cosign, actionlint) or `go.sum` (govulncheck), fetched into `~/.cache/agentcapsule-release-tools` |
+| `vulnerability-allowlist.json`, `license-policy.json` | Reviewed exceptions of the vulnerability gates (each expires within 90 days), and the allowed licenses |
+| `test_release_audit.py` | Unit tests of the release audit's rules, without network or tools |
 | `openapi-requirements.txt` | Python requirements for validating the OpenAPI specification |
 | `adapter-sdk-requirements.txt` | Model SDKs for `verify-adapter.py`, pinned by hash |
 
@@ -105,6 +127,46 @@ Files that predate the rules are listed in `scripts/hygiene-baseline.json`;
 fixing one never fails the check. Use `--update` only to record a reviewed
 decision, never to hide a new offending file. CI runs this check before the
 PostgreSQL campaign.
+
+## Model checks (Apalache, TLC)
+
+```bash
+(cd spec && npm ci)
+python3 scripts/check-models.py --list            # the checks, their bounds and time limits
+python3 scripts/check-models.py --quick            # those limited to 15 minutes (about 1 hour)
+python3 scripts/check-models.py --only 'concurrentProtocol|serviceProgress'
+python3 scripts/check-models.py                    # all of them (about 16 hours here, 7 in the three that do not finish)
+```
+
+It needs a Java runtime and Apalache, installed without root as
+[spec/README.md](../spec/README.md#bounded-and-exhaustive-checks) says, and
+recorded in `~/.local/share/agentcapsule-tools/model-checkers.json`
+(`--tools` names another directory). The evidence goes to
+`quint/results/check-models-<timestamp>` (git-ignored) unless `--output`
+names a new directory. The checks run one at a time; TLC uses four workers
+(`--workers`). A run passes only when every check ends as expected: a timeout
+or a tool error fails it.
+
+## Install from scratch
+
+```bash
+python3 scripts/verify-install.py --go <path-to-go> --pg-bin <postgres-bin-dir> \
+  [--pg-library-path <dir>] [--native-tools <tools-dir>/guest-build] \
+  [--firecracker <fc> --jailer <jailer> --kernel <vmlinux> --initrd <guest-image>] \
+  --output <output-dir>/install
+```
+
+It runs as an ordinary user, with `openssl`, `curl` and `unshare`, in about a
+minute once Go's cache is warm. The worker refuses a configuration that root
+does not own, and the authority service admits only root on the worker's
+socket: the run starts both in a user namespace where its account is root
+(`unshare -r`). On Ubuntu 24.04, allow it first with
+`sysctl kernel.apparmor_restrict_unprivileged_userns=0`. Without the
+artifacts, the worker's preflight reports them as failed and the run checks
+that the worker refuses to start; `/dev/kvm` is reported as this account sees
+it. `summary.json` lists each step with the document it follows, what it
+checked and the deviations from the docs. The run removes the database, the
+binaries and every secret, then searches its evidence for each secret.
 
 ## PostgreSQL integration (required)
 
@@ -187,11 +249,17 @@ process. Run each with `--help` for the full option list.
 ```bash
 # Runtime: Go host-driver tests under KVM. --native-headers is required with
 # the PostgreSQL checks (--pg-bin), because the worker links libcryptsetup.
+# With --pg-bin, the KVM tests of internal/worker: the placement tests, and
+# with --control-guest (build-control-guest.py) the control tests. Only those:
+# the ordinary tests of the package run in verify-postgres.py as an ordinary
+# user. The evidence goes back to the user who ran sudo.
 sudo python3 scripts/verify-runtime.py --go <path-to-go> \
   --firecracker-build <firecracker-build-dir> \
   --upstream-firecracker <upstream-firecracker> \
   --kernel <guest-kernel> --guest <guest-image> \
   --pg-bin <postgres-bin-dir> --pg-user <non-root-user> \
+  [--pg-library-path <postgres-lib-dir>] \
+  --control-guest <control-guest-build-dir>/init \
   --native-headers <tools-dir>/guest-build/usr/include \
   --output <output-dir>/runtime
 
@@ -240,16 +308,27 @@ volumes/keys.
 The `backups` job runs `verify-backups.py`, `verify-archive-shipping.py` and
 `verify-failover.py`, with the tools of `fetch-backup-tools.py` and PostgreSQL
 16 from Ubuntu 24.04.
+
+The `release-audit` job lints the workflows (actionlint), runs
+`audit-dependencies.py`, `build-release.py --twice` with the guest image,
+`build-a2a-harness.py`, `release-sbom.py` and `scan-artifacts.py`; the
+harness job writes the SBOMs of the Dagger-built packages and scans them.
+[`.github/workflows/release.yml`](../.github/workflows/release.yml) runs the
+same on a version tag, then signs and publishes a draft release; see
+[docs/release.md](../docs/release.md).
 Ubuntu 26.04's PostgreSQL 18 needs glibc 2.43, newer than the runner's 2.39,
 so it does not run there. The job keeps a run's evidence for seven days only
 when the run's own search found no secret in it and no file holds a private
 key.
 
-Go is pinned to **1.27.3**; the `go 1.25.0` line of `go.mod` remains the
-module's language/minimum version, not a promise of validation on all Go
-versions. CI uses PostgreSQL **16** from Ubuntu 24.04; the patch number and the
-native versions are recorded on each run. The Ubuntu image and its patches
-evolve, so this is not a hermetic system build.
+Go is pinned to **1.27.4**. The `go 1.27.4` line of every `go.mod` is the
+minimum: with `GOTOOLCHAIN=local`, an older Go refuses to build. It is not a
+promise of validation on later Go versions. The Dagger module's `go.mod` says
+1.27.3, the highest its Go SDK (Dagger v0.21.11) accepts; its code does not
+ship, and the image it builds the harness tools in is Go 1.27.4. CI uses PostgreSQL **16** from
+Ubuntu 24.04; the patch number and the native versions are recorded on each
+run. The Ubuntu image and its patches evolve, so this is not a hermetic system
+build.
 
 Actions are pinned by full SHA
 ([checkout v7.0.1](https://github.com/actions/checkout/releases/tag/v7.0.1),
@@ -264,7 +343,9 @@ GitHub permissions are limited to reading the repository, with no credentials
 persisted by checkout. No deployment, LLM provider or KVM secret is needed. The
 workflow does not use `pull_request_target` and deploys nothing.
 
-CI does **not** validate Firecracker/jailer on the target host, physical
+CI does **not** run the models' bounded and exhaustive checks
+(`check-models.py`, hours of TLC and Apalache; a release check, see
+[docs/release.md](../docs/release.md)), nor validate Firecracker/jailer on the target host, physical
 storage cuts, complete product isolation, the platform's use of the AGNTCY
 services (INT-02 to INT-05) or an external restore. It does qualify the pinned
 interoperability profile against its private services (`verify-interop.py

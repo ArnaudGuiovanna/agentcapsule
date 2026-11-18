@@ -6,6 +6,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/authoritylog"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorization"
 	"github.com/jackc/pgx/v5"
 )
@@ -237,6 +238,7 @@ func (a *Accounts) changeMember(ctx context.Context, p Principal, id, key string
 		Role        authorization.Role `json:"role"`
 	}{id, next}
 	r, err := a.withTenantReceipt(ctx, tx, p, operation, key, input, func() (int, any, error) {
+		revoked := a.store.revocations(tx, p.TenantID)
 		before := target.Role
 		changed := target.Status == "active"
 		if role != nil {
@@ -266,14 +268,26 @@ func (a *Accounts) changeMember(ctx context.Context, p Principal, id, key string
 		// Technical-account tokens issued by this person lapse with the right that
 		// justified them: all on offboarding, those no longer manageable on demotion.
 		if changed {
-			if err = revokeIssuedServiceTokens(ctx, tx, p, id, next); err != nil {
+			tokens, err := revokeIssuedServiceTokens(ctx, tx, p, id, next)
+			if err != nil {
+				return 0, nil, err
+			}
+			// The records, before the commit: the membership (and with it
+			// its team memberships) on offboarding, and the tokens.
+			if role == nil {
+				if err = revoked.add(ctx, authoritylog.AccessMember, p.TenantID, [][]string{{id}}); err != nil {
+					return 0, nil, err
+				}
+			}
+			if err = revoked.add(ctx, authoritylog.AccessServiceToken, p.TenantID, objects(tokens)); err != nil {
 				return 0, nil, err
 			}
 		}
 		if err = auditMember(ctx, tx, p, id, action, before, next, changed); err != nil {
 			return 0, nil, err
 		}
-		return 200, target, nil
+		body, err := revoked.body(target)
+		return 200, body, err
 	})
 	if err != nil {
 		return APIReceipt{}, err

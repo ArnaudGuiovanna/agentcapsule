@@ -23,8 +23,9 @@ module concurrentProtocol {
   type Request = { phase: RequestPhase, final: RequestPhase, closure: Closure,
     notified: bool, accepted: bool }
   type Mandate = { remaining: int, valid: bool }
+  // sent: an RPC was ever allowed to carry it (may_have_reached in SQL).
   type Event = { phase: EventPhase, attempts: int, owner: int, leased: bool,
-    permitted: bool, closing: bool }
+    permitted: bool, closing: bool, sent: bool }
   type Call = { phase: CallPhase, kind: CallKind, request: RequestId,
     caller: AgentId, generation: int, mandate: AgentId, locks: Set[AgentId] }
   type RPC = { phase: RPCPhase, event: EventId, generation: int, token: int }
@@ -33,7 +34,8 @@ module concurrentProtocol {
     mandates: AgentId -> Mandate, events: EventId -> Event, order: List[EventId],
     calls: int -> Call, rpc: int -> RPC, fences: AgentId -> Set[Subject],
     receipts: Set[Receipt], acks: Set[Receipt], seen: Set[EventId],
-    effects: EventId -> int, staleEffect: bool, badCaller: bool, badOrder: bool }
+    effects: EventId -> int, staleEffect: bool, badCaller: bool, badOrder: bool,
+    lateEffect: bool }
   var s: State
 
   const AGENTS: Set[AgentId]
@@ -54,7 +56,7 @@ module concurrentProtocol {
   pure val BUDGET = 2
   pure val ATTEMPTS = 2
   pure val emptyEvent = { phase: AbsentEvent, attempts: 0, owner: 0,
-    leased: false, permitted: false, closing: false }
+    leased: false, permitted: false, closing: false, sent: false }
   pure val emptyCall = { phase: EmptyCall, kind: SubmitCall, request: 0,
     caller: 0, generation: 0, mandate: 0, locks: Set() }
   pure val idleRPC = { phase: IdleRPC, event: (0,0), generation: 0, token: 0 }
@@ -98,6 +100,7 @@ module concurrentProtocol {
     calls: SLOTS.mapBy(_ => emptyCall), rpc: WORKERS.mapBy(_ => idleRPC),
     fences: AGENTS.mapBy(_ => Set()), receipts: Set(), acks: Set(), seen: Set(),
     effects: EVENTS.mapBy(_ => 0), staleEffect: false, badCaller: false, badOrder: false,
+    lateEffect: false,
   }
   action init = s' = initialState
 
@@ -190,7 +193,7 @@ module concurrentProtocol {
   }
   pure def authorized(x: State, w: int): State = {
     val r = x.rpc.get(w)
-    { ...x, events: x.events.set(r.event,{ ...x.events.get(r.event), permitted: true }),
+    { ...x, events: x.events.set(r.event,{ ...x.events.get(r.event), permitted: true, sent: true }),
       rpc: x.rpc.set(w,{ ...r, phase: SentRPC }) }
   }
   action authorize(w: int): bool = all { canAuthorize(s,w), s' = authorized(s,w) }
@@ -211,7 +214,10 @@ module concurrentProtocol {
     val apply = not(DEDUP) or not(x.seen.contains(r.event))
     { ...x, rpc: x.rpc.set(w,{ ...r, phase: AckRPC }), seen: x.seen.union(Set(r.event)),
       effects: if (apply) x.effects.set(r.event,x.effects.get(r.event)+1) else x.effects,
-      staleEffect: x.staleEffect or (apply and forbiddenEffect(x,r.event)) }
+      staleEffect: x.staleEffect or (apply and forbiddenEffect(x,r.event)),
+      // A dead event's effect (leased_delivery's noLateEffect): its retirement
+      // fenced it, or no RPC was ever allowed to carry it.
+      lateEffect: x.lateEffect or (apply and x.events.get(r.event).phase == DeadEvent) }
   }
   action commitEffect(w: int): bool = all { s.rpc.get(w).phase == ExecutingRPC, s' = effectCommitted(s,w) }
   pure def canAcknowledge(x: State, w: int): bool = {
@@ -245,10 +251,33 @@ module concurrentProtocol {
     s.up, freeAgents(s,Set(a)), s.agents.get(a).phase == Active,
     s' = { ...s, agents: s.agents.set(a,{ ...s.agents.get(a), phase: Quiescing }) },
   }
+  // An event dies only while the agents its delivery needs are active: a
+  // deletion cancels the event of an agent being deleted instead, and tells
+  // the sender of a revoked reply (commitDelete). Go: deliverable, checked
+  // under the agents' locks when a delivery dies (ADR 007 §7).
+  pure def retirable(x: State, e: EventId): bool =
+    x.agents.get(dest(e)).phase == Active and (e._2 == 2 or livePeers(x,e._1))
   action beginRetire(e: EventId): bool = all {
     s.up, freeAgents(s,peers(e._1)), e._2 != 0, s.events.get(e).phase == PendingEvent,
     not(s.events.get(e).leased), s.events.get(e).attempts == ATTEMPTS, not(s.events.get(e).closing),
     s' = { ...s, events: s.events.set(e,{ ...s.events.get(e), closing: true }) },
+  }
+  // A reply's or status's deadline passes (ADR 007): it closes like an
+  // exhausted one, whatever its attempts and lease.
+  action expireEvent(e: EventId): bool = all {
+    s.up, freeAgents(s,peers(e._1)), e._2 != 0, s.events.get(e).phase == PendingEvent,
+    not(s.events.get(e).closing),
+    s' = { ...s, events: s.events.set(e,{ ...s.events.get(e), closing: true }) },
+  }
+  // A closing event no RPC was ever allowed to carry dies without its
+  // destination's fence: closing, it can be neither claimed nor authorized, so
+  // no effect of it can begin (unsentInert). Its destination need not be
+  // alive, and the event need not head its queue (no isHead): what never
+  // reached the destination leaves the queue out of order.
+  action retireUnsent(e: EventId): bool = all {
+    s.up, freeAgents(s,peers(e._1)), s.events.get(e).closing, s.events.get(e).phase == PendingEvent,
+    not(s.events.get(e).sent), retirable(s,e),
+    s' = { ...s, events: s.events.set(e,{ ...s.events.get(e), phase: DeadEvent, leased: false }) },
   }
   pure def wanted(x: State, subject: Subject): bool = match subject {
     | AgentSubject(a) => x.agents.get(a).phase == Quiescing
@@ -270,9 +299,18 @@ module concurrentProtocol {
       s' = { ...s, acks: s.acks.union(Set(receipt)), receipts: s.receipts.exclude(Set(receipt)) } }
   }
   pure def allAcks(x: State, subject: Subject): bool = AGENTS.forall(a => x.acks.contains({ store: a, subject: subject }))
+  // A request's closure waits for the fences of its two parties only (ADR 007
+  // §7): an event carrying its subject goes to one of them (closureScope), so
+  // no other store can hold an effect of it. Within this model even the
+  // sender's fence is not needed, since a request under closure has no reply
+  // (closedNeverReplied). The code keeps it: a restore of PostgreSQL within
+  // its RPO can lose the reply that makes the two exclusive, and a delayed
+  // reply event carries the request's subject to the sender.
+  pure def closureAcks(x: State, r: RequestId): bool =
+    peers(r).forall(a => x.acks.contains({ store: a, subject: RequestSubject(r) }))
   pure def canCommitClose(x: State, r: RequestId): bool = x.up and freeAgents(x,peers(r)) and
     x.requests.get(r).closure != NoClosure and active(x.requests.get(r).phase) and
-    (not(WAIT_ALL) or allAcks(x,RequestSubject(r)))
+    (not(WAIT_ALL) or closureAcks(x,r))
   pure def closeCommitted(x: State, r: RequestId): State = {
     val y = { ...x, events: EVENTS.mapBy(e => if (e._1 == r and e._2 != 2 and x.events.get(e).phase == PendingEvent)
       { ...x.events.get(e), phase: CanceledEvent, leased: false } else x.events.get(e)) }
@@ -293,8 +331,39 @@ module concurrentProtocol {
   action commitDelete(a: AgentId): bool = all { canCommitDelete(s,a), s' = deleteCommitted(s,a) }
   action retire(e: EventId): bool = all {
     s.up, freeAgents(s,peers(e._1)), s.events.get(e).closing, s.events.get(e).phase == PendingEvent,
-    not(WAIT_ALL) or s.acks.contains({ store: dest(e), subject: EventSubject(e) }),
+    not(WAIT_ALL) or s.acks.contains({ store: dest(e), subject: EventSubject(e) }), retirable(s,e),
     s' = { ...s, events: s.events.set(e,{ ...s.events.get(e), phase: DeadEvent, leased: false }) },
+  }
+  // ADR 008: a restore of an event's destination from an archive older than
+  // its delivery loses its effect. The old incarnation is retired first: no
+  // RPC carries the event any more, and the restored store lacks it. The
+  // event stays delivered; P2 declares its loss (restore_authority.qnt).
+  action loseOutcome(e: EventId): bool = all {
+    s.up, s.events.get(e).phase == DeliveredEvent, s.seen.contains(e),
+    not(s.agents.get(dest(e)).alive), s.agents.get(dest(e)).retired,
+    WORKERS.forall(w => s.rpc.get(w).phase == IdleRPC or s.rpc.get(w).event != e),
+    s' = { ...s, seen: s.seen.exclude(Set(e)), effects: s.effects.set(e,0) },
+  }
+  // ADR 008: the restore's last step puts a lost event back in its queue,
+  // under the same ID and at its place in the order. A request's event goes
+  // back only while its request is processing and not closing, and the
+  // request goes back to Delivering; a final request never reopens
+  // (terminalStable). A reply or status goes back to the sender, whose
+  // request keeps its final state, and the sender no longer counts as
+  // notified. The agents its delivery needs are active (retirable).
+  pure def lost(x: State, e: EventId): bool = x.events.get(e).phase == DeliveredEvent and not(x.seen.contains(e))
+  pure def redeliverable(x: State, e: EventId): bool = {
+    val q = x.requests.get(e._1)
+    lost(x,e) and retirable(x,e) and
+      (if (e._2 == 0) q.phase == Processing and q.closure == NoClosure else terminal(q.phase))
+  }
+  pure def redelivered(x: State, e: EventId): State = {
+    val q = x.requests.get(e._1)
+    { ...x, events: x.events.set(e,{ ...emptyEvent, phase: PendingEvent }),
+      requests: x.requests.set(e._1,if (e._2 == 0) { ...q, phase: Delivering } else { ...q, notified: false }) }
+  }
+  action redeliver(e: EventId): bool = all {
+    s.up, freeAgents(s,peers(e._1)), redeliverable(s,e), s' = redelivered(s,e),
   }
   pure def abortLocal(x: State, a: AgentId): State = { ...x,
     rpc: WORKERS.mapBy(w => if (x.rpc.get(w).phase == ExecutingRPC and dest(x.rpc.get(w).event) == a) idleRPC else x.rpc.get(w)),
@@ -367,8 +436,20 @@ module concurrentProtocol {
   val effectOnce = EVENTS.forall(e => s.effects.get(e) <= 1)
   val acksSound = s.acks.forall(r => barrier(s,r.store,r.subject))
   val tombstoneSafe = AGENTS.forall(a => s.agents.get(a).phase == Deleting implies AGENTS.forall(b => barrier(s,b,AgentSubject(a))))
+  // Every store that can hold an effect of an expired or failed request has
+  // its barrier: its parties' (closureScope). noStaleEffect is what it keeps.
   val closedSafe = REQUESTS.forall(r => Set(Expired,Failed).contains(s.requests.get(r).phase) implies
-    AGENTS.forall(a => barrier(s,a,RequestSubject(r))))
+    peers(r).forall(a => barrier(s,a,RequestSubject(r))))
+  // Where closedSafe looks: every event that carries a request's subject goes
+  // to one of that request's parties. It depends on the routes and on
+  // SCOPED_FENCES only: concurrentProtocolWrongRequestFence breaks it.
+  pure val closureScope = EVENTS.forall(e => REQUESTS.forall(r =>
+    subjects(e).contains(RequestSubject(r)) implies peers(r).contains(dest(e))))
+  // A request under closure has no reply, so no event carrying its subject
+  // goes to its sender: replying needs no closure, and a closure needs an
+  // active request.
+  val closedNeverReplied = REQUESTS.forall(r => s.requests.get(r).closure != NoClosure implies
+    s.events.get((r,1)).phase == AbsentEvent)
   val noLiveRequestForDeleted = REQUESTS.forall(r => active(s.requests.get(r).phase) implies
     peers(r).forall(a => s.agents.get(a).phase != Deleting))
   val terminalOutbox = REQUESTS.forall(r => terminal(s.requests.get(r).phase) and s.agents.get(sender(r)).phase == Active implies
@@ -377,11 +458,17 @@ module concurrentProtocol {
   val publicationConfirmed = AGENTS.forall(a => s.agents.get(a).bootPhase == Published implies s.agents.get(a).confirmed)
   val retirementBeforeStopped = AGENTS.forall(a => s.agents.get(a).placement == Stopped implies
     s.agents.get(a).retired and not(s.agents.get(a).alive))
+  // What retireUnsent relies on: an event no RPC was allowed to carry has no
+  // effect, and no RPC past its claim.
+  val unsentInert = EVENTS.forall(e => not(s.events.get(e).sent) implies (s.effects.get(e) == 0 and
+    WORKERS.forall(w => s.rpc.get(w).event == e implies Set(IdleRPC,ClaimedRPC).contains(s.rpc.get(w).phase))))
+  val noLateEffect = not(s.lateEffect)
   val noStaleEffect = not(s.staleEffect)
   val fifo = not(s.badOrder)
   val safety = quotaConserved and terminalStable and lockedAuthority and effectOnce and not(s.badCaller)
     and not(s.staleEffect) and not(s.badOrder) and acksSound and tombstoneSafe and closedSafe
     and noLiveRequestForDeleted and terminalOutbox and noVMSealed and publicationConfirmed and retirementBeforeStopped
+    and unsentInert and noLateEffect and closedNeverReplied
   action step = any {
     { nondet slot = SLOTS.oneOf(); nondet r = REQUESTS.oneOf(); nondet kind = Set(SubmitCall,ReplyCall,AcceptCall,DeclineCall).oneOf();
       nondet m = AGENTS.oneOf(); receive(slot,r,kind,m) },
@@ -394,7 +481,7 @@ module concurrentProtocol {
     { nondet r = REQUESTS.oneOf(); commitClose(r) },
     { nondet a = AGENTS.oneOf(); any { requestDelete(a), commitDelete(a) } },
     { nondet a = AGENTS.oneOf(); nondet p = SUBJECTS.oneOf(); any { fenceStore(a,p), recordFence(a,p) } },
-    { nondet e = EVENTS.oneOf(); any { beginRetire(e), retire(e) } },
+    { nondet e = EVENTS.oneOf(); any { beginRetire(e), retire(e), expireEvent(e), retireUnsent(e), loseOutcome(e), redeliver(e) } },
     { nondet a = AGENTS.oneOf(); any { stopVM(a), beginStop(a), retireBoot(a), observeStopped(a),
       launchBoot(a), confirmBoot(a), publishBoot(a), expireBootLease(a), abandonBoot(a), sealStore(a) } },
     { nondet a = AGENTS.oneOf(); nondet restricted = Set(true,false).oneOf(); bootVM(a,restricted) },

@@ -107,13 +107,24 @@ func writeFrame(w io.Writer, v any) error {
 	return err
 }
 
-func readFrame(r io.Reader, v any) error {
+func readFrame(r io.Reader, v any) error { return readFrameUpTo(r, v, maxFrame) }
+
+// WriteFrame writes v as one frame of the link: a JSON object behind its
+// 4-byte big-endian length. The authority service's sockets use the same
+// format (docs/adr/006-authority-service.md).
+func WriteFrame(w io.Writer, v any) error { return writeFrame(w, v) }
+
+// ReadFrame reads one frame into v, refusing unknown fields and a frame
+// longer than limit, itself bounded by the link's own limit.
+func ReadFrame(r io.Reader, v any, limit int) error { return readFrameUpTo(r, v, min(limit, maxFrame)) }
+
+func readFrameUpTo(r io.Reader, v any, limit int) error {
 	var size [4]byte
 	if _, err := io.ReadFull(r, size[:]); err != nil {
 		return err
 	}
 	n := binary.BigEndian.Uint32(size[:])
-	if n == 0 || n > maxFrame {
+	if n == 0 || uint64(n) > uint64(max(limit, 0)) {
 		return ErrProtocol
 	}
 	b := make([]byte, n)

@@ -25,13 +25,18 @@ func ValidAgentID(s string) bool {
 
 // RequestStatus is what the sender of a request may know of it now. State is
 // the platform's own request state (PENDING_APPROVAL, DELIVERING, PROCESSING,
-// REPLIED, DECLINED, EXPIRED, CANCELED or FAILED); the reply itself arrives as
-// a "reply" event, never through this read.
+// REPLIED, DECLINED, EXPIRED, CANCELED or FAILED). The reply arrives as a
+// "reply" event; a REPLIED request also carries it here while it is kept, so
+// that the sender catches up on a reply whose event never came (ADR 007).
+// Reason says why a REPLIED request has none: content_purged at the end of
+// its retention, content_revoked when it was revoked.
 type RequestStatus struct {
-	RequestID        string    `json:"request_id"`
-	RecipientAgentID string    `json:"recipient_agent_id"`
-	State            string    `json:"state"`
-	ExpiresAt        time.Time `json:"expires_at"`
+	RequestID        string       `json:"request_id"`
+	RecipientAgentID string       `json:"recipient_agent_id"`
+	State            string       `json:"state"`
+	ExpiresAt        time.Time    `json:"expires_at"`
+	Reply            *PeerPayload `json:"reply,omitempty"`
+	Reason           string       `json:"reason,omitempty"`
 }
 
 // PeerAPI is optional on a PlatformAPI: the reads behind the guest's A2A
@@ -72,7 +77,8 @@ func (p *PlatformClient) RequestStatus(ctx context.Context, requestID string) (R
 	if err != nil {
 		return RequestStatus{}, err
 	}
-	if r.RequestStatus == nil || r.RequestStatus.RequestID != requestID {
+	if r.RequestStatus == nil || r.RequestStatus.RequestID != requestID || len(r.RequestStatus.Reason) > 100 ||
+		r.RequestStatus.Reply != nil && (r.RequestStatus.State != "REPLIED" || r.RequestStatus.Reply.Validate() != nil) {
 		return RequestStatus{}, ErrProtocol
 	}
 	return *r.RequestStatus, nil

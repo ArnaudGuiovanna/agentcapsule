@@ -411,13 +411,14 @@ func TestArchiveRetryReasons(t *testing.T) {
 	}
 }
 
-// The archives section is validated at load, without touching its root.
+// The archives section is validated at load, without touching its root. The
+// authorities' directories are the service's: each capture checks the root
+// against them (TestWorkerChecksItsRootsAgainstTheService).
 func TestServiceArchivesConfiguration(t *testing.T) {
 	parent := t.TempDir()
 	base := ServiceConfig{Version: 1, HostID: "local", Root: filepath.Join(parent, "runtime"),
-		KeyAuthority:     &ServiceKeyAuthority{Root: filepath.Join(parent, "keys")},
-		RestoreAuthority: &ServiceKeyAuthority{Root: filepath.Join(parent, "authority")},
-		Provisioning:     &ProvisioningConfig{FirstUID: 62000, LastUID: 62009}}
+		Authority:    &ServiceAuthority{Socket: "/run/agentcapsule-authority/worker.sock", RestoreAuthorityID: "restoreauth_" + strings.Repeat("a", 32), KeyAuthorityID: "keyauth_" + strings.Repeat("b", 32)},
+		Provisioning: &ProvisioningConfig{FirstUID: 62000, LastUID: 62009}}
 	root := filepath.Join(parent, "archives")
 	c := base
 	c.Archives = &ServiceArchives{Root: root}
@@ -440,10 +441,8 @@ func TestServiceArchivesConfiguration(t *testing.T) {
 		"unclean root":            func(c *ServiceConfig) { c.Archives.Root = root + "/../archives" },
 		"inside runtime":          func(c *ServiceConfig) { c.Archives.Root = filepath.Join(c.Root, "archives") },
 		"contains runtime":        func(c *ServiceConfig) { c.Archives.Root = parent },
-		"inside key authority":    func(c *ServiceConfig) { c.Archives.Root = filepath.Join(c.KeyAuthority.Root, "a") },
-		"inside restore":          func(c *ServiceConfig) { c.Archives.Root = filepath.Join(c.RestoreAuthority.Root, "a") },
 		"without provisioning":    func(c *ServiceConfig) { c.Provisioning = nil },
-		"without authorities":     func(c *ServiceConfig) { c.KeyAuthority, c.RestoreAuthority = nil, nil },
+		"without authorities":     func(c *ServiceConfig) { c.Authority = nil },
 		"every too short":         func(c *ServiceConfig) { c.Archives.Every = "59m" },
 		"every too long":          func(c *ServiceConfig) { c.Archives.Every = "169h" },
 		"every unparsable":        func(c *ServiceConfig) { c.Archives.Every = "daily" },

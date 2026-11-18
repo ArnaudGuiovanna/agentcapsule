@@ -147,7 +147,7 @@ func TestDelegationOperatorCLIAndRealAPI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"agentcapsule-admin", "agentcapsule-api"} {
+	for _, name := range []string{"agentcapsule-admin", "agentcapsule-api", "agentcapsule-authority"} {
 		build := exec.CommandContext(t.Context(), "go", "build", "-o", filepath.Join(dir, name), "./cmd/"+name)
 		build.Dir = root
 		if output, err := build.CombinedOutput(); err != nil {
@@ -167,11 +167,14 @@ func TestDelegationOperatorCLIAndRealAPI(t *testing.T) {
 	if err = os.WriteFile(keyFile, []byte(strings.Repeat("6", 32)), 0600); err != nil {
 		t.Fatal(err)
 	}
+	// The token's revocation appends its record to the authority service
+	// before it commits (ADR 006 wave 5).
+	authority := startAuthorityService(t, dir)
 	admin := func(action, operation string) controlplane.DelegationChangeResult {
 		t.Helper()
 		args := []string{"configure-delegation", "-action", action, "-operation-id", operation, "-tenant-id", l.org.ID, "-issuer", l.trust.Issuer}
 		if action == "revoke-token" {
-			args = append(args, "-token-id", "live")
+			args = append(append(args, "-token-id", "live", "-confirm", "live"), authority.flags()...)
 		} else {
 			args = append(args, "-audience", l.trust.Audience, "-trust-file", configFile)
 		}
@@ -204,8 +207,11 @@ func TestDelegationOperatorCLIAndRealAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer log.Close()
-	cmd := exec.CommandContext(t.Context(), filepath.Join(dir, "agentcapsule-api"), "-listen", address, "-receipt-key-file", keyFile, "-host-id", "local", "-delegated-identity-file", configFile)
-	cmd.Env = append(os.Environ(), "AGENTCAPSULE_DATABASE_URL="+l.dsn)
+	// No local trust file: the API verifies with the keys the operator
+	// registered in PostgreSQL. Development mode: plain HTTP on loopback (TLS
+	// is tested in TestAPIBinariesBootstrapServeAndShutdown).
+	cmd := exec.CommandContext(t.Context(), filepath.Join(dir, "agentcapsule-api"), "-listen", address, "-receipt-key-file", keyFile, "-host-id", "local")
+	cmd.Env = append(os.Environ(), "AGENTCAPSULE_DATABASE_URL="+l.dsn, "AGENTCAPSULE_MODE=development")
 	cmd.Stdout = log
 	cmd.Stderr = log
 	if err = cmd.Start(); err != nil {
@@ -264,7 +270,10 @@ func TestDelegationOperatorCLIAndRealAPI(t *testing.T) {
 		}
 	}
 	request(200)
-	admin("revoke-token", "revoke")
+	if revoked := admin("revoke-token", "revoke"); len(revoked.Revocations) != 1 || revoked.Revocations[0].Kind != "delegated_token" ||
+		revoked.Revocations[0].State != controlplane.RevocationConfirmed {
+		t.Fatal("the token's revocation record", revoked)
+	}
 	request(401)
 	if err = cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)

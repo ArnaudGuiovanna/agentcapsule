@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/authoritylog"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/delegatedidentity"
 	"github.com/jackc/pgx/v5"
 )
@@ -50,7 +51,7 @@ func (s *Store) Authenticate(ctx context.Context, secret string) (Principal, err
 	if strings.HasPrefix(secret, serviceTokenPrefix) {
 		return s.authenticateService(ctx, secret)
 	}
-	if len(secret) != 47 || !strings.HasPrefix(secret, "acp_") {
+	if len(secret) != 47 || !strings.HasPrefix(secret, "acp_") || s.legacyClosed.Load() {
 		return Principal{}, ErrAuthentication
 	}
 	hash := sha256.Sum256([]byte(secret))
@@ -182,13 +183,22 @@ func (s *Store) RevokeToken(ctx context.Context, p Principal, tokenID string) er
 	if p.Kind == "user" && tokenID != p.TokenID {
 		return ErrNotFound
 	}
-	tag, err := tx.Exec(ctx, `UPDATE api_tokens SET revoked_at=coalesce(revoked_at,clock_timestamp())
-        WHERE id=$1 AND kind='user'`, tokenID)
+	var active bool
+	err = tx.QueryRow(ctx, `SELECT revoked_at IS NULL FROM api_tokens WHERE id=$1 AND kind='user' FOR UPDATE`, tokenID).Scan(&active)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() != 1 {
-		return ErrNotFound
+	if !active {
+		return commit(ctx, tx)
+	}
+	if _, err = tx.Exec(ctx, `UPDATE api_tokens SET revoked_at=clock_timestamp() WHERE id=$1 AND kind='user'`, tokenID); err != nil {
+		return err
+	}
+	if err = s.revocations(tx, "").add(ctx, authoritylog.AccessAPIToken, "", [][]string{{tokenID}}); err != nil {
+		return err
 	}
 	return commit(ctx, tx)
 }

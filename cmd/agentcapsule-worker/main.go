@@ -20,11 +20,14 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/directory"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/operatorconfig"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/preflight"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/restoreauthority"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/slimlink"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/telemetry"
@@ -40,19 +43,66 @@ func run() int {
 	archiveRoot := flag.String("archive-root", "", "absolute private archive directory outside runtime and authorities")
 	restoreAgent := flag.String("restore-agent", "", "restore this agent from -archive-id into a new incarnation, then exit")
 	restoreID := flag.String("restore-id", "", "stable rst_ identifier with 32 lowercase hex digits; reuse to resume the restore")
+	restoreHost := flag.String("restore-host", "", "restore every agent of this lost host, which this host took over, from its archives, then exit")
+	archiveFetch := flag.String("archive-fetch", "", "the archive shipper (agentcapsule-archive-ship.py), to fetch an archive missing from -archive-root from the standby's copy or S3")
+	check := flag.Bool("preflight", false, "check this host and configuration, print what to fix, change nothing, then exit")
+	testAgent := flag.String("test-restore", "", "test the restore of this agent from its newest archive, or -archive-id, in -scratch, change nothing, then exit")
+	scratch := flag.String("scratch", "", "absolute directory outside the runtime, archive and authority roots, where -test-restore works")
+	collect := flag.Bool("collect-garbage", false, "remove the archives past retention, the archives of deleted agents and the unused cached harness images, then exit")
+	dryRun := flag.Bool("dry-run", false, "with -collect-garbage: print what it would remove, remove nothing")
+	confirm := flag.String("confirm", "", "with -collect-garbage: repeat this host's host_id; not needed with -dry-run")
 	flag.Parse()
 	fail := func(code string) int { fmt.Fprintln(os.Stderr, code); return 1 }
 	if *path == "" || flag.NArg() != 0 {
 		return fail("configuration_required")
+	}
+	if *restoreHost != "" && (*restoreAgent != "" || *restoreID != "" || *archiveAgent != "" || *archiveID != "" || !filepath.IsAbs(*archiveRoot)) {
+		return fail("restore_host_configuration_invalid")
+	}
+	if *testAgent != "" && (*restoreAgent != "" || *restoreID != "" || *restoreHost != "" || *archiveAgent != "" || *migrate || *check || *collect ||
+		!filepath.IsAbs(*archiveRoot) || !filepath.IsAbs(*scratch) || *archiveID != "" && !volumearchive.ValidID(*archiveID)) ||
+		*testAgent == "" && *scratch != "" {
+		return fail("restore_test_configuration_invalid")
+	}
+	if *collect && (*restoreAgent != "" || *restoreID != "" || *restoreHost != "" || *archiveAgent != "" || *archiveID != "" || *archiveRoot != "" ||
+		*archiveFetch != "" || *migrate || *check) || !*collect && (*dryRun || *confirm != "") {
+		return fail("collect_garbage_configuration_invalid")
+	}
+	if *archiveFetch != "" && (!filepath.IsAbs(*archiveFetch) || (*restoreHost == "" && *restoreAgent == "" && *testAgent == "")) {
+		return fail("archive_fetch_configuration_invalid")
+	}
+	// Production unless AGENTCAPSULE_MODE=development, which says so at
+	// every start (docs/adr/010-transport-security-and-preflight.md).
+	mode, err := operatorconfig.ModeFromEnvironment()
+	if err != nil {
+		return fail("mode_invalid")
+	}
+	if mode == operatorconfig.Development {
+		fmt.Fprintln(os.Stderr, operatorconfig.DevelopmentWarning)
+	}
+	if *check {
+		return runPreflight(*path, mode)
+	}
+	if *testAgent != "" || *collect {
+		c, err := worker.LoadServiceConfig(*path)
+		if err != nil {
+			return fail("configuration_invalid")
+		}
+		if *collect {
+			return collectGarbage(c, mode, *dryRun, *confirm)
+		}
+		return testRestore(c, mode, *testAgent, *archiveID, *archiveRoot, *scratch, *archiveFetch)
 	}
 	restoreRequested := *restoreAgent != "" || *restoreID != ""
 	if restoreRequested && (*restoreAgent == "" || *archiveAgent != "" || !controlplane.ValidRestoreID(*restoreID) ||
 		!volumearchive.ValidID(*archiveID) || !filepath.IsAbs(*archiveRoot)) {
 		return fail("restore_configuration_invalid")
 	}
-	// A capture or a restore: one agent, then exit; no maintenance.
-	archiveRequested := *archiveAgent != "" || *archiveID != "" || *archiveRoot != "" || restoreRequested
-	if archiveRequested && !restoreRequested && (*archiveAgent == "" || !volumearchive.ValidID(*archiveID) || !filepath.IsAbs(*archiveRoot)) {
+	// A capture or a restore: one agent, or a lost host's, then exit; no
+	// maintenance.
+	hostRestoreRequested := *restoreHost != ""
+	archiveRequested := *archiveAgent != "" || *archiveID != "" || *archiveRoot != "" || restoreRequested || hostRestoreRequested
+	if archiveRequested && !restoreRequested && !hostRestoreRequested && (*archiveAgent == "" || !volumearchive.ValidID(*archiveID) || !filepath.IsAbs(*archiveRoot)) {
 		return fail("archive_configuration_invalid")
 	}
 	c, err := worker.LoadServiceConfig(*path)
@@ -60,25 +110,63 @@ func run() int {
 		return fail("configuration_invalid")
 	}
 	opts, lease, maintenance, err := c.Settings()
+	if errors.Is(err, worker.ErrAuthorityServiceRequired) {
+		return fail(worker.AuthorityFailure(err))
+	}
 	if err != nil {
 		return fail("configuration_invalid")
 	}
-	if archiveRequested {
-		if c.Provisioning == nil || c.KeyAuthority == nil || c.RestoreAuthority == nil {
-			return fail("archive_requires_product_authorities")
-		}
-		for _, root := range []string{opts.Root, c.KeyAuthority.Root, c.RestoreAuthority.Root} {
-			if err = restoreauthority.CheckSeparation(root, *archiveRoot); err != nil {
-				return fail("archive_domain_overlap")
+	if mode == operatorconfig.Production && c.CheckProductionTransport() != nil {
+		return fail("registry_local_rule_refused_in_production")
+	}
+	// RUN-012: no Firecracker without KVM, a compatible kernel, cgroup v2, room
+	// on the runtime disk (DEP-3) and the pinned artifacts. The failed checks
+	// say what to fix.
+	if results := c.MandatoryPreflight(context.Background(), preflight.System()); preflight.Failed(results) {
+		var failed []preflight.Result
+		for _, r := range results {
+			if r.Status == preflight.Fail {
+				failed = append(failed, r)
 			}
 		}
+		_ = preflight.Write(os.Stderr, failed)
+		return 1
 	}
-	dsn := os.Getenv("AGENTCAPSULE_DATABASE_URL")
-	if dsn == "" {
-		return fail("database_configuration_required")
+	if archiveRequested {
+		if c.Provisioning == nil || c.Authority == nil {
+			return fail("archive_requires_product_authorities")
+		}
+		if err = restoreauthority.CheckSeparation(opts.Root, *archiveRoot); err != nil {
+			return fail("archive_domain_overlap")
+		}
+	}
+	dsn, code := operatorconfig.DatabaseURL(mode)
+	if code != "" {
+		return fail(code)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	// The authorities belong to the authority service (ADR 006): the worker
+	// reaches them through its socket and never opens their directories. A
+	// service that does not answer yet is waited for; one that holds other
+	// authorities is refused.
+	authority, err := c.OpenAuthority()
+	if err != nil {
+		return fail("configuration_invalid")
+	}
+	if authority != nil {
+		defer authority.Close()
+		waiting := telemetry.NewLogger(os.Stderr, map[string][]string{"event": {"authority_service_waiting"}})
+		var once sync.Once
+		if err = worker.WaitForAuthority(ctx, authority, opts.Root, func(error) {
+			once.Do(func() { waiting.Event("authority_service_waiting") })
+		}); err != nil {
+			return fail(worker.AuthorityFailure(err))
+		}
+		if archiveRequested && authority.SeparateFrom(*archiveRoot) != nil {
+			return fail("archive_domain_overlap")
+		}
+	}
 	startup, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	s, err := controlplane.Open(startup, dsn)
@@ -94,26 +182,25 @@ func run() int {
 	if _, err = s.PendingCredentialRenewals(startup, c.HostID); err != nil {
 		return fail("database_schema_unavailable")
 	}
+	// A lost host never serves again (ADR 020): its worker gets no work.
+	if _, err = s.HostTakeoverOf(startup, c.HostID); err == nil {
+		return fail("host_taken_over")
+	} else if !errors.Is(err, controlplane.ErrNotFound) {
+		return fail("database_schema_unavailable")
+	}
 	nonce := make([]byte, 16)
 	if _, err = rand.Read(nonce); err != nil {
 		return fail("worker_identity_failed")
 	}
 	workerID := "maintenance-" + hex.EncodeToString(nonce)
 	var w *worker.Placements
-	if c.KeyAuthority != nil {
-		keys, e := c.OpenVolumeKeys()
-		if e != nil {
-			return fail("key_authority_unavailable")
-		}
-		authority, e := c.OpenRestoreAuthority(startup, keys)
-		if e != nil {
-			return fail(worker.AuthorityFailure(e))
-		}
-		defer authority.Close()
+	if authority != nil {
+		// The client is both authorities: keys are created and destroyed
+		// through it, and a key in use is held under its binding.
 		if c.Provisioning != nil {
-			w, err = worker.NewProvisioningPlacements(s, c.HostID, workerID, lease, opts, keys, authority, *c.Provisioning)
+			w, err = worker.NewProvisioningPlacements(s, c.HostID, workerID, lease, opts, authority, authority, *c.Provisioning)
 		} else {
-			w, err = worker.NewPlacementsWithAuthority(s, c.HostID, workerID, lease, opts, keys, authority)
+			w, err = worker.NewPlacementsWithAuthority(s, c.HostID, workerID, lease, opts, authority, authority)
 		}
 	} else {
 		w, err = worker.NewPlacements(s, c.HostID, workerID, lease, opts)
@@ -122,19 +209,54 @@ func run() int {
 		return fail("runtime_initialization_failed")
 	}
 	defer w.Close() // Listener ownership ends; surviving VMMs remain adoptable.
+	budget, err := c.Restarts()
+	if err != nil || w.SetRestartBudget(budget) != nil {
+		return fail("configuration_invalid")
+	}
 	// Events, one JSON object per line, from a closed vocabulary (OPS-02):
 	// progress on standard output, retries and failures on standard error.
 	vocabulary := map[string][]string{"event": {"maintenance_started", "maintenance_complete", "maintenance_retry", "wake_budget_exhausted",
 		"harness_import_retry", "directory_publish_retry", "slim_callback_stopped", "job_done", "job_retried",
-		"volume_archive_captured", "volume_archive_retry"},
-		"reason": append(worker.RetryReasons(), worker.ArchiveRetryReasons()...), "kind": worker.JobKinds(), "vm": worker.ArchiveVMs()}
+		"volume_archive_captured", "volume_archive_retry", "volume_archive_purged", "delivery_dead", "agent_failed"},
+		"reason": append(append(append(worker.RetryReasons(), worker.ArchiveRetryReasons()...), worker.DeadDeliveryReasons()...), worker.AgentFailureReasons()...),
+		"kind":   append(worker.JobKinds(), worker.DeadDeliveryKinds()...), "vm": worker.ArchiveVMs()}
+	// The model gateway's events: a soft budget passed, a call refused (ADR 011).
+	vocabulary["event"] = append(vocabulary["event"], worker.LLMEvents()...)
+	for key, values := range worker.LLMEventCodes() {
+		vocabulary[key] = append(vocabulary[key], values...)
+	}
 	events, problems := telemetry.NewLogger(os.Stdout, vocabulary), telemetry.NewLogger(os.Stderr, vocabulary)
 	registry := telemetry.NewRegistry()
 	if err = w.EnableTelemetry(registry, opts.Root, opts.MaxActive); err != nil {
 		return fail("telemetry_unavailable")
 	}
+	if err = w.EnableDeletionTelemetry(registry); err != nil {
+		return fail("telemetry_unavailable")
+	}
 	if err = w.EnableJobEvents(events, problems); err != nil {
 		return fail("telemetry_unavailable")
+	}
+	pressure := c.Pressure()
+	if err = w.EnableStoragePressure(pressure, registry); err != nil {
+		return fail("configuration_invalid")
+	}
+	if c.TraceFile != "" && !archiveRequested {
+		// Spans (OPR-3), every identifier pseudonymized with the
+		// installation's key, which the API reads too.
+		key, err := s.TraceKey(startup)
+		if err != nil {
+			return fail("database_schema_unavailable")
+		}
+		tracer, err := telemetry.NewFileTracer(c.TraceFile, "agentcapsule-worker", key)
+		clear(key)
+		if err != nil {
+			return fail("trace_file_unavailable")
+		}
+		defer tracer.Close()
+		tracer.Count(registry)
+		if err = w.EnableTracing(tracer); err != nil {
+			return fail("telemetry_unavailable")
+		}
 	}
 	importRetries := registry.Counter("agentcapsule_worker_harness_import_retries_total", "Harness imports that failed and will be tried again.")
 	publishRetries := registry.Counter("agentcapsule_worker_directory_publish_retries_total", "Directory publication passes that failed (the Directory unreachable or refusing).")
@@ -162,16 +284,20 @@ func run() int {
 			return fail("transit_keys_unavailable")
 		}
 	}
-	llm, err := c.OpenLLM(s)
+	llm, err := c.OpenLLM(s, mode == operatorconfig.Production)
 	if err != nil {
 		return fail("llm_configuration_invalid")
 	}
 	if llm != nil {
+		llm.Observe(worker.NewLLMTelemetry(registry, problems, s.LLMUnresolvedCalls))
 		if err = w.EnableLLM(llm); err != nil {
 			return fail("llm_unavailable")
 		}
 	}
 	importer, err := c.OpenRegistry(s, workerID)
+	if errors.Is(err, worker.ErrInspection) {
+		return fail("registry_inspection_unavailable")
+	}
 	if err != nil {
 		return fail("registry_configuration_invalid")
 	}
@@ -179,6 +305,7 @@ func run() int {
 		if err = w.EnableRegistry(importer); err != nil {
 			return fail("registry_unavailable")
 		}
+		importer.Pressure = pressure.Refuse
 	}
 	if importer != nil && !archiveRequested {
 		// Imports run beside maintenance: a large download never delays delivery.
@@ -204,12 +331,16 @@ func run() int {
 			// Brings the Directory to the organizations' descriptions; an outage
 			// only delays publication, every step is recorded in PostgreSQL.
 			publisher := &directory.Publisher{Store: s, Directory: dir}
-			go publisher.Run(ctx, publishEvery, func(error) {
+			retry := func(error) {
 				if ctx.Err() == nil {
 					publishRetries.Inc()
 					problems.Event("directory_publish_retry")
 				}
-			})
+			}
+			// A Directory that cannot be reached defers the publication: it
+			// counts as a failed pass, so that the outage alerts.
+			publisher.Deferred = retry
+			go publisher.Run(ctx, publishEvery, retry)
 		}
 	}
 	link, linkListener, err := c.OpenSLIM()
@@ -255,42 +386,86 @@ func run() int {
 					problems.Event("volume_archive_retry", vm, telemetry.Code("reason", "retention"))
 				}
 			}
+			// The archives of deleted agents, whose key is destroyed (ADR 018).
+			archives.Purged = func(removed int, err error) {
+				if removed > 0 {
+					events.Event("volume_archive_purged", telemetry.Int("removed", int64(removed)))
+				}
+				if err != nil {
+					problems.Event("volume_archive_retry", telemetry.Code("reason", "purge"))
+				}
+			}
 			maintenance.Archives = archives
 		}
+	}
+	// While the authorities do not answer, a restore pauses, then resumes
+	// from its last durable step (ADR 006 §4).
+	pauses := telemetry.NewLogger(os.Stderr, map[string][]string{"event": {"restore_paused"}, "reason": worker.RestorePauses()})
+	paused := func(err error) { pauses.Event("restore_paused", telemetry.Code("reason", worker.RestorePause(err))) }
+	var fetch worker.ArchiveFetcher
+	if *archiveFetch != "" {
+		fetch = worker.ScriptFetcher([]string{*archiveFetch}, *archiveRoot)
+	}
+	if hostRestoreRequested {
+		archives, err := volumearchive.New(*archiveRoot)
+		if err != nil {
+			return fail("archive_storage_unavailable")
+		}
+		// One line per agent as it goes, then the totals (docs/recovery.md).
+		out := json.NewEncoder(os.Stdout)
+		items, err := w.RestoreHost(ctx, *restoreHost, archives, fetch, paused, func(item worker.HostRestoreItem) { _ = out.Encode(item) })
+		if errors.Is(err, worker.ErrNotTakenOver) {
+			return fail("restore_host_not_taken_over")
+		}
+		if err != nil {
+			return fail("restore_host_interrupted_run_again")
+		}
+		totals := map[string]int{"restored": 0, "skipped": 0, "failed": 0}
+		for _, item := range items {
+			totals[item.Result]++
+		}
+		_ = out.Encode(struct {
+			LostHost string `json:"lost_host"`
+			Host     string `json:"host"`
+			Restored int    `json:"restored"`
+			Skipped  int    `json:"skipped"`
+			Failed   int    `json:"failed"`
+		}{*restoreHost, c.HostID, totals["restored"], totals["skipped"], totals["failed"]})
+		if totals["failed"] > 0 {
+			return fail("restore_host_incomplete_run_again")
+		}
+		return 0
 	}
 	if restoreRequested {
 		archives, err := volumearchive.New(*archiveRoot)
 		if err != nil {
 			return fail("archive_storage_unavailable")
 		}
-		result, err := w.RestoreFromArchive(ctx, *restoreID, *restoreAgent, *archiveID, archives)
+		// From the archive root, or fetched from a store and verified first.
+		store := "local"
+		if _, err = archives.Manifest(*archiveID); err != nil && fetch != nil {
+			if store, err = w.FetchArchive(ctx, archives, fetch, *archiveID, paused); err != nil {
+				return fail("restore_failed_" + worker.RestoreFailure(err))
+			}
+		}
+		result, err := w.RestoreFromArchive(ctx, *restoreID, *restoreAgent, *archiveID, archives, paused)
 		if err != nil {
 			// Once the restore is recorded, the agent stays out of service
 			// until the same command succeeds (see docs/recovery.md).
 			return fail("restore_failed_" + worker.RestoreFailure(err))
 		}
-		unmatched, queued, skipped := 0, 0, 0
-		for _, l := range result.Losses {
-			if l.MailboxID == "" {
-				unmatched++
-			}
-			switch l.Rerun {
-			case controlplane.RerunQueued:
-				queued++
-			case controlplane.RerunSkipped:
-				skipped++
-			}
-		}
+		unmatched, queued, skipped := worker.RestoreCounts(result.Losses)
 		if err = json.NewEncoder(os.Stdout).Encode(struct {
-			RestoreID   string `json:"restore_id"`
-			AgentID     string `json:"agent_id"`
-			ArchiveID   string `json:"archive_id"`
-			Incarnation uint64 `json:"incarnation"`
-			Losses      int    `json:"losses"`
-			Unmatched   int    `json:"unmatched_losses"`
-			Queued      int    `json:"reruns_queued"`
-			Skipped     int    `json:"reruns_skipped"`
-		}{result.RestoreID, result.AgentID, result.ArchiveID, result.Incarnation, len(result.Losses), unmatched, queued, skipped}); err != nil {
+			RestoreID    string `json:"restore_id"`
+			AgentID      string `json:"agent_id"`
+			ArchiveID    string `json:"archive_id"`
+			ArchiveStore string `json:"archive_store"`
+			Incarnation  uint64 `json:"incarnation"`
+			Losses       int    `json:"losses"`
+			Unmatched    int    `json:"unmatched_losses"`
+			Queued       int    `json:"reruns_queued"`
+			Skipped      int    `json:"reruns_skipped"`
+		}{result.RestoreID, result.AgentID, result.ArchiveID, store, result.Incarnation, len(result.Losses), unmatched, queued, skipped}); err != nil {
 			return fail("restore_receipt_write_failed_retry_same_id")
 		}
 		return 0
@@ -327,6 +502,33 @@ func run() int {
 		return 0
 	}
 	return fail("maintenance_stopped")
+}
+
+// runPreflight prints every check of the configuration and of this host, and
+// exits 1 when one fails. It changes nothing: it creates no runtime root,
+// opens no authority and writes no row.
+func runPreflight(path string, mode operatorconfig.Mode) int {
+	_, modeResult := preflight.Mode()
+	results := []preflight.Result{modeResult}
+	c, err := worker.LoadServiceConfig(path)
+	if err == nil {
+		_, _, _, err = c.Settings()
+	}
+	if err != nil {
+		results = append(results, preflight.Result{Check: "configuration", Status: preflight.Fail,
+			Detail: path + " is not a valid worker configuration",
+			Fix:    "a root-owned regular file, not writable by group or others, with the fields of runtime/worker/config.example.json"})
+		_ = preflight.Write(os.Stdout, results)
+		return 1
+	}
+	results = append(results, preflight.Result{Check: "configuration", Status: preflight.OK, Detail: path})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	results = append(results, c.Preflight(ctx, preflight.System(), mode, os.Getenv(operatorconfig.DatabaseVariable))...)
+	if err = preflight.Write(os.Stdout, results); err != nil || preflight.Failed(results) {
+		return 1
+	}
+	return 0
 }
 
 func main() { os.Exit(run()) }

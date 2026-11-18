@@ -1,6 +1,7 @@
 # Secret scanning configuration (https://github.com/gitleaks/gitleaks).
 # The default ruleset applies. Fake credentials in tests are allowed line by line
 # with a `gitleaks:allow` comment, never by excluding whole directories.
+# A fixture already in the history is listed by its fingerprint in .gitleaksignore.
 title = "Agent Capsule"
 
 [extend]

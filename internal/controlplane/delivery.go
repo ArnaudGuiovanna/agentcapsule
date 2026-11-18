@@ -41,6 +41,24 @@ type PreparedDeliveryAdmission interface {
 	WithPreparedDelivery(context.Context, string, func(context.Context) error) error
 }
 
+// DeadDelivery is a delivery that died (ADR 007): its kind (reply, status or
+// instruction) and why (attempts_exhausted or expired; the deadline wins
+// when both hold). Its request, if any, keeps its state.
+type DeadDelivery struct{ ID, Kind, Reason string }
+
+// A DeathObserver runtime is told of each delivery that dies, once its death
+// has committed. A dispatcher that stops in between loses that report; the
+// dead delivery in PostgreSQL stays the record.
+type DeathObserver interface {
+	DeliveryDead(context.Context, DeadDelivery)
+}
+
+func reportDeath(ctx context.Context, runtime RevocationRuntime, d *DeadDelivery) {
+	if o, ok := runtime.(DeathObserver); ok && d != nil {
+		o.DeliveryDead(ctx, *d)
+	}
+}
+
 type DeliveryAttempt struct {
 	ID, RequestID, Destination, Token string
 	Sequence                          int64
@@ -93,6 +111,14 @@ func (s *Store) HeadDelivery(ctx context.Context, agentID string) (string, error
 	return id, err
 }
 
+// deliverable reports whether the agents a delivery needs are live: its
+// destination and, for a request or a reply, both parties of the request.
+// Otherwise a deletion is under way, and it cancels the delivery
+// (revocation.go), telling the sender of a revoked reply.
+func deliverable(m mailboxRow, r requestRow, agents map[string]agent) bool {
+	return agents[m.Destination].Phase == "LIVE" && (m.Kind == "status" || agents[r.Sender].Phase == "LIVE" && agents[r.Recipient].Phase == "LIVE")
+}
+
 func isHead(ctx context.Context, tx pgx.Tx, m mailboxRow) error {
 	if m.State != "PENDING" {
 		return ErrNoDelivery
@@ -127,7 +153,7 @@ func (s *Store) ClaimDelivery(ctx context.Context, mailboxID string, lease time.
 	if err := isHead(ctx, tx, m); err != nil {
 		return attempt, err
 	}
-	if agents[m.Destination].Phase != "LIVE" || (m.Kind != "status" && (agents[r.Sender].Phase != "LIVE" || agents[r.Recipient].Phase != "LIVE")) {
+	if !deliverable(m, r, agents) {
 		return attempt, ErrUnavailable
 	}
 	if m.Kind == "request" {
@@ -210,7 +236,7 @@ func (s *Store) AuthorizeDispatch(ctx context.Context, mailboxID, token string) 
 	if err != nil {
 		return err
 	}
-	if agents[m.Destination].Phase != "LIVE" || (m.Kind != "status" && (agents[r.Sender].Phase != "LIVE" || agents[r.Recipient].Phase != "LIVE")) {
+	if !deliverable(m, r, agents) {
 		return ErrUnavailable
 	}
 	tag, err := tx.Exec(ctx, `UPDATE agent_mailboxes SET may_have_reached=true,dispatch_authorized=true
@@ -289,6 +315,12 @@ func (s *Store) acknowledgeDelivery(ctx context.Context, mailboxID, token string
 // RetireDelivery revokes uncertain old work before removing the queue head. Merely
 // expiring a lease is insufficient: a delayed RPC can outlive that lease.
 func (s *Store) RetireDelivery(ctx context.Context, mailboxID string, runtime RevocationRuntime) error {
+	return s.retireDelivery(ctx, mailboxID, runtime, nil)
+}
+
+// retireDelivery also starts a dead reply's retention when the dispatcher
+// holds the transit (ADR 007).
+func (s *Store) retireDelivery(ctx context.Context, mailboxID string, runtime RevocationRuntime, transit *Transit) error {
 	if runtime == nil {
 		return errors.New("revocation runtime is required")
 	}
@@ -297,15 +329,12 @@ func (s *Store) RetireDelivery(ctx context.Context, mailboxID string, runtime Re
 		return err
 	}
 	defer rollback(tx)
-	m, r, _, err := lockMailbox(ctx, tx, mailboxID)
+	m, r, agents, err := lockMailbox(ctx, tx, mailboxID)
 	if err != nil {
 		return err
 	}
 	if m.State != "PENDING" {
 		return commit(ctx, tx)
-	}
-	if err := isHead(ctx, tx, m); err != nil {
-		return err
 	}
 	var expired, exhausted bool
 	if err := tx.QueryRow(ctx, `SELECT expires_at<=clock_timestamp(),
@@ -314,6 +343,9 @@ func (s *Store) RetireDelivery(ctx context.Context, mailboxID string, runtime Re
 		return err
 	}
 	if m.Kind == "request" {
+		if err := isHead(ctx, tx, m); err != nil {
+			return err
+		}
 		var existing bool
 		if err := tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM request_closures WHERE request_id=$1)", r.ID).Scan(&existing); err != nil {
 			return err
@@ -338,8 +370,37 @@ func (s *Store) RetireDelivery(ctx context.Context, mailboxID string, runtime Re
 		}
 		return s.ReconcileRequestClosure(ctx, r.ID, runtime)
 	}
+	// Checked here, under the agents' locks, whatever the caller saw: a
+	// delivery that the deletion of an agent will cancel does not die.
+	if !deliverable(m, r, agents) {
+		return ErrUnavailable
+	}
 	if !m.Closing && !expired && !exhausted {
 		return ErrTransition
+	}
+	// No attempt was ever allowed to reach the destination, and none can be
+	// now: AuthorizeDispatch needs a current lease on an open delivery before
+	// its deadline, and this transaction holds the row. With no delayed send
+	// to fence, the delivery dies here, without its destination, which may
+	// never boot (ADR 007). It need not head the mailbox: what never reached
+	// the agent leaves the queue out of order without changing the order of
+	// what the agent receives, and a delivery ahead of it, to an agent that
+	// never boots, must not keep it alive.
+	if !m.MayHaveReached {
+		dead, err := markDead(ctx, tx, m, r, transit)
+		if err != nil {
+			return err
+		}
+		if err = commit(ctx, tx); err != nil {
+			return err
+		}
+		reportDeath(ctx, runtime, &dead)
+		return nil
+	}
+	// An attempt may have reached it, so it was claimed as the head, and
+	// stays the head while pending.
+	if err := isHead(ctx, tx, m); err != nil {
+		return err
 	}
 	if _, err := tx.Exec(ctx, "UPDATE agent_mailboxes SET closing=true WHERE id=$1", mailboxID); err != nil {
 		return err
@@ -350,29 +411,58 @@ func (s *Store) RetireDelivery(ctx context.Context, mailboxID string, runtime Re
 	if err := commit(ctx, tx); err != nil {
 		return err
 	}
-	if err := runtime.Fence(ctx, m.Destination, "event/"+m.ID); err != nil {
+	if err := s.fencePastAttempts(ctx, runtime, m.Destination, "event/"+m.ID); err != nil {
 		return err
 	}
-	return commitBarrier(ctx, runtime, "event/"+m.ID, []string{m.Destination}, func() error {
+	var died *DeadDelivery
+	err = commitBarrier(ctx, runtime, "event/"+m.ID, []string{m.Destination}, func() error {
 		finish, err := s.begin(ctx)
 		if err != nil {
 			return err
 		}
 		defer rollback(finish)
-		current, _, _, err := lockMailbox(ctx, finish, mailboxID)
+		current, r, agents, err := lockMailbox(ctx, finish, mailboxID)
 		if err != nil {
 			return err
 		}
-		if current.State == "PENDING" && current.Closing {
-			if _, err := finish.Exec(ctx, "UPDATE agent_mailboxes SET delivery_state='DEAD',lease_token='',lease_until=NULL WHERE id=$1", mailboxID); err != nil {
-				return err
-			}
-			if _, err := finish.Exec(ctx, "DELETE FROM outbox WHERE mailbox_id=$1", mailboxID); err != nil {
-				return err
-			}
+		if current.State != "PENDING" || !current.Closing {
+			return commit(ctx, finish)
 		}
-		return commit(ctx, finish)
+		// A deletion that began during the fence cancels the delivery.
+		if !deliverable(current, r, agents) {
+			return ErrUnavailable
+		}
+		dead, err := markDead(ctx, finish, current, r, transit)
+		if err != nil {
+			return err
+		}
+		if err = commit(ctx, finish); err != nil {
+			return err
+		}
+		died = &dead
+		return nil
 	})
+	reportDeath(ctx, runtime, died)
+	return err
+}
+
+// markDead ends a delivery that will not reach its destination. The request
+// keeps its state. A dead reply is kept for the transit retention from now, as
+// a delivered reply is from its delivery, and its sender may read it until then.
+func markDead(ctx context.Context, tx pgx.Tx, m mailboxRow, r requestRow, transit *Transit) (DeadDelivery, error) {
+	d := DeadDelivery{ID: m.ID, Kind: m.Kind}
+	// Expiry wins when both hold, as for an instruction.
+	if err := tx.QueryRow(ctx, `UPDATE agent_mailboxes SET delivery_state='DEAD',lease_token='',lease_until=NULL WHERE id=$1
+        RETURNING CASE WHEN expires_at<=clock_timestamp() THEN 'expired' ELSE 'attempts_exhausted' END`, m.ID).Scan(&d.Reason); err != nil {
+		return d, err
+	}
+	if _, err := tx.Exec(ctx, "DELETE FROM outbox WHERE mailbox_id=$1", m.ID); err != nil {
+		return d, err
+	}
+	if transit != nil && m.Kind == "reply" {
+		return d, transit.delivered(ctx, tx, r.ReplyPayload)
+	}
+	return d, nil
 }
 
 // DispatchOne performs at most one RPC attempt or one head retirement. Scheduling,
@@ -412,7 +502,32 @@ func (s *Store) dispatchMailbox(ctx context.Context, agentID, id string, lease t
 	return s.dispatchMailboxWithTransit(ctx, agentID, id, lease, runtime, nil)
 }
 
+// retirementDue reports whether a pending reply, status or instruction is to
+// be retired, however its destination fares: closing, past its deadline, or
+// out of attempts with no live lease. A request is closed by its own closure;
+// a delivery to an agent being deleted is canceled by the deletion. It reads
+// without locks: the retirement checks the agents again under theirs.
+func (s *Store) retirementDue(ctx context.Context, id string) (bool, error) {
+	var due bool
+	err := s.pool.QueryRow(ctx, `SELECT m.kind<>'request' AND m.delivery_state='PENDING' AND a.phase='LIVE' AND (m.closing
+        OR m.expires_at<=clock_timestamp() OR m.attempts>=m.attempt_limit AND (m.lease_until IS NULL OR m.lease_until<=clock_timestamp()))
+        FROM agent_mailboxes m JOIN agents a ON a.id=m.dest_agent_id WHERE m.id=$1`, id).Scan(&due)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	return due, err
+}
+
 func (s *Store) dispatchMailboxWithTransit(ctx context.Context, agentID, id string, lease time.Duration, runtime DeliveryRuntime, transit *Transit) error {
+	// A delivery due to die needs no prepared destination: an agent that
+	// never boots must not keep it, nor its mailbox, alive (EVT-005, EVT-006).
+	// The retirement boots the agent only to fence an attempt that may have
+	// reached it. Preparation still spends no attempt.
+	if due, err := s.retirementDue(ctx, id); err != nil {
+		return err
+	} else if due {
+		return s.retireDelivery(ctx, id, runtime, transit)
+	}
 	var err error
 	retire := false
 	dispatch := func(ctx context.Context) error {
@@ -450,7 +565,7 @@ func (s *Store) dispatchMailboxWithTransit(ctx context.Context, agentID, id stri
 		return err
 	}
 	if retire {
-		return s.RetireDelivery(ctx, id, runtime)
+		return s.retireDelivery(ctx, id, runtime, transit)
 	}
 	return nil
 }

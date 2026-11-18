@@ -211,7 +211,13 @@ const invokeScopes = "org:read agent:read agent:invoke agent:content:read provid
 // SQL fixture the owner-domain HTTP tests use; no physical VM is asserted.
 func apiActiveTenantAgent(t *testing.T, l *apiDelegationFixture, owner, name string) string {
 	t.Helper()
-	id := apiTenantAgent(t, l, owner, name)
+	return apiProvisionAgent(t, l, apiTenantAgent(t, l, owner, name))
+}
+
+// apiProvisionAgent plays the worker: it formats the reserved agent's volume
+// in a VM that it then stops, and activates the agent.
+func apiProvisionAgent(t *testing.T, l *apiDelegationFixture, id string) string {
+	t.Helper()
 	jobs, err := l.store.PendingProvisioning(t.Context(), "local", 20)
 	if err != nil {
 		t.Fatal(err)

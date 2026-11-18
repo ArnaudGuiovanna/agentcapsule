@@ -96,6 +96,21 @@ func TestRealHarnessProcessPersistenceAndFences(t *testing.T) {
 	if err = json.Unmarshal(receipt.Result, &response); err != nil || string(response.Echo) != string(e.Body) {
 		t.Fatal("reference echo response mismatch", err)
 	}
+	// The reference harness accepts JSON content (ADR 016) and echoes it.
+	if err = c.RequireControlContract(t.Context()); err != nil || !c.Accepts(capsuleprotocol.ControlContentJSON) {
+		t.Fatal("the reference harness does not accept JSON content", err)
+	}
+	content := []capsuleprotocol.ContentPart{{Type: "text", Text: "rows"}, {Type: "json", JSON: `{"n":[1,2]}`}}
+	body, err := json.Marshal(capsuleprotocol.Invocation{Kind: "message.user", OperationID: "op_json",
+		Mandate: capsuleprotocol.InstructionMandate{ID: "mdt_json", MaxAgentRequests: 1, ExpiresAt: time.Now().Add(time.Hour)}, Content: content})
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt, err = c.Invoke(t.Context(), harnessstore.Event{ID: "json-event", Subjects: []string{"agent/a", "event/json-event"}, Body: body})
+	var echoed capsuleprotocol.OwnerMessage
+	if err != nil || json.Unmarshal(receipt.Result, &echoed) != nil || len(echoed.Content) != 2 || echoed.Content[1] != content[1] {
+		t.Fatal("JSON content not echoed", string(receipt.Result), err)
+	}
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	err = p.Stop(ctx)
 	cancel()
@@ -139,7 +154,7 @@ func TestRealHarnessProcessPersistenceAndFences(t *testing.T) {
 	}
 	defer db.Close()
 	var count int
-	if err = db.QueryRow("SELECT count(*) FROM echo_events").Scan(&count); err != nil || count != 1 {
+	if err = db.QueryRow("SELECT count(*) FROM echo_events").Scan(&count); err != nil || count != 2 { // the event and the JSON invocation
 		t.Fatal("durable effect count", count, err)
 	}
 	// A frozen real harness cannot handle SIGTERM. The supervisor must kill it
@@ -167,5 +182,78 @@ func TestGuestVolumeCannotBeMountedByHostProcess(t *testing.T) {
 	v := capsuleprotocol.VolumeBoot{Incarnation: 1, VolumeID: "vol_" + strings.Repeat("b", 32), UUID: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", Initialize: true, PreviousShutdown: capsuleprotocol.ShutdownClean}
 	if _, err := OpenVolume(t.Context(), v, make([]byte, 32)); !errors.Is(err, ErrGuest) {
 		t.Fatal("host process admitted to guest mount path", err)
+	}
+}
+
+// Two callers stop a harness when the VM's lifetime ends: StartHarness's own
+// watch and capsule-init's shutdown; two calls of Stop play them here. The
+// harness gets SIGTERM once: a second would reach it after it restored
+// SIGTERM's default action, as a Go harness does when its main function
+// returns, and end a graceful stop by the signal (seen under load, with
+// capsule-echo, as "signal: terminated").
+func TestStoppedHarnessIsSignalledOnce(t *testing.T) {
+	root, err := os.MkdirTemp("", "acp-stop-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(root) })
+	if err = os.Chmod(root, 0711); err != nil {
+		t.Fatal(err)
+	}
+	binary := harnessFixture(t, root)
+	uid, gid := uint32(os.Geteuid()), uint32(os.Getegid())
+	if uid == 0 {
+		uid, gid = 1000, 1000
+	}
+	data := filepath.Join(root, "data")
+	if err = os.Mkdir(data, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Chown(data, int(uid), int(gid)); err != nil {
+		t.Fatal(err)
+	}
+	// A barrier-only boot: the contract child offers health and fences.
+	opts := ProcessOptions{Boot: HarnessBoot{Protocol: capsuleprotocol.Version, PreviousShutdown: capsuleprotocol.ShutdownClean,
+		Identity:      capsuleprotocol.Identity{Incarnation: 1, AgentID: "a", Generation: 1, VMID: "0123456789abcdef", FenceOnly: true},
+		DataDirectory: data, SupervisorUID: uint32(os.Geteuid())}, UID: uid, GID: gid,
+		SocketPath: filepath.Join(root, "control.sock"), Entrypoint: []string{binary, "-test.run=^TestContractHarnessChild$", "--", "contract-child-slow-stop"}}
+	ready, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	p, err := StartHarness(t.Context(), ready, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Generous deadlines: a loaded host must not turn this into a kill.
+	stop := func(stopped chan<- error) {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		stopped <- p.Stop(ctx)
+	}
+	// A first stop: the harness gets SIGTERM, stops serving, and has work left.
+	first, second := make(chan error, 1), make(chan error, 1)
+	go stop(first)
+	for _, err := os.Stat(filepath.Join(data, "stopping")); err != nil; _, err = os.Stat(filepath.Join(data, "stopping")) {
+		select {
+		case <-p.Done():
+			t.Fatal("the harness exited before it was released", p.Err())
+		case <-ready.Done():
+			t.Fatal("the harness did not stop serving", err)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	go stop(second)
+	select {
+	case err = <-second:
+	case <-time.After(200 * time.Millisecond):
+		if err = os.WriteFile(filepath.Join(data, "released"), nil, 0600); err != nil {
+			t.Fatal(err)
+		}
+		err = <-second
+	}
+	if err = errors.Join(err, <-first); err != nil {
+		t.Fatal("a graceful stop ended otherwise:", err)
+	}
+	if _, err = os.Stat(filepath.Join(data, "terminated")); err != nil {
+		t.Fatal("the harness did not finish its work", err)
 	}
 }

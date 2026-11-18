@@ -50,6 +50,14 @@ const (
 	WriteKeyCreate = "key_create"
 	// WriteKeyDestroy destroys a volume key.
 	WriteKeyDestroy = "key_destroy"
+	// WriteAccess records an access revocation (access.go).
+	WriteAccess = "access"
+	// WriteReceiptKeyCreate creates a daily receipt key, a key of the key
+	// authority bound to a day (docs/adr/006-authority-service.md §7).
+	WriteReceiptKeyCreate = "receipt_key_create"
+	// WriteReceiptKeyDestroy destroys a daily receipt key once its day is
+	// over.
+	WriteReceiptKeyDestroy = "receipt_key_destroy"
 )
 
 // degradedPolicy is the classification: true when the kind continues in
@@ -65,9 +73,18 @@ const (
 // So creating, deleting and restoring an agent wait.
 //
 // Finding 1 was decided on November 15, 2026 (option (a)): the completion of
-// a revocation waits, which is the model's safe configuration. Revocations of
-// access (ADR 005 §5.4) do not exist yet: when they do, they get their own
-// kinds here. A bearer token's continues; a standing grant's waits.
+// a revocation waits, which is the model's safe configuration. An access
+// revocation record (ADR 005 §5.4, ADR 006 wave 5) continues: the revocation
+// takes effect at once on the primary. The API confirms a standing grant's
+// only once the replica holds its record, and a bearer token's at once in
+// degraded mode: the model's acknowledged access revocation is the confirmed
+// one, so that rule, not the stream, keeps the model's safe configuration.
+//
+// The daily receipt key (ADR 006 wave 6, answer 4(b), November 16, 2026):
+// its creation continues, so that the API can encrypt the receipts of a new
+// day while the standby is away; the key is then on the primary alone until
+// the standby returns. Its destruction waits, as a volume key's: a key that
+// only the replica still held would come back after a failover.
 var degradedPolicy = map[string]bool{
 	WriteRead:            true,
 	WriteOutcome:         true,
@@ -82,6 +99,10 @@ var degradedPolicy = map[string]bool{
 	WriteSeal:            false,
 	WriteKeyCreate:       false,
 	WriteKeyDestroy:      false,
+	WriteAccess:          true,
+	// Answer 4(b): see above.
+	WriteReceiptKeyCreate:  true,
+	WriteReceiptKeyDestroy: false,
 }
 
 // revocationDoneContinues is ADR 005's finding 1, decided as option (a):
@@ -94,7 +115,8 @@ const revocationDoneContinues = false
 // WriteKinds lists every kind.
 func WriteKinds() []string {
 	return []string{WriteRead, WriteOutcome, WriteRerun, WriteFence, WriteRevocationStart, WriteRevocationDone,
-		WriteRegistration, WriteReservation, WriteLoss, WriteActivation, WriteSeal, WriteKeyCreate, WriteKeyDestroy}
+		WriteRegistration, WriteReservation, WriteLoss, WriteActivation, WriteSeal, WriteKeyCreate, WriteKeyDestroy, WriteAccess,
+		WriteReceiptKeyCreate, WriteReceiptKeyDestroy}
 }
 
 // ContinuesDegraded reports whether an operation of this kind continues in

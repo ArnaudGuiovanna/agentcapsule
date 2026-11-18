@@ -30,15 +30,23 @@ type Platform interface {
 
 // Job is one run of the agent's command.
 type Job struct {
-	ID    string // the operation or request it answers
-	Text  string
-	Files []string // absolute paths of the received files, if any
+	ID string // the operation or request it answers
+	// Text is the message as text: its text parts, and its JSON parts as
+	// compact JSON, separated by blank lines.
+	Text string
+	// Content is the message as received, JSON parts included, for a runner
+	// that can pass them on (ServerRunner). Empty for work recorded before.
+	Content []capsuleprotocol.ContentPart
+	Files   []string // absolute paths of the received files, if any
 }
 
 // Output is what a run produced. Completed is false when the program failed.
+// Content, when set, is the answer with its JSON parts; Text is then its text
+// form, posted instead if Content does not fit.
 type Output struct {
 	Completed bool
 	Text      string
+	Content   []capsuleprotocol.ContentPart
 }
 
 // Runner runs the agent's command for a job. Runs are sequential.
@@ -93,6 +101,10 @@ CREATE TABLE IF NOT EXISTS adapter_a2a_results(
  reason TEXT NOT NULL DEFAULT '',
  received_ns INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS adapter_outputs(
+ id TEXT PRIMARY KEY,
+ content BLOB NOT NULL
+);
 CREATE TABLE IF NOT EXISTS adapter_work(
  seq INTEGER PRIMARY KEY AUTOINCREMENT,
  id TEXT NOT NULL UNIQUE,
@@ -109,16 +121,20 @@ CREATE TABLE IF NOT EXISTS adapter_work(
 );`
 
 type input struct {
-	Text        string                          `json:"text"`
+	Text string `json:"text"`
+	// Content keeps the parts as delivered; absent in work recorded before
+	// JSON content.
+	Content     []capsuleprotocol.ContentPart   `json:"content,omitempty"`
 	Attachments []capsuleprotocol.AttachmentRef `json:"attachments,omitempty"`
 	// Mandate bounds the requests the run may send to other agents. Only an
 	// invocation carries one; a request from another agent never does.
 	Mandate *capsuleprotocol.InstructionMandate `json:"mandate,omitempty"`
 }
 
-func joined(content []capsuleprotocol.TextContent) string {
+// joined is the text of a message: JSON parts are given as their compact JSON.
+func joined(content []capsuleprotocol.ContentPart) string {
 	parts := make([]string, 0, len(content))
-	for _, c := range content {
+	for _, c := range capsuleprotocol.TextOnly(content) {
 		parts = append(parts, c.Text)
 	}
 	return strings.Join(parts, "\n\n")
@@ -164,7 +180,7 @@ func (h *Engine) Handle(ctx context.Context, e harnessstore.Event, tx harnesssto
 			return json.Marshal(capsuleprotocol.OwnerMessage{Content: []capsuleprotocol.TextContent{{Type: "text", Text: "The platform channel is unavailable; the agent cannot answer."}}})
 		}
 		mandate := in.Mandate
-		if err = h.record(ctx, tx, e, "invocation", in.OperationID, input{Text: joined(in.Content), Attachments: in.Attachments, Mandate: &mandate}); err != nil {
+		if err = h.record(ctx, tx, e, "invocation", in.OperationID, input{Text: joined(in.Content), Content: in.Content, Attachments: in.Attachments, Mandate: &mandate}); err != nil {
 			return nil, err
 		}
 		return capsuleprotocol.WorkingResult(), nil
@@ -176,7 +192,7 @@ func (h *Engine) Handle(ctx context.Context, e harnessstore.Event, tx harnesssto
 		if h.platform == nil {
 			return nil, capsuleprotocol.ErrTransport
 		}
-		if err = h.record(ctx, tx, e, "request", peer.RequestID, input{Text: joined(peer.Payload.Content)}); err != nil {
+		if err = h.record(ctx, tx, e, "request", peer.RequestID, input{Text: joined(peer.Payload.Content), Content: peer.Payload.Content}); err != nil {
 			return nil, err
 		}
 		return received()
@@ -217,9 +233,14 @@ func (h *Engine) Handle(ctx context.Context, e harnessstore.Event, tx harnesssto
 		if _, err := tx.ExecContext(ctx, `UPDATE adapter_work SET state='stopped',reason='request_terminal' WHERE kind='request' AND target=? AND state='pending'`, status.RequestID); err != nil {
 			return nil, err
 		}
-		// A request the agent sent ended without a reply.
+		// A request the agent sent ended without a reply; or it was replied,
+		// but the reply was revoked before it arrived (its author deleted:
+		// reason content_revoked). Either ends the task, without an artifact.
 		switch status.Status {
-		case "DECLINED", "EXPIRED", "CANCELED", "FAILED":
+		case "DECLINED", "EXPIRED", "CANCELED", "FAILED", "REPLIED":
+			if status.Status == "REPLIED" && status.Reason == "" {
+				break
+			}
 			if _, err := tx.ExecContext(ctx, `INSERT INTO adapter_a2a_results(request_id,state,reason,received_ns) VALUES(?,?,?,?)
                 ON CONFLICT(request_id) DO NOTHING`, status.RequestID, status.Status, truncate(status.Reason, 100), time.Now().UnixNano()); err != nil {
 				return nil, err
@@ -321,8 +342,22 @@ func (h *Engine) Step(ctx context.Context) (bool, error) {
 			return true, nil // the files could not be read yet; retry later
 		}
 		completed, output = sql.NullBool{Bool: out.Completed, Valid: true}, sql.NullString{String: Answer(out.Text), Valid: true}
+		// An answer with JSON parts is kept as well; the text stays its
+		// fallback.
+		var structured []byte
+		if out.Completed && capsuleprotocol.HasJSON(out.Content) {
+			if structured, err = json.Marshal(out.Content); err != nil {
+				return false, err
+			}
+		}
 		err = h.store.Local(ctx, subjects, func(tx harnessstore.SQL) error {
-			_, err := tx.ExecContext(ctx, `UPDATE adapter_work SET completed=?,output=? WHERE id=? AND state='pending'`, completed.Bool, output.String, id)
+			if _, err := tx.ExecContext(ctx, `UPDATE adapter_work SET completed=?,output=? WHERE id=? AND state='pending'`, completed.Bool, output.String, id); err != nil {
+				return err
+			}
+			if structured == nil {
+				return nil
+			}
+			_, err := tx.ExecContext(ctx, `INSERT INTO adapter_outputs(id,content) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET content=excluded.content`, id, structured)
 			return err
 		})
 		if errors.Is(err, harnessstore.ErrFenced) {
@@ -334,7 +369,12 @@ func (h *Engine) Step(ctx context.Context) (bool, error) {
 	}
 	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	content := []capsuleprotocol.TextContent{{Type: "text", Text: output.String}}
+	content := []capsuleprotocol.ContentPart{{Type: "text", Text: output.String}}
+	if structured, err := h.structuredOutput(ctx, id, kind); err != nil {
+		return false, err
+	} else if structured != nil {
+		content = structured
+	}
 	if kind == "invocation" {
 		done := capsuleprotocol.InvocationCompletion{OperationID: target, Outcome: "completed", Content: content}
 		if !completed.Bool {
@@ -367,10 +407,37 @@ func (h *Engine) Step(ctx context.Context) (bool, error) {
 	return true, h.finish(ctx, id, "")
 }
 
+// structuredOutput is the recorded answer with its JSON parts, or nil when
+// there is none or it does not fit an answer: the text is posted then.
+func (h *Engine) structuredOutput(ctx context.Context, id, kind string) ([]capsuleprotocol.ContentPart, error) {
+	var raw []byte
+	err := h.store.Local(ctx, []string{"agent/" + h.agent}, func(tx harnessstore.SQL) error {
+		return tx.QueryRowContext(ctx, `SELECT content FROM adapter_outputs WHERE id=?`, id).Scan(&raw)
+	})
+	if errors.Is(err, sql.ErrNoRows) || errors.Is(err, harnessstore.ErrFenced) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var content []capsuleprotocol.ContentPart
+	if json.Unmarshal(raw, &content) != nil {
+		return nil, nil
+	}
+	valid := capsuleprotocol.OwnerMessage{Content: content}.Validate()
+	if kind != "invocation" {
+		valid = capsuleprotocol.PeerPayload{Content: content}.Validate()
+	}
+	if valid != nil {
+		return nil, nil
+	}
+	return content, nil
+}
+
 // execute fetches the job's files, runs the command once and removes the files.
 // An error means the files could not be read yet.
 func (h *Engine) execute(ctx context.Context, target string, in input) (Output, error) {
-	job := Job{ID: target, Text: in.Text}
+	job := Job{ID: target, Text: in.Text, Content: in.Content}
 	if len(in.Attachments) > 0 {
 		dir := filepath.Join(h.home, ".agentcapsule", "files", safeName(target, "job"))
 		if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -397,7 +464,11 @@ func (h *Engine) execute(ctx context.Context, target string, in input) (Output, 
 			job.Files = append(job.Files, path)
 			listing = append(listing, fmt.Sprintf("- %s (%s, %d bytes)", path, ref.MediaType, ref.Size))
 		}
-		job.Text += "\n\nAttached files:\n" + strings.Join(listing, "\n")
+		files := "Attached files:\n" + strings.Join(listing, "\n")
+		job.Text += "\n\n" + files
+		if len(job.Content) > 0 {
+			job.Content = append(job.Content[:len(job.Content):len(job.Content)], capsuleprotocol.ContentPart{Type: "text", Text: files})
+		}
 	}
 	return h.run(ctx, job), nil
 }
@@ -438,13 +509,15 @@ func (h *Engine) finish(ctx context.Context, id, reason string) error {
 	return err
 }
 
-// Run works through the jobs until ctx ends.
+// Run works through the jobs until ctx ends or the store fails. A store
+// that a delivery's handler holds past its busy timeout is waited out: the
+// job is tried again at the next tick.
 func (h *Engine) Run(ctx context.Context) error {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		worked, err := h.Step(ctx)
-		if err != nil {
+		if err != nil && !harnessstore.Busy(err) {
 			return err
 		}
 		if worked {

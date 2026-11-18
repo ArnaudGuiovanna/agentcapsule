@@ -118,6 +118,10 @@ const (
 	stmtSeal
 	stmtLoss
 	stmtRerun
+	// Schema version 4 (ADR 006 wave 5): a replica of an older release does
+	// not know them, and refuses the first record that carries one.
+	stmtAccess
+	stmtOutcomeEvent
 )
 
 var statements = map[statement]string{
@@ -131,6 +135,8 @@ var statements = map[statement]string{
 	stmtSeal:          "UPDATE stores SET sealed=1 WHERE id=?",
 	stmtLoss:          "INSERT INTO losses VALUES(?,?,?) ON CONFLICT DO NOTHING",
 	stmtRerun:         "INSERT INTO reruns VALUES(?,?,?) ON CONFLICT DO NOTHING",
+	stmtAccess:        "INSERT INTO access_revocations VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING",
+	stmtOutcomeEvent:  "INSERT INTO outcome_events VALUES(?,?) ON CONFLICT(outcome) DO NOTHING",
 }
 
 // statementKinds classifies every statement for degraded mode
@@ -148,6 +154,8 @@ var statementKinds = map[statement]string{
 	stmtSeal:          authoritylog.WriteSeal,
 	stmtLoss:          authoritylog.WriteLoss,
 	stmtRerun:         authoritylog.WriteRerun,
+	stmtAccess:        authoritylog.WriteAccess,
+	stmtOutcomeEvent:  authoritylog.WriteOutcome,
 }
 
 // allows reports whether an operation of kind may run statement s: one of its
@@ -162,12 +170,28 @@ func opKind(op authoritylog.Op) string {
 	switch op.Kind {
 	case authoritylog.OpStatement:
 		return statementKinds[statement(op.Statement)]
-	case authoritylog.OpKeyCreate:
-		return authoritylog.WriteKeyCreate
-	case authoritylog.OpKeyRevoke:
-		return authoritylog.WriteKeyDestroy
+	case authoritylog.OpKeyCreate, authoritylog.OpKeyRevoke:
+		return keyKind(op.Kind == authoritylog.OpKeyRevoke, op.Agent, op.Volume)
 	}
 	return ""
+}
+
+// keyKind is the kind of a key write: a volume key's, or a daily receipt
+// key's, whose creation continues in degraded mode (ADR 006, answer 4(b)).
+// The receipt keys' agent with a volume that names no day has no kind.
+func keyKind(revoke bool, agent, volume string) string {
+	_, receipt := keyauthority.ReceiptKeyDay(agent, volume)
+	switch {
+	case receipt && revoke:
+		return authoritylog.WriteReceiptKeyDestroy
+	case receipt:
+		return authoritylog.WriteReceiptKeyCreate
+	case agent == keyauthority.ReceiptKeyAgent:
+		return ""
+	case revoke:
+		return authoritylog.WriteKeyDestroy
+	}
+	return authoritylog.WriteKeyCreate
 }
 
 // continues reports whether degraded mode lets every operation of r through.
@@ -632,6 +656,22 @@ func (c *Catalog) ReplicateWith(ctx context.Context, link authoritylog.Link, o R
 	return nil
 }
 
+// ReachReplica starts the monitor now, without waiting for an operation: it
+// reaches the replica in the background, and keeps trying while the replica
+// does not answer. Until it does, this process runs nothing, reports
+// waiting, and may not enter degraded mode (finding 2), as before. The
+// authority service calls it at start: an idle service then reports its
+// mode, and its failed attempts reach the metrics and the alerts. Without a
+// link to a replica it does nothing.
+func (c *Catalog) ReachReplica() {
+	if c.repl == nil {
+		return
+	}
+	c.repl.mu.Lock()
+	defer c.repl.mu.Unlock()
+	c.repl.watch()
+}
+
 // ObserveReplication sends the stream's metrics to m. Without a link it
 // records the standalone mode.
 func (c *Catalog) ObserveReplication(m *authoritylog.Metrics) {
@@ -649,20 +689,35 @@ var _ keyauthority.Journal = (*Catalog)(nil)
 
 // Append runs write in a catalogue transaction, after the barrier, and
 // records the key change it returns, wrapped to the unlock key's recipient.
-// Both kinds of key write wait for the replica in degraded mode, before
-// write runs.
-func (c *Catalog) Append(ctx context.Context, revoke bool, write func() (*keyauthority.Change, error)) error {
-	if write == nil {
+// Both kinds of volume key write wait for the replica in degraded mode,
+// before write runs. A daily receipt key's have their own kinds (ADR 006
+// §7): its creation continues in degraded mode, its destruction waits.
+//
+// A volume key's destruction is refused before write runs unless this
+// catalogue holds the store (the agent's ID) sealed with that volume
+// (ErrNotSealed, ADR 006 §3). The check runs in the transaction that records
+// the destruction, so that the seal is in the stream before it: a replica
+// that holds the destruction holds the seal. A receipt key has no store, so
+// no seal: the authority service destroys it once its day's receipts have
+// expired.
+func (c *Catalog) Append(ctx context.Context, intent keyauthority.Change, write func() (*keyauthority.Change, error)) error {
+	if write == nil || intent.Key != nil {
 		return ErrInput
 	}
-	kind := authoritylog.WriteKeyCreate
-	if revoke {
-		kind = authoritylog.WriteKeyDestroy
+	kind := keyKind(intent.Revoke, intent.Agent, intent.Volume)
+	if kind == "" {
+		return ErrInput // the receipt keys' agent names days only
 	}
+	receipt := kind == authoritylog.WriteReceiptKeyCreate || kind == authoritylog.WriteReceiptKeyDestroy
 	return c.operate(ctx, kind, func(tx *sql.Tx) error {
 		rec := c.recordingOf(tx)
 		if rec == nil || !rec.state.armed() || c.repl == nil {
 			return ErrUnavailable
+		}
+		if intent.Revoke && !receipt {
+			if err := sealedWith(ctx, tx, intent.Agent, intent.Volume, 0); err != nil {
+				return err
+			}
 		}
 		change, err := write()
 		if change != nil {
@@ -671,7 +726,7 @@ func (c *Catalog) Append(ctx context.Context, revoke bool, write func() (*keyaut
 		if err != nil || change == nil {
 			return err
 		}
-		if change.Revoke != revoke {
+		if change.Revoke != intent.Revoke || change.Agent != intent.Agent || change.Volume != intent.Volume {
 			return ErrInput
 		}
 		op, err := c.keyOp(rec.state, change)

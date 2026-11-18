@@ -1,7 +1,8 @@
 # D-05 — The authority service
 
 Date: November 16, 2026. **Status: accepted by the product owner on November
-16, 2026** (see [Questions](#questions-for-the-product-owner)). This record designs
+16, 2026** (see [Questions](#questions-for-the-product-owner)); waves 1 to 7
+are built ([Implementation status](#implementation-status)). This record designs
 item 3 of [ADR 005 §5](005-keys-outside-restored-domain.md#5-what-changes-in-code-and-docs)
 and item 5 of its [What the code must do](005-keys-outside-restored-domain.md#what-the-code-must-do).
 It changes no decision of ADR 005. It is a record of its own, not a section
@@ -106,6 +107,13 @@ command that opens a directory takes the same lock and refuses with
 lock is taken by the commands, not by `restoreauthority.Open`: the package
 tests open two handles in one process to stand for two processes.
 
+The lock file is `owner.lock`. In the replica role, the service holds the
+lock of the replica's directory, so `promote` and `init-replica` refuse
+while it runs: [recovery.md](../recovery.md#promote-the-replica) already
+asks to stop it before a promotion. `promote` takes the locks of the
+replica's directory and of its two targets. A directory that does not exist
+has no lock to take: nothing runs on it, and the lock does not create it.
+
 **The account.** The directories, the catalogue file and the key files belong
 to `agentcapsule-authority` (the existing checks compare them with the
 process's UID). No other account could read them before either, and root
@@ -125,7 +133,7 @@ and the API reaches the authorities only through its socket's operations.
 | Activation: `recorded_outcomes`, `declare_losses`, `hold_activation` | yes | no | 1 |
 | Access revocation records: `append_access`, `on_replica` | yes | yes | 5 |
 | Daily receipt key: `receipt_key` | no | yes | 6 |
-| Reconciliation and announcement: export of access records, subjects, seals and stores; import of PostgreSQL's own revocations; `announcement` | no | yes | 7 |
+| Reconciliation and announcement: export of access records, subjects, seals and stores; import of PostgreSQL's own revocations; `announcement` | yes | yes | 7 |
 
 The worker socket admits UID 0 only. The API socket admits the configured
 `api_uid` and UID 0. `agentcapsule-admin` uses the API socket when it runs as
@@ -149,25 +157,35 @@ closed and counted.
   role, and the two identities the client pins. The service checks the role
   against the socket and the identities against its own, then answers with
   `status`. A mismatch closes the connection: a worker never talks to another
-  installation's authorities.
+  installation's authorities. `status` reads no database, so a hold never
+  delays a hello: the epoch is read at start (only a promotion changes it,
+  and a promotion builds another catalogue), and the mode is in memory.
 - **One request at a time** per connection: `{"op": …, "timeout_ms": …,
   "args": {…}}`, then one response: `{"result": {…}}` or `{"error": "<code>"}`.
   The client keeps a small pool of connections. A hold takes one out of the
   pool for its duration.
 - **The deadline travels.** `timeout_ms` becomes the operation's context in
   the service, so a wait at the barrier ends at the caller's deadline, and
-  `ErrWaitsForReplica` and `_degraded_refused_total` keep their meaning.
+  `ErrWaitsForReplica` and `_degraded_refused_total` keep their meaning. A
+  timeout is at most 10 minutes; a client without a deadline sends that one.
+  The client waits one second past its deadline for the service's answer,
+  which says why the operation ended.
 - **Errors** are a closed vocabulary: `input`, `unavailable`, `conflict`,
-  `stale`, `revoked`, `sealed`, `history`, `not_declared`,
+  `stale`, `revoked`, `sealed`, `history`, `not_declared`, `not_sealed`,
   `waits_for_replica`, `replica_required`, `not_armed`, `diverged`, the key
-  authority's `key_unavailable`, `key_revoked`, `key_conflict`, and
-  `hold_expired`, `role`, `protocol`, `identity`. The client turns each back
-  into the same sentinel error as today (`restoreauthority.ErrStale`, …), so
+  authority's `key_unavailable`, `key_revoked`, `key_conflict`,
+  `key_input`, and `hold_expired`, `role`, `protocol`, `identity`. The
+  client turns each back into the same sentinel error as today
+  (`restoreauthority.ErrStale`, …), so
   every `errors.Is` in the worker keeps working: `RestoreFailure`,
   `archiveRetryReason`, `platformError` and the adoption's split between a
   stale binding and an outage (`internal/worker/placements_linux.go:143`). A
   connection that fails, or ends, is `unavailable`: an outage, never a stale
-  binding.
+  binding. For the same reason, an error that carries `ErrUnavailable` is
+  sent as `unavailable` (or the more precise `waits_for_replica`,
+  `replica_required`, `diverged`) even when it also carries a refusal. On
+  the client's side, `hold_expired`, `role`, `protocol` and `identity` are
+  also `ErrUnavailable`.
 - **A key** follows its `held` frame as exactly 32 raw bytes. The client
   reads them with `io.ReadFull` into a buffer it owns and clears at release.
   No key ever goes through `encoding/json`, which would leave base64 copies
@@ -193,13 +211,18 @@ exclusions are exactly today's. Holds need no change in the authority
 packages: no new lock, no new state.
 
 The client runs its own callback with a **hold context**. It is canceled when
-the connection ends, and 5 seconds before the cap. The worker's publish runs
-in it, so a client that loses its hold stops its PostgreSQL transaction. The
+the connection ends, and 5 seconds before the hold's end (a fifth of a hold
+shorter than 25 seconds). The hold's end is the shorter of the request's
+deadline and the cap; the `held` frame gives it (`hold_ms`). The worker's
+publish runs in it, so a client that loses its hold stops its PostgreSQL
+transaction. The
 callbacks of the worker's interface therefore take a context
 (`func(context.Context) error`). When the callback returns, the client sends
 `release` and waits for `released`. Only then does the operation succeed. A
 callback that failed sends `release` too; no hold writes anything in the
-root, so the outcome is the same.
+root, so the outcome is the same. A hold that ended before its callback
+returned fails as an outage, even when the callback succeeded: the
+exclusion did not cover all of it.
 
 Rules:
 
@@ -235,13 +258,21 @@ Rules:
 | `WithSubjectKey` (`catalog_linux.go:988`) | Nothing outside the package's tests | Not exposed. A future caller gets a hold like `hold_binding` | — | — | — | `revokedSubjectCannotAcquireNewKeyTest` stays in the package (`TestSubjectKeyGateUsesIndependentIntent`) |
 | The journal (`Catalog.Append`, used by `Ensure` and `Revoke`) | Key creation and destruction | Inside the service only: `ensure_key`, `destroy_key` | — | — | — | Unchanged |
 
+`hold_key` names the key's agent, volume and incarnation: it holds the
+binding {agent, volume, incarnation} around the key, as the worker binds an
+agent's store to the agent's ID. Without an incarnation it is refused
+(`input`, since wave 2): a key held alone would keep its lock without the
+catalogue's transaction, and an armed destruction would then wait for it
+inside that transaction, with every catalogue operation behind it.
+
 **The activation.** Today `Inspect` asks the guest which outcomes its image
 holds, inside a catalogue transaction, up to three times: before the repair,
 when declaring losses, and at the activation. Across the socket, the
 inspection runs in the worker, outside any hold:
 
 1. `recorded_outcomes(receipt)`: the outcomes the authority recorded for the
-   store, and a digest of that list. Pages when the list is long.
+   store, and a digest of that list. Pages of 1000 outcomes; the client
+   checks the whole list against the digest.
 2. The worker inspects the guest, then calls the repair, as today.
 3. `declare_losses(receipt, digest, missing)`: the service runs today's
    `declareLosses`, with an inspection that checks the digest against the
@@ -249,7 +280,8 @@ inspection runs in the worker, outside any hold:
 4. `hold_activation(receipt, digest, missing)`: the same, through
    `WithActivation`. The worker publishes in PostgreSQL, then releases.
 
-A changed list is `stale`, and the worker starts again at step 1. This is
+A changed list is `stale`, and the worker starts again at step 1, at most
+three times. This is
 equivalent to today. The image boots restricted, with no delivery and no
 writer, so what it holds cannot change between the inspection and the
 step. In the model, a store in `Reconciling` has no writer (`canBeginEffect`
@@ -330,6 +362,27 @@ because `keyauthority.Revoke` takes no seal (`TestDestructionRequiresPermanentSe
 destruction, `internal/worker/removals_linux.go`) stays; the service no
 longer relies on it.
 
+As built (wave 3):
+
+- `destroy_key` names the binding {agent, volume, incarnation}, as
+  `hold_key` does. Without the incarnation it is refused (`input`). A store
+  the catalogue holds with that binding, but not sealed, is refused with
+  `not_sealed`; another binding is `stale`. Both are refusals, not
+  outages: the worker's deletion job retries.
+- The interface's `DestroyKey(binding)` replaces the key authority's
+  `Revoke(agent, volume)` for the worker. `Revoke` names no binding, so both
+  implementations refuse it (`keyauthority.ErrInput`; the client sends
+  nothing, as for a bare key hold).
+- `restoreauthority.Local` checks the seal in a catalogue transaction, then
+  destroys the key: the rule for a standalone authority, and the same in the
+  test double and in the service. Armed, the key authority's journal names
+  the change's agent and volume before it runs the write
+  (`keyauthority.Journal`), and `Catalog.Append` checks the seal there,
+  before the tombstone. So the key authority's own `Revoke` cannot destroy
+  an unsealed store's key either, and the seal's record precedes the
+  destruction's in the stream: a replica that holds the destruction holds
+  the seal.
+
 ## 4. Restarts and upgrades
 
 **The service restarts under a running worker.** Requests in flight fail as
@@ -377,8 +430,14 @@ the service.
   The preprovisioned laboratory path without authorities does not change.
 - **In tests it stays.** The worker depends on an interface,
   `restoreauthority.Authority`, as it depends on `keyauthority.Provider` for
-  keys. `*restoreauthority.Catalog` implements it in process; the client
-  implements it over the socket. The worker's tests run against both.
+  keys. `restoreauthority.Local`, the catalogue and the key authority opened
+  in process, implements both; the client implements both over the socket.
+  `*restoreauthority.Catalog` alone does not: the key hold needs both
+  authorities, and today's `With*` functions keep their signatures. The
+  interface's holds are named after their operations (`CheckBinding`,
+  `HoldBinding`, `HoldKey`, `HoldFences`, `HoldRevocation`), the activation
+  is `ActivateRestored`, and each callback takes the hold's context. The
+  worker's tests run against both.
 
 ## 6. Installation
 
@@ -408,7 +467,8 @@ not writable by others:
 }
 ```
 
-`authority_replica` moves unchanged from the worker's configuration. The
+`authority_replica` moves unchanged from the worker's configuration.
+`api_uid` is required, and is not 0. The
 replica role keeps today's file, with `"role": "replica"` in version 2. The
 metrics port is the same on both hosts: one scrape job,
 `agentcapsule-authority`.
@@ -487,7 +547,7 @@ kind continues in degraded mode: the revocation takes effect on the primary at
 once. The API commits in PostgreSQL once the record is committed, and
 confirms it if `on_replica`, or if it is a bearer token's and `degraded`.
 Otherwise it reports the revocation as pending, and learns later with
-`on_replica(seq)`. A record that the service did not commit fails the
+`on_replica`, which names the record by its ID (as built, wave 5). A record that the service did not commit fails the
 request, and nothing is committed in PostgreSQL. So does a service that does
 not answer: the API answers "try again in a moment" (question 2). The
 model's acknowledged access revocation is the confirmed one: a pending one is
@@ -502,7 +562,9 @@ hours like one. The service creates the next day's key a day ahead.
 them in memory. If the standby does not hold the next day's key when it is
 due, the service creates it on the primary alone (question 4, option (b)): the
 creation of a receipt key continues in degraded mode, and the destruction of
-the old key waits for the standby.
+the old key waits for the standby. As built (wave 6): `receipt_key(day)`
+also gives tomorrow's key, for an API whose clock runs a little ahead, and
+a day's key is destroyed an hour after its last receipt expired.
 
 **The announcement and the reconciliation** (items 14 and 15). `promote`
 writes the announced window and the blanket revocation of bearer tokens into
@@ -511,7 +573,11 @@ reads them and the access records, subjects, seals and stores through the API
 socket. It writes PostgreSQL's own revocations into the authority, then
 records in PostgreSQL that it reconciled the current epoch. The API compares
 that epoch with `status` before it listens, and in its readiness probe
-(`REPLAY_FIRST`).
+(`REPLAY_FIRST`). As built (wave 7): the window and the blanket revocation
+are one access revocation record of kind `blanket`; the reads are
+`export_access`, `export_subjects` and `export_stores`, page by page; the
+import is `import_subjects` and `append_access`; all are on both sockets,
+since root may run the command too (§2).
 
 None of these needs a hold. They need the API socket, `status`, and writes
 that report whether the replica holds them.
@@ -533,7 +599,7 @@ Two places differ from an atomic step, both argued above:
   restored image in `Reconciling` has no writer, and the service checks the
   recorded list's digest.
 
-**Go projections.** `TestDestructionRequiresPermanentSeal` becomes full in
+**Go projections.** `TestDestructionRequiresPermanentSeal` is full since
 wave 3. The runs of the reconciliation (`reconciliationReplaysRootTest`,
 `shippedGrantRevocationSurvivesTest`, `shippedDatabaseNeedsNoReportTest`,
 `restoreWitnessEarlyOpenGuard`) and `tokenRevocationCoveredByBlanketTest` get
@@ -631,7 +697,7 @@ and alerts, the migration and the docs.
 
 **Wave 3 — destruction checks the seal** (item 5).
 `TestDestructionRequiresPermanentSeal` refuses the destruction of an unsealed
-store's key: today `keyauthority.Revoke` takes no seal.
+store's key: before wave 3, `keyauthority.Revoke` took no seal.
 
 The next waves of D-05 build on these:
 
@@ -642,9 +708,11 @@ The next waves of D-05 build on these:
   and `grantRevocationResumesAfterResyncTest`; a standby without the new
   statements refuses the first record (upgrade order).
 - **Wave 6 — the daily receipt key.** A receipt older than a day no longer
-  decrypts; the key's destruction reaches the replica.
+  decrypts; the key's destruction reaches the replica. Built: see the
+  [Implementation status](#implementation-status).
 - **Wave 7 — the announcement and the reconciliation** (items 14 and 15),
-  with the runs of [§8](#8-the-model).
+  with the runs of [§8](#8-the-model). Built: see the
+  [Implementation status](#implementation-status).
 
 **Later, optional: holds per store.** In wave 1 a hold keeps the catalogue's
 single write transaction, as today, so one agent's boot or platform call waits
@@ -652,6 +720,568 @@ for another's. Once one process owns the catalogue, a hold could take a lock
 per store, and the revocation's revision a lock of its own. That changes which
 operations exclude each other, so it needs its own argument against the model
 and its own tests. It is not needed for D-05.
+
+## Implementation status
+
+November 16, 2026. **Wave 1 is built**, used by tests only: the worker and
+the API still open the authorities in process, and no unit or production
+configuration changed.
+
+- `internal/authorityservice`: the server, the protocol, the owner lock,
+  the link to the standby (`Link`, the worker's `replicate`, which stays
+  in the worker until wave 2), and the service's metrics:
+  `agentcapsule_authority_service_holds{kind}`, `_hold_expired_total{kind}`,
+  `_refused_peers_total{socket}`, beside the replication metrics. They
+  reach [observability.md](../observability.md) with wave 2.
+- `internal/authorityclient`: the client, implementing
+  `restoreauthority.Authority` and `keyauthority.Provider`.
+- `restoreauthority.Authority`, `Activation` and `Local` (§5), and the
+  reads the service needs: `RecordedOutcomes`, `DeclareLosses` (the
+  declaration step of `Activate`), `KnownSubject` and `KnownReservation`
+  (the quiet period), `ReplicationMode` (`status`), and `Root`. The holds
+  changed nothing else in the authority packages.
+- `agentcapsule-authority serve` reads the configuration of §6: version 1,
+  or version 2 with `role`. The primary role runs the service, with the
+  replication metrics on `metrics_listen`. Both roles, `snapshot`,
+  `init-replica`, `promote` and `agentcapsule-admin`'s init commands take
+  the owner lock (§1).
+- Tests: those of wave 1 above, and `TestKeyBytesNeverTravelInJSON` (the
+  stream between client and service, read frame by frame),
+  `TestBothImplementationsAgree` (an agent's life through `Local` and
+  through the client), `TestActivationRepairsBeforeItDeclares`,
+  `TestServiceRunsDegradedMode` (degraded mode, `waits_for_replica` and the
+  replication metrics through the socket), `TestServeConfigurationNamesItsRole`,
+  `TestInitCommandsRefuseWhileTheServiceRuns`, `TestOwnerLockIsExclusive`.
+  Each mechanism was disabled in turn, and its test failed.
+
+Building it changed this record in five places, each time for the safer
+variant: `Local` rather than `*Catalog` implements the interface (§5);
+`key_input` joins the codes, and an outage is sent as one even when it also
+carries a refusal (§2); the hold context's margin for short holds, and a
+lost hold is an outage even when its callback succeeded (§3); the replica
+role holds the lock of its directory (§1); `status` reads no database (§2).
+The model needs no change (§8).
+
+November 16, 2026. **Wave 2 is built**: the worker on the service.
+
+- The worker depends on `restoreauthority.Authority` and
+  `keyauthority.Provider` only; `Authority` gains `SeparateFrom`, which
+  checks a root against both directories (the client takes them from
+  `status`). Its `authority` section (§6) gives the socket and the pinned
+  identities. A worker configuration with `key_authority`,
+  `restore_authority` or `authority_replica` is refused
+  (`authority_service_required`). The worker waits for a service that does
+  not answer, logging `authority_service_waiting` once, and refuses another
+  installation's (`authority_identity_mismatch`). The worker's
+  `OpenVolumeKeys`, `OpenRestoreAuthority` and its copy of the link
+  (`replicate`) are gone; `TestWorkerNeverOpensTheAuthorities` checks that no
+  worker code opens or initializes an authority directory.
+- **A key is held under its binding only.** A bare key hold
+  (`Provider.WithKey` across the socket) kept the key's lock without the
+  catalogue's transaction: an armed destruction then waited for the key
+  inside that transaction, and every catalogue operation behind it, up to
+  `max_key_hold`. The service refuses `hold_key` without an incarnation
+  (`input`), and the client's `WithKey` refuses without sending it
+  (`TestServiceRefusesABareKeyHold`); so does the in-process `Local`
+  (`TestBothImplementationsAgree`). The worker formats and unlocks volumes
+  with `HoldKey`. §3 says so.
+- The restore command pauses while the authorities are unavailable, logs
+  `restore_paused` (`authority_unavailable`, `waits_for_replica`), and
+  resumes from its last durable step; a refusal ends it (§4,
+  `TestRestorePausesWhileTheServiceIsDown`). The archive command goes through
+  the service too.
+- `deploy/systemd`: the service's unit (exposure 1.1 under
+  `systemd-analyze security`), its sysusers and tmpfiles files, and a drop-in
+  for the worker's and the API's units (`Wants=`, `After=`). No unit of the
+  worker or the API exists in the repository yet, so the `Before=` of the
+  service's unit and the drop-in stand for §6's change to their units.
+  `deploy/prometheus`: the `agentcapsule-authority` job on 9466 and
+  `AgentCapsuleAuthorityServiceDown`, with its promtool test. Examples:
+  `runtime/authority/primary.example.json` and `replica.example.json`.
+- Docs (§9): worker.md, recovery.md (the install and the migration, the
+  snapshot and the promotion as `agentcapsule-authority`, degraded mode),
+  key-authority.md, observability.md, ADR 005's status.
+- Tests: the worker's authority tests (`authority_test.go`,
+  `authority_barriers_test.go`, `authority_outcomes_test.go`,
+  `volume_boot_test.go`, `restore_test.go`) run against both
+  implementations; `TestWorkerRefusesTheOldAuthoritySections`,
+  `TestWorkerKeepsItsVMsWhileTheServiceIsDown`,
+  `TestWorkerRestartKeepsDegradedMode`, `TestWorkerChecksItsRootsAgainstTheService`;
+  `TestAuthorityReplicaConfiguration` and `TestWorkerRunsOnPromotedAuthorities`
+  moved to `cmd/agentcapsule-authority`, on `openPrimary`. The KVM product
+  tests reach the authorities through a service run in the test process,
+  as root.
+
+Not done in wave 2:
+- The revocation's publish (`CommitBarrier`'s callback, from
+  `internal/controlplane`) takes no context: a lost hold does not cancel it.
+  The quiet period still keeps the excluded reservations away (§3, What a
+  lost hold can do). Passing the hold's context needs a change to
+  `controlplane.BarrierCommitter` and its four callers.
+- The KVM product tests passed through the service on November 17, 2026.
+- The worker's preflight (ADR 010) checks the authorities through the
+  service; the checks of the link to the standby (`authority_replica_tls`,
+  `authority_replica`) left with the link and have no home yet: the service
+  has no preflight.
+- `scripts/verify-interop.py --systemd` does not check the service's unit;
+  the same checks were run by hand.
+
+November 16, 2026. **Wave 3 is built**: key destruction checks the seal
+(§3, item 5 of ADR 005's [What the code must do](005-keys-outside-restored-domain.md#what-the-code-must-do)).
+
+- `destroy_key` names the binding and refuses without its incarnation
+  (`input`), before the seal (`not_sealed`, `restoreauthority.ErrNotSealed`)
+  and under another binding (`stale`). The client's `DestroyKey` sends it;
+  its `Revoke`, without a binding, refuses without sending, and so does
+  `Local`'s.
+- `Local.DestroyKey` checks the seal, then destroys the key. Armed,
+  `Catalog.Append` checks it again in the transaction that records the
+  destruction: `keyauthority.Journal.Append` now receives the change's
+  agent and volume before the write, and a refusal there publishes no
+  tombstone.
+- The worker's removal records the seal, then calls `DestroyKey` with the
+  same binding (`internal/worker/removals_linux.go`).
+- Tests: `TestDestructionRequiresPermanentSeal`, now a full projection, in
+  `internal/restoreauthority` (in process, standalone and armed; armed, the
+  key authority's own `Revoke` is refused and nothing reaches the stream)
+  and in `internal/authorityclient` (in process and through the service);
+  `TestServiceRefusesADestructionWithoutASealedBinding` (the worker socket,
+  frame by frame); `TestJournalRefusesADestructionBeforeItsTombstone`
+  (`internal/keyauthority`). `TestBothImplementationsAgree` refuses the
+  destruction before the seal in both implementations. Before the change,
+  the service and `Local` destroyed an unsealed store's key, and so did an
+  armed key authority. With the check removed from `Catalog.Append`, the
+  armed projection fails; with it removed from `Local.DestroyKey`, the
+  standalone one and both of `internal/authorityclient` fail.
+- The authorities' tests that destroyed a key without a seal now seal the
+  key's store first, as a deletion does.
+
+Building it changed this record in one place: `not_sealed` joins the
+error codes (§2). The protocol's version stays 1: no release carries waves
+1 and 2. The model needs no change: `destroyKey` already requires the seal.
+
+Not done in wave 3, and left to the key rotation and sealing policy
+(ADR 018, being written):
+
+- the model's `destroyKey` also requires the store's agent to be revoked
+  (`root.revoked`); the code checks the seal only, which the worker records
+  after the deletion's barrier;
+- the daily receipt key of wave 6 has no store: its destruction will need
+  its own operation, bound to its day (built in wave 6: the service
+  destroys it, by its day, without a seal);
+- a key registered but never sealed (an abandoned provisioning) cannot be
+  destroyed until something seals its store.
+
+November 16, 2026. **Wave 4 is built**: the API reaches the service.
+
+- `agentcapsule-api` takes `-authority-socket`, `-restore-authority-id` and
+  `-key-authority-id` (§6), all three or none (`configuration_required`).
+  Production requires them (`authority_required_in_production`, answer
+  3(a)). Development may run without them, and writes
+  `development_mode_without_authority_service_never_use_in_production` on
+  standard error at each start, after ADR 010's own warning.
+- At start, before it opens the database, the API waits for a service that
+  does not answer, logging `authority_service_waiting` once. It refuses
+  another installation's authorities (`authority_identity_mismatch`), the
+  worker's socket (`authority_socket_role_mismatch`) and an older protocol
+  (`authority_protocol_unsupported`) at once.
+- The readiness probe reports the service's mode:
+  `{"status":"ready","authority":"synchronous"}`, or `standalone`,
+  `degraded`, `waiting`. While the service does not answer with the pinned
+  identities, it answers 503 `authority_unavailable`; it asks the service
+  for at most 2 seconds. Degraded mode and the wait for the standby leave
+  the API ready. Default pending the product owner (question 5).
+- `-preflight` gains an `authority` check: the flags, the identities, the
+  socket's role, a socket this account may not open (the group
+  `agentcapsule-authority-clients`), and the mode.
+- `internal/authorityclient.API` is the API socket's client. It offers
+  `Status` and `Wait` only; waves 5 to 7 add their operations there. `Wait`
+  is the worker's former loop, now shared (`worker.WaitForAuthority` uses
+  it). A socket path must be clean and at most 100 bytes, as in the
+  service's configuration.
+- **The service reaches its standby at start.** Before, a service reached
+  the replica only at its first operation. An idle primary then reported
+  `waiting` with its standby up, and the API's readiness and the worker's
+  preflight said so. With the standby down, it made no attempt, so
+  `AgentCapsuleAuthorityReplicationStopped` did not fire. `LinkTo` now
+  starts the catalogue's monitor (`Catalog.ReachReplica`). Until the replica
+  answers, nothing runs and degraded mode cannot begin, as before (finding
+  2). The model needs no change: it has no `waiting` state, and the
+  monitor's exchange is the one an operation runs, earlier.
+- `deploy/systemd`: the drop-in already ordered the API's unit after the
+  service (`Wants=`, `After=`); the sysusers file now asks to add the API's
+  account to `agentcapsule-authority-clients`.
+- `scripts/verify-install.py` starts the service before the API, and shows
+  the API's refusals and its readiness. `scripts/verify-failover.py` runs the
+  authorities' replica on the standby, promotes it at the failover and
+  starts the API on the promoted service, with the same identities.
+- Docs: [api/README.md](../api/README.md#the-authority-service),
+  [install.md](../install.md), [bootstrap.md](../bootstrap.md),
+  [recovery.md](../recovery.md) (the failover starts the service before the
+  API), [observability.md](../observability.md), `openapi/openapi.yaml`.
+- Tests: `TestAPIRefusesAnotherInstallationsAuthority`,
+  `TestAPIRequiresTheAuthorityServiceInProduction`,
+  `TestAPIWaitsForTheAuthorityService`,
+  `TestPreflightReachesTheAuthorityService` (`cmd/agentcapsule-api`);
+  `TestReadinessReportsTheAuthorityService` and the authority service in
+  `TestAPIBinariesBootstrapServeAndShutdown` (`internal/api`, PostgreSQL);
+  `TestAPIClientReachesTheAPISocketOnly`, `TestAPIClientWaitsForTheService`,
+  `TestServiceReachesItsReplicaWithoutAnOperation`, and the API's view of
+  degraded and waiting modes in `TestServiceRunsDegradedMode` and
+  `TestRestartedServiceRunsNothingUntilItReachesTheReplica`
+  (`internal/authorityclient`). Each failed before its change.
+
+Building it changed one behaviour of wave 1, for the safer variant: the
+service reaches its standby at start (above), not at its first operation.
+§1's monitor now also runs from the start.
+
+Not done in wave 4:
+- The API's own unit does not exist in the repository yet: the drop-in
+  stands for its ordering, as in wave 2.
+- In `verify-install.py` the service runs in a user namespace where the
+  run's account is root, so it sees the API as root, which the API socket
+  admits too: that run does not show the admission of `api_uid`. The Go
+  tests do (`TestSocketRoleFollowsPeerCredentials`).
+- The API builds with cgo now: `internal/authorityclient` needs it, as the
+  worker does. The release already builds the API with cgo.
+
+November 16, 2026. **Wave 5 is built**: the access revocation records (§7;
+ADR 005, "What the code must do", items 6 to 8).
+
+- **The records.** The catalogue's schema version 4 adds
+  `access_revocations` and `outcome_events`, and the stream two statements
+  of kind `access` and `outcome`. A record holds its ID (`arv_…`, the
+  caller's), its kind, the organization, the revoked objects (each named by
+  the parts of its identity, [api/README.md](../api/README.md#revocations-pending-and-confirmed)),
+  its time, and the epoch and sequence number of the stream's record that
+  carried it: what the reconciliation of wave 7 replays. Triggers refuse to
+  change or delete one. The kind `access` continues in degraded mode. The
+  kinds are a closed vocabulary (`authoritylog.AccessKinds`): four bearer
+  tokens' (`api_token`, `service_token`, `platform_credential`,
+  `delegated_token`) and nine standing grants' (`member`, `principal`,
+  `organization`, `team`, `team_membership`, `assignment`, `mandate`,
+  `delegation_trust`, `llm_provider`).
+- **The operations**, on both sockets. `append_access` fails only when the
+  record was not committed; once committed it always answers
+  `{epoch, seq, on_replica, degraded}`, `on_replica` false when the wait for
+  the replica ended first or the replica refused the record. Appending the
+  same record again changes nothing; another record under its ID is
+  `conflict`. Without a standby (standalone, or promoted before a new
+  standby) `on_replica` is true: nothing more can be waited for, as the
+  model acknowledges any write without a standby. `on_replica` takes the
+  record's ID: a record of an older epoch, brought by a promotion, is on
+  the replica, whatever its sequence number.
+- **Every revoking transaction appends its record before its PostgreSQL
+  commit**, in the transaction, after the rows it changes: members, the
+  service tokens a member issued (also on a role change), technical
+  accounts and their tokens, teams and team memberships, assignments
+  (revoked, replaced or reassigned), LLM providers (disabled, or rotated:
+  the previous generation), organizations, the legacy domain's API tokens,
+  mandates, and in `agentcapsule-admin` the platform credentials and the
+  delegation changes (`revoke-token`, `revoke-trust`, `rotate`,
+  `retire-key`). One record per kind: a member's offboarding appends a
+  `member` record and a `service_token` one. A transaction that revokes
+  nothing new appends nothing. The API waits for the service at most 5
+  seconds, within the request's 10.
+- **The answers.** A record the service did not commit fails the request:
+  503 `authority_unavailable`, `Retry-After: 5`, nothing committed, no
+  answer stored for the key. Otherwise the answer's `revocations` gives each
+  record's `state`, `confirmed` or `pending`, and PostgreSQL keeps it
+  (migration 0040, `access_revocations`, rows only confirmed, never
+  deleted). The API asks about pending ones every 5 seconds, and when one is
+  read (`GET /v1/access-revocations/{id}`); a replay gives the current
+  state. `agentcapsule_api_access_revocations_pending` and
+  `_oldest_pending_seconds` count them.
+- **`agentcapsule-admin`** takes the API's three flags for its revoking
+  commands; in production it refuses them without
+  (`authority_required_in_production`).
+- **Upgrade order** (§4). A replica opened by this release gains the new
+  tables. A replica of the previous release refuses the first record
+  (`conflict`), and the refusal stops the primary until the standby is
+  upgraded; the record stays committed on the primary, its revocation
+  pending. The service refuses a catalogue older than version 4
+  (`restore_authority_upgrade_required`): `init-restore-authority`
+  upgrades it, with the service stopped.
+- **Outcome records keep the event ID** (item 8): the worker records the
+  mailbox's ID with each outcome, and a declared loss names it.
+- Tests: `TestGrantRevocationWaitsForReplica` and
+  `TestGrantRevocationResumesAfterResync` (`internal/api`, PostgreSQL and a
+  real service with its replica and degraded mode: the projections of the
+  two runs); `TestRevocationAppendsItsRecordBeforeItsCommit`,
+  `TestRevocationTriesAgainWithoutTheAuthorityService`,
+  `TestRevocationIsPendingUntilTheReplicaHoldsIt`, and `TestRBACMatrix`,
+  which checks the kind every revoking route records; in
+  `internal/restoreauthority` `TestAccessRecordsAreKeptForGood`,
+  `TestAccessRecordReachesTheReplicaAndSurvivesThePromotion`,
+  `TestAccessRecordContinuesInDegradedMode`,
+  `TestAccessRecordWithinTheDelayFailsUncommitted`,
+  `TestStandbyWithoutTheAccessStatementRefusesTheFirstRecord`,
+  `TestOutcomeRecordKeepsTheEventID`, `TestVersionThreeUpgradesForAccessRecords`;
+  `TestAccessRecordsThroughTheService` (`internal/authorityclient`);
+  `TestRevokingCommandsAppendTheirRecord` (`cmd/agentcapsule-admin`); the
+  admin's revocations through a real service in
+  `TestOperatorBootstrapFromEmptyDatabase`,
+  `TestDelegationOperatorCLIAndRealAPI` and
+  `TestCredentialCLIListRevokeAndReplaceWithNewFile`. Each mechanism was
+  disabled in turn, and its test failed.
+
+Building it changed this record in three places, each for the safer or the
+simpler variant: `on_replica` takes the record's ID, not its sequence
+number (§7); `append_access` answers once the record is committed, even
+when the replica refused it, so that a revocation that took effect is never
+reported as failed; and the kinds add `team`, for a team disabled with its
+memberships. The model needs no change: its acknowledged access revocation
+is the API's confirmed one, and a standing grant's is confirmed only once
+the replica holds it.
+
+Not done in wave 5:
+- The reconciliation that replays the records into PostgreSQL after a
+  failover, and the announcement of the window of pending revocations
+  (wave 7).
+- **A write that waits for the standby holds the records back.** In
+  degraded mode nothing runs behind a record that degraded mode does not let
+  through and the replica lacks (the barrier of ADR 005, item 17): a
+  registration, a seal or a key's creation committed just as the standby
+  went away. Until the standby returns, every revocation then answers
+  "try again". An access record depends on no such write, so it could pass
+  it; that changes the barrier, and is left to the product owner
+  (question 6).
+- Not recorded, because ADR 005's list does not name them: a role lowered
+  (only the service tokens it revokes are), an LLM alias disabled or its
+  grant revoked, an agent's deletion (its revocation subject already is),
+  and a mandate used up (question 7).
+- The KVM product tests passed with the event ID recorded on November 17,
+  2026.
+
+November 16, 2026. **Wave 6 is built**: the daily receipt key (§7; ADR 005,
+Decision of November 13 and answer 4(b) here).
+
+- **The key.** The key authority keeps a day's receipt key as the key of a
+  reserved binding: the agent `agt_000…0`, which no agent has, and a volume
+  ID that names the day, `vol_` then 24 zeros then `YYYYMMDD` (UTC). So it
+  is written, wrapped to the unlock key, replicated, carried by a snapshot,
+  promoted and destroyed exactly as a volume key, with no new format on
+  disk, in the stream or in the replica, and no schema change. Its writes
+  have their own kinds, `receipt_key_create`, which continues in degraded
+  mode, and `receipt_key_destroy`, which waits (`authoritylog/degraded.go`).
+  Its destruction needs no seal: it has no store. The catalogue refuses to
+  register the reserved agent, the worker's `ensure_key` refuses it, and
+  the stream refuses it with a volume that names no day. A destroyed day's
+  key is never created again: its tombstone stays.
+- **`receipt_key(day)`**, on the API socket only (the worker's socket
+  answers `role`): a frame, then the key's 32 raw bytes, as `hold_key`
+  sends a volume key. By the service's clock it gives yesterday's, today's
+  and tomorrow's keys, the last for an API whose clock runs ahead. Reading
+  a key that exists waits for nothing, not even for a restarted service to
+  reach its standby: it changes nothing. Today's key is created if it is
+  missing; another day's never is. A day before yesterday, or yesterday's
+  when the service does not hold it, is gone (`key_revoked`); a day after
+  tomorrow is `key_input`.
+- **The service tends the keys** every minute (`KeepReceiptKeys`, primary
+  role): it creates today's key if missing, tomorrow's while the standby
+  answers (not in degraded mode, nor while a restarted service waits for
+  its standby), and destroys each day's key at 01:00 UTC two days after the
+  day began: 24 hours after its last receipt expired, and an hour for the
+  clocks of the API, PostgreSQL and the service. A step bounded at 30
+  seconds that fails, or waits for the standby, is tried again at the next
+  pass. Events `receipt_key_created`, `receipt_key_destroyed` (standard
+  output) and `receipt_key_failed` (standard error); metrics
+  `agentcapsule_authority_receipt_key_ready{day="today"|"tomorrow"}` and
+  `agentcapsule_authority_receipt_keys_overdue`, with three alerts
+  ([observability.md](../observability.md)).
+- **The API** (`controlplane.Accounts.UseDailyReceiptKeys`, given the
+  service's client) encrypts each new receipt, of both domains, with
+  today's key, and records its day: migration 0041 adds `key_day` to
+  `http_receipts` and `tenant_http_receipts`. It keeps today's and
+  yesterday's keys in memory, asks the service at most 5 seconds for one it
+  does not hold, and forgets older ones. A new request whose day's key the
+  service does not give fails before it runs: 503 `authority_unavailable`.
+  A replay whose day's key is gone, or was created again under another
+  value after a failover lost a key the old primary held alone, answers 409
+  `idempotency_receipt_unreadable`, and the request does not run again.
+- **Migration.** A receipt that names no day, written before this release
+  or by an API without the service (development), keeps the installation's
+  receipt key, and stays readable until it expires, 24 hours after it was
+  written. The installation's key stays, unchanged: it reads those
+  receipts, and derives the LLM credential key and the download link key
+  (ADR 016), which keep today's behaviour. A rotatable key for LLM
+  credentials stays "later, not blocking" (ADR 005 §5 item 10, LLM-01).
+- **What a backup then holds.** A receipt's token secret is readable,
+  with the backup's passphrase, until its day's key is destroyed: a backup
+  taken on day D holds no readable secret once 01:00 UTC on day D+2 has
+  passed, between 25 and 49 hours after it was taken. ADR 005 said "a backup
+  older than a day": the receipt's 24 hours and the key's day add up to two
+  days at most.
+- **Two fixes in the stream**, needed once a record with a wrapped key can
+  continue in degraded mode: such a record was deleted from the primary's
+  log once its write returned, acknowledged or not; it is now deleted only
+  once the replica holds it, and the monitor drops the log once the replica
+  holds all of it. Without them, a key created in degraded mode never
+  reached the standby, which then refused every later record as a gap.
+- **Upgrade order** (§4): a standby of an older release applies receipt
+  key records as volume keys' (same operations), so no order is needed.
+- Tests: `TestReceiptKeyCreationContinuesInDegradedMode`,
+  `TestReceiptKeyDestructionWaitsForTheStandby` (the destruction reaches
+  the replica and removes its wrapped copy), `TestReceiptKeyBindingIsReserved`,
+  `TestStandaloneReceiptKeys`, `TestReceiptKeysSurviveThePromotion` and the
+  receipt keys in `TestEveryStatementAndKeyWriteIsClassified`
+  (`internal/restoreauthority`); `TestReceiptKeyBindingNamesOneDay`,
+  `TestReceiptKeysListsTheDaysHeld` (`internal/keyauthority`);
+  `TestAPIGetsTheDailyReceiptKeys`, `TestServiceTendsTheDailyReceiptKeys`,
+  `TestReceiptKeyOfANewDayIsCreatedWithoutTheStandby`,
+  `TestReceiptKeyNeverTravelsInJSON` (`internal/authorityclient`);
+  `TestPrimaryKeepsTheDailyReceiptKeys` (`cmd/agentcapsule-authority`);
+  `TestReceiptKeyRingKeepsTodayAndYesterday`, `TestReceiptsUseTheKeyOfTheirDay`,
+  `TestTenantReceiptsUseTheKeyOfTheirDay`, `TestReceiptOfAGoneDayKeyIsNotReplayed`,
+  `TestNewReceiptWaitsForTheKeyOfItsDay`,
+  `TestReceiptsOfTheInstallationKeyStayReadable` (`internal/controlplane`,
+  PostgreSQL); `TestHTTPReceiptsOfTheDailyKeys` (`internal/api`).
+  `scripts/verify-failover.py` replays, on the promoted standby, a request
+  acknowledged by the old primary. Each test failed before its change.
+
+The model needs no change (§8): the daily receipt key protects old backups'
+receipts, not the restore invariants, and its creation in degraded mode is
+a write that continues, like an outcome's.
+
+Not done in wave 6:
+- **The blanket revocation at a failover** that covers the tokens of a day
+  whose key was lost (answer 4(b)) is ADR 005's item 14, wave 7. Until
+  then, a token issued in that period stays valid, and its receipt answers
+  409.
+- **A destruction committed as the standby goes away holds the records
+  back**, as in wave 5's notes: `receipt_key_destroy` waits, and runs every
+  day, at about 01:00 UTC. The window is the time between its commit and the
+  standby's acknowledgment.
+- The key authority keeps, per day, an empty lock file, an allocation
+  marker and a tombstone, and the replica one row: about 1,100 small files a
+  year, as for volume keys.
+
+November 16, 2026. **Wave 7 is built**: the announcement after a degraded
+period and the reconciliation with PostgreSQL (§7; ADR 005, "What the code
+must do", items 14 and 15).
+
+- **The last contact.** The replica writes the arrival of each request it
+  answers, before it answers, as its last contact (`replica_contact`, a
+  table of the replica's own, outside the snapshot's schema), at most once
+  a second; it takes the time before it waits for the replica's lock. Every
+  success the primary sees thus follows a contact on disk, and no degraded
+  period begins less than `degraded_after` after it. A replica its primary
+  never reached holds none. The primary's link (`Link`, the production
+  path) reaches the replica every sixth of `degraded_after` (5 seconds by
+  default) with an exchange that only asks its position, when nothing else
+  runs (`Catalog.KeepContact`): the contact stays recent on an idle primary,
+  which also learns at once that its standby went away, and enters degraded
+  mode after the delay without an operation.
+- **The announcement** (item 14). `promote` takes `-degraded-after`, the old
+  primary's delay (30 seconds by default), and compares the last contact
+  with its own time, the failover's. Beyond the delay, or when the
+  failover precedes the contact (a clock gone back), it assumes a degraded
+  period ran, and writes into the promoted catalogue, with its tables, one
+  access revocation record of kind `blanket`: its objects name the failover
+  (`issued_before`) and the window from the last contact
+  (`authoritylog.Blanket`), its ID is derived from the restore authority and
+  the epoch. The decision is written in the replica in the transaction that
+  marks it promoted (`replica_promotion`), so a repeated promotion
+  announces the same, and checks the promoted catalogue against it. Within
+  the delay, or without a contact, nothing is written: ADR 005 conditions
+  both the window and the blanket on the degraded period. `promote` prints
+  the announcement; the service's `announcement` gives it.
+- **The reconciliation** (item 15), `agentcapsule-admin reconcile`, as the
+  API's account on the API socket, with the API's three flags
+  (`controlplane.Store.Reconcile`, `authorityclient.API` as its
+  authority): it appends to the authority each record PostgreSQL holds and
+  the authority lacks, and begins each revocation subject of
+  `revocation_catalogue` it lacks (`import_subjects`, with the quiet
+  period of `begin_revocation`); it replays every record PostgreSQL lacks,
+  in order, each with its effect and its row in one transaction; it copies
+  the subjects into `revocation_catalogue`; it resumes the deletion
+  (`requestDeletion`, requested by `authority-reconciliation`) of every
+  agent whose store the authority sealed or whose `agent/` subject it
+  holds; it reports the stores whose registration, volume or incarnation
+  differs; and it records the epoch, the window and its report in
+  `authority_reconciliations` (migration 0042). A record PostgreSQL holds
+  is not replayed: its row committed with its effect, and a later grant
+  (a team membership added again, a trust rotated again) must not be
+  undone; a record it lacks was lost with every later commit. Each step can
+  be repeated.
+- **The replay of each kind** follows its route: a member's memberships and
+  team memberships, a technical account and its memberships, service
+  tokens (`revoked_by` names the token's issuer), teams, team memberships,
+  assignments, organizations, API tokens, platform credentials, mandates,
+  delegated token IDs, delegation trusts (revoked; retired keys end), LLM
+  providers. A rotation whose new credential or keys the database lost
+  revokes what the database holds: the provider is disabled, the trust
+  revoked, until its administrator acts again. The blanket revokes every
+  API token, service token and platform credential created before the
+  failover, and moves every trust's `minimum_iat` to the second after it.
+- **The API** refuses to start (`authority_not_reconciled`) until
+  `authority_reconciliations` holds the service's epoch, and its readiness
+  probe answers 503 `authority_not_reconciled` (`api.ReconciledAuthority`).
+  Epoch 1 counts as reconciled from the start: the migration records it,
+  so a new installation and an upgraded one need no step. An installation
+  promoted before this release is at epoch 2 or more: its API refuses until
+  `reconcile` has run once.
+- **`durableTables`**, the list each transaction checks for an UNLOGGED
+  table, lacked eleven tables of later migrations (`peer_redeliveries`,
+  `host_takeovers`, `volume_relocations` and others): now complete, and
+  `TestEveryTableIsDurable` keeps it so.
+- **A fix to wave 6.** `receipt_key` wrote the key from its operation,
+  before its request ended: a client's next request on the same connection
+  could arrive first, be taken for a broken protocol, and end the
+  connection (EOF, once, under the PostgreSQL campaign's load). The request
+  now writes the key once the operation has ended, as every other answer
+  (`TestReceiptKeysBackToBack`, through a test seam,
+  `Config.AfterOperation`).
+- Tests: the projections of §8 (`TestReconciliationReplaysRoot`,
+  `TestShippedDatabaseNeedsNoReport`, `TestShippedGrantRevocationSurvives`,
+  `TestTokenRevocationCoveredByBlanket`, `TestEarlyOpenGuard` in
+  `internal/api`, PostgreSQL with a real service, its replica and the
+  promotion; `TestDegradedOutcomeIsAnnouncedAsWindow` in
+  `internal/restoreauthority`); `TestReconciliationReplaysEveryRevokingRoute`
+  (every kind the routes and the operator's commands record, replayed on a
+  database set back before them); `TestReplicaRecordsItsLastContact`,
+  `TestKeepContactReachesAnIdleReplica`,
+  `TestPromotionAnnouncesADegradedPeriodBeyondTheDelay`,
+  `TestPromotionWithinTheDelayAnnouncesNoWindow`,
+  `TestPromotionWithoutAComparableContact`, `TestReconciliationReadsPageByPage`
+  (`internal/restoreauthority`); `TestReconciliationThroughTheAPISocket`
+  (`internal/authorityclient`); `TestAPIRefusesToOpenBeforeTheReconciliation`
+  (`cmd/agentcapsule-api`); `TestReconcileCommand` (`cmd/agentcapsule-admin`);
+  `TestBlanketRecordReadsBack` (`internal/authoritylog`).
+  `scripts/verify-failover.py` removes a member three seconds before the
+  disaster, in the WAL segment that never ships, shows that the API refuses
+  to start and that the promoted database still holds the membership, then
+  reconciles: the member is revoked, and reads nothing. Each mechanism was
+  disabled in turn, and its test failed.
+
+The model needs no change (§8). The code's degraded period is wider than
+the model's: the promotion assumes one whenever the last contact is older
+than the delay, a superset of the model's `s.degraded`, and the blanket
+then revokes more tokens than the model's `TOKENS`, which keeps every
+invariant. The model's `window` is a set of events; the code's is a time
+window that contains them.
+
+Not done in wave 7:
+- **The window starts at the last contact the replica wrote**, to within a
+  second, and from when the request arrived on the replica. A request
+  delivered to the replica more than the degraded delay after the primary
+  sent it (the replica's whole process stalled with the request in its
+  socket) would record a contact later than the start of degraded mode.
+- **The reconciliation reads PostgreSQL's own revocations from
+  `access_revocations` only.** A revocation of an older release (before
+  wave 5) or of the development mode without the service has no record:
+  the authority does not learn it, and a later failover to an older copy
+  can revive it.
+- **The resumed deletions of a lost host's agents** do not end: the
+  deletion of an agent on the lost host needs the worker there (ADR 020,
+  What stays undone).
+- **A divergent store** is reported, not repaired: an agent restored in
+  the window is refused by the restore of the lost host (`authority`).
+- **A database restored in place**, at the same epoch, is not detected: the
+  operator runs `reconcile` before starting the API (recovery.md).
+- **The API's preflight** does not check the reconciliation.
+- **The KVM product tests** have not run with the heartbeat: their service,
+  on November 17, 2026, had no standby.
 
 ## 11. Options considered
 
@@ -670,7 +1300,8 @@ and its own tests. It is not needed for D-05.
 ## Questions for the product owner
 
 Answered on November 16, 2026: **1 (a), 2 (a), 3 (a), 4 (b)**, the
-recommended options.
+recommended options. Questions 5, from wave 4, and 6 and 7, from wave 5,
+are open; their recommended or safest options are built as the defaults.
 
 1. **The authority service restarts** (an upgrade, or a crash that systemd
    restarts). For a few seconds, more if the standby does not answer at that
@@ -718,3 +1349,41 @@ recommended options.
 
    Recommended: (b). The service creates each key a day ahead, so this
    happens only when the standby stays away for a day.
+5. **The authority service stops answering for good** (it crashed and does
+   not come back), while the database is fine. No agent boots and platform
+   calls fail anyway; what should the API's readiness probe say?
+   - (a) Not ready (503 `authority_unavailable`). A load balancer that
+     watches it stops sending requests to this API, so every caller gets an
+     error until the service is back. The alert
+     `AgentCapsuleAuthorityServiceDown` fires as well.
+   - (b) Ready, with `"authority": "unavailable"`. Calls that do not need
+     the authority keep working; from wave 5, removing someone's access
+     answers "try again in a moment".
+
+   Recommended: (a), built as the default. Most of the product stops without
+   the service, the API does not start without it either, and from wave 7
+   the API needs the service to know whether it may serve after a failover.
+   Degraded mode and the wait for the standby keep the API ready in both
+   options.
+6. **The standby goes away while an agent is being created** (wave 5). The
+   creation's write reached the primary, not the standby. For as long as
+   the standby is away (minutes, or hours), removing a member or revoking a
+   token answers "try again in a moment"; deliveries and boots go on.
+   - (a) Keep it: a revocation waits, like the creation, for the standby.
+   - (b) Let a revocation's record pass such a write: it depends on
+     nothing the write changed. Revocations then take effect in degraded
+     mode in every case, as decided for finding 1.
+
+   Built: (a), the barrier as it stands. Recommended: (b), in a later
+   change with its own test.
+7. **Which changes count as revocations** (wave 5). An administrator
+   lowers someone from `org_admin` to `agent_user`, or disables a model
+   alias, an hour before the primary is lost; the database restored on the
+   standby is 10 minutes old.
+   - (a) Only what the product spec names: memberships, assignments,
+     tokens, delegations, keys. The person is `org_admin` again after the
+     failover until someone lowers them again; the alias works again.
+   - (b) Also record role reductions and LLM alias changes, so that the
+     reconciliation (wave 7) replays them.
+
+   Built: (a). Recommended: (b), with wave 7.

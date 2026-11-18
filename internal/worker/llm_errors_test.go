@@ -32,6 +32,20 @@ func TestModelBridgeErrorsCrossAsEnumeratedCodesOnly(t *testing.T) {
 	}
 }
 
+// A policy refusal keeps the codes the guest knows: an alias not granted to
+// the agent is unauthorized, a hard budget in tokens or cost, or a hard cost
+// budget on an unpriced alias, is quota_exceeded.
+func TestModelBridgeRefusalsCrossAsKnownCodes(t *testing.T) {
+	for _, c := range []struct {
+		reason, want string
+	}{{"alias_access", "unauthorized"}, {"budget_tokens", "quota_exceeded"}, {"budget_cost", "quota_exceeded"}, {"unpriced", "quota_exceeded"}} {
+		var pe *capsuleprotocol.PlatformError
+		if got := platformError(&controlplane.LLMRefusal{Reason: c.reason, Period: "day", Scope: "agent"}); !errors.As(got, &pe) || pe.Code != c.want {
+			t.Fatalf("%s -> %v, want %s", c.reason, got, c.want)
+		}
+	}
+}
+
 func TestModelBridgeIsUnavailableUntilEnabled(t *testing.T) {
 	api := platformAPI{}
 	_, err := api.CompleteLLM(t.Context(), "k", capsuleprotocol.LLMRequest{Alias: "fast", Messages: []capsuleprotocol.LLMMessage{{Role: "user", Content: "x"}}})

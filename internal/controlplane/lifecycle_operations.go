@@ -59,6 +59,10 @@ func (c *AgentCatalog) RequestLifecycle(ctx context.Context, p Principal, id, ke
 		op := newID("op")
 		_, err = tx.Exec(ctx, `INSERT INTO platform_operations(id,owner_user_id,agent_id,host_id,seq,kind)
             VALUES($1,$2,$3,$4,$5,$6)`, op, a.Owner, id, host, seq, kind)
+		if err == nil && kind == "wake" {
+			// An explicit wake gives a FAILED agent a new restart budget (ADR 012).
+			_, err = clearAgentFailure(ctx, tx, id)
+		}
 		return 202, AgentCreation{AgentID: id, OperationID: op, Status: "PENDING"}, err
 	})
 	if err != nil {

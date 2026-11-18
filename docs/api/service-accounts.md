@@ -40,11 +40,26 @@ Each token records the human who issued it. It is revoked:
 Promoting a role resurrects no token. Another authorized human issues a new
 token to transfer operation.
 
+Every revocation of a token or of an account is recorded with the authority
+service before it commits. A token's is a bearer token's: confirmed at once
+while the service runs in degraded mode. A disabled account's is a standing
+grant's: `pending` until the standby holds it. A 503 `authority_unavailable`
+means that nothing changed: try again ([README](README.md#revocations-pending-and-confirmed)).
+
 ## Limits
 
 - Revoking a JTI or rotating the trust that authenticated the issuer does not
   revoke its service tokens (a separate choice, not decided).
-- Restoring an old SQL backup can lose revocations: invalidate or rotate the
-  tokens before reopening (D-03/D-05).
+- Restoring an old SQL backup can lose revocations made since. Each one is
+  recorded with the authority service and kept on the standby (ADR 006 wave
+  5); after a failover, `agentcapsule-admin reconcile` writes them back into
+  PostgreSQL before the API opens (wave 7). When the failover may have ended
+  a degraded period, every token issued before it is revoked too: issue new
+  ones ([recovery.md](../recovery.md#reconcile-the-database)). A database
+  restored in place from a backup needs the same command before the API
+  starts again.
 - The encrypted issuance receipt contains a temporary copy of the secret, kept
-  24 hours and protected by the installation's receipt key.
+  24 hours and protected by the daily receipt key of its day, which the
+  authority service destroys once the receipt has expired
+  ([README.md](README.md#the-daily-receipt-keys)); without the service
+  (development), by the installation's receipt key.

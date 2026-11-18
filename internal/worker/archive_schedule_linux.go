@@ -40,7 +40,12 @@ type Archives struct {
 	// Report receives the outcome of each capture and must return promptly.
 	// The service command turns it into fixed events.
 	Report func(ArchiveReport)
+	// Purged receives, when there is any, how many archives of deleted
+	// agents the pass removed, or why it stopped (archive_purge_linux.go).
+	Purged func(removed int, err error)
 
+	// purged is when the pass last looked for archives of deleted agents.
+	purged time.Time
 	// retries holds the agents whose last capture failed, until they may be
 	// tried again. Only the maintenance loop uses it.
 	retries map[string]archiveRetry
@@ -82,7 +87,7 @@ type archiveMetrics struct{ captures *telemetry.Counter }
 
 var (
 	archiveVMs          = []string{"asleep", "running"}
-	archiveRetryReasons = []string{"placement", "busy", "disk_full", "authority", "timeout", "retention", "error"}
+	archiveRetryReasons = []string{"placement", "busy", "disk_full", "authority", "timeout", "retention", "purge", "error"}
 )
 
 // ArchiveVMs and ArchiveRetryReasons are the vocabularies of the archive events.
@@ -226,6 +231,7 @@ func (w *Placements) ArchivePass(ctx context.Context, a *Archives) error {
 	if !a.valid() {
 		return errors.New("invalid archive options")
 	}
+	w.purgeArchives(ctx, a)
 	var now *time.Time
 	if a.now != nil {
 		t := a.now()

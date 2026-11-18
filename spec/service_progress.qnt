@@ -114,6 +114,52 @@ module serviceProgress {
     s' = delivered(s, i, if (success) Acked else if (s.jobs.get(i).attempts + 1 >= MAX_ATTEMPTS) RetiringDead else Pending,
       s.jobs.get(i).attempts + 1),
   }
+  // The notification's deadline passes (ADR 007). One no attempt was allowed
+  // to reach its store dies at once, without the store or a slot, and
+  // wherever it is in the queue: there is no delayed send to fence, and it
+  // leaves the queue without changing the order of what the store receives.
+  // One an attempt may have reached heads the queue, and is retired like an
+  // exhausted one, behind its fence. One to a deleted store is cancelled by
+  // the deletion instead (cancelNotification). Not assumed fair: progress
+  // never relies on it. The reliable instance, which promises receipt, has no
+  // deadline.
+  //
+  // attempts == 0 is P3's "no attempt may have reached the store" (Go:
+  // may_have_reached false). A P3 attempt (notify) is a claim, its
+  // authorization and its send in one step, so each may have reached the
+  // store. Go also counts a claim a crash interrupted before its
+  // authorization: such a delivery has attempts > 0, may_have_reached false,
+  // and dies like one never attempted. P3 retires it behind a fence instead,
+  // needing its store and a slot where Go needs neither: P3 never assumes
+  // less than Go. P1 has the exact rule (sent).
+  action expireNotification(i: int): bool = all {
+    not(RELIABLE), online, queued(s.notificationQueue, i), s.jobs.get(i).delivery == Pending,
+    eligible(i), s.jobs.get(i).attempts == 0 or atHead(s.notificationQueue, i),
+    s' = if (s.jobs.get(i).attempts == 0) unattemptedDead(s, i)
+      else delivered(s, i, RetiringDead, s.jobs.get(i).attempts),
+  }
+  pure def unattemptedDead(st: State, i: int): State = { ...st,
+    jobs: st.jobs.set(i, { ...st.jobs.get(i), delivery: Dead, notificationQueued: false }),
+    notificationQueue: st.notificationQueue.select(j => j != i) }
+  // ADR 008: a store restored from an archive older than a delivery loses
+  // it, and the restore's last step delivers it again. A request its store
+  // was executing goes back to admission: the restore retired the VM that
+  // ran it, and its deadline still closes it. An acknowledged notification
+  // is pending again, at the end of the queue. Restores happen only before
+  // the run stabilizes, like store losses, so progress is unchanged; a
+  // final job keeps its result. The model holds no content, so the reasons
+  // to skip a redelivery are outside it.
+  action redeliverRequest(i: int): bool = all {
+    not(s.stable), online, s.jobs.get(i).stage == Executing, eligible(i),
+    s' = { ...s, jobs: s.jobs.set(i, { ...s.jobs.get(i), stage: Accepted }),
+      workQueue: s.workQueue.select(j => j != i), running: s.running.exclude(Set(i)),
+      admissionQueue: s.admissionQueue.append(i) },
+  }
+  action redeliverNotification(i: int): bool = all {
+    not(s.stable), online, terminal(i), s.jobs.get(i).delivery == Acked, eligible(i),
+    s' = { ...s, jobs: s.jobs.set(i, { ...s.jobs.get(i), delivery: Pending, notificationQueued: true, attempts: 0 }),
+      notificationQueue: s.notificationQueue.append(i) },
+  }
   action cancelNotification(i: int): bool = all {
     online, atHead(s.notificationQueue, i), s.jobs.get(i).delivery == Pending, not(eligible(i)),
     s' = delivered(s, i, RetiringCancelled, s.jobs.get(i).attempts),
@@ -150,7 +196,8 @@ module serviceProgress {
     nondet a = STORES.oneOf()
     nondet cooperative = Set(false, true).oneOf()
     any { arrive(i, cooperative), admit(i), complete(i), deadline(i), closeDeleted(i),
-      releaseExecution(i), fence(i, a), commitClose(i), attempt(i), cancelNotification(i), retireNotification(i), observe(i), recycle(i) },
+      releaseExecution(i), fence(i, a), commitClose(i), attempt(i), expireNotification(i), cancelNotification(i), retireNotification(i), observe(i), recycle(i),
+      redeliverRequest(i), redeliverNotification(i) },
     nondet a = STORES.oneOf()
     any { loseStore(a), recoverStore(a) },
     requestDelete, finishDelete, crashWorker, recoverWorker, loseAuthority, recoverAuthority, stabilize, s' = s,

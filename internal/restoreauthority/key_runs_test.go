@@ -7,6 +7,7 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -89,55 +90,123 @@ func keyAEAD(key []byte) (cipher.AEAD, error) {
 	return cipher.NewGCM(block)
 }
 
-// destructionRequiresPermanentSealTest, in part. In the model a revoked but
-// unsealed store's key cannot be destroyed. The catalogue supplies that
-// evidence: after the revocation the store is acknowledged but not sealed, and
-// Lookup still returns it; only RecordRetiredSeal makes it sealed for good.
-// The refusal itself is not in these packages: keyauthority.Revoke takes no
-// seal, and the worker orders RecordRetiredSeal before Revoke
-// (RemoveDeletedStore). The authority service of ADR 005 §5 item 3 owns both
-// directories and must check the seal in the destruction's own write.
+// destructionRequiresPermanentSealTest:
+// init.then(revoke(0)).expect(safety).then(destroyKey(0).fail()).
+// A revoked but unsealed store's key cannot be destroyed, and the
+// authorities refuse it themselves (ADR 006 §3): DestroyKey checks the seal,
+// and armed, the catalogue checks it again in the transaction that records
+// the destruction, so that the key authority's own Revoke is refused too.
+// Only RecordRetiredSeal, which is permanent, lets the destruction run. The
+// same run through the authority service is
+// internal/authorityclient's TestDestructionRequiresPermanentSeal.
 func TestDestructionRequiresPermanentSeal(t *testing.T) {
-	keys, c := authorities(t)
-	b, err := c.Register(t.Context(), offboarded, offboardedV)
+	t.Run("standalone", func(t *testing.T) {
+		keys, c := authorities(t)
+		destructionRequiresPermanentSeal(t, keys, c, nil)
+	})
+	t.Run("armed", func(t *testing.T) {
+		p := replicated(t)
+		destructionRequiresPermanentSeal(t, p.keys, p.catalog, p)
+	})
+}
+
+// destructionRequiresPermanentSeal runs the projection on keys and c,
+// in process; p is their replica when they are armed.
+func destructionRequiresPermanentSeal(t *testing.T, keys *keyauthority.Files, c *Catalog, p *pair) {
+	ctx := t.Context()
+	a := Local{Catalog: c, Keys: keys}
+	b, err := c.Register(ctx, offboarded, offboardedV)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = keys.Ensure(t.Context(), offboarded, offboardedV); err != nil {
+	if err = keys.Ensure(ctx, offboarded, offboardedV); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = c.BeginRevocation(t.Context(), offboarded); err != nil {
+	// revoke(0): begin, fence the store, complete.
+	if _, err = c.BeginRevocation(ctx, offboarded); err != nil {
 		t.Fatal(err)
 	}
 	receipt(t, c, b)
-	acknowledged, sealed, err := c.SubjectBarrier(t.Context(), b, offboarded)
+	if err = c.WithRevocation(ctx, offboarded, []Binding{b}, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	acknowledged, sealed, err := c.SubjectBarrier(ctx, b, offboarded)
 	if err != nil || !acknowledged || sealed {
 		t.Fatal("revoked store must be acknowledged and not sealed", acknowledged, sealed, err)
 	}
-	if got, err := c.Lookup(t.Context(), offboarded); err != nil || got != b {
+	if got, err := c.Lookup(ctx, offboarded); err != nil || got != b {
 		t.Fatal("an unsealed store is still live", got, err)
 	}
 	header := wrappedBackup(t, keys, offboarded, offboardedV)
+	// destroyKey(0).fail(): refused while the store is not sealed, and
+	// without a sealed binding.
+	before, err := c.Replication(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = a.DestroyKey(ctx, b); !errors.Is(err, ErrNotSealed) {
+		t.Fatal("an unsealed store's key was destroyed", err)
+	}
+	if err = a.Revoke(ctx, offboarded, offboardedV); !errors.Is(err, keyauthority.ErrInput) {
+		t.Fatal("a key was destroyed without its binding", err)
+	}
+	for _, other := range []Binding{{Store: offboarded, Volume: offboardedV, Incarnation: 2}, {Store: keyRunAgent, Volume: keyRunVolume, Incarnation: 1}} {
+		if err = a.DestroyKey(ctx, other); !errors.Is(err, ErrStale) {
+			t.Fatal("a key was destroyed under another binding", other, err)
+		}
+	}
+	if err = a.DestroyKey(ctx, Binding{Store: offboarded, Volume: offboardedV}); !errors.Is(err, ErrInput) {
+		t.Fatal("a key was destroyed without its incarnation", err)
+	}
+	if p != nil {
+		// The catalogue's own check, in the transaction that would record
+		// the destruction: the key authority's Revoke is refused too, and
+		// nothing reaches the stream.
+		if err = keys.Revoke(ctx, offboarded, offboardedV); !errors.Is(err, ErrNotSealed) {
+			t.Fatal("the journal destroyed an unsealed store's key", err)
+		}
+		if after, err := c.Replication(ctx); err != nil || after.Committed.Seq != before.Committed.Seq {
+			t.Fatal("a refused destruction was recorded", before.Committed, after.Committed, err)
+		}
+	}
+	if _, err = os.Lstat(filepath.Join(keys.Root(), "revoked", offboardedV)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("a refused destruction published its tombstone", err)
+	}
 	if err = openBackup(t, keys, offboarded, offboardedV, header); err != nil {
 		t.Fatal("key gone before the seal", err)
 	}
-	if err = c.RecordRetiredSeal(t.Context(), b); err != nil {
+	// permanentlySeal(0), then destroyKey(0).
+	if err = c.RecordRetiredSeal(ctx, b); err != nil {
 		t.Fatal(err)
 	}
-	if _, sealed, err = c.SubjectBarrier(t.Context(), b, offboarded); err != nil || !sealed {
+	if _, sealed, err = c.SubjectBarrier(ctx, b, offboarded); err != nil || !sealed {
 		t.Fatal("seal not recorded", sealed, err)
 	}
-	if _, err = c.Lookup(t.Context(), offboarded); !errors.Is(err, ErrSealed) {
+	if _, err = c.Lookup(ctx, offboarded); !errors.Is(err, ErrSealed) {
 		t.Fatal("sealed store still live", err)
 	}
-	if _, err = c.ReserveIncarnation(t.Context(), b, "restore"); !errors.Is(err, ErrSealed) {
+	if _, err = c.ReserveIncarnation(ctx, b, "restore"); !errors.Is(err, ErrSealed) {
 		t.Fatal("sealed store reserved an image", err)
 	}
-	if err = keys.Revoke(t.Context(), offboarded, offboardedV); err != nil {
+	if err = a.DestroyKey(ctx, b); err != nil {
 		t.Fatal(err)
 	}
 	if err = openBackup(t, keys, offboarded, offboardedV, header); !errors.Is(err, keyauthority.ErrRevoked) {
 		t.Fatal("destroyed key opened a backup", err)
+	}
+	// The seal is permanent: it outlives the key, and a repeated
+	// destruction finds it again.
+	if _, err = c.Register(ctx, offboarded, offboardedV); !errors.Is(err, ErrSealed) {
+		t.Fatal("a sealed store registered again", err)
+	}
+	if err = a.DestroyKey(ctx, b); err != nil {
+		t.Fatal("a repeated destruction", err)
+	}
+	if _, err = c.Lookup(ctx, offboarded); !errors.Is(err, ErrSealed) {
+		t.Fatal("the seal did not outlive the key", err)
+	}
+	if p != nil {
+		p.same(t)
 	}
 }
 
@@ -180,7 +249,7 @@ func TestOldImageDoesNotReviveDestroyedKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = keys.Revoke(t.Context(), offboarded, offboardedV); err != nil {
+	if err = (Local{Catalog: c, Keys: keys}).DestroyKey(t.Context(), b); err != nil {
 		t.Fatal(err)
 	}
 	// reconcile(1), declareLoss(1), activate(1).

@@ -33,13 +33,17 @@ type peers struct {
 	keys        []string
 	byKey       map[string]string
 	states      map[string]string
-	code        string          // a refusal of every submission
-	statusDown  bool            // RequestStatus answers "unavailable"
-	onSubmit    func(id string) // called once per new request, outside the lock
+	replies     map[string]*capsuleprotocol.PeerPayload // what RequestStatus carries of a REPLIED request
+	reasons     map[string]string                       // why it carries no reply
+	code        string                                  // a refusal of every submission
+	statusDown  bool                                    // RequestStatus answers "unavailable"
+	onSubmit    func(id string)                         // called once per new request, outside the lock
 	searches    []capsuleprotocol.DirectoryQuery
 }
 
-func newPeers() *peers { return &peers{byKey: map[string]string{}, states: map[string]string{}} }
+func newPeers() *peers {
+	return &peers{byKey: map[string]string{}, states: map[string]string{}, replies: map[string]*capsuleprotocol.PeerPayload{}, reasons: map[string]string{}}
+}
 
 func (p *peers) Submit(_ context.Context, key string, in capsuleprotocol.Submission) (capsuleprotocol.PlatformReceipt, error) {
 	p.mu.Lock()
@@ -74,6 +78,18 @@ func (p *peers) set(id, state string) {
 	p.states[id] = state
 }
 
+// replied makes the platform's status carry a request's reply, or the reason
+// it has none, as a host with ADR 007 does.
+func (p *peers) replied(id, answer, reason string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.states[id] = "REPLIED"
+	if answer != "" {
+		p.replies[id] = &capsuleprotocol.PeerPayload{Content: []capsuleprotocol.TextContent{{Type: "text", Text: answer}}}
+	}
+	p.reasons[id] = reason
+}
+
 func (p *peers) FindAgents(_ context.Context, q capsuleprotocol.DirectoryQuery) ([]capsuleprotocol.DirectoryAgent, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -101,7 +117,8 @@ func (p *peers) RequestStatus(_ context.Context, id string) (capsuleprotocol.Req
 	if !ok {
 		return capsuleprotocol.RequestStatus{}, &capsuleprotocol.PlatformError{Code: "not_found"}
 	}
-	return capsuleprotocol.RequestStatus{RequestID: id, RecipientAgentID: "b", State: state, ExpiresAt: time.Now().Add(time.Hour)}, nil
+	return capsuleprotocol.RequestStatus{RequestID: id, RecipientAgentID: "b", State: state, ExpiresAt: time.Now().Add(time.Hour),
+		Reply: p.replies[id], Reason: p.reasons[id]}, nil
 }
 
 type a2aLab struct {
@@ -329,6 +346,95 @@ func TestRequestsThatEndWithoutAReply(t *testing.T) {
 	}
 }
 
+// summary is a task's state, its artifact's text and its reason.
+func summary(t *a2a.Task) string {
+	artifact := "-"
+	if len(t.Artifacts) == 1 && len(t.Artifacts[0].Parts) == 1 {
+		artifact = fmt.Sprint(t.Artifacts[0].Parts[0].Content)
+	} else if len(t.Artifacts) != 0 {
+		artifact = "?"
+	}
+	reason, _ := t.Metadata["agentcapsule"].(map[string]any)["reason"].(string)
+	return state(t) + "/" + artifact + "/" + reason
+}
+
+// A reply whose event never came, its delivery dead (ADR 007): the platform's
+// status carries it, and the task completes with it as its artifact. A reply
+// no longer kept completes the task without an artifact, and says why.
+func TestA2AGetTaskCompletesAfterDeadReply(t *testing.T) {
+	l := newA2ALab(t, func(ctx context.Context, l *a2aLab, j Job) string {
+		client, _, err := l.client(ctx, "b")
+		if err != nil {
+			t.Error(err)
+			return ""
+		}
+		kept, _ := client.SendMessage(ctx, &a2a.SendMessageRequest{Message: text("first"), Config: &a2a.SendMessageConfig{ReturnImmediately: true}})
+		purged, _ := client.SendMessage(ctx, &a2a.SendMessageRequest{Message: text("second"), Config: &a2a.SendMessageConfig{ReturnImmediately: true}})
+		if kept == nil || purged == nil {
+			t.Error("not sent")
+			return ""
+		}
+		k, p := kept.(*a2a.Task).ID, purged.(*a2a.Task).ID
+		l.peers.replied(string(k), "the answer", "")
+		l.peers.replied(string(p), "", "content_purged")
+		var out []string
+		for _, id := range []a2a.TaskID{k, p} {
+			task, err := client.GetTask(ctx, &a2a.GetTaskRequest{ID: id})
+			if err != nil {
+				t.Error(err)
+				return ""
+			}
+			out = append(out, summary(task))
+		}
+		// The outcome is the task's from now on, whatever the platform says.
+		l.peers.statusDown = true
+		if task, err := client.GetTask(ctx, &a2a.GetTaskRequest{ID: k}); err != nil || summary(task) != out[0] {
+			t.Error("known reply lost", task, err)
+		}
+		return strings.Join(out, " ")
+	})
+	l.deliver(invocation(t, "e1", "go"))
+	l.drain()
+	want := "TASK_STATE_COMPLETED/REPLIED/the answer/ TASK_STATE_COMPLETED/REPLIED/-/content_purged"
+	if len(l.p.completions) != 1 || l.p.completions[0].Content[0].Text != want {
+		t.Fatalf("got %v\nwant %s", l.p.completions, want)
+	}
+}
+
+// The replier's deletion revokes a reply A never received: the host sends A a
+// REPLIED status without content, reason content_revoked. The task ends with
+// it, even when the platform no longer answers the status read.
+func TestARevokedReplyEndsTheTask(t *testing.T) {
+	l := newA2ALab(t, func(ctx context.Context, l *a2aLab, j Job) string {
+		client, _, err := l.client(ctx, "b")
+		if err != nil {
+			t.Error(err)
+			return ""
+		}
+		sent, _ := client.SendMessage(ctx, &a2a.SendMessageRequest{Message: text("first"), Config: &a2a.SendMessageConfig{ReturnImmediately: true}})
+		if sent == nil {
+			t.Error("not sent")
+			return ""
+		}
+		id := sent.(*a2a.Task).ID
+		l.peers.set(string(id), "REPLIED")
+		l.peers.statusDown = true
+		l.deliver(statusEvent(string(id), "REPLIED", "content_revoked"))
+		task, err := client.GetTask(ctx, &a2a.GetTaskRequest{ID: id})
+		if err != nil {
+			t.Error(err)
+			return ""
+		}
+		return summary(task)
+	})
+	l.deliver(invocation(t, "e1", "go"))
+	l.drain()
+	want := "TASK_STATE_COMPLETED/REPLIED/-/content_revoked"
+	if len(l.p.completions) != 1 || l.p.completions[0].Content[0].Text != want {
+		t.Fatalf("got %v\nwant %s", l.p.completions, want)
+	}
+}
+
 // The endpoint sends nothing it may not: outside an invocation, while
 // answering another agent, past the mandate, or anything but text; it serves
 // no card for itself or an unknown agent, and no task of another peer.
@@ -357,8 +463,9 @@ func TestTheA2AEndpointRefusals(t *testing.T) {
 			check("from a peer request", send(text("onward"), nil), a2a.ErrUnauthorized)
 			return "no"
 		}
-		data := a2a.NewMessage(a2a.MessageRoleUser, a2a.NewDataPart(map[string]any{"k": 1}))
-		check("data part", send(data, nil), a2a.ErrUnsupportedContentType)
+		file := a2a.NewMessage(a2a.MessageRoleUser, a2a.NewRawPart([]byte{1, 2}))
+		check("file part", send(file, nil), a2a.ErrUnsupportedContentType)
+		check("null data", send(a2a.NewMessage(a2a.MessageRoleUser, &a2a.Part{Content: a2a.Data{Value: nil}}), nil), a2a.ErrInvalidParams)
 		followUp := text("more")
 		followUp.TaskID = "arq_1"
 		check("follow-up", send(followUp, nil), a2a.ErrInvalidParams)

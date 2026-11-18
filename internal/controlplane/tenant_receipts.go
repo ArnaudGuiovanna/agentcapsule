@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -45,23 +46,31 @@ func (a *Accounts) withTenantReceipt(ctx context.Context, tx pgx.Tx, p Principal
 	}
 	var original, ciphertext []byte
 	var version int
+	var day *time.Time
 	var result APIReceipt
-	err = tx.QueryRow(ctx, `SELECT request_hash,response_status,response_ciphertext,aad_version FROM tenant_http_receipts WHERE tenant_id=$1 AND principal_id=$2 AND operation=$3 AND key=$4`, args...).Scan(&original, &result.Status, &ciphertext, &version)
+	err = tx.QueryRow(ctx, `SELECT request_hash,response_status,response_ciphertext,aad_version,key_day FROM tenant_http_receipts WHERE tenant_id=$1 AND principal_id=$2 AND operation=$3 AND key=$4`, args...).Scan(&original, &result.Status, &ciphertext, &version, &day)
 	if err == nil {
 		if !bytes.Equal(original, hash[:]) {
 			return APIReceipt{}, ErrConflict
 		}
-		if version != 1 || len(ciphertext) < a.cipher.NonceSize()+a.cipher.Overhead() {
+		if version != 1 {
 			return APIReceipt{}, errors.New("invalid encrypted tenant receipt")
 		}
-		plain, err := a.cipher.Open(nil, ciphertext[:a.cipher.NonceSize()], ciphertext[a.cipher.NonceSize():], aad(result.Status))
+		plain, err := a.openReceipt(ctx, ciphertext, day, aad(result.Status), "tenant")
 		if err != nil {
-			return APIReceipt{}, errors.New("tenant receipt cannot be decrypted")
+			return APIReceipt{}, err
+		}
+		if plain, err = currentRevocations(ctx, tx, plain); err != nil {
+			return APIReceipt{}, err
 		}
 		result.Body, result.Replayed = plain, true
 		return result, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
+		return APIReceipt{}, err
+	}
+	sealer, day, err := a.receiptSealer(ctx)
+	if err != nil {
 		return APIReceipt{}, err
 	}
 	status, body, err := fn()
@@ -72,11 +81,11 @@ func (a *Accounts) withTenantReceipt(ctx context.Context, tx pgx.Tx, p Principal
 	if err != nil {
 		return APIReceipt{}, err
 	}
-	nonce := make([]byte, a.cipher.NonceSize())
+	nonce := make([]byte, sealer.NonceSize())
 	if _, err = rand.Read(nonce); err != nil {
 		return APIReceipt{}, err
 	}
-	ciphertext = a.cipher.Seal(nonce, nonce, plain, aad(status))
-	_, err = tx.Exec(ctx, `INSERT INTO tenant_http_receipts(tenant_id,principal_id,operation,key,request_hash,response_status,response_ciphertext,aad_version) VALUES($1,$2,$3,$4,$5,$6,$7,1)`, p.TenantID, p.ID, operation, key, hash[:], status, ciphertext)
+	ciphertext = sealer.Seal(nonce, nonce, plain, aad(status))
+	_, err = tx.Exec(ctx, `INSERT INTO tenant_http_receipts(tenant_id,principal_id,operation,key,request_hash,response_status,response_ciphertext,aad_version,key_day) VALUES($1,$2,$3,$4,$5,$6,$7,1,$8)`, p.TenantID, p.ID, operation, key, hash[:], status, ciphertext, day)
 	return APIReceipt{Status: status, Body: plain}, err
 }

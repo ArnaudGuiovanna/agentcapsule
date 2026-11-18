@@ -138,7 +138,7 @@ json.dump(out, sys.stdout)
 
 func TestLiveOfficialSDKsThroughTheModelEndpoint(t *testing.T) {
 	base, model, python := liveEnv(t)
-	f := &gatewayForwarder{g: llmgateway.New(llmgateway.Config{Timeout: 2 * time.Minute}), base: base, model: model}
+	f := &gatewayForwarder{g: llmgateway.NewForTests(llmgateway.Config{Timeout: 2 * time.Minute}, llmgateway.TestOptions{Loopback: true}), base: base, model: model}
 	cfg, err := ParseConfig([]byte(`{"version":1,"command":["/bin/true"],"models":{"gpt-4o":"oa","claude-sonnet":"an"}}`))
 	if err != nil {
 		t.Fatal(err)
@@ -247,7 +247,7 @@ func (p *livePlatform) Reply(context.Context, string, string, capsuleprotocol.Re
 
 func TestLiveUnmodifiedAgentAnswersAnInvocation(t *testing.T) {
 	base, model, python := liveEnv(t)
-	p := &livePlatform{gatewayForwarder: &gatewayForwarder{g: llmgateway.New(llmgateway.Config{Timeout: 2 * time.Minute}), base: base, model: model},
+	p := &livePlatform{gatewayForwarder: &gatewayForwarder{g: llmgateway.NewForTests(llmgateway.Config{Timeout: 2 * time.Minute}, llmgateway.TestOptions{Loopback: true}), base: base, model: model},
 		file: []byte("The access code of the vault is 4417.\n")}
 	dir := t.TempDir()
 	agent := filepath.Join(dir, "agent.py")
@@ -311,7 +311,7 @@ func TestLivePiAnswersInvocations(t *testing.T) {
 		{"capsule-openai", "gpt-capsule", "oa"},
 	} {
 		t.Run(c.provider, func(t *testing.T) {
-			p := &livePlatform{gatewayForwarder: &gatewayForwarder{g: llmgateway.New(llmgateway.Config{Timeout: 3 * time.Minute}), base: base, model: model},
+			p := &livePlatform{gatewayForwarder: &gatewayForwarder{g: llmgateway.NewForTests(llmgateway.Config{Timeout: 3 * time.Minute}, llmgateway.TestOptions{Loopback: true}), base: base, model: model},
 				file: []byte("The access code of the vault is 4417.\n")}
 			dir := t.TempDir()
 			cfg, err := ParseConfig([]byte(`{"version":1,"command":["` + pi + `","--print","--provider","` + c.provider + `","--model","` + c.model + `",` +

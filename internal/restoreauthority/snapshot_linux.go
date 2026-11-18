@@ -23,11 +23,12 @@ import (
 // which every replicated write of either authority takes too.
 //
 // Arming is permanent. From then on, a process without the replica refuses
-// every operation (ErrReplicaRequired, and keyauthority's armed check). The
-// first snapshot must be taken with the worker stopped: a worker started
-// before it writes keys without the journal. A later snapshot, to build a new
-// replica, may run beside a worker that replicates; it keeps the epoch, and
-// the recipient must stay the same.
+// every operation (ErrReplicaRequired, and keyauthority's armed check). Every
+// snapshot, the first and a later one to build a new replica, runs with the
+// authority service stopped: the service owns both directories while it
+// runs, and the snapshot command takes the same owner lock, so it refuses
+// beside the service (docs/adr/006-authority-service.md §1). A later
+// snapshot keeps the epoch, and the recipient must stay the same.
 func (c *Catalog) Snapshot(ctx context.Context, keys *keyauthority.Files, recipient authoritylog.Recipient, path string) (authoritylog.Position, error) {
 	var position authoritylog.Position
 	if keys == nil || keys.Identity() != c.keyIdentity || !validRootPath(path) {
@@ -39,10 +40,11 @@ func (c *Catalog) Snapshot(ctx context.Context, keys *keyauthority.Files, recipi
 	if err := CheckSeparation(c.root, path); err != nil {
 		return position, err
 	}
-	// Arm nothing on a catalogue that cannot hold the stream.
+	// Arm nothing on a catalogue that cannot hold the stream, nor the
+	// tables of the current schema that the replica holds.
 	if err := c.run(ctx, false, func(tx *sql.Tx) error {
 		v, err := version(ctx, tx)
-		if err == nil && v < 3 {
+		if err == nil && v < schemaVersion {
 			err = ErrUnavailable // upgrade with Initialize first
 		}
 		return err
@@ -114,7 +116,7 @@ func (c *Catalog) snapshot(ctx context.Context, tx *sql.Tx, keys *keyauthority.F
 	if identity != c.identity || keyIdentity != c.keyIdentity || len(secret) != 32 {
 		return position, ErrUnavailable
 	}
-	if v, err := version(ctx, tx); err != nil || v < 3 {
+	if v, err := version(ctx, tx); err != nil || v < schemaVersion {
 		return position, errors.Join(ErrUnavailable, err) // upgrade with Initialize first
 	}
 	state, err := readReplication(ctx, tx)

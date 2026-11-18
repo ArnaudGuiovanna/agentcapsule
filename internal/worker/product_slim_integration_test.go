@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -201,6 +202,21 @@ func (b *slimBridge) stop() {
 	b.cmd = nil
 }
 
+// colours matches the terminal colour codes the SLIM node writes into its
+// log, even without a terminal.
+var colours = regexp.MustCompile("\x1b\\[[0-9;]*m")
+
+// slimNodeLog returns the private SLIM node's own log so far, without its
+// colours, through the campaign's control script (docker compose logs).
+func slimNodeLog(t *testing.T, control string) string {
+	t.Helper()
+	out, err := exec.Command(control, "logs", "slim").CombinedOutput()
+	if err != nil {
+		t.Fatal("the SLIM node's log", err, string(out))
+	}
+	return colours.ReplaceAllString(string(out), "")
+}
+
 // onlyBridgeAway accepts a pass whose only failures are deliveries waiting
 // for an absent bridge: its socket is gone, or it answers unavailable.
 func onlyBridgeAway(err error) bool {
@@ -231,11 +247,14 @@ func onlyBridgeAway(err error) bool {
 // VM over vsock. While the bridge is away, a request waits without spending an
 // attempt, and it is delivered once the bridge is back. A request also wakes
 // a sleeping recipient through SLIM. Owner instructions never cross SLIM.
+// The exchange is visible in the private SLIM node itself (A2A-005): its own
+// log shows it forwarding a message to b's name, then one to a's.
 func TestProductWorkerTenantAgentsTalkOverSLIM(t *testing.T) {
 	pkg, binary := os.Getenv("AGENTCAPSULE_KVM_A2A_HARNESS"), os.Getenv("AGENTCAPSULE_KVM_SLIM_BRIDGE")
 	endpoint, certs := os.Getenv("AGENTCAPSULE_KVM_SLIM_ENDPOINT"), os.Getenv("AGENTCAPSULE_KVM_SLIM_CERTS")
-	if pkg == "" || binary == "" || endpoint == "" || certs == "" {
-		t.Fatal("AGENTCAPSULE_KVM_A2A_HARNESS, AGENTCAPSULE_KVM_SLIM_BRIDGE, AGENTCAPSULE_KVM_SLIM_ENDPOINT and AGENTCAPSULE_KVM_SLIM_CERTS are required (verify-product-guest.py --slim-bridge-build)")
+	control := os.Getenv("AGENTCAPSULE_KVM_INTEROP_CONTROL")
+	if pkg == "" || binary == "" || endpoint == "" || certs == "" || control == "" {
+		t.Fatal("AGENTCAPSULE_KVM_A2A_HARNESS, AGENTCAPSULE_KVM_SLIM_BRIDGE, AGENTCAPSULE_KVM_SLIM_ENDPOINT, AGENTCAPSULE_KVM_SLIM_CERTS and AGENTCAPSULE_KVM_INTEROP_CONTROL are required (verify-product-guest.py --slim-bridge-build)")
 	}
 	l := newRegistryLab(t)
 	bridge := startSLIMBridge(t, l.worker, binary, endpoint, certs)
@@ -289,6 +308,14 @@ func TestProductWorkerTenantAgentsTalkOverSLIM(t *testing.T) {
 	for _, agent := range []string{b, a} {
 		if !strings.Contains(bridge.out.String(), slimName(agent)) {
 			t.Fatal("the bridge never served the name of", agent, bridge.out.String())
+		}
+	}
+	// The node itself forwarded the request to b's name and the reply to a's:
+	// the campaign runs it with its message processing logged.
+	nodeLog := slimNodeLog(t, control)
+	for _, agent := range []string{b, a} {
+		if !strings.Contains(nodeLog, "match and forward message name="+slimName(agent)+"/") {
+			t.Fatal("the SLIM node's log shows no message forwarded to", agent)
 		}
 	}
 	if n := requests(); len(n) != 1 || n["REPLIED"] != 1 {

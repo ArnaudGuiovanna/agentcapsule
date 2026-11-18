@@ -84,12 +84,131 @@ module concurrentProtocolTests {
     .then(requestDelete(1)).then(barrierEverywhere(AgentSubject(1))).then(commitDelete(1))
     .then(deliver(0,(0,2))).expect(safety and s.requests.get(0).phase == Replied and s.requests.get(0).notified)
 
+  // ADR 007: a reply past its deadline that no RPC was allowed to carry dies
+  // while its destination is stopped, without a fence; the request stays
+  // replied and its sender is not notified. One an RPC may have carried waits
+  // for its destination's fence.
+  run expiredUnsentReplyTest = init.then(submit(0)).then(deliver(0,(0,0)))
+    .then(receive(0,0,ReplyCall,1)).then(admit(0)).then(commitCall(0))
+    .then(stopVM(0)).then(retireStopped(0))
+    .then(expireEvent((0,1))).then(retireUnsent((0,1)))
+    .expect(safety and s.events.get((0,1)).phase == DeadEvent and s.requests.get(0).phase == Replied
+      and not(s.requests.get(0).notified) and s.receipts == Set() and s.acks == Set())
+  run expiredSentReplyWaitsForFenceTest = init.then(submit(0)).then(deliver(0,(0,0)))
+    .then(receive(0,0,ReplyCall,1)).then(admit(0)).then(commitCall(0))
+    .then(claim(0,(0,1))).then(authorize(0)).then(loseRPC(0)).then(expireLease((0,1)))
+    .then(stopVM(0)).then(retireStopped(0))
+    .then(expireEvent((0,1))).expect(safety).then(retireUnsent((0,1)).fail())
+  // Why retireUnsent needs not(sent): retired without its fence, an event an
+  // RPC may carry is applied after its death (noLateEffect).
+  action retireUnfenced(e: EventId): bool = all {
+    s.events.get(e).closing, s.events.get(e).phase == PendingEvent,
+    s' = { ...s, events: s.events.set(e,{ ...s.events.get(e), phase: DeadEvent, leased: false }) },
+  }
+  run unfencedRetireAllowsLateEffectTest = init.then(submit(0)).then(deliver(0,(0,0)))
+    .then(receive(0,0,ReplyCall,1)).then(admit(0)).then(commitCall(0))
+    .then(claim(0,(0,1))).then(authorize(0)).then(expireEvent((0,1)))
+    .then(retireUnfenced((0,1))).then(beginEffect(0)).then(commitEffect(0))
+    .expect(s.lateEffect and not(safety))
+  run expiredSentReplyRetiredAfterFenceTest = init.then(submit(0)).then(deliver(0,(0,0)))
+    .then(receive(0,0,ReplyCall,1)).then(admit(0)).then(commitCall(0))
+    .then(claim(0,(0,1))).then(authorize(0)).then(loseRPC(0)).then(expireLease((0,1)))
+    .then(expireEvent((0,1))).then(fenceStore(0,EventSubject((0,1)))).then(recordFence(0,EventSubject((0,1))))
+    .then(retire((0,1))).expect(safety and s.events.get((0,1)).phase == DeadEvent and s.requests.get(0).phase == Replied)
+  // ADR 007 §7: what never reached its destination dies even behind another
+  // pending event to that agent, here a request whose recipient is stopped.
+  run unsentReplyDiesBehindHeadTest = init.then(submit(0)).then(deliver(0,(0,0))).then(submit(2))
+    .then(receive(0,0,ReplyCall,1)).then(admit(0)).then(commitCall(0))
+    .then(stopVM(0)).then(retireStopped(0))
+    .expect(safety and isHead(s,(2,0)) and not(isHead(s,(0,1))))
+    .then(expireEvent((0,1))).then(retireUnsent((0,1)))
+    .expect(safety and s.events.get((0,1)).phase == DeadEvent and s.events.get((2,0)).phase == PendingEvent)
+  // A reply its author's deletion revokes does not die at its deadline: the
+  // deletion cancels it and tells the sender.
+  action revokedReply = init.then(submit(0)).then(deliver(0,(0,0)))
+    .then(receive(0,0,ReplyCall,1)).then(admit(0)).then(commitCall(0))
+    .then(requestDelete(1)).then(expireEvent((0,1)))
+  run retirementLeavesDeletionTest = revokedReply.expect(safety).then(retireUnsent((0,1)).fail())
+  run deletionCancelsExpiredReplyTest = revokedReply.then(barrierEverywhere(AgentSubject(1))).then(commitDelete(1))
+    .expect(safety and s.events.get((0,1)).phase == CanceledEvent and s.events.get((0,2)).phase == PendingEvent)
+  // ADR 007 §7: a request's closure waits for its parties' fences only. An
+  // agent that is not a party and cannot be fenced (stopped, not sealed)
+  // holds nothing, and a send under way to the recipient still cannot apply.
+  action closingWithStoppedBystander = init.then(submit(0)).then(claim(0,(0,0))).then(authorize(0))
+    .then(stopVM(2)).then(retireStopped(2)).then(closeRequest(0,ExpireRequest))
+  run closureFencesOnlyItsPartiesTest = closingWithStoppedBystander
+    .expect(safety).then(fenceStore(2,RequestSubject(0)).fail())
+  run closureCommitsWithoutOtherStoresTest = closingWithStoppedBystander
+    .then(fenceStore(0,RequestSubject(0))).then(recordFence(0,RequestSubject(0)))
+    .then(fenceStore(1,RequestSubject(0))).then(recordFence(1,RequestSubject(0)))
+    .then(commitClose(0))
+    .expect(safety and s.requests.get(0).phase == Expired and not(barrier(s,2,RequestSubject(0))))
+    .then(beginEffect(0).fail())
+  run closureScopeTest = init.expect(closureScope)
+  // Why the recipient's fence is needed: committed without it, a send under
+  // way applies the request after its expiry (noStaleEffect).
+  action commitCloseWithout(r: RequestId, a: AgentId): bool = all {
+    s.up, s.requests.get(r).closure != NoClosure, active(s.requests.get(r).phase),
+    peers(r).exclude(Set(a)).forall(b => s.acks.contains({ store: b, subject: RequestSubject(r) })),
+    s' = closeCommitted(s,r),
+  }
+  run closureWithoutRecipientAllowsStaleEffectTest = init.then(submit(0)).then(claim(0,(0,0))).then(authorize(0))
+    .then(closeRequest(0,ExpireRequest)).then(fenceStore(0,RequestSubject(0))).then(recordFence(0,RequestSubject(0)))
+    .then(commitCloseWithout(0,1)).then(beginEffect(0)).then(commitEffect(0))
+    .expect(s.staleEffect and not(safety))
   run retiredNotificationTest = init.then(submit(0)).then(closeRequest(0,FailRequest))
     .then(barrierEverywhere(RequestSubject(0))).then(commitClose(0))
     .then(claim(0,(0,2))).then(authorize(0)).then(loseRPC(0)).then(expireLease((0,2)))
     .then(claim(0,(0,2))).then(authorize(0)).then(loseRPC(0)).then(expireLease((0,2)))
     .then(beginRetire((0,2))).then(fenceStore(0,EventSubject((0,2)))).then(recordFence(0,EventSubject((0,2))))
     .then(retire((0,2))).expect(safety and s.events.get((0,2)).phase == DeadEvent and not(s.requests.get(0).notified))
+  // ADR 008: a restore loses an event its destination had received; the
+  // restore's last step delivers it again, under the same ID, or not at all.
+  action retireForRestore(a: int): bool = stopVM(a).then(retireStopped(a))
+  action bootAgain(a: int): bool = bootVM(a,false).then(launchBoot(a)).then(confirmBoot(a)).then(publishBoot(a))
+  action replied = init.then(submit(0)).then(deliver(0,(0,0)))
+    .then(receive(0,0,ReplyCall,1)).then(admit(0)).then(commitCall(0))
+  run restoredRecipientGetsRequestAgainTest = init.then(submit(0)).then(deliver(0,(0,0)))
+    .then(retireForRestore(1)).then(loseOutcome((0,0)))
+    .expect(safety and s.effects.get((0,0)) == 0 and s.requests.get(0).phase == Processing)
+    .then(redeliver((0,0)))
+    .expect(safety and s.requests.get(0).phase == Delivering and s.events.get((0,0)).phase == PendingEvent)
+    .then(bootAgain(1)).then(deliver(0,(0,0)))
+    .expect(safety and s.effects.get((0,0)) == 1 and s.requests.get(0).phase == Processing)
+    .then(receive(0,0,ReplyCall,1)).then(admit(0)).then(commitCall(0)).then(deliver(0,(0,1)))
+    .expect(safety and s.requests.get(0).phase == Replied and s.requests.get(0).notified)
+  run restoreNeedsRetiredStoreTest = init.then(submit(0)).then(deliver(0,(0,0)))
+    .expect(safety).then(loseOutcome((0,0)).fail())
+  run finalRequestDoesNotReopenTest = replied.then(retireForRestore(1)).then(loseOutcome((0,0)))
+    .expect(safety and s.requests.get(0).phase == Replied).then(redeliver((0,0)).fail())
+  run closingRequestIsNotRedeliveredTest = init.then(submit(0)).then(deliver(0,(0,0)))
+    .then(closeRequest(0,ExpireRequest)).then(retireForRestore(1)).then(loseOutcome((0,0)))
+    .expect(safety).then(redeliver((0,0)).fail())
+  run restoredSenderGetsReplyAgainTest = replied.then(deliver(0,(0,1)))
+    .then(retireForRestore(0)).then(loseOutcome((0,1))).then(redeliver((0,1)))
+    .expect(safety and s.requests.get(0).phase == Replied and not(s.requests.get(0).notified)
+      and s.events.get((0,1)).phase == PendingEvent)
+    .then(bootAgain(0)).then(deliver(0,(0,1)))
+    .expect(safety and s.effects.get((0,1)) == 1 and s.requests.get(0).notified)
+  run restoredSenderGetsStatusAgainTest = init.then(submit(0)).then(closeRequest(0,CancelRequest))
+    .then(barrierEverywhere(RequestSubject(0))).then(commitClose(0)).then(deliver(0,(0,2)))
+    .then(retireForRestore(0)).then(loseOutcome((0,2))).then(redeliver((0,2)))
+    .expect(safety and s.requests.get(0).phase == Canceled and s.events.get((0,2)).phase == PendingEvent)
+    .then(bootAgain(0)).then(deliver(0,(0,2)))
+    .expect(safety and s.effects.get((0,2)) == 1 and s.requests.get(0).notified)
+  run deletionBlocksRedeliveryTest = replied.then(deliver(0,(0,1)))
+    .then(retireForRestore(0)).then(loseOutcome((0,1))).then(requestDelete(1))
+    .expect(safety).then(redeliver((0,1)).fail())
+  run closureCancelsRedeliveryTest = init.then(submit(0)).then(deliver(0,(0,0)))
+    .then(retireForRestore(1)).then(loseOutcome((0,0))).then(redeliver((0,0))).then(bootAgain(1))
+    .then(closeRequest(0,CancelRequest)).then(barrierEverywhere(RequestSubject(0))).then(commitClose(0))
+    .expect(safety and s.requests.get(0).phase == Canceled and s.events.get((0,0)).phase == CanceledEvent
+      and s.effects.get((0,0)) == 0)
+  // Why a final request is not redelivered: reopened, it leaves its final
+  // state (terminalStable).
+  action reopen(e: EventId): bool = all { lost(s,e), s' = redelivered(s,e) }
+  run reopenedRequestBreaksTerminalStableTest = replied.then(retireForRestore(1)).then(loseOutcome((0,0)))
+    .then(reopen((0,0))).expect(not(terminalStable) and not(safety))
   run sealAndFutureBarrierTest = init.then(requestDelete(1)).then(barrierEverywhere(AgentSubject(1)))
     .then(commitDelete(1)).then(stopVM(1)).then(retireStopped(1)).then(sealStore(1))
     .then(submit(2)).then(closeRequest(2,CancelRequest)).then(barrierEverywhere(RequestSubject(2)))

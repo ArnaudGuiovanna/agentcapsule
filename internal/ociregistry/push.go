@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/harnesspkg"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/ociregistry/reference"
 )
 
 // Push publishes the package files in dir (harness.yaml, checksums.json,
@@ -21,7 +22,7 @@ func Push(ctx context.Context, rule Rule, repository, tag, dir string) (Referenc
 	if err := (Policy{Rules: []Rule{rule}}).Validate(); err != nil {
 		return Reference{}, err
 	}
-	if !validRepository(repository) || tag != "" && !tagPattern.MatchString(tag) {
+	if !validRepository(repository) || tag != "" && !reference.ValidTag(tag) {
 		return Reference{}, fmt.Errorf("%w: repository or tag", ErrPolicy)
 	}
 	c := newClient(rule, 0)

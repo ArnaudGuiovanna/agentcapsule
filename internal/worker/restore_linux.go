@@ -15,6 +15,7 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/restoreauthority"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/runtime"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/volumearchive"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/volumestore"
 )
 
 var (
@@ -49,6 +50,11 @@ type restoreHost struct {
 	// boot starts the restricted boot of the installed image and returns its
 	// authenticated control.
 	boot func(ctx context.Context, id string) (runtime.VMRun, *capsuleprotocol.Client, error)
+	// relocate creates the volume file of an agent that moves here from a
+	// lost host, and registers it on this host: the same volume ID, size and
+	// key, an empty container. It returns the file's identity. Repeating it
+	// returns the same file. The agent's barrier needs it registered.
+	relocate func(ctx context.Context, e controlplane.Enrollment) (device, inode uint64, err error)
 	// after runs once each step is durable; tests stop the restore there.
 	after func(step string) error
 }
@@ -61,6 +67,7 @@ func (w *Placements) productRestoreHost() restoreHost {
 		install: func(ctx context.Context, plan controlplane.VolumeRestorePlan, image io.Reader, a restoreauthority.Archive) error {
 			return w.host.InstallVolume(ctx, plan.Restore.AgentID, plan.Placement.Generation, plan.Device, plan.Inode, image, a.Size, a.Digest)
 		},
+		relocate: w.relocateVolume,
 		boot: func(ctx context.Context, id string) (runtime.VMRun, *capsuleprotocol.Client, error) {
 			run, err := w.start(ctx, id, true)
 			if errors.Is(err, runtime.ErrCapacity) {
@@ -77,6 +84,96 @@ func (w *Placements) productRestoreHost() restoreHost {
 		},
 		after: w.afterRestoreStep,
 	}
+}
+
+// relocateVolume creates, as provisioning does, the volume file of an agent
+// that moves here from a lost host (ADR 020): a container of its volume ID
+// and size, formatted with its key, which the key authority holds under the
+// store's current binding. It registers it on this host with the agent's
+// harness. The archive's bytes replace it at the install. Nothing boots it
+// before its restore moves the agent here.
+func (w *Placements) relocateVolume(ctx context.Context, e controlplane.Enrollment) (uint64, uint64, error) {
+	p := w.provisioning
+	if p == nil {
+		return 0, 0, controlplane.ErrInput
+	}
+	harness, err := w.resolveHarness(ctx, e)
+	if err != nil {
+		return 0, 0, err
+	}
+	// The incarnation the authority holds now: the lost host's, or the one a
+	// begun restore reserved. A sealed store is refused here.
+	binding, err := w.authority.Lookup(ctx, e.AgentID)
+	if err != nil {
+		return 0, 0, err
+	}
+	if binding.Volume != e.VolumeID {
+		return 0, 0, restoreauthority.ErrStale
+	}
+	var volume volumestore.Container
+	err = w.authority.HoldKey(ctx, binding, func(ctx context.Context, key []byte) error {
+		var err error
+		volume, err = p.volumes.Prepare(ctx, volumestore.Spec{AgentID: e.AgentID, VolumeID: e.VolumeID, SizeMiB: int64(e.Resources.DataVolumeMiB)}, key)
+		return err
+	})
+	if err != nil {
+		return 0, 0, err
+	}
+	registration := runtime.ProvisionedAgent{ID: e.AgentID, Volume: volume.Path, Device: volume.Device, Inode: volume.Inode,
+		Resources: runtime.VMResources{VCPUs: e.Resources.VCPUs, MemoryMiB: e.Resources.MemoryMiB, VolumeMiB: e.Resources.DataVolumeMiB}, Harness: harness}
+	if err = w.host.RegisterProvisioned(ctx, registration, p.config.FirstUID, p.config.LastUID); err != nil {
+		return 0, 0, err
+	}
+	return volume.Device, volume.Inode, nil
+}
+
+// arriveForRestore records the volume file of an agent whose relocation is
+// pending, before the install: arriveBeforeBarrier created it. It does
+// nothing for an agent whose volume is here.
+func (w *Placements) arriveForRestore(ctx context.Context, h restoreHost, plan controlplane.VolumeRestorePlan) error {
+	if plan.RelocatedFrom == "" {
+		return nil
+	}
+	if h.relocate == nil {
+		return controlplane.ErrInput
+	}
+	device, inode, err := h.relocate(ctx, plan.Enrollment)
+	if err != nil {
+		return err
+	}
+	return w.store.RecordRelocatedVolume(ctx, plan.Restore.ID, w.hostID, device, inode)
+}
+
+// arriveBeforeBarrier creates and registers the volume file of an agent
+// that moves here, or whose relocation is pending, before the restore takes
+// the agent's barrier on this host: the host admits a barrier only for an
+// agent it knows. An agent whose volume is here needs nothing.
+func (w *Placements) arriveBeforeBarrier(ctx context.Context, h restoreHost, restoreID, agentID string) error {
+	plan, err := w.store.VolumeRestoreTarget(ctx, restoreID, w.hostID)
+	var e controlplane.Enrollment
+	switch {
+	case err == nil && plan.RelocatedFrom == "":
+		return nil
+	case err == nil:
+		e = plan.Enrollment
+	case errors.Is(err, controlplane.ErrNotFound):
+		if _, err = w.store.VolumeEnrollment(ctx, agentID, w.hostID); err == nil {
+			return nil
+		}
+		if !errors.Is(err, controlplane.ErrStoreEnrollment) && !errors.Is(err, controlplane.ErrPlacement) {
+			return err
+		}
+		if e, _, err = w.store.TakenOverEnrollment(ctx, agentID, w.hostID); err != nil {
+			return err
+		}
+	default:
+		return err
+	}
+	if h.relocate == nil {
+		return controlplane.ErrInput
+	}
+	_, _, err = h.relocate(ctx, e)
+	return err
 }
 
 // retireForRestore runs under the agent's barrier. Reconciliation already
@@ -180,30 +277,73 @@ func (w *Placements) placement(ctx context.Context, id string) (controlplane.Pla
 // ordinary work. Calling it again with the same restoreID resumes from the
 // last durable step; a new restoreID replaces an unfinished restore that has
 // not activated. The agent wakes on its next delivery.
-func (w *Placements) RestoreFromArchive(ctx context.Context, restoreID, agentID, archiveID string, archives *volumearchive.Store) (VolumeRestoreResult, error) {
+//
+// While the authorities are unavailable (the authority service is away, or
+// in degraded mode waits for the standby), the restore pauses: paused, when
+// not nil, receives the error, then the restore resumes from its last
+// durable step once they answer, until ctx ends (ADR 006 §4). A refusal
+// ends it.
+func (w *Placements) RestoreFromArchive(ctx context.Context, restoreID, agentID, archiveID string, archives *volumearchive.Store, paused func(error)) (VolumeRestoreResult, error) {
 	if w.provisioning == nil || w.authority == nil || archives == nil {
-		return VolumeRestoreResult{}, controlplane.ErrInput
-	}
-	keys, ok := w.provisioning.keys.(interface{ SeparateFrom(string) error })
-	if !ok {
 		return VolumeRestoreResult{}, controlplane.ErrInput
 	}
 	for _, check := range []func() error{
 		func() error { return restoreauthority.CheckSeparation(w.provisioning.runtimeRoot, archives.Root()) },
 		func() error { return w.authority.SeparateFrom(archives.Root()) },
-		func() error { return keys.SeparateFrom(archives.Root()) },
 	} {
 		if err := check(); err != nil {
 			return VolumeRestoreResult{}, err
 		}
 	}
-	return w.restore(ctx, w.productRestoreHost(), restoreID, agentID, archiveID, archives)
+	return w.restorePausing(ctx, w.productRestoreHost(), restoreID, agentID, archiveID, archives, paused)
+}
+
+// restorePause bounds the wait between two attempts of a paused restore.
+var restorePause = struct{ first, max time.Duration }{time.Second, 30 * time.Second}
+
+// restorePausing runs the restore, and runs it again with the same ID
+// whenever it stopped on unavailable authorities: every step can be
+// repeated, and each attempt resumes from the last durable one.
+func (w *Placements) restorePausing(ctx context.Context, h restoreHost, restoreID, agentID, archiveID string, archives *volumearchive.Store, paused func(error)) (VolumeRestoreResult, error) {
+	wait := restorePause.first
+	for {
+		result, err := w.restore(ctx, h, restoreID, agentID, archiveID, archives)
+		if err == nil || !errors.Is(err, restoreauthority.ErrUnavailable) || ctx.Err() != nil {
+			return result, err
+		}
+		if paused != nil {
+			paused(err)
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return result, errors.Join(err, ctx.Err())
+		case <-timer.C:
+		}
+		wait = min(2*wait, restorePause.max)
+	}
+}
+
+// RestorePauses is the vocabulary of RestorePause.
+func RestorePauses() []string { return []string{"waits_for_replica", "authority_unavailable"} }
+
+// RestorePause says why a restore paused: the authority service waits for
+// the standby in degraded mode, or the authorities do not answer.
+func RestorePause(err error) string {
+	if errors.Is(err, restoreauthority.ErrWaitsForReplica) {
+		return "waits_for_replica"
+	}
+	return "authority_unavailable"
 }
 
 func (w *Placements) restore(ctx context.Context, h restoreHost, restoreID, agentID, archiveID string, archives *volumearchive.Store) (VolumeRestoreResult, error) {
 	var result VolumeRestoreResult
 	if w.authority == nil || archives == nil || !controlplane.ValidRestoreID(restoreID) || !volumearchive.ValidID(archiveID) || agentID == "" {
 		return result, controlplane.ErrInput
+	}
+	if err := w.arriveBeforeBarrier(ctx, h, restoreID, agentID); err != nil {
+		return result, err
 	}
 	err := h.barrier(ctx, agentID, func(ctx context.Context) error {
 		plan, err := w.beginRestore(ctx, h, restoreID, agentID, archiveID, archives)
@@ -259,7 +399,18 @@ func (w *Placements) beginRestore(ctx context.Context, h restoreHost, restoreID,
 	if !errors.Is(err, controlplane.ErrNotFound) {
 		return plan, err
 	}
+	// An agent of a lost host that this host took over (ADR 020): the
+	// restore moves it here. Its harness cannot be asked before: its VMs went
+	// with the lost host, and its volume is not here yet. The restricted boot
+	// asks it, as for any restore.
 	e, err := w.store.VolumeEnrollment(ctx, agentID, w.hostID)
+	relocating := false
+	if errors.Is(err, controlplane.ErrStoreEnrollment) || errors.Is(err, controlplane.ErrPlacement) {
+		var lost string
+		if e, lost, err = w.store.TakenOverEnrollment(ctx, agentID, w.hostID); err == nil {
+			relocating = lost != ""
+		}
+	}
 	if err != nil {
 		return plan, err
 	}
@@ -286,15 +437,17 @@ func (w *Placements) beginRestore(ctx context.Context, h restoreHost, restoreID,
 		if _, err = w.authority.ReserveIncarnation(ctx, previous, open.ID); err != nil {
 			return plan, err
 		}
-	} else if err = h.probe(ctx, agentID); err != nil {
-		return plan, err
+	} else if !relocating {
+		if err = h.probe(ctx, agentID); err != nil {
+			return plan, err
+		}
 	}
 	return w.store.BeginVolumeRestore(ctx, restoreID, agentID, w.hostID, archiveID)
 }
 
 // checkRestoreArchive authenticates the archive and hashes its bytes, then
 // checks that it is of this agent's volume and of its size.
-func checkRestoreArchive(ctx context.Context, archives *volumearchive.Store, archiveID string, e controlplane.Enrollment, authority *restoreauthority.Catalog) error {
+func checkRestoreArchive(ctx context.Context, archives *volumearchive.Store, archiveID string, e controlplane.Enrollment, authority volumearchive.Authority) error {
 	f, a, err := archives.Open(ctx, archiveID, authority)
 	if err != nil {
 		return err
@@ -342,6 +495,11 @@ func (w *Placements) drainForRestore(ctx context.Context, h restoreHost, plan co
 	if next.Incarnation != r.Incarnation {
 		return restoreauthority.ErrStale
 	}
+	// A relocated agent's volume is created once its incarnation is
+	// reserved: the key authority holds its key under that incarnation.
+	if err = w.arriveForRestore(ctx, h, plan); err != nil {
+		return err
+	}
 	if err = h.retire(ctx, r.AgentID); err != nil {
 		return err
 	}
@@ -352,6 +510,9 @@ func (w *Placements) drainForRestore(ctx context.Context, h restoreHost, plan co
 // image, which nothing boots; the copy is redone from the immutable archive.
 func (w *Placements) installRestore(ctx context.Context, h restoreHost, plan controlplane.VolumeRestorePlan, archives *volumearchive.Store) error {
 	r := plan.Restore
+	if err := w.arriveForRestore(ctx, h, plan); err != nil {
+		return err
+	}
 	if err := h.retire(ctx, r.AgentID); err != nil {
 		return err
 	}
@@ -424,12 +585,12 @@ func (w *Placements) activateRestore(ctx context.Context, h restoreHost, plan co
 		}
 		return missing, nil
 	}
-	_, err = w.authority.Activate(ctx, receipt, restoreauthority.Restoration{
+	_, err = w.authority.ActivateRestored(ctx, receipt, restoreauthority.Activation{
 		Inspect: inspect,
 		Repair: func([]restoreauthority.Outcome) error {
 			return w.newerArchive(ctx, r.AgentID, r.ArchiveID, archives)
 		},
-		Publish: func() error {
+		Publish: func(ctx context.Context) error {
 			return w.store.ActivateVolumeRestore(ctx, r.ID, w.hostID, run.Generation, run.ID)
 		},
 	})
@@ -474,7 +635,7 @@ func RestoreFailures() []string { return slices.Clone(restoreFailures) }
 // restore is resumed, except a refusal before the agent was stopped.
 func RestoreFailure(err error) string {
 	switch {
-	case errors.Is(err, volumearchive.ErrArchive), errors.Is(err, ErrRestoreArchive), errors.Is(err, runtime.ErrVolumeImage):
+	case errors.Is(err, volumearchive.ErrArchive), errors.Is(err, ErrRestoreArchive), errors.Is(err, runtime.ErrVolumeImage), errors.Is(err, ErrArchiveUnavailable):
 		return "archive"
 	case errors.Is(err, ErrNewerArchive):
 		return "newer_archive"
@@ -487,7 +648,8 @@ func RestoreFailure(err error) string {
 	case errors.Is(err, capsuleprotocol.ErrUnsupportedProtocol), errors.Is(err, capsuleprotocol.ErrCapabilitiesUnavailable):
 		return "unsupported_harness"
 	case errors.Is(err, controlplane.ErrRestore), errors.Is(err, controlplane.ErrStoreEnrollment), errors.Is(err, controlplane.ErrConflict),
-		errors.Is(err, controlplane.ErrPlacement), errors.Is(err, controlplane.ErrNotFound):
+		errors.Is(err, controlplane.ErrPlacement), errors.Is(err, controlplane.ErrNotFound), errors.Is(err, controlplane.ErrHostLost),
+		errors.Is(err, controlplane.ErrRelease), errors.Is(err, ErrNotTakenOver):
 		return "state"
 	}
 	return "error"

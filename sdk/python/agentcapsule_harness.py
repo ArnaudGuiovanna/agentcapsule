@@ -358,19 +358,29 @@ class Attachment:
 
 @dataclass(frozen=True)
 class Invocation:
-    """An owner's message to the agent (kind message.user)."""
+    """An owner's message to the agent (kind message.user).
+
+    content holds its parts as received: {"type": "text", "text": ...} or,
+    for a harness created with json_content=True, {"type": "json", "json":
+    value}, where value is the decoded JSON value."""
 
     event_id: str
     operation_id: str
     mandate_id: str
     max_agent_requests: int
     expires_at: str
-    content: List[Dict[str, str]]
+    content: List[Dict[str, Any]]
     attachments: List[Attachment] = field(default_factory=list)
 
     @property
     def text(self) -> str:
-        return "\n".join(c["text"] for c in self.content)
+        """The text parts, one per line."""
+        return "\n".join(c["text"] for c in self.content if c["type"] == "text")
+
+    @property
+    def values(self) -> List[Any]:
+        """The values of the JSON parts, in order."""
+        return [c["json"] for c in self.content if c["type"] == "json"]
 
 
 def _valid_subject(s: Any) -> bool:
@@ -386,21 +396,74 @@ def _valid_event(identity: Identity, e: Event) -> bool:
     return all(_valid_subject(s) for s in e.subjects) and ("agent/" + identity.agent_id) in e.subjects
 
 
-def _valid_text_content(content: Any) -> bool:
+MAX_JSON_DEPTH = 32
+
+
+def _depth(v: Any) -> int:
+    if isinstance(v, dict):
+        return 1 + max((_depth(x) for x in v.values()), default=0)
+    if isinstance(v, list):
+        return 1 + max((_depth(x) for x in v), default=0)
+    return 0
+
+
+def _compact(value: Any) -> Optional[str]:
+    """The compact text of a JSON value as this SDK sends it, or None if it
+    is null, not JSON or nested deeper than MAX_JSON_DEPTH."""
+    if value is None:
+        return None
+    try:
+        if _depth(value) > MAX_JSON_DEPTH:
+            return None
+        return json.dumps(value, separators=(",", ":"), allow_nan=False)
+    except (TypeError, ValueError, RecursionError):
+        return None
+
+
+def _valid_content(content: Any, json_parts: bool = True, limit: Optional[int] = 32 * 1024) -> bool:
+    """1 to 32 parts: text, or JSON values when json_parts. With a limit,
+    text and compact JSON add up to at most limit bytes (UTF-8). Content the
+    platform sent is checked without a limit: the platform bounded it."""
     if not isinstance(content, list) or not 1 <= len(content) <= 32:
         return False
     total = 0
     for c in content:
-        if not isinstance(c, dict) or set(c) != {"type", "text"} or c["type"] != "text" or not isinstance(c["text"], str):
-            return False
-        text = c["text"]
-        if not text.strip() or "\x00" in text:
+        if isinstance(c, dict) and set(c) == {"type", "json"} and c["type"] == "json" and json_parts:
+            if limit is None:
+                if c["json"] is None or _depth(c["json"]) > MAX_JSON_DEPTH:
+                    return False
+                continue
+            text = _compact(c["json"])
+            if text is None:
+                return False
+        elif isinstance(c, dict) and set(c) == {"type", "text"} and c["type"] == "text" and isinstance(c["text"], str):
+            text = c["text"]
+            if not text.strip() or "\x00" in text:
+                return False
+        else:
             return False
         try:
             total += len(text.encode("utf-8"))
         except UnicodeEncodeError:
             return False
-    return total <= 32 * 1024
+    return limit is None or total <= limit
+
+
+def _valid_text_content(content: Any) -> bool:
+    return _valid_content(content, json_parts=False)
+
+
+def _event_has_json(body: bytes) -> bool:
+    """Whether an invocation, request or reply body carries a JSON part."""
+    try:
+        v = json.loads(body)
+    except (ValueError, UnicodeDecodeError, RecursionError):
+        return False
+    if not isinstance(v, dict):
+        return False
+    parts = v.get("content") if v.get("kind") == "message.user" else (v.get("payload") or {}).get("content") \
+        if v.get("kind") in ("request", "reply") and isinstance(v.get("payload"), dict) else None
+    return isinstance(parts, list) and any(isinstance(c, dict) and c.get("type") == "json" for c in parts)
 
 
 def _valid_attachment_name(n: str) -> bool:
@@ -424,7 +487,9 @@ def _rfc3339(v: Any) -> bool:
     return m is not None and int(m.group(1)) > 1
 
 
-def decode_invocation(e: Event, agent_id: str) -> Invocation:
+def decode_invocation(e: Event, agent_id: str, json_content: bool = False) -> Invocation:
+    """Validates an invocation. JSON parts are accepted only with
+    json_content, as the harness negotiated it (Harness(json_content=True))."""
     if len(e.subjects) != 2 or ("agent/" + agent_id) not in e.subjects or ("event/" + e.id) not in e.subjects:
         raise ProtocolError("invocation subjects")
     v = _strict_json(e.body)
@@ -451,7 +516,7 @@ def decode_invocation(e: Event, agent_id: str) -> Invocation:
             raise ProtocolError("attachment")
         seen.add(a["id"])
         attachments.append(Attachment(a["id"], a["name"], a["media_type"], a["size"], a["sha256"]))
-    if not _valid_text_content(v["content"]):
+    if not _valid_content(v["content"], json_parts=json_content, limit=None):
         raise ProtocolError("content")
     return Invocation(e.id, op, m["id"], m["max_agent_requests"], m["expires_at"], v["content"], attachments)
 
@@ -467,6 +532,21 @@ def _is_invocation(e: Event) -> bool:
 def text_result(*texts: str) -> Dict[str, Any]:
     """The usual final answer: text content the requester reads."""
     return {"content": [{"type": "text", "text": t} for t in texts]}
+
+
+def text_part(text: str) -> Dict[str, Any]:
+    """A text part (text/plain)."""
+    return {"type": "text", "text": text}
+
+
+def json_part(value: Any) -> Dict[str, Any]:
+    """A JSON part (application/json): any JSON value but None."""
+    return {"type": "json", "json": value}
+
+
+def content_result(*parts: Dict[str, Any]) -> Dict[str, Any]:
+    """A final answer made of text and JSON parts (text_part, json_part)."""
+    return {"content": list(parts)}
 
 
 # --- platform channel ------------------------------------------------------
@@ -556,12 +636,12 @@ class Platform:
         return found
 
     def complete_invocation(self, key: str, operation_id: str, outcome: str,
-                            content: Optional[List[Dict[str, str]]] = None) -> Dict[str, Any]:
+                            content: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
         """Posts the outcome of an invocation answered WORKING: "completed"
-        with content, or "failed"."""
+        with content (text and JSON parts), or "failed"."""
         completion: Dict[str, Any] = {"operation_id": operation_id, "outcome": outcome}
         if outcome == "completed":
-            if not _valid_text_content(content):
+            if not _valid_content(content):
                 raise ProtocolError("completion content")
             completion["content"] = content
         elif outcome != "failed" or content:
@@ -684,6 +764,12 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if not self.server.harness.boot.identity.fence_only:
             features += ["events", "invoke.message.user.text"]
         features.append("outcomes")
+        # content.json only to a client that asked for it: older clients
+        # validate exactly the five features above.
+        asked = self.headers.get_all("X-Capsule-Accept-Features") or []
+        if self.server.harness.json_content and not self.server.harness.boot.identity.fence_only and len(asked) == 1 \
+                and len(asked[0]) <= 256 and "content.json" in [a.strip(" \t") for a in asked[0].split(",")]:
+            features.append("content.json")
         self._reply(200, {"features": features, "limits": {"message_bytes": MAX_MESSAGE_BYTES, "content_bytes": MAX_CONTENT_BYTES}},
                     {"X-Capsule-Protocol": PROTOCOL})
 
@@ -760,9 +846,11 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             event = _decode_event(v["event"])
             if not _valid_event(identity, event):
                 raise ProtocolError("event")
+            if not h.json_content and _event_has_json(event.body):
+                raise ProtocolError("JSON content not negotiated")
             invocation = None
             if self.path == "/v1/invoke":
-                invocation = decode_invocation(event, identity.agent_id)
+                invocation = decode_invocation(event, identity.agent_id, h.json_content)
             elif _is_invocation(event):
                 raise ProtocolError("invocation sent as an event")
         except ProtocolError:
@@ -825,9 +913,16 @@ class Harness:
     later through platform.complete_invocation. on_background(harness) runs in
     a separate thread after each committed event and periodically, and may
     call the platform; it returns True while it still has work.
+
+    With json_content=True the harness also receives JSON parts
+    ({"type": "json", "json": value}) in invocations and in the requests
+    and replies of other agents. Without it, the platform sends each JSON
+    part as a text part holding the compact JSON.
     """
 
-    def __init__(self, boot: Optional[Boot] = None, listener_fd: int = 4, database: str = "harness.db"):
+    def __init__(self, boot: Optional[Boot] = None, listener_fd: int = 4, database: str = "harness.db",
+                 json_content: bool = False):
+        self.json_content = json_content
         self.boot = boot or read_boot(3)
         self.store = Store(os.path.join(self.boot.data_directory, database))
         self.platform: Optional[Platform] = None

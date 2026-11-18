@@ -34,12 +34,11 @@ type provisioner struct {
 // NewProvisioningPlacements supports the approved local guest image pinned by
 // opts.InitrdSHA256. Its digest must match the reserved harness release. OCI
 // artifact fetching/assembly remains a separate future source of approved images.
-func NewProvisioningPlacements(store *controlplane.Store, hostID, workerID string, lease time.Duration, opts runtime.FirecrackerOptions, keys *keyauthority.Files, authority *restoreauthority.Catalog, config ProvisioningConfig) (*Placements, error) {
+// keys creates volume keys; a key in use is held through authority, under
+// its binding, and destroyed through authority once its store is sealed.
+func NewProvisioningPlacements(store *controlplane.Store, hostID, workerID string, lease time.Duration, opts runtime.FirecrackerOptions, keys keyauthority.Provider, authority restoreauthority.Authority, config ProvisioningConfig) (*Placements, error) {
 	if keys == nil || authority == nil || !config.valid() {
 		return nil, controlplane.ErrInput
-	}
-	if err := keys.SeparateFrom(opts.Root); err != nil {
-		return nil, err
 	}
 	w, err := NewPlacementsWithAuthority(store, hostID, workerID, lease, opts, keys, authority)
 	if err != nil {
@@ -81,13 +80,18 @@ func (w *Placements) provision(ctx context.Context, job controlplane.WorkerJob) 
 		if err = p.keys.Ensure(ctx, e.AgentID, e.VolumeID); err != nil {
 			return err
 		}
-		var volume volumestore.Container
-		err = w.authority.WithBinding(ctx, enrollmentBinding(e), func() error {
-			return p.keys.WithKey(ctx, e.AgentID, e.VolumeID, func(key []byte) error {
-				var err error
-				volume, err = p.volumes.Prepare(ctx, volumestore.Spec{AgentID: e.AgentID, VolumeID: e.VolumeID, SizeMiB: int64(e.Resources.DataVolumeMiB)}, key)
+		// No new volume past the storage pressure threshold (OPS-03): the
+		// job waits until space returns.
+		if pressure := w.pressure.Load(); pressure != nil {
+			if err = pressure.Refuse(pressure.Data); err != nil {
 				return err
-			})
+			}
+		}
+		var volume volumestore.Container
+		err = w.authority.HoldKey(ctx, enrollmentBinding(e), func(ctx context.Context, key []byte) error {
+			var err error
+			volume, err = p.volumes.Prepare(ctx, volumestore.Spec{AgentID: e.AgentID, VolumeID: e.VolumeID, SizeMiB: int64(e.Resources.DataVolumeMiB)}, key)
+			return err
 		})
 		if err != nil {
 			return err
@@ -166,6 +170,6 @@ func (w *Placements) provision(ctx context.Context, job controlplane.WorkerJob) 
 		stopped = true
 		// This transaction checks the CURRENT revocation catalogue. A new
 		// revocation since the scan above retains the job for another pass.
-		return w.authority.WithCurrentFences(ctx, receipt, func() error { return w.store.ActivateProvisionedAgent(ctx, e) })
+		return w.authority.HoldFences(ctx, receipt, func(ctx context.Context) error { return w.store.ActivateProvisionedAgent(ctx, e) })
 	})
 }

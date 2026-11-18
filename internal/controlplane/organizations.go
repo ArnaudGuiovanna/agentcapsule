@@ -8,8 +8,14 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/authoritylog"
 	"github.com/jackc/pgx/v5"
 )
+
+// ErrOrganizationNameTaken refuses a second active organization of the same
+// name, compared without case: creating an organization twice by mistake, with
+// another idempotency key, fails (ADR 001, D-01).
+var ErrOrganizationNameTaken = errors.New("an active organization already has this name")
 
 type Organization struct {
 	ID            string    `json:"id"`
@@ -72,7 +78,11 @@ func (a *Accounts) CreateOrganization(ctx context.Context, p Principal, key stri
 	}
 	r, err := a.withReceipt(ctx, tx, scope(p, "POST", "/v1/organizations", key), in, func() (int, any, error) {
 		o, err := scanOrganization(tx.QueryRow(ctx, `INSERT INTO organizations(id,name) VALUES($1,$2)
+            ON CONFLICT (lower(name)) WHERE status='active' DO NOTHING
             RETURNING id,name,status,policy_version,created_at`, newID("org"), in.Name))
+		if errors.Is(err, ErrNotFound) {
+			return 0, nil, ErrOrganizationNameTaken
+		}
 		if err != nil {
 			return 0, nil, err
 		}
@@ -175,7 +185,15 @@ func (a *Accounts) DisableOrganization(ctx context.Context, p Principal, id, key
 		if err = auditOrganization(ctx, tx, p, id, "organization.disabled", changed); err != nil {
 			return 0, nil, err
 		}
-		return 200, o, nil
+		// The platform's own revocation: its operator reads it.
+		revoked := a.store.revocations(tx, "")
+		if changed {
+			if err = revoked.add(ctx, authoritylog.AccessOrganization, id, [][]string{{id}}); err != nil {
+				return 0, nil, err
+			}
+		}
+		body, err := revoked.body(o)
+		return 200, body, err
 	})
 	if err != nil {
 		return APIReceipt{}, err

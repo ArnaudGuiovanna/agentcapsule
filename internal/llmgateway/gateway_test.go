@@ -12,9 +12,13 @@ import (
 	"time"
 )
 
-func fast(c Config) *Gateway {
+// fast is a gateway without backoff delays that may reach the mock providers
+// tests run on loopback.
+func fast(c Config) *Gateway { return fastWith(c, TestOptions{Loopback: true}) }
+
+func fastWith(c Config, t TestOptions) *Gateway {
 	c.Sleep = func(context.Context, time.Duration) error { return nil }
-	return New(c)
+	return NewForTests(c, t)
 }
 
 var ask = Request{Messages: []Message{{Role: "system", Content: "be brief"}, {Role: "user", Content: "hi"}}, MaxTokens: 50}
@@ -153,5 +157,41 @@ func TestInvalidInputIsRejectedBeforeAnyCall(t *testing.T) {
 	}
 	if _, err := g.Complete(t.Context(), Route{Kind: "anthropic", BaseURL: "http://x", UpstreamModel: "m", Secret: "s"}, Request{Messages: []Message{{Role: "system", Content: "only"}}}); !errors.Is(err, ErrInvalid) {
 		t.Fatal("system-only anthropic request accepted", err)
+	}
+}
+
+// Production refuses a provider on plain HTTP before anything is sent: the
+// provider's key never crosses a clear-text hop. HTTPS still works.
+func TestRequireHTTPSRefusesPlainHTTPBeforeSending(t *testing.T) {
+	var calls atomic.Int32
+	reply := func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}
+	plain := httptest.NewServer(http.HandlerFunc(reply))
+	defer plain.Close()
+	g := fast(Config{RequireHTTPS: true})
+	route := Route{Kind: "openai_compatible", BaseURL: plain.URL, UpstreamModel: "m1", Secret: "sk-secret", Key: "t/p"}
+	if _, err := g.Complete(t.Context(), route, ask); !errors.Is(err, ErrRejected) {
+		t.Fatal("plain HTTP accepted:", err)
+	}
+	if _, err := g.Forward(t.Context(), route, DialectOpenAI, []byte(`{"model":"x","messages":[{"role":"user","content":"hi"}],"max_tokens":5}`)); !errors.Is(err, ErrRejected) {
+		t.Fatal("plain HTTP forwarded:", err)
+	}
+	if calls.Load() != 0 {
+		t.Fatal("a request reached the plain HTTP provider")
+	}
+	secure := httptest.NewTLSServer(http.HandlerFunc(reply))
+	defer secure.Close()
+	g = fastWith(Config{RequireHTTPS: true}, TestOptions{Loopback: true, RootCAs: trust(secure)})
+	route.BaseURL = secure.URL
+	if out, err := g.Complete(t.Context(), route, ask); err != nil || out.Text != "hello" {
+		t.Fatal("HTTPS refused:", err)
+	}
+	// Without the rule (development, tests), plain HTTP to an allowed local
+	// server works.
+	route.BaseURL = plain.URL
+	if out, err := fast(Config{}).Complete(t.Context(), route, ask); err != nil || out.Text != "hello" {
+		t.Fatal(err)
 	}
 }

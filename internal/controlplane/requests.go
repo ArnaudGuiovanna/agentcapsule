@@ -116,8 +116,11 @@ func (s *Store) submitPayload(ctx context.Context, callerAgentID, key string, in
 			return Receipt{}, err
 		}
 	}
-	if _, err = tx.Exec(ctx, "INSERT INTO inbox_items(id,user_id,kind,ref_id) VALUES ($1,$2,$3,$4)", newID("inb"), recipient.Owner, kind, receipt.RequestID); err != nil {
-		return Receipt{}, err
+	// An organization's agent has no owner, so no inbox to write to.
+	if recipient.Owner != "" {
+		if _, err = tx.Exec(ctx, "INSERT INTO inbox_items(id,user_id,kind,ref_id) VALUES ($1,$2,$3,$4)", newID("inb"), recipient.Owner, kind, receipt.RequestID); err != nil {
+			return Receipt{}, err
+		}
 	}
 	return receipt, commit(ctx, tx)
 }

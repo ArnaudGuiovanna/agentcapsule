@@ -165,6 +165,8 @@ func dump(t *testing.T, db *sql.DB) []string {
 		"SELECT id||'|'||store||'|'||hex(digest) FROM outcomes ORDER BY id",
 		"SELECT outcome||'|'||store||'|'||incarnation FROM losses ORDER BY outcome,incarnation",
 		"SELECT outcome||'|'||incarnation||'|'||hex(digest) FROM reruns ORDER BY outcome,incarnation",
+		"SELECT id||'|'||kind||'|'||organization||'|'||objects||'|'||recorded_at||'|'||epoch||'|'||seq FROM access_revocations ORDER BY id",
+		"SELECT outcome||'|'||event FROM outcome_events ORDER BY outcome",
 	} {
 		rows, err := db.Query(query)
 		if err != nil {
@@ -241,7 +243,10 @@ func everyWrite(t *testing.T, keys *keyauthority.Files, c *Catalog) Binding {
 	if err = c.RecordVerifiedFence(ctx, r); err != nil {
 		t.Fatal(err)
 	}
-	if err = c.RecordOutcome(ctx, b, Outcome{ID: "event-1", Digest: sha256.Sum256([]byte("one"))}); err != nil {
+	if err = c.RecordOutcome(ctx, b, Outcome{ID: "event-1", Digest: sha256.Sum256([]byte("one")), Event: "mbx-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = c.AppendAccess(ctx, AccessRecord{ID: "arv_" + strings.Repeat("1", 32), Kind: authoritylog.AccessMember, Organization: "org_1", Objects: [][]string{{"prn_1"}}}); err != nil {
 		t.Fatal(err)
 	}
 	next, err := c.ReserveIncarnation(ctx, b, "restore-1")
@@ -261,17 +266,18 @@ func everyWrite(t *testing.T, keys *keyauthority.Files, c *Catalog) Binding {
 	if err = c.RecordOutcome(ctx, next, Outcome{ID: "event-1", Digest: sha256.Sum256([]byte("rerun"))}); err != nil {
 		t.Fatal(err)
 	}
+	// A deleted agent: its store sealed, then its key destroyed.
 	other := "vol_" + strings.Repeat("c", 32)
+	if _, err = c.Register(ctx, streamAgent, other); err != nil {
+		t.Fatal(err)
+	}
 	if err = keys.Ensure(ctx, streamAgent, other); err != nil {
 		t.Fatal(err)
 	}
+	if err = c.RecordRetiredSeal(ctx, Binding{Store: streamAgent, Volume: other, Incarnation: 1}); err != nil {
+		t.Fatal(err)
+	}
 	if err = keys.Revoke(ctx, streamAgent, other); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = c.Register(ctx, "store-z", "volume-z"); err != nil {
-		t.Fatal(err)
-	}
-	if err = c.RecordRetiredSeal(ctx, Binding{Store: "store-z", Volume: "volume-z", Incarnation: 1}); err != nil {
 		t.Fatal(err)
 	}
 	return next
@@ -373,7 +379,15 @@ func TestWrappedKeysLeaveNoCopyBehind(t *testing.T) {
 	if contains(t, filepath.Join(p.dir, "restore", "catalog.sqlite"), wrapped) {
 		t.Fatal("the primary's log kept the wrapped key")
 	}
-	// Destroying the key removes the replica's copy in the same write.
+	// Destroying the key, once its store is sealed, removes the replica's
+	// copy in the same write.
+	gone := Binding{Store: streamAgent, Volume: streamVolume, Incarnation: 1}
+	if _, err = p.catalog.Register(t.Context(), gone.Store, gone.Volume); err != nil {
+		t.Fatal(err)
+	}
+	if err = p.catalog.RecordRetiredSeal(t.Context(), gone); err != nil {
+		t.Fatal(err)
+	}
 	if err = p.keys.Revoke(t.Context(), streamAgent, streamVolume); err != nil {
 		t.Fatal(err)
 	}
@@ -561,6 +575,15 @@ func TestReplicaCreatedFromASnapshotCatchesUp(t *testing.T) {
 	if err = keys.Ensure(t.Context(), streamAgent, streamVolume); err != nil {
 		t.Fatal(err)
 	}
+	// A store sealed before the snapshot: the replica receives the seal with
+	// it, and its key's destruction runs once armed.
+	gone := Binding{Store: streamAgent, Volume: streamVolume, Incarnation: 1}
+	if _, err = c.Register(t.Context(), gone.Store, gone.Volume); err != nil {
+		t.Fatal(err)
+	}
+	if err = c.RecordRetiredSeal(t.Context(), gone); err != nil {
+		t.Fatal(err)
+	}
 	unlock, recipient := newUnlockKey(t)
 	snapshot := filepath.Join(dir, "snapshot.sqlite")
 	if _, err = c.Snapshot(t.Context(), keys, recipient, snapshot); err != nil {
@@ -620,7 +643,7 @@ func TestReplicaCreatedFromASnapshotCatchesUp(t *testing.T) {
 func TestSnapshotNeedsVersionThreeBeforeArming(t *testing.T) {
 	dir := t.TempDir()
 	keys, c := primary(t, dir)
-	if _, err := c.db.Exec("DROP TABLE replication_log; DROP TABLE replication; PRAGMA user_version=2"); err != nil {
+	if _, err := c.db.Exec("DROP TABLE outcome_events; DROP TABLE access_revocations; DROP TABLE replication_log; DROP TABLE replication; PRAGMA user_version=2"); err != nil {
 		t.Fatal(err)
 	}
 	_, recipient := newUnlockKey(t)

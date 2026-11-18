@@ -2,7 +2,7 @@
   "profile": "agentcapsule-int-1",
   "researched_at": "2026-11-09",
   "status": "qualified_single_host",
-  "go": "go1.27.3",
+  "go": "go1.27.4",
   "target": "linux/amd64/gnu",
   "a2a": {
     "specification_release": "v1.0.1",

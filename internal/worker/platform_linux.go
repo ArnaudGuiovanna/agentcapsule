@@ -14,15 +14,26 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/runtime"
 )
 
+// applicationHost is what the platform channel needs of the host driver
+// (runtime.FirecrackerHost): its shared admission, and the control session of
+// the agent's current boot, whose identity the caller must have.
+type applicationHost interface {
+	WithApplication(context.Context, func(context.Context) error) error
+	Control(context.Context, string) (*capsuleprotocol.Client, error)
+}
+
 type platformAPI struct {
 	store       *controlplane.Store
-	host        *runtime.FirecrackerHost
+	host        applicationHost
 	caller      controlplane.VMCaller
 	transit     func() *controlplane.Transit
 	llm         func() *controlplane.LLMService
 	directory   func() *directory.Client
-	authority   *restoreauthority.Catalog
+	authority   restoreauthority.Authority
 	incarnation uint64
+	// traces records each call's span (OPR-3); nil or returning nil
+	// without traces.
+	traces func() *workerTracing
 }
 
 // withApplication checks the current boot's negotiated contract under host
@@ -57,7 +68,7 @@ func (a platformAPI) withIdentity(ctx context.Context, fn func(context.Context) 
 	if e.Incarnation != a.incarnation {
 		return restoreauthority.ErrStale
 	}
-	return a.authority.WithBinding(ctx, enrollmentBinding(e), func() error { return fn(ctx) })
+	return a.authority.HoldBinding(ctx, enrollmentBinding(e), fn)
 }
 
 func platformError(err error) error {
@@ -83,7 +94,9 @@ func platformError(err error) error {
 		code = "transition"
 	case errors.Is(err, controlplane.ErrCommitUnknown):
 		code = "commit_unknown"
-	case errors.Is(err, controlplane.ErrForbidden):
+	case errors.Is(err, controlplane.ErrForbidden), errors.Is(err, controlplane.ErrLLMAliasDenied):
+		// An alias the organization did not grant to this agent (ADR 011):
+		// the guest's existing code, so that no guest change is needed.
 		code = "unauthorized"
 	case errors.Is(err, controlplane.ErrBudgetExceeded):
 		code = "quota_exceeded"
@@ -106,9 +119,13 @@ func receipt(r controlplane.Receipt) capsuleprotocol.PlatformReceipt {
 	return capsuleprotocol.PlatformReceipt{RequestID: r.RequestID, State: string(r.State), Replayed: r.Replayed}
 }
 func (a platformAPI) Validate(ctx context.Context) error {
-	return platformError(a.withApplication(ctx, func(ctx context.Context) error { return a.store.ValidateVMCaller(ctx, a.caller) }))
+	ctx, end := a.trace(ctx, "validate", "", "")
+	err := a.withApplication(ctx, func(ctx context.Context) error { return a.store.ValidateVMCaller(ctx, a.caller) })
+	end(err)
+	return platformError(err)
 }
 func (a platformAPI) Submit(ctx context.Context, key string, input capsuleprotocol.Submission) (capsuleprotocol.PlatformReceipt, error) {
+	ctx, end := a.trace(ctx, "submit", "mandate", input.MandateID)
 	var r controlplane.Receipt
 	err := a.withApplication(ctx, func(ctx context.Context) error {
 		var err error
@@ -127,9 +144,11 @@ func (a platformAPI) Submit(ctx context.Context, key string, input capsuleprotoc
 		r, err = a.store.SubmitFromVM(ctx, a.caller, key, controlplane.Submission{RecipientAgentID: input.RecipientAgentID, MandateID: input.MandateID, PayloadRef: input.PayloadRef, PayloadHash: input.PayloadHash, ExpiresAt: input.ExpiresAt})
 		return err
 	})
+	end(err)
 	return receipt(r), platformError(err)
 }
 func (a platformAPI) Reply(ctx context.Context, requestID, key string, input capsuleprotocol.Reply) (capsuleprotocol.PlatformReceipt, error) {
+	ctx, end := a.trace(ctx, "reply", "request", requestID)
 	var r controlplane.Receipt
 	err := a.withApplication(ctx, func(ctx context.Context) error {
 		var err error
@@ -145,19 +164,23 @@ func (a platformAPI) Reply(ctx context.Context, requestID, key string, input cap
 		r, err = a.store.ReplyFromVM(ctx, a.caller, requestID, key, controlplane.Reply{Outcome: input.Outcome, PayloadRef: input.PayloadRef, PayloadHash: input.PayloadHash})
 		return err
 	})
+	end(err)
 	return receipt(r), platformError(err)
 }
 func (a platformAPI) Search(ctx context.Context, candidates []string) ([]string, error) {
+	ctx, end := a.trace(ctx, "search", "", "")
 	var r []string
 	err := a.withApplication(ctx, func(ctx context.Context) error {
 		var err error
 		r, err = a.store.SearchDirectoryFromVM(ctx, a.caller, candidates)
 		return err
 	})
+	end(err)
 	return r, platformError(err)
 }
 
 func (a platformAPI) PostOwner(ctx context.Context, key string, input capsuleprotocol.OwnerPost) (capsuleprotocol.OwnerPostReceipt, error) {
+	ctx, end := a.trace(ctx, "post_owner", "", "")
 	var result capsuleprotocol.OwnerPostReceipt
 	err := a.withApplication(ctx, func(ctx context.Context) error {
 		if a.transit == nil {
@@ -171,6 +194,7 @@ func (a platformAPI) PostOwner(ctx context.Context, key string, input capsulepro
 		result, err = transit.PostOwnerFromVM(ctx, a.caller, key, input)
 		return err
 	})
+	end(err)
 	return result, platformError(err)
 }
 
@@ -178,6 +202,7 @@ func (a platformAPI) PostOwner(ctx context.Context, key string, input capsulepro
 // the capsule is running. Like the other effects it is decided under host
 // admission and only touches PostgreSQL.
 func (a platformAPI) ReadAttachment(ctx context.Context, id string, index int) (capsuleprotocol.AttachmentSegment, error) {
+	ctx, end := a.trace(ctx, "read_attachment", "", "")
 	var seg capsuleprotocol.AttachmentSegment
 	err := a.withApplication(ctx, func(ctx context.Context) error {
 		if a.transit == nil {
@@ -191,6 +216,7 @@ func (a platformAPI) ReadAttachment(ctx context.Context, id string, index int) (
 		seg, err = transit.ReadAttachmentFromVM(ctx, a.caller, id, index)
 		return err
 	})
+	end(err)
 	return seg, platformError(err)
 }
 
@@ -198,6 +224,7 @@ func (a platformAPI) ReadAttachment(ctx context.Context, id string, index int) (
 // acknowledged "working". It runs under the shared admission like any other
 // guest effect, after the exclusive delivery turn has ended.
 func (a platformAPI) CompleteInvocation(ctx context.Context, key string, in capsuleprotocol.InvocationCompletion) (capsuleprotocol.CompletionReceipt, error) {
+	ctx, end := a.trace(ctx, "complete_invocation", "invocation", in.OperationID)
 	var out capsuleprotocol.CompletionReceipt
 	err := a.withApplication(ctx, func(ctx context.Context) error {
 		if a.transit == nil {
@@ -211,13 +238,16 @@ func (a platformAPI) CompleteInvocation(ctx context.Context, key string, in caps
 		out, err = transit.CompleteInvocationFromVM(ctx, a.caller, key, in)
 		return err
 	})
+	end(err)
 	return out, platformError(err)
 }
 
 // CompleteLLM serves a model call from the running capsule. Placement and
 // reservation happen under host admission; the provider call itself does not, so
 // a slow model never delays a wake, sleep or delete.
-func (a platformAPI) CompleteLLM(ctx context.Context, key string, in capsuleprotocol.LLMRequest) (capsuleprotocol.LLMResult, error) {
+func (a platformAPI) CompleteLLM(ctx context.Context, key string, in capsuleprotocol.LLMRequest) (_ capsuleprotocol.LLMResult, err error) {
+	ctx, end := a.trace(ctx, "llm_complete", "", "")
+	defer func() { end(err) }()
 	if a.llm == nil {
 		return capsuleprotocol.LLMResult{}, platformError(controlplane.ErrUnavailable)
 	}
@@ -239,7 +269,9 @@ func (a platformAPI) CompleteLLM(ctx context.Context, key string, in capsuleprot
 
 // ForwardLLM serves an agent's native model request from the model endpoint
 // inside its VM, with the same admission rules as CompleteLLM.
-func (a platformAPI) ForwardLLM(ctx context.Context, key string, in capsuleprotocol.LLMForward) (capsuleprotocol.LLMForwardResult, error) {
+func (a platformAPI) ForwardLLM(ctx context.Context, key string, in capsuleprotocol.LLMForward) (_ capsuleprotocol.LLMForwardResult, err error) {
+	ctx, end := a.trace(ctx, "llm_forward", "", "")
+	defer func() { end(err) }()
 	if a.llm == nil {
 		return capsuleprotocol.LLMForwardResult{}, platformError(controlplane.ErrUnavailable)
 	}
@@ -262,29 +294,54 @@ func (w *Placements) Close() { w.host.Close() }
 // DescribeAgent and RequestStatus are the reads behind the guest's A2A
 // endpoint (INT-03); PostgreSQL answers both, after the placement check.
 func (a platformAPI) DescribeAgent(ctx context.Context, agentID string) (capsuleprotocol.DirectoryAgent, error) {
+	ctx, end := a.trace(ctx, "describe_agent", "", "")
 	var d controlplane.DirectoryAgent
 	err := a.withApplication(ctx, func(ctx context.Context) error {
 		var err error
 		d, err = a.store.DescribeAgentFromVM(ctx, a.caller, agentID)
 		return err
 	})
+	end(err)
 	if err != nil {
 		return capsuleprotocol.DirectoryAgent{}, platformError(err)
 	}
 	return capsuleprotocol.DirectoryAgent{AgentID: d.AgentID, Description: d.Description, Skills: d.Skills, Domains: d.Domains}, nil
 }
 
+// RequestStatus carries a replied request's reply when the worker holds the
+// transit: the sender's agent catches up on a reply whose event never came,
+// even after its delivery died (ADR 007).
 func (a platformAPI) RequestStatus(ctx context.Context, requestID string) (capsuleprotocol.RequestStatus, error) {
+	ctx, end := a.trace(ctx, "request_status", "request", requestID)
 	var r controlplane.RequestState
 	err := a.withApplication(ctx, func(ctx context.Context) error {
 		var err error
-		r, err = a.store.RequestStateFromVM(ctx, a.caller, requestID)
+		if t := a.transit(); t != nil {
+			r, err = t.RequestStateFromVM(ctx, a.caller, requestID)
+		} else {
+			r, err = a.store.RequestStateFromVM(ctx, a.caller, requestID)
+		}
 		return err
 	})
+	end(err)
 	if err != nil {
 		return capsuleprotocol.RequestStatus{}, platformError(err)
 	}
-	return capsuleprotocol.RequestStatus{RequestID: r.RequestID, RecipientAgentID: r.RecipientAgentID, State: r.State, ExpiresAt: r.ExpiresAt}, nil
+	return capsuleprotocol.RequestStatus{RequestID: r.RequestID, RecipientAgentID: r.RecipientAgentID, State: r.State, ExpiresAt: r.ExpiresAt,
+		Reply: r.Reply, Reason: r.Reason}, nil
 }
 
 var _ capsuleprotocol.PeerAPI = platformAPI{}
+
+// RequireCapability refuses a call whose capability the agent's harness did
+// not request or a policy denies (ADR 016). It is read from PostgreSQL at
+// each call, before the call's own placement and authority checks.
+func (a platformAPI) RequireCapability(ctx context.Context, name string) error {
+	err := a.store.RequireCapabilityFromVM(ctx, a.caller, name)
+	if errors.Is(err, controlplane.ErrCapability) {
+		return &capsuleprotocol.PlatformError{Code: "capability_denied"}
+	}
+	return platformError(err)
+}
+
+var _ capsuleprotocol.CapabilityAPI = platformAPI{}

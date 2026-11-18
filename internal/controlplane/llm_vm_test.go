@@ -32,7 +32,7 @@ func TestModelCallFromAVMIsBoundToItsTenantAndPlacement(t *testing.T) {
 	if _, err := l.s.pool.Exec(t.Context(), `UPDATE llm_providers SET base_url=$1`, srv.URL); err != nil {
 		t.Fatal(err)
 	}
-	svc, err := NewLLMService(l.a, llmgateway.New(llmgateway.Config{Timeout: time.Second, MaxAttempts: 1}))
+	svc, err := NewLLMService(l.a, llmgateway.NewForTests(llmgateway.Config{Timeout: time.Second, MaxAttempts: 1}, llmgateway.TestOptions{Loopback: true}))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -8,7 +8,9 @@ see the [roadmap](../../ROADMAP.md) for what remains.
 
 An agent belongs to **exactly one** domain (constraint `agents_one_domain`):
 
-- **legacy**: `owner_user_id`, one agent per owner, `acp_` tokens;
+- **legacy**: `owner_user_id`, one agent per owner, `acp_` tokens. This domain
+  is closed: `agentcapsule-api` refuses its tokens, and no command creates
+  them ([ADR 001](../adr/001-organization-identity.md#tenant-transition-and-operator-bootstrap-d-01));
 - **tenant**: `tenant_id`, any number of agents, delegated JWT.
 
 The legacy paths (`/v1/agents` with an `acp_` token, wake, sleep, deletion,
@@ -21,7 +23,7 @@ deletes a tenant agent. A tenant principal never reaches the legacy lists.
 |---|---|---|
 | `POST /v1/agents` | `agent:create` | `org_owner`, `org_admin`, `agent_operator` |
 | `GET /v1/agents`, `GET /v1/agents/{id}` | `agent:read` | see below |
-| `GET /v1/operations/{id}` | `agent:read` | requester of the operation, or a role that can read metadata |
+| `GET /v1/operations/{id}` | `agent:read` | requester of the operation while it still sees the agent, or a role that can read metadata |
 | `POST /v1/agents/{id}/wake`, `POST /v1/agents/{id}/sleep` | `agent:operate` | `org_owner`, `org_admin`, `agent_operator` |
 | `DELETE /v1/agents/{id}` | `agent:delete` | `org_owner`, `org_admin` |
 | `POST /v1/agents/{id}/messages` | `agent:invoke` | none: `invoke` permission of an assignment |
@@ -30,14 +32,38 @@ deletes a tenant agent. A tenant principal never reaches the legacy lists.
 | `GET /v1/agents/{id}/assignments` | `agent:assign` | `org_owner`, `org_admin` |
 | `POST /v1/agents/{id}/assignments/{assignment_id}/revoke` | `agent:assign` | `org_owner`, `org_admin` |
 | `POST /v1/agents/{id}/assignments/{assignment_id}/replace` | `agent:assign` | `org_owner`, `org_admin` |
+| `POST /v1/agents/{id}/assignments/{assignment_id}/reassign` | `agent:assign` | `org_owner`, `org_admin` |
 | `PUT /v1/agents/{id}/directory` | `agent:manage` | `org_owner`, `org_admin`, `agent_operator` |
 | `GET /v1/agents/{id}/directory` | `agent:read` | a role that can read metadata, or a `read_metadata` assignment |
 | `PUT /v1/agents/{id}/inbound` | `agent:manage` | `org_owner`, `org_admin`, `agent_operator` |
 | `GET /v1/agents/{id}/inbound` | `agent:read` | a role that can read metadata, or a `read_metadata` assignment |
+| `GET /v1/agents/{id}/capabilities` | `agent:read` | a role that can read metadata, or a `read_metadata` assignment |
+| `PUT /v1/agents/{id}/capabilities` | `agent:manage` | `org_owner`, `org_admin`, `agent_operator` |
+| `GET /v1/organizations/current/capabilities` | `org:read` | `org_owner`, `org_admin`, `auditor` |
+| `PUT /v1/organizations/current/capabilities` | `quota:manage` | `org_owner`, `org_admin` |
+| `GET /v1/organizations/current/quotas` | `usage:read` | `org_owner`, `org_admin`, `auditor` |
+| `POST /v1/attachments/{id}/link`, `POST /v1/invocations/{id}/result/link` | `agent:content:read` | none: the content's own reader with `read_content` |
+| `GET /v1/downloads/{token}` | none | the link itself; see "Temporary download links" |
+
+The matrix of every route against every role and kind of caller, checked by
+a test, is in [rbac.md](rbac.md).
 
 Creation reuses the worker's existing provisioning (reservation, volume,
 activation, automatic wake). The operations of a tenant agent have no owner
 user: they record `requested_by_principal_id`.
+
+**Quotas** ([ADR 021](../adr/021-organization-quotas.md)). The platform
+operator may bound the organization's agents, their volume storage, their
+VMs running at once and the vCPUs and RAM those VMs reserve
+([organizations.md](organizations.md#quotas)); `GET
+/v1/organizations/current/quotas` gives the limits and the usage. A creation
+past the agents or storage quota, or of an agent that alone needs more vCPUs
+or RAM than the organization may run, answers **409
+`organization_quota_exceeded`** with `quota` (`max_agents`,
+`max_storage_mib`, `max_vcpus`, `max_memory_mib`), before anything is
+reserved; the refused attempt joins the organization's trail. An agent being
+deleted counts until its deletion ends. Past the host's own storage, a
+creation answers 503 `storage_capacity_unavailable`.
 
 ## Visibility
 
@@ -66,7 +92,8 @@ Mutation, audit (`tenant_agent_audit`) and receipt are atomic.
 - Covered: creation, metadata reading, wake, sleep, deletion, assignment
   management, invocation and reading the result.
 - Widening a target's rights requires revoking its assignment and creating a new
-  one; see "Atomic replacement" below for the single-transaction alternative.
+  one; see "Atomic replacement" below for the single-transaction alternative,
+  and "Reassignment" to move an assignment to another target.
 - Messaging settings, the inbox and instructions of the legacy domain remain
   separate and do not concern tenant agents. Requests between the agents of one
   organization follow the organization's inbound policy (below).
@@ -82,7 +109,9 @@ The encrypted (transit) content is bound to the **requesting principal**, not to
 the agent's administrator. Its result is readable only by that principal, and
 only while they still hold `read_content` on the agent: neither an
 administrator, nor another member, nor a new assignee opens it (D-02), and
-revoking the assignment or the member closes it again. Work accepted before a
+revoking the assignment or the member closes it again. The requester sees the
+metadata of its invocations, operations and files only while it still sees the
+agent through an assignment. Work accepted before a
 revocation may complete for the organization without making its result readable
 to the former member.
 
@@ -96,9 +125,58 @@ being worked on and the recipient's inbound policy.
 the active assignment then creates its replacement for the same target (person
 or team). There is no instant without rights and no double set of active rights.
 An already revoked assignment answers 409; the target must remain active. The
-audit records `assignment.revoked` then `assignment.created`. As with any
+audit records `assignment.revoked` then `assignment.created`. The revoked
+assignment is recorded with the authority service before the commit, as for
+`revoke` and `reassign`: the answer's `revocations` says `pending` or
+`confirmed`, and a 503 `authority_unavailable` means that nothing changed
+([README](README.md#revocations-pending-and-confirmed)). As with any
 authority decision, content already produced is not transferred: only the
 original requester re-reads it, while they hold `read_content`.
+
+## Reassignment
+
+`reassign` moves an active assignment to another target. The body names
+exactly one target, `{"principal_id": "prn_..."}` or `{"team_id": "team_..."}`,
+and may give `"permissions"`; without them the new target receives the moved
+assignment's permissions. In one transaction the assignment is revoked and the
+new one created; the answer is the new assignment (201). The audit records
+`assignment.revoked` then `assignment.created`.
+
+| Case | Answer |
+|---|---|
+| Assignment already revoked | 409 |
+| Same target as now (use `replace` to change its permissions) | 409 |
+| The target already holds an active assignment on the agent | 409 |
+| Target unknown, revoked or disabled, or of another organization | 404; nothing changes |
+| Agent being deleted | 409 |
+
+What happens to work and results ([ADR 002](../adr/002-assignment-revocation.md#reading-and-reassignment)):
+
+- **Admitted work is not canceled.** An invocation the old target had admitted
+  before the reassignment committed is delivered and completes for the
+  organization. Its operation keeps the old target as requester. This
+  includes a scheduled invocation (`run_at`) not yet due: it runs when due.
+  The rerun of an invocation lost in a restore does not run, as for any
+  requester that can no longer invoke (`requester_revoked`).
+- **Results stay with their requester.** The old target loses its view of the
+  agent: it no longer invokes, replays an old idempotency key, reads its
+  results or sees its invocations, operations and files. The new target reads
+  only the results of what it asks itself. Administrators keep the redacted
+  metadata, never the content. Reassigning back to the old target makes its
+  own retained results readable again.
+- **The harness's memory is not separated.** The agent's volume may keep what
+  the old target said, and a harness may reuse it in an answer to the new
+  target. When that must not happen, give the new target a new agent.
+
+**Races.** The reassignment takes the organization's row exclusively, like
+every change of authority. An admission, a replay or a result read holds that
+row shared from its authorization to its commit. So each one happens wholly
+before or wholly after the reassignment: an admission authorized first keeps
+its job and the reassignment waits for its commit; one that arrived earlier
+but is authorized after the reassignment is judged against the new target.
+A target revoked just before the reassignment makes it fail with 404, and the
+old assignment stays. These orders are tested against PostgreSQL
+(`internal/controlplane/assignment_reassignment_test.go`).
 
 ## Structured invocations
 
@@ -109,7 +187,7 @@ an `Invocation` resource that is then tracked:
 | Route | Scope | Who |
 |---|---|---|
 | `POST /v1/agents/{id}/invocations` | `agent:invoke` | `invoke` assignment |
-| `GET /v1/agents/{id}/invocations` | `agent:read` | the requester (their own); a role reading metadata (all) |
+| `GET /v1/agents/{id}/invocations` | `agent:read` | the requester (their own) while it still sees the agent; a role reading metadata (all) |
 | `GET /v1/invocations/{id}` | `agent:read` | same |
 | `GET /v1/invocations/{id}/result` | `agent:content:read` | requester AND current `read_content` |
 
@@ -125,6 +203,35 @@ Idempotency of `/invocations` is distinct from that of `/messages`: the same key
 on the two routes never replays the response of the other form. Same key and
 same content replays the initial response; same key and different content
 answers 409.
+
+### Text and JSON content (EXT-001)
+
+A message's `content` holds 1 to 32 parts. A part is text, content type
+`text/plain`, or a JSON value, content type `application/json`
+([ADR 016](../adr/016-content-links-capabilities.md)):
+
+```json
+{"content":[{"type":"text","text":"Total these rows."},
+            {"type":"json","json":{"rows":[{"id":1,"amount":12.5}]}}]}
+```
+
+- **Bounds.** The text of the text parts and the compact form of the JSON
+  values add up to at most 32 KiB; the request body to at most 64 KiB. A JSON
+  value is any value but `null`, nested at most 32 levels, in UTF-8. The API
+  refuses anything else with 400 before storing it. The same value with other
+  spacing is the same request for idempotency.
+- **Transit.** The content is encrypted as before; JSON changes nothing there.
+- **Results.** An agent answers with the same parts: the result read by
+  `GET /v1/invocations/{id}/result` is `{"content":[...]}` for the reference
+  harnesses and SDKs. A harness may still answer with another JSON value at
+  delivery, as before.
+- **Harnesses that do not accept JSON.** A harness says at boot whether it
+  accepts JSON parts (control feature `content.json`, see
+  [capsule-control.md](../guest/capsule-control.md)). One that does not, such
+  as a harness built before JSON content, receives each JSON part as a text
+  part holding the compact JSON: `{"type":"text","text":"{\"rows\":[...]}"}`.
+  It never receives a part it would refuse. Requests and replies between
+  agents follow the same rule.
 
 ### Queues, deadlines and dead letters (EVT-02)
 
@@ -143,14 +250,41 @@ answers 409.
   `close_reason` `expired`, `attempts_exhausted` or `closed` (state `expired` for
   the first); `expired` wins if the deadline has also passed. The operation's
   `error_code` stays `delivery_failed` / `delivery_outcome_unknown`: an unknown
-  outcome is never presented as "not processed".
+  outcome is never presented as "not processed". It is `capacity_unavailable`
+  when the deadline passed, unsent, while the agent waited for a VM slot.
   `GET .../invocations?state=failed|expired` lists them.
+- **Replay** ([ADR 017](../adr/017-capacity-queue-and-dead-letter-replay.md)):
+  `POST /v1/invocations/{id}/replay` (`quota:manage`: owners and
+  administrators) puts a dead letter back in its agent's queue, with an
+  idempotency key and `{}` or `{"ttl_seconds": n}`. It keeps its identifier
+  and its event ID, so the agent can deduplicate it, gets a new attempt budget
+  and goes to the end of the agent's queue. It keeps its deadline, which must
+  not have passed (409 `expired`), unless `ttl_seconds` (1 to 86 400) gives a
+  new window from now. It counts in the queue limits (429 `queue_full`). The
+  administrator reads neither content nor result: they stay the requester's,
+  who must still hold `invoke` (409 `requester_revoked`). Also 409:
+  `outcome_unknown` (an attempt may have reached the agent, whose store fenced
+  the event), `input_purged`, `attachments_purged`, `agent_unavailable`,
+  `invalid_transition` (not a dead letter). The invocation is `accepted` again
+  and carries `replayed_at`, which stays once it ends. Each replay is
+  audited (`instruction_replays`), and shows in the organization's trail as
+  `invocation.replayed`; the audit retention deletes that record,
+  and `replayed_at` with it. The operator has the same replay
+  (`agentcapsule-admin replay-dead-letter`, [worker.md](../worker.md#replaying-a-dead-letter)).
+- **Capacity**: accepted work never fails for a full host. It waits, spending
+  no attempt, and its agent shows `QUEUED`; it boots in arrival order across
+  every organization of the host, or dies at its deadline
+  (`capacity_unavailable`). See [worker.md](../worker.md). Work past the
+  organization's quotas on active VMs, vCPUs or RAM waits the same way, with
+  `queue_reason` `organization_quota`, without holding back other
+  organizations ([ADR 021](../adr/021-organization-quotas.md)).
 - **No priority**: ordering within an agent stays FIFO. The verified delivery
-  model has none and D-04 forbids adding one without revisiting it. Bounded
+  model has none; priority is P1
+  ([ADR 007](../adr/007-delivery-closure-and-priority.md)). Bounded
   retries, delay between attempts and fence closure were already in place
   (`attempt_limit`, `RetryBase`, `RetryMax`, `RetireInstruction`).
 
-Limits: content remains text (the guest protocol has no JSON type); there is no
+Limits: there is no
 `/events` stream yet, no expiry signaled in the state, and no wake of a stopped
 recipient driven by this resource (EVT-02/CAP-02).
 
@@ -178,8 +312,22 @@ the same identifier:
   state becomes `canceled`, with `lost_at`.
 
 The rerun keeps the invocation's mandate and its remaining budget: with its
-first run, it makes no more agent requests than the requester allowed. These
-rules are defaults that the product owner has not confirmed yet.
+first run, it makes no more agent requests than the requester allowed. The
+product owner confirmed these rules on November 16, 2026
+([ADR 003](../adr/003-restore-rpo.md#defaults-confirmed-by-the-product-owner)).
+An agent whose job acts outside it should pass the invocation's identifier
+to the outside service as an idempotency key
+([adapter.md](../adapter.md#guarantees-and-limits)).
+
+Requests between agents follow
+[ADR 008](../adr/008-redelivering-lost-agent-requests.md)
+([recovery.md](../recovery.md#the-lost-agent-to-agent-events)). Only the
+restored agent gets its lost event again, under the same identifier. A request
+its recipient lost while working on it is `DELIVERING` again until the
+recipient has it again; a request in a final state never changes. A reply or
+a status the sender lost reaches it again. A request the recipient will not
+get again (its requester revoked, its content purged) fails at once, and its
+sender gets the `FAILED` status.
 
 ## Desired and observed state, lifecycle audit (CAP-02)
 
@@ -191,6 +339,33 @@ was canceled, otherwise `auto_start`, and `deleted` as soon as a deletion is
 requested. An agent created cold is therefore `stopped`/`STOPPED` and converged,
 with no VM. `converged: false` after an accepted wake means "requested, not yet
 observed"; this field **reports**, it does not restart a stopped agent.
+
+A stopped agent whose work waits for a VM slot on its full host is `QUEUED`
+(RUN-011, [ADR 017](../adr/017-capacity-queue-and-dead-letter-replay.md)),
+with `queue_reason` `capacity`; one whose work waits for room under its
+organization's quotas is `QUEUED` with `queue_reason` `organization_quota`
+([ADR 021](../adr/021-organization-quotas.md)). A wake past those quotas is
+accepted and waits; it is not refused.
+A guest whose harness exits or dies, for example killed by the guest's
+kernel for taking all its memory, ends its VM: before the agent is ready,
+the boot failed; after, the guest crashed, and the agent reads `STOPPED`
+once the worker has seen it, until its next work boots it again.
+An agent whose guest failed to boot, crashed, or did not answer, 5 times
+within an hour is `FAILED`, with `failure_reason` `boot_failed`, `crashed`
+or `unresponsive`, the kind of its last failure
+([ADR 012](../adr/012-limits-restart-budgets-egress.md)). It is
+not booted again: its open wake ends `FAILED` with the error
+`restart_budget_exhausted`, and invocations and requests to it wait until a
+wake or their deadline. A new wake (`POST /v1/agents/{id}/wake`) gives it a
+new budget and boots it; so does the operator's
+`agentcapsule-admin clear-agent-failure -agent-id <id>`.
+A guest does not answer when its harness never returns from a delivery and
+holds its store. Once the delivery's three attempts are spent, or its
+deadline passed, the platform stops the agent's VM and counts the failure;
+the invocation fails with `delivery_outcome_unknown`, and the agent's next
+invocation boots it again. Such an agent can be deleted at any time: the
+deletion stops its VM, counts no failure, and completes; the held
+invocation ends `canceled` (`agent_unavailable`).
 
 Wake, sleep and deletion are audited (`tenant_agent_audit`:
 `agent.wake_requested`, `agent.sleep_requested`, `agent.delete_requested`), in
@@ -231,8 +406,10 @@ the policy answers for the sleeps (audit `agent.idle_sleep_requested`).
 Limits: "critical task not checkpointed" is known to the platform only through
 what it tracks (operations, inboxes, exchanges, model calls); an internal
 harness computation with no platform-side trace is not seen, and it is the stop
-with acknowledged quiesce that protects its data. The tests drive the clock; the
-worker's real loop has not run under KVM.
+with acknowledged quiesce that protects its data. The tests drive the clock,
+also on KVM (`TestProductWorkerWakesQueuesAndKeepsAWorkingAgentAwake`, passed
+on 2026-11-17); the worker's real loop, on its own timer, has not run under
+KVM.
 
 ## Attachments (EVT-04)
 
@@ -255,7 +432,7 @@ most 8).
 | Route | Scope | Condition |
 |---|---|---|
 | `POST /v1/agents/{id}/attachments` | `agent:invoke` | `invoke` assignment (like the invocation) |
-| `GET /v1/attachments/{id}` | `agent:read` | the sender; a role reading metadata |
+| `GET /v1/attachments/{id}` | `agent:read` | the sender while it still sees the agent; a role reading metadata |
 | `DELETE /v1/attachments/{id}` | `agent:invoke` | the sender, file still `pending` |
 
 - **Storage**: at most 8 MiB per file. The body is split into 256 KiB segments,
@@ -287,12 +464,85 @@ most 8).
   version.
 
 Limits: the file passes through the API's memory (8 MiB per simultaneous upload)
-and is stored in PostgreSQL, with no external object storage or temporary link.
+and is stored in PostgreSQL, with no external object storage.
 Media type parameters (`charset`, ...) are not kept. Results remain text: an
 agent cannot return a file yet.
 
 The guest reads its files **after** acknowledging "working" (next section):
 during delivery, its platform calls wait for the host's exclusive turn.
+
+### Temporary download links
+
+A file, or an invocation's result, can be fetched without the bearer token,
+through a link that works for a few minutes
+([ADR 016](../adr/016-content-links-capabilities.md)):
+
+```http
+POST /v1/attachments/{id}/link?ttl_seconds=300
+POST /v1/invocations/{id}/result/link
+→ 201 {"url":"/v1/downloads/dl_...","expires_at":"..."}
+GET /v1/downloads/dl_...      (no Authorization header)
+```
+
+- **Who.** Only who may read the content now: the file's sender, or the
+  invocation's requester, while they hold `read_content` on the agent (scope
+  `agent:content:read`). Anyone else gets 404.
+- **Bound to the caller and one resource.** The link is sealed with a key
+  derived from the installation's receipt key. It carries the credential that
+  minted it, narrowed to `agent:content:read`, and the resource, and shows
+  neither. It opens that one file or result, nothing else.
+- **Checked at each use.** Each download checks the credential, the
+  membership, the assignment and the resource again, exactly as a read with
+  the bearer: a revoked token, member or assignment, or a purged file, closes
+  the link at once. Reading a result through a link starts its retention as
+  the ordinary read does.
+- **Expiry.** 5 minutes by default, 30 seconds to 15 minutes, and never after
+  the minting credential expires. The link can be used several times until
+  then (a default pending the product owner). Minting stores nothing, so it
+  takes no `Idempotency-Key`.
+- **Nothing leaks.** An expired, changed or revoked link is the same 404. The
+  request log and the metrics record the route pattern
+  `/v1/downloads/{token}`, never the link. The answer carries
+  `Content-Disposition: attachment`, `X-Content-SHA256`,
+  `Referrer-Policy: no-referrer` and `Cache-Control: no-store`.
+
+## Capabilities (CAP-01, EXT-003)
+
+What an agent may ask the platform for over its platform channel, beyond
+answering the work delivered to it, is a set of capabilities
+([ADR 016](../adr/016-content-links-capabilities.md)):
+
+| Capability | Platform channel routes |
+|---|---|
+| `llm.invoke` | `/v1/llm/complete`, `/v1/llm/forward` |
+| `agents.delegate` | `/v1/agent-requests`, `/v1/agent-requests/{id}/status` |
+| `agents.discover` | `/v1/directory/find`, `/v1/directory/search`, `/v1/directory/agent` |
+
+Replies to delivered requests, invocation completions, owner messages and the
+invocation's own files need none.
+
+- **Effective set = harness ∩ organization ∩ agent.** The harness requests
+  capabilities in `harness.yaml` (`capabilities:`, see
+  [registry.md](../registry.md)); the importer records them on the release. A
+  manifest without the field predates it and requests every capability (a
+  default pending the product owner). The organization
+  (`PUT /v1/organizations/current/capabilities`) and the agent
+  (`PUT /v1/agents/{id}/capabilities`) each allow a set, `{"allowed":[...]}`;
+  without one, everything.
+- **Catalog.** `GET /v1/agents/{id}/capabilities` shows the pinned release's
+  request (`requested`, `declared`), the organization's and the agent's
+  policies, and the effective set.
+- **Enforcement.** The host's platform channel checks the capability a call
+  needs before the call reaches its effect, at each call: a policy change
+  applies to the agent's next call, without a reboot. A refusal is the typed
+  code `capability_denied` (HTTP 403 on the channel); the reference harness,
+  the Python SDK example and `capsule-adapter` treat it as final.
+- **Release changes.** The catalog and the check read the release the agent
+  is pinned to. A running VM keeps the harness it booted with until it stops,
+  while a release change applies to its capabilities at once.
+- **Audit.** Each policy change bumps the organization's policy version and
+  is audited (`organization.capabilities_changed`,
+  `agent.capabilities_changed`), with who and when, not what is used.
 
 ## Deferred result: the `working` state
 
@@ -435,7 +685,19 @@ channel serve the A2A endpoint of [capsule-adapter](../adapter.md#other-agents-a
   skills come from PostgreSQL, empty for an agent never described.
 - `/v1/agent-requests/{id}/status` returns the state, recipient and deadline
   of a request the caller sent; any other request is `not_found`. The reply
-  itself only arrives as an event.
+  arrives as an event; a `REPLIED` request also carries it here (`reply`)
+  while it is kept, whether its delivery is pending, delivered or dead, so
+  that the sender catches up on a reply whose event never came
+  ([ADR 007](../adr/007-delivery-closure-and-priority.md)). It is read with
+  the checks of the owners' read. A reply no longer kept comes with `reason`:
+  `content_purged` at the end of its retention, `content_revoked` once the
+  deletion of its author has purged it. Offboarding the person it is bound to
+  does not revoke it: the request is work accepted before, which may complete
+  for the organization ([ADR 002](../adr/002-assignment-revocation.md)). The
+  agent keeps reading the reply; the former member reads nothing. After a
+  restore of the recipient, a request it was working on reads `DELIVERING`
+  again until it is delivered again
+  ([ADR 008](../adr/008-redelivering-lost-agent-requests.md)).
 
 Both pass the placement check of every VM call and decide nothing.
 
