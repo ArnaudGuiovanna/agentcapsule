@@ -76,6 +76,8 @@ func run() (result error) {
 	handle := h.Handle
 	if mode.neverFiles {
 		handle = neverFiles(b.Identity.AgentID, handle, func() { burn(ctx, 1) })
+	} else if mode.neverReturns {
+		handle = neverReturns(b.Identity.AgentID, handle, ctx)
 	} else if act := hostile[mode.hostile]; act != nil {
 		handle = afterFirstAnswer(handle, hostileDelay, func() { act(ctx) })
 	}
