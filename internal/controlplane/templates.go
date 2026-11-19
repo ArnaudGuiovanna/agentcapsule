@@ -515,7 +515,7 @@ type AgentPool struct {
 func poolInventory(ctx context.Context, tx pgx.Tx, tenant, id string) (AgentPool, error) {
 	var p AgentPool
 	err := tx.QueryRow(ctx, `SELECT p.id,p.name,p.deployment_id,count(m.agent_id),count(v.agent_id) FILTER(WHERE a.phase='LIVE'),count(v.agent_id) FILTER(WHERE a.phase='PROVISIONING')
- FROM agent_pools p LEFT JOIN agent_pool_members m ON m.pool_id=p.id LEFT JOIN agent_pool_inventory v ON v.agent_id=m.agent_id LEFT JOIN agents a ON a.id=m.agent_id
+ FROM agent_pools p LEFT JOIN agent_pool_members m ON m.pool_id=p.id LEFT JOIN `+assignablePoolInventory+` v ON v.agent_id=m.agent_id LEFT JOIN agents a ON a.id=m.agent_id
  WHERE p.tenant_id=$1 AND p.id=$2 GROUP BY p.id`, tenant, id).Scan(&p.ID, &p.Name, &p.DeploymentID, &p.Total, &p.Available, &p.Preparing)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return p, ErrNotFound
@@ -561,31 +561,49 @@ func (c *AgentCatalog) GetPool(ctx context.Context, p Principal, id string) (Age
 	return poolInventory(ctx, tx, p.TenantID, id)
 }
 
-// reservePoolAgent runs in the activation transaction after the application
-// policy authorized this pool. A rollback releases the quota and the slot.
-func reservePoolAgent(ctx context.Context, tx pgx.Tx, p Principal, poolID string) (string, error) {
+type ExpandPoolInput struct {
+	Count int `json:"count"`
+}
+
+func (c *AgentCatalog) ExpandPool(ctx context.Context, p Principal, id, key string, in ExpandPoolInput) (APIReceipt, error) {
+	return c.templateMutation(ctx, p, key, "pool.expand/"+id, in, func(tx pgx.Tx) (int, any, error) {
+		if _, err := reservePoolAgents(ctx, tx, p, id, in.Count); err != nil {
+			return 0, nil, err
+		}
+		out, err := poolInventory(ctx, tx, p.TenantID, id)
+		if err != nil {
+			return 0, nil, err
+		}
+		return 200, out, auditApplication(ctx, tx, p, id, "pool.expanded")
+	})
+}
+
+func reservePoolAgents(ctx context.Context, tx pgx.Tx, p Principal, poolID string, count int) ([]string, error) {
+	if count < 1 || count > 100000 {
+		return nil, ErrInput
+	}
 	var id string
 	err := tx.QueryRow(ctx, "SELECT deployment_id FROM agent_pools WHERE tenant_id=$1 AND id=$2", p.TenantID, poolID).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", ErrNotFound
+		return nil, ErrNotFound
 	}
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	plan, _, err := pinnedPlan(ctx, tx, p.TenantID, id)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	plan.Count, plan.ActiveCount = 1, 0
+	plan.Count, plan.ActiveCount = count, 0
 	if err = plan.admit(ctx, tx, p.TenantID); err != nil {
-		return "", err
+		return nil, err
 	}
 	ids, err := plan.reserveAgents(ctx, tx, p)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	_, err = tx.Exec(ctx, "INSERT INTO agent_pool_members VALUES($1,$2,$3)", p.TenantID, poolID, ids[0])
-	return ids[0], err
+	_, err = tx.Exec(ctx, "INSERT INTO agent_pool_members(tenant_id,pool_id,agent_id) SELECT $1,$2,unnest($3::text[])", p.TenantID, poolID, ids)
+	return ids, err
 }
 
 func deploymentIDs(kind string, n int) []string {

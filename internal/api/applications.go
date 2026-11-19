@@ -183,3 +183,9 @@ func (s *Server) accessExplanation(w http.ResponseWriter, r *http.Request) {
 	}
 	jsonResponse(w, 200, v)
 }
+
+func (s *Server) expandPool(w http.ResponseWriter, r *http.Request) {
+	appMutation(s, w, r, "POST", func(p controlplane.Principal, key string, in controlplane.ExpandPoolInput) (controlplane.APIReceipt, error) {
+		return s.catalog.ExpandPool(r.Context(), p, r.PathValue("id"), key, in)
+	})
+}

@@ -37,6 +37,11 @@ type MemberEvent struct {
 	Disabled bool   `json:"disabled"`
 }
 type Activation struct {
+	AdmittedWork struct {
+		Pending int `json:"pending"`
+		Running int `json:"running"`
+	} `json:"admitted_work"`
+
 	ID            string `json:"id"`
 	ApplicationID string `json:"application_id"`
 	PolicyID      string `json:"policy_id"`
@@ -135,8 +140,10 @@ func (a *Accounts) Invite(ctx context.Context, p Principal, appID, key string, i
 
 func readActivation(ctx context.Context, tx pgx.Tx, tenant, appID, id string) (Activation, error) {
 	var v Activation
-	err := tx.QueryRow(ctx, `SELECT id,app_id,policy_id,principal_id,coalesce(team_id,''),version,disabled
-      FROM app_activations WHERE tenant_id=$1 AND app_id=$2 AND id=$3`, tenant, appID, id).Scan(&v.ID, &v.ApplicationID, &v.PolicyID, &v.PrincipalID, &v.TeamID, &v.Version, &v.Disabled)
+	err := tx.QueryRow(ctx, `SELECT v.id,v.app_id,v.policy_id,v.principal_id,coalesce(v.team_id,''),v.version,
+        v.disabled OR m.status<>'active' OR p.status<>'active' OR app.status<>'active'
+      FROM app_activations v JOIN memberships m ON m.principal_id=v.principal_id JOIN principals p ON p.id=v.principal_id
+      JOIN principals app ON app.id=v.app_id WHERE v.tenant_id=$1 AND v.app_id=$2 AND v.id=$3`, tenant, appID, id).Scan(&v.ID, &v.ApplicationID, &v.PolicyID, &v.PrincipalID, &v.TeamID, &v.Version, &v.Disabled)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = ErrNotFound
 	}
@@ -291,7 +298,7 @@ func allocateSlots(ctx context.Context, tx pgx.Tx, p Principal, v Activation, po
 		}
 		var agent string
 		// The tenant's exclusive lock serializes allocation and changes of rights.
-		err := tx.QueryRow(ctx, `SELECT agent_id FROM agent_pool_inventory WHERE tenant_id=$1 AND pool_id=$2 ORDER BY agent_id LIMIT 1`, p.TenantID, slot.PoolID).Scan(&agent)
+		err := tx.QueryRow(ctx, `SELECT agent_id FROM `+assignablePoolInventory+` free WHERE tenant_id=$1 AND pool_id=$2 ORDER BY agent_id LIMIT 1`, p.TenantID, slot.PoolID).Scan(&agent)
 		if errors.Is(err, pgx.ErrNoRows) {
 			switch pol.OnExhaustion {
 			case "wait":
@@ -300,7 +307,11 @@ func allocateSlots(ctx context.Context, tx pgx.Tx, p Principal, v Activation, po
 			case "refuse":
 				return ErrPoolExhausted
 			case "create":
-				agent, err = reservePoolAgent(ctx, tx, p, slot.PoolID)
+				ids, reserveErr := reservePoolAgents(ctx, tx, p, slot.PoolID, 1)
+				if reserveErr != nil {
+					return reserveErr
+				}
+				agent, err = ids[0], nil
 			}
 		}
 		if err != nil {
@@ -317,9 +328,19 @@ func allocateSlots(ctx context.Context, tx pgx.Tx, p Principal, v Activation, po
 	return err
 }
 
+// A formerly assigned pool agent can contain private state even after all
+// of its grants were revoked. Keep such a volume out of future allocations.
+const assignablePoolInventory = `(SELECT i.* FROM agent_pool_inventory i WHERE NOT EXISTS (
+  SELECT 1 FROM agent_assignments history WHERE (history.tenant_id,history.agent_id)=(i.tenant_id,i.agent_id)))`
+
 var ErrPoolExhausted = errors.New("personal agent pool exhausted")
 
 func activationState(ctx context.Context, tx pgx.Tx, tenant string, v *Activation, pol AssignmentPolicy) error {
+	if err := tx.QueryRow(ctx, `SELECT count(*) FILTER(WHERE o.status='PENDING'),count(*) FILTER(WHERE o.status='RUNNING')
+      FROM platform_operations o JOIN agents a ON a.id=o.agent_id WHERE a.tenant_id=$1 AND o.requested_by_principal_id=$2 AND o.kind='instruction'
+      AND o.status IN ('PENDING','RUNNING')`, tenant, v.PrincipalID).Scan(&v.AdmittedWork.Pending, &v.AdmittedWork.Running); err != nil {
+		return err
+	}
 	v.State = "ready"
 	v.Agents = map[string]string{}
 	if v.Disabled {
@@ -340,6 +361,14 @@ func activationState(ctx context.Context, tx pgx.Tx, tenant string, v *Activatio
 				return err
 			}
 		} else if slot.TeamID != v.TeamID {
+			continue
+		}
+		perms, err := effectiveAgentPermissions(ctx, tx, tenant, v.PrincipalID, agent)
+		if err != nil {
+			return err
+		}
+		if len(perms) == 0 {
+			v.State, v.Reason, v.RetryAfter = "failed", "assignment_revoked", 0
 			continue
 		}
 		var phase string
@@ -575,4 +604,13 @@ func (a *Accounts) retryOne(ctx context.Context, ids [3]string) error {
 		return err
 	}
 	return commit(ctx, tx)
+}
+
+func personalTarget(ctx context.Context, tx pgx.Tx, tenant, agent, member string) error {
+	var conflicts bool
+	err := tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM app_personal_reservations WHERE tenant_id=$1 AND agent_id=$2 AND principal_id<>$3)", tenant, agent, member).Scan(&conflicts)
+	if err == nil && conflicts {
+		return ErrTransition
+	}
+	return err
 }

@@ -70,7 +70,7 @@ def login(issuer, client_id, redirect_uri, username, password, tls):
             raise ValueError('unexpected endpoint origin')
 
     params = dict(client_id=client_id, response_type='code', redirect_uri=redirect_uri, state=state,
-                  scope='openid email member:accept member:invite org:read agent:read agent:invoke agent:content:read',
+                  nonce=secrets.token_urlsafe(32), scope='openid email member:accept member:invite org:read agent:read agent:invoke agent:content:read',
                   code_challenge=challenge, code_challenge_method='S256')
     form = LoginForm()
     with browser.open(config['authorization_endpoint'] + '?' + urllib.parse.urlencode(params), timeout=20) as page:
@@ -83,7 +83,7 @@ def login(issuer, client_id, redirect_uri, username, password, tls):
             raise ValueError('test sign-in did not complete')
     except Callback as redirect:
         query = redirect.args[0]
-    if query.get('state') != [state] or len(query.get('code', [])) != 1:
+    if query.get('iss', [issuer]) != [issuer] or query.get('state') != [state] or len(query.get('code', [])) != 1:
         raise ValueError('invalid authorization response')
     data = urllib.parse.urlencode(dict(grant_type='authorization_code', client_id=client_id,
                                        redirect_uri=redirect_uri, code=query['code'][0],

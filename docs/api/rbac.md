@@ -204,6 +204,7 @@ only its own.
 | `POST /v1/me/inbox/requests/{id}/decline` (historical owner domain) | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 401 | 401 | 403 |
 | `GET /v1/agent-requests/{id}` (historical owner domain) | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 401 | 401 | 403 |
 | `POST /v1/agent-requests/{id}/cancel` (historical owner domain) | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 401 | 401 | 403 |
+| `POST /v1/pools/{id}/expand` | yes | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
 | `GET /v1/applications` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | yes | 401 | 401 | 403 |
 | `POST /v1/applications` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | yes | 401 | 401 | 403 |
 | `GET /v1/applications/{id}` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
