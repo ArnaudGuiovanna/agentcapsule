@@ -11,7 +11,6 @@ import (
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorization"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/capability"
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/harnesspkg"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -51,7 +50,7 @@ func (s *Store) ReportDeploymentHost(ctx context.Context, host string, budget Ho
 		return err
 	}
 	for _, i := range images {
-		if !harnesspkg.ValidDigest(i.Kernel) || !harnesspkg.ValidDigest(i.Initrd) {
+		if !validArtifactDigest(i.Kernel) || !validArtifactDigest(i.Initrd) {
 			return ErrInput
 		}
 		if _, err = tx.Exec(ctx, "INSERT INTO host_system_images VALUES($1,$2,$3) ON CONFLICT DO NOTHING", host, i.Kernel, i.Initrd); err != nil {
@@ -73,7 +72,7 @@ func (c *AgentCatalog) ApproveSystemImage(ctx context.Context, p Principal, key 
 	if err = authorizePlatform(ctx, tx, p); err != nil {
 		return APIReceipt{}, err
 	}
-	if !imageID(in.ID) || !harnesspkg.ValidDigest(in.Kernel) || !harnesspkg.ValidDigest(in.Initrd) {
+	if !imageID(in.ID) || !validArtifactDigest(in.Kernel) || !validArtifactDigest(in.Initrd) {
 		return APIReceipt{}, ErrInput
 	}
 	out, err := c.accounts.withReceipt(ctx, tx, scope(p, "POST", "/v1/system-images", key), in, func() (int, any, error) {

@@ -104,14 +104,19 @@ func displayName(v string) bool {
 	return utf8.ValidString(v) && utf8.RuneCountInString(v) <= 100 && strings.TrimSpace(v) != "" && strings.IndexFunc(v, unicode.IsControl) < 0
 }
 
+func validArtifactDigest(digest string) bool {
+	if !strings.HasPrefix(digest, "sha256:") || len(digest) != 71 || strings.ToLower(digest) != digest {
+		return false
+	}
+	_, err := hex.DecodeString(digest[7:])
+	return err == nil
+}
+
 // RegisterLocalRelease records a trusted operator approval of a digest. This
 // does not fetch or validate an OCI artifact; the worker must verify the pinned
 // artifact against this digest before provisioning. A version cannot be rebound.
 func (s *Store) RegisterLocalRelease(ctx context.Context, ref HarnessReference, digest string) (string, error) {
-	if !catalogName(ref.Name) || !catalogName(ref.Version) || !strings.HasPrefix(digest, "sha256:") || len(digest) != 71 || strings.ToLower(digest) != digest {
-		return "", ErrInput
-	}
-	if _, err := hex.DecodeString(digest[7:]); err != nil {
+	if !catalogName(ref.Name) || !catalogName(ref.Version) || !validArtifactDigest(digest) {
 		return "", ErrInput
 	}
 	tx, err := s.begin(ctx)
