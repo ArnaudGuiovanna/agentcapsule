@@ -1,6 +1,6 @@
 # Production host setup. This file is embedded ahead of host.py in the helper.
 import base64
-import copy
+import configparser
 import json
 import os
 from pathlib import Path
@@ -12,6 +12,7 @@ import socket
 import subprocess
 import tempfile
 import time
+import urllib.parse
 
 
 def normalize_profile(raw):
@@ -19,24 +20,34 @@ def normalize_profile(raw):
                     platform_account="sysadmin", host_id="local", storage_mib=8192, max_active=2,
                     first_uid=62100, last_uid=63123, allow_internal_providers=[], database_url_file=None,
                     tls_certificate=None, tls_key=None, tls_ca=None, interop_certs=None, pgbackrest_config=None,
-                    registry_rules=None)
+                    registry_rules=None, oidc_port=9444, oidc_name=None, oidc_cert=None, oidc_key=None,
+                    oidc_ca=None, monapp_redirect_uri=None, rclone_config=None)
     if not isinstance(raw, dict) or set(raw) - set(defaults):
         raise ValueError("unknown installation profile field")
     p = dict(defaults, **raw)
+    p["oidc_name"]=p["oidc_name"] or p["api_name"]
+    p["monapp_redirect_uri"]=p["monapp_redirect_uri"] or "https://"+p["api_name"]+"/monapp/callback"
+    redirect=urllib.parse.urlsplit(p["monapp_redirect_uri"])
+    if redirect.scheme!="https" or not redirect.hostname or redirect.username or redirect.password or redirect.fragment:
+        raise ValueError("MonApp needs an exact HTTPS callback URI")
     if p["schema"] != defaults["schema"]:
         raise ValueError("unknown profile schema")
-    for field in ("api_name","host_id","platform_account"):
+    for field in ("api_name","oidc_name","host_id","platform_account"):
         if not isinstance(p[field],str) or not re.fullmatch(r"[A-Za-z0-9][a-zA-Z0-9_.-]{0,126}", p[field]):
             raise ValueError("invalid "+field)
-    if any(type(p[k]) != int for k in ("api_port","storage_mib","max_active","first_uid","last_uid")):
+    if any(type(p[k]) != int for k in ("api_port","oidc_port","storage_mib","max_active","first_uid","last_uid")):
         raise ValueError("expected integer capacity and port settings")
+    if p["oidc_port"] == p["api_port"] or not 1 <= p["oidc_port"] <= 65535 or p["oidc_port"] in (8443,9464,9465,9466,46357,55432):
+        raise ValueError("invalid OIDC port")
     if (p["api_port"] in (8443,9464,9465,9466,46357,55432) or not 1 <= p["api_port"] <= 65535
             or min(p["storage_mib"],p["max_active"]) < 1 or not 10000 <= p["first_uid"] <= p["last_uid"] < 2147483647
             or p["last_uid"]-p["first_uid"] > 1 << 20):
         raise ValueError("invalid profile capacity or listen port")
-    for key in ("database_url_file","tls_certificate","tls_key","tls_ca","interop_certs","pgbackrest_config"):
+    for key in ("database_url_file","tls_certificate","tls_key","tls_ca","interop_certs","pgbackrest_config","oidc_cert","oidc_key","oidc_ca","rclone_config"):
         if p[key] is not None and (not isinstance(p[key],str) or not Path(p[key]).is_absolute()):
             raise ValueError("expected absolute host path for "+key)
+    if bool(p["oidc_cert"]) != bool(p["oidc_key"]):
+        raise ValueError("provide both OIDC TLS certificate and key")
     if bool(p["tls_key"]) != bool(p["tls_certificate"]):
         raise ValueError("provide both TLS certificate and private key")
     return p
@@ -74,10 +85,17 @@ def install_dependencies(dist,release):
         run("apt-get","install","-y","--no-download","--no-install-recommends",*packages,
             env=dict(os.environ, DEBIAN_FRONTEND="noninteractive"))
     run("systemctl","enable","--now","docker.service")
-    run("docker","load","--input",dist/IMAGES)
-    for image in read(release/"offline-images.json"):
-        if output("docker","inspect","--type=image","--format","{{.Id}}",image["tag"]) != image["config_id"]:
-            raise ValueError("offline image differs from signed image index")
+    with tempfile.TemporaryDirectory(dir=STATE) as tmp:
+        root=Path(tmp)/"images"
+        unpack(dist/IMAGES,root)
+        for image in read(release/"offline-images.json"):
+            engine=image["engine"]
+            if engine not in ("docker","podman"):
+                raise ValueError("unknown OCI image engine")
+            run(engine,"load","--input",root/image["file"])
+            actual=output(engine,"inspect","--type=image","--format","{{.Id}}",image["tag"])
+            if actual.removeprefix("sha256:") != image["config_id"].removeprefix("sha256:"):
+                raise ValueError("offline image differs from signed image index")
 
 
 def configure_system():
@@ -122,7 +140,7 @@ def database():
         if not file.read_text().startswith(entries):
             write_file(file,(entries+file.read_text()).encode(),0o640)
             os.chown(file,user_id("postgres"),pwd.getpwnam("postgres").pw_gid)
-    write_file(folder/"conf.d"/"agentcapsule.conf",b"listen_addresses = ''\n",0o644)
+    write_file(folder/"conf.d"/"agentcapsule.conf",b"listen_addresses = '127.0.0.1'\n",0o644)
     run("systemctl","enable","--now","postgresql@16-agentcapsule.service")
     run("pg_ctlcluster","16","agentcapsule","reload")
     cmd=["psql","-XAt","-v","ON_ERROR_STOP=1","-h","/run/postgresql","-p","55432","-d","postgres","-c"]
@@ -180,13 +198,13 @@ def setup_interop(profile):
     for name in ("slim-ca.pem","client.crt","client.key"):
         install_file(links/"slim-bridge"/name,slimdir/name,0o600,uid)
     secret=slimdir/"secret"
-    create_key(secret,secrets.token_bytes(32))
+    create_key(secret,secrets.token_hex(32).encode())
     os.chown(secret,uid,-1)
     cfg=read(ACTIVE/"config/slim-bridge.json")
     cfg["name"]="agentcapsule/platform/"+profile["host_id"]
     write_file(ETC/"slim-bridge.json",json.dumps(cfg).encode(),0o644)
     # Offline tags are generated from the pinned OCI manifests at build time.
-    override={"services":{i["service"]:{"image":i["tag"]} for i in read(ACTIVE/"offline-images.json") if i.get("service")}}
+    override={"services":{i["service"]:{"image":i["tag"]} for i in read(ACTIVE/"offline-images.json") if i["engine"]=="docker"}}
     save(ETC/"interop-images.json",override)
     compose="/usr/bin/docker compose -f compose.yml -f /etc/agentcapsule/interop-images.json"
     unit_drop("agentcapsule-interop","offline","[Service]\nExecStart=\nExecStart="+compose+" up -d --wait --pull never --remove-orphans\nExecStop=\nExecStop="+compose+" stop\n")
@@ -221,10 +239,10 @@ def environment_file(path, settings):
 
 def configure(p,version,initial):
     configure_system()
-    if not p["database_url_file"]:
-        database()
+    database()  # Dedicated local cluster also owns the bundled OIDC realm.
     api_tls(p)
     setup_interop(p)
+    setup_oidc(p)
     auth=authority()
     admin=ACTIVE/"agentcapsule-admin"
     env=db_env(p)
@@ -269,6 +287,7 @@ def configure(p,version,initial):
 def start_services(p):
     # The authority and private transports retain their state across reboot.
     (STATE/"maintenance").unlink(missing_ok=True)
+    run("systemctl","enable","--now","agentcapsule-oidc.service")
     for service in ("agentcapsule-interop","agentcapsule-authority","agentcapsule-worker","agentcapsule-slim-bridge","agentcapsule-api"):
         run("systemctl","enable","--now",service+".service")
     for _ in range(60):
@@ -280,7 +299,21 @@ def start_services(p):
     else:
         raise ValueError("HTTPS readiness did not pass")
     run("systemctl","is-active","--quiet","agentcapsule-worker")
-    return {"services_started":True, "url":f"https://{p['api_name']}:{p['api_port']}", "enrollment_file":str(ETC/"first-enrollment.token")}
+    port=str(p["oidc_port"])
+    realm=f"https://{p['oidc_name']}:{port}/realms/agentcapsule"
+    cmd=["curl","-fsS","--max-time","5","--noproxy","*","--resolve",p["oidc_name"]+":"+port+":127.0.0.1"]
+    if p["oidc_ca"] or not p["oidc_cert"]:
+        cmd+=["--cacert",p["oidc_ca"] or ETC/"oidc-tls/tls.crt"]
+    for _ in range(120):
+        try:
+            if json.loads(output(*cmd,realm+"/.well-known/openid-configuration"))["issuer"] == realm:
+                break
+        except (subprocess.CalledProcessError,ValueError,KeyError):
+            pass
+        time.sleep(2)
+    else:
+        raise ValueError("OIDC issuer discovery did not pass")
+    return {"services_started":True, "url":f"https://{p['api_name']}:{p['api_port']}", "oidc_issuer":realm,"enrollment_file":str(ETC/"first-enrollment.token")}
 
 
 def backup(profile,mandatory):
@@ -289,10 +322,18 @@ def backup(profile,mandatory):
         if mandatory:
             raise ValueError("configure off-host pgBackRest repositories before updating")
         return {"off_host_backup_verified":False,"backup_status":"awaiting_off_host_configuration"}
+    cfg=configparser.ConfigParser(interpolation=None, strict=False)
+    cfg.read(config)
+    remote={cfg.get("global","repo1-type",fallback="posix"),cfg.get("global","repo2-type",fallback="posix")}=={"s3","sftp"}
+    if mandatory and not remote and "-dev." not in (current() or ""):
+        raise ValueError("update requires verified off-host repositories")
     if not profile["database_url_file"]:
         folder=Path("/etc/postgresql/16/agentcapsule/conf.d")
-        install_file(ACTIVE/"backup/postgresql.conf",folder/"backup.conf")
-        run("systemctl","restart","postgresql@16-agentcapsule.service")
+        config_file=folder/"backup.conf"
+        source=ACTIVE/"backup/postgresql.conf"
+        if not config_file.exists() or config_file.read_bytes()!=source.read_bytes():
+            install_file(source,config_file)
+            run("systemctl","restart","postgresql@16-agentcapsule.service")
     conf=Path("/etc/pgbackrest/pgbackrest.conf")
     install_file(Path(config),conf,0o600,user_id("postgres"))
     pg=["pgbackrest","--stanza=agentcapsule"]
@@ -310,7 +351,31 @@ def backup(profile,mandatory):
     run("systemctl","daemon-reload")
     for timer in ("pg-backup-full","pg-backup-diff","pg-heartbeat"):
         run("systemctl","enable","--now","agentcapsule-"+timer+".timer")
-    return {"off_host_backup_verified":True,"backup_status":"two_repositories_verified"}
+    volumes=False
+    if profile.get("rclone_config"):
+        conf=Path("/etc/agentcapsule-archive-ship/rclone.conf")
+        install_file(ACTIVE/"backup/agentcapsule-archive-ship.sysusers",Path("/usr/lib/sysusers.d/agentcapsule-archive-ship.conf"))
+        run("systemd-sysusers","/usr/lib/sysusers.d/agentcapsule-archive-ship.conf")
+        conf.parent.mkdir(exist_ok=True)
+        os.chmod(conf.parent,0o755)
+        install_file(Path(profile["rclone_config"]),conf,0o600,user_id("agentcapsule-ship"))
+        for suffix in ("service","timer"):
+            name="agentcapsule-archive-ship."+suffix
+            install_file(ACTIVE/"backup"/name,UNIT_DIR/name)
+        Path("/var/lib/prometheus/node-exporter").mkdir(parents=True,exist_ok=True)
+        # Exercise the physical storage path on the probe volume.
+        probe=read(STATE/"smoke.json")
+        archive="arc_"+secrets.token_hex(16)
+        run(ACTIVE/"agentcapsule-worker","-config",ETC/"worker.json","-archive-agent",probe["agent"],
+            "-archive-root","/var/lib/agentcapsule-archives","-archive-id",archive,env=db_env(profile))
+        run("systemctl","daemon-reload")
+        run("systemctl","start","agentcapsule-archive-ship.service")
+        run("systemctl","enable","--now","agentcapsule-archive-ship.timer")
+        volumes=True
+    if mandatory and remote and not volumes:
+        raise ValueError("configure and verify off-host volume shipping before updating")
+    return {"off_host_backup_verified":remote and volumes, "database_backups_verified":True,
+            "volume_shipping_verified":volumes, "backup_status":"two_remote_repositories_verified" if remote else "local_repositories_verified"}
 
 
 def drain(profile):
@@ -445,3 +510,48 @@ def smoke(p,directory):
     sleep=call("POST",prefix+"/sleep",{},marker+"-sleep")
     wait("/v1/operations/"+sleep["operation_id"],"status","SUCCEEDED")
     return {"invocation_verified":True,"probe_agent":data["agent"],"probe_invocation":invocation["id"]}
+
+
+def setup_oidc(p):
+    env=ETC/"oidc.env"
+    certs=ETC/"oidc-tls"
+    certs.mkdir(exist_ok=True)
+    certs.chmod(0o755)
+    if p["oidc_cert"]:
+        install_file(Path(p["oidc_cert"]),certs/"tls.crt")
+        install_file(Path(p["oidc_key"]),certs/"tls.key",0o600,1000)
+    elif not (certs/"tls.crt").exists():
+        with tempfile.TemporaryDirectory(dir=STATE) as tmp:
+            key=Path(tmp)/"tls.key"
+            crt=Path(tmp)/"tls.crt"
+            run("openssl","req","-new","-x509","-nodes","-newkey","ec","-pkeyopt","ec_paramgen_curve:P-256","-days","365",
+                "-subj","/CN="+p["oidc_name"],"-addext","subjectAltName=DNS:"+p["oidc_name"],
+                "-addext","extendedKeyUsage=serverAuth","-keyout",key,"-out",crt)
+            install_file(key,certs/"tls.key",0o600,1000)
+            install_file(crt,certs/"tls.crt")
+    # Keep the password in root-only files and stdin, out of psql arguments.
+    secret=STATE/"oidc-db.password"
+    create_key(secret,secrets.token_hex(32).encode())
+    dbpass=secret.read_text()
+    sql=["psql","-XAt","-v","ON_ERROR_STOP=1","-h","/run/postgresql","-p","55432","-d","postgres"]
+    if not run_user("postgres",*sql,"-c","SELECT 1 FROM pg_roles WHERE rolname='keycloak'",capture=True):
+        run("runuser","-u","postgres","--",*sql,input="CREATE ROLE keycloak LOGIN PASSWORD '"+dbpass+"';",text=True)
+    if not run_user("postgres",*sql,"-c","SELECT 1 FROM pg_database WHERE datname='keycloak'",capture=True):
+        run_user("postgres",*sql,"-c","CREATE DATABASE keycloak OWNER keycloak")
+    if not env.exists():
+        data=dict(KC_DB="postgres",KC_DB_URL="jdbc:postgresql://127.0.0.1:55432/keycloak",KC_DB_USERNAME="keycloak",
+                  KC_DB_PASSWORD=dbpass,KC_HOSTNAME="https://"+p["oidc_name"]+":"+str(p["oidc_port"]),
+                  KC_HTTPS_PORT=str(p["oidc_port"]),KC_HTTPS_CERTIFICATE_FILE="/keycloak-tls/tls.crt",
+                  KC_HTTPS_CERTIFICATE_KEY_FILE="/keycloak-tls/tls.key",KC_BOOTSTRAP_ADMIN_USERNAME="operator",
+                  KC_BOOTSTRAP_ADMIN_PASSWORD=secrets.token_hex(32),MONAPP_REDIRECT_URI=p["monapp_redirect_uri"])
+        if any("\n" in v or "\r" in v for v in data.values()):
+            raise ValueError("invalid OIDC environment")
+        write_file(env,"".join(k+"="+v+"\n" for k,v in data.items()).encode())
+    (ETC/"oidc").mkdir(exist_ok=True)
+    (ETC/"oidc").chmod(0o755)
+    install_file(ACTIVE/"oidc/realm.json",ETC/"oidc/realm.json")
+    image=next(i for i in read(ACTIVE/"offline-images.json") if i["service"]=="oidc")
+    template=(ACTIVE/"oidc/agentcapsule-oidc.service").read_text()
+    if image["ref"] not in template:
+        raise ValueError("OIDC unit image differs from signed image index")
+    write_file(UNIT_DIR/"agentcapsule-oidc.service",template.replace(image["ref"],image["tag"]).encode(),0o644)

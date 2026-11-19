@@ -3,7 +3,7 @@ name: Release
 # Cuts a release from a version tag, and only from one: see docs/release.md.
 # The build job builds every binary and the guest image twice and compares
 # them, audits the dependencies, writes the SBOMs and scans them; it holds no
-# token that can sign or write. It publishes the host binaries only. The sign job signs the checksums with cosign
+# token that can sign or write. It assembles the offline host distribution. The sign job signs the checksums with cosign
 # (keyless, GitHub's OIDC identity) and attests their SLSA provenance. The
 # publish job creates a draft release, which a maintainer reviews and publishes.
 
@@ -34,7 +34,7 @@ jobs:
   build:
     name: Build twice, audit, SBOMs and scans
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 180
     permissions:
       contents: read
     steps:
@@ -64,9 +64,18 @@ jobs:
 
       - name: Install native headers and the guest image's tools
         run: |
+          sudo tee /etc/apt/sources.list.d/ubuntu.sources >/dev/null <<'EOF'
+          Types: deb deb-src
+          URIs: https://snapshot.ubuntu.com/ubuntu/20261113T000000Z
+          Suites: noble noble-updates noble-security
+          Components: main universe
+          Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+          Check-Valid-Until: no
+          EOF
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends \
-            build-essential libcryptsetup-dev cryptsetup-bin e2fsprogs
+            build-essential libcryptsetup-dev cryptsetup-bin e2fsprogs musl-tools cmake pkg-config \
+            bison flex libelf-dev libssl-dev bc xz-utils skopeo
 
       - name: Dependency audit (govulncheck on every Go module, licenses)
         run: |
@@ -83,6 +92,16 @@ jobs:
             --twice --fresh-module-cache --guest-cryptsetup /usr/sbin/cryptsetup \
             --output "$RUNNER_TEMP/release/build"
 
+      - name: Build the patched VMM, guest kernel and server distribution
+        run: |
+          set -euo pipefail
+          release="$RUNNER_TEMP/release"
+          rustup toolchain install 1.97.0 --profile minimal --target x86_64-unknown-linux-musl
+          python3 scripts/build-firecracker.py --output "$release/vmm"
+          python3 scripts/build-guest-kernel.py --output "$release/kernel"
+          python3 scripts/build-server-bundle.py --build "$release/build" --out "$release/assets" \
+            --vmm "$release/vmm" --kernel "$release/kernel" --licenses "$release/audit/third-party-licenses.txt"
+
       - name: SBOMs
         env:
           TAG: ${{ github.ref_name }}
@@ -94,29 +113,36 @@ jobs:
               agentcapsule-harness capsule-adapter agentcapsule-slim-bridge; do
             binaries+=(--binary "$dist/$name")
           done
+          for cli in "$dist"/agentcapsule-{linux,darwin,windows}-*; do binaries+=(--binary "$cli"); done
           python3 scripts/release-sbom.py --go "$(command -v go)" --version "$TAG" \
             --output "$RUNNER_TEMP/release/sbom" "${binaries[@]}" --guest-build "$dist"
 
       - name: Vulnerability scan (SBOMs and deploy images)
         run: |
           set -euo pipefail
+          release="$RUNNER_TEMP/release"
+          syft="$(python3 scripts/release_tools.py syft | awk '{print $3}')"
+          for file in "$release"/assets/agentcapsule-{server,packages,images}-linux-amd64.tar*; do
+            "$syft" scan "file:$file" -o "spdx-json=$release/sbom/$(basename "$file").spdx.json"
+          done
           sboms=("$RUNNER_TEMP"/release/sbom/*.spdx.json)
           python3 scripts/scan-artifacts.py --output "$RUNNER_TEMP/release/scan" \
             "${sboms[@]/#/--sbom=}" --deploy-images
 
       - name: Assemble the release files and their checksums
         run: |
-          # The guest image and capsule-adapter are built, described and
-          # scanned above but not published: they carry GPL and LGPL code
-          # whose source a release would have to offer (ADR 013, question 4).
+          # Include the corresponding sources and notices alongside the server bundle.
           set -euo pipefail
           release="$RUNNER_TEMP/release"
           assets="$release/assets"
-          mkdir "$assets"
+          cp "$release"/build/dist/agentcapsule-{linux,darwin,windows}-* "$assets"/
+          cp "$release"/sbom/*.spdx.json "$assets"/
           for name in agentcapsule-api agentcapsule-worker agentcapsule-admin agentcapsule-authority \
               agentcapsule-harness agentcapsule-slim-bridge; do
             cp "$release/build/dist/$name" "$release/sbom/$name.spdx.json" "$assets"/
           done
+          verifier="$(python3 scripts/release_tools.py cosign | awk '{print $3}')"
+          cp "$verifier" "$assets/cosign-linux-amd64"
           cp "$release/build/build.json" "$assets/build.json"
           cp "$release/audit/third-party-licenses.txt" "$release/audit/licenses.json" "$assets"/
           cp "$release/audit/summary.json" "$assets/dependency-audit.json"
