@@ -40,6 +40,8 @@ Each image inventory is tied to its offline archive and the pinned reference in 
 
 The offline Noble snapshot used in the installation test contained 171 binary packages. The release inventory checks every archived `.deb` against the server's package index and records its SHA-256, Ubuntu release, binary version and source package. Grype 0.121.0 with the 19 November database reported six High matches, 452 Medium, 37 Low and five Negligible. The six High matches block this archive under the release policy. The six separate Keycloak matches also block the offline images. [Image qualification](release-image-qualification.md)
 
+The development media's `agentcapsule-ubuntu-sources-01.tar` contains the 108 exact Ubuntu source versions for those 171 packages. Its `ubuntu-source-index.json` maps each binary to its source name and version. The qualification checked all 349 source files against the signed Noble indexes and the corresponding `.dsc` files, then read the finished tar back. The tar SHA-256 is `8f621aceab2ce35552afc9a8f63014624352ab3b1a8dbadbf7761b776c8ff5e4`.
+
 | Binary and exact Ubuntu source | Shipped Noble version | High advisories | Ubuntu evidence |
 |---|---|---|---|
 | `docker.io` from `docker.io-app` | `29.1.3-0ubuntu3~24.04.2` | CVE-2024-41110 | Canonical fixed the application source in `27.5.1-0ubuntu3~24.04.2`. [Ubuntu advisory](https://ubuntu.com/security/CVE-2024-41110) |
