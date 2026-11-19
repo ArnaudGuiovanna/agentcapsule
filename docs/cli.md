@@ -104,9 +104,12 @@ agentcapsule app register monapp --config monapp.yaml --output-file monapp-backe
 app=$(jq -er '.data.id' monapp-backend.json)
 policy=$(agentcapsule assignment-policy plan --file arrival.yaml | jq -er '.data.id')
 agentcapsule assignment-policy apply --plan "$policy"
+agentcapsule app verify "$app" --issuer-ca oidc-ca.pem
 agentcapsule app connection "$app" --output-file monapp-public.json
 agentcapsule access explain --member "$alice" --agent "$shared_agent"
 ```
+
+Run `app verify APP_ID` in the organization's context after registration or rotation. It reads the registration from that installation, fetches the issuer's HTTPS discovery document and checks each pinned RS256 signing key against the published JWKS. A disabled registration, a changed key or an explicitly incompatible code flow or PKCE method fails the check. Supply `--issuer-ca` for a private issuer CA, or omit it for the operating system's trust store. The API and issuer may use different CAs. A provider can omit its optional PKCE metadata, in which case the result reports `advertised_pkce: unadvertised`. Use the member sign-in scenario below to verify an actual token's audience, claims and the client's registered callback. `app show` and `app connection` remain available for inspecting a disabled registration.
 
 The HTTP guide covers inviting Alice and Bob, concurrent acceptance, private results, changing teams, and departure. A new activation can be followed with `operation wait --type activation --app APP_ID ACTIVATION_ID`. On departure, read the admitted-work counts and follow any returned revocation ID with `revocation show ID` under an audit-authorized identity. The current primary enforces the change immediately. The receipt records whether the authority replica has confirmed it. Rotate the backend token with `app rotate APP_ID --output-file monapp-next.json` or revoke the whole integration with `app revoke APP_ID`. [HTTP scenario and runner](api/applications.md)
 

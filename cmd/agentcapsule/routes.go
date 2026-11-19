@@ -53,6 +53,7 @@ var commands = map[string]string{
 	"app revoke":     "POST /applications/{id}/revoke",
 	"app rotate":     "POST /applications/{id}/rotate",
 	"app show":       "GET /applications/{id}",
+	"app verify":     "GET /applications/{id}",
 
 	"assignment grant":    "POST /agents/{agent}/assignments",
 	"assignment list":     "GET /agents/{agent}/assignments",
@@ -262,7 +263,7 @@ func hasSecret(val any) bool {
 	case map[string]any:
 		for k, v := range x {
 			switch strings.ToLower(k) {
-			case "secret", "token", "client_secret", "password", "invitation_token", "private_key", "access_token", "refresh_token", "proof":
+			case "secret", "token", "client_secret", "password", "invitation_token", "provisioning_token", "private_key", "access_token", "refresh_token", "proof":
 				return true
 			}
 			if hasSecret(v) {
@@ -438,6 +439,7 @@ identity create|show --key-file PATH --display-name NAME
 login --enrollment-file FILE|- | login --key-file PATH | login --token-file FILE|- | session renew | logout
 status [--watch] | doctor | support export --output-file FILE
 install | update check|plan|apply | self update | host operation show|wait | restore
+app verify APP_ID [--issuer-ca PEM_FILE]
 api METHOD /v1/path
 --json selects versioned JSON (default). --non-interactive runs without prompts.
 For named routes supply identifiers in route order or as named flags.`)

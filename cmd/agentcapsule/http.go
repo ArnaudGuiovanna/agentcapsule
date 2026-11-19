@@ -27,20 +27,28 @@ func newClient(c connection) (*client, error) {
 	if err := c.validate(); err != nil {
 		return nil, err
 	}
+	h, err := httpsClient(c.CA)
+	if err != nil {
+		return nil, err
+	}
+	return &client{h, c}, nil
+}
+
+func httpsClient(ca string) (*http.Client, error) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
-	if c.CA != "" {
-		b, err := os.ReadFile(c.CA)
+	if ca != "" {
+		b, err := os.ReadFile(ca)
 		if err != nil {
 			return nil, err
 		}
 		roots := x509.NewCertPool()
 		if !roots.AppendCertsFromPEM(b) {
-			return nil, errors.New("invalid context CA")
+			return nil, errors.New("invalid CA certificate")
 		}
 		transport.TLSClientConfig.RootCAs = roots
 	}
-	return &client{&http.Client{Transport: transport, Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, c}, nil
+	return &http.Client{Transport: transport, Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, nil
 }
 
 type apiError struct {

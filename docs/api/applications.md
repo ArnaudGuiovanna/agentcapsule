@@ -10,6 +10,7 @@ Send requests to the installation's HTTPS URL. The API accepts JSON. All mutatio
 |---|---|---|
 | Acme owner, `app register monapp --config monapp.yaml --output-file backend.json` | `POST /v1/applications`, identity:manage | 201, application ID, OIDC parameters and backend token |
 | Acme owner, `app show <id>` | `GET /v1/applications/{id}` | Public client configuration, pinned public keys, applied policy IDs |
+| Acme owner, `app verify <id> [--issuer-ca PEM_FILE]` | `GET /v1/applications/{id}`, then HTTPS discovery and JWKS at the issuer | Active registration, matching issuer and pinned RSA signing keys, advertised code flow and PKCE method |
 | Acme owner, `app rotate <id> --output-file backend-next.json` | `POST /v1/applications/{id}/rotate` with `{}` or new `verification_keys` | Updated token, previous backend tokens revoked |
 | Acme owner, `app revoke <id>` | `POST /v1/applications/{id}/revoke` with `{}` | Integration disabled, including current member sessions |
 | Acme owner, `assignment-policy plan --file arrival.yaml` | `POST /v1/assignment-policies/plan`, agent:assign | 201, immutable plan ID and available inventory per pool |

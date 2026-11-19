@@ -168,6 +168,10 @@ func run(ctx context.Context, args []string, in io.Reader, out, errout io.Writer
 		return cli.sessionCommand(ctx, dir, name, api, strings.Join(pos, " "), o)
 	}
 	key := o.take("idempotency-key")
+	var issuerCA string
+	if len(pos) >= 2 && pos[0] == "app" && pos[1] == "verify" {
+		issuerCA = o.take("issuer-ca")
+	}
 	a, err := buildAction(pos, o, in)
 	if err != nil {
 		return usageError{err}
@@ -223,8 +227,8 @@ func run(ctx context.Context, args []string, in io.Reader, out, errout io.Writer
 		if err != nil {
 			return err
 		}
-		if a.name == "app connection" {
-			return cli.appConnection(c, r)
+		if a.name == "app connection" || a.name == "app verify" {
+			return cli.applicationCommand(ctx, a, c, r, issuerCA)
 		}
 		if a.name != "operation wait" {
 			return cli.print(r.Data, r.RequestID)
@@ -277,28 +281,6 @@ func operationState(data json.RawMessage) (string, string, error) {
 	default:
 		return "", "", fmt.Errorf("unrecognized operation state %q", state)
 	}
-}
-
-func (cli console) appConnection(c connection, r reply) error {
-	// Select the fields a frontend can receive even if the registration API
-	// gains additional administrative metadata later.
-	var app struct {
-		ID           string   `json:"id"`
-		Tenant       string   `json:"tenant_id"`
-		Issuer       string   `json:"issuer"`
-		ClientID     string   `json:"client_id"`
-		Audience     string   `json:"audience"`
-		RedirectURIs []string `json:"redirect_uris"`
-		Policies     []string `json:"policy_ids"`
-		Status       string   `json:"status"`
-	}
-	if json.Unmarshal(r.Data, &app) != nil || app.ID == "" || app.Issuer == "" || app.Tenant != c.Organization {
-		return errors.New("invalid application connection response")
-	}
-	return cli.print(map[string]any{"api_url": c.URL, "application_id": app.ID, "organization_id": app.Tenant, "issuer": app.Issuer,
-		"discovery_url": strings.TrimRight(app.Issuer, "/") + "/.well-known/openid-configuration", "client_id": app.ClientID,
-		"audience": app.Audience, "redirect_uris": app.RedirectURIs, "policy_ids": app.Policies, "status": app.Status,
-		"response_type": "code", "code_challenge_method": "S256"}, r.RequestID)
 }
 
 func wait(ctx context.Context, d time.Duration) error {
