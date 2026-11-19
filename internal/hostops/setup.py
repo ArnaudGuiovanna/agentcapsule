@@ -2,6 +2,7 @@
 import base64
 import configparser
 import ctypes
+import errno
 import json
 import os
 from pathlib import Path
@@ -461,16 +462,106 @@ def install_backup_config(source, directory=Path("/etc/pgbackrest")):
     run_user("postgres","test","-r",conf)
 
 
+def backup_peer_addresses(address):
+    host=urllib.parse.urlsplit(address if "://" in address else "//"+address).hostname
+    if not host:
+        return set()
+    peers=socket.getaddrinfo(host,None,type=socket.SOCK_STREAM)
+    for family,kind,protocol,_,peer in peers:
+        with socket.socket(family,kind,protocol) as probe:
+            try:
+                probe.bind(peer)
+            except OSError as err:
+                # This address is not assigned to the current host.
+                if err.errno==errno.EADDRNOTAVAIL:
+                    continue
+                raise
+            return set()
+    return {peer[4][0] for peer in peers}
+
+
+def backup_destinations(config, includes=()):
+    cfg=configparser.ConfigParser(interpolation=None)
+    cfg.read([config,*includes])
+    # A command/stanza override can redirect the periodic backup or its readback.
+    # Require consistent destinations across every operation before attesting them.
+    def setting(key):
+        values={s[key] for s in cfg.values() if key in s}
+        if len(values)>1:
+            raise ValueError("conflicting pgBackRest destinations or encryption settings")
+        return next(iter(values),"")
+    stores={}
+    for n in (1,2):
+        prefix=f"repo{n}-"
+        kind=setting(prefix+"type")
+        if kind not in ("s3","sftp"):
+            return {}
+        if setting(prefix+"cipher-type")!="aes-256-cbc":
+            raise ValueError("both remote pgBackRest repositories must be encrypted")
+        stores[kind]=setting(prefix+("s3-endpoint" if kind=="s3" else "sftp-host"))
+    if set(stores)!={"s3","sftp"} or not all(stores.values()):
+        raise ValueError("configure independent S3 and SFTP pgBackRest repositories")
+    return stores
+
+
+def volume_destinations(config):
+    cfg=configparser.ConfigParser(interpolation=None)
+    cfg.read(config)
+    hosts={}
+    for name,kind in (("s3","s3"),("standby","sftp")):
+        crypt=cfg[name] if name in cfg else {}
+        remote,sep,_=crypt.get("remote","").partition(":")
+        if (crypt.get("type")!="crypt" or not sep or remote not in cfg or cfg[remote].get("type")!=kind
+                or not crypt.get("password") or not crypt.get("password2")
+                or crypt.get("filename_encryption","standard")!="standard"
+                or crypt.get("directory_name_encryption","true").lower() not in ("1","t","true")):
+            raise ValueError("configure encrypted rclone remotes s3 and standby backed by S3 and SFTP")
+        backend=cfg[remote]
+        hosts[kind]=backend.get("endpoint","s3.amazonaws.com") if kind=="s3" else backend.get("host","")
+        if not hosts[kind]:
+            raise ValueError("missing rclone store endpoint")
+    return hosts
+
+
+def off_host_destinations(stores):
+    if not stores:
+        return False
+    s3=backup_peer_addresses(stores["s3"])
+    sftp=backup_peer_addresses(stores["sftp"])
+    return bool(s3 and sftp) and s3.isdisjoint(sftp)
+
+
+def verify_volume_copies(profile, agent, archive, directory, conf):
+    evidence={}
+    for store in ("s3","standby"):
+        with tempfile.TemporaryDirectory(dir=directory) as tmp:
+            root=Path(tmp)/"copies"
+            scratch=Path(tmp)/"scratch"
+            scratch.mkdir()
+            run("python3","-I",ACTIVE/"agentcapsule-archive-ship.py","--rclone-config",conf,
+                "--archive-root",root,"fetch","--store",store,"--archive",archive)
+            result=json.loads(output(ACTIVE/"agentcapsule-worker","-config",ETC/"worker.json","-test-restore",agent,
+                                     "-archive-id",archive,"-archive-root",root,"-scratch",scratch,env=db_env(profile)))
+            if (result.get("archive_id")!=archive or result.get("agent_id")!=agent or result.get("archive_store")!="local"
+                    or not {"manifest","digest","volume","copy","key"}<=set(result.get("checked",[]))):
+                raise ValueError("restore test did not confirm the fetched probe archive")
+            evidence[store]={"archive_id":archive,"bytes":result["size"],"checked":result["checked"]}
+    return evidence
+
+
 def backup(profile,mandatory,directory):
     config=profile["pgbackrest_config"]
     if not config:
         if mandatory:
             raise ValueError("configure off-host pgBackRest repositories before updating")
-        return {"off_host_backup_verified":False,"backup_status":"awaiting_off_host_configuration"}
-    cfg=configparser.ConfigParser(interpolation=None, strict=False)
-    cfg.read(config)
-    remote={cfg.get("global","repo1-type",fallback="posix"),cfg.get("global","repo2-type",fallback="posix")}=={"s3","sftp"}
-    if mandatory and not remote and "-dev." not in (current() or ""):
+        return {"off_host_backup_verified":False,"database_backups_verified":False,"volume_shipping_verified":False,
+                "backup_status":"awaiting_off_host_configuration"}
+    stores=backup_destinations(config,sorted(Path("/etc/pgbackrest/conf.d").glob("*.conf")))
+    destinations=volume_destinations(profile["rclone_config"]) if profile.get("rclone_config") else {}
+    remote=off_host_destinations(stores)
+    remote_volumes=off_host_destinations(destinations)
+    strict=mandatory and "-dev." not in (current() or "")
+    if strict and not (remote and remote_volumes):
         raise ValueError("update requires verified off-host repositories")
     if not profile["database_url_file"]:
         folder=Path("/etc/postgresql/16/agentcapsule/conf.d")
@@ -486,8 +577,17 @@ def backup(profile,mandatory,directory):
     for repo in (1,2):
         run_user("postgres",*pg,"--repo="+str(repo),"--type=full","backup")
     info=json.loads(run_user("postgres",*pg,"--output=json","info",capture=True))
-    if not info or {b["database"]["repo-key"] for b in info[0].get("backup",[]) if b["type"]=="full" and not b.get("error")} != {1,2}:
-        raise ValueError("missing full backup in at least one repository")
+    stanza,=info
+    labels={}
+    for repo in (1,2):
+        status=next((r for r in stanza["repo"] if r["key"]==repo),{})
+        full=[b for b in stanza.get("backup",[]) if b["database"]["repo-key"]==repo and b["type"]=="full" and not b.get("error")]
+        if (not full or status.get("status",{}).get("code")!=0 or (stores and status.get("cipher")!="aes-256-cbc")):
+            raise ValueError("missing healthy full backup in at least one repository")
+        labels[str(repo)]=max(full,key=lambda b:b["timestamp"]["stop"])["label"]
+        # Noble ships pgBackRest 2.50. Its verify command checks the whole
+        # selected repository, including this full backup and its WAL.
+        run_user("postgres",*pg,"--repo="+str(repo),"verify")
     for timer in (ACTIVE/"backup").glob("agentcapsule-pg-*"):
         install_file(timer,UNIT_DIR/timer.name)
     if not profile["database_url_file"]:
@@ -495,14 +595,15 @@ def backup(profile,mandatory,directory):
     run("systemctl","daemon-reload")
     for timer in ("pg-backup-full","pg-backup-diff","pg-heartbeat"):
         run("systemctl","enable","--now","agentcapsule-"+timer+".timer")
-    volumes=False
+    copies={}
     if profile.get("rclone_config"):
         conf=Path("/etc/agentcapsule-archive-ship/rclone.conf")
         install_file(ACTIVE/"backup/agentcapsule-archive-ship.sysusers",Path("/usr/lib/sysusers.d/agentcapsule-archive-ship.conf"))
         run("systemd-sysusers","/usr/lib/sysusers.d/agentcapsule-archive-ship.conf")
         conf.parent.mkdir(exist_ok=True)
         os.chmod(conf.parent,0o755)
-        install_file(Path(profile["rclone_config"]),conf,0o600,user_id("agentcapsule-ship"))
+        install_file(Path(profile["rclone_config"]),conf,0o640)
+        os.chown(conf,0,pwd.getpwnam("agentcapsule-ship").pw_gid)
         for suffix in ("service","timer"):
             name="agentcapsule-archive-ship."+suffix
             install_file(ACTIVE/"backup"/name,UNIT_DIR/name)
@@ -515,11 +616,13 @@ def backup(profile,mandatory,directory):
         run("systemctl","daemon-reload")
         run("systemctl","start","agentcapsule-archive-ship.service")
         run("systemctl","enable","--now","agentcapsule-archive-ship.timer")
-        volumes=True
-    if mandatory and remote and not volumes:
+        copies=verify_volume_copies(profile,probe["agent"],archive,directory,conf)
+    if mandatory and remote and not copies:
         raise ValueError("configure and verify off-host volume shipping before updating")
-    return {"off_host_backup_verified":remote and volumes, "database_backups_verified":True,
-            "volume_shipping_verified":volumes, "backup_status":"two_remote_repositories_verified" if remote else "local_repositories_verified"}
+    off_host=remote and bool(copies) and remote_volumes
+    return {"off_host_backup_verified":off_host,"database_backups_verified":True,"database_backup_sets":labels,
+            "volume_shipping_verified":bool(copies),"volume_copy_checks":copies,
+            "backup_status":"two_remote_repositories_verified" if off_host else "local_repositories_verified" if not remote else "awaiting_volume_shipping"}
 
 
 # RUNNING includes invocations that have acknowledged work and await a result.
