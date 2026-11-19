@@ -99,3 +99,54 @@ func (s *Server) showPool(w http.ResponseWriter, r *http.Request) {
 	}
 	jsonResponse(w, http.StatusOK, out)
 }
+
+func (s *Server) startRollout(w http.ResponseWriter, r *http.Request) {
+	if !method(w, r, "POST") {
+		return
+	}
+	catalogMutation(s, w, r, func(ctx context.Context, p controlplane.Principal, key string, in controlplane.RolloutInput) (controlplane.APIReceipt, error) {
+		return s.catalog.StartRollout(ctx, p, r.PathValue("id"), key, in)
+	})
+}
+func (s *Server) showRollout(w http.ResponseWriter, r *http.Request) {
+	if !method(w, r, "GET") {
+		return
+	}
+	p, ok := s.principal(w, r)
+	if !ok {
+		return
+	}
+	out, err := s.catalog.GetRollout(r.Context(), p, r.PathValue("id"))
+	if err != nil {
+		failure(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusOK, out)
+}
+func (s *Server) resumeRollout(w http.ResponseWriter, r *http.Request) {
+	if !method(w, r, "POST") {
+		return
+	}
+	catalogMutation(s, w, r, func(ctx context.Context, p controlplane.Principal, key string, _ struct{}) (controlplane.APIReceipt, error) {
+		return s.catalog.ResumeRollout(ctx, p, r.PathValue("id"), key)
+	})
+}
+func (s *Server) rolloutMembers(w http.ResponseWriter, r *http.Request) {
+	if !method(w, r, "GET") {
+		return
+	}
+	p, ok := s.principal(w, r)
+	if !ok {
+		return
+	}
+	after, limit, ok := teamPagination(w, r)
+	if !ok {
+		return
+	}
+	out, err := s.catalog.RolloutMembers(r.Context(), p, r.PathValue("id"), after, limit)
+	if err != nil {
+		failure(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusOK, map[string]any{"items": out})
+}

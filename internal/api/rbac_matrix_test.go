@@ -115,6 +115,10 @@ var rbacRoutes = append([]rbacRoute{
 	{Method: "POST", Path: "/v1/deployment-plans", Success: 201, Want: "S S S 403 403 403 403 403 403 404 401 401 403", body: `{"template":"matrix-base@1","count":1}`},
 	{Method: "POST", Path: "/v1/deployment-plans/{fresh}/apply", Success: 202, Want: "S S S 403 403 403 403 403 403 404 401 401 403", body: `{}`, fresh: rbacFreshDeployment},
 	{Method: "GET", Path: "/v1/deployments/{deployment}", Success: 200, Want: "S S S 403 403 403 403 403 403 404 401 401 403"},
+	{Method: "POST", Path: "/v1/deployments/{fresh}/rollouts", Success: 202, Want: rbacConfigure, body: `{"template":"matrix-base@1","max_unavailable":1}`, fresh: rbacPoolDeployment},
+	{Method: "GET", Path: "/v1/rollouts/{fresh}/members", Success: 200, Want: rbacConfigure, fresh: rbacFreshRollout},
+	{Method: "GET", Path: "/v1/rollouts/{fresh}", Success: 200, Want: rbacConfigure, fresh: rbacFreshRollout},
+	{Method: "POST", Path: "/v1/rollouts/{fresh}/resume", Success: 202, Want: rbacConfigure, body: `{}`, fresh: rbacFreshRollout},
 	{Method: "POST", Path: "/v1/pools", Success: 201, Want: "S S S 403 403 403 403 403 403 404 401 401 403", body: `{"name":"{name}","deployment_id":"{fresh}"}`, fresh: rbacPoolDeployment},
 	{Method: "GET", Path: "/v1/pools/{pool}", Success: 200, Want: "S S S 403 403 403 403 403 403 404 401 401 403"},
 	{Method: "GET", Path: "/v1/organizations/current", Success: 200, Want: "S S S S S S S S S F 401 401 403", hides: []string{"{org}"}, Note: "the caller's own organization"},
@@ -960,5 +964,13 @@ func rbacFreshDeployment(t *testing.T, f *rbacFixture) map[string]string {
 func rbacPoolDeployment(t *testing.T, f *rbacFixture) map[string]string {
 	vars := rbacFreshDeployment(t, f)
 	f.must(t, "owner", "POST", "/v1/deployment-plans/"+vars["fresh"]+"/apply", `{}`, 202, nil)
+	return vars
+}
+
+func rbacFreshRollout(t *testing.T, f *rbacFixture) map[string]string {
+	vars := rbacPoolDeployment(t, f)
+	var rollout controlplane.Rollout
+	f.must(t, "owner", "POST", "/v1/deployments/"+vars["fresh"]+"/rollouts", `{"template":"matrix-base@1","max_unavailable":1}`, 202, &rollout)
+	vars["fresh"] = rollout.ID
 	return vars
 }

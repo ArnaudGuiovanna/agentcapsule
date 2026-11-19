@@ -3,11 +3,14 @@
 package worker
 
 import (
+	"bufio"
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	goruntime "runtime"
+	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
@@ -57,18 +60,17 @@ func NewProvisioningPlacements(store *controlplane.Store, hostID, workerID strin
 		return nil, err
 	}
 	w.provisioning = &provisioner{keys: keys, volumes: volumes, digest: "sha256:" + opts.InitrdSHA256, config: config, runtimeRoot: opts.Root}
-	var sys syscall.Sysinfo_t
-	if err = syscall.Sysinfo(&sys); err != nil {
-		w.Close()
-		return nil, err
-	}
 	cpus := config.VCPUs
 	if cpus == 0 {
 		cpus = goruntime.NumCPU()
 	}
 	memory := config.MemoryMiB
 	if memory == 0 {
-		memory = int64(sys.Freeram) * int64(sys.Unit) >> 20
+		memory, err = availableDeploymentMemory()
+		if err != nil {
+			w.Close()
+			return nil, err
+		}
 	}
 	budget := controlplane.HostProvisioningBudget{VCPUs: cpus, MemoryMiB: memory, UIDSlots: int(config.LastUID-config.FirstUID) + 1, MaxActive: opts.MaxActive}
 	images := []controlplane.ImageDigests{{Kernel: "sha256:" + opts.KernelSHA256, Initrd: "sha256:" + opts.InitrdSHA256}}
@@ -211,4 +213,29 @@ func bootImageID(e controlplane.Enrollment) *runtime.BootImageID {
 		return nil
 	}
 	return &runtime.BootImageID{Kernel: strings.TrimPrefix(e.SystemImage.Kernel, "sha256:"), Initrd: strings.TrimPrefix(e.SystemImage.Initrd, "sha256:")}
+}
+
+// Linux MemAvailable includes reclaimable page cache. MemFree alone can be
+// small immediately after importing or verifying a large guest image.
+func availableDeploymentMemory() (int64, error) {
+	f, err := os.Open("/proc/meminfo")
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	scan := bufio.NewScanner(f)
+	for scan.Scan() {
+		fields := strings.Fields(scan.Text())
+		if len(fields) == 3 && fields[0] == "MemAvailable:" && fields[2] == "kB" {
+			kb, err := strconv.ParseInt(fields[1], 10, 64)
+			if err != nil {
+				return 0, err
+			}
+			return kb / 1024, nil
+		}
+	}
+	if err := scan.Err(); err != nil {
+		return 0, err
+	}
+	return 0, fmt.Errorf("/proc/meminfo does not report MemAvailable")
 }

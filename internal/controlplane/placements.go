@@ -99,7 +99,7 @@ func (s *Store) RegisterPlacement(ctx context.Context, id, host string) error {
 // expiring job lease. A RUNNING placement survives worker death; another worker
 // on the same host must reconcile the VMM, not infer its death from elapsed time.
 func (s *Store) ClaimPlacement(ctx context.Context, id, host, worker string, lease time.Duration) (Placement, error) {
-	return s.claimPlacement(ctx, id, host, worker, lease, false, 0)
+	return s.claimPlacement(ctx, id, host, worker, lease, false, 0, "")
 }
 
 // ClaimFencePlacement may wake a LIVE, QUIESCING or provisioned but not yet
@@ -107,10 +107,10 @@ func (s *Store) ClaimPlacement(ctx context.Context, id, host, worker string, lea
 // A new boot always has that restricted purpose; an existing ordinary RUNNING
 // boot can be reused. The purpose must match the post-boot confirmation.
 func (s *Store) ClaimFencePlacement(ctx context.Context, id, host, worker string, lease time.Duration) (Placement, error) {
-	return s.claimPlacement(ctx, id, host, worker, lease, true, 0)
+	return s.claimPlacement(ctx, id, host, worker, lease, true, 0, "")
 }
 
-func (s *Store) claimPlacement(ctx context.Context, id, host, worker string, lease time.Duration, forFence bool, renewal uint64) (Placement, error) {
+func (s *Store) claimPlacement(ctx context.Context, id, host, worker string, lease time.Duration, forFence bool, renewal uint64, rolloutID string) (Placement, error) {
 	if worker == "" || lease < time.Microsecond || lease > 24*time.Hour {
 		return Placement{}, ErrPlacement
 	}
@@ -149,6 +149,9 @@ func (s *Store) claimPlacement(ctx context.Context, id, host, worker string, lea
 		return p, ErrUnavailable
 	}
 	if !forFence {
+		if err := allowRolloutBoot(ctx, tx, id, rolloutID); err != nil {
+			return p, err
+		}
 		if err := ordinaryStoreReady(ctx, tx, id); err != nil {
 			return p, err
 		}

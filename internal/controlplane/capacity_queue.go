@@ -114,6 +114,9 @@ func (s *Store) AdmitToSlot(ctx context.Context, host, agent string, running []s
 	if err = lockWorkerHost(ctx, tx, host); err != nil {
 		return SlotDecision{}, err
 	}
+	if err = allowRolloutBoot(ctx, tx, agent, ""); err != nil {
+		return SlotDecision{}, err
+	}
 	if err = pruneCapacityWaits(ctx, tx, host); err != nil {
 		return SlotDecision{}, err
 	}
