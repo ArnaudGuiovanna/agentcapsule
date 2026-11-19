@@ -8,7 +8,7 @@
 # server.key,ca.pem} (make-certs.sh writes this layout). Only the control plane
 # talks to Directory and only the platform's SLIM bridge talks to the node; both
 # ports are published on loopback only. Never run these containers with host
-# networking: Directory v1.8.0 always starts a libp2p host, which advertises
+# networking: Directory v1.9.1 starts a libp2p host, which advertises
 # itself over mDNS and asks the router for a UPnP port mapping.
 name: agentcapsule-interop
 
@@ -62,7 +62,7 @@ services:
       start_interval: 2s
 
   directory:
-    image: ghcr.io/agntcy/dir-apiserver:v1.8.0@sha256:6b49d53c22e049b16d25d588b1f022c92cf573872f19ae55636d52252eb5522e
+    image: ghcr.io/agntcy/dir-apiserver:v1.9.1@sha256:b42c7e47692e8ce5d154660e1b153e834033371740bbed95504a6498198ab386
     <<: *hardening
     env_file: [./directory.env]
     volumes:

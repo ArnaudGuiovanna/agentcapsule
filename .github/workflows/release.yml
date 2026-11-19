@@ -97,8 +97,10 @@ jobs:
           set -euo pipefail
           release="$RUNNER_TEMP/release"
           rustup toolchain install 1.97.0 --profile minimal --target x86_64-unknown-linux-musl
-          python3 scripts/build-firecracker.py --output "$release/vmm"
+          python3 scripts/build-firecracker.py --output "$release/vmm" --target-dir "$RUNNER_TEMP/firecracker-target"
+          rm -rf -- "$RUNNER_TEMP/firecracker-target"
           python3 scripts/build-guest-kernel.py --output "$release/kernel"
+          rm -rf -- "$release/kernel/source" "$release/kernel/build"
           python3 scripts/build-server-bundle.py --build "$release/build" --out "$release/assets" \
             --vmm "$release/vmm" --kernel "$release/kernel" --licenses "$release/audit/third-party-licenses.txt"
 
@@ -122,12 +124,14 @@ jobs:
           set -euo pipefail
           release="$RUNNER_TEMP/release"
           syft="$(python3 scripts/release_tools.py syft | awk '{print $3}')"
-          for file in "$release"/assets/agentcapsule-{server,packages,images}-linux-amd64.tar*; do
+          for file in "$release"/assets/agentcapsule-{server,packages}-linux-amd64.tar*; do
             "$syft" scan "file:$file" -o "spdx-json=$release/sbom/$(basename "$file").spdx.json"
           done
+          "$syft" scan "file:$release/vmm/Cargo.lock" --source-name firecracker-Cargo.lock -o "spdx-json=$release/sbom/firecracker-Cargo.lock.spdx.json"
+          python3 scripts/release_oci.py --assets "$release/assets" --sboms "$release/sbom"
           sboms=("$RUNNER_TEMP"/release/sbom/*.spdx.json)
           python3 scripts/scan-artifacts.py --output "$RUNNER_TEMP/release/scan" \
-            "${sboms[@]/#/--sbom=}" --deploy-images
+            "${sboms[@]/#/--sbom=}" --offline-image-index "$release/assets/component-sources.json" --deploy-images
 
       - name: Assemble the release files and their checksums
         run: |
@@ -148,6 +152,17 @@ jobs:
           cp "$release/audit/summary.json" "$assets/dependency-audit.json"
           cp "$release/scan/summary.json" "$assets/vulnerability-scan.json"
           cd "$assets"
+          # GitHub accepts at most 1000 files, each strictly below 2 GiB.
+          # Reserve three entries for SHA256SUMS and the two Sigstore bundles.
+          python3 - <<'PYTHON'
+          from pathlib import Path
+          files = list(Path(".").iterdir())
+          if len(files) + 3 > 1000:
+              raise SystemExit("Too many GitHub release files")
+          for file in files:
+              if file.name.startswith(".") or not file.is_file() or file.is_symlink() or file.stat().st_size >= 2**31:
+                  raise SystemExit(f"Invalid or oversized release asset: {file.name}")
+          PYTHON
           LC_ALL=C sha256sum -- * > "$release/SHA256SUMS"
           mv "$release/SHA256SUMS" SHA256SUMS
           cat SHA256SUMS
@@ -157,6 +172,7 @@ jobs:
         with:
           name: release-files
           retention-days: 7
+          compression-level: 0
           if-no-files-found: error
           path: ${{ runner.temp }}/release/assets/
 
@@ -164,7 +180,7 @@ jobs:
     name: Sign the checksums and attest the provenance
     needs: build
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 45
     permissions:
       contents: read
       id-token: write
@@ -229,7 +245,7 @@ jobs:
     name: Create the draft release
     needs: [build, sign]
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 60
     permissions:
       contents: write
     steps:

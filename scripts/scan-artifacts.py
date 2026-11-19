@@ -27,6 +27,7 @@ digest) and its build date is recorded. The new --output directory receives
 one grype report per target and summary.json.
 """
 
+import hashlib
 import argparse
 import datetime
 import importlib.util
@@ -105,6 +106,33 @@ def target_name(kind, value):
     return f"{kind}:{value}"
 
 
+def offline_image_policies(index, sboms):
+    """Apply the image's existing policy to its byte-checked local inventory."""
+    profile = json.loads((ROOT / "runtime/interop/profile.json").read_bytes())
+    approved = dict(profile["services"])
+    unit = (ROOT / "deploy/oidc/agentcapsule-oidc.service").read_text()
+    oidc = set(re.findall(r"quay\.io/keycloak/keycloak@sha256:[0-9a-f]{64}", unit))
+    if len(oidc) != 1:
+        raise ValueError("expected one pinned OIDC image")
+    approved["oidc"] = oidc.pop()
+    by_name = {path.name: path for path in sboms}
+    policies = {}
+    for image in json.loads(index.read_bytes())["images"]:
+        service = image["service"]
+        ref = approved.pop(service)
+        filename = "oci-" + service + ".spdx.json"
+        if image["ref"] != ref or not PINNED.search(ref) or image["sbom"] != filename:
+            raise ValueError("offline inventory does not match the pinned service " + service)
+        sbom = by_name[filename]
+        with sbom.open("rb") as stream:
+            if hashlib.file_digest(stream, "sha256").hexdigest() != image["sbom_sha256"]:
+                raise ValueError("offline inventory digest differs for " + service)
+        policies[target_name("sbom", sbom)] = target_name("image", ref)
+    if approved:
+        raise ValueError("missing offline image inventories")
+    return policies
+
+
 def slug(name):
     return re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("_")
 
@@ -112,6 +140,7 @@ def slug(name):
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--sbom", action="append", default=[], type=Path)
+    p.add_argument("--offline-image-index", type=Path, help="associate shipped OCI SBOMs with the exact pinned image policy")
     p.add_argument("--deploy-images", action="store_true")
     p.add_argument("--image", action="append", default=[])
     p.add_argument("--manifest", action="append", default=[], type=Path)
@@ -122,6 +151,7 @@ def main(argv=None):
     p.add_argument("--output", required=True, type=Path, help="new output directory")
     a = p.parse_args(argv)
 
+    policies = offline_image_policies(a.offline_image_index, a.sbom) if a.offline_image_index else {}
     targets = []  # (name, grype source, blocking)
     for sbom in a.sbom:
         targets.append((target_name("sbom", sbom), f"sbom:{sbom.resolve()}", True))
@@ -180,7 +210,7 @@ def main(argv=None):
             failed = True
             print(f"ERROR {name}: grype failed", file=sys.stderr)
             continue
-        found = findings(json.loads(report_path.read_text()), name)
+        found = findings(json.loads(report_path.read_text()), policies.get(name, name))
         blocked, allowed, other = TOOLS.apply_allowlist(
             found, entries, lambda f: blocking and f["severity"] in BLOCKING)
         counts = {s: sum(1 for f in found if f["severity"] == s) for s in SEVERITIES}

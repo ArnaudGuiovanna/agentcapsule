@@ -15,6 +15,9 @@ version tag. A maintainer reviews it, then publishes it.
 |---|---|
 | `agentcapsule-api`, `agentcapsule-worker`, `agentcapsule-admin`, `agentcapsule-authority`, `agentcapsule-slim-bridge` | The host programs, linux/amd64, linked dynamically against glibc 2.39 or newer (Ubuntu 24.04). The worker also needs `libcryptsetup.so.12`. |
 | `agentcapsule-harness` | The harness package tool (pack, push, sign, verify), static. |
+| `oci-<service>.spdx.json` | Inventory of the exact container image distributed for the service. |
+| `component-sources.json`, `component-notices.tar.gz` | Component versions, package source locations, SHA-256 identities and notices copied from application sources, container layers, Java archives and native Rust dependencies. |
+| `agentcapsule-oci-sources-*.tar` | Application sources, BusyBox, distribution source packages and recipes, plus the source of the SLIM native binding and the crate archives matching its Cargo.lock. |
 | `<binary>.spdx.json` | The SPDX 2.3 SBOM of each binary. |
 | `third-party-licenses.txt`, `licenses.json` | The license and notice files of every linked module, and the license inventory. |
 | `build.json` | How the binaries were built: commit, Go, C compiler, host packages, flags, both builds' digests. |
@@ -29,8 +32,9 @@ archives, and the source archives of the exact host and guest packages. The
 server bundle contains the patched Firecracker/jailer, kernel, guest initrd
 with the reference echo harness, adapter, deploy configuration, units, public
 HTTP contract and host guide. `agentcapsule-bundle.json` records the server
-release, migration format, commit and artifact digests. Each of these
-files is covered by the release workflow signature and provenance.
+release, migration format, commit and artifact digests. The release workflow signs checksums and attests the provenance of these files. GitHub allows up to 1,000 files per release and requires each to be smaller than 2 GiB. The builder splits source archives at 1,500 MiB before checking every final file. [GitHub release limits](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases)
+
+Each image inventory is tied to its offline archive and the pinned reference in the deployment configuration. The scanner applies the same image policy to the local SPDX and the registry scan. The source index records exact Red Hat SRPMs, Debian source packages, and Alpine recipes with their upstream files and packaging patches. Maven source-classifier URLs and Go module URLs identify further upstream components. [Candidate image qualification](release-image-qualification.md)
 [Single-host installation and updates](cli-host.md)
 
 ## What is checked
@@ -199,7 +203,7 @@ Not reproducible yet, and why:
 - **The harness packages.** The Dagger module installs Alpine packages
   (`gcc`, `musl-dev`, `e2fsprogs`) without pinning their versions; their
   reproducibility is not checked.
-- **The guest kernel and Firecracker.** Not studied.
+- **The guest kernel and Firecracker.** The release builds them from the recorded sources and configuration. Their separate builds have no two-builder reproducibility result.
 
 ## Cut a release
 
@@ -300,6 +304,5 @@ Download the files you need, with `SHA256SUMS` and `SHA256SUMS.sigstore.json`.
 - The provenance is SLSA Build Level 2: GitHub signs it, but the build runs
   in the repository's own workflow, not in an isolated reusable one.
 - The guest image's native packages are scanned with the build host's
-  distribution data; the guest kernel and Firecracker are not scanned.
-- Vulnerabilities of the SLIM native library's Rust dependencies are not
-  scanned: its published archive carries no SBOM.
+  distribution data. The release scans the Firecracker workspace dependency lock. The kernel build has no configuration-specific vulnerability inventory.
+- The SLIM native library has an inventory of the source revision and the Rust dependency lock. The lock also contains optional and build dependencies. It describes the upstream source tree and cannot identify every crate linked into the prebuilt native library.
