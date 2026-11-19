@@ -147,3 +147,11 @@ CLI, an installation profile with backup repositories and a command that
 reboots only that instance. The report records the interrupted operation,
 the recovered checkpoints, an invocation on the same agent after the update
 and its encrypted-volume archive, restore test and restore receipts.
+
+### Development qualification on WSL2
+
+On 19 November 2026, a network-isolated Ubuntu 24.04 instance in WSL2 installed the development assets offline and booted Firecracker on KVM. Resuming the interrupted installation preserved the original operation. The API verified the starter's echo and pgBackRest verified full encrypted backups in two local repositories. The host reported `off_host_backup_verified: false` for those destinations.
+
+The operator upgraded the server from `v0.1.0-dev.2` to `v0.1.0-dev.4`. PostgreSQL applied migrations 53 and 54, and the original probe agent returned a new echo. The `v0.1.0-dev.5` Linux CLI resumed the operation after fixing the Keycloak service restart. The realm's HTTPS discovery document was available again after a second, explicit service restart.
+
+MonApp's HTTP acceptance client then used the installed API, Keycloak and worker. The test provisioned three agents for Alice and Bob, checked the response from the starter harness, enforced the private-result boundary and confirmed Alice's revocation. [Application scenario](api/applications.md) · [KVM batch measurements](api/deployments.md#measured-deployment-on-wsl2-with-kvm)
