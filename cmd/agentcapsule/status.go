@@ -84,7 +84,7 @@ func (cli console) archive(report any) error {
 	if err = gz.Close(); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(cli.outputFile, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	f, err := createPrivateFile(cli.outputFile)
 	if err != nil {
 		return err
 	}

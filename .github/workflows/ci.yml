@@ -25,6 +25,26 @@ env:
   CGO_LDFLAGS_ALLOW: '-l:libcryptsetup\.so\.12'
 
 jobs:
+  cli:
+    name: CLI on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2025]
+    env:
+      CGO_ENABLED: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: go.sum
+      - run: go test ./cmd/agentcapsule
+      - run: go build ./cmd/agentcapsule
+
   checks:
     name: Format, vet, contracts and models
     runs-on: ubuntu-24.04

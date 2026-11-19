@@ -48,7 +48,7 @@ func (cli console) print(v any, id string) error {
 		}
 		// Only create new outputs. Existing configuration, credentials and
 		// support archives must survive a mistaken destination or failed write.
-		f, err := os.OpenFile(cli.outputFile, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		f, err := createPrivateFile(cli.outputFile)
 		if err != nil {
 			return err
 		}
