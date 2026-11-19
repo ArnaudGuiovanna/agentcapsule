@@ -133,3 +133,15 @@ The CLI updater verifies the signed digest for its own OS and architecture
 using the operator's cosign installation, then stages the replacement beside
 the current executable. Offline CLI updates take the same `--offline`,
 `--trusted-root` and `--to` options.
+
+The archive and restore-apply commands stop the maintenance worker while the
+one-shot operator process owns its listeners. They resume it when it was
+previously running. A restore test runs beside the worker and reports its
+archive digest, size and authority checks in the operation's storage result.
+
+To qualify two signed builds on a dedicated instance, the repository provides
+`scripts/verify-cli-host.py`. Pass the two asset directories and versions, the
+CLI, an installation profile with backup repositories and a command that
+reboots only that instance. The report records the interrupted operation,
+the recovered checkpoints, an invocation on the same agent after the update
+and its encrypted-volume archive, restore test and restore receipts.

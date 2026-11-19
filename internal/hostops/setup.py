@@ -378,7 +378,24 @@ def start_services(p):
     return {"services_started":True, "url":f"https://{p['api_name']}:{p['api_port']}", "oidc_issuer":realm}
 
 
-def backup(profile,mandatory):
+def worker_exclusive(args, profile, checkpoint):
+    # The worker's operator modes acquire the host listeners. Preserve a
+    # maintenance service that was already stopped, also on operation replay.
+    if not checkpoint.exists():
+        status=subprocess.run(["systemctl","is-active","--quiet","agentcapsule-worker"])
+        if status.returncode not in (0,3):
+            raise ValueError("cannot determine maintenance worker state")
+        save(checkpoint,{"restart":status.returncode==0})
+    restart=read(checkpoint)["restart"]
+    run("systemctl","stop","agentcapsule-worker")
+    try:
+        return output(*args,env=db_env(profile))
+    finally:
+        if restart:
+            run("systemctl","start","agentcapsule-worker")
+
+
+def backup(profile,mandatory,directory):
     config=profile["pgbackrest_config"]
     if not config:
         if mandatory:
@@ -428,8 +445,8 @@ def backup(profile,mandatory):
         # Exercise the physical storage path on the probe volume.
         probe=read(STATE/"smoke.json")
         archive="arc_"+secrets.token_hex(16)
-        run(ACTIVE/"agentcapsule-worker","-config",ETC/"worker.json","-archive-agent",probe["agent"],
-            "-archive-root","/var/lib/agentcapsule-archives","-archive-id",archive,env=db_env(profile))
+        worker_exclusive([ACTIVE/"agentcapsule-worker","-config",ETC/"worker.json","-archive-agent",probe["agent"],
+                         "-archive-root","/var/lib/agentcapsule-archives","-archive-id",archive],profile,directory/"backup-worker.json")
         run("systemctl","daemon-reload")
         run("systemctl","start","agentcapsule-archive-ship.service")
         run("systemctl","enable","--now","agentcapsule-archive-ship.timer")
@@ -467,8 +484,11 @@ def run_storage(request,directory):
         scratch=Path("/var/lib/agentcapsule-restore-tests")/directory.name
         scratch.mkdir(parents=True,exist_ok=True)
         args+=["-scratch",scratch]
-    result=json.loads(output(*args,env=db_env(profile)))
-    return {"storage_result":result}
+    if action=="restore-test":
+        result=output(*args,env=db_env(profile))
+    else:
+        result=worker_exclusive(args,profile,directory/"worker-state.json")
+    return {"storage_result":json.loads(result.splitlines()[-1])}
 
 
 def request_api(p,method,path,body=None,token=None,idempotency=None):

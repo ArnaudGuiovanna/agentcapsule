@@ -297,7 +297,7 @@ def execute(directory):
                 step("verify-release", lambda: (stage(request), None)[1])
                 step("prepare-release", lambda: prepare_release(release, dist, version))
                 if request["action"] == "update":
-                    step("backup", lambda: backup(profile, mandatory=True))
+                    step("backup", lambda: backup(profile, mandatory=True, directory=directory))
                     step("drain", lambda: drain(profile))
                 step("dependencies", lambda: install_dependencies(dist, release))
                 step("activate", lambda: activate(ACTIVE, release))
@@ -305,7 +305,7 @@ def execute(directory):
                 step("services", lambda: start_services(profile))
                 step("invocation", lambda: smoke(profile, directory))
                 if request["action"] == "install":
-                    step("backup", lambda: backup(profile, mandatory=False))
+                    step("backup", lambda: backup(profile, mandatory=False, directory=directory))
                     step("enrollment", lambda: issue_enrollment(profile))
                 save(STATE / "profile.json", profile)
             state(directory, state="succeeded", phase="complete")

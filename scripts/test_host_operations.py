@@ -89,6 +89,23 @@ class HostOperationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,"archive entry"):
                 self.api["unpack"](archive,self.root/f"extraction{i}")
 
+    def test_restore_restarts_the_worker_even_after_failure(self):
+        from unittest.mock import Mock
+        for previously_active in (True,False):
+            marker=self.root/("worker-"+str(previously_active))
+            running=Mock(returncode=0 if previously_active else 3)
+            self.api["run"]=Mock()
+            self.api["output"]=Mock(side_effect=ValueError("restore interrupted"))
+            self.api["db_env"]=lambda profile:{}
+            with patch("subprocess.run",return_value=running) as query:
+                for _ in range(2):
+                    with self.assertRaisesRegex(ValueError,"restore interrupted"):
+                        self.api["worker_exclusive"](["worker"],{},marker)
+                query.assert_called_once()
+            commands=[call.args for call in self.api["run"].call_args_list]
+            self.assertEqual(commands.count(("systemctl","stop","agentcapsule-worker")),2)
+            self.assertEqual(commands.count(("systemctl","start","agentcapsule-worker")),2 if previously_active else 0)
+
     def test_resume_preserves_completed_storage_operation(self):
         op=self.state/("host_"+"a"*32)
         op.mkdir()
