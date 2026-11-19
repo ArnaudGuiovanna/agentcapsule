@@ -51,6 +51,14 @@ Two clean builds of `f1d216d` on Ubuntu 24.04 amd64 in WSL2 produced the same ei
 
 The release scanner checked the 19 SPDX inventories on this medium. The Ubuntu package archive and the Keycloak image account for all 12 findings that block publication, one Critical and 11 High. [Image qualification](release-image-qualification.md) · [Ubuntu package findings](#ubuntu-package-archive-19-november-2026)
 
+### Signed Linux development build `v0.1.0-dev.11`
+
+On 20 November 2026, two clean Ubuntu 24.04 amd64 builds of commit `b14a85f` in WSL2 produced identical bytes for all eight Linux executables and `product.initrd`. The development signing key used for `dev.6` signed an index of 44 files totaling 2,548,341,450 bytes. The SHA-256 of `SHA256SUMS` is `34cfec44601cbc3b4f21c38c4970bc6fd1d10eec0f39e45c9cd14dd419a3a38a`. The offline reader verified the signature, extracted the server bundle and checked all 63 files. Its manifest declares the binary rollback contract `agentcapsule-state/v1` and 54 PostgreSQL migration records. The installation and restored-agent exercise used the earlier `dev.6` media. [WSL installation and recovery](cli-host.md#development-qualification-on-wsl2)
+
+The Linux/arm64 CLI from the same commit ran under QEMU 10.2.1 in WSL2 against a native Linux HTTPS API and PostgreSQL. The test observed 49 TLS 1.3 requests across enrollment, context isolation, key rotation and logout. It also checked that the client rejected an untrusted certificate authority and an overly permissive context file. The arm64 executable's SHA-256 was `f51294db614ecadba7c631b31523b0957c7e06a85cd1242aebc9161a96f47777`.
+
+The scan of the 19 SPDX inventories found one Critical and eleven High matches that block publication. The six Ubuntu package matches and six Keycloak matches are detailed below and in the image qualification. [Image findings](release-image-qualification.md)
+
 ### Ubuntu package archive, 19 November 2026
 
 The offline Noble snapshot used in the installation test contained 171 binary packages. The release inventory checks every archived `.deb` against the server's package index and records its SHA-256, Ubuntu release, binary version and source package. Grype 0.121.0 with the 19 November database reported six High matches, 452 Medium, 37 Low and five Negligible. The six High matches block this archive under the release policy. The six separate Keycloak matches also block the offline images. [Image qualification](release-image-qualification.md)
