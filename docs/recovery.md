@@ -1681,6 +1681,30 @@ restore proves those, as the KVM test below does.
 
 ## Volume archives off the host (REC-02)
 
+### Installation and update receipts
+
+The host CLI takes a full PostgreSQL backup in each configured pgBackRest repository. It records each full backup label in `database_backup_sets` after checking the repository status and running `pgbackrest --repo=N verify` against each repository. Noble ships pgBackRest 2.50, whose verifier checks the entire repository, including its WAL. The status field `database_backups_verified` records this check.
+
+For `volume_shipping_verified`, the host archives its smoke-test agent and starts the shipper. It then fetches that archive separately from the S3 and standby crypt remotes. Each fetch has its own empty destination. The worker's restore test reads that copy, authenticates the manifest and binding, checks the digest and volume identity, makes a scratch copy and opens the LUKS container with the agent's current key. The operation records each store's archive ID, byte count and completed checks in `volume_copy_checks`. Budget scratch space for a fetched archive plus one copy of its volume. The two store tests run sequentially.
+
+`off_host_backup_verified` also requires encrypted database repositories using S3 and SFTP, and encrypted volume copies over those protocols. For each pair, the helper resolves the configured transport hosts, rejects an address assigned to the current host, and checks that the two sets of addresses are disjoint. Operators establish physical and administrative independence with their storage providers. A production update requires the off-host checks to pass.
+
+### WSL recovery qualification, 19 November 2026
+
+An unprivileged Ubuntu 24.04 fixture ran two separate services and repositories in a private network namespace on one WSL2 machine. SeaweedFS 4.53 served S3 over TLS. OpenSSH 9.6p1 served SFTP over a public-key-authenticated test listener. The clients were PostgreSQL 16.15, pgBackRest 2.50 and Ubuntu's rclone 1.60.1. Both destinations used loopback addresses, so the off-host separation check stays false. This run qualifies protocol and storage recovery on one kernel. Physical site independence requires a separate exercise.
+
+| Exercise | S3 result | SFTP result |
+|---|---|---|
+| Repeat shipping of one signed 1 MiB probe archive | First run uploaded one archive. The second uploaded zero. | First run uploaded one archive. The second uploaded zero. |
+| Independent PostgreSQL recovery | Restored full set `20261119-235205F`, booted PostgreSQL and read the committed SQL sentinel. | Restored full set `20261119-235209F`, booted PostgreSQL and read the same sentinel. |
+| Independent volume recovery | Fetched the signed probe and verified its digest. In the worker test, reopened 67,108,864 LUKS bytes with the agent's current key. | Verified the same digest and reopened 67,108,864 LUKS bytes with the agent's current key. A subsequent fetch rejected a payload corrupted without changing its size. |
+
+The fixture removed the source PostgreSQL cluster and the original probe archive before recovery. During each independent database restore and probe fetch it suspended the other store. The worker also exercised loss of its original host with the newest archive removed from the standby. It recovered incarnation 2 from S3, retained the two earlier outcomes, reported the one expected post-archive loss, and retrieved the older archive from SFTP. The worker scenario used its in-process host fixture. Its separate LUKS check authenticates a real encrypted container from each store. [Worker recovery test](../internal/worker/host_restore_shipped_test.go)
+
+The local receipt is `_evidence/cli-backup-review/summary.json`. Its redacted `qualification.log` records the two backup labels, independent SQL results, archive digest, LUKS sizes and expected loss. The receipt and log contain no repository credentials or volume keys.
+
+### Shipping archives
+
 Every hour, `agentcapsule-archive-ship.timer` copies every complete archive of
 the worker's archive root to the two stores of ADR 004: the S3-compatible
 object store, and the standby host over SFTP. Either store alone restores an
