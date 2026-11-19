@@ -2,6 +2,7 @@
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
+from http.client import IncompleteRead
 import json
 from pathlib import Path, PurePosixPath
 import re
@@ -10,8 +11,10 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import time
 import zipfile
 import tomllib
+from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import urlopen
 
@@ -88,15 +91,35 @@ def git_source(repository, revision, work):
     return dest
 
 
-def checked_download(url, dest, expected):
-    with urlopen(url, timeout=120) as source, dest.open("wb") as dst:
-        shutil.copyfileobj(source, dst)
+def checked_download(url, dest, expected, cache=None):
+    cached = cache / hashlib.sha256(url.encode()).hexdigest() if cache else None
+    if cached and cached.is_file() and BUNDLE["digest"](cached) == expected:
+        shutil.copyfile(cached, dest)
+        return dest
+    for attempt in range(3):
+        try:
+            with urlopen(url, timeout=120) as source, dest.open("wb") as dst:
+                shutil.copyfileobj(source, dst)
+            break
+        except (HTTPError, URLError, TimeoutError, IncompleteRead, ConnectionError) as err:
+            if attempt == 2 or isinstance(err, HTTPError) and err.code < 500 and err.code != 429:
+                raise
+            time.sleep(2 ** attempt)
     if BUNDLE["digest"](dest) != expected:
         raise ValueError("upstream source checksum mismatch for " + dest.name)
+    if cached:
+        cache.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=cache, delete=False) as entry:
+            temporary = Path(entry.name)
+        try:
+            shutil.copyfile(dest, temporary)
+            temporary.replace(cached)
+        finally:
+            temporary.unlink(missing_ok=True)
     return dest
 
 
-def native_rust_sources(archive, sources, work, notice_root, syft, sboms):
+def native_rust_sources(archive, sources, work, notice_root, syft, sboms, source_cache):
     with tarfile.open(archive) as tree:
         lock = tree.extractfile("rust/Cargo.lock").read()
     lock_file = work / "Cargo.lock"
@@ -115,7 +138,7 @@ def native_rust_sources(archive, sources, work, notice_root, syft, sboms):
         if not re.fullmatch(r"[a-zA-Z0-9_-]+", name) or not re.fullmatch(r"[a-zA-Z0-9.+_-]+", version):
             raise ValueError("invalid crate identifier")
         filename = f"{name}-{version}.crate"
-        dest = checked_download(f"https://static.crates.io/crates/{name}/{filename}", work / filename, pkg["checksum"])
+        dest = checked_download(f"https://static.crates.io/crates/{name}/{filename}", work / filename, pkg["checksum"], source_cache)
         with tarfile.open(dest) as tree:
             notices(tree, notice_root, "native/crates")
         return dest
@@ -183,11 +206,7 @@ def mirror_distro(records, sources, work, source_cache):
     def collect(file):
         name = file["sha256"]
         dest = work / ("distro-" + name)
-        cached = source_cache / hashlib.sha256(file["url"].encode()).hexdigest() if source_cache else None
-        if cached and cached.is_file() and BUNDLE["digest"](cached) == name:
-            shutil.copyfile(cached, dest)
-        else:
-            checked_download(file["url"], dest, name)
+        checked_download(file["url"], dest, name, source_cache)
         return name, dest
 
     with ThreadPoolExecutor(max_workers=5) as pool:
@@ -300,7 +319,7 @@ def audit(assets, sboms, syft, source_cache):
         sources[archive.name] = archive
         with tarfile.open(archive) as tree:
             native_notices = notices(tree, notice_root, "native/slim-bindings")
-        rust = native_rust_sources(archive, sources, work, notice_root, syft, sboms)
+        rust = native_rust_sources(archive, sources, work, notice_root, syft, sboms, source_cache)
         distro = mirror_distro(records, sources, work, source_cache)
         write_json(assets / "component-sources.json", {
             "distribution_sources": distro,
@@ -315,6 +334,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--assets", required=True, type=Path)
     parser.add_argument("--sboms", required=True, type=Path)
-    parser.add_argument("--source-cache", type=Path, help="reuse locally downloaded distro sources after verifying their pinned SHA-256")
+    parser.add_argument("--source-cache", type=Path, help="reuse locally downloaded distro or crate sources after verifying their pinned SHA-256")
     args = parser.parse_args()
     audit(args.assets.resolve(), args.sboms.resolve(), release_tools.tool("syft"), args.source_cache)

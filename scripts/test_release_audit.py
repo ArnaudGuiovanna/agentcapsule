@@ -35,6 +35,7 @@ TOOLS = load("release_tools", "release_tools.py")
 SCAN = load("scan_artifacts", "scan-artifacts.py")
 SBOM = load("release_sbom", "release-sbom.py")
 AUDIT = load("audit_dependencies", "audit-dependencies.py")
+OCI = load("release_oci", "release_oci.py")
 GUEST = load("build_product_guest", "build-product-guest.py")
 TODAY = datetime.date(2026, 11, 16)
 
@@ -51,6 +52,28 @@ class Temporary(unittest.TestCase):
 
 
 class PinnedToolTest(Temporary):
+    def test_source_cache_reuses_only_digest_verified_bytes(self):
+        source = self.dir / "upstream"
+        source.write_bytes(b"upstream source")
+        url = source.as_uri()
+        checksum = TOOLS.sha256(source)
+        cache = self.dir / "cache"
+        dest = self.dir / "download"
+        OCI.checked_download(url, dest, checksum, cache)
+        entry, = cache.iterdir()
+        self.assertEqual(entry.read_bytes(), source.read_bytes())
+        source.unlink()
+        dest.unlink()
+        OCI.checked_download(url, dest, checksum, cache)
+        self.assertEqual(TOOLS.sha256(dest), checksum)
+        entry.write_bytes(b"corrupted")
+        source.write_bytes(b"different source")
+        with self.assertRaisesRegex(ValueError, "checksum mismatch"):
+            OCI.checked_download(url, dest, checksum, cache)
+        source.write_bytes(b"upstream source")
+        OCI.checked_download(url, dest, checksum, cache)
+        self.assertEqual(TOOLS.sha256(entry), checksum)
+
     def pin(self, payload, digest=None):
         archive = self.dir / "tool.tar.gz"
         member = self.dir / "member"
