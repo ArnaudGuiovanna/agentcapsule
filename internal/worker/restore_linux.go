@@ -119,7 +119,7 @@ func (w *Placements) relocateVolume(ctx context.Context, e controlplane.Enrollme
 	if err != nil {
 		return 0, 0, err
 	}
-	registration := runtime.ProvisionedAgent{ID: e.AgentID, Volume: volume.Path, Device: volume.Device, Inode: volume.Inode,
+	registration := runtime.ProvisionedAgent{SystemImage: bootImageID(e), ID: e.AgentID, Volume: volume.Path, Device: volume.Device, Inode: volume.Inode,
 		Resources: runtime.VMResources{VCPUs: e.Resources.VCPUs, MemoryMiB: e.Resources.MemoryMiB, VolumeMiB: e.Resources.DataVolumeMiB}, Harness: harness}
 	if err = w.host.RegisterProvisioned(ctx, registration, p.config.FirstUID, p.config.LastUID); err != nil {
 		return 0, 0, err

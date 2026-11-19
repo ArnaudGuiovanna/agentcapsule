@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/runtime"
 )
 
 type DispatchOptions struct {
@@ -109,7 +110,7 @@ func (w *Placements) DispatchPass(ctx context.Context, o DispatchOptions, attemp
 		if err == nil {
 			err = w.store.CompleteWork(finish, job)
 		} else {
-			err = errors.Join(err, w.store.RetryWork(finish, job, o.backoff(job.Failures)))
+			err = errors.Join(err, w.store.RetryWorkWithCapacity(finish, job, o.backoff(job.Failures), errors.Is(err, runtime.ErrCapacity)))
 		}
 		finishCancel()
 		result = errors.Join(result, err)

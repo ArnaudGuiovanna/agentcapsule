@@ -50,24 +50,30 @@ var ErrAuthorityServiceRequired = errors.New("key_authority, restore_authority a
 // ServiceConfig is trusted operator input; the DSN is provided separately through
 // AGENTCAPSULE_DATABASE_URL. Provisioning requires an explicit key authority and
 // a dedicated UID range; without them it maintains preprovisioned placements.
+type ServiceBootImage struct {
+	Kernel ServiceImage `json:"kernel"`
+	Initrd ServiceImage `json:"initrd"`
+}
+
 type ServiceConfig struct {
-	Version        int          `json:"version"`
-	HostID         string       `json:"host_id"`
-	Root           string       `json:"root"`
-	Firecracker    ServiceImage `json:"firecracker"`
-	Jailer         ServiceImage `json:"jailer"`
-	Kernel         ServiceImage `json:"kernel"`
-	Initrd         ServiceImage `json:"initrd"`
-	MaxActive      int          `json:"max_active"`
-	BootTimeout    string       `json:"boot_timeout"`
-	BootLease      string       `json:"boot_lease"`
-	PollInterval   string       `json:"poll_interval"`
-	AttemptTimeout string       `json:"attempt_timeout"`
-	DispatchBatch  int          `json:"dispatch_batch"`
-	WorkLease      string       `json:"work_lease"`
-	DeliveryLease  string       `json:"delivery_lease"`
-	RetryBase      string       `json:"retry_base"`
-	RetryMax       string       `json:"retry_max"`
+	Version        int                `json:"version"`
+	HostID         string             `json:"host_id"`
+	Root           string             `json:"root"`
+	Firecracker    ServiceImage       `json:"firecracker"`
+	Jailer         ServiceImage       `json:"jailer"`
+	Kernel         ServiceImage       `json:"kernel"`
+	Initrd         ServiceImage       `json:"initrd"`
+	SystemImages   []ServiceBootImage `json:"system_images,omitempty"`
+	MaxActive      int                `json:"max_active"`
+	BootTimeout    string             `json:"boot_timeout"`
+	BootLease      string             `json:"boot_lease"`
+	PollInterval   string             `json:"poll_interval"`
+	AttemptTimeout string             `json:"attempt_timeout"`
+	DispatchBatch  int                `json:"dispatch_batch"`
+	WorkLease      string             `json:"work_lease"`
+	DeliveryLease  string             `json:"delivery_lease"`
+	RetryBase      string             `json:"retry_base"`
+	RetryMax       string             `json:"retry_max"`
 	// Authority reaches the authority service; none on a laboratory host
 	// without authorities.
 	Authority *ServiceAuthority `json:"authority,omitempty"`
@@ -365,6 +371,14 @@ func (c ServiceConfig) Settings() (runtime.FirecrackerOptions, time.Duration, Ma
 	}
 	r = runtime.FirecrackerOptions{Root: c.Root, Firecracker: c.Firecracker.Path, FirecrackerSHA256: c.Firecracker.SHA256,
 		Jailer: c.Jailer.Path, JailerSHA256: c.Jailer.SHA256, Kernel: c.Kernel.Path, KernelSHA256: c.Kernel.SHA256,
-		Initrd: c.Initrd.Path, InitrdSHA256: c.Initrd.SHA256, MaxActive: c.MaxActive, BootTimeout: boot, DriveLimits: drives, AuthenticatedControl: true}
+		SystemImages: c.bootImages(), Initrd: c.Initrd.Path, InitrdSHA256: c.Initrd.SHA256, MaxActive: c.MaxActive, BootTimeout: boot, DriveLimits: drives, AuthenticatedControl: true}
 	return r, lease, m, nil
+}
+
+func (c ServiceConfig) bootImages() []runtime.BootImage {
+	var images []runtime.BootImage
+	for _, img := range c.SystemImages {
+		images = append(images, runtime.BootImage{Kernel: img.Kernel.Path, Initrd: img.Initrd.Path, KernelSHA256: img.Kernel.SHA256, InitrdSHA256: img.Initrd.SHA256})
+	}
+	return images
 }
