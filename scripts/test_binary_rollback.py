@@ -1,7 +1,10 @@
 """Exercise the real host plan and operation using signed offline media.
 
-Set AGENTCAPSULE_TEST_POSTGRES and AGENTCAPSULE_TEST_ADMIN to also exercise
-rollback on a physical PostgreSQL copy. The test role needs CREATEDB.
+To exercise a physical PostgreSQL copy, set AGENTCAPSULE_TEST_POSTGRES to
+a test role with CREATEDB, AGENTCAPSULE_TEST_PG_BIN to the PostgreSQL tools
+directory and AGENTCAPSULE_TEST_ADMIN, AGENTCAPSULE_TEST_ADMIN_NEW,
+AGENTCAPSULE_TEST_API and AGENTCAPSULE_TEST_API_NEW to the two pairs of
+Linux binaries.
 """
 import base64
 import hashlib
@@ -15,6 +18,7 @@ import tarfile
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import unittest
 import uuid
@@ -26,6 +30,16 @@ OLD, NEW = "v0.1.0-dev.9", "v0.1.0-dev.10"
 
 def digest(data):
     return hashlib.sha256(data).hexdigest()
+
+
+def database_dsn(base, name):
+    if not base.startswith(("postgresql://", "postgres://")):
+        return base + " dbname=" + name
+    parts = urllib.parse.urlsplit(base)
+    query = [(key, value) for key, value in urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
+             if key != "dbname"]
+    # Unix-socket URIs can have an empty authority (postgresql:///dbname).
+    return parts.scheme + "://" + parts.netloc + "/" + name + ("?" + urllib.parse.urlencode(query) if query else "")
 
 
 class BinaryRollbackTests(unittest.TestCase):
@@ -236,7 +250,7 @@ class BinaryRollbackTests(unittest.TestCase):
             return dict(os.environ, AGENTCAPSULE_MODE="development", AGENTCAPSULE_DATABASE_URL=dsn)
         sql(base, "CREATE DATABASE " + source)
         self.addCleanup(sql, base, "DROP DATABASE " + source)
-        src = base + " dbname=" + source
+        src = database_dsn(base, source)
         subprocess.run([self.binaries[OLD], "migrate"],env=private(src),check=True,stdout=subprocess.DEVNULL)
         receipt_key = self.root / "api-receipt-key"
         receipt_key.write_bytes(os.urandom(32))
@@ -255,7 +269,7 @@ class BinaryRollbackTests(unittest.TestCase):
                     INSERT INTO organizations(id,name) VALUES ('rollback-tenant','rollback tenant');""")
         sql(base, "CREATE DATABASE " + copy + " TEMPLATE " + source)
         self.addCleanup(sql, base, "DROP DATABASE " + copy)
-        dsn = base + " dbname=" + copy
+        dsn = database_dsn(base, copy)
         self.api["db_env"] = lambda _: private(dsn)
         # Reinstall the production libpq query, used during both plan and apply.
         setup = ROOT / "internal/hostops/setup.py"
