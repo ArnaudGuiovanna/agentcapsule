@@ -94,6 +94,7 @@ def main():
     for name in ["AGENTCAPSULE_PG_CHILD", "AGENTCAPSULE_PG_CHILD_DSN", "AGENTCAPSULE_PG_RECOVERY",
                  "CAPSULE_CRASH_POINT", "CAPSULE_CRASH_DB", "AGENTCAPSULE_VOLUME_CHILD", "AGENTCAPSULE_KEY_CHILD"]:
         env.pop(name, None)
+    env["AGENTCAPSULE_TEST_PG_BIN"] = str(pg_bin)
     if args.library_path:
         env["LD_LIBRARY_PATH"] = args.library_path
     results = []

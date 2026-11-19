@@ -120,3 +120,10 @@ Repeat the login for Bob. For an enterprise IdP, acquire the two access tokens u
 ```
 
 The scenario performs concurrent acceptance, replays a lost response, checks personal exclusivity, shared access, cross-tenant isolation and private results, and then moves and offboards Alice. Finally it revokes the test application and checks Bob's still-unexpired credential. It prints resource and revocation IDs. Its inputs are HTTPS and JSON so another language can replay the same sequence. [Reference client](../../examples/monapp/verify.py)
+
+
+## Recovering a personal volume
+
+Before granting the first access to a pool volume, the API records the immutable volume ID, agent ID and member ID in the restore authority. A replicated installation waits for the standby to acknowledge that record. If the authority is unavailable, the request returns HTTP 503 and can be retried with the same invitation and idempotency key.
+
+Restoring a database snapshot that predates the assignment leaves the volume reserved outside PostgreSQL. On promotion, reconciliation imports the record. On a same-host restore, the API replays missing records before it opens its listener. A member whose assignment is absent from the snapshot may need another invitation and a fresh agent. The retained volume is excluded from pool and team assignments.

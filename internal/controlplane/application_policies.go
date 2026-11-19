@@ -130,7 +130,8 @@ func inspectPolicy(ctx context.Context, tx pgx.Tx, tenant string, v *AssignmentP
 			}
 			var present bool
 			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM agents WHERE tenant_id=$1 AND id=$2 AND phase='LIVE' AND NOT EXISTS(
-                SELECT 1 FROM app_personal_reservations WHERE tenant_id=$1 AND agent_id=$2))`, tenant, slot.AgentID).Scan(&present); err != nil {
+                SELECT 1 FROM app_personal_reservations WHERE tenant_id=$1 AND agent_id=$2) AND NOT EXISTS(
+                SELECT 1 FROM personal_volume_holds WHERE tenant_id=$1 AND agent_id=$2))`, tenant, slot.AgentID).Scan(&present); err != nil {
 				return err
 			}
 			if !present {

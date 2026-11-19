@@ -222,7 +222,9 @@ func (a *Accounts) AcceptInvitation(ctx context.Context, appID, key, token strin
 		if err = eligibleTeam(ctx, tx, tenant, team, pol.PolicySpec); err != nil {
 			return APIReceipt{}, err
 		}
-		pID := newID("prn")
+		// A lost commit may already have recorded this member as a volume owner
+		// outside PostgreSQL. The same verified subject must retry as that owner.
+		pID := applicationStableID("prn", appID, c.Subject)
 		// A newly registered issuer cannot take over a manually registered
 		// principal, even when a subject or email happens to match.
 		tag, err := tx.Exec(ctx, `INSERT INTO principals(id,tenant_id,kind,issuer,subject,display_name) VALUES($1,$2,'user',$3,$4,$5) ON CONFLICT DO NOTHING`, pID, tenant, c.Issuer, c.Subject, "Member")
@@ -260,7 +262,7 @@ func (a *Accounts) AcceptInvitation(ctx context.Context, appID, key, token strin
 	// Receipts are scoped to Alice, never to the application shared by Alice and Bob.
 	actor := Principal{ID: v.PrincipalID, TenantID: tenant}
 	out, err := a.withTenantReceipt(ctx, tx, actor, "invitation.accept", key, invite, func() (int, any, error) {
-		err := allocateSlots(ctx, tx, p, v, pol)
+		err := a.allocateSlots(ctx, tx, p, v, pol)
 		if err != nil {
 			return 0, nil, err
 		}
@@ -283,8 +285,9 @@ func joinAppTeam(ctx context.Context, tx pgx.Tx, p Principal, member, team strin
 	return err
 }
 
-func allocateSlots(ctx context.Context, tx pgx.Tx, p Principal, v Activation, pol AssignmentPolicy) error {
+func (a *Accounts) allocateSlots(ctx context.Context, tx pgx.Tx, p Principal, v Activation, pol AssignmentPolicy) error {
 	waiting := false
+	var holds [][]string
 	for _, slot := range pol.Slots {
 		if slot.PoolID == "" {
 			continue
@@ -320,7 +323,21 @@ func allocateSlots(ctx context.Context, tx pgx.Tx, p Principal, v Activation, po
 		if _, err := tx.Exec(ctx, `INSERT INTO app_personal_reservations(tenant_id,agent_id,principal_id,policy_id,slot) VALUES($1,$2,$3,$4,$5)`, p.TenantID, agent, v.PrincipalID, pol.ID, slot.Name); err != nil {
 			return err
 		}
+		if a.store.recorder() != nil {
+			var volume string
+			if err = tx.QueryRow(ctx, "SELECT volume_id FROM store_enrollments WHERE agent_id=$1", agent).Scan(&volume); err != nil {
+				return err
+			}
+			holds = append(holds, []string{agent, volume, v.PrincipalID})
+		}
 		if err := writePolicyGrant(ctx, tx, p, pol.ID, agent, v.PrincipalID, "", slot.Permissions); err != nil {
+			return err
+		}
+	}
+	// Record only after every slot has passed admission. No personal volume
+	// becomes accessible until its recovery record is also safe on failover.
+	for _, h := range holds {
+		if err := a.store.recordPersonalVolume(ctx, tx, p.TenantID, h); err != nil {
 			return err
 		}
 	}
@@ -331,7 +348,8 @@ func allocateSlots(ctx context.Context, tx pgx.Tx, p Principal, v Activation, po
 // A formerly assigned pool agent can contain private state even after all
 // of its grants were revoked. Keep such a volume out of future allocations.
 const assignablePoolInventory = `(SELECT i.* FROM agent_pool_inventory i WHERE NOT EXISTS (
-  SELECT 1 FROM agent_assignments history WHERE (history.tenant_id,history.agent_id)=(i.tenant_id,i.agent_id)))`
+  SELECT 1 FROM agent_assignments history WHERE (history.tenant_id,history.agent_id)=(i.tenant_id,i.agent_id)) AND NOT EXISTS (
+  SELECT 1 FROM personal_volume_holds h WHERE (h.tenant_id,h.agent_id)=(i.tenant_id,i.agent_id)))`
 
 var ErrPoolExhausted = errors.New("personal agent pool exhausted")
 
@@ -506,7 +524,7 @@ func (a *Accounts) SyncActivation(ctx context.Context, p Principal, appID, id, k
 						return 0, nil, err
 					}
 				}
-				if err := allocateSlots(ctx, tx, actor, v, pol); err != nil {
+				if err := a.allocateSlots(ctx, tx, actor, v, pol); err != nil {
 					return 0, nil, err
 				}
 			}
@@ -600,7 +618,7 @@ func (a *Accounts) retryOne(ctx context.Context, ids [3]string) error {
 	if err != nil {
 		return err
 	}
-	if err = allocateSlots(ctx, tx, Principal{ID: ids[1], TenantID: ids[0]}, v, pol); err != nil {
+	if err = a.allocateSlots(ctx, tx, Principal{ID: ids[1], TenantID: ids[0]}, v, pol); err != nil {
 		return err
 	}
 	return commit(ctx, tx)
@@ -608,7 +626,8 @@ func (a *Accounts) retryOne(ctx context.Context, ids [3]string) error {
 
 func personalTarget(ctx context.Context, tx pgx.Tx, tenant, agent, member string) error {
 	var conflicts bool
-	err := tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM app_personal_reservations WHERE tenant_id=$1 AND agent_id=$2 AND principal_id<>$3)", tenant, agent, member).Scan(&conflicts)
+	err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM app_personal_reservations WHERE tenant_id=$1 AND agent_id=$2 AND principal_id<>$3)
+		OR EXISTS(SELECT 1 FROM personal_volume_holds WHERE tenant_id=$1 AND agent_id=$2 AND principal_id<>$3)`, tenant, agent, member).Scan(&conflicts)
 	if err == nil && conflicts {
 		return ErrTransition
 	}

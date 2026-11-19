@@ -4113,7 +4113,7 @@ components:
         id: {type: string, pattern: '^arv_[0-9a-f]{32}$'}
         kind:
           type: string
-          enum: [api_token, service_token, platform_credential, delegated_token, blanket, member, principal, organization, team, team_membership, assignment, mandate, delegation_trust, llm_provider]
+          enum: [api_token, service_token, platform_credential, delegated_token, blanket, member, principal, organization, team, team_membership, assignment, mandate, delegation_trust, llm_provider, personal_volume]
           description: "A bearer token's (the first four), every bearer token issued before a failover that may have ended a degraded period (blanket, recorded by the promotion of the authorities, ADR 006 wave 7), or a standing grant's."
         state:
           type: string

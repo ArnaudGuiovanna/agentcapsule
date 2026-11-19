@@ -398,6 +398,7 @@ func revertTenantAgents(t *testing.T, s *Store) {
         DROP TABLE IF EXISTS authority_reconciliations;
         ALTER TABLE http_receipts DROP COLUMN IF EXISTS key_day;
         ALTER TABLE tenant_http_receipts DROP COLUMN IF EXISTS key_day;
+        DROP VIEW IF EXISTS personal_volume_holds;
         DROP TABLE IF EXISTS access_revocations;
         DROP FUNCTION IF EXISTS preserve_access_revocation();
         DROP TABLE IF EXISTS volume_relocations, host_takeovers;
