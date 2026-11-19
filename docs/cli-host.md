@@ -142,13 +142,17 @@ The archive and restore-apply commands stop the maintenance worker while the
 one-shot operator process owns its listeners. They resume it when it was
 previously running. A restore test runs beside the worker and reports its
 archive digest, size and authority checks in the operation's storage result.
+When restoring the installation's starter agent, add `--verify-starter` to
+`restore apply`. The operation submits a fresh echo request after restoring
+the volume and records the agent and invocation IDs. If the echo fails, a
+resume retries that check from the completed restore checkpoint.
 
 To qualify two signed builds on a dedicated instance, the repository provides
 `scripts/verify-cli-host.py`. Pass the two asset directories and versions, the
 CLI, an installation profile with backup repositories and a command that
-reboots only that instance. The report records the interrupted operation,
-the recovered checkpoints, an invocation on the same agent after the update
-and its encrypted-volume archive, restore test and restore receipts.
+reboots only that instance. The report records the guest boot IDs during the
+interrupted installation and after the upgrade, the recovered checkpoints,
+the encrypted-volume checks and a fresh invocation on the restored agent.
 
 ### Development qualification on WSL2
 

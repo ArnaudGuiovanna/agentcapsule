@@ -15,6 +15,22 @@ import time
 import uuid
 
 
+def verify_reboot(command, before, diagnostics, required_services=()):
+    subprocess.run(command, timeout=300, check=True)
+    deadline = time.monotonic() + 300
+    while time.monotonic() < deadline:
+        try:
+            health = diagnostics()
+            after = uuid.UUID(health["boot_id"])
+            active = {s["service"] for s in health["services"] if s.get("ActiveState") == "active"}
+            if before != after and active.issuperset(required_services):
+                return {"boot_before": str(before), "boot_after": str(after)}
+        except (subprocess.CalledProcessError, ValueError):
+            pass
+        time.sleep(2)
+    raise ValueError("target did not report a new boot with the required services")
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument("--cli",nargs="+",required=True,help="CLI command or wrapper that enters the target namespace")
@@ -51,12 +67,16 @@ def main():
         # Keep only operation state and public IDs, never the host's profile.
         step=dict(name=name,**{k:v for k,v in data.items() if k in {
             "state","phase","operation_id","completed","target","installed","services_started","invocation_verified",
-            "off_host_backup_verified","volume_shipping_verified","database_backups_verified","backup_status","probe_agent","probe_invocation","reason"}})
+            "off_host_backup_verified","volume_shipping_verified","database_backups_verified","backup_status","probe_agent","probe_invocation","reason",
+            "boot_before","boot_after"}})
         if "storage_result" in data:
             step["storage_result"]={k:v for k,v in data["storage_result"].items() if k in {
-                "id","size","agent_id","restore_id","archive_id","archive_store","archive_incarnation","incarnation","checked","losses"}}
+                "id","size","agent_id","restore_id","archive_id","archive_store","archive_incarnation","incarnation","checked","losses",
+                "digest","harness_digest"}}
         report["steps"].append(step)
         save()
+    def diagnostics():
+        return call(["host", "diagnose", "alerts"], [])
     def wait(data):
         try:
             result=call(["host","operation","wait"],[data["operation_id"]])
@@ -73,6 +93,7 @@ def main():
     try:
         plan=call(["install"],["--plan-only",*install])
         record("install-plan",plan)
+        install_boot = uuid.UUID(diagnostics()["boot_id"])
         started=call(["install"],install)
         if plan["operation_id"]!=started["operation_id"]:
             raise ValueError("plan and install operation mismatch")
@@ -90,7 +111,7 @@ def main():
         if not before["completed"] or before["state"]=="succeeded":
             raise ValueError("installation did not reach an interruptible checkpoint")
         record("before-restart",before)
-        subprocess.run(a.restart_command,timeout=300,check=True)
+        record("installation reboot", verify_reboot(a.restart_command, install_boot, diagnostics))
         for i in range(120):
             try:
                 after=call(["host","operation","show"],[started["operation_id"]])
@@ -110,13 +131,16 @@ def main():
         record("update-plan",update)
         upgraded=wait(call(["update","apply"],["--plan",update["operation_id"]]))
         record("upgraded",upgraded)
-        if not upgraded["invocation_verified"] or upgraded["probe_agent"]!=installed["probe_agent"]:
+        if (not upgraded["invocation_verified"] or upgraded["probe_agent"]!=installed["probe_agent"]
+                or upgraded["probe_invocation"]==installed["probe_invocation"]):
             raise ValueError("starter agent identity or invocation changed unexpectedly")
         if not a.development_key and not upgraded["off_host_backup_verified"]:
             raise ValueError("release qualification needs verified off-host backups")
         agent=upgraded["probe_agent"]
         if not re.fullmatch("agt_[a-f0-9]{32}",agent):
             raise ValueError("invalid starter agent")
+        upgrade_boot = uuid.UUID(diagnostics()["boot_id"])
+        record("upgraded reboot", verify_reboot(a.restart_command, upgrade_boot, diagnostics, ("api", "worker", "authority")))
         archive_id="arc_"+uuid.uuid4().hex
         restore_id="rst_"+uuid.uuid4().hex
         archive=["--agent",agent,"--archive-id",archive_id]
@@ -127,14 +151,19 @@ def main():
         tested=wait(call(["restore","test"],archive))
         record("restore test",tested)
         test=tested["storage_result"]
-        if test["agent_id"]!=agent or test["archive_id"]!=archive_id or not test["checked"]:
-            raise ValueError("restore test has no checks for this agent and archive")
-        applied=wait(call(["restore","apply"],[*archive,"--restore-id",restore_id]))
+        if (test["agent_id"] != agent or test["archive_id"] != archive_id or
+                test["size"] != captured["storage_result"]["size"] or
+                not {"manifest", "digest", "volume", "copy", "key"}.issubset(test["checked"])):
+            raise ValueError("restore test did not verify the requested agent and full archive")
+        applied=wait(call(["restore","apply"],[*archive,"--restore-id",restore_id,"--verify-starter"]))
         record("restore apply",applied)
         receipt=applied["storage_result"]
-        if (receipt["restore_id"]!=restore_id or receipt["archive_id"]!=archive_id
+        if (receipt["restore_id"]!=restore_id or receipt["archive_id"]!=archive_id or receipt["losses"] != 0
                 or receipt["agent_id"]!=agent or receipt["incarnation"]<=test["incarnation"]):
-            raise ValueError("restore receipt does not confirm the new incarnation")
+            raise ValueError("restore receipt does not confirm a loss-free new incarnation of the starter")
+        if (not applied["invocation_verified"] or applied["probe_agent"] != agent or
+                applied["probe_invocation"] in (installed["probe_invocation"], upgraded["probe_invocation"])):
+            raise ValueError("restored installation agent did not return a new echo")
         report["status"]="passed"
     finally:
         if report["status"]=="running":

@@ -262,6 +262,57 @@ class HostOperationTests(unittest.TestCase):
         self.assertEqual(calls,["backup","migration","migration"])
         self.assertEqual(self.api["read"](op/"status.json")["state"],"succeeded")
 
+    def test_reboot_qualification_waits_for_a_new_boot_and_the_expected_services(self):
+        import uuid
+        from unittest.mock import Mock
+        before, after = uuid.uuid4(), uuid.uuid4()
+        active = [{"service": "worker", "ActiveState": "active"}]
+        health = Mock(side_effect=[
+            {"boot_id": str(before), "services": active},
+            subprocess.CalledProcessError(1, "ssh"),
+            {"boot_id": str(after), "services": []},
+            {"boot_id": str(after), "services": active},
+        ])
+        verify = runpy.run_path(str(ROOT / "scripts/verify-cli-host.py"))["verify_reboot"]
+        with patch("subprocess.run") as run, patch("time.sleep"):
+            receipt = verify(["reboot-test-instance"], before, health, ("worker",))
+        run.assert_called_once_with(["reboot-test-instance"], timeout=300, check=True)
+        self.assertEqual(health.call_count, 4)
+        self.assertEqual(receipt, {"boot_before": str(before), "boot_after": str(after)})
+
+    def test_starter_restore_retries_echo_without_reapplying_the_volume(self):
+        from unittest.mock import Mock
+        agent = "agt_" + "1" * 32
+        save = self.api["save"]
+        save(self.state / "smoke.json", {"agent": agent})
+        save(self.state / "profile.json", {})
+        receipt = {"invocation_verified": True, "probe_agent": agent, "probe_invocation": "op_" + "4" * 32}
+        restore = Mock(return_value={"storage_result": {"incarnation": 2}})
+        probe = Mock(side_effect=[ValueError("worker restarting"), receipt])
+        options = ["--archive-id", "arc_" + "2" * 32, "--restore-id", "rst_" + "3" * 32, "--verify-starter"]
+        def start(target):
+            result = self.api["main"](["restore", "apply", "--agent", target, *options], self.version)
+            return self.api["opdir"](result["operation_id"])
+        with patch.dict(self.api, preflight=lambda: None, launch=lambda _: None, HELPER_SOURCE=b"",
+                        run_storage=restore, smoke=probe):
+            wrong = start("agt_" + "9" * 32)
+            with self.assertRaisesRegex(ValueError, "original installation probe"):
+                self.api["execute"](wrong)
+            restore.assert_not_called()
+            op = start(agent)
+            with self.assertRaisesRegex(ValueError, "worker restarting"):
+                self.api["execute"](op)
+            failed = self.api["main"](["host", "operation", "show", op.name], self.version)
+            self.assertEqual(failed["completed"], ["restore-apply"])
+            self.assertEqual(failed["phase"], "invocation")
+            self.api["main"](["host", "operation", "resume", op.name], self.version)
+            self.api["execute"](op)
+            result = self.api["main"](["host", "operation", "wait", op.name], self.version)
+        restore.assert_called_once()
+        self.assertEqual(result["storage_result"]["incarnation"], 2)
+        self.assertEqual(result["phases"], ["restore-apply", "invocation"])
+        self.assertEqual(result["probe_invocation"], receipt["probe_invocation"])
+
     def test_concurrent_executors_observe_completed_storage_operation_under_lock(self):
         import fcntl
         import threading

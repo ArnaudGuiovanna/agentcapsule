@@ -2,6 +2,7 @@
 import datetime
 import http.client
 import json
+from pathlib import Path
 import re
 
 DIAG_SERVICES = ("api", "worker", "authority", "interop", "slim-bridge", "oidc")
@@ -42,6 +43,7 @@ def service_observations():
 def diagnose(args):
     report = {"schema": "agentcapsule.host/v1", "observed_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}
     if args.sub == "alerts":
+        report["boot_id"] = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
         report["services"] = service_observations()
     elif args.sub == "metrics":
         conn = http.client.HTTPConnection("127.0.0.1", METRIC_PORTS[args.service], timeout=5)

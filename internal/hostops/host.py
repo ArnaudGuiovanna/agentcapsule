@@ -286,7 +286,12 @@ def execute(directory):
                 fields.append(name)
                 state(directory, completed=fields, **(details or {}))
             if request["action"] in ("archive", "restore-test", "restore-apply"):
+                if request.get("verify_starter"):
+                    if read(STATE / "smoke.json").get("agent") != request["agent"]:
+                        raise ValueError("--verify-starter requires the original installation probe agent")
                 step(request["action"], lambda: run_storage(request, directory))
+                if request.get("verify_starter"):
+                    step("invocation", lambda: smoke(read(STATE / "profile.json"), directory))
             else:
                 if current() != request["from"] and "activate" not in fields and current() != request["version"]:
                     raise ValueError("installed release changed after plan")
@@ -440,6 +445,7 @@ def main(argv, cli_version):
             item.add_argument("--archive-id", required=True)
             if action == "restore" and item.prog.endswith("apply"):
                 item.add_argument("--restore-id", required=True)
+                item.add_argument("--verify-starter", action="store_true", help="invoke the original installation probe after restoring it")
     args = parser.parse_args(argv)
     if args.command == "update" and args.sub == "check":
         target = args.to or latest()
@@ -484,6 +490,8 @@ def main(argv, cli_version):
             if not re.fullmatch(r"rst_[a-f0-9]{32}", args.restore_id):
                 raise ValueError("invalid restore identifier")
             request["restore"] = args.restore_id
+            if args.verify_starter:
+                request["verify_starter"] = True
     else:
         installed = current()
         profile = read(Path(args.profile)) if args.profile else (read(STATE/"profile.json") if (STATE/"profile.json").is_file() else {})
@@ -516,7 +524,7 @@ def main(argv, cli_version):
             details=stage(request, manifest_only=True) if action in ("update","install") else {}
             state(directory, state="planned", action=request["action"], target=request.get("version"), **details,
                   installed=current(), services_started=False, invocation_verified=False,
-                  off_host_backup_verified=False, phases=phases(request["action"]))
+                  off_host_backup_verified=False, phases=phases(request["action"]) + (["invocation"] if request.get("verify_starter") else []))
         if action == "install" and not args.plan_only or action in ("archive","restore"):
             if read(directory/"status.json")["state"] == "planned":
                 submit(directory)
