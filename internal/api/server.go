@@ -72,6 +72,7 @@ func NewForHost(store *controlplane.Store, accounts *controlplane.Accounts, host
 	s.handle("/v1/deployment-plans", s.planDeployment)
 	s.handle("/v1/deployment-plans/{id}/apply", s.applyDeployment)
 	s.handle("/v1/deployments/{id}", s.showDeployment)
+	s.handle("/v1/agents/{id}/resize", s.resizeAgent)
 	s.handle("/v1/deployments/{id}/rollouts", s.startRollout)
 	s.handle("/v1/agents/{id}/volume-growth", s.requestGrowth)
 	s.handle("/v1/volume-growth/{id}", s.showGrowth)

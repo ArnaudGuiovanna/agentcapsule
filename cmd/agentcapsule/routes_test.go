@@ -16,6 +16,7 @@ func TestDeploymentAndConfigurationSyntax(t *testing.T) {
 		body        map[string]any
 	}{
 		{[]string{"deployment", "plan", "--count", "100", "--template", "support@3", "--active-count", "2"}, "", "/v1/deployment-plans", map[string]any{"count": float64(100), "template": "support@3", "active_count": float64(2)}},
+		{[]string{"agent", "resize", "agt_1", "--vcpus", "2", "--memory-mib", "512"}, "", "/v1/agents/agt_1/resize", map[string]any{"vcpus": float64(2), "memory_mib": float64(512)}},
 		{[]string{"deployment", "apply", "--plan", "plan_3"}, "", "/v1/deployment-plans/plan_3/apply", nil},
 		{[]string{"app", "register", "monapp", "--config", "-"}, "issuer: https://id.example.org", "/v1/applications", map[string]any{"name": "monapp", "issuer": "https://id.example.org"}},
 		{[]string{"access", "explain", "--member", "alice", "--agent", "support"}, "", "/v1/access/explain?agent=support&member=alice", nil},

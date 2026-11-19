@@ -119,6 +119,24 @@ paths:
                   id: {type: string}
                   status: {const: revoked}
                   revocations: {$ref: '#/components/schemas/AccessRevocations'}
+  /v1/agents/{id}/resize:
+    post:
+      summary: Resize the CPU and memory of one enrolled tenant agent at a controlled stop
+      security: [{delegatedBearer: []}]
+      description: Requires agent:manage. Returns a one-member rollout. The worker preserves the encrypted volume, installed images and deployment membership and validates an authenticated boot. An open conflicting rollout or volume growth is refused.
+      parameters:
+        - {$ref: '#/components/parameters/ResourceID'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json: {schema: {$ref: '#/components/schemas/ComputeResources'}}
+      responses:
+        '202':
+          description: Pending CPU and memory profile for this agent
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/Rollout'}}
+        default: {$ref: '#/components/responses/Problem'}
   /v1/deployments/{id}/rollouts:
     post:
       summary: Begin a canary rollout of an immutable template revision
@@ -3815,6 +3833,13 @@ components:
         error: {type: string, description: The schema server's reason when publication is invalid}
         record_cid: {type: string, description: Content ID of the record in the Directory when published}
         updated_at: {type: string, format: date-time, description: Last change of the description or of its record; absent if never described}
+    ComputeResources:
+      type: object
+      additionalProperties: false
+      required: [vcpus, memory_mib]
+      properties:
+        vcpus: {type: integer, minimum: 1, maximum: 8}
+        memory_mib: {type: integer, minimum: 128, maximum: 8192}
     RolloutMembers:
       type: object
       required: [items]
@@ -3823,11 +3848,15 @@ components:
           type: array
           items:
             type: object
-            required: [agent_id, stage, requested_template]
+            required: [agent_id, stage]
+            oneOf:
+              - required: [requested_template]
+              - required: [requested_resources]
             properties:
               agent_id: {type: string}
               stage: {type: string, enum: [pending, draining, validating, verified, complete]}
               requested_template: {type: string}
+              requested_resources: {$ref: '#/components/schemas/ComputeResources'}
               last_verified_template: {type: string}
               verified_generation: {type: integer}
     RolloutInput:
@@ -3837,19 +3866,24 @@ components:
         template: {type: string, description: Immutable template reference}
         max_unavailable: {type: integer, minimum: 1, maximum: 1000}
     Rollout:
-      allOf:
-        - {$ref: '#/components/schemas/RolloutInput'}
-        - type: object
-          required: [id, deployment_id, status, total, updated, maintaining, booted]
-          properties:
-            id: {type: string}
-            deployment_id: {type: string}
-            status: {type: string, enum: [running, paused, completed]}
-            reason: {type: string, enum: [artifact_unavailable, update_failed, agent_unavailable, boot_failed]}
-            total: {type: integer}
-            updated: {type: integer}
-            maintaining: {type: integer}
-            booted: {type: integer, description: Number of agents that reached authenticated readiness on the requested revision}
+      type: object
+      required: [id, max_unavailable, status, total, updated, maintaining, booted]
+      oneOf:
+        - required: [deployment_id, template]
+        - required: [agent_id, resources]
+      properties:
+        id: {type: string}
+        deployment_id: {type: string}
+        template: {type: string}
+        agent_id: {type: string}
+        resources: {$ref: '#/components/schemas/ComputeResources'}
+        max_unavailable: {type: integer, minimum: 1, maximum: 1000}
+        status: {type: string, enum: [running, paused, completed]}
+        reason: {type: string, enum: [artifact_unavailable, update_failed, agent_unavailable, boot_failed, waiting_capacity]}
+        total: {type: integer}
+        updated: {type: integer}
+        maintaining: {type: integer}
+        booted: {type: integer, description: Number of agents that reached authenticated readiness on the requested configuration}
     SystemImage:
       type: object
       required: [reference, kernel_digest, initrd_digest]

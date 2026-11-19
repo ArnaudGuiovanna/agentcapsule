@@ -52,7 +52,12 @@ func (w *Placements) rolloutPass(ctx context.Context) error {
 			}
 			if !running {
 				resources := runtime.VMResources{VCPUs: step.Spec.Resources.VCPUs, MemoryMiB: step.Spec.Resources.MemoryMiB, VolumeMiB: step.Spec.Resources.DataVolumeMiB}
-				if err = w.host.SetRolloutProfile(ctx, agent, id, resources, bootImageID(step.Target), img); err != nil {
+				if step.Resize {
+					err = w.host.ResizeRollout(ctx, agent, id, resources)
+				} else {
+					err = w.host.SetRolloutProfile(ctx, agent, id, resources, bootImageID(step.Target), img)
+				}
+				if err != nil {
 					return w.store.PauseRollout(ctx, id, agent, "update_failed")
 				}
 			}

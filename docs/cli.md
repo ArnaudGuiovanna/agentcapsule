@@ -126,6 +126,7 @@ The HTTP guide covers inviting Alice and Bob, concurrent acceptance, private res
 | Held or delayed exchange | `communication explain RECIPIENT_AGENT REQUEST_ID` | Directory state, visibility at submission, current mandate, consent, outward delivery, attempts and return delivery |
 | Backup status | `host diagnose backups` | Repository status and latest successful backup time |
 | Export for support | `support export --output-file report.tar.gz` | Versioned aggregate `diagnostics.json` with an observation timestamp |
+| Resize one agent | `agent resize AGENT --vcpus 2 --memory-mib 512` | Follow its authenticated validation boot with `rollout show ID` or `operation wait --type rollout ID` |
 | Deploy a new guest revision | `rollout start DEPLOYMENT --template support@2 --max-unavailable 1` | `rollout members ID` reports requested and last verified revisions. Fix a canary failure and run `rollout resume ID` |
 | Change data volume size | `agent grow AGENT_ID --size-mib 192` | Follow `operation show --type volume-growth ID` for the archive, restore and stage |
 | Update the server or recover | `update plan`, `update apply`, `host operation wait`, `restore test`, `restore apply` | Verify the backup repositories and maintenance results in the host operation |

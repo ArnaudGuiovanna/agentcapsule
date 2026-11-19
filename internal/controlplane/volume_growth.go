@@ -46,31 +46,31 @@ func (c *AgentCatalog) RequestGrowth(ctx context.Context, p Principal, agent, ke
 	if _, err = authorizeTenantAdminMutation(ctx, tx, p, authorization.ConfigureAgent); err != nil {
 		return APIReceipt{}, err
 	}
-	a, _, err := tenantAgentForUpdate(ctx, tx, p, agent)
+	host, err := maintenanceHost(ctx, tx, p, agent)
 	if err != nil {
 		return APIReceipt{}, err
 	}
 	out, err := c.accounts.withTenantReceipt(ctx, tx, p, "volume.grow/"+agent, key, in, func() (int, any, error) {
+		a, err := lockMaintenanceAgent(ctx, tx, p, agent, host)
+		if err != nil {
+			return 0, nil, err
+		}
 		if in.SizeMiB < 64 || in.SizeMiB > 32768 {
 			return 0, nil, ErrInput
 		}
 		var size int
-		var host string
-		if err := tx.QueryRow(ctx, "SELECT volume_mib,host_id FROM agent_specs WHERE agent_id=$1", agent).Scan(&size, &host); err != nil {
+		if err := tx.QueryRow(ctx, "SELECT volume_mib FROM agent_specs WHERE agent_id=$1", agent).Scan(&size); err != nil {
 			return 0, nil, err
 		}
 		if a.Phase != "LIVE" || in.SizeMiB <= size {
 			return 0, nil, ErrTransition
 		}
 		var busy bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT FROM agent_rollout_steps WHERE agent_id=$1 AND stage IN ('draining','validating','verified')) OR EXISTS(SELECT FROM store_enrollments WHERE agent_id=$1 AND stage<>'READY')`, agent).Scan(&busy); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT FROM agent_rollout_steps m JOIN agent_rollouts u ON u.id=m.rollout_id WHERE m.agent_id=$1 AND (m.stage IN ('draining','validating','verified') OR (u.target_agent=$1 AND u.status<>'completed'))) OR EXISTS(SELECT FROM store_enrollments WHERE agent_id=$1 AND stage<>'READY')`, agent).Scan(&busy); err != nil {
 			return 0, nil, err
 		}
 		if busy {
 			return 0, nil, ErrTransition
-		}
-		if err := lockWorkerHost(ctx, tx, host); err != nil {
-			return 0, nil, err
 		}
 		if err := refuseUnderDataPressure(ctx, tx, host); err != nil {
 			return 0, nil, err

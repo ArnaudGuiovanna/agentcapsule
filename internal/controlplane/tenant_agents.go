@@ -626,6 +626,30 @@ func tenantAgentForUpdate(ctx context.Context, tx pgx.Tx, p Principal, id string
 	return a, host, nil
 }
 
+// Resolve the tenant-visible host before consulting an idempotency receipt.
+// A replay does not need capacity on the original host.
+func maintenanceHost(ctx context.Context, tx pgx.Tx, p Principal, id string) (string, error) {
+	var host string
+	err := tx.QueryRow(ctx, "SELECT x.host_id FROM agent_specs x JOIN agents a ON a.id=x.agent_id WHERE a.tenant_id=$1 AND a.id=$2", p.TenantID, id).Scan(&host)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return host, err
+}
+
+// Maintenance admissions budget the host before locking the agent, like a
+// warm boot. Recheck after the locks in case a takeover moved this volume.
+func lockMaintenanceAgent(ctx context.Context, tx pgx.Tx, p Principal, id, host string) (agent, error) {
+	if err := lockWorkerHost(ctx, tx, host); err != nil {
+		return agent{}, err
+	}
+	a, current, err := tenantAgentForUpdate(ctx, tx, p, id)
+	if err == nil && current != host {
+		err = ErrPlacementBusy
+	}
+	return a, err
+}
+
 // requestLifecycleTenant records an ordered wake or sleep command for a tenant
 // agent. The caller needs the operate scope and a role that may operate agents.
 func (c *AgentCatalog) requestLifecycleTenant(ctx context.Context, p Principal, id, key, kind string) (APIReceipt, error) {

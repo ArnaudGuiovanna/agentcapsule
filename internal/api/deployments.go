@@ -100,6 +100,15 @@ func (s *Server) showPool(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, out)
 }
 
+func (s *Server) resizeAgent(w http.ResponseWriter, r *http.Request) {
+	if !method(w, r, "POST") {
+		return
+	}
+	catalogMutation(s, w, r, func(ctx context.Context, p controlplane.Principal, key string, in controlplane.ComputeResources) (controlplane.APIReceipt, error) {
+		return s.catalog.ResizeAgent(ctx, p, r.PathValue("id"), key, in)
+	})
+}
+
 func (s *Server) startRollout(w http.ResponseWriter, r *http.Request) {
 	if !method(w, r, "POST") {
 		return

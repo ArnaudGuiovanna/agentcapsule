@@ -235,10 +235,14 @@ type DeploymentShortfall ResourceCheck
 func (e *DeploymentShortfall) Error() string { return "insufficient " + e.Resource }
 
 func planCapacity(ctx context.Context, tx pgx.Tx, tenant, host string, in DeploymentRequest) (DeploymentPlan, error) {
-	plan := DeploymentPlan{DeploymentRequest: in, Admitted: true}
 	if err := lockWorkerHost(ctx, tx, host); err != nil {
-		return plan, err
+		return DeploymentPlan{}, err
 	}
+	return planCapacityLocked(ctx, tx, tenant, host, in)
+}
+
+func planCapacityLocked(ctx context.Context, tx pgx.Tx, tenant, host string, in DeploymentRequest) (DeploymentPlan, error) {
+	plan := DeploymentPlan{DeploymentRequest: in, Admitted: true}
 	if err := lockOrganizationQuota(ctx, tx, tenant); err != nil {
 		return plan, err
 	}
@@ -260,11 +264,14 @@ func planCapacity(ctx context.Context, tx pgx.Tx, tenant, host string, in Deploy
 	// A deployment keeps its warm reservation between boots. Count already
 	// active members first so an on-demand boot can satisfy its target.
 	err = tx.QueryRow(ctx, `WITH members AS (
- SELECT a.tenant_id,x.volume_mib+x.reserved_growth_mib AS volume_mib,x.vcpus,x.memory_mib,a.phase,
+ SELECT a.tenant_id,x.volume_mib+x.reserved_growth_mib AS volume_mib, greatest(x.vcpus,resize.resize_vcpus) AS vcpus,
+ greatest(x.memory_mib,resize.resize_memory_mib) AS memory_mib,a.phase,
  d.id AS deployment_id, d.active_count,x.auto_start, m.ordinal,
- (coalesce(p.state IN ('STARTING','RUNNING','STOPPING') AND NOT p.fence_only,false) OR
+ (coalesce(step.keep_running,false) OR coalesce(p.state IN ('STARTING','RUNNING','STOPPING') AND NOT p.fence_only,false) OR
   (m.agent_id IS NULL AND x.auto_start AND a.phase='PROVISIONING') OR EXISTS(SELECT FROM platform_operations o WHERE o.agent_id=a.id AND o.kind='wake' AND o.status IN ('PENDING','RUNNING'))) AS committed
  FROM agent_specs x JOIN agents a ON a.id=x.agent_id LEFT JOIN agent_placements p ON p.agent_id=a.id
+ LEFT JOIN agent_rollouts resize ON resize.target_agent=a.id AND resize.status<>'completed'
+ LEFT JOIN agent_rollout_steps step ON step.rollout_id=resize.id AND step.agent_id=a.id
  LEFT JOIN agent_deployment_members m ON m.agent_id=a.id LEFT JOIN agent_deployments d ON d.id=m.deployment_id WHERE x.host_id=$1
  ), reservations AS (
  SELECT *, committed OR (deployment_id IS NOT NULL AND phase IN ('LIVE','PROVISIONING') AND row_number() OVER
@@ -452,6 +459,10 @@ func (plan *reservationPlan) admit(ctx context.Context, tx pgx.Tx, tenant string
 	if err != nil {
 		return err
 	}
+	return status.shortfall()
+}
+
+func (status DeploymentPlan) shortfall() error {
 	for _, v := range status.Checks {
 		if v.Available != nil && *v.Available < v.Required {
 			e := DeploymentShortfall(v)

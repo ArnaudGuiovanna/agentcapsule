@@ -50,6 +50,19 @@ func NewProvisioningPlacements(store *controlplane.Store, hostID, workerID strin
 	if keys == nil || authority == nil || !config.valid() {
 		return nil, controlplane.ErrInput
 	}
+	cpus := config.VCPUs
+	if cpus == 0 {
+		cpus = goruntime.NumCPU()
+	}
+	memory := config.MemoryMiB
+	if memory == 0 {
+		var err error
+		memory, err = availableDeploymentMemory()
+		if err != nil {
+			return nil, err
+		}
+	}
+	opts.HostVCPUs, opts.HostMemoryMiB = cpus, memory
 	w, err := NewPlacementsWithAuthority(store, hostID, workerID, lease, opts, keys, authority)
 	if err != nil {
 		return nil, err
@@ -60,18 +73,6 @@ func NewProvisioningPlacements(store *controlplane.Store, hostID, workerID strin
 		return nil, err
 	}
 	w.provisioning = &provisioner{keys: keys, volumes: volumes, digest: "sha256:" + opts.InitrdSHA256, config: config, runtimeRoot: opts.Root}
-	cpus := config.VCPUs
-	if cpus == 0 {
-		cpus = goruntime.NumCPU()
-	}
-	memory := config.MemoryMiB
-	if memory == 0 {
-		memory, err = availableDeploymentMemory()
-		if err != nil {
-			w.Close()
-			return nil, err
-		}
-	}
 	budget := controlplane.HostProvisioningBudget{VCPUs: cpus, MemoryMiB: memory, UIDSlots: int(config.LastUID-config.FirstUID) + 1, MaxActive: opts.MaxActive}
 	images := []controlplane.ImageDigests{{Kernel: "sha256:" + opts.KernelSHA256, Initrd: "sha256:" + opts.InitrdSHA256}}
 	for _, img := range opts.SystemImages {

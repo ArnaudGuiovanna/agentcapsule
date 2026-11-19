@@ -11,12 +11,14 @@ import (
 )
 
 type RolloutInput struct {
-	Template       string `json:"template"`
+	Template       string `json:"template,omitempty"`
 	MaxUnavailable int    `json:"max_unavailable"`
 }
 type Rollout struct {
-	ID           string `json:"id"`
-	DeploymentID string `json:"deployment_id"`
+	ID           string            `json:"id"`
+	DeploymentID string            `json:"deployment_id,omitempty"`
+	AgentID      string            `json:"agent_id,omitempty"`
+	Resources    *ComputeResources `json:"resources,omitempty"`
 	RolloutInput
 	Status      string `json:"status"`
 	Reason      string `json:"reason,omitempty"`
@@ -27,11 +29,14 @@ type Rollout struct {
 	Booted int `json:"booted"`
 }
 
+// NULL for template rollouts. The public resource shape is shared with agent resize.
+const requestedCompute = `CASE WHEN u.target_agent IS NOT NULL THEN jsonb_build_object('vcpus',u.resize_vcpus,'memory_mib',u.resize_memory_mib) END`
+
 func readRollout(ctx context.Context, tx pgx.Tx, tenant, id string) (Rollout, error) {
 	var v Rollout
-	err := tx.QueryRow(ctx, `SELECT u.id,u.deployment_id,u.template_name||'@'||u.revision,u.max_unavailable,u.status,u.reason,
+	err := tx.QueryRow(ctx, `SELECT u.id,coalesce(u.deployment_id,''),coalesce(u.template_name||'@'||u.revision,''),coalesce(u.target_agent,''),`+requestedCompute+`,u.max_unavailable,u.status,u.reason,
  count(s.agent_id),count(*) FILTER (WHERE stage='complete'),count(*) FILTER (WHERE stage IN ('draining','validating','verified')),count(observed_generation)
- FROM agent_rollouts u JOIN agent_rollout_steps s ON s.rollout_id=u.id WHERE u.tenant_id=$1 AND u.id=$2 GROUP BY u.id`, tenant, id).Scan(&v.ID, &v.DeploymentID, &v.Template, &v.MaxUnavailable, &v.Status, &v.Reason, &v.Total, &v.Updated, &v.Maintaining, &v.Booted)
+ FROM agent_rollouts u JOIN agent_rollout_steps s ON s.rollout_id=u.id WHERE u.tenant_id=$1 AND u.id=$2 GROUP BY u.id`, tenant, id).Scan(&v.ID, &v.DeploymentID, &v.Template, &v.AgentID, &v.Resources, &v.MaxUnavailable, &v.Status, &v.Reason, &v.Total, &v.Updated, &v.Maintaining, &v.Booted)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return v, ErrNotFound
 	}
@@ -73,6 +78,13 @@ func (c *AgentCatalog) StartRollout(ctx context.Context, p Principal, dep, key s
 			return 0, nil, err
 		}
 		if diskChange {
+			return 0, nil, ErrTransition
+		}
+		var resizing bool
+		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT FROM agent_rollouts u JOIN agent_deployment_members m ON m.agent_id=u.target_agent WHERE m.deployment_id=$1 AND u.status<>'completed')`, dep).Scan(&resizing); err != nil {
+			return 0, nil, err
+		}
+		if resizing {
 			return 0, nil, ErrTransition
 		}
 		id := newID("roll")
@@ -141,9 +153,11 @@ func (c *AgentCatalog) ResumeRollout(ctx context.Context, p Principal, id, key s
 // finished before any later member becomes visible to a worker.
 func (s *Store) NextRollout(ctx context.Context, host string) (string, string, error) {
 	var id, agent string
-	err := s.pool.QueryRow(ctx, `SELECT u.id,s.agent_id FROM agent_rollouts u JOIN agent_deployments d ON d.id=u.deployment_id JOIN agent_rollout_steps s ON s.rollout_id=u.id
- WHERE d.host_id=$1 AND u.status='running' AND s.stage<>'complete' AND NOT EXISTS(SELECT FROM agent_rollout_steps e WHERE e.rollout_id=u.id AND e.wave<s.wave AND e.stage<>'complete')
- ORDER BY u.created_at,s.wave,s.agent_id LIMIT 1`, host).Scan(&id, &agent)
+	err := s.pool.QueryRow(ctx, `WITH candidate AS (SELECT s.rollout_id,s.agent_id FROM agent_rollouts u JOIN agent_rollout_steps s ON s.rollout_id=u.id JOIN agent_specs x ON x.agent_id=s.agent_id LEFT JOIN agent_deployments d ON d.id=u.deployment_id
+ WHERE coalesce(d.host_id,x.host_id)=$1 AND u.status='running' AND s.stage<>'complete' AND NOT EXISTS(SELECT FROM agent_rollout_steps e WHERE e.rollout_id=u.id AND e.wave<s.wave AND e.stage<>'complete')
+ ORDER BY s.attempted_at NULLS FIRST,u.created_at,s.wave,s.agent_id FOR UPDATE OF s SKIP LOCKED LIMIT 1)
+ UPDATE agent_rollout_steps s SET attempted_at=clock_timestamp() FROM candidate c
+ WHERE (s.rollout_id,s.agent_id)=(c.rollout_id,c.agent_id) RETURNING s.rollout_id,s.agent_id`, host).Scan(&id, &agent)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", "", ErrNoWork
 	}
@@ -153,6 +167,7 @@ func (s *Store) NextRollout(ctx context.Context, host string) (string, string, e
 type RolloutStep struct {
 	ID, Agent, Host, Stage, Tenant, Actor string
 	KeepRunning                           bool
+	Resize                                bool
 	Target                                Enrollment
 	Spec                                  TemplateSpec
 	Release                               string
@@ -171,11 +186,14 @@ func (s *Store) RolloutStep(ctx context.Context, id, agent, host string, running
 	a := agents[agent]
 	var enabled bool
 	step := RolloutStep{ID: id, Agent: agent, Host: host}
-	err = tx.QueryRow(ctx, `SELECT u.tenant_id,u.created_by,m.stage,coalesce(m.keep_running,$4),r.spec,h.enabled,h.id,h.artifact_digest,h.source,coalesce(h.rootfs_digest,''),i.kernel_digest,i.initrd_digest
- FROM agent_rollout_steps m JOIN agent_rollouts u ON u.id=m.rollout_id JOIN agent_deployments d ON d.id=u.deployment_id
- JOIN agent_template_revisions r ON (r.tenant_id,r.name,r.revision)=(u.tenant_id,u.template_name,u.revision)
- JOIN harness_releases h ON h.id=u.release_id JOIN system_images i ON i.id=r.spec->>'system_image'
- WHERE u.id=$1 AND m.agent_id=$2 AND d.host_id=$3 AND u.status='running' AND m.stage<>'complete' FOR UPDATE OF u,m`, id, agent, host, running).Scan(&step.Tenant, &step.Actor, &step.Stage, &step.KeepRunning, &step.Spec, &enabled, &step.Release, &step.Target.HarnessDigest, &step.Target.HarnessSource, &step.Target.RootfsDigest, &step.Target.SystemImage.Kernel, &step.Target.SystemImage.Initrd)
+	err = tx.QueryRow(ctx, `SELECT u.tenant_id,u.created_by,m.stage,coalesce(m.keep_running,$4),u.target_agent IS NOT NULL,
+ coalesce(r.spec,jsonb_build_object('resources',jsonb_build_object('vcpus',u.resize_vcpus,'memory_mib',u.resize_memory_mib,'data_volume_mib',x.volume_mib))),
+ h.enabled,h.id,h.artifact_digest,h.source,coalesce(h.rootfs_digest,''),coalesce(i.kernel_digest,''),coalesce(i.initrd_digest,'')
+ FROM agent_rollout_steps m JOIN agent_rollouts u ON u.id=m.rollout_id JOIN agent_specs x ON x.agent_id=m.agent_id
+ LEFT JOIN agent_deployments d ON d.id=u.deployment_id
+ LEFT JOIN agent_template_revisions r ON (r.tenant_id,r.name,r.revision)=(u.tenant_id,u.template_name,u.revision)
+ JOIN harness_releases h ON h.id=coalesce(u.release_id,x.release_id) LEFT JOIN system_images i ON i.id=coalesce(r.spec->>'system_image',x.system_image)
+ WHERE u.id=$1 AND m.agent_id=$2 AND coalesce(d.host_id,x.host_id)=$3 AND u.status='running' AND m.stage<>'complete' FOR UPDATE OF u,m`, id, agent, host, running).Scan(&step.Tenant, &step.Actor, &step.Stage, &step.KeepRunning, &step.Resize, &step.Spec, &enabled, &step.Release, &step.Target.HarnessDigest, &step.Target.HarnessSource, &step.Target.RootfsDigest, &step.Target.SystemImage.Kernel, &step.Target.SystemImage.Initrd)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return step, ErrTransition
 	}
@@ -255,8 +273,25 @@ func (s *Store) InstallRolloutSpec(ctx context.Context, st RolloutStep) error {
 	if quota := firstOf(overInt(q.MaxVCPUs, st.Spec.Resources.VCPUs, "max_vcpus"), over(q.MaxMemoryMiB, int64(st.Spec.Resources.MemoryMiB), "max_memory_mib")); quota != "" {
 		return &OrganizationQuotaError{Quota: quota}
 	}
+	if st.Resize {
+		tag, err := tx.Exec(ctx, "UPDATE agent_specs SET vcpus=$2,memory_mib=$3 WHERE agent_id=$1 AND volume_mib=$4", st.Agent, st.Spec.Resources.VCPUs, st.Spec.Resources.MemoryMiB, st.Spec.Resources.DataVolumeMiB)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 1 {
+			return ErrTransition
+		}
+	} else if err = installRolloutTemplate(ctx, tx, st); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, "UPDATE agent_rollout_steps SET stage='validating' WHERE rollout_id=$1 AND agent_id=$2", st.ID, st.Agent); err != nil {
+		return err
+	}
+	return commit(ctx, tx)
+}
+func installRolloutTemplate(ctx context.Context, tx pgx.Tx, st RolloutStep) error {
 	var previous *string
-	err = tx.QueryRow(ctx, `UPDATE agent_specs SET release_id=$2,system_image=$3,vcpus=$4,memory_mib=$5 WHERE agent_id=$1 AND volume_mib=$6 RETURNING template_grant_id`, st.Agent, st.Release, st.Spec.SystemImage, st.Spec.Resources.VCPUs, st.Spec.Resources.MemoryMiB, st.Spec.Resources.DataVolumeMiB).Scan(&previous)
+	err := tx.QueryRow(ctx, `UPDATE agent_specs SET release_id=$2,system_image=$3,vcpus=$4,memory_mib=$5 WHERE agent_id=$1 AND volume_mib=$6 RETURNING template_grant_id`, st.Agent, st.Release, st.Spec.SystemImage, st.Spec.Resources.VCPUs, st.Spec.Resources.MemoryMiB, st.Spec.Resources.DataVolumeMiB).Scan(&previous)
 	if err != nil {
 		return err
 	}
@@ -284,13 +319,7 @@ func (s *Store) InstallRolloutSpec(ctx context.Context, st RolloutStep) error {
 	} else {
 		_, err = tx.Exec(ctx, `INSERT INTO agent_capability_policies(agent_id,allowed,updated_by) VALUES($1,$2,$3) ON CONFLICT(agent_id) DO UPDATE SET allowed=EXCLUDED.allowed,updated_by=EXCLUDED.updated_by,updated_at=clock_timestamp()`, st.Agent, st.Spec.Capabilities, st.Actor)
 	}
-	if err != nil {
-		return err
-	}
-	if _, err = tx.Exec(ctx, "UPDATE agent_rollout_steps SET stage='validating' WHERE rollout_id=$1 AND agent_id=$2", st.ID, st.Agent); err != nil {
-		return err
-	}
-	return commit(ctx, tx)
+	return err
 }
 func (s *Store) ObserveRolloutBoot(ctx context.Context, st RolloutStep, generation uint64, vm string) error {
 	tag, err := s.pool.Exec(ctx, `UPDATE agent_rollout_steps m SET stage='verified',observed_generation=$3,observed_vm=$4 FROM agent_placements p JOIN placement_control_contracts c USING(agent_id,host_id,generation,vm_id)
@@ -372,11 +401,12 @@ func (s *Store) ClaimRolloutPlacement(ctx context.Context, agent, host, worker, 
 }
 
 type RolloutMember struct {
-	AgentID      string  `json:"agent_id"`
-	Stage        string  `json:"stage"`
-	Requested    string  `json:"requested_template"`
-	LastVerified string  `json:"last_verified_template,omitempty"`
-	Generation   *uint64 `json:"verified_generation,omitempty"`
+	AgentID      string            `json:"agent_id"`
+	Stage        string            `json:"stage"`
+	Requested    string            `json:"requested_template,omitempty"`
+	Resources    *ComputeResources `json:"requested_resources,omitempty"`
+	LastVerified string            `json:"last_verified_template,omitempty"`
+	Generation   *uint64           `json:"verified_generation,omitempty"`
 }
 
 func (c *AgentCatalog) RolloutMembers(ctx context.Context, p Principal, id, after string, limit int) ([]RolloutMember, error) {
@@ -394,10 +424,10 @@ func (c *AgentCatalog) RolloutMembers(ctx context.Context, p Principal, id, afte
 	if _, err = readRollout(ctx, tx, p.TenantID, id); err != nil {
 		return nil, err
 	}
-	rows, err := tx.Query(ctx, `SELECT m.agent_id,m.stage,u.template_name||'@'||u.revision,coalesce(v.ref,''),v.generation
+	rows, err := tx.Query(ctx, `SELECT m.agent_id,m.stage,coalesce(u.template_name||'@'||u.revision,''),`+requestedCompute+`,coalesce(v.ref,''),CASE WHEN u.target_agent IS NULL THEN v.generation ELSE m.observed_generation END
  FROM agent_rollout_steps m JOIN agent_rollouts u ON u.id=m.rollout_id
  LEFT JOIN LATERAL (SELECT z.template_name||'@'||z.revision ref,b.observed_generation generation FROM agent_rollout_steps b JOIN agent_rollouts z ON z.id=b.rollout_id
- WHERE b.agent_id=m.agent_id AND b.observed_generation IS NOT NULL ORDER BY b.observed_generation DESC LIMIT 1) v ON true
+ WHERE b.agent_id=m.agent_id AND z.template_name IS NOT NULL AND b.observed_generation IS NOT NULL ORDER BY b.observed_generation DESC LIMIT 1) v ON true
  WHERE u.tenant_id=$1 AND u.id=$2 AND m.agent_id>$3 ORDER BY m.agent_id LIMIT $4`, p.TenantID, id, after, limit)
 	if err != nil {
 		return nil, err
@@ -406,7 +436,7 @@ func (c *AgentCatalog) RolloutMembers(ctx context.Context, p Principal, id, afte
 	out := []RolloutMember{}
 	for rows.Next() {
 		var v RolloutMember
-		if err = rows.Scan(&v.AgentID, &v.Stage, &v.Requested, &v.LastVerified, &v.Generation); err != nil {
+		if err = rows.Scan(&v.AgentID, &v.Stage, &v.Requested, &v.Resources, &v.LastVerified, &v.Generation); err != nil {
 			return nil, err
 		}
 		out = append(out, v)

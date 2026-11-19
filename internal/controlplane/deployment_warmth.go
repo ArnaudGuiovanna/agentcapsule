@@ -25,6 +25,7 @@ func nextWarmAgent(ctx context.Context, db rowQuerier, host, candidate string) (
  LEFT JOIN agent_placements p USING(agent_id)
  WHERE d.host_id=$1 AND d.applied_at IS NOT NULL AND d.active_count>0
  AND NOT EXISTS(SELECT FROM agent_rollouts r WHERE r.deployment_id=d.id AND r.status<>'completed')
+ AND NOT EXISTS(SELECT FROM agent_rollouts r JOIN agent_deployment_members m2 ON m2.agent_id=r.target_agent WHERE m2.deployment_id=d.id AND r.status<>'completed')
  GROUP BY d.id HAVING count(*) FILTER(WHERE p.state IN ('STARTING','RUNNING') AND NOT p.fence_only)<d.active_count
  )
  SELECT m.agent_id FROM under_target d JOIN agent_deployment_members m ON m.deployment_id=d.id

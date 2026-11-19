@@ -265,6 +265,19 @@ func (h *FirecrackerHost) SetRolloutProfile(ctx context.Context, agent, rollout 
 			return ErrGeneration
 		}
 	}
+	return h.setStoppedRolloutProfile(ctx, agent, rollout, resources, system, harness)
+}
+
+// ResizeRollout keeps the installed image and harness, including legacy agents
+// that use this host's built-in image without an explicit system-image pin.
+func (h *FirecrackerHost) ResizeRollout(ctx context.Context, agent, rollout string, resources VMResources) error {
+	if rollout == "" || !resources.valid() {
+		return ErrGeneration
+	}
+	return h.setStoppedRolloutProfile(ctx, agent, rollout, resources, nil, nil)
+}
+
+func (h *FirecrackerHost) setStoppedRolloutProfile(ctx context.Context, agent, rollout string, resources VMResources, system *BootImageID, harness *HarnessImage) error {
 	return h.locked(ctx, func(r *hostRegistry) error {
 		a := r.Agents[agent]
 		if a == nil || a.Fenced || a.SealID != "" || a.VolumeRemoved {
@@ -278,8 +291,10 @@ func (h *FirecrackerHost) SetRolloutProfile(ctx context.Context, agent, rollout 
 		}
 		a.Rollout = rollout
 		a.Resources = resources
-		a.SystemImage = system
-		a.Harness = harness
+		if system != nil {
+			a.SystemImage = system
+			a.Harness = harness
+		}
 		return h.save(r)
 	})
 }

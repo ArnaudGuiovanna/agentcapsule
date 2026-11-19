@@ -31,6 +31,7 @@ var commands = map[string]string{
 	"agent idle-policy":      "POST /agents/{agent}/idle-policy",
 	"agent invoke":           "POST /agents/{agent}/invocations",
 	"agent list":             "GET /agents",
+	"agent resize":           "POST /agents/{id}/resize",
 	"agent release":          "POST /agents/{agent}/release",
 	"agent set-capabilities": "PUT /agents/{agent}/capabilities",
 	"agent show":             "GET /agents/{agent}",
@@ -388,7 +389,7 @@ func buildAction(pos []string, o options, in io.Reader) (action, error) {
 			}
 			args = args[1:]
 		}
-		for _, k := range []string{"template", "count", "active-count", "max-unavailable", "size-mib", "deployment", "auth-mode", "base-url", "kind", "name", "reference", "alias", "upstream-model", "provider-id"} {
+		for _, k := range []string{"template", "count", "active-count", "max-unavailable", "size-mib", "vcpus", "memory-mib", "deployment", "auth-mode", "base-url", "kind", "name", "reference", "alias", "upstream-model", "provider-id"} {
 			v := o.take(k)
 			if v == "" {
 				continue
@@ -398,7 +399,7 @@ func buildAction(pos []string, o options, in io.Reader) (action, error) {
 			if k == "deployment" {
 				field = "deployment_id"
 			}
-			if k == "count" || k == "active-count" || k == "max-unavailable" || k == "size-mib" {
+			if k == "count" || k == "active-count" || k == "max-unavailable" || k == "size-mib" || k == "vcpus" || k == "memory-mib" {
 				n, e := strconv.Atoi(v)
 				if e != nil || n < 0 {
 					return a, fmt.Errorf("invalid --%s", k)

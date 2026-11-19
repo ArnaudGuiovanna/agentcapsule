@@ -39,6 +39,7 @@ var auditedRoutes = map[string]auditedRoute{
 	"POST /v1/deployment-plans":                                 {"deployment.planned", "", ""},
 	"POST /v1/deployment-plans/{id}/apply":                      {"deployment.applied", "id", ""},
 	"POST /v1/pools":                                            {"pool.created", "", ""},
+	"POST /v1/agents/{id}/resize":                               {"agent.resize_requested", "id", ""},
 	"POST /v1/deployments/{id}/rollouts":                        {"rollout.started", "id", ""},
 	"POST /v1/rollouts/{id}/resume":                             {"rollout.resumed", "id", ""},
 	"POST /v1/agents/{id}/volume-growth":                        {"volume.growth_requested", "id", ""},

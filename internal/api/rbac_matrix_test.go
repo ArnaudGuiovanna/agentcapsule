@@ -115,6 +115,7 @@ var rbacRoutes = append([]rbacRoute{
 	{Method: "POST", Path: "/v1/deployment-plans", Success: 201, Want: "S S S 403 403 403 403 403 403 404 401 401 403", body: `{"template":"matrix-base@1","count":1}`},
 	{Method: "POST", Path: "/v1/deployment-plans/{fresh}/apply", Success: 202, Want: "S S S 403 403 403 403 403 403 404 401 401 403", body: `{}`, fresh: rbacFreshDeployment},
 	{Method: "GET", Path: "/v1/deployments/{deployment}", Success: 200, Want: "S S S 403 403 403 403 403 403 404 401 401 403"},
+	{Method: "POST", Path: "/v1/agents/{fresh}/resize", Success: 202, Want: rbacConfigure, body: `{"vcpus":2,"memory_mib":512}`, fresh: rbacFreshAgent},
 	{Method: "POST", Path: "/v1/agents/{fresh}/volume-growth", Success: 202, Want: rbacConfigure, body: `{"size_mib":192}`, fresh: rbacFreshAgent},
 	{Method: "GET", Path: "/v1/volume-growth/{fresh}", Success: 200, Want: rbacConfigure, fresh: rbacFreshGrowth},
 	{Method: "POST", Path: "/v1/deployments/{fresh}/rollouts", Success: 202, Want: rbacConfigure, body: `{"template":"matrix-base@1","max_unavailable":1}`, fresh: rbacPoolDeployment},

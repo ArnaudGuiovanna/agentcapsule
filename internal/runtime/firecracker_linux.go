@@ -42,7 +42,11 @@ type FirecrackerOptions struct {
 	FirecrackerSHA256, JailerSHA256, KernelSHA256, InitrdSHA256 string
 	SystemImages                                                []BootImage
 	MaxActive                                                   int
-	BootTimeout                                                 time.Duration
+	// Provisioning hosts also enforce the CPU and memory budget reported to
+	// the planner. Preprovisioned hosts without these limits use MaxActive.
+	HostVCPUs     int
+	HostMemoryMiB int64
+	BootTimeout   time.Duration
 	// DriveLimits caps the I/O of each VM's drives; zero means
 	// DefaultDriveLimits (CAP-03, ADR 012).
 	DriveLimits DriveLimits
@@ -293,6 +297,23 @@ func syncDir(path string) error {
 	}
 	defer f.Close()
 	return f.Sync()
+}
+
+// The caller holds the registry lock and has reconciled exited runs. Include
+// a VM whose startup is in progress and the same 256 MiB of VMM headroom per
+// guest used by the cgroup limit and the deployment planner.
+func (h *FirecrackerHost) hasBootCapacity(r *hostRegistry, requested VMResources) bool {
+	slots, cpus, memory := 1, requested.VCPUs, int64(requested.MemoryMiB+256)
+	for _, other := range r.Agents {
+		if other.Run != nil {
+			v := other.resources()
+			slots++
+			cpus += v.VCPUs
+			memory += int64(v.MemoryMiB + 256)
+		}
+	}
+	return slots <= h.opts.MaxActive && (h.opts.HostVCPUs == 0 || cpus <= h.opts.HostVCPUs) &&
+		(h.opts.HostMemoryMiB == 0 || memory <= h.opts.HostMemoryMiB)
 }
 
 func (h *FirecrackerHost) locked(ctx context.Context, fn func(*hostRegistry) error) error {
@@ -829,13 +850,7 @@ func (h *FirecrackerHost) start(ctx context.Context, id string, generation uint6
 			if err := h.recover(ctx, r); err != nil {
 				return err
 			}
-			active := 0
-			for _, other := range r.Agents {
-				if other.Run != nil {
-					active++
-				}
-			}
-			if active >= h.opts.MaxActive {
+			if !h.hasBootCapacity(r, a.resources()) {
 				return ErrCapacity
 			}
 			st, err := os.Stat(a.Volume)
