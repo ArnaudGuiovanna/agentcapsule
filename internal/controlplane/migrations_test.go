@@ -376,6 +376,9 @@ func TestReadyChecksInstalledMigrationLedger(t *testing.T) {
 func revertTenantAgents(t *testing.T, s *Store) {
 	t.Helper()
 	if _, err := s.pool.Exec(t.Context(), `
+        DROP TABLE IF EXISTS agent_volume_growth, deployment_audit;
+        ALTER TABLE IF EXISTS agent_specs DROP COLUMN IF EXISTS reserved_growth_mib;
+        ALTER TABLE IF EXISTS volume_restores DROP COLUMN IF EXISTS grow_to_mib;
         DROP TABLE IF EXISTS agent_rollout_steps, agent_rollouts;
         ALTER TABLE agent_specs DROP COLUMN IF EXISTS template_grant_id, DROP COLUMN IF EXISTS system_image;
         DROP VIEW IF EXISTS agent_pool_inventory, available_pool_members;

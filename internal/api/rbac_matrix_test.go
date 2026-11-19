@@ -115,6 +115,8 @@ var rbacRoutes = append([]rbacRoute{
 	{Method: "POST", Path: "/v1/deployment-plans", Success: 201, Want: "S S S 403 403 403 403 403 403 404 401 401 403", body: `{"template":"matrix-base@1","count":1}`},
 	{Method: "POST", Path: "/v1/deployment-plans/{fresh}/apply", Success: 202, Want: "S S S 403 403 403 403 403 403 404 401 401 403", body: `{}`, fresh: rbacFreshDeployment},
 	{Method: "GET", Path: "/v1/deployments/{deployment}", Success: 200, Want: "S S S 403 403 403 403 403 403 404 401 401 403"},
+	{Method: "POST", Path: "/v1/agents/{fresh}/volume-growth", Success: 202, Want: rbacConfigure, body: `{"size_mib":192}`, fresh: rbacFreshAgent},
+	{Method: "GET", Path: "/v1/volume-growth/{fresh}", Success: 200, Want: rbacConfigure, fresh: rbacFreshGrowth},
 	{Method: "POST", Path: "/v1/deployments/{fresh}/rollouts", Success: 202, Want: rbacConfigure, body: `{"template":"matrix-base@1","max_unavailable":1}`, fresh: rbacPoolDeployment},
 	{Method: "GET", Path: "/v1/rollouts/{fresh}/members", Success: 200, Want: rbacConfigure, fresh: rbacFreshRollout},
 	{Method: "GET", Path: "/v1/rollouts/{fresh}", Success: 200, Want: rbacConfigure, fresh: rbacFreshRollout},
@@ -611,6 +613,13 @@ func rbacFreshCall(t *testing.T, f *rbacFixture) map[string]string {
 		t.Fatal(err)
 	}
 	return map[string]string{"fresh": res.ID}
+}
+
+func rbacFreshGrowth(t *testing.T, f *rbacFixture) map[string]string {
+	agent := f.activeAgent(t, f.next())
+	var g controlplane.VolumeGrowth
+	f.must(t, "owner", "POST", "/v1/agents/"+agent+"/volume-growth", `{"size_mib":192}`, 202, &g)
+	return map[string]string{"fresh": g.ID}
 }
 
 func rbacFreshAgent(t *testing.T, f *rbacFixture) map[string]string {

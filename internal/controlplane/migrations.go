@@ -175,6 +175,9 @@ var providerAuthSQL string
 //go:embed migrations/0052_rollouts.sql
 var rolloutsSQL string
 
+//go:embed migrations/0053_volume_growth.sql
+var volumeGrowthSQL string
+
 // Append migrations; never edit an installed migration. The original schema
 // also upgrades pre-ledger installations, preserving its historical backfills.
 // Later calls validate its checksum without replaying DDL or those backfills.
@@ -231,6 +234,7 @@ var controlPlaneMigrations = []schemaMigration{
 	{version: 50, name: "applications", sql: applicationsSQL},
 	{version: 51, name: "provider-auth", sql: providerAuthSQL},
 	{version: 52, name: "rollouts", sql: rolloutsSQL},
+	{version: 53, name: "volume-growth", sql: volumeGrowthSQL},
 }
 
 func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error {

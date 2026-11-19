@@ -319,6 +319,36 @@ paths:
           content:
             application/json: {schema: {$ref: '#/components/schemas/AgentPool'}}
         default: {$ref: '#/components/responses/Problem'}
+  /v1/agents/{id}/volume-growth:
+    post:
+      summary: Reserve additional capacity for a private encrypted volume
+      security: [{delegatedBearer: []}]
+      description: Requires agent:configure. The worker stops the agent, captures the ciphertext archive, restores it at a new incarnation, and verifies the expanded filesystem during restricted boot. Poll the returned growth id.
+      parameters:
+        - {$ref: '#/components/parameters/ResourceID'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json: {schema: {$ref: '#/components/schemas/VolumeGrowthRequest'}}
+      responses:
+        '202':
+          description: Reserve additional capacity for a private encrypted volume
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/VolumeGrowth'}}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/volume-growth/{id}:
+    get:
+      summary: Read the stage and archive of a volume growth request
+      security: [{delegatedBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/ResourceID'}
+      responses:
+        '200':
+          description: Read the stage and archive of a volume growth request
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/VolumeGrowth'}}
+        default: {$ref: '#/components/responses/Problem'}
   /v1/health/live:
     get:
       security: []
@@ -3906,6 +3936,23 @@ components:
             total: {type: integer}
             available: {type: integer, description: Unassigned provisioned members}
             preparing: {type: integer, description: Unassigned members still provisioning}
+    VolumeGrowthRequest:
+      type: object
+      required: [size_mib]
+      properties:
+        size_mib: {type: integer, minimum: 64, maximum: 32768}
+    VolumeGrowth:
+      type: object
+      required: [id, agent_id, archive_id, restore_id, previous_mib, target_mib, stage]
+      properties:
+        id: {type: string}
+        agent_id: {type: string}
+        archive_id: {type: string}
+        restore_id: {type: string}
+        previous_mib: {type: integer}
+        target_mib: {type: integer}
+        stage: {type: string, enum: [pending, capturing, restoring, succeeded, refused]}
+        reason: {type: string}
     HarnessReference:
       type: object
       additionalProperties: false

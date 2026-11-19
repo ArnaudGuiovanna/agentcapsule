@@ -155,7 +155,7 @@ func (s *Store) ConfigureHostStorage(ctx context.Context, host string, limitMiB 
 		return err
 	}
 	var reserved int64
-	if err = tx.QueryRow(ctx, `SELECT coalesce(sum(volume_mib),0) FROM agent_specs x JOIN agents a ON a.id=x.agent_id WHERE x.host_id=$1 AND a.phase<>'DELETED'`, host).Scan(&reserved); err != nil {
+	if err = tx.QueryRow(ctx, `SELECT coalesce(sum(volume_mib+reserved_growth_mib),0) FROM agent_specs x JOIN agents a ON a.id=x.agent_id WHERE x.host_id=$1 AND a.phase<>'DELETED'`, host).Scan(&reserved); err != nil {
 		return err
 	}
 	if reserved > limitMiB {
@@ -255,7 +255,7 @@ func (c *AgentCatalog) Reserve(ctx context.Context, p Principal, key string, in 
 		}
 		var available bool
 		err = tx.QueryRow(ctx, `SELECT storage_limit_mib>0 AND storage_limit_mib >= $2::bigint +
-            (SELECT coalesce(sum(x.volume_mib),0) FROM agent_specs x JOIN agents a ON a.id=x.agent_id WHERE x.host_id=$1 AND a.phase<>'DELETED')
+            (SELECT coalesce(sum(x.volume_mib+x.reserved_growth_mib),0) FROM agent_specs x JOIN agents a ON a.id=x.agent_id WHERE x.host_id=$1 AND a.phase<>'DELETED')
             FROM worker_hosts WHERE host_id=$1`, c.host, r.DataVolumeMiB).Scan(&available)
 		if err != nil {
 			return 0, nil, err

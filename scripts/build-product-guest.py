@@ -113,7 +113,7 @@ def main():
         native[destination] = {"source": str(source.resolve()), "sha256": sha(source)}
 
     for source, dest in [(a.cryptsetup.resolve(), "sbin/cryptsetup"), (Path("/usr/sbin/mkfs.ext4"), "sbin/mkfs.ext4"),
-                         (Path("/usr/sbin/e2fsck"), "sbin/e2fsck"), (Path("/usr/sbin/blkid"), "sbin/blkid")]:
+                         (Path("/usr/sbin/e2fsck"), "sbin/e2fsck"), (Path("/usr/sbin/resize2fs"), "sbin/resize2fs"), (Path("/usr/sbin/blkid"), "sbin/blkid")]:
         add(source, dest, 0o500)
         result = subprocess.run(["ldd", str(source)], capture_output=True, text=True, check=True, timeout=30)
         if "not found" in result.stdout:
