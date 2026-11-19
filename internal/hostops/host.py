@@ -397,6 +397,8 @@ def main(argv, cli_version):
     for action in ("show", "wait", "resume"):
         p = operations.add_parser(action)
         p.add_argument("id")
+        if action=="resume":
+            p.add_argument("--refresh-helper",action="store_true",help="retry the failed phase with this CLI’s host helper")
     for action in ("archive", "restore"):
         parent = groups.add_parser(action)
         parents = [parent] if action == "archive" else [parent.add_subparsers(dest="sub", required=True)]
@@ -419,6 +421,8 @@ def main(argv, cli_version):
         if args.sub == "resume":
             if read(directory / "status.json")["state"] != "failed":
                 raise ValueError("only a failed host operation can be resumed")
+            if args.refresh_helper:
+                write_file(directory/"helper.py",HELPER_SOURCE)
             submit(directory)
         while args.sub == "wait":
             report = read(directory / "status.json")

@@ -79,11 +79,20 @@ def install_dependencies(dist,release):
     with tempfile.TemporaryDirectory(dir=STATE) as tmp:
         root = Path(tmp)/"packages"
         unpack(dist/DEBS,root)
-        packages=sorted(root.glob("*.deb"))
-        if not packages:
-            raise ValueError("empty package distribution")
-        run("apt-get","install","-y","--no-download","--no-install-recommends",*packages,
-            env=dict(os.environ, DEBIAN_FRONTEND="noninteractive"))
+        roots=read(root/"roots.json")
+        if not roots or not all(re.fullmatch(r"[a-z0-9.+-]+=[A-Za-z0-9:.+~_-]+",p) for p in roots):
+            raise ValueError("invalid version-locked packages")
+        lists=Path(tmp)/"lists"
+        (lists/"partial").mkdir(parents=True)
+        sources=Path(tmp)/"local.list"
+        write_file(sources,("deb [trusted=yes] file:"+str(root)+" ./\n").encode())
+        # The entire local repository was verified before extraction. Isolate
+        # the indices and sources so APT can acquire only those local files.
+        apt=["apt-get","-o","Dir::Etc::sourcelist="+str(sources),"-o","Dir::Etc::sourceparts=-",
+             "-o","Dir::State::lists="+str(lists),"-o","Acquire::Languages=none"]
+        run(*apt,"update")
+        run(*apt,"install","--no-remove","-y","--no-install-recommends",*roots,
+            env=dict(os.environ,DEBIAN_FRONTEND="noninteractive"))
     run("systemctl","enable","--now","docker.service")
     with tempfile.TemporaryDirectory(dir=STATE) as tmp:
         root=Path(tmp)/"images"
