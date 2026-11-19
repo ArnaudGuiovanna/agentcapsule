@@ -264,12 +264,14 @@ def activate(link, destination):
 def execute(directory):
     # An operation retried after an interrupted boot uses its original helper,
     # target digest, profile, and completed phases.
-    request = read(directory / "request.json")
-    status = read(directory / "status.json")
-    if status["state"] == "succeeded":
+    if read(directory / "status.json")["state"] == "succeeded":
         return
     with (STATE / "operation.lock").open("a+b") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
+        status = read(directory / "status.json")
+        if status["state"] == "succeeded":
+            return
+        request = read(directory / "request.json")
         fields = status["completed"]
         phase = "preflight"
         try:
@@ -295,6 +297,10 @@ def execute(directory):
                 release = RELEASES / version
                 profile = request["profile"]
                 step("verify-release", lambda: (stage(request), None)[1])
+                if "prepare-release" in fields and "activate" not in fields:
+                    # A restart can leave an extracted candidate on disk for
+                    # days before its package index and service units are used.
+                    verify_release_files(release, dist, version)
                 step("prepare-release", lambda: prepare_release(release, dist, version))
                 if request["action"] == "update":
                     step("backup", lambda: backup(profile, mandatory=True, directory=directory))
@@ -326,22 +332,41 @@ def safe_error(error):
     return str(error)
 
 
+def verify_release_files(release, dist, version):
+    # The external manifest was authenticated when staging the signed plan.
+    manifest = read(dist / "agentcapsule-bundle.json")
+    if (release.is_symlink() or (release / "bundle.json").is_symlink() or
+            manifest.get("schema") != "agentcapsule.bundle/v1" or manifest.get("version") != version or
+            read(release / "bundle.json") != manifest):
+        raise ValueError("extracted release differs from the verified bundle manifest")
+    expected = manifest["sha256"]
+    required = {"firecracker", "jailer", "vmlinux", "product.initrd", "agentcapsule-api", "agentcapsule-worker"}
+    if not required.issubset(expected) or "bundle.json" in expected:
+        raise ValueError("incomplete server bundle manifest")
+    verified = set()
+    for path in release.rglob("*"):
+        name = path.relative_to(release).as_posix()
+        if path.is_symlink():
+            raise ValueError("unexpected link in server bundle: " + name)
+        if path.is_dir() or name == "bundle.json":
+            continue
+        if not path.is_file() or name not in expected or sha(path) != expected[name]:
+            raise ValueError("server bundle file differs from manifest: " + name)
+        verified.add(name)
+    if verified != expected.keys():
+        raise ValueError("server bundle lacks files from its manifest")
+
+
 def prepare_release(release, dist, version):
     if release.exists():
-        if read(release / "bundle.json")["version"] != version:
-            raise ValueError("release directory version mismatch")
+        verify_release_files(release, dist, version)
         return
     RELEASES.mkdir(mode=0o755, exist_ok=True)
     RELEASES.chmod(0o755)
     with tempfile.TemporaryDirectory(dir=RELEASES) as tmp:
         new = Path(tmp) / "release"
         unpack(dist / SERVER, new)
-        manifest = read(new / "bundle.json")
-        if manifest["schema"] != "agentcapsule.bundle/v1" or manifest["version"] != version:
-            raise ValueError("incompatible bundle")
-        for name in ("firecracker", "jailer", "vmlinux", "product.initrd", "agentcapsule-api", "agentcapsule-worker"):
-            if sha(new / name) != manifest["sha256"][name]:
-                raise ValueError("incomplete server bundle")
+        verify_release_files(new, dist, version)
         new.rename(release)
 
 

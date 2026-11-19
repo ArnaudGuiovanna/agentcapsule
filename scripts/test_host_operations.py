@@ -80,6 +80,33 @@ class HostOperationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,"restore"):
             self.api["stage"](self.request,True)
 
+    def test_prepared_release_matches_the_signed_plan_and_all_files_on_reuse(self):
+        required = ("firecracker", "jailer", "vmlinux", "product.initrd", "agentcapsule-api", "agentcapsule-worker")
+        files = {name: name.encode() for name in (*required, "systemd/agentcapsule-api.service")}
+        self.bundle["sha256"] = {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}
+        files["bundle.json"] = json.dumps(self.bundle).encode()
+        with tarfile.open(self.assets / self.api["SERVER"], "w:gz") as tar:
+            for name, data in files.items():
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                tar.addfile(info, io.BytesIO(data))
+        self.sign()
+        staged = self.api["stage"](self.request)
+        release = self.api["RELEASES"] / self.version
+        prepare = self.api["prepare_release"]
+        prepare(release, staged, self.version)
+        prepare(release, staged, self.version)
+        unit = release / "systemd/agentcapsule-api.service"
+        unit.write_bytes(b"interrupted write")
+        with self.assertRaisesRegex(ValueError, "differs from manifest"):
+            prepare(release, staged, self.version)
+        # Replacing the inner inventory along with that unit cannot change
+        # which files the independently signed installation plan selected.
+        self.bundle["sha256"]["systemd/agentcapsule-api.service"] = hashlib.sha256(unit.read_bytes()).hexdigest()
+        (release / "bundle.json").write_text(json.dumps(self.bundle))
+        with self.assertRaisesRegex(ValueError, "verified bundle manifest"):
+            prepare(release, staged, self.version)
+
     def test_reject_archive_traversal_and_links(self):
         for i,(name,kind) in enumerate((("../outside",tarfile.REGTYPE),("/root/a",tarfile.REGTYPE),("link",tarfile.SYMTYPE))):
             archive=self.root/f"bad{i}.tar"
@@ -234,6 +261,27 @@ class HostOperationTests(unittest.TestCase):
             self.api["execute"](op)
         self.assertEqual(calls,["backup","migration","migration"])
         self.assertEqual(self.api["read"](op/"status.json")["state"],"succeeded")
+
+    def test_concurrent_executors_observe_completed_storage_operation_under_lock(self):
+        import fcntl
+        import threading
+        from concurrent.futures import ThreadPoolExecutor
+        from unittest.mock import Mock
+        op = self.state / ("host_" + "b" * 32)
+        op.mkdir()
+        self.api["save"](op / "request.json", {"action": "restore-apply"})
+        self.api["state"](op, state="queued")
+        arrived = threading.Barrier(2)
+        flock = fcntl.flock
+        def simultaneous_lock(file, flags):
+            arrived.wait(timeout=5)
+            return flock(file, flags)
+        storage = Mock(return_value={"storage_result": {"incarnation": 2}})
+        with patch.dict(self.api, preflight=lambda: None, run_storage=storage), patch("fcntl.flock", simultaneous_lock):
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                list(pool.map(self.api["execute"], (op, op)))
+        storage.assert_called_once()
+        self.assertEqual(self.api["read"](op/"status.json")["state"], "succeeded")
 
     def test_resume_preserves_completed_storage_operation(self):
         op=self.state/("host_"+"a"*32)

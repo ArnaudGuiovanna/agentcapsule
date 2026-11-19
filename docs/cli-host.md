@@ -84,14 +84,16 @@ authority recovery material independently. [Recovery](recovery.md)
 
 ## Verify and load offline assets
 
-On the connected station obtain the server bundle, package tar, OCI image
-archive, `SHA256SUMS`, `SHA256SUMS.sigstore.json` and the pinned cosign Linux
+On the connected station obtain `agentcapsule-bundle.json`, the server bundle,
+package tar, OCI image archive, `SHA256SUMS`, `SHA256SUMS.sigstore.json` and the pinned cosign Linux
 binary under the name `cosign-linux-amd64`. Copy these files onto the target. The CLI embeds the Sigstore trusted root
 whose verified TUF target SHA-256 is
 `6494e21ea73fa7ee769f85f57d5a3e6a08725eae1e38c755fc3517c9e6bc0b66`.
 Use `--trusted-root` to select an independently trusted replacement. The CLI
 checks the verifier's pinned digest and the workflow identity for the exact
-tag, then rechecks each archive before it is activated. The package tar holds
+tag. It verifies the archive digests and checks every extracted server file
+against the signed inventory. A resumed update rechecks its prepared server
+directory before using its dependencies and activating the release. The package tar holds
 the APT dependency closure. The image archive uses the immutable manifest
 references and the runtime verifies the loaded image's config digest.
 Preflight checks the OS, cgroup controllers and KVM before large downloads.
