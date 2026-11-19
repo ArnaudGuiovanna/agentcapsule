@@ -336,3 +336,15 @@ Download the files you need, with `SHA256SUMS` and `SHA256SUMS.sigstore.json`.
 - The guest image's native packages are scanned with the build host's
   distribution data. The release scans the Firecracker workspace dependency lock. The kernel build has no configuration-specific vulnerability inventory.
 - The SLIM native library has an inventory of the source revision and the Rust dependency lock. The lock also contains optional and build dependencies. It describes the upstream source tree and cannot identify every crate linked into the prebuilt native library.
+
+### Binary rollback compatibility
+
+The signed server manifest contains a `binary_rollback_epoch`. Bump the value
+in `scripts/build-server-bundle.py` whenever an older server could misinterpret
+persistent state, guest or authority protocols, revocations, destroyed keys,
+exclusive volume ownership or security policy after the new server has run.
+Use a fresh epoch even when the database schema and HTTP API are unchanged.
+Within an epoch the host helper separately checks the full SQL ledger,
+external dependencies, guest runtime and host configuration before it accepts
+a binary rollback. The build and its own signed version remain independently
+identifiable. [Host rollback procedure](cli-host.md#update-and-recovery)

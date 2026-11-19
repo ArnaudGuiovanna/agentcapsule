@@ -319,7 +319,7 @@ class HostOperationTests(unittest.TestCase):
         op=self.state/("host_"+"b"*32)
         op.mkdir()
         profile={"database_url_file":None}
-        req=dict(action="update",profile=profile,version=self.version,**{"from":"previous"})
+        req=dict(action="update",profile=profile,version=self.version,**{"from":"v0.0.1"})
         self.api["save"](op/"request.json",req)
         self.api["state"](op,state="queued")
         calls=[]
@@ -331,7 +331,7 @@ class HostOperationTests(unittest.TestCase):
                 raise ValueError("test migration failure")
         def no_action(*_,**__):
             pass
-        fixtures=dict(preflight=no_action,current=lambda:"previous",stage=no_action,prepare_release=no_action,
+        fixtures=dict(preflight=no_action,current=lambda:"v0.0.1",stage=no_action,prepare_release=no_action,
                       backup=lambda *_,**__:calls.append("backup"),install_dependencies=no_action,
                       activate=no_action,configure=migrate,start_services=no_action,smoke=no_action,
                       pending_operations=lambda _:0,run=no_action)

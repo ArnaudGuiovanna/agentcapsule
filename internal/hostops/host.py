@@ -76,6 +76,89 @@ def current():
     return read(path)["version"] if path.is_file() else None
 
 
+def version_order(tag):
+    match = re.fullmatch(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*))?", tag)
+    if not match:
+        raise ValueError("invalid semantic version")
+    prerelease = match[4].split(".") if match[4] else []
+    if any(part.isdigit() and len(part) > 1 and part.startswith("0") for part in prerelease):
+        raise ValueError("invalid numeric prerelease identifier")
+    labels = tuple((0, int(part)) if part.isdigit() else (1, part) for part in prerelease)
+    return (*map(int, match.groups()[:3]), not prerelease, labels)
+
+
+def validate_release_direction(request):
+    action = request["action"]
+    if action not in ("update", "rollback"):
+        return
+    older = version_order(request["version"]) < version_order(request["from"])
+    if action == "update" and older:
+        raise ValueError("use rollback plan for an older signed release")
+    if action == "rollback" and not older:
+        raise ValueError("rollback requires a strictly older signed release")
+
+
+def activation_generation():
+    receipt = STATE / "active-release.json"
+    if receipt.is_file():
+        return read(receipt)["operation_id"]
+    if ACTIVE.is_symlink():
+        info = ACTIVE.lstat()
+        return f"legacy-{info.st_ino}-{info.st_ctime_ns}"
+    return None
+
+
+class MigrationHistoryMismatch(ValueError):
+    pass
+
+
+class RollbackIncompatible(ValueError):
+    pass
+
+
+def rollback_requires_restore(reason):
+    return RollbackIncompatible("binary rollback requires coordinated restoration: " + reason +
+                      ". Select a matching PostgreSQL and volume recovery point with the current independent "
+                      "authorities. Writes after that point may be lost. See docs/recovery.md")
+
+
+def check_binary_rollback(request, candidate, origin):
+    version = request["from"]
+    source = RELEASES / version / "bundle.json"
+    receipt = STATE / "downloads" / version / "activated-origin.json"
+    if not source.is_file() or not receipt.is_file():
+        raise rollback_requires_restore("installed build lacks a verified activation receipt")
+    if current() == version and (not ACTIVE.is_symlink() or ACTIVE.resolve() != source.parent.resolve()):
+        raise ValueError("active link differs from the authenticated release directory")
+    evidence = read(receipt)
+    if sha(source) != evidence["manifest_sha256"] or evidence["version"] != version:
+        raise ValueError("installed manifest differs from its authenticated activation receipt")
+    if evidence["signer"] != origin["signer"]:
+        raise ValueError("rollback signing authority differs from the installed release")
+    installed = read(source)
+    if (not installed.get("binary_rollback_epoch") or installed["binary_rollback_epoch"] != candidate.get("binary_rollback_epoch") or
+            any(bundle.get("protocol") != "v1" or bundle.get("migration_mode") != "offline-exact-history"
+                for bundle in (installed, candidate))):
+        raise rollback_requires_restore("formats, protocols or authority semantics differ or are undeclared")
+    if (not installed.get("migration_ledger") or installed["migration_ledger"] != candidate.get("migration_ledger") or
+            installed.get("migrations") != candidate.get("migrations")):
+        raise rollback_requires_restore("signed PostgreSQL histories differ or are undeclared")
+    required = {"offline-images.json", "host-packages.json", "vmlinux", "firecracker", "jailer", "product.initrd"}
+    def environment(bundle):
+        files = bundle.get("sha256", {})
+        return {name: digest for name, digest in files.items() if name in required or
+                name == "agentcapsule-archive-ship.py" or
+                name.startswith(("systemd/", "config/", "oidc/", "interop/", "backup/"))}
+    installed_environment = environment(installed)
+    if (not required <= installed_environment.keys() or
+            installed_environment != environment(candidate)):
+        raise rollback_requires_restore("host or guest dependencies, service definitions or OCI configurations differ")
+    try:
+        return check_migration_plan(installed, candidate)
+    except MigrationHistoryMismatch as error:
+        raise rollback_requires_restore(str(error)) from error
+
+
 def run(*argv, **kwargs):
     return subprocess.run([str(arg) for arg in argv], check=True, **kwargs)
 
@@ -148,7 +231,7 @@ def check_migration_plan(installed, candidate):
                'sha256',encode(checksum,'hex')) ORDER BY version),'[]'::json) FROM schema_migrations"""
     actual = json.loads(postgres_scalar(read(STATE / "profile.json"), query))
     if actual != expected or installed.get("migration_ledger", actual) != actual:
-        raise ValueError("database migration history differs from the signed build; review the restore plan")
+        raise MigrationHistoryMismatch("database migration history differs from the signed build; review the restore plan")
     return "database_ledger_verified"
 
 
@@ -180,13 +263,19 @@ def verify_assets(request,manifest_only,version,uri,dest):
         # operator supplies the public key independently of the bundle.
         if not offline or not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+-dev\.[0-9]+",version):
             raise ValueError("local build trust requires an offline -dev.N version")
-        pub=Path(request["development_key"])
-        trusted=STATE/"development-key.sha256"
-        if trusted.exists() and trusted.read_text()!=sha(pub) or current() and not trusted.exists():
-            raise ValueError("local development signing key differs from installed trust")
-        sig=fetch("SHA256SUMS.dev.sig",maxsize=1024)
-        run("openssl","pkeyutl","-verify","-pubin","-inkey",pub,"-rawin","-in",sums,"-sigfile",sig,stdout=sys.stderr)
-        write_file(trusted,sha(pub).encode())
+        pub = dest / "development-key.pub"
+        key = Path(request["development_key"]).read_bytes()
+        write_file(pub, key)
+        key_digest = hashlib.sha256(key).hexdigest()
+        trusted = STATE / "development-key.sha256"
+        sig = fetch("SHA256SUMS.dev.sig", maxsize=1024)
+        with (STATE / "development-key.lock").open("a+b") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            if trusted.exists() and trusted.read_text() != key_digest or current() and not trusted.exists():
+                raise ValueError("local development signing key differs from installed trust")
+            run("openssl","pkeyutl","-verify","-pubin","-inkey",pub,"-rawin","-in",sums,"-sigfile",sig,stdout=sys.stderr)
+            write_file(trusted, key_digest.encode())
+        signer = {"mode":"development-ed25519", "key_sha256":key_digest}
     else:
         cosign = STATE / "cosign"
         if not cosign.exists() or sha(cosign) != COSIGN_HASH:
@@ -200,13 +289,17 @@ def verify_assets(request,manifest_only,version,uri,dest):
         verify = [cosign, "verify-blob", "--bundle", bundle, "--certificate-identity",
                   f"https://github.com/{REPO}/.github/workflows/release.yml@refs/tags/{version}",
                   "--certificate-oidc-issuer", "https://token.actions.githubusercontent.com"]
+        custom_root = None
         if offline:
-            root=request.get("trusted_root")
-            if not root:
-                root=dest/"trusted-root.json"
-                write_file(root,TRUSTED_ROOT)
+            root_contents = Path(request["trusted_root"]).read_bytes() if request.get("trusted_root") else TRUSTED_ROOT
+            root = dest / "trusted-root.json"
+            write_file(root, root_contents)
+            if root_contents != TRUSTED_ROOT:
+                custom_root = hashlib.sha256(root_contents).hexdigest()
             verify.extend(["--offline", "--trusted-root", root])
         run(*verify, sums,stdout=sys.stderr)
+        signer = {"mode":"sigstore", "workflow":f"{REPO}/.github/workflows/release.yml",
+                  "issuer":"https://token.actions.githubusercontent.com", "custom_root_sha256":custom_root}
     fingerprint=sha(sums)
     pinned=dest/"verified-manifest.sha256"
     if pinned.exists() and pinned.read_text()!=fingerprint:
@@ -217,13 +310,19 @@ def verify_assets(request,manifest_only,version,uri,dest):
         raise ValueError("incompatible server distribution")
     installed = read(ACTIVE / "bundle.json") if current() else {}
     before = installed.get("migrations", [])
-    migration_check = check_migration_plan(installed, manifest)
+    origin = {"version":version, "signer":signer, "manifest_sha256":digests["agentcapsule-bundle.json"]}
+    activated = dest / "activated-origin.json"
+    if activated.is_file() and read(activated) != origin:
+        raise ValueError("release signing identity or manifest changed since activation")
+    rollback = request.get("action") == "rollback"
+    migration_check = check_binary_rollback(request, manifest, origin) if rollback else check_migration_plan(installed, manifest)
+    save(dest / "verified-origin.json", origin)
     write_file(pinned,fingerprint.encode())
     if manifest_only:
         return {"added_migrations":manifest["migrations"][len(before):],"server_sha256":digests[SERVER],
                 "backup_required":bool(installed),"maintenance_window":bool(installed),"commit":manifest["commit"],
-                "migration_check":migration_check}
-    for name in (SERVER, DEBS, IMAGES):
+                "migration_check":migration_check, **({"binary_rollback_compatible":True} if rollback else {})}
+    for name in ((SERVER,) if rollback else (SERVER, DEBS, IMAGES)):
         fetch(name, digests[name])
     return dest
 
@@ -284,8 +383,26 @@ def activate(link, destination):
     try:
         new.symlink_to(destination)
         os.replace(new, link)
+        parent = os.open(link.parent, os.O_DIRECTORY)
+        try:
+            os.fsync(parent)
+        finally:
+            os.close(parent)
     finally:
         new.unlink(missing_ok=True)
+
+
+def activate_verified(directory, request, release, dist):
+    verified = dist / "verified-origin.json"
+    if verified.is_file() and sha(release / "bundle.json") != read(verified)["manifest_sha256"]:
+        raise ValueError("prepared manifest differs from the signed release")
+    if request["action"] == "rollback":
+        # Always check the live history with admissions closed, also on retry.
+        check_binary_rollback(request, read(dist / "agentcapsule-bundle.json"), read(dist / "verified-origin.json"))
+    activate(ACTIVE, release)
+    if verified.is_file():
+        save(dist / "activated-origin.json", read(verified))
+        save(STATE / "active-release.json", {"operation_id":directory.name, "version":request["version"]})
 
 
 def execute(directory):
@@ -312,6 +429,13 @@ def execute(directory):
                 details = fn()
                 fields.append(name)
                 state(directory, completed=fields, **(details or {}))
+            transition = STATE / "transition.json"
+            owner = read(transition)["operation_id"] if transition.is_file() else None
+            if owner and read(opdir(owner) / "status.json")["state"] == "succeeded":
+                clear_gate("transition.json")
+                owner = None
+            if owner and owner != directory.name:
+                raise ValueError("another host transition must be resumed: " + owner)
             if request["action"] in ("archive", "restore-test", "restore-apply"):
                 if request.get("verify_starter"):
                     if read(STATE / "smoke.json").get("agent") != request["agent"]:
@@ -320,6 +444,10 @@ def execute(directory):
                 if request.get("verify_starter"):
                     step("invocation", lambda: smoke(read(STATE / "profile.json"), directory))
             else:
+                validate_release_direction(request)
+                if "source_activation" in request and not owner:
+                    if current() != request["from"] or activation_generation() != request["source_activation"]:
+                        raise ValueError("installed activation changed after plan")
                 if current() != request["from"] and "activate" not in fields and current() != request["version"]:
                     raise ValueError("installed release changed after plan")
                 if request["action"] == "install" and ACTIVE.exists() and not ACTIVE.is_symlink():
@@ -329,23 +457,37 @@ def execute(directory):
                 release = RELEASES / version
                 profile = request["profile"]
                 step("verify-release", lambda: (stage(request), None)[1])
-                if "prepare-release" in fields and "activate" not in fields:
+                if "prepare-release" in fields and ("activate" not in fields or request["action"] == "rollback"):
                     # A restart can leave an extracted candidate on disk for
                     # days before its package index and service units are used.
                     verify_release_files(release, dist, version)
                 step("prepare-release", lambda: prepare_release(release, dist, version))
-                if request["action"] == "update":
+                if request["action"] in ("rollback", "update"):
                     step("backup", lambda: backup(profile, mandatory=True, directory=directory))
-                    if "drain" in fields and "configure" not in fields:
+                    if "source_activation" in request and not owner:
+                        save(transition, {"operation_id":directory.name})
+                    if "drain" in fields and "services" not in fields and "configure" not in fields:
                         # A helper upgraded in place may resume an older drain
                         # whose units were enabled without suspension guards.
                         install_maintenance_gates()
                         pause_admissions()
                         suspend_services()
                     step("drain", lambda: drain(profile))
-                step("dependencies", lambda: install_dependencies(dist, release))
-                step("activate", lambda: activate(ACTIVE, release))
-                step("configure", lambda: configure(profile, version, request["action"] == "install"))
+                if request["action"] != "rollback":
+                    step("dependencies", lambda: install_dependencies(dist, release))
+                try:
+                    step("activate", lambda: activate_verified(directory, request, release, dist))
+                except RollbackIncompatible:
+                    # No switch took place. Reopen the verified source on a
+                    # late compatibility refusal; a retry must drain again.
+                    if current() == request["from"]:
+                        start_services(profile)
+                        fields.remove("drain")
+                        state(directory, completed=fields)
+                        clear_gate("transition.json")
+                    raise
+                if request["action"] != "rollback":
+                    step("configure", lambda: configure(profile, version, request["action"] == "install"))
                 step("services", lambda: start_services(profile))
                 step("invocation", lambda: smoke(profile, directory))
                 if request["action"] == "install":
@@ -353,6 +495,8 @@ def execute(directory):
                     step("enrollment", lambda: issue_enrollment(profile))
                 save(STATE / "profile.json", profile)
             state(directory, state="succeeded", phase="complete")
+            if transition.is_file() and read(transition)["operation_id"] == directory.name:
+                clear_gate("transition.json")
         except Exception as e:
             state(directory, state="failed", phase=phase, reason=safe_error(e))
             raise
@@ -449,9 +593,12 @@ def main(argv, cli_version):
     plan = updates.add_parser("plan")
     apply = updates.add_parser("apply")
     apply.add_argument("--plan", required=True)
-    for p in (install, plan):
+    rollbacks = groups.add_parser("rollback").add_subparsers(dest="sub", required=True)
+    rollback_plan = rollbacks.add_parser("plan")
+    rollbacks.add_parser("apply").add_argument("--plan", required=True)
+    for p in (install, plan, rollback_plan):
         p.add_argument("--profile", help="installation profile JSON on host")
-        p.add_argument("--to")
+        p.add_argument("--to", required=p is rollback_plan)
         p.add_argument("--development-key",help="independently trusted key for local offline -dev.N builds")
         p.add_argument("--offline", help="verified release assets on host")
         p.add_argument("--trusted-root", help="trusted Sigstore root on host")
@@ -484,6 +631,7 @@ def main(argv, cli_version):
     if args.command == "host":
         directory = opdir(args.id)
         if args.sub == "resume":
+            validate_release_direction(read(directory / "request.json"))
             if read(directory / "status.json")["state"] != "failed":
                 raise ValueError("only a failed host operation can be resumed")
             if args.refresh_helper:
@@ -502,10 +650,12 @@ def main(argv, cli_version):
     STATE.mkdir(mode=0o700, exist_ok=True)
     OPERATIONS.mkdir(mode=0o700, exist_ok=True)
     action = args.command
-    if action == "update" and args.sub == "apply":
+    if action in ("update", "rollback") and args.sub == "apply":
         directory = opdir(args.plan)
-        if read(directory / "request.json")["action"] != "update":
-            raise ValueError("expected an update plan")
+        planned = read(directory / "request.json")
+        validate_release_direction(planned)
+        if planned["action"] != action:
+            raise ValueError("plan belongs to a different operation: expected " + action + " plan")
         if read(directory / "status.json")["state"] == "planned":
             submit(directory)
         return read(directory / "status.json")
@@ -527,17 +677,21 @@ def main(argv, cli_version):
         version = args.to or (cli_version if re.fullmatch(VERSION, cli_version) and (args.offline or action=="install") else latest())
         if not re.fullmatch(VERSION, version):
             raise ValueError("invalid release tag")
-        if action == "install" and installed and installed != version or action == "update" and not installed:
-            raise ValueError("install requires an empty host and update requires an installed release")
+        if action == "install" and installed and installed != version or action in ("update", "rollback") and not installed:
+            raise ValueError("install requires an empty host and update or rollback requires an installed release")
         profile = normalize_profile(profile)
-        if action == "update":
+        if action in ("update", "rollback"):
+            validate_release_direction({"version":version, "from":installed, "action":action})
             installed_profile = read(STATE/"profile.json")
-            if any(installed_profile.get(k) != v for k,v in profile.items() if k not in ("pgbackrest_config","rclone_config")):
-                raise ValueError("update uses the installed host profile")
+            if any(installed_profile.get(k) != v for k,v in profile.items()
+                   if action == "rollback" or k not in ("pgbackrest_config","rclone_config")):
+                raise ValueError("use the installed host profile")
         request = {"action": action, "version":version, "from":None if action=="install" else installed, "profile":profile,
                    "development_key":str(Path(args.development_key).resolve()) if args.development_key else None,
                    "offline": str(Path(args.offline).resolve()) if args.offline else None,
                    "trusted_root":str(Path(args.trusted_root).resolve()) if args.trusted_root else None}
+        if action in ("update", "rollback"):
+            request["source_activation"] = activation_generation()
     ident = "host_" + hashlib.sha256(json.dumps(request, sort_keys=True).encode()).hexdigest()[:32]
     directory = opdir(ident)
     with (STATE/"submit.lock").open("a+") as lock:
@@ -548,7 +702,7 @@ def main(argv, cli_version):
         if not (directory / "status.json").exists():
             save(directory / "request.json",request)
             write_file(directory / "helper.py", HELPER_SOURCE)
-            details=stage(request, manifest_only=True) if action in ("update","install") else {}
+            details=stage(request, manifest_only=True) if action in ("update","install","rollback") else {}
             state(directory, state="planned", action=request["action"], target=request.get("version"), **details,
                   installed=current(), services_started=False, invocation_verified=False,
                   off_host_backup_verified=False, phases=phases(request["action"]) + (["invocation"] if request.get("verify_starter") else []))
@@ -559,6 +713,8 @@ def main(argv, cli_version):
 
 
 def phases(action):
+    if action == "rollback":
+        return ["verify-release","prepare-release","backup","drain","activate","services","invocation"]
     if action not in ("install","update"):
         return [action]
     steps = ["verify-release","prepare-release"]

@@ -115,6 +115,8 @@ the GitHub workflow certificate.
 agentcapsule update check
 agentcapsule update plan --to v0.1.0
 agentcapsule update apply --plan host_ID
+agentcapsule rollback plan --to v0.1.0-rc.1
+agentcapsule rollback apply --plan host_ID
 agentcapsule host operation wait host_ID
 agentcapsule self update --to v0.1.0
 agentcapsule archive --agent agt_ID --archive-id arc_ID
@@ -134,11 +136,36 @@ It closes admissions, waits for existing work, stops affected services,
 switches the installation symlink, applies the new binary's exact schema
 history, and sends an invocation. The worker retains the configured kernel,
 VMM and initrd paths of its existing guests. A failed migration leaves a
-named operation to resume. Inspect the migrated data format and protocols
-before reverting a binary. A restore uses the current authority and durable
+named operation to resume. A restore uses the current authority and durable
 restore ID and retains destruction and revocation state. The service
 returns the observed result of the restore. The SQL database also holds the
 OIDC realm when both are on the managed cluster. [Recovery](recovery.md)
+
+Use `rollback plan --to TAG` to select an older release. An eligible plan
+reports `binary_rollback_compatible: true` and `database_ledger_verified`.
+The active build must have an authenticated activation receipt. Both signed
+builds must identify the same platform state and authority compatibility epoch,
+server protocol, complete SQL history, host packages, OCI images, service
+definitions, guest kernel, initrd, VMM and jailer. The helper verifies each
+tag's signing identity and requires the same signing authority across the
+switch. For locally signed development builds, pass `--offline` and
+`--development-key` to the plan. Apply takes its operation ID.
+
+The rollback operation verifies the candidate, makes the configured off-host
+backup, closes admissions, drains the workers and checks the live SQL history
+again. It switches the active binary directory and opens services using
+their existing configuration, authority identities, volume ownership and
+revocation records. The operation then verifies the original starter agent.
+A late data-format refusal reopens the source release. Inspect a failed
+operation with `host operation show` before resuming it. Plans are bound to
+one activation, including when a later transition returns to the same tag.
+
+When either signed build lacks the format declaration, a dependency differs
+or the database has already migrated beyond the candidate, the plan refuses
+the binary switch. Select a coordinated PostgreSQL and volume recovery point
+and use the current independent authorities to retain destroyed keys and
+revocations. Writes made after the chosen recovery point may be lost.
+[Restore procedure and recovery window](recovery.md)
 
 The CLI updater verifies the signed digest for its own OS and architecture
 using the operator's cosign installation, then stages the replacement beside
