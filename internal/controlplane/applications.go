@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authoritylog"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorization"
@@ -23,6 +24,8 @@ type ApplicationConfig struct {
 }
 
 type Application struct {
+	minimumIAT time.Time
+	signerID   string
 	ApplicationConfig
 	ID         string   `json:"id"`
 	TenantID   string   `json:"tenant_id"`
@@ -48,13 +51,13 @@ func (c ApplicationConfig) valid() bool {
 	return true
 }
 
-const appSelect = `SELECT a.id,a.tenant_id,a.name,a.issuer,a.audience,a.client_id,a.redirect_uris,a.verification_keys,a.generation,p.status,
+const appSelect = `SELECT a.id,a.tenant_id,a.name,a.issuer,a.audience,a.client_id,a.redirect_uris,a.verification_keys,a.generation,CASE WHEN signer.status='active' THEN p.status ELSE 'disabled' END,a.minimum_iat,signer.id,
   ARRAY(SELECT id FROM app_policies WHERE app_id=a.id AND applied ORDER BY id)
-  FROM applications a JOIN principals p ON (p.tenant_id,p.id)=(a.tenant_id,a.id) `
+  FROM applications a JOIN principals p ON (p.tenant_id,p.id)=(a.tenant_id,a.id) JOIN principals signer ON signer.id=a.signing_principal `
 
 func scanApp(row pgx.Row) (Application, error) {
 	var v Application
-	err := row.Scan(&v.ID, &v.TenantID, &v.Name, &v.Issuer, &v.Audience, &v.ClientID, &v.RedirectURIs, &v.VerificationKeys, &v.Generation, &v.Status, &v.PolicyIDs)
+	err := row.Scan(&v.ID, &v.TenantID, &v.Name, &v.Issuer, &v.Audience, &v.ClientID, &v.RedirectURIs, &v.VerificationKeys, &v.Generation, &v.Status, &v.minimumIAT, &v.signerID, &v.PolicyIDs)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = ErrNotFound
 	}
@@ -133,6 +136,14 @@ type IssuedApplication struct {
 	ProvisioningToken string `json:"provisioning_token"`
 }
 
+// A key generation has its own revocable authority record. Restoring a
+// backup made before rotation can never make its old public keys authoritative.
+func registerAppSigner(ctx context.Context, tx pgx.Tx, tenant string) (string, error) {
+	id := newID("sig")
+	_, err := tx.Exec(ctx, "INSERT INTO principals(id,tenant_id,kind,display_name) VALUES($1,$2,'service','OIDC signing keys')", id, tenant)
+	return id, err
+}
+
 func issueAppToken(ctx context.Context, tx pgx.Tx, p Principal, id string) (string, error) {
 	raw := newServiceSecret()
 	hash := sha256.Sum256([]byte(raw))
@@ -161,8 +172,12 @@ func (a *Accounts) RegisterApplication(ctx context.Context, p Principal, key str
 		if _, err := tx.Exec(ctx, `INSERT INTO memberships(tenant_id,principal_id,role) VALUES($1,$2,'agent_user')`, p.TenantID, id); err != nil {
 			return 0, nil, err
 		}
-		tag, err := tx.Exec(ctx, `INSERT INTO applications(id,tenant_id,name,issuer,audience,client_id,redirect_uris,verification_keys)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT DO NOTHING`, id, p.TenantID, in.Name, in.Issuer, in.Audience, in.ClientID, in.RedirectURIs, in.VerificationKeys)
+		signer, err := registerAppSigner(ctx, tx, p.TenantID)
+		if err != nil {
+			return 0, nil, err
+		}
+		tag, err := tx.Exec(ctx, `INSERT INTO applications(id,tenant_id,name,issuer,audience,client_id,redirect_uris,verification_keys,signing_principal)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING`, id, p.TenantID, in.Name, in.Issuer, in.Audience, in.ClientID, in.RedirectURIs, in.VerificationKeys, signer)
 		if err != nil {
 			return 0, nil, err
 		}
@@ -240,8 +255,18 @@ func (a *Accounts) ChangeApplication(ctx context.Context, p Principal, id, key s
 			response = v
 		} else {
 			if in.VerificationKeys != nil {
+				signer, err := registerAppSigner(ctx, tx, p.TenantID)
+				if err != nil {
+					return 0, nil, err
+				}
+				if _, err = tx.Exec(ctx, "UPDATE principals SET status='disabled' WHERE id=$1", v.signerID); err != nil {
+					return 0, nil, err
+				}
+				if err = revoked.add(ctx, authoritylog.AccessPrincipal, p.TenantID, [][]string{{v.signerID}}); err != nil {
+					return 0, nil, err
+				}
 				v.VerificationKeys = slices.Clone(in.VerificationKeys)
-				if err = tx.QueryRow(ctx, "UPDATE applications SET verification_keys=$2,generation=generation+1 WHERE id=$1 RETURNING generation", id, v.VerificationKeys).Scan(&v.Generation); err != nil {
+				if err = tx.QueryRow(ctx, "UPDATE applications SET verification_keys=$2,signing_principal=$3,generation=generation+1 WHERE id=$1 RETURNING generation", id, v.VerificationKeys, signer).Scan(&v.Generation); err != nil {
 					return 0, nil, err
 				}
 			}

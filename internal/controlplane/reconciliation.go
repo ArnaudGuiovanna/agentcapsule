@@ -493,6 +493,7 @@ func replayBlanket(ctx context.Context, tx pgx.Tx, failover time.Time) error {
 		`UPDATE api_tokens SET revoked_at=clock_timestamp() WHERE revoked_at IS NULL AND created_at<$1`,
 		`UPDATE service_tokens SET revoked_at=clock_timestamp(),revoked_by=issued_by WHERE revoked_at IS NULL AND created_at<$1`,
 		`UPDATE platform_credentials SET revoked_at=clock_timestamp() WHERE revoked_at IS NULL AND created_at<$1`,
+		`UPDATE applications SET minimum_iat=greatest(minimum_iat,date_trunc('second',$1::timestamptz)+interval '1 second')`,
 		`UPDATE delegation_trusts SET minimum_iat=date_trunc('second',$1::timestamptz)+interval '1 second',updated_at=clock_timestamp()
             WHERE minimum_iat<date_trunc('second',$1::timestamptz)+interval '1 second'`,
 	} {

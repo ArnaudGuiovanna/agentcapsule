@@ -372,6 +372,222 @@ paths:
               schema: {$ref: '#/components/schemas/HarnessRelease'}
         '404': {$ref: '#/components/responses/Problem'}
         default: {$ref: '#/components/responses/Problem'}
+  /v1/applications:
+    get:
+      operationId: listApplications
+      description: "List registrations in the current tenant. Requires identity:manage."
+      security: [{delegatedBearer: []}]
+      parameters:
+        - {name: after, in: query, schema: {type: string}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 100}}
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApplicationPage'}
+        default: {$ref: '#/components/responses/Problem'}
+    post:
+      operationId: registerApplication
+      description: "Register a single OIDC client in this tenant. Requires identity:manage. The backend token expires after 90 days."
+      security: [{delegatedBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ApplicationConfig'}
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/IssuedApplication'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/applications/{id}:
+    get:
+      operationId: showApplication
+      description: "Read public connection configuration and active policy IDs. Requires identity:manage."
+      security: [{delegatedBearer: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Application'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/applications/{id}/rotate:
+    post:
+      operationId: rotateApplication
+      description: "Rotate the provisioning token and optionally replace pinned verification keys. Requires identity:manage."
+      security: [{delegatedBearer: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RotateApplication'}
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/IssuedApplication'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/applications/{id}/revoke:
+    post:
+      operationId: revokeApplication
+      description: "Disable the application and its backend credentials. Requires identity:manage."
+      security: [{delegatedBearer: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, additionalProperties: false}
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Application'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/assignment-policies/plan:
+    post:
+      operationId: planAssignmentPolicy
+      description: "Simulate grants and pool availability, recording an immutable plan. Requires agent:assign."
+      security: [{delegatedBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PolicySpec'}
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AssignmentPolicy'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/assignment-policies/{id}/apply:
+    post:
+      operationId: applyAssignmentPolicy
+      description: "Activate a simulated policy after rechecking pool and team state. Requires agent:assign."
+      security: [{delegatedBearer: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, additionalProperties: false}
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AssignmentPolicy'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/applications/{id}/invitations:
+    post:
+      operationId: inviteMember
+      description: "Invite a recipient to an applied rule. A member:manage administrator or an approved member:invite manager issues the proof."
+      security: [{delegatedBearer: []}, {memberOIDC: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AppInviteInput'}
+      responses:
+        '201':
+          description: Success
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AppInvitation'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/applications/{id}/accept:
+    post:
+      operationId: acceptApplicationInvitation
+      description: "Exchange the invitation and a verified recipient access token with member:accept. A second acceptance retains the same activation."
+      security: [{memberOIDC: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AppAcceptInput'}
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AppActivation'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/applications/{id}/activations/{activation_id}:
+    get:
+      operationId: showActivation
+      description: "Get provisioning status. Requires member:manage, the application backend token, or org:read from the member who owns the activation."
+      security: [{delegatedBearer: []}, {serviceBearer: []}, {memberOIDC: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+        - {name: activation_id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AppActivation'}
+        default: {$ref: '#/components/responses/Problem'}
+    put:
+      operationId: syncActivation
+      description: "Apply a versioned team or departure event. Requires member:manage or the application backend token. A departed member cannot be reactivated."
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+        - {name: activation_id, in: path, required: true, schema: {type: string}}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AppMemberEvent'}
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AppActivation'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/access/explain:
+    get:
+      operationId: explainMemberAccess
+      description: "Return effective permissions and contributing assignment sources for a member in this tenant. Requires agent:assign."
+      security: [{delegatedBearer: []}]
+      parameters:
+        - {name: member, in: query, required: true, schema: {type: string}}
+        - {name: agent, in: query, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AccessExplanation'}
+        default: {$ref: '#/components/responses/Problem'}
   /v1/members:
     get:
       operationId: listMembers
@@ -1642,7 +1858,7 @@ paths:
         Idempotency is a separate operation from `/messages`: the same key
         never replays the other endpoint's response. 202 means "durably
         accepted", never "processed".
-      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      security: [{memberOIDC: []}, {delegatedBearer: []}, {serviceBearer: []}]
       parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
       requestBody:
         required: true
@@ -1671,7 +1887,7 @@ paths:
         agent through an assignment. A role that can read agent metadata sees
         all invocations and the requester. An agent the caller cannot see
         returns 404. Never the instruction or the result.
-      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      security: [{memberOIDC: []}, {delegatedBearer: []}, {serviceBearer: []}]
       parameters:
         - {$ref: '#/components/parameters/ResourceID'}
         - {name: after, in: query, schema: {type: string, maxLength: 100}, description: "Last invocation identifier received."}
@@ -2258,7 +2474,7 @@ paths:
         nor another member. While the invocation is `lost`, the result that
         the database still holds stays readable; the rerun's result replaces
         it.
-      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      security: [{memberOIDC: []}, {delegatedBearer: []}, {serviceBearer: []}]
       parameters: [{$ref: '#/components/parameters/ResourceID'}]
       responses:
         '200':
@@ -2406,6 +2622,11 @@ components:
         Opaque acps_ token of a tenant service account. Same authority as a
         delegated credential on tenant routes, bounded by the account role and
         the token scopes. Never on identity routes.
+    memberOIDC:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: OIDC code flow with S256 PKCE. Present the RS256 API access token bearing the registered issuer, API audience, client, subject, token ID, expiry, issue time and requested scopes.
     delegatedBearer:
       type: http
       scheme: bearer
@@ -2546,6 +2767,156 @@ components:
         application/json:
           schema: {type: object, additionalProperties: false}
   schemas:
+    OIDCKey:
+      type: object
+      required: [kty, kid, n, e]
+      properties:
+        kty: {type: string, const: RSA}
+        kid: {type: string}
+        n: {type: string}
+        e: {type: string}
+    ApplicationConfig:
+      type: object
+      required: [name, issuer, client_id, audience, redirect_uris, verification_keys]
+      properties:
+        name: {type: string}
+        issuer: {type: string, format: uri}
+        client_id: {type: string}
+        audience: {type: string}
+        redirect_uris: {type: array, items: {type: string}}
+        verification_keys: {type: array, items: {$ref: '#/components/schemas/OIDCKey'}}
+    Application:
+      type: object
+      required: [id, tenant_id, name, issuer, client_id, audience, redirect_uris, verification_keys, status, generation, policy_ids]
+      properties:
+        id: {type: string}
+        tenant_id: {type: string}
+        name: {type: string}
+        issuer: {type: string, format: uri}
+        client_id: {type: string}
+        audience: {type: string}
+        redirect_uris: {type: array, items: {type: string}}
+        verification_keys: {type: array, items: {$ref: '#/components/schemas/OIDCKey'}}
+        status: {type: string, enum: [active, disabled]}
+        generation: {type: integer}
+        policy_ids: {type: array, items: {type: string}}
+        revocations: {$ref: '#/components/schemas/AccessRevocations'}
+    IssuedApplication:
+      type: object
+      required: [id, tenant_id, name, issuer, client_id, audience, redirect_uris, verification_keys, status, generation, policy_ids, provisioning_token]
+      properties:
+        id: {type: string}
+        tenant_id: {type: string}
+        name: {type: string}
+        issuer: {type: string, format: uri}
+        client_id: {type: string}
+        audience: {type: string}
+        redirect_uris: {type: array, items: {type: string}}
+        verification_keys: {type: array, items: {$ref: '#/components/schemas/OIDCKey'}}
+        status: {type: string, enum: [active, disabled]}
+        generation: {type: integer}
+        policy_ids: {type: array, items: {type: string}}
+        revocations: {$ref: '#/components/schemas/AccessRevocations'}
+        provisioning_token: {type: string}
+    ApplicationPage:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/Application'}}
+    RotateApplication:
+      type: object
+      properties:
+        verification_keys: {type: array, items: {$ref: '#/components/schemas/OIDCKey'}}
+    PolicySlot:
+      type: object
+      required: [name, permissions]
+      properties:
+        name: {type: string}
+        pool_id: {type: string}
+        team_id: {type: string}
+        agent_id: {type: string}
+        permissions: {type: array, items: {type: string, enum: [read_metadata, invoke, read_content]}}
+    PolicySpec:
+      type: object
+      required: [application_id, on_exhaustion, slots]
+      properties:
+        application_id: {type: string}
+        on_exhaustion: {type: string, enum: [wait, refuse, create]}
+        allowed_teams: {type: array, items: {type: string}}
+        manager_ids: {type: array, items: {type: string}}
+        slots: {type: array, items: {$ref: '#/components/schemas/PolicySlot'}}
+    AssignmentPolicy:
+      type: object
+      required: [id, application_id, on_exhaustion, allowed_teams, slots, applied, pool_available]
+      properties:
+        id: {type: string}
+        application_id: {type: string}
+        on_exhaustion: {type: string, enum: [wait, refuse, create]}
+        allowed_teams: {type: array, items: {type: string}}
+        manager_ids: {type: array, items: {type: string}}
+        slots: {type: array, items: {$ref: '#/components/schemas/PolicySlot'}}
+        applied: {type: boolean}
+        pool_available: {type: object, additionalProperties: {type: integer}}
+    AppInviteInput:
+      type: object
+      required: [email, policy_id, expires_at]
+      properties:
+        email: {type: string, format: email}
+        team_id: {type: string}
+        policy_id: {type: string}
+        expires_at: {type: string, format: date-time}
+    AppInvitation:
+      type: object
+      required: [id, proof, expires_at]
+      properties:
+        id: {type: string}
+        proof: {type: string}
+        expires_at: {type: string, format: date-time}
+    AppAcceptInput:
+      type: object
+      required: [proof]
+      properties:
+        proof: {type: string}
+    AppMemberEvent:
+      type: object
+      required: [version]
+      properties:
+        version: {type: integer, minimum: 1}
+        team_id: {type: string}
+        disabled: {type: boolean}
+    AppActivation:
+      type: object
+      required: [id, application_id, policy_id, principal_id, version, disabled, state, agents]
+      properties:
+        id: {type: string}
+        application_id: {type: string}
+        policy_id: {type: string}
+        principal_id: {type: string}
+        version: {type: integer, minimum: 1}
+        team_id: {type: string}
+        disabled: {type: boolean}
+        state: {type: string, enum: [preparing, ready, waiting_capacity, failed, disabled]}
+        reason: {type: string}
+        retry_after_seconds: {type: integer}
+        agents: {type: object, additionalProperties: {type: string}}
+        revocations: {$ref: '#/components/schemas/AccessRevocations'}
+    AppAccessSource:
+      type: object
+      required: [assignment_id, permissions]
+      properties:
+        assignment_id: {type: string}
+        team_id: {type: string}
+        policy_id: {type: string}
+        permissions: {type: array, items: {type: string}}
+    AccessExplanation:
+      type: object
+      required: [member, agent, active, permissions, sources]
+      properties:
+        member: {type: string}
+        agent: {type: string}
+        active: {type: boolean}
+        permissions: {type: array, items: {type: string}}
+        sources: {type: array, items: {$ref: '#/components/schemas/AppAccessSource'}}
     HarnessImport:
       type: object
       required: [id, reference, digest, state, attempts, created_at]

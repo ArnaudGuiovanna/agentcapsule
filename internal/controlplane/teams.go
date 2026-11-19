@@ -285,7 +285,7 @@ func (a *Accounts) changeTeamMembership(ctx context.Context, p Principal, team, 
 			status = 201
 			m, err = scanTeamMembership(tx.QueryRow(ctx, `INSERT INTO team_memberships(tenant_id,team_id,principal_id) VALUES($1,$2,$3) RETURNING team_id,principal_id,status,created_at`, p.TenantID, team, principal))
 		} else if before != next {
-			_, err = tx.Exec(ctx, `UPDATE team_memberships SET status=$4 WHERE tenant_id=$1 AND team_id=$2 AND principal_id=$3`, p.TenantID, team, principal, next)
+			_, err = tx.Exec(ctx, `UPDATE team_memberships SET status=$4,source_app_id=NULL WHERE tenant_id=$1 AND team_id=$2 AND principal_id=$3`, p.TenantID, team, principal, next)
 			m.Status = next
 		}
 		if err != nil {

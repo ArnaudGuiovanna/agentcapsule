@@ -191,6 +191,18 @@ only its own.
 | `POST /v1/me/inbox/requests/{id}/decline` (historical owner domain) | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 401 | 401 | 403 |
 | `GET /v1/agent-requests/{id}` (historical owner domain) | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 401 | 401 | 403 |
 | `POST /v1/agent-requests/{id}/cancel` (historical owner domain) | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 401 | 401 | 403 |
+| `GET /v1/applications` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | yes | 401 | 401 | 403 |
+| `POST /v1/applications` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | yes | 401 | 401 | 403 |
+| `GET /v1/applications/{id}` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `POST /v1/applications/{id}/rotate` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `POST /v1/applications/{id}/revoke` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `POST /v1/assignment-policies/plan` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `POST /v1/assignment-policies/{id}/apply` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `POST /v1/applications/{id}/invitations` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `POST /v1/applications/{id}/accept` (requires the recipient's OIDC access token and invitation proof) | 401 | 401 | 401 | 401 | 401 | 401 | 401 | 401 | 401 | 401 | 401 | 401 | 401 |
+| `GET /v1/applications/{id}/activations/{activation_id}` (also visible to its member and application backend) | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `PUT /v1/applications/{id}/activations/{activation_id}` (also available to the authorized application backend) | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `GET /v1/access/explain` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
 <!-- rbac-matrix:end -->
 
 ## What the matrix does not show
