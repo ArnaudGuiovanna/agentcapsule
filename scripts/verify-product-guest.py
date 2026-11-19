@@ -33,9 +33,10 @@ ROOT = Path(__file__).resolve().parents[1]
 # #cgo directive unless this pattern allows it.
 CGO_LDFLAGS_ALLOW = r"-l:libcryptsetup\.so\.12"
 
-# Every TestProductWorker* test under internal/worker is required; the Pi and
-# SLIM scenarios only when their optional input is given.
+# Include the worker product scenarios and the KVM deployment and storage
+# journeys. Pi, SLIM and remote stores have additional inputs.
 REQUIRED_WORKER = {"TestProductWorkerProvisioningAndEncryptedWake", "TestProductWorkerTwoOwnersPrivateExchange",
+    "TestProductDeploymentCampaignKVM", "TestProductVolumeGrowthKVM",
     "TestProductWorkerContractOutagePreservesCensusAndMaintenance", "TestProductWorkerTenantAsyncInvocationWithFileAndModel",
     "TestProductWorkerTenantRunsAnImportedHarness", "TestProductWorkerTenantUpgradesAndRollsBackAnImportedHarness",
     "TestProductWorkerTenantRunsAPythonHarness", "TestProductWorkerTenantRunsAnAdaptedAgent", "TestProductWorkerTwoOrganizationsStayIsolated",
@@ -59,9 +60,9 @@ RCLONE_WORKER = {"TestProductWorkerRestoresAgentFromShippedArchiveOnAnotherHost"
 
 
 def declared_worker_tests(worker_dir):
-    """The TestProductWorker* functions the worker's test files declare."""
+    """Discover worker product scenarios, including TestProduct…KVM."""
     return {name for path in sorted(worker_dir.glob("*_test.go"))
-            for name in re.findall(r"^func (TestProductWorker\w+)\(", path.read_text(), re.M)}
+            for name in re.findall(r"^func (TestProduct(?:Worker\w+|[A-Z]\w*KVM))\(", path.read_text(), re.M)}
 
 
 def sha(path):
@@ -365,15 +366,14 @@ def main():
                            AGENTCAPSULE_KVM_INTEROP_CONTROL=str(control))
             unlisted = sorted(declared_worker_tests(src / "internal/worker") - REQUIRED_WORKER - PI_WORKER - SLIM_WORKER - RCLONE_WORKER)
             assert not unlisted, "product worker scenarios this script does not require: " + ", ".join(unlisted)
-            skipped = sorted((set() if a.pi_harness else PI_WORKER) | (set() if slim_build else SLIM_WORKER) | (set() if a.rclone else RCLONE_WORKER))
+            required_worker = (REQUIRED_WORKER | (PI_WORKER if a.pi_harness else set()) | (SLIM_WORKER if slim_build else set())
+                               | (RCLONE_WORKER if a.rclone else set()))
+            selection = "^(" + "|".join(sorted(required_worker)) + ")$"
             run("worker-integration", [a.go, "tool", "test2json", "-p", "github.com/ArnaudGuiovanna/agentcapsule/internal/worker",
-                out / "product-worker.test", "-test.v", "-test.run=^TestProductWorker", "-test.timeout=3600s"]
-                + ([f"-test.skip=^({'|'.join(skipped)})$"] if skipped else []), 3660)
+                out / "product-worker.test", "-test.v", "-test.run=" + selection, "-test.timeout=3600s"], 3660)
             events = [json.loads(line) for line in (out / "worker-integration.log").read_text().splitlines()]
             assert not any(e["Action"] in ["skip", "fail"] for e in events)
             worker_passed = {e["Test"] for e in events if e["Action"] == "pass" and "Test" in e}
-            required_worker = (REQUIRED_WORKER | (PI_WORKER if a.pi_harness else set()) | (SLIM_WORKER if slim_build else set())
-                               | (RCLONE_WORKER if a.rclone else set()))
             missing = sorted(required_worker - worker_passed)
             assert not missing, "missing required product worker scenarios: " + ", ".join(missing)
             run("conformance-compile", [a.go, "test", "-c", "-buildvcs=false", "-race", "-tags=kvm_integration,kvm_product_integration",
@@ -414,6 +414,8 @@ def main():
             "flagship_journey": "passed" if "TestProductWorkerTenantFlagshipJourney" in worker_passed else "not_run",
             "two_organizations_isolated": "passed" if "TestProductWorkerTwoOrganizationsStayIsolated" in worker_passed else "not_run",
             "nightly_volume_archives": "passed" if "TestProductWorkerNightlyVolumeArchives" in worker_passed else "not_run",
+            "deployment_campaign": "passed" if "TestProductDeploymentCampaignKVM" in worker_passed else "not_run",
+            "volume_growth": "passed" if "TestProductVolumeGrowthKVM" in worker_passed else "not_run",
             "restore_from_archive": "passed" if "TestProductWorkerRestoresAgentFromArchive" in worker_passed else "not_run",
             "jail_and_cleanup": "passed" if "TestProductWorkerJailsEachVMAndLeavesNothingBehind" in worker_passed else "not_run",
             "wake_queue_and_idle": "passed" if "TestProductWorkerWakesQueuesAndKeepsAWorkingAgentAwake" in worker_passed else "not_run",

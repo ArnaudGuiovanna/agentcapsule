@@ -36,14 +36,17 @@ class WorkerScenarios(unittest.TestCase):
         # The stuck harness's tests need no optional input: every run requires them.
         self.assertLessEqual({"TestProductWorkerStopsAGuestThatNeverAnswersAnInvocation",
                               "TestProductWorkerDeletesAnAgentWhoseHarnessNeverAnswers"}, GUEST.REQUIRED_WORKER)
+        self.assertLessEqual({"TestProductDeploymentCampaignKVM", "TestProductVolumeGrowthKVM"}, GUEST.REQUIRED_WORKER)
 
     def test_an_unlisted_test_is_found(self):
         with tempfile.TemporaryDirectory() as tmp:
             Path(tmp, "x_integration_test.go").write_text(
                 "package worker\n\nfunc TestProductWorkerSomethingNew(t *testing.T) {}\nfunc TestOther(t *testing.T) {}\n"
+                "func TestProductResourceChangeKVM(t *testing.T) {}\n"
+                "func TestProductionConfiguration(t *testing.T) {}\n"
                 "// func TestProductWorkerCommentedOut(t *testing.T) {}\n")
             Path(tmp, "x.go").write_text("package worker\n\nfunc TestProductWorkerNotATestFile() {}\n")
-            self.assertEqual(GUEST.declared_worker_tests(Path(tmp)), {"TestProductWorkerSomethingNew"})
+            self.assertEqual(GUEST.declared_worker_tests(Path(tmp)), {"TestProductWorkerSomethingNew", "TestProductResourceChangeKVM"})
 
 
 def measured(n):
