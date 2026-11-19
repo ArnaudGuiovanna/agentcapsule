@@ -18,29 +18,150 @@ import (
 // Commands use the same HTTP contract as an application. Each brace takes
 // one positional identifier (left to right), or its named flag.
 var commands = map[string]string{
-	"pool expand": "POST /pools/{id}/expand", "rollout start": "POST /deployments/{deployment}/rollouts", "rollout members": "GET /rollouts/{id}/members", "rollout show": "GET /rollouts/{id}", "rollout resume": "POST /rollouts/{id}/resume",
-	"app invite": "POST /applications/{app}/invitations", "activation show": "GET /applications/{app}/activations/{id}", "activation update": "PUT /applications/{app}/activations/{id}",
-	"agent grow": "POST /agents/{id}/volume-growth", "volume-growth show": "GET /volume-growth/{id}",
-	"organization capabilities": "GET /organizations/current/capabilities", "organization set-capabilities": "PUT /organizations/current/capabilities", "agent set-capabilities": "PUT /agents/{agent}/capabilities",
-	"communication explain": "GET /agents/{agent}/requests/{request}/diagnostics",
-	"organization list":     "GET /organizations", "organization create": "POST /organizations", "organization show": "GET /organizations/{id}", "organization disable": "POST /organizations/{id}/disable", "organization current": "GET /organizations/current",
-	"quota show": "GET /organizations/{id}/quotas", "quota set": "PUT /organizations/{id}/quotas", "quota current": "GET /organizations/current/quotas",
-	"member list": "GET /members", "member create": "POST /members", "member role": "POST /members/{member}/role", "member revoke": "POST /members/{member}/revoke",
-	"team list": "GET /teams", "team create": "POST /teams", "team show": "GET /teams/{team}", "team disable": "POST /teams/{team}/disable", "team members": "GET /teams/{team}/members", "team add": "POST /teams/{team}/members", "team remove": "POST /teams/{team}/members/{member}/revoke",
-	"service-account list": "GET /service-accounts", "service-account create": "POST /service-accounts", "service-account disable": "POST /service-accounts/{account}/disable", "key list": "GET /service-accounts/{account}/tokens", "key issue": "POST /service-accounts/{account}/tokens", "key revoke": "POST /service-accounts/{account}/tokens/{id}/revoke",
-	"agent list": "GET /agents", "agent create": "POST /agents", "agent show": "GET /agents/{agent}", "agent delete": "DELETE /agents/{agent}", "agent wake": "POST /agents/{agent}/wake", "agent sleep": "POST /agents/{agent}/sleep", "agent idle-policy": "POST /agents/{agent}/idle-policy", "agent release": "POST /agents/{agent}/release", "agent invoke": "POST /agents/{agent}/invocations", "agent capabilities": "GET /agents/{agent}/capabilities",
-	"assignment list": "GET /agents/{agent}/assignments", "assignment grant": "POST /agents/{agent}/assignments", "assignment revoke": "POST /agents/{agent}/assignments/{id}/revoke", "assignment replace": "POST /agents/{agent}/assignments/{id}/replace", "assignment reassign": "POST /agents/{agent}/assignments/{id}/reassign",
-	"registry import": "POST /harness-imports", "registry show": "GET /harness-imports/{id}", "registry list": "GET /harness-releases", "registry deprecate": "POST /harness-releases/{id}/deprecate",
-	"invocation show": "GET /invocations/{id}", "invocation result": "GET /invocations/{id}/result", "invocation cancel": "POST /invocations/{id}/cancel", "invocation replay": "POST /invocations/{id}/replay",
-	"queue show": "GET /queue", "queue limits": "POST /queue/limits", "audit list": "GET /audit", "audit export": "GET /audit/export", "revocation show": "GET /access-revocations/{id}",
-	"provider list": "GET /llm/providers", "provider create": "POST /llm/providers", "provider rotate": "POST /llm/providers/{id}/rotate", "provider disable": "POST /llm/providers/{id}/disable",
-	"alias list": "GET /llm/aliases", "alias create": "POST /llm/aliases", "alias access": "POST /llm/aliases/{alias}/access", "alias prices": "POST /llm/aliases/{alias}/prices", "alias disable": "POST /llm/aliases/{alias}/disable", "alias grants": "GET /llm/aliases/{alias}/grants", "alias grant": "POST /llm/aliases/{alias}/grants", "alias revoke": "POST /llm/aliases/{alias}/grants/{id}/revoke",
-	"budget list": "GET /llm/budgets", "budget create": "POST /llm/budgets", "budget disable": "POST /llm/budgets/{id}/disable", "llm usage": "GET /llm/usage", "llm unresolved": "GET /llm/calls/unresolved", "llm settle": "POST /llm/calls/{id}/settle", "llm release": "POST /llm/calls/{id}/release",
-	"directory show": "GET /agents/{agent}/directory", "directory set": "PUT /agents/{agent}/directory", "communication inbound": "GET /agents/{agent}/inbound", "communication configure": "PUT /agents/{agent}/inbound", "communication held": "GET /agents/{agent}/held-requests", "communication accept": "POST /agents/{agent}/held-requests/{id}/accept", "communication decline": "POST /agents/{agent}/held-requests/{id}/decline",
-	"operation show": "GET /operations/{id}", "operation wait": "GET /operations/{id}", "session show": "GET /platform/session", "session revoke": "POST /platform/sessions/{id}/revoke",
-	"template publish": "POST /templates", "deployment plan": "POST /deployment-plans", "deployment apply": "POST /deployment-plans/{plan}/apply", "deployment show": "GET /deployments/{id}", "pool create": "POST /pools", "pool show": "GET /pools/{id}", "system-image publish": "POST /system-images", "system-image list": "GET /system-images",
-	"app register": "POST /applications", "app list": "GET /applications", "app connection": "GET /applications/{id}", "app show": "GET /applications/{id}", "app rotate": "POST /applications/{id}/rotate", "app revoke": "POST /applications/{id}/revoke",
-	"assignment-policy plan": "POST /assignment-policies/plan", "assignment-policy apply": "POST /assignment-policies/{plan}/apply", "access explain": "GET /access/explain",
+	"access explain": "GET /access/explain",
+
+	"activation show":   "GET /applications/{app}/activations/{id}",
+	"activation update": "PUT /applications/{app}/activations/{id}",
+
+	"agent capabilities":     "GET /agents/{agent}/capabilities",
+	"agent create":           "POST /agents",
+	"agent delete":           "DELETE /agents/{agent}",
+	"agent grow":             "POST /agents/{id}/volume-growth",
+	"agent idle-policy":      "POST /agents/{agent}/idle-policy",
+	"agent invoke":           "POST /agents/{agent}/invocations",
+	"agent list":             "GET /agents",
+	"agent release":          "POST /agents/{agent}/release",
+	"agent set-capabilities": "PUT /agents/{agent}/capabilities",
+	"agent show":             "GET /agents/{agent}",
+	"agent sleep":            "POST /agents/{agent}/sleep",
+	"agent wake":             "POST /agents/{agent}/wake",
+
+	"alias access":  "POST /llm/aliases/{alias}/access",
+	"alias create":  "POST /llm/aliases",
+	"alias disable": "POST /llm/aliases/{alias}/disable",
+	"alias grant":   "POST /llm/aliases/{alias}/grants",
+	"alias grants":  "GET /llm/aliases/{alias}/grants",
+	"alias list":    "GET /llm/aliases",
+	"alias prices":  "POST /llm/aliases/{alias}/prices",
+	"alias revoke":  "POST /llm/aliases/{alias}/grants/{id}/revoke",
+
+	"app connection": "GET /applications/{id}",
+	"app invite":     "POST /applications/{app}/invitations",
+	"app list":       "GET /applications",
+	"app register":   "POST /applications",
+	"app revoke":     "POST /applications/{id}/revoke",
+	"app rotate":     "POST /applications/{id}/rotate",
+	"app show":       "GET /applications/{id}",
+
+	"assignment grant":    "POST /agents/{agent}/assignments",
+	"assignment list":     "GET /agents/{agent}/assignments",
+	"assignment reassign": "POST /agents/{agent}/assignments/{id}/reassign",
+	"assignment replace":  "POST /agents/{agent}/assignments/{id}/replace",
+	"assignment revoke":   "POST /agents/{agent}/assignments/{id}/revoke",
+
+	"assignment-policy apply": "POST /assignment-policies/{plan}/apply",
+	"assignment-policy plan":  "POST /assignment-policies/plan",
+
+	"audit export": "GET /audit/export",
+	"audit list":   "GET /audit",
+
+	"budget create":  "POST /llm/budgets",
+	"budget disable": "POST /llm/budgets/{id}/disable",
+	"budget list":    "GET /llm/budgets",
+
+	"communication accept":    "POST /agents/{agent}/held-requests/{id}/accept",
+	"communication configure": "PUT /agents/{agent}/inbound",
+	"communication decline":   "POST /agents/{agent}/held-requests/{id}/decline",
+	"communication explain":   "GET /agents/{agent}/requests/{request}/diagnostics",
+	"communication held":      "GET /agents/{agent}/held-requests",
+	"communication inbound":   "GET /agents/{agent}/inbound",
+
+	"deployment apply": "POST /deployment-plans/{plan}/apply",
+	"deployment plan":  "POST /deployment-plans",
+	"deployment show":  "GET /deployments/{id}",
+
+	"directory set":  "PUT /agents/{agent}/directory",
+	"directory show": "GET /agents/{agent}/directory",
+
+	"invocation cancel": "POST /invocations/{id}/cancel",
+	"invocation replay": "POST /invocations/{id}/replay",
+	"invocation result": "GET /invocations/{id}/result",
+	"invocation show":   "GET /invocations/{id}",
+
+	"key issue":  "POST /service-accounts/{account}/tokens",
+	"key list":   "GET /service-accounts/{account}/tokens",
+	"key revoke": "POST /service-accounts/{account}/tokens/{id}/revoke",
+
+	"llm release":    "POST /llm/calls/{id}/release",
+	"llm settle":     "POST /llm/calls/{id}/settle",
+	"llm unresolved": "GET /llm/calls/unresolved",
+	"llm usage":      "GET /llm/usage",
+
+	"member create": "POST /members",
+	"member list":   "GET /members",
+	"member revoke": "POST /members/{member}/revoke",
+	"member role":   "POST /members/{member}/role",
+
+	"operation show": "GET /operations/{id}",
+	"operation wait": "GET /operations/{id}",
+
+	"organization capabilities":     "GET /organizations/current/capabilities",
+	"organization create":           "POST /organizations",
+	"organization current":          "GET /organizations/current",
+	"organization disable":          "POST /organizations/{id}/disable",
+	"organization list":             "GET /organizations",
+	"organization set-capabilities": "PUT /organizations/current/capabilities",
+	"organization show":             "GET /organizations/{id}",
+
+	"pool create": "POST /pools",
+	"pool expand": "POST /pools/{id}/expand",
+	"pool show":   "GET /pools/{id}",
+
+	"provider create":  "POST /llm/providers",
+	"provider disable": "POST /llm/providers/{id}/disable",
+	"provider list":    "GET /llm/providers",
+	"provider rotate":  "POST /llm/providers/{id}/rotate",
+
+	"queue limits": "POST /queue/limits",
+	"queue show":   "GET /queue",
+
+	"quota current": "GET /organizations/current/quotas",
+	"quota set":     "PUT /organizations/{id}/quotas",
+	"quota show":    "GET /organizations/{id}/quotas",
+
+	"registry deprecate": "POST /harness-releases/{id}/deprecate",
+	"registry import":    "POST /harness-imports",
+	"registry list":      "GET /harness-releases",
+	"registry show":      "GET /harness-imports/{id}",
+
+	"revocation show": "GET /access-revocations/{id}",
+
+	"rollout members": "GET /rollouts/{id}/members",
+	"rollout resume":  "POST /rollouts/{id}/resume",
+	"rollout show":    "GET /rollouts/{id}",
+	"rollout start":   "POST /deployments/{deployment}/rollouts",
+
+	"service-account create":  "POST /service-accounts",
+	"service-account disable": "POST /service-accounts/{account}/disable",
+	"service-account list":    "GET /service-accounts",
+
+	"session revoke": "POST /platform/sessions/{id}/revoke",
+	"session show":   "GET /platform/session",
+
+	"system-image list":    "GET /system-images",
+	"system-image publish": "POST /system-images",
+
+	"team add":     "POST /teams/{team}/members",
+	"team create":  "POST /teams",
+	"team disable": "POST /teams/{team}/disable",
+	"team list":    "GET /teams",
+	"team members": "GET /teams/{team}/members",
+	"team remove":  "POST /teams/{team}/members/{member}/revoke",
+	"team show":    "GET /teams/{team}",
+
+	"template publish": "POST /templates",
+
+	"volume-growth show": "GET /volume-growth/{id}",
 }
 
 type options map[string]string

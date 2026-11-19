@@ -18,23 +18,32 @@ type finding struct {
 	AgeSeconds *int64 `json:"observation_age_seconds,omitempty"`
 }
 
-func diagnosePlatform(data json.RawMessage) []finding {
-	var report struct {
-		Diagnostics struct {
-			Hosts []struct {
-				ID            string     `json:"host"`
-				DataPressure  bool       `json:"data_pressure"`
-				ImagePressure bool       `json:"image_pressure"`
-				Observed      *time.Time `json:"pressure_observed_at"`
-				Queue         []struct {
-					Failing int `json:"failing"`
-				} `json:"queue"`
-			} `json:"hosts"`
-		} `json:"diagnostics"`
-	}
-	if json.Unmarshal(data, &report) != nil {
-		return []finding{{"api", "unknown", "check_diagnostics_response", nil}}
-	}
+// These fields can be included in a support archive. New fields in an API
+// response need an explicit review before leaving the operator's workstation.
+type platformSummary struct {
+	ObservedAt  time.Time `json:"observed_at"`
+	Diagnostics struct {
+		PostgresVersion   string `json:"postgresql_version"`
+		ExpectedMigration int    `json:"expected_migration"`
+		Hosts             []struct {
+			ID              string     `json:"host"`
+			RunningVMs      int64      `json:"running_vms"`
+			StorageLimit    int64      `json:"storage_limit_mib"`
+			StorageReserved int64      `json:"storage_reserved_mib"`
+			DataPressure    bool       `json:"data_pressure"`
+			ImagePressure   bool       `json:"image_pressure"`
+			Observed        *time.Time `json:"pressure_observed_at,omitempty"`
+			Queue           []struct {
+				Kind    string `json:"kind"`
+				Jobs    int64  `json:"jobs"`
+				Due     int64  `json:"due"`
+				Failing int64  `json:"failing"`
+			} `json:"queue"`
+		} `json:"hosts"`
+	} `json:"diagnostics"`
+}
+
+func (report platformSummary) findings() []finding {
 	items := []finding{}
 	if len(report.Diagnostics.Hosts) == 0 {
 		items = append(items, finding{"worker", "unobserved", "check_worker_registration", nil})
@@ -121,7 +130,14 @@ func (cli console) status(ctx context.Context, api *client, cmd string, watch bo
 			}
 			report["api"] = failure
 		} else {
-			report["api"] = r.Data
+			var ready struct {
+				Status    string `json:"status"`
+				Authority string `json:"authority,omitempty"`
+			}
+			if err := json.Unmarshal(r.Data, &ready); err != nil || ready.Status != "ready" {
+				return errors.New("invalid API readiness response")
+			}
+			report["api"] = ready
 			if err := api.compatible(ctx); err != nil {
 				return err
 			}
@@ -143,8 +159,15 @@ func (cli console) status(ctx context.Context, api *client, cmd string, watch bo
 				if err != nil {
 					return err
 				}
+				var summary platformSummary
+				if err := json.Unmarshal(r.Data, &summary); err != nil || summary.Diagnostics.Hosts == nil {
+					return errors.New("invalid platform diagnostics response")
+				}
 				report["platform"] = r.Data
-				report["checks"] = diagnosePlatform(r.Data)
+				if cmd == "support export" {
+					report["platform"] = summary
+				}
+				report["checks"] = summary.findings()
 			} else if cmd == "support export" {
 				report["organization_session"] = "authenticated"
 			} else {

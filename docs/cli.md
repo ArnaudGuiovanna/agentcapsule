@@ -55,7 +55,15 @@ A platform operator can rotate their session with `session renew` and invalidate
 
 ## Select inference and provision a pool
 
-1. Approve the kernel and initrd digests from the verified release with `--context platform-dev system-image publish --file image.json`. Use `system-image list` to check which approved images the configured worker actually has. The installed starter harness is named `starter`, version `1.0.0`. Import an additional signed harness with `registry import --reference REGISTRY/REPOSITORY@sha256:DIGEST`, then `operation wait --type harness-import IMPORT_ID`. [Image and template bodies](api/deployments.md) · [Registry](registry.md)
+1. From the verified release manifest, publish the kernel and initrd pair that the organization will use. The reference in this example is `ubuntu@1`. Check that the worker reports the approved image.
+
+   ```sh
+   jq -e '{reference:"ubuntu@1",kernel_digest:("sha256:" + .sha256.vmlinux),initrd_digest:("sha256:" + .sha256["product.initrd"])}' agentcapsule-bundle.json > image.json
+   agentcapsule --context platform-dev system-image publish --file image.json
+   agentcapsule --context platform-dev system-image list
+   ```
+
+   The installed starter harness is named `starter`, version `1.0.0`. Import an additional signed harness with `registry import --reference REGISTRY/REPOSITORY@sha256:DIGEST`, then `operation wait --type harness-import IMPORT_ID`. [Image and template bodies](api/deployments.md) · [Registry](registry.md)
 2. Create the provider, alias and budget under Acme. Supply a provider's secret with `--auth-mode secret --secret-file PATH`, or choose `--auth-mode none` for an endpoint that accepts unauthenticated calls. The production worker requires TLS and uses its configured egress allowlist for internal endpoints. [LLM API](api/llm.md) · [Transport and worker policy](install.md#model-providers-on-internal-addresses)
 3. Publish a template and apply a capacity plan. The example keeps one VM warm and reserves persistent storage for all three. Save the same plan ID across retries. Inspect the plan's `admitted` flag and per-resource quantities before applying.
 

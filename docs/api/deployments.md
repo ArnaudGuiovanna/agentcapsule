@@ -30,7 +30,20 @@ Configure `provisioning.deployment_memory_mib` and `provisioning.deployment_vcpu
 
 Applying takes the organization's and host's reservation locks and rechecks quotas, storage, UID space and requested warm capacity. One transaction records every agent, volume identity and provisioning operation. Reapplying the same plan after loss of the HTTP receipt follows the original deployment. Physical work resumes from durable enrollment records. A different template revision gets a different plan. Agents created later by a pool expansion appear in pool inventory separately from the original deployment's requested count.
 
-The PostgreSQL regression `TestDeploymentBatchSizesAndQuotaBoundaries` exercises batches of 1, 50, 100 and 1,000 and checks every reserved identity. `TestDeploymentResumesWithDistinctVolumesAndImmutableTemplate` exercises concurrent apply, restart after partial initialization and a pool expansion. These counts describe logical reservations and SQL worker observations. KVM timing and physical volume measurements require the deployment host.
+The PostgreSQL regression `TestDeploymentBatchSizesAndQuotaBoundaries` exercises batches of 1, 50, 100 and 1,000 and checks every reserved identity. `TestDeploymentResumesWithDistinctVolumesAndImmutableTemplate` exercises concurrent apply, restart after partial initialization and a pool expansion.
+
+### Measured deployment on WSL2 with KVM
+
+On 19 November 2026, the Linux worker ran Firecracker on an Intel Core i7-9750H with 12 logical CPUs and 15.5 GiB of memory visible to WSL2. Each agent received its own 128 MiB LUKS volume. The table records individual observations from a run of `TestProductDeploymentCampaignKVM`. “Active in batch” counts application VMs belonging to that deployment at completion. Disk figures include every agent created up to that point.
+
+| Requested | Provisioned | Active in batch | Apply response | Time to ready | Total logical disk | Total allocated disk |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 1 | 0 | 54 ms | 9.09 s | 128 MiB | 27.34 MiB |
+| 3 | 3 | 1 | 26 ms | 33.30 s | 512 MiB | 109.40 MiB |
+
+During the three-agent batch, the test restarted the worker after it initialized the first volume. An already active agent from the preceding batch answered a request in 30.08 s across that interruption. Once provisioning finished, the warm agent in the new batch returned its first response in 458 ms. The test checked four distinct volume inodes and their LUKS headers. These timings represent single requests. The larger batches above were exercised in PostgreSQL.
+
+A separate KVM run exercised the rollout: a failed canary paused it, then all three agents authenticated on the corrected revision. The disk measurement run subsequently waited for a rollout slot while both slots were occupied. Its recorded batch and latency figures end before that wait.
 
 ## Updating a deployed template
 

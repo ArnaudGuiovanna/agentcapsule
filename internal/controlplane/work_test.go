@@ -231,6 +231,7 @@ func TestWorkRejectsUnloggedQueue(t *testing.T) {
 				if _, err := s.pool.Exec(t.Context(), `ALTER TABLE agent_specs DROP CONSTRAINT agent_specs_host_id_fkey;
                     ALTER TABLE deployment_hosts DROP CONSTRAINT deployment_hosts_host_id_fkey;
                     ALTER TABLE agent_deployments DROP CONSTRAINT agent_deployments_host_id_fkey;
+                    ALTER TABLE agent_volume_growth DROP CONSTRAINT agent_volume_growth_host_id_fkey;
                     ALTER TABLE platform_operations DROP CONSTRAINT platform_operations_host_id_fkey;
                     ALTER TABLE host_takeovers DROP CONSTRAINT host_takeovers_lost_host_id_fkey,
                       DROP CONSTRAINT host_takeovers_host_id_fkey;
