@@ -91,6 +91,8 @@ agentcapsule operation wait --type deployment "$plan"
 agentcapsule pool create assistants --deployment "$plan" --idempotency-key pool-assistants
 ```
 
+In this example the deployment creates three private volumes and maintains one active application VM when capacity permits. Inspect `active_count` and `active` with `agentcapsule deployment show "$plan"`.
+
 The starter echoes text. For inference use an imported model-capable harness, request `llm.invoke` in its template's `capabilities` and select `llm_profile: support-model`. The worker resolves the alias, checks the agent grant and budget, then contacts the selected endpoint. Use `alias grant` or `alias revoke` for an individual agent. `provider rotate PROVIDER_ID --secret-file PATH` replaces that provider's private key. Give a dedicated provider its own alias when it needs an independent key. Check the catalog with `host diagnose llm --organization ORG_ID --alias support-model`, then verify a generation with an assigned member's `agent invoke AGENT_ID --file request.json`, `operation wait --type invocation INVOCATION_ID`, `invocation result INVOCATION_ID` and `llm usage`.
 
 ## Register MonApp and verify Alice's access

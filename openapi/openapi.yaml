@@ -3886,7 +3886,7 @@ components:
       properties:
         template: {type: string, description: 'Immutable name@revision'}
         count: {type: integer, minimum: 1, maximum: 100000}
-        active_count: {type: integer, minimum: 0, default: 0, description: Number to wake at provisioning}
+        active_count: {type: integer, minimum: 0, default: 0, description: Target number of active deployment members to maintain when capacity is available}
         resources: {$ref: '#/components/schemas/Resources'}
     DeploymentPlan:
       allOf:

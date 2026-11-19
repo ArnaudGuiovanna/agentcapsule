@@ -209,14 +209,61 @@ func TestProductDeploymentCampaignKVM(t *testing.T) {
 	var sleep controlplane.AgentCreation
 	lab.request(owner(), "POST", "/v1/agents/"+activeAgent+"/sleep", "done-measuring", struct{}{}, 202, &sleep)
 	lab.awaitOperation(owner, sleep.OperationID)
+	testProductWarmReplacement(t, lab, owner, lastDeployment)
 	testProductRollout(t, lab, owner, lastDeployment, tmpl)
+}
 
+func testProductWarmReplacement(t *testing.T, lab *productPeerLab, owner func() string, dep string) {
+	t.Helper()
+	ctx := t.Context()
+	active := func() (string, uint64) {
+		t.Helper()
+		var id string
+		var gen uint64
+		if err := lab.db.QueryRow(ctx, `SELECT agent_id,generation FROM agent_placements JOIN agent_deployment_members USING(agent_id)
+			WHERE deployment_id=$1 AND state='RUNNING' AND NOT fence_only`, dep).Scan(&id, &gen); err != nil {
+			t.Fatal(err)
+		}
+		return id, gen
+	}
+	ready := func() bool {
+		var d controlplane.DeploymentStatus
+		lab.request(owner(), "GET", "/v1/deployments/"+dep, "", nil, 200, &d)
+		return d.Active == 1 && d.Status == "ready"
+	}
+	id, generation := active()
+	// Remove the actual VMM without a lifecycle request. Reconcile notices
+	// the exit as it does on worker startup. No client sends a wake.
+	if err := lab.worker.host.Retire(ctx, id, generation); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lab.worker.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if ready() {
+		t.Fatal("retired VMM counted as active")
+	}
+	lab.await("replace lost warm VM", true, ready)
+	recovered, next := active()
+	if recovered != id || next <= generation {
+		t.Fatal("unexpected replacement generation", id, generation, recovered, next)
+	}
+	var sleep controlplane.AgentCreation
+	lab.request(owner(), "POST", "/v1/agents/"+id+"/sleep", "sleep-warm-member", struct{}{}, 202, &sleep)
+	lab.awaitOperation(owner, sleep.OperationID)
+	lab.await("replace sleeping warm member", true, ready)
+	replacement, _ := active()
+	if replacement == id {
+		t.Fatal("explicit sleep overridden")
+	}
+	t.Logf("warm_target=1 lost_generation=%d recovered_generation=%d sleeping_member_replaced=true", generation, next)
 }
 
 // Remove only the disposable worker's target image, then repair its cache.
 // The first failed member pauses the campaign with the later VMs untouched.
 func testProductRollout(t *testing.T, lab *productPeerLab, owner func() string, dep string, initial controlplane.TemplateRevision) {
 	spec := initial.TemplateSpec
+	spec.Resources.VCPUs = 2
 	spec.Resources.MemoryMiB = 384
 	var revision controlplane.TemplateRevision
 	lab.request(owner(), "POST", "/v1/templates", "upgrade", spec, 201, &revision)
@@ -245,5 +292,23 @@ func testProductRollout(t *testing.T, lab *productPeerLab, owner func() string, 
 	if done.Booted != 3 || done.Updated != 3 || done.Maintaining != 0 {
 		t.Fatal(done)
 	}
-	t.Logf("canary=%s booted_revision=%s authenticated_boots=%d", paused.Reason, done.Template, done.Booted)
+	var vmID string
+	if err := lab.db.QueryRow(t.Context(), `SELECT p.vm_id FROM agent_deployment_members m JOIN agent_placements p USING(agent_id)
+		WHERE m.deployment_id=$1 AND p.state='RUNNING' AND NOT p.fence_only`, dep).Scan(&vmID); err != nil {
+		t.Fatal(err)
+	}
+	boot, err := os.ReadFile(filepath.Join(lab.root, "jails", "firecracker", vmID, "root", "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config struct {
+		Machine struct {
+			CPUs   int `json:"vcpu_count"`
+			Memory int `json:"mem_size_mib"`
+		} `json:"machine-config"`
+	}
+	if err := json.Unmarshal(boot, &config); err != nil || config.Machine.CPUs != spec.Resources.VCPUs || config.Machine.Memory != spec.Resources.MemoryMiB {
+		t.Fatal("running Firecracker machine", config.Machine, err)
+	}
+	t.Logf("canary=%s booted_revision=%s authenticated_boots=%d vcpus=%d memory_mib=%d", paused.Reason, done.Template, done.Booted, config.Machine.CPUs, config.Machine.Memory)
 }

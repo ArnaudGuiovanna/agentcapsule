@@ -491,7 +491,16 @@ func (s *Store) ActivateProvisionedAgent(ctx context.Context, wanted Enrollment)
 	if tag.RowsAffected() != 1 {
 		return ErrStoreEnrollment
 	}
+	// Deployment members share a durable warm target. Standalone autostart
+	// still requests one ordinary wake on successful enrollment.
 	if e.AutoStart {
+		var member bool
+		if err := tx.QueryRow(ctx, "SELECT EXISTS(SELECT FROM agent_deployment_members WHERE agent_id=$1)", e.AgentID).Scan(&member); err != nil {
+			return err
+		}
+		if member {
+			return commit(ctx, tx)
+		}
 		var seq int64
 		if err = tx.QueryRow(ctx, `UPDATE agent_specs SET next_operation_seq=next_operation_seq+1
             WHERE agent_id=$1 RETURNING next_operation_seq`, e.AgentID).Scan(&seq); err != nil {

@@ -368,7 +368,7 @@ func (s *Store) ClaimRolloutPlacement(ctx context.Context, agent, host, worker, 
 	if id == "" {
 		return Placement{}, ErrInput
 	}
-	return s.claimPlacement(ctx, agent, host, worker, lease, false, 0, id)
+	return s.claimPlacement(ctx, agent, host, worker, lease, placementIntent{rolloutID: id})
 }
 
 type RolloutMember struct {

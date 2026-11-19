@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func deploymentLab(t *testing.T) (*tenantLab, *AgentCatalog, Principal, TemplateRevision) {
@@ -154,4 +155,142 @@ func TestDeploymentBatchSizesAndQuotaBoundaries(t *testing.T) {
 	if got := count(t, l.s, "store_enrollments"); got != limit {
 		t.Fatal("partial reservation", got)
 	}
+}
+
+func TestDeploymentMaintainsWarmTargetWithoutEvicting(t *testing.T) {
+	l, c, owner, rev := deploymentLab(t)
+	ctx := t.Context()
+	plan := testDeploymentPlan(t, c, owner, "plan", DeploymentRequest{Template: rev.Reference, Count: 2, ActiveCount: 1})
+	if _, err := c.ApplyDeployment(ctx, owner, plan.ID, "apply"); err != nil {
+		t.Fatal(err)
+	}
+	cold := testDeploymentPlan(t, c, owner, "cold", DeploymentRequest{Template: rev.Reference, Count: 1})
+	if _, err := c.ApplyDeployment(ctx, owner, cold.ID, "cold"); err != nil {
+		t.Fatal(err)
+	}
+	var neighbor string
+	if err := l.s.pool.QueryRow(ctx, "SELECT agent_id FROM agent_deployment_members WHERE deployment_id=$1", cold.ID).Scan(&neighbor); err != nil {
+		t.Fatal(err)
+	}
+	enrollments, err := l.s.PendingProvisioning(ctx, c.host, 10)
+	if err != nil || len(enrollments) != 3 {
+		t.Fatal(enrollments, err)
+	}
+	var preferred string
+	for i, e := range enrollments {
+		if e.AutoStart {
+			preferred = e.AgentID
+		}
+		if err := l.s.RecordProvisionedVolume(ctx, ProvisionedVolume{AgentID: e.AgentID, HostID: c.host, OperationID: e.OperationID, VolumeID: e.VolumeID, Device: 1, Inode: uint64(i + 100)}); err != nil {
+			t.Fatal(err)
+		}
+		retireEnrollmentBoot(t, l.s, enrollmentBoot(t, l.s, e))
+		if err := l.s.ActivateProvisionedAgent(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	hostLimit := func(slots int) {
+		t.Helper()
+		if _, err := l.s.pool.Exec(ctx, "UPDATE deployment_hosts SET max_active=$2 WHERE host_id=$1", c.host, slots); err != nil {
+			t.Fatal(err)
+		}
+	}
+	hostLimit(1)
+	second := testDeploymentPlan(t, c, owner, "second", DeploymentRequest{Template: rev.Reference, Count: 1, ActiveCount: 1})
+	if second.Admitted {
+		t.Fatal("new deployment took a warm reservation between boots")
+	}
+	claim := func(id string) error {
+		_, err := l.s.ClaimWarmPlacement(ctx, id, c.host, "worker", time.Minute)
+		return err
+	}
+	pick := func() string {
+		t.Helper()
+		id, err := l.s.NextWarmAgent(ctx, c.host)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	none := func() {
+		t.Helper()
+		if id, err := l.s.NextWarmAgent(ctx, c.host); !errors.Is(err, ErrNoWork) {
+			t.Fatal("unexpected warm candidate", id, err)
+		}
+	}
+	if got := pick(); got != preferred {
+		t.Fatal(got, preferred)
+	}
+	// A user sleep after selection invalidates the hint and an alternate
+	// member can satisfy the same target.
+	if _, err := c.RequestLifecycle(ctx, owner, preferred, "manual-sleep", "sleep"); err != nil {
+		t.Fatal(err)
+	}
+	if err := claim(preferred); !errors.Is(err, ErrNoWork) {
+		t.Fatal("stale hint after sleep", err)
+	}
+	id := pick()
+	if id == preferred {
+		t.Fatal("selected sleeping agent")
+	}
+	near, err := l.s.ClaimPlacement(ctx, neighbor, c.host, "neighbor", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	none()
+	if err := claim(id); !errors.Is(err, ErrNoWork) {
+		t.Fatal("warm claim with full host", err)
+	}
+	hostLimit(2)
+	lim := 1
+	if _, err := l.a.SetOrganizationQuotas(ctx, l.platform, owner.TenantID, "quota", OrganizationQuotas{MaxActiveVMs: &lim}); err != nil {
+		t.Fatal(err)
+	}
+	none()
+	if _, err := l.a.SetOrganizationQuotas(ctx, l.platform, owner.TenantID, "clear", OrganizationQuotas{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := pick(); got != id {
+		t.Fatal(got, id)
+	}
+	if err := l.s.ObservePlacementStopped(ctx, neighbor, c.host, near.Generation, false); err != nil {
+		t.Fatal(err)
+	}
+	hostLimit(1)
+	// Other work taking the last slot after selection prevents a warm boot.
+	// Its ordinary boot also satisfies the deployment even with a second slot free.
+	other, err := l.s.ClaimPlacement(ctx, preferred, c.host, "work", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := claim(id); !errors.Is(err, ErrNoWork) {
+		t.Fatal("warm claim with occupied host", err)
+	}
+	hostLimit(2)
+	none()
+	if err := l.s.ObservePlacementStopped(ctx, preferred, c.host, other.Generation, false); err != nil {
+		t.Fatal(err)
+	}
+	if got := pick(); got != id {
+		t.Fatal(got, id)
+	}
+	var wg sync.WaitGroup
+	results := make(chan error, 2)
+	for range 2 {
+		wg.Go(func() { results <- claim(id) })
+	}
+	wg.Wait()
+	close(results)
+	successes := 0
+	for err := range results {
+		if err == nil {
+			successes++
+		} else if !errors.Is(err, ErrNoWork) {
+			t.Fatal(err)
+		}
+	}
+	if successes != 1 {
+		t.Fatal("generation claims", successes)
+	}
+	none()
 }

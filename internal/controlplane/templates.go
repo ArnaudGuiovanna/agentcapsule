@@ -257,12 +257,18 @@ func planCapacity(ctx context.Context, tx pgx.Tx, tenant, host string, in Deploy
 	}
 	var usedStorage, usedMem, tenantMem int64
 	var usedSlots, usedCPUs, usedUIDs, tenantSlots, tenantCPUs int
-	// Outstanding autostarts and running workloads share the warm capacity.
-	err = tx.QueryRow(ctx, `WITH reservations AS (
+	// A deployment keeps its warm reservation between boots. Count already
+	// active members first so an on-demand boot can satisfy its target.
+	err = tx.QueryRow(ctx, `WITH members AS (
  SELECT a.tenant_id,x.volume_mib+x.reserved_growth_mib AS volume_mib,x.vcpus,x.memory_mib,a.phase,
- ((p.state IN ('STARTING','RUNNING','STOPPING') AND NOT p.fence_only) OR
-  (x.auto_start AND a.phase='PROVISIONING') OR EXISTS(SELECT FROM platform_operations o WHERE o.agent_id=a.id AND o.kind='wake' AND o.status IN ('PENDING','RUNNING'))) AS warm
- FROM agent_specs x JOIN agents a ON a.id=x.agent_id LEFT JOIN agent_placements p ON p.agent_id=a.id WHERE x.host_id=$1)
+ d.id AS deployment_id, d.active_count,x.auto_start, m.ordinal,
+ (coalesce(p.state IN ('STARTING','RUNNING','STOPPING') AND NOT p.fence_only,false) OR
+  (m.agent_id IS NULL AND x.auto_start AND a.phase='PROVISIONING') OR EXISTS(SELECT FROM platform_operations o WHERE o.agent_id=a.id AND o.kind='wake' AND o.status IN ('PENDING','RUNNING'))) AS committed
+ FROM agent_specs x JOIN agents a ON a.id=x.agent_id LEFT JOIN agent_placements p ON p.agent_id=a.id
+ LEFT JOIN agent_deployment_members m ON m.agent_id=a.id LEFT JOIN agent_deployments d ON d.id=m.deployment_id WHERE x.host_id=$1
+ ), reservations AS (
+ SELECT *, committed OR (deployment_id IS NOT NULL AND phase IN ('LIVE','PROVISIONING') AND row_number() OVER
+ (PARTITION BY deployment_id ORDER BY (phase IN ('LIVE','PROVISIONING')) DESC,committed DESC,auto_start DESC,ordinal)<=active_count) AS warm FROM members)
  SELECT count(*),coalesce(sum(volume_mib) FILTER(WHERE phase<>'DELETED'),0),count(*) FILTER(WHERE warm),
  coalesce(sum(vcpus) FILTER(WHERE warm),0),coalesce(sum(memory_mib+256) FILTER(WHERE warm),0),
  count(*) FILTER(WHERE warm AND tenant_id=$2),coalesce(sum(vcpus) FILTER(WHERE warm AND tenant_id=$2),0),coalesce(sum(memory_mib) FILTER(WHERE warm AND tenant_id=$2),0) FROM reservations`, host, tenant).Scan(&usedUIDs, &usedStorage, &usedSlots, &usedCPUs, &usedMem, &tenantSlots, &tenantCPUs, &tenantMem)
