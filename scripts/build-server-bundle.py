@@ -24,6 +24,11 @@ HOST_PROGRAMS = ("agentcapsule-api", "agentcapsule-admin", "agentcapsule-worker"
                  "agentcapsule-slim-bridge", "agentcapsule-harness", "capsule-adapter")
 PACKAGES = ("postgresql-16", "docker.io", "docker-compose-v2", "pgbackrest", "rclone", "curl", "e2fsprogs",
             "libcryptsetup12", "podman", "openssl", "iproute2", "ca-certificates")
+# Noble systems upgraded from the installation ISO can still carry the
+# original systemd/libsystemd pair. Ship matched updates without asking APT
+# to install optional services that the operator has never enabled.
+BASE_UPGRADES = ("systemd", "systemd-sysv", "udev", "libnss-systemd", "libpam-systemd",
+                 "systemd-resolved", "systemd-timesyncd", "dbus", "dbus-user-session")
 SNAPSHOT = "https://snapshot.ubuntu.com/ubuntu/20261113T000000Z"
 
 
@@ -132,8 +137,9 @@ def package_archive(out,src,work,epoch):
     # Resolve everything including dependencies already installed on this
     # runner. The host uses only the downloaded signed release artifacts.
     run("apt-get","-o","Debug::NoLocking=true","-o","Dir::State::status=/dev/null","-o","Dir::Cache::archives="+str(debdir),
-        "--yes","--download-only","--no-install-recommends","install",*PACKAGES)
+        "--yes","--download-only","--no-install-recommends","install",*PACKAGES,*BASE_UPGRADES)
     records=[]
+    index=[]
     sources=set()
     for deb in sorted(debdir.glob("*.deb")):
         data=output("dpkg-deb","-f",deb,"Package","Version","Source")
@@ -145,9 +151,14 @@ def package_archive(out,src,work,epoch):
             raise ValueError("invalid Debian package source")
         sources.add(match[1]+"="+(match[2] or version))
         records.append(dict(file=deb.name,package=name,version=version,sha256=digest(deb),source=source))
+        control=output("dpkg-deb","-f",deb)
+        index.append(control+"\nFilename: ./"+deb.name+"\nSize: "+str(deb.stat().st_size)+"\nSHA256: "+records[-1]["sha256"]+"\n")
     if not {r["package"] for r in records}.issuperset(PACKAGES):
         raise ValueError("incomplete host package closure")
-    write_tar(out/"agentcapsule-packages-linux-amd64.tar",{f.name:f for f in debdir.glob("*.deb")},epoch)
+    files={f.name:f for f in debdir.glob("*.deb")}
+    files["Packages"]=("\n".join(index)+"\n").encode()
+    files["roots.json"]=json_bytes([r["package"]+"="+r["version"] for r in records if r["package"] in PACKAGES])
+    write_tar(out/"agentcapsule-packages-linux-amd64.tar",files,epoch)
     # Match ELF files embedded in the guest, and libc linked statically by
     # capsule-adapter, to the exact source versions on the build machine.
     return records,sources

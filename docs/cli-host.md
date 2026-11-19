@@ -23,7 +23,8 @@ The first two commands identify the same operation. The helper records its
 input, checkpoints and outcome under `/var/lib/agentcapsule-install`. The
 systemd instance continues after SSH disconnects and resumes after reboot.
 On a failed phase read `journalctl -u agentcapsule-host@host_ID`, fix the
-reported component, and resume. All operations emit `agentcapsule.host/v1`
+reported component, and resume. If the CLI itself contains a fix for the
+failed phase, add `--refresh-helper` to resume using that verified CLI. All operations emit `agentcapsule.host/v1`
 JSON. The operation returns distinct evidence for service startup, the
 starter microVM's echo and backups. The probe uses a dedicated organization,
 member and encrypted volume. Repeated updates use the same probe agent.
