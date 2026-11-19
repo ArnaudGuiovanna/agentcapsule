@@ -49,12 +49,20 @@ def main():
         return data
     def record(name,data):
         # Keep only operation state and public IDs, never the host's profile.
-        report["steps"].append(dict(name=name,**{k:v for k,v in data.items() if k in {
+        step=dict(name=name,**{k:v for k,v in data.items() if k in {
             "state","phase","operation_id","completed","target","installed","services_started","invocation_verified",
-            "off_host_backup_verified","volume_shipping_verified","database_backups_verified","backup_status","probe_agent","probe_invocation","reason"}}))
+            "off_host_backup_verified","volume_shipping_verified","database_backups_verified","backup_status","probe_agent","probe_invocation","reason"}})
+        if "storage_result" in data:
+            step["storage_result"]={k:v for k,v in data["storage_result"].items() if k in {
+                "id","size","agent_id","restore_id","archive_id","archive_store","archive_incarnation","incarnation","checked","losses"}}
+        report["steps"].append(step)
         save()
     def wait(data):
-        result=call(["host","operation","wait"],[data["operation_id"]])
+        try:
+            result=call(["host","operation","wait"],[data["operation_id"]])
+        except subprocess.CalledProcessError:
+            record("failed-operation",call(["host","operation","show"],[data["operation_id"]]))
+            raise
         if result["state"]!="succeeded":
             raise ValueError("operation did not succeed")
         return result
@@ -109,10 +117,24 @@ def main():
         agent=upgraded["probe_agent"]
         if not re.fullmatch("agt_[a-f0-9]{32}",agent):
             raise ValueError("invalid starter agent")
-        archive=["--agent",agent,"--archive-id","arc_"+uuid.uuid4().hex]
-        for command,args in [(["archive"],archive),(["restore","test"],archive),
-                             (["restore","apply"],[*archive,"--restore-id","rst_"+uuid.uuid4().hex])]:
-            record(" ".join(command),wait(call(command,args)))
+        archive_id="arc_"+uuid.uuid4().hex
+        restore_id="rst_"+uuid.uuid4().hex
+        archive=["--agent",agent,"--archive-id",archive_id]
+        captured=wait(call(["archive"],archive))
+        record("archive",captured)
+        if captured["storage_result"]["id"]!=archive_id or captured["storage_result"]["size"]<=0:
+            raise ValueError("capture receipt does not identify the requested archive")
+        tested=wait(call(["restore","test"],archive))
+        record("restore test",tested)
+        test=tested["storage_result"]
+        if test["agent_id"]!=agent or test["archive_id"]!=archive_id or not test["checked"]:
+            raise ValueError("restore test has no checks for this agent and archive")
+        applied=wait(call(["restore","apply"],[*archive,"--restore-id",restore_id]))
+        record("restore apply",applied)
+        receipt=applied["storage_result"]
+        if (receipt["restore_id"]!=restore_id or receipt["archive_id"]!=archive_id
+                or receipt["agent_id"]!=agent or receipt["incarnation"]<=test["incarnation"]):
+            raise ValueError("restore receipt does not confirm the new incarnation")
         report["status"]="passed"
     finally:
         if report["status"]=="running":
