@@ -91,6 +91,11 @@ const (
 )
 
 var rbacRoutes = []rbacRoute{
+	{Method: "GET", Path: "/v1/version", Success: 200, Want: "S S S S S S S S S S S S S", Note: "no authentication"},
+	{Method: "GET", Path: "/v1/platform/diagnostics", Success: 200, Want: rbacPlatformOnly},
+	{Method: "GET", Path: "/v1/platform/session", Success: 200, Want: rbacPlatformOnly},
+	{Method: "POST", Path: "/v1/platform/sessions", Success: 201, Want: rbacPlatformOnly, body: `{"token_sha256":"{digest}"}`, fresh: rbacName},
+	{Method: "POST", Path: "/v1/platform/sessions/{fresh}/revoke", Success: 200, Want: rbacPlatformOnly, body: `{}`, fresh: rbacFreshSession, revokes: "platform_credential"},
 	{Method: "GET", Path: "/v1/health/live", Success: 200, Want: "S S S S S S S S S S S S S", Note: "no authentication"},
 	{Method: "GET", Path: "/v1/health/ready", Success: 200, Want: "S S S S S S S S S S S S S", Note: "no authentication"},
 
@@ -492,6 +497,13 @@ func rbacName(t *testing.T, f *rbacFixture) map[string]string {
 	name := f.next()
 	sum := sha256.Sum256([]byte(name))
 	return map[string]string{"name": name, "digest": hex.EncodeToString(sum[:]), "expires": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)}
+}
+
+func rbacFreshSession(t *testing.T, f *rbacFixture) map[string]string {
+	identity := rbacName(t, f)
+	var result controlplane.OperatorCredential
+	f.must(t, "platform", "POST", "/v1/platform/sessions", `{"token_sha256":"`+identity["digest"]+`"}`, 201, &result)
+	return map[string]string{"fresh": result.ID}
 }
 
 func rbacFreshOrganization(t *testing.T, f *rbacFixture) map[string]string {

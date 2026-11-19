@@ -150,9 +150,9 @@ func TestProductWorkerTenantRunsPiOnARealModel(t *testing.T) {
 	// A local Ollama needs no key; a hosted provider does. The key is sealed in
 	// the organization's provider and sent with the warm-up call, never logged.
 	key := os.Getenv("AGENTCAPSULE_KVM_PI_API_KEY")
-	secret := key
-	if secret == "" {
-		secret = "a-local-server-needs-no-key"
+	authMode := "secret"
+	if key == "" {
+		authMode = "none"
 	}
 	l := newRegistryLab(t)
 	svc, err := controlplane.NewLLMService(l.accounts, llmgateway.NewForTests(llmgateway.Config{Timeout: 3 * time.Minute, MaxAttempts: 1}, llmgateway.TestOptions{Loopback: true}))
@@ -193,7 +193,7 @@ func TestProductWorkerTenantRunsPiOnARealModel(t *testing.T) {
 
 	var p controlplane.LLMProvider
 	l.request(l.owner(), "POST", "/v1/llm/providers", "provider", controlplane.CreateLLMProviderInput{Name: "pi-model-server", Kind: "openai_compatible",
-		BaseURL: url, Secret: secret}, 201, &p)
+		BaseURL: url, AuthMode: authMode, Secret: key}, 201, &p)
 	// Pi asks for "pi-model" (its models.json); the organization decides what it is.
 	l.request(l.owner(), "POST", "/v1/llm/aliases", "alias", controlplane.CreateLLMAliasInput{Alias: "pi-model", ProviderID: p.ID, UpstreamModel: model}, 201, nil)
 

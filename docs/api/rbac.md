@@ -85,6 +85,11 @@ only its own.
 <!-- rbac-matrix:begin -->
 | Route | owner | admin | operator | auditor | user | team | former | unassigned | service | foreign | revoked | revoked-token | platform |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `GET /v1/version` (no authentication) | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes |
+| `GET /v1/platform/diagnostics` | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 401 | 401 | yes |
+| `GET /v1/platform/session` | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 401 | 401 | yes |
+| `POST /v1/platform/sessions` | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 401 | 401 | yes |
+| `POST /v1/platform/sessions/{id}/revoke` | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 401 | 401 | yes |
 | `GET /v1/health/live` (no authentication) | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes |
 | `GET /v1/health/ready` (no authentication) | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes |
 | `GET /v1/organizations` | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 401 | 401 | yes |

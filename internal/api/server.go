@@ -118,6 +118,11 @@ func New(store *controlplane.Store, accounts *controlplane.Accounts) (*Server, e
 		return nil, controlplane.ErrInput
 	}
 	s := &Server{store: store, accounts: accounts, mux: http.NewServeMux()}
+	s.handle("/v1/version", s.version)
+	s.handle("/v1/platform/diagnostics", s.platformDiagnostics)
+	s.handle("/v1/platform/session", s.platformSession)
+	s.handle("/v1/platform/sessions", s.createPlatformSession)
+	s.handle("/v1/platform/sessions/{id}/revoke", s.revokePlatformSession)
 	s.handle("/v1/health/live", s.live)
 	s.handle("/v1/health/ready", s.ready)
 	s.handle("/v1/users", s.users)
