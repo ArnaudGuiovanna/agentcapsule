@@ -33,6 +33,9 @@ func linkOrCopy(src, dst string) error {
 		return err
 	}
 	if _, err = io.Copy(out, in); err == nil {
+		err = out.Chmod(0444)
+	}
+	if err == nil {
 		err = out.Sync()
 	}
 	return errors.Join(err, out.Close())

@@ -1031,10 +1031,15 @@ func (h *FirecrackerHost) prepare(a *HostAgent) error {
 		if err == nil && name == "initrd" && h.opts.AuthenticatedControl {
 			err = appendControlConfig(f, guest, a.Harness)
 		}
+		// The worker runs with UMask=0077. The jailer drops privileges before
+		// Firecracker reads these files inside its per-run private directory.
+		if err == nil {
+			err = f.Chmod(0444)
+		}
 		if err == nil {
 			err = f.Sync()
 		}
-		f.Close()
+		err = errors.Join(err, f.Close())
 		if err != nil {
 			return err
 		}
@@ -1072,7 +1077,11 @@ func (h *FirecrackerHost) prepare(a *HostAgent) error {
 	if err != nil {
 		return err
 	}
-	if err = os.WriteFile(filepath.Join(root, "config.json"), b, 0444); err != nil {
+	configPath := filepath.Join(root, "config.json")
+	if err = os.WriteFile(configPath, b, 0600); err != nil {
+		return err
+	}
+	if err = os.Chmod(configPath, 0444); err != nil {
 		return err
 	}
 	if err = os.Mkdir(h.group(run), 0700); err != nil {
