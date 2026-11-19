@@ -498,7 +498,12 @@ def backup_destinations(config, includes=()):
             return {}
         if setting(prefix+"cipher-type")!="aes-256-cbc":
             raise ValueError("both remote pgBackRest repositories must be encrypted")
-        stores[kind]=setting(prefix+("s3-endpoint" if kind=="s3" else "sftp-host"))
+        if kind=="s3":
+            # The transport host may differ from the endpoint used for the
+            # S3 signature (e.g. a local forwarder).
+            stores[kind]=setting(prefix+"storage-host") or setting(prefix+"s3-host") or setting(prefix+"s3-endpoint")
+        else:
+            stores[kind]=setting(prefix+"sftp-host")
     if set(stores)!={"s3","sftp"} or not all(stores.values()):
         raise ValueError("configure independent S3 and SFTP pgBackRest repositories")
     return stores

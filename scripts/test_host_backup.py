@@ -42,6 +42,8 @@ class BackupEvidenceTest(unittest.TestCase):
         example = (ROOT / "deploy/backup/pgbackrest.conf").read_text()
         conf.write_text(example)
         self.assertEqual(set(self.api["backup_destinations"](conf)), {"s3", "sftp"})
+        conf.write_text(example.replace("repo1-type=s3", "repo1-type=s3\nrepo1-storage-host=127.0.0.1"))
+        self.assertEqual(self.api["backup_destinations"](conf)["s3"], "127.0.0.1")
         for changed in (example + "\n[agentcapsule:backup]\nrepo1-type=posix\n",
                         example.replace("repo2-cipher-type=aes-256-cbc", "repo2-cipher-type=none")):
             conf.write_text(changed)
