@@ -25,6 +25,7 @@ var conventionNotMutations = map[string]string{
 // idempotencyOtherBody is, for each mutation that takes input, another valid
 // input for the same path: the first call's key with it is refused.
 var idempotencyOtherBody = map[string]string{
+	"POST /v1/agents/{fresh}/volume-growth": `{"size_mib":256}`,
 	"POST /v1/deployments/{fresh}/rollouts": `{"template":"matrix-base@1","max_unavailable":2}`,
 	"POST /v1/platform/sessions":            `{"token_sha256":"{digest}","replace_current":true}`,
 	"POST /v1/templates":                    strings.ReplaceAll(rbacTemplateBody, "{name}", "{name}-other"),
@@ -211,6 +212,7 @@ type asyncRoute struct{ field, follow string }
 // asyncRoutes lists every route that answers 202 (CONV-4), the legacy
 // domain's aside.
 var asyncRoutes = map[string]asyncRoute{
+	"POST /v1/agents/{fresh}/volume-growth":   {"id", "/v1/volume-growth/{id}"},
 	"POST /v1/deployments/{fresh}/rollouts":   {"id", "/v1/rollouts/{id}"},
 	"POST /v1/rollouts/{fresh}/resume":        {"id", "/v1/rollouts/{id}"},
 	"POST /v1/deployment-plans/{fresh}/apply": {"id", "/v1/deployments/{id}"},

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -117,6 +118,23 @@ func OpenVolume(ctx context.Context, v capsuleprotocol.VolumeBoot, key []byte) (
 	_, code, err = runTool(ctx, nil, "/sbin/e2fsck", "-p", "-f", mappedDevice)
 	if err != nil || (code != 0 && code != 1) {
 		return m, ErrGuest
+	}
+	if v.GrowToMiB != 0 {
+		// Opening LUKS2 without an explicit sector count maps the enlarged device.
+		sectors, err := os.ReadFile("/sys/class/block/vda/size")
+		if err != nil {
+			return m, ErrGuest
+		}
+		n, err := strconv.ParseInt(strings.TrimSpace(string(sectors)), 10, 64)
+		if err != nil || n != int64(v.GrowToMiB)*2048 {
+			return m, ErrGuest
+		}
+		if _, code, err = runTool(ctx, nil, "/sbin/resize2fs", mappedDevice); err != nil || code != 0 {
+			return m, ErrGuest
+		}
+		if _, code, err = runTool(ctx, nil, "/sbin/e2fsck", "-p", "-f", mappedDevice); err != nil || (code != 0 && code != 1) {
+			return m, ErrGuest
+		}
 	}
 	for _, dir := range []string{mountRoot, DataDirectory} {
 		if err = os.MkdirAll(dir, 0700); err != nil {

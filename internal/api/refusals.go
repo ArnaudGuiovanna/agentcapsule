@@ -24,6 +24,15 @@ type auditedRoute struct {
 // organization's to see. TestEveryAuditedRouteIsServed keeps the list in
 // step with the routes.
 var auditedRoutes = map[string]auditedRoute{
+	"POST /v1/system-images":               {"system_image.approved", "", ""},
+	"POST /v1/templates":                   {"template.published", "", ""},
+	"POST /v1/deployment-plans":            {"deployment.planned", "", ""},
+	"POST /v1/deployment-plans/{id}/apply": {"deployment.applied", "id", ""},
+	"POST /v1/pools":                       {"pool.created", "", ""},
+	"POST /v1/deployments/{id}/rollouts":   {"rollout.started", "id", ""},
+	"POST /v1/rollouts/{id}/resume":        {"rollout.resumed", "id", ""},
+	"POST /v1/agents/{id}/volume-growth":   {"volume.growth_requested", "id", ""},
+
 	"POST /v1/members":                                          {"member.created", "", ""},
 	"POST /v1/members/{id}/role":                                {"member.role_changed", "id", ""},
 	"POST /v1/members/{id}/revoke":                              {"member.revoked", "id", ""},

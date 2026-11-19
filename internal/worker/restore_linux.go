@@ -65,6 +65,30 @@ func (w *Placements) productRestoreHost() restoreHost {
 		retire:  w.retireForRestore,
 		probe:   w.probeRestoreHarness,
 		install: func(ctx context.Context, plan controlplane.VolumeRestorePlan, image io.Reader, a restoreauthority.Archive) error {
+			g, err := w.store.GrowthForRestore(ctx, plan.Restore.ID)
+			if err == nil {
+				if g.AgentID != a.Binding.Store || g.ArchiveID != plan.Restore.ArchiveID || a.Size != int64(g.Previous)<<20 {
+					return ErrRestoreArchive
+				}
+				spec := volumestore.Spec{AgentID: g.AgentID, VolumeID: plan.Enrollment.VolumeID, SizeMiB: int64(g.Previous)}
+				if err = w.provisioning.volumes.Grow(ctx, spec, int64(g.Target), plan.Device, plan.Inode); err != nil {
+					return err
+				}
+				if err = w.host.InstallGrownVolume(ctx, g.AgentID, plan.Placement.Generation, plan.Device, plan.Inode, image, a.Size, a.Digest, g.Target); err != nil {
+					return err
+				}
+				return w.store.CommitRestoredSize(ctx, plan.Restore.ID, w.hostID, g.Target)
+			}
+			if !errors.Is(err, controlplane.ErrNotFound) {
+				return err
+			}
+			if a.Size < int64(plan.Enrollment.Resources.DataVolumeMiB)<<20 {
+				target := plan.Enrollment.Resources.DataVolumeMiB
+				if err = w.host.InstallGrownVolume(ctx, plan.Restore.AgentID, plan.Placement.Generation, plan.Device, plan.Inode, image, a.Size, a.Digest, target); err != nil {
+					return err
+				}
+				return w.store.CommitRestoredSize(ctx, plan.Restore.ID, w.hostID, target)
+			}
 			return w.host.InstallVolume(ctx, plan.Restore.AgentID, plan.Placement.Generation, plan.Device, plan.Inode, image, a.Size, a.Digest)
 		},
 		relocate: w.relocateVolume,
@@ -204,7 +228,10 @@ func (w *Placements) retireForRestore(ctx context.Context, id string) error {
 // probeRestoreHarness asks the agent's running VM which control features its
 // harness offers. A sleeping agent boots restricted for the question, and that
 // boot is removed after.
-func (w *Placements) probeRestoreHarness(ctx context.Context, id string) (result error) {
+func (w *Placements) probeRestoreHarness(ctx context.Context, id string) error {
+	return w.probeVolumeFeatures(ctx, id, false)
+}
+func (w *Placements) probeVolumeFeatures(ctx context.Context, id string, growing bool) (result error) {
 	runs, err := w.Reconcile(ctx)
 	if err != nil {
 		return err
@@ -230,7 +257,13 @@ func (w *Placements) probeRestoreHarness(ctx context.Context, id string) (result
 	if err != nil {
 		return err
 	}
-	return requireOutcomes(ctx, client)
+	if err = requireOutcomes(ctx, client); err != nil {
+		return err
+	}
+	if growing {
+		return client.RequireVolumeGrowth(ctx)
+	}
+	return nil
 }
 
 func requireOutcomes(ctx context.Context, client *capsuleprotocol.Client) error {
@@ -414,7 +447,12 @@ func (w *Placements) beginRestore(ctx context.Context, h restoreHost, restoreID,
 	if err != nil {
 		return plan, err
 	}
-	if err = checkRestoreArchive(ctx, archives, archiveID, e, w.authority); err != nil {
+	f, a, err := archives.Open(ctx, archiveID, w.authority)
+	if err != nil {
+		return plan, err
+	}
+	f.Close()
+	if err = w.checkRestoredSize(ctx, a, e); err != nil {
 		return plan, err
 	}
 	if err = w.newerArchive(ctx, agentID, archiveID, archives); err != nil {
@@ -438,22 +476,16 @@ func (w *Placements) beginRestore(ctx context.Context, h restoreHost, restoreID,
 			return plan, err
 		}
 	} else if !relocating {
-		if err = h.probe(ctx, agentID); err != nil {
+		if a.Size < int64(e.Resources.DataVolumeMiB)<<20 {
+			err = w.probeVolumeFeatures(ctx, agentID, true)
+		} else {
+			err = h.probe(ctx, agentID)
+		}
+		if err != nil {
 			return plan, err
 		}
 	}
 	return w.store.BeginVolumeRestore(ctx, restoreID, agentID, w.hostID, archiveID)
-}
-
-// checkRestoreArchive authenticates the archive and hashes its bytes, then
-// checks that it is of this agent's volume and of its size.
-func checkRestoreArchive(ctx context.Context, archives *volumearchive.Store, archiveID string, e controlplane.Enrollment, authority volumearchive.Authority) error {
-	f, a, err := archives.Open(ctx, archiveID, authority)
-	if err != nil {
-		return err
-	}
-	f.Close()
-	return archiveFits(a, e)
 }
 
 func archiveFits(a restoreauthority.Archive, e controlplane.Enrollment) error {
@@ -462,6 +494,21 @@ func archiveFits(a restoreauthority.Archive, e controlplane.Enrollment) error {
 		return ErrRestoreArchive
 	}
 	return nil
+}
+
+// Older captures remain recoverable after growth. Only an authenticated image
+// bound to this volume at a previously approved capacity can be expanded.
+func (w *Placements) checkRestoredSize(ctx context.Context, a restoreauthority.Archive, e controlplane.Enrollment) error {
+	if a.Size < int64(e.Resources.DataVolumeMiB)<<20 && a.Size >= 64<<20 && a.Size%(1<<20) == 0 {
+		approved, err := w.store.PreviouslyGrownSize(ctx, e.AgentID, int(a.Size>>20))
+		if err != nil {
+			return err
+		}
+		if approved {
+			e.Resources.DataVolumeMiB = int(a.Size >> 20)
+		}
+	}
+	return archiveFits(a, e)
 }
 
 // newerArchive is the coordinator's repair: an archive can hold the outcomes
@@ -526,7 +573,13 @@ func (w *Placements) installRestore(ctx context.Context, h restoreHost, plan con
 		return err
 	}
 	defer f.Close()
-	if err = archiveFits(a, plan.Enrollment); err != nil {
+	expected := plan.Enrollment
+	if g, err := w.store.GrowthForRestore(ctx, r.ID); err == nil && g.ArchiveID == r.ArchiveID {
+		expected.Resources.DataVolumeMiB = g.Previous
+	} else if err != nil && !errors.Is(err, controlplane.ErrNotFound) {
+		return err
+	}
+	if err = w.checkRestoredSize(ctx, a, expected); err != nil {
 		return err
 	}
 	if err = h.install(ctx, plan, f, a); err != nil {

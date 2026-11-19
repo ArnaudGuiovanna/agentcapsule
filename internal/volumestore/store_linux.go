@@ -386,3 +386,51 @@ func CheckContainer(path, volumeID string, key []byte) error {
 	}
 	return luks(path, Spec{VolumeID: volumeID}.uuid(), key, false, nil)
 }
+
+// Grow verifies the published inode and extends its reservation without changing
+// its LUKS header. Only a retired volume under a recorded restore may be passed.
+func (s *Store) Grow(ctx context.Context, spec Spec, target int64, device, inode uint64) error {
+	if !identifier(spec.AgentID, "agt_") || !identifier(spec.VolumeID, "vol_") || spec.SizeMiB < 64 || target <= spec.SizeMiB || target > 32768 || inode == 0 {
+		return ErrInput
+	}
+	base := filepath.Join(s.root, "volume-state", spec.VolumeID)
+	lock, err := file(base+".lock", false)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	if err = flock(ctx, lock, true); err != nil {
+		return err
+	}
+	j, err := load(base + ".json")
+	if err != nil {
+		return err
+	}
+	if j.Stage != "READY" || j.Spec.AgentID != spec.AgentID || j.Spec.VolumeID != spec.VolumeID || (j.Spec.SizeMiB != spec.SizeMiB && j.Spec.SizeMiB != target) || j.Device != device || j.Inode != inode {
+		return ErrState
+	}
+	f, err := file(filepath.Join(s.root, "volumes", spec.VolumeID+".luks"), false)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if err = flock(ctx, f, false); err != nil {
+		return err
+	}
+	st, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	id := st.Sys().(*syscall.Stat_t)
+	if uint64(id.Dev) != device || id.Ino != inode || id.Nlink != 1 || (st.Size() != spec.SizeMiB<<20 && st.Size() != target<<20) {
+		return ErrState
+	}
+	if err = f.Truncate(target << 20); err != nil {
+		return err
+	}
+	if err = f.Sync(); err != nil {
+		return err
+	}
+	j.Spec.SizeMiB = target
+	return save(base+".json", j)
+}

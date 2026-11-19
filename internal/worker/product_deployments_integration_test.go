@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -35,6 +36,10 @@ func TestProductDeploymentCampaignKVM(t *testing.T) {
 	lab.request(owner(), "POST", "/v1/members", "bob", controlplane.CreateMemberInput{Issuer: identity.trust.Issuer, Subject: "bob", DisplayName: "Bob", Role: "agent_user"}, 201, &bob)
 	var agents []string
 	var lastDeployment string
+	var activeAgent string
+	var competing controlplane.Invocation
+	var competingStart time.Time
+	member := func() string { return identity.token(t, "bob") }
 	t.Cleanup(func() {
 		for _, id := range agents {
 			cleanup, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -59,7 +64,9 @@ func TestProductDeploymentCampaignKVM(t *testing.T) {
 		}
 		lastDeployment = plan.ID
 		apply := "/v1/deployment-plans/" + plan.ID + "/apply"
+		applyStart := time.Now()
 		lab.request(owner(), "POST", apply, "apply", struct{}{}, 202, nil)
+		applyDuration := time.Since(applyStart)
 		rows, err := lab.db.Query(ctx, "SELECT agent_id FROM agent_deployment_members WHERE deployment_id=$1 ORDER BY ordinal", plan.ID)
 		if err != nil {
 			t.Fatal(err)
@@ -82,8 +89,22 @@ func TestProductDeploymentCampaignKVM(t *testing.T) {
 		}
 		if batch == 3 {
 			dispatch := DispatchOptions{Batch: 1, WorkLease: 3 * time.Minute, DeliveryLease: 30 * time.Second, RetryBase: time.Second, RetryMax: 10 * time.Second}
+			lab.worker.afterWorkClaim = func(job controlplane.WorkerJob) {
+				if job.Kind != "provision" || competing.ID != "" {
+					return
+				}
+				if _, err := lab.worker.host.Control(ctx, activeAgent); err != nil {
+					t.Fatal("expected existing active VM", err)
+				}
+				competingStart = time.Now()
+				lab.request(member(), "POST", "/v1/agents/"+activeAgent+"/invocations", "during-provision", map[string]any{"content": []map[string]string{{"type": "text", "text": "serving during provisioning"}}}, 202, &competing)
+			}
 			if err := lab.worker.DispatchPass(ctx, dispatch, 90*time.Second); err != nil {
 				t.Fatal(err)
+			}
+			lab.worker.afterWorkClaim = nil
+			if competing.ID == "" {
+				t.Fatal("no provision job observed")
 			}
 			var partly controlplane.DeploymentStatus
 			lab.request(owner(), "GET", "/v1/deployments/"+plan.ID, "", nil, 200, &partly)
@@ -104,6 +125,18 @@ func TestProductDeploymentCampaignKVM(t *testing.T) {
 			}
 			lab.request(owner(), "POST", apply, "apply-after-interruption", struct{}{}, 202, nil)
 		}
+		if competing.ID != "" {
+			lab.await("existing agent invocation during provisioning", true, func() bool {
+				var inv controlplane.Invocation
+				lab.request(member(), "GET", "/v1/invocations/"+competing.ID, "", nil, 200, &inv)
+				return inv.State == "completed"
+			})
+			answer := lab.request(member(), "GET", "/v1/invocations/"+competing.ID+"/result", "", nil, 200, nil)
+			if !strings.Contains(string(answer), "serving during provisioning") {
+				t.Fatal("missing concurrent answer")
+			}
+			t.Logf("active_agent_invocation_during_provisioning=%s", time.Since(competingStart))
+		}
 		var result controlplane.DeploymentStatus
 		lab.awaitFor("deployment completion", true, 5*time.Minute, func() bool {
 			lab.request(owner(), "GET", "/v1/deployments/"+plan.ID, "", nil, 200, &result)
@@ -120,6 +153,7 @@ func TestProductDeploymentCampaignKVM(t *testing.T) {
 			t.Fatal("registry", err)
 		}
 		var seen []os.FileInfo
+		var allocated, logical int64
 		for _, id := range agents {
 			a := registry.Agents[id]
 			f, err := os.Open(a.Volume)
@@ -139,8 +173,17 @@ func TestProductDeploymentCampaignKVM(t *testing.T) {
 				}
 			}
 			seen = append(seen, st)
+			allocated += st.Sys().(*syscall.Stat_t).Blocks * 512
+			logical += st.Size()
 		}
-		t.Logf("batch=%d provisioned=%d active=%d elapsed=%s", batch, result.Provisioned, result.Active, time.Since(start))
+		t.Logf("batch=%d provisioned=%d active=%d apply=%s elapsed=%s inventory_logical_bytes=%d inventory_allocated_bytes=%d", batch, result.Provisioned, result.Active, applyDuration, time.Since(start), logical, allocated)
+		if batch == 1 {
+			activeAgent = batchIDs[0]
+			lab.request(owner(), "POST", "/v1/agents/"+activeAgent+"/assignments", "competing-agent", controlplane.CreateAssignmentInput{PrincipalID: bob.PrincipalID, Permissions: []string{"read_metadata", "invoke", "read_content"}}, 201, nil)
+			var wake controlplane.AgentCreation
+			lab.request(owner(), "POST", "/v1/agents/"+activeAgent+"/wake", "competing-wake", struct{}{}, 202, &wake)
+			lab.awaitOperation(owner, wake.OperationID)
+		}
 		if desired > 0 {
 			id := batchIDs[len(batchIDs)-1]
 			lab.request(owner(), "POST", "/v1/agents/"+id+"/assignments", "assign", controlplane.CreateAssignmentInput{PrincipalID: bob.PrincipalID, Permissions: []string{"read_metadata", "invoke", "read_content"}}, 201, nil)

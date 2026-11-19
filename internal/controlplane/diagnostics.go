@@ -111,7 +111,7 @@ func (s *Store) diagnostics(ctx context.Context, p *Principal) (Diagnostics, err
 		return d, err
 	}
 	rows, err = tx.Query(ctx, `SELECT h.host_id,h.storage_limit_mib,h.data_pressure,h.image_pressure,h.pressure_observed_at,
-        (SELECT coalesce(sum(x.volume_mib),0) FROM agent_specs x JOIN agents a ON a.id=x.agent_id WHERE x.host_id=h.host_id AND a.phase<>'DELETED'),
+        (SELECT coalesce(sum(x.volume_mib+x.reserved_growth_mib),0) FROM agent_specs x JOIN agents a ON a.id=x.agent_id WHERE x.host_id=h.host_id AND a.phase<>'DELETED'),
         (SELECT count(*) FROM agent_placements p WHERE p.host_id=h.host_id AND p.state='RUNNING'),
         (SELECT count(*) FROM agent_placements p WHERE p.host_id=h.host_id AND p.unclean_stop)
         FROM worker_hosts h ORDER BY h.host_id`)

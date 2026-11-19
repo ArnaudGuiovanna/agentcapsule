@@ -124,7 +124,7 @@ func organizationUsage(ctx context.Context, tx pgx.Tx, tenant, except string) (O
 	var u OrganizationUsage
 	err := tx.QueryRow(ctx, `SELECT
         (SELECT count(*) FROM agents a WHERE a.tenant_id=$1 AND a.phase<>'DELETED'),
-        (SELECT coalesce(sum(x.volume_mib),0) FROM agents a JOIN agent_specs x ON x.agent_id=a.id WHERE a.tenant_id=$1 AND a.phase<>'DELETED'),
+        (SELECT coalesce(sum(x.volume_mib+x.reserved_growth_mib),0) FROM agents a JOIN agent_specs x ON x.agent_id=a.id WHERE a.tenant_id=$1 AND a.phase<>'DELETED'),
         count(*),coalesce(sum(x.vcpus),0),coalesce(sum(x.memory_mib),0)
         FROM agents a JOIN agent_specs x ON x.agent_id=a.id JOIN agent_placements p ON p.agent_id=a.id
         WHERE a.tenant_id=$1 AND a.id<>$2 AND `+workVMs, tenant, except).

@@ -28,6 +28,9 @@ func (w *Placements) rolloutPass(ctx context.Context) error {
 		if errors.Is(err, controlplane.ErrNoWork) {
 			return nil
 		}
+		if errors.Is(err, controlplane.ErrRelease) {
+			return w.store.PauseRollout(ctx, id, agent, "artifact_unavailable")
+		}
 		if errors.Is(err, controlplane.ErrUnavailable) {
 			return w.store.PauseRollout(ctx, id, agent, "agent_unavailable")
 		}

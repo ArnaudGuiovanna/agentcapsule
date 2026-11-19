@@ -205,6 +205,9 @@ func (c *AgentCatalog) PublishTemplate(ctx context.Context, p Principal, key str
 		}
 		var rev int
 		err = tx.QueryRow(ctx, `INSERT INTO agent_template_revisions(tenant_id,name,revision,spec,published_by) SELECT $1,$2,coalesce(max(revision),0)+1,$3,$4 FROM agent_template_revisions WHERE tenant_id=$1 AND name=$2 RETURNING revision`, p.TenantID, in.Name, raw, p.ID).Scan(&rev)
+		if err == nil {
+			err = auditDeployment(ctx, tx, p, "template.published", p.TenantID)
+		}
 		return 201, TemplateRevision{in, rev, fmt.Sprintf("%s@%d", in.Name, rev)}, err
 	})
 }
@@ -256,7 +259,7 @@ func planCapacity(ctx context.Context, tx pgx.Tx, tenant, host string, in Deploy
 	var usedSlots, usedCPUs, usedUIDs, tenantSlots, tenantCPUs int
 	// Outstanding autostarts and running workloads share the warm capacity.
 	err = tx.QueryRow(ctx, `WITH reservations AS (
- SELECT a.tenant_id,x.volume_mib,x.vcpus,x.memory_mib,a.phase,
+ SELECT a.tenant_id,x.volume_mib+x.reserved_growth_mib AS volume_mib,x.vcpus,x.memory_mib,a.phase,
  ((p.state IN ('STARTING','RUNNING','STOPPING') AND NOT p.fence_only) OR
   (x.auto_start AND a.phase='PROVISIONING') OR EXISTS(SELECT FROM platform_operations o WHERE o.agent_id=a.id AND o.kind='wake' AND o.status IN ('PENDING','RUNNING'))) AS warm
  FROM agent_specs x JOIN agents a ON a.id=x.agent_id LEFT JOIN agent_placements p ON p.agent_id=a.id WHERE x.host_id=$1)
@@ -341,6 +344,9 @@ func (c *AgentCatalog) PlanDeployment(ctx context.Context, p Principal, key stri
 		}
 		plan.ID = newID("dep")
 		_, err = tx.Exec(ctx, `INSERT INTO agent_deployments(id,tenant_id,template_name,revision,host_id,requested_count,active_count,resources,created_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, plan.ID, p.TenantID, name, rev, c.host, in.Count, in.ActiveCount, s.Resources, p.ID)
+		if err == nil {
+			err = auditDeployment(ctx, tx, p, "deployment.planned", plan.ID)
+		}
 		return 201, plan, err
 	})
 }
@@ -497,6 +503,11 @@ func (c *AgentCatalog) ApplyDeployment(ctx context.Context, p Principal, id, key
 				return 0, nil, err
 			}
 		}
+		if !applied {
+			if err := auditDeployment(ctx, tx, p, "deployment.applied", id); err != nil {
+				return 0, nil, err
+			}
+		}
 		out, err := deploymentStatus(ctx, tx, p.TenantID, id)
 		return 202, out, err
 	})
@@ -545,6 +556,9 @@ func (c *AgentCatalog) CreatePool(ctx context.Context, p Principal, key string, 
 			return 0, nil, ErrTransition
 		}
 		if _, err = tx.Exec(ctx, `INSERT INTO agent_pool_members SELECT tenant_id,$2,agent_id FROM agent_deployment_members WHERE deployment_id=$1`, in.DeploymentID, id); err != nil {
+			return 0, nil, err
+		}
+		if err := auditDeployment(ctx, tx, p, "pool.created", id); err != nil {
 			return 0, nil, err
 		}
 		out, err := poolInventory(ctx, tx, p.TenantID, id)
