@@ -272,6 +272,9 @@ func (w *Placements) start(ctx context.Context, id string, forFence bool) (runti
 }
 
 func (w *Placements) startRenewal(ctx context.Context, id string, forFence bool, renewal *controlplane.CredentialRenewal) (runtime.VMRun, error) {
+	return w.startPlacement(ctx, id, forFence, renewal, "")
+}
+func (w *Placements) startPlacement(ctx context.Context, id string, forFence bool, renewal *controlplane.CredentialRenewal, rollout string) (runtime.VMRun, error) {
 	// Reusing the agent's running VM concerns that VM alone. Before a boot,
 	// which counts the host's VMs, every placement is settled.
 	runs, err := w.reconcileAgent(ctx, id)
@@ -290,7 +293,9 @@ func (w *Placements) startRenewal(ctx context.Context, id string, forFence bool,
 		}
 	}
 	var p controlplane.Placement
-	if renewal != nil {
+	if rollout != "" {
+		p, err = w.store.ClaimRolloutPlacement(ctx, id, w.hostID, w.workerID, rollout, w.lease)
+	} else if renewal != nil {
 		p, err = w.store.ClaimRenewalPlacement(ctx, *renewal, w.workerID, w.lease)
 	} else if forFence {
 		p, err = w.store.ClaimFencePlacement(ctx, id, w.hostID, w.workerID, w.lease)

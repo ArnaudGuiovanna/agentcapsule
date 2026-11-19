@@ -119,6 +119,64 @@ paths:
                   id: {type: string}
                   status: {const: revoked}
                   revocations: {$ref: '#/components/schemas/AccessRevocations'}
+  /v1/deployments/{id}/rollouts:
+    post:
+      summary: Begin a canary rollout of an immutable template revision
+      security: [{delegatedBearer: []}]
+      description: Requires agent:manage. The host preloads pinned artifacts and updates one canary before larger waves. A conflicting open rollout or requested disk size change is refused.
+      parameters:
+        - {$ref: '#/components/parameters/ResourceID'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json: {schema: {$ref: '#/components/schemas/RolloutInput'}}
+      responses:
+        '202':
+          description: Begin a canary rollout of an immutable template revision
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/Rollout'}}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/rollouts/{id}:
+    get:
+      summary: Observe desired template and authenticated boots
+      security: [{delegatedBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/ResourceID'}
+      responses:
+        '200':
+          description: Observe desired template and authenticated boots
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/Rollout'}}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/rollouts/{id}/resume:
+    post:
+      summary: Resume a paused rollout from its durable step
+      security: [{delegatedBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/ResourceID'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody: {$ref: '#/components/requestBodies/EmptyCommand'}
+      responses:
+        '202':
+          description: Resume a paused rollout from its durable step
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/Rollout'}}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/rollouts/{id}/members:
+    get:
+      summary: Report requested and last verified template per member
+      security: [{delegatedBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/ResourceID'}
+        - {name: after, in: query, schema: {type: string, maxLength: 100}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 100}}
+      responses:
+        '200':
+          description: Report requested and last verified template per member
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/RolloutMembers'}}
+        default: {$ref: '#/components/responses/Problem'}
   /v1/system-images:
     get:
       summary: List approved system images installed on the host
@@ -3300,6 +3358,41 @@ components:
         error: {type: string, description: The schema server's reason when publication is invalid}
         record_cid: {type: string, description: Content ID of the record in the Directory when published}
         updated_at: {type: string, format: date-time, description: Last change of the description or of its record; absent if never described}
+    RolloutMembers:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            required: [agent_id, stage, requested_template]
+            properties:
+              agent_id: {type: string}
+              stage: {type: string, enum: [pending, draining, validating, verified, complete]}
+              requested_template: {type: string}
+              last_verified_template: {type: string}
+              verified_generation: {type: integer}
+    RolloutInput:
+      type: object
+      required: [template, max_unavailable]
+      properties:
+        template: {type: string, description: Immutable template reference}
+        max_unavailable: {type: integer, minimum: 1, maximum: 1000}
+    Rollout:
+      allOf:
+        - {$ref: '#/components/schemas/RolloutInput'}
+        - type: object
+          required: [id, deployment_id, status, total, updated, maintaining, booted]
+          properties:
+            id: {type: string}
+            deployment_id: {type: string}
+            status: {type: string, enum: [running, paused, completed]}
+            reason: {type: string, enum: [artifact_unavailable, update_failed, agent_unavailable, boot_failed]}
+            total: {type: integer}
+            updated: {type: integer}
+            maintaining: {type: integer}
+            booted: {type: integer, description: Number of agents that reached authenticated readiness on the requested revision}
     SystemImage:
       type: object
       required: [reference, kernel_digest, initrd_digest]

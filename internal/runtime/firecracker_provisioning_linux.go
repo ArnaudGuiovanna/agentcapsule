@@ -4,6 +4,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"io"
 	"os"
@@ -238,4 +239,44 @@ func HarnessImagesInUseAt(ctx context.Context, root string) (map[string]bool, er
 		return nil, errors.New("runtime root must not contain symlinks")
 	}
 	return (&FirecrackerHost{root: abs}).HarnessImagesInUse(ctx)
+}
+
+// SetRolloutProfile changes only a stopped, unsealed agent. Its encrypted
+// device, inode, volume size and dedicated UID stay bound to the same agent.
+func (h *FirecrackerHost) SetRolloutProfile(ctx context.Context, agent, rollout string, resources VMResources, system *BootImageID, harness *HarnessImage) error {
+	if rollout == "" || system == nil || !resources.valid() {
+		return ErrGeneration
+	}
+	if err := validHarness(harness); err != nil {
+		return err
+	}
+	for _, a := range []struct{ name, digest string }{{"kernel", system.Kernel}, {"initrd", system.Initrd}} {
+		if raw, err := hex.DecodeString(a.digest); err != nil || len(raw) != 32 {
+			return ErrGeneration
+		}
+		f, err := os.Stat(filepath.Join(h.root, "bin", a.name+"-"+a.digest))
+		if err != nil {
+			return err
+		}
+		if !f.Mode().IsRegular() {
+			return ErrGeneration
+		}
+	}
+	return h.locked(ctx, func(r *hostRegistry) error {
+		a := r.Agents[agent]
+		if a == nil || a.Fenced || a.SealID != "" || a.VolumeRemoved {
+			return ErrHostFenced
+		}
+		if a.Resources.VolumeMiB != resources.VolumeMiB {
+			return ErrGeneration
+		}
+		if a.Run != nil {
+			return ErrHarnessInUse
+		}
+		a.Rollout = rollout
+		a.Resources = resources
+		a.SystemImage = system
+		a.Harness = harness
+		return h.save(r)
+	})
 }

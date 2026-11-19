@@ -78,6 +78,11 @@ func (w *Placements) DispatchPass(ctx context.Context, o DispatchOptions, attemp
 		cancel()
 	}
 	result = errors.Join(result, w.purgeAudit(ctx, attemptTimeout))
+	if w.provisioning != nil {
+		step, cancel := context.WithTimeout(ctx, attemptTimeout)
+		result = errors.Join(result, w.rolloutPass(step))
+		cancel()
+	}
 	for range o.Batch {
 		if ctx.Err() != nil {
 			return errors.Join(result, ctx.Err())

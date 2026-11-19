@@ -108,6 +108,10 @@ only its own.
 | `POST /v1/deployment-plans` | yes | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
 | `POST /v1/deployment-plans/{id}/apply` | yes | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
 | `GET /v1/deployments/{id}` | yes | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `POST /v1/deployments/{id}/rollouts` | yes | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `GET /v1/rollouts/{id}/members` | yes | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `GET /v1/rollouts/{id}` | yes | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `POST /v1/rollouts/{id}/resume` | yes | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
 | `POST /v1/pools` | yes | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
 | `GET /v1/pools/{id}` | yes | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
 | `GET /v1/organizations/current` (the caller's own organization) | yes | yes | yes | yes | yes | yes | yes | yes | yes | filtered | 401 | 401 | 403 |

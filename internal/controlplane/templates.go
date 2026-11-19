@@ -11,6 +11,7 @@ import (
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorization"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/capability"
+
 	"github.com/jackc/pgx/v5"
 )
 
@@ -469,7 +470,9 @@ func (plan *reservationPlan) reserveAgents(ctx context.Context, tx pgx.Tx, p Pri
 		b.Queue(`INSERT INTO agent_capability_policies(agent_id,allowed,updated_by) SELECT id,$2,$3 FROM unnest($1::text[]) id`, ids, plan.spec.Capabilities, p.ID)
 	}
 	if alias := plan.spec.LLMProfile; alias != "" {
-		b.Queue(`INSERT INTO llm_alias_grants(id,tenant_id,alias,agent_id,created_by) SELECT grant_id,$2,$3,id,$4 FROM unnest($1::text[],$5::text[]) i(id,grant_id)`, ids, p.TenantID, alias, p.ID, deploymentIDs("grant", len(ids)))
+		grants := deploymentIDs("grant", len(ids))
+		b.Queue(`INSERT INTO llm_alias_grants(id,tenant_id,alias,agent_id,created_by) SELECT grant_id,$2,$3,id,$4 FROM unnest($1::text[],$5::text[]) i(id,grant_id)`, ids, p.TenantID, alias, p.ID, grants)
+		b.Queue(`UPDATE agent_specs x SET template_grant_id=v.grant_id FROM unnest($1::text[],$2::text[]) v(id,grant_id) WHERE x.agent_id=v.id`, ids, grants)
 	}
 	return ids, tx.SendBatch(ctx, b).Close()
 }

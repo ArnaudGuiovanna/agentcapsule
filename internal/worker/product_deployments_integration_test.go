@@ -34,6 +34,7 @@ func TestProductDeploymentCampaignKVM(t *testing.T) {
 	var bob controlplane.Member
 	lab.request(owner(), "POST", "/v1/members", "bob", controlplane.CreateMemberInput{Issuer: identity.trust.Issuer, Subject: "bob", DisplayName: "Bob", Role: "agent_user"}, 201, &bob)
 	var agents []string
+	var lastDeployment string
 	t.Cleanup(func() {
 		for _, id := range agents {
 			cleanup, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -56,6 +57,7 @@ func TestProductDeploymentCampaignKVM(t *testing.T) {
 		if !plan.Admitted {
 			t.Fatal("unexpected admission refusal", plan.Checks)
 		}
+		lastDeployment = plan.ID
 		apply := "/v1/deployment-plans/" + plan.ID + "/apply"
 		lab.request(owner(), "POST", apply, "apply", struct{}{}, 202, nil)
 		rows, err := lab.db.Query(ctx, "SELECT agent_id FROM agent_deployment_members WHERE deployment_id=$1 ORDER BY ordinal", plan.ID)
@@ -160,4 +162,41 @@ func TestProductDeploymentCampaignKVM(t *testing.T) {
 	if err := lab.db.QueryRow(ctx, "SELECT count(*),count(DISTINCT volume_id) FROM store_enrollments").Scan(&total, &vols); err != nil || total != 4 || vols != 4 {
 		t.Fatal(total, vols, err)
 	}
+	testProductRollout(t, lab, owner, lastDeployment, tmpl)
+
+}
+
+// Remove only the disposable worker's target image, then repair its cache.
+// The first failed member pauses the campaign with the later VMs untouched.
+func testProductRollout(t *testing.T, lab *productPeerLab, owner func() string, dep string, initial controlplane.TemplateRevision) {
+	spec := initial.TemplateSpec
+	spec.Resources.MemoryMiB = 384
+	var revision controlplane.TemplateRevision
+	lab.request(owner(), "POST", "/v1/templates", "upgrade", spec, 201, &revision)
+	var rollout controlplane.Rollout
+	lab.request(owner(), "POST", "/v1/deployments/"+dep+"/rollouts", "upgrade", controlplane.RolloutInput{Template: revision.Reference, MaxUnavailable: 2}, 202, &rollout)
+	cache := filepath.Join(lab.root, "bin", "kernel-"+digest(t, config(t).Kernel))
+	if err := os.Rename(cache, cache+"-offline"); err != nil {
+		t.Fatal(err)
+	}
+	st := func() controlplane.Rollout {
+		var state controlplane.Rollout
+		lab.request(owner(), "GET", "/v1/rollouts/"+rollout.ID, "", nil, 200, &state)
+		return state
+	}
+	lab.await("canary pause", true, func() bool { return st().Status == "paused" })
+	paused := st()
+	if paused.Maintaining != 1 || paused.Updated != 0 || paused.Booted != 0 {
+		t.Fatal(paused)
+	}
+	if err := os.Rename(cache+"-offline", cache); err != nil {
+		t.Fatal(err)
+	}
+	lab.request(owner(), "POST", "/v1/rollouts/"+rollout.ID+"/resume", "resume", struct{}{}, 202, nil)
+	lab.awaitFor("rollout completion", true, 5*time.Minute, func() bool { return st().Status == "completed" })
+	done := st()
+	if done.Booted != 3 || done.Updated != 3 || done.Maintaining != 0 {
+		t.Fatal(done)
+	}
+	t.Logf("canary=%s booted_revision=%s authenticated_boots=%d", paused.Reason, done.Template, done.Booted)
 }

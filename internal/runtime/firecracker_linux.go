@@ -84,6 +84,7 @@ type BootImageID struct {
 }
 
 type HostAgent struct {
+	Rollout       string       `json:"rollout,omitempty"`
 	SystemImage   *BootImageID `json:"system_image,omitempty"`
 	ID            string       `json:"id"`
 	UID           uint32       `json:"uid"`
@@ -110,6 +111,7 @@ type HarnessImage struct {
 }
 
 type VMRun struct {
+	Rollout     string `json:"rollout,omitempty"`
 	Incarnation uint64 `json:"incarnation"`
 	ID          string `json:"id"`
 	Generation  uint64 `json:"generation"`
@@ -872,7 +874,7 @@ func (h *FirecrackerHost) start(ctx context.Context, id string, generation uint6
 			if incarnation == 0 || incarnation > 1<<63-1 {
 				return ErrGeneration
 			}
-			run := &VMRun{Incarnation: incarnation, ID: hex.EncodeToString(nonce), Generation: generation, Phase: "STARTING", FenceOnly: fenceOnly}
+			run := &VMRun{Rollout: a.Rollout, Incarnation: incarnation, ID: hex.EncodeToString(nonce), Generation: generation, Phase: "STARTING", FenceOnly: fenceOnly}
 			run.Socket = filepath.Join(h.jail(run), "vsock")
 			a.Generation = generation
 			a.Run = run
