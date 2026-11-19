@@ -355,6 +355,8 @@ SUSPENDED_SERVICES = ("agentcapsule-oidc", "agentcapsule-interop", "agentcapsule
 
 
 def install_maintenance_gates():
+    if (UNIT_DIR/"agentcapsule-oidc.service").is_file():
+        setup_oidc_unit()
     for unit in (*SUSPENDED_SERVICES, "agentcapsule-api"):
         gates = [STATE / "maintenance"]
         if unit == "agentcapsule-api":
@@ -391,6 +393,9 @@ def start_services(p):
     pause_admissions()
     clear_gate("maintenance")
     for service in SUSPENDED_SERVICES:
+        if service=="agentcapsule-oidc" and output("systemctl","show","--value","-p","ActiveState",service+".service")=="failed":
+            run("python3","-I","/usr/local/lib/agentcapsule-host/oidc-container.py","prepare")
+            run("systemctl","reset-failed",service+".service")
         run("systemctl", "enable", "--now", service+".service")
     port=str(p["oidc_port"])
     realm=f"https://{p['oidc_name']}:{port}/realms/agentcapsule"
@@ -744,4 +749,15 @@ def setup_oidc_unit():
     template=(ACTIVE/"oidc/agentcapsule-oidc.service").read_text()
     if image["ref"] not in template:
         raise ValueError("OIDC unit image differs from signed image index")
+    helper=Path("/usr/local/lib/agentcapsule-host/oidc-container.py")
+    write_file(helper,OIDC_LIFECYCLE,0o700)
+    launch="/usr/bin/python3 -I "+str(helper)
+    if "--cidfile=" not in template:
+        legacy_stop="ExecStop=/usr/bin/podman stop --time 30 agentcapsule-oidc"
+        legacy_run="/usr/bin/podman run --rm --name agentcapsule-oidc "
+        if legacy_run not in template or legacy_stop not in template:
+            raise ValueError("unrecognized OIDC unit lifecycle")
+        template=template.replace("Type=simple\n","Type=simple\nStateDirectory=agentcapsule-oidc\nStateDirectoryMode=0700\nExecStartPre="+launch+" prepare\n")
+        template=template.replace(legacy_run,"/usr/bin/podman run --rm --cidfile=/var/lib/agentcapsule-oidc/container-id --name agentcapsule-oidc ")
+        template=template.replace(legacy_stop,"ExecStop="+launch+" stop\nExecStopPost="+launch+" cleanup")
     write_file(UNIT_DIR/"agentcapsule-oidc.service",template.replace(image["ref"],image["tag"]).encode(),0o644)
