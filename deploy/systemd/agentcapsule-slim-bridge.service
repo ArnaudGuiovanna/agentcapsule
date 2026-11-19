@@ -11,6 +11,7 @@
 # worker spends no delivery attempt. Code 2 (invalid configuration or socket)
 # is not retried: fix it, then restart the unit.
 [Unit]
+ConditionPathExists=!/var/lib/agentcapsule-install/maintenance
 Description=Agent Capsule SLIM bridge
 Documentation=https://github.com/ArnaudGuiovanna/agentcapsule/blob/main/docs/interop.md#the-slim-bridge-int-04
 After=network-online.target agentcapsule-interop.service

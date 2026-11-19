@@ -2,8 +2,10 @@
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import runpy
+import sqlite3
 import subprocess
 import tarfile
 import tempfile
@@ -119,6 +121,119 @@ class HostOperationTests(unittest.TestCase):
             commands=[call.args for call in self.api["run"].call_args_list]
             self.assertEqual(commands.count(("systemctl","stop","agentcapsule-worker")),2)
             self.assertEqual(commands.count(("systemctl","start","agentcapsule-worker")),2 if previously_active else 0)
+
+    def test_update_drains_after_reboot_before_it_suspends_migration_services(self):
+        self.api["UNIT_DIR"]=self.root/"units"
+        maintenance=self.state/"maintenance"
+        admission=self.state/"admissions-paused"
+        # A reboot during the old helper's drain left even the worker gated.
+        maintenance.write_text("platform update\n")
+        counts=iter([2,1,0,1,1,0,0])
+        events=[]
+        def systemctl(*command):
+            events.append((tuple(command[1:]),admission.exists(),maintenance.exists()))
+        with patch.dict(self.api,run=systemctl,pending_operations=lambda _:next(counts)), patch("time.sleep"):
+            self.api["drain"]({"database_url_file":None})
+        self.assertTrue(admission.exists() and maintenance.exists())
+        starts=[e for e in events if e[0][0]=="start" and "agentcapsule-worker" in e[0]]
+        self.assertEqual(len(starts),2)  # a final delivery raced the first stop
+        self.assertTrue(all(paused and not suspended for _,paused,suspended in starts))
+        stops=[e for e in events if e[0][0]=="stop" and "agentcapsule-worker" in e[0]]
+        self.assertEqual(len(stops),2)
+        self.assertTrue(all(paused and suspended for _,paused,suspended in stops))
+        for service in (*self.api["SUSPENDED_SERVICES"],"agentcapsule-api"):
+            unit=(self.root/"units"/(service+".service.d")/"agentcapsule-update.conf").read_text()
+            self.assertIn("ConditionPathExists=!"+str(maintenance),unit)
+            self.assertEqual(str(admission) in unit,service=="agentcapsule-api")
+
+    def test_update_counts_actual_invocation_states(self):
+        with sqlite3.connect(":memory:") as db:
+            db.executescript("""
+                CREATE TABLE platform_operations (id text, kind text, status text);
+                CREATE TABLE owner_instructions (operation_id text, run_at text, released_at text);
+            """)
+            for i,(kind,state,at,released,want) in enumerate([
+                ("instruction","PENDING",None,None,1),
+                ("instruction","PENDING","2999-01-01",None,0),
+                ("instruction","PENDING","2000-01-01",None,1),
+                ("instruction","PENDING","2999-01-01","2020-01-01",1),
+                ("instruction","RUNNING","2999-01-01",None,1),
+                ("instruction","SUCCEEDED",None,None,0),
+                ("instruction","CANCELED",None,None,0),
+                ("instruction","FAILED",None,None,0),
+                ("provision","PENDING",None,None,1),
+            ]):
+                with self.subTest(kind=kind,state=state,at=at):
+                    db.execute("INSERT INTO platform_operations VALUES(?,?,?)",(str(i),kind,state))
+                    if kind=="instruction":
+                        db.execute("INSERT INTO owner_instructions VALUES(?,?,?)",(str(i),at,released))
+                    self.assertEqual(db.execute(self.api["DRAIN_QUERY"]).fetchone()[0],want)
+                    db.execute("DELETE FROM platform_operations")
+
+    @unittest.skipUnless(os.environ.get("AGENTCAPSULE_TEST_POSTGRES"),"requires PostgreSQL")
+    def test_drain_reads_postgresql_through_the_configured_libpq_dsn(self):
+        fixtures="""WITH platform_operations(id,kind,status) AS (VALUES
+            ('working','instruction','RUNNING'),('future','instruction','PENDING'),
+            ('immediate','instruction','PENDING'),('done','instruction','SUCCEEDED')),
+            owner_instructions(operation_id,run_at,released_at) AS (VALUES
+            ('future',CURRENT_TIMESTAMP + interval '1 day',NULL::timestamptz)) """
+        env={"AGENTCAPSULE_DATABASE_URL":os.environ["AGENTCAPSULE_TEST_POSTGRES"]}
+        with patch.dict(self.api,DRAIN_QUERY=fixtures+self.api["DRAIN_QUERY"],db_env=lambda _:env):
+            self.assertEqual(self.api["pending_operations"]({}),2)
+
+    def test_service_retry_keeps_api_closed_until_workers_and_oidc_are_up(self):
+        self.api["UNIT_DIR"]=self.root/"units"
+        p=self.api["normalize_profile"]({"api_name":"local.test"})
+        admission=self.state/"admissions-paused"
+        maintenance=self.state/"maintenance"
+        maintenance.write_text("suspended")
+        calls=[]
+        def systemctl(*cmd):
+            calls.append(cmd)
+            if "--now" in cmd:
+                self.assertFalse(maintenance.exists())
+                self.assertEqual(admission.exists(),cmd[-1]!="agentcapsule-api.service")
+        actual=self.api["start_services"]
+        # A failed identity provider check does not release the API on reboot.
+        with patch.dict(self.api, run=systemctl, output=lambda *_:"{}"), patch("time.sleep"):
+            with self.assertRaisesRegex(ValueError,"OIDC issuer"):
+                actual(p)
+        self.assertTrue(admission.exists())
+        self.assertNotIn(("systemctl","enable","--now","agentcapsule-api.service"),calls)
+        issuer=json.dumps({"issuer":"https://local.test:9444/realms/agentcapsule"})
+        with patch.dict(self.api,run=systemctl,output=lambda *_:issuer,request_api=lambda *_:None):
+            self.assertTrue(actual(p)["services_started"])
+        self.assertFalse(admission.exists() or maintenance.exists())
+
+    def test_failed_offline_migration_reinstates_old_bundle_guards_before_retry(self):
+        self.api["UNIT_DIR"]=self.root/"units"
+        op=self.state/("host_"+"b"*32)
+        op.mkdir()
+        profile={"database_url_file":None}
+        req=dict(action="update",profile=profile,version=self.version,**{"from":"previous"})
+        self.api["save"](op/"request.json",req)
+        self.api["state"](op,state="queued")
+        calls=[]
+        def migrate(*_):
+            calls.append("migration")
+            self.assertTrue((self.state/"maintenance").exists())
+            self.assertTrue((self.state/"admissions-paused").exists())
+            if calls.count("migration")==1:
+                raise ValueError("test migration failure")
+        def no_action(*_,**__):
+            pass
+        fixtures=dict(preflight=no_action,current=lambda:"previous",stage=no_action,prepare_release=no_action,
+                      backup=lambda *_,**__:calls.append("backup"),install_dependencies=no_action,
+                      activate=no_action,configure=migrate,start_services=no_action,smoke=no_action,
+                      pending_operations=lambda _:0,run=no_action)
+        with patch.dict(self.api,**fixtures):
+            with self.assertRaisesRegex(ValueError,"test migration failure"):
+                self.api["execute"](op)
+            # Resuming an original bundle can find only its old shared gate.
+            (self.state/"admissions-paused").unlink()
+            self.api["execute"](op)
+        self.assertEqual(calls,["backup","migration","migration"])
+        self.assertEqual(self.api["read"](op/"status.json")["state"],"succeeded")
 
     def test_resume_preserves_completed_storage_operation(self):
         op=self.state/("host_"+"a"*32)

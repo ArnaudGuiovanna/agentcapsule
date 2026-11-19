@@ -1,6 +1,7 @@
 # Production host setup. This file is embedded ahead of host.py in the helper.
 import base64
 import configparser
+import ctypes
 import json
 import os
 from pathlib import Path
@@ -159,7 +160,7 @@ def db_env(profile):
         dsn="host=/run/postgresql port=55432 dbname=agentcapsule user=agentcapsule"
     if not dsn or any(ord(c)<32 for c in dsn):
         raise ValueError("invalid database URL file")
-    return dict(os.environ,AGENTCAPSULE_DATABASE_URL=dsn,PGDATABASE=dsn)
+    return dict(os.environ,AGENTCAPSULE_DATABASE_URL=dsn)
 
 
 def database():
@@ -286,6 +287,8 @@ def configure(p,version,initial):
         cfg=read(ETC/"authority.json")
         admin=ACTIVE/"agentcapsule-admin"
         env=db_env(p)
+        if not p["database_url_file"]:
+            run("systemctl", "start", "postgresql@16-agentcapsule.service")
         run(admin,"migrate",env=env)
         upgrade=json.loads(run_user("agentcapsule-authority",admin,"init-restore-authority",
                            "-root",cfg["restore_authority"]["root"],"-data-root",read(ETC/"worker.json")["root"],
@@ -345,20 +348,50 @@ def issue_enrollment(p):
     return {"enrollment_file":str(path)}
 
 
-def start_services(p):
-    # The authority and private transports retain their state across reboot.
-    (STATE/"maintenance").unlink(missing_ok=True)
-    run("systemctl","enable","--now","agentcapsule-oidc.service")
-    for service in ("agentcapsule-interop","agentcapsule-authority","agentcapsule-worker","agentcapsule-slim-bridge","agentcapsule-api"):
-        run("systemctl","enable","--now",service+".service")
-    for _ in range(60):
+# Keep these drop-ins on the host across release swaps. Older bundled units
+# gate both the worker and the API on "maintenance", or lack a gate entirely.
+SUSPENDED_SERVICES = ("agentcapsule-oidc", "agentcapsule-interop", "agentcapsule-authority",
+                      "agentcapsule-worker", "agentcapsule-slim-bridge")
+
+
+def install_maintenance_gates():
+    for unit in (*SUSPENDED_SERVICES, "agentcapsule-api"):
+        gates = [STATE / "maintenance"]
+        if unit == "agentcapsule-api":
+            gates.append(STATE / "admissions-paused")
+        unit_drop(unit, "agentcapsule-update", "[Unit]\n" + "".join(f"ConditionPathExists=!{gate}\n" for gate in gates))
+    run("systemctl", "daemon-reload")
+
+
+def clear_gate(name):
+    marker = STATE / name
+    if marker.exists():
+        marker.unlink()
+        fd = os.open(STATE, os.O_DIRECTORY)
         try:
-            request_api(p,"GET","/v1/health/ready")
-            break
-        except (ValueError,subprocess.CalledProcessError):
-            time.sleep(1)
-    else:
-        raise ValueError("HTTPS readiness did not pass")
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+
+def pause_admissions():
+    write_file(STATE / "admissions-paused", b"platform update\n")
+    run("systemctl", "stop", "agentcapsule-api")
+
+
+def suspend_services():
+    write_file(STATE / "maintenance", b"services suspended\n")
+    run("systemctl", "stop", *SUSPENDED_SERVICES)
+
+
+def start_services(p):
+    # A reboot can start these enabled units independently. Hold admissions
+    # until the migrated worker, authorities and identity provider are ready.
+    install_maintenance_gates()
+    pause_admissions()
+    clear_gate("maintenance")
+    for service in SUSPENDED_SERVICES:
+        run("systemctl", "enable", "--now", service+".service")
     port=str(p["oidc_port"])
     realm=f"https://{p['oidc_name']}:{port}/realms/agentcapsule"
     cmd=["curl","-fsS","--max-time","5","--noproxy","*","--resolve",p["oidc_name"]+":"+port+":127.0.0.1"]
@@ -373,8 +406,23 @@ def start_services(p):
         time.sleep(2)
     else:
         raise ValueError("OIDC issuer discovery did not pass")
-    for service in ("agentcapsule-oidc","agentcapsule-interop","agentcapsule-authority","agentcapsule-worker","agentcapsule-slim-bridge","agentcapsule-api"):
-        run("systemctl","is-active","--quiet",service)
+    for service in SUSPENDED_SERVICES:
+        run("systemctl", "is-active", "--quiet", service)
+    clear_gate("admissions-paused")
+    try:
+        run("systemctl", "enable", "--now", "agentcapsule-api.service")
+        for _ in range(60):
+            try:
+                request_api(p,"GET","/v1/health/ready")
+                break
+            except (ValueError,subprocess.CalledProcessError):
+                time.sleep(1)
+        else:
+            raise ValueError("HTTPS readiness did not pass")
+        run("systemctl", "is-active", "--quiet", "agentcapsule-api")
+    except Exception:
+        pause_admissions()
+        raise
     return {"services_started":True, "url":f"https://{p['api_name']}:{p['api_port']}", "oidc_issuer":realm}
 
 
@@ -469,19 +517,62 @@ def backup(profile,mandatory,directory):
             "volume_shipping_verified":volumes, "backup_status":"two_remote_repositories_verified" if remote else "local_repositories_verified"}
 
 
+# RUNNING includes invocations that have acknowledged work and await a result.
+# Unreleased future schedules are durable and can stay queued across migration.
+DRAIN_QUERY = """SELECT count(*) FROM platform_operations o
+    WHERE o.status='RUNNING' OR (o.status='PENDING' AND NOT EXISTS (
+        SELECT 1 FROM owner_instructions i WHERE i.operation_id=o.id AND o.kind='instruction'
+        AND i.run_at>CURRENT_TIMESTAMP AND i.released_at IS NULL))"""
+
+
+def pending_operations(profile):
+    # Use the same private libpq connection string as the API. PGDATABASE in
+    # psql's environment treats a connection string as a literal database name.
+    # Putting it in psql's arguments would expose operator-supplied credentials.
+    pq = ctypes.CDLL("libpq.so.5")
+    ptr, string, integer = ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int
+    connect = ctypes.CFUNCTYPE(ptr, string)(("PQconnectdb", pq))
+    status = ctypes.CFUNCTYPE(integer, ptr)(("PQstatus", pq))
+    execute = ctypes.CFUNCTYPE(ptr, ptr, string)(("PQexec", pq))
+    result_status = ctypes.CFUNCTYPE(integer, ptr)(("PQresultStatus", pq))
+    value = ctypes.CFUNCTYPE(string, ptr, integer, integer)(("PQgetvalue", pq))
+    clear = ctypes.CFUNCTYPE(None, ptr)(("PQclear", pq))
+    finish = ctypes.CFUNCTYPE(None, ptr)(("PQfinish", pq))
+    conn = connect(db_env(profile)["AGENTCAPSULE_DATABASE_URL"].encode())
+    if not conn:
+        raise ValueError("drain could not allocate a PostgreSQL connection")
+    try:
+        if status(conn) != 0:  # CONNECTION_OK
+            raise ValueError("drain could not connect to the configured PostgreSQL database")
+        result = execute(conn, DRAIN_QUERY.encode())
+        try:
+            if not result or result_status(result) != 2:  # PGRES_TUPLES_OK
+                raise ValueError("PostgreSQL could not report outstanding operations")
+            return int(value(result, 0, 0))
+        finally:
+            clear(result)
+    finally:
+        finish(conn)
+
+
 def drain(profile):
-    # The durable marker also suppresses admissions after a reboot mid-update.
-    write_file(STATE/"maintenance",b"platform update\n")
-    run("systemctl","stop","agentcapsule-api")
-    for _ in range(120):
-        remaining=output("psql","-XAt","-v","ON_ERROR_STOP=1","-c",
-                         "SELECT count(*) FROM platform_operations WHERE status IN ('PENDING','RUNNING')",env=db_env(profile))
-        if remaining=="0":
-            break
-        time.sleep(2)
-    else:
-        raise ValueError("admissions paused; pending operations still draining")
-    run("systemctl","stop","agentcapsule-worker","agentcapsule-slim-bridge","agentcapsule-authority","agentcapsule-interop","agentcapsule-oidc")
+    install_maintenance_gates()
+    pause_admissions()
+    if not profile["database_url_file"]:
+        run("systemctl", "start", "postgresql@16-agentcapsule.service")
+    while True:
+        if pending_operations(profile):
+            # Also recover an interrupted older drain whose single marker
+            # stopped the worker on reboot. The API retains its separate gate.
+            clear_gate("maintenance")
+            run("systemctl", "start", *SUSPENDED_SERVICES)
+            while pending_operations(profile):
+                time.sleep(2)
+        suspend_services()
+        # Close the race with delivery becoming eligible just before stop.
+        # No worker can start more work after this final observation.
+        if not pending_operations(profile):
+            return
 
 
 def run_storage(request,directory):

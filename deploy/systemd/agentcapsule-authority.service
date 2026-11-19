@@ -17,6 +17,7 @@
 # On the standby, or to reach the standby from the primary, add the other
 # host's address to IPAddressAllow= in a drop-in.
 [Unit]
+ConditionPathExists=!/var/lib/agentcapsule-install/maintenance
 Description=Agent Capsule authority service
 Documentation=https://github.com/ArnaudGuiovanna/agentcapsule/blob/main/docs/adr/006-authority-service.md
 After=network-online.target

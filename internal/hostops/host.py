@@ -298,6 +298,12 @@ def execute(directory):
                 step("prepare-release", lambda: prepare_release(release, dist, version))
                 if request["action"] == "update":
                     step("backup", lambda: backup(profile, mandatory=True, directory=directory))
+                    if "drain" in fields and "configure" not in fields:
+                        # A helper upgraded in place may resume an older drain
+                        # whose units were enabled without suspension guards.
+                        install_maintenance_gates()
+                        pause_admissions()
+                        suspend_services()
                     step("drain", lambda: drain(profile))
                 step("dependencies", lambda: install_dependencies(dist, release))
                 step("activate", lambda: activate(ACTIVE, release))

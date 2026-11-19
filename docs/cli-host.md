@@ -29,6 +29,8 @@ JSON. The operation returns distinct evidence for service startup, the
 starter microVM's echo and backups. The probe uses a dedicated organization,
 member and encrypted volume. Repeated updates use the same probe agent.
 
+During an update, the host closes the API and keeps the worker available to finish active operations and immediately due invocations. Future scheduled invocations stay in PostgreSQL. Once the worker has stopped and the queue has been checked again, a separate marker holds the worker, authority and private services through offline migration. Both markers survive reboot. The host opens API admissions after the worker and identity provider return.
+
 ## Profile
 
 An empty JSON object selects local PostgreSQL 16 on port 55432, a stand-alone

@@ -1,4 +1,5 @@
 [Unit]
+ConditionPathExists=!/var/lib/agentcapsule-install/maintenance
 Description=AgentCapsule member identity provider
 After=network-online.target postgresql.service
 Wants=network-online.target

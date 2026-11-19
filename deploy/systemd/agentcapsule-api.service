@@ -3,6 +3,7 @@ Description=AgentCapsule HTTPS control plane
 After=network-online.target postgresql.service agentcapsule-authority.service
 Wants=network-online.target agentcapsule-authority.service
 ConditionPathExists=!/var/lib/agentcapsule-install/maintenance
+ConditionPathExists=!/var/lib/agentcapsule-install/admissions-paused
 
 [Service]
 Type=exec
