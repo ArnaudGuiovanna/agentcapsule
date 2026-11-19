@@ -56,6 +56,7 @@ type linkClaims struct {
 	Tenant     string                              `json:"tenant"`
 	Principal  string                              `json:"principal"`
 	Delegation *delegatedidentity.VerifiedIdentity `json:"delegation,omitempty"`
+	App        *appBinding                         `json:"app,omitempty"`
 	Service    string                              `json:"service,omitempty"` // service token ID
 }
 
@@ -77,6 +78,8 @@ func (a *Accounts) seal(p Principal, purpose, resource string, ttl time.Duration
 	case p.delegation != nil:
 		v := *p.delegation
 		c.Delegation = &v
+	case p.app != nil:
+		c.App = p.app
 	case p.service != nil:
 		c.Service = p.service.tokenID
 	default:
@@ -120,11 +123,14 @@ func (a *Accounts) open(token string, now time.Time) (Principal, linkClaims, err
 	read := []string{authorization.ScopeAgentContentRead}
 	p := Principal{Kind: "tenant", ID: c.Principal, TenantID: c.Tenant, Scopes: read}
 	switch {
-	case c.Delegation != nil && c.Service == "":
+	case c.App != nil && c.Delegation == nil && c.Service == "":
+		c.App.Scopes = read
+		p.app, p.TokenID = c.App, c.App.Token
+	case c.App == nil && c.Delegation != nil && c.Service == "":
 		v := *c.Delegation
 		v.Scopes = read
 		p.delegation, p.TokenID = &v, v.TokenID
-	case c.Delegation == nil && c.Service != "":
+	case c.App == nil && c.Delegation == nil && c.Service != "":
 		p.service, p.TokenID = &serviceBinding{tenantID: c.Tenant, tokenID: c.Service, scopes: read}, c.Service
 	default:
 		return Principal{}, c, ErrNotFound

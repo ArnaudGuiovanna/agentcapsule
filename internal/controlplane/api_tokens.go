@@ -36,6 +36,7 @@ type Principal struct {
 	delegation *delegatedidentity.VerifiedIdentity
 	// Set instead of delegation for a technical account token (acps_).
 	service *serviceBinding
+	app     *appBinding
 }
 
 func tokenSecret() string {

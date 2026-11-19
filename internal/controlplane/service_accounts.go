@@ -46,6 +46,8 @@ func tenantScopes(p Principal) []string {
 	switch {
 	case p.delegation != nil:
 		return p.delegation.Scopes
+	case p.app != nil:
+		return p.app.Scopes
 	case p.service != nil:
 		return p.service.scopes
 	}
@@ -61,6 +63,8 @@ func tenantBound(p Principal) bool {
 	switch {
 	case p.delegation != nil:
 		return p.TenantID == p.delegation.TenantID && p.TokenID == p.delegation.TokenID
+	case p.app != nil:
+		return p.TenantID == p.app.Tenant && p.TokenID == p.app.Token
 	case p.service != nil:
 		return p.TenantID == p.service.tenantID && p.TokenID == p.service.tokenID
 	}
