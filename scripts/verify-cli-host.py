@@ -31,6 +31,28 @@ def verify_reboot(command, before, diagnostics, required_services=()):
     raise ValueError("target did not report a new boot with the required services")
 
 
+def observe_service_images(version, observe, timeout=120):
+    deadline = time.monotonic() + timeout
+    while True:
+        report = observe()
+        if report["installed"] != version or report["verified"] or not report["images"]:
+            return report
+        pending = [image for image in report["images"] if not image["verified"]]
+        if not pending or time.monotonic() >= deadline:
+            return report
+        # A systemd unit can be active before Podman publishes the container
+        # or before the one-shot schema initializer exits.
+        for image in pending:
+            if image.get("reason") == "container_count" and image.get("container_count") == 0:
+                continue
+            if image.get("reason") == "container_state" and (image.get("state") in
+                    ("created", "configured", "initialized", "restarting") or
+                    (image.get("service") == "init" and image.get("state") == "running")):
+                continue
+            return report
+        time.sleep(2)
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument("--cli",nargs="+",required=True,help="CLI command or wrapper that enters the target namespace")
@@ -78,7 +100,7 @@ def main():
     def diagnostics():
         return call(["host", "diagnose", "alerts"], [])
     def check_images(version):
-        observation = call(["host", "diagnose", "images"], [])
+        observation = observe_service_images(version, lambda: call(["host", "diagnose", "images"], []))
         images = [{k: v for k, v in image.items() if k in {
             "service", "engine", "reference", "expected_config_id", "container_id", "image_id",
             "state", "exit_code", "method", "verified", "reason", "container_count"}}

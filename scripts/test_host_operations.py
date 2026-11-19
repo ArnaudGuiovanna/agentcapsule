@@ -362,6 +362,20 @@ class HostOperationTests(unittest.TestCase):
         self.assertEqual(health.call_count, 4)
         self.assertEqual(receipt, {"boot_before": str(before), "boot_after": str(after)})
 
+    def test_image_qualification_waits_for_startup_and_reports_mismatches_immediately(self):
+        from unittest.mock import Mock
+        verify = runpy.run_path(str(ROOT / "scripts/verify-cli-host.py"))["observe_service_images"]
+        missing = dict(verified=False, reason="container_count", container_count=0, service="oidc")
+        starting = dict(verified=False, reason="container_state", state="running", service="init")
+        wrong = dict(verified=False, reason="configuration_mismatch", service="directory")
+        for last in (dict(verified=True), wrong):
+            with self.subTest(last=last), patch("time.sleep") as sleep:
+                reports = [dict(installed=self.version, verified=image["verified"], images=[image])
+                           for image in (missing, starting, last)]
+                observe = Mock(side_effect=reports)
+                self.assertEqual(verify(self.version, observe), reports[-1])
+                self.assertEqual(sleep.call_count, 2)
+
     def test_starter_restore_retries_echo_without_reapplying_the_volume(self):
         from unittest.mock import Mock
         agent = "agt_" + "1" * 32
