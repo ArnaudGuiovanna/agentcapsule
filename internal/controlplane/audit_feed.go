@@ -44,6 +44,7 @@ type AuditPage struct {
 // and its refused administrative attempts.
 const auditUnion = `
     SELECT id,created_at,action,actor_principal_id AS actor,target_principal_id AS target,'' AS reference,'done' AS outcome,'' AS reason FROM tenant_member_audit WHERE tenant_id=$1 AND changed
+    UNION ALL SELECT id,created_at,action,actor,target,'','done','' FROM application_audit WHERE tenant_id=$1
     UNION ALL SELECT id,created_at,action,actor_principal_id,coalesce(target_principal_id,team_id),team_id,'done','' FROM tenant_team_audit WHERE tenant_id=$1 AND changed
     UNION ALL SELECT id,created_at,action,actor_principal_id,agent_id,coalesce(assignment_id,request_id,''),'done','' FROM tenant_agent_audit WHERE tenant_id=$1
     UNION ALL SELECT id,created_at,action,actor_principal_id,service_principal_id,coalesce(token_id,''),'done','' FROM tenant_service_audit WHERE tenant_id=$1

@@ -165,7 +165,7 @@ func (s *Store) RecordGarbageCollection(ctx context.Context, cmd OperatorCommand
 // (ADR 017). The retention
 // applies to all of them, by the time each recorded its event (at), which an
 // index of the table starts with.
-var auditTables = []struct{ table, at string }{{"organization_audit", "created_at"}, {"delegation_audit", "created_at"},
+var auditTables = []struct{ table, at string }{{"application_audit", "created_at"}, {"organization_audit", "created_at"}, {"delegation_audit", "created_at"},
 	{"tenant_member_audit", "created_at"}, {"tenant_team_audit", "created_at"}, {"tenant_agent_audit", "created_at"},
 	{"tenant_service_audit", "created_at"}, {"llm_audit", "created_at"}, {"queue_audit", "created_at"}, {"harness_audit", "created_at"},
 	{"platform_audit", "created_at"}, {"operator_audit", "created_at"}, {"capability_audit", "created_at"},
