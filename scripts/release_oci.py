@@ -20,8 +20,8 @@ import release_tools
 ROOT = Path(__file__).resolve().parents[1]
 BUNDLE = runpy.run_path(str(ROOT / "scripts/build-server-bundle.py"))
 # The shipped image's build repository for Keycloak differs from its public
-# source repository. This is the commit of its published 26.6.3 source tag.
-KEYCLOAK_SOURCE = ("26.6.3", "8a67e82f8c85b35bbe69dbc9f3cd28aa26c00ebb")
+# source repository. Use the commit of the corresponding public release tag.
+KEYCLOAK_SOURCE = ("26.8.2", "e514445f9dcdabc5bdcf67cab56c1e49655de067")
 GITHUB_IMAGES = {"slim": "agntcy/slim", "directory": "agntcy/dir", "init": "agntcy/oasf",
                  "oasf": "agntcy/oasf-server"}
 
