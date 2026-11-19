@@ -47,6 +47,8 @@ During the three-agent batch, the test restarted the worker after it initialized
 
 The same KVM run exercised the quota boundary and a template rollout. The API refused the fifth reservation. After the competing VM released its slot, the worker started the rollout on the three-agent batch. The failed canary paused the update. Once the artifact was repaired and the rollout resumed, all three agents completed an authenticated boot on `support@2`.
 
+On 20 November 2026, a second WSL2 KVM run exercised recovery of the requested active count. After the host retired the active member’s VM, the worker restored the target of one with boot generation 3 following generation 2. An explicit sleep then left that member stopped and the worker started a different member from the same deployment. After the rollout canary paused and resumed, all three members authenticated on `support@2`. The test read 2 vCPUs and 384 MiB from the running Firecracker machine configuration, up from 1 vCPU and 256 MiB. The full test took 60.46 s. [KVM test](../../internal/worker/product_deployments_integration_test.go)
+
 ## Updating a deployed template
 
 Publish a revision, then send `POST /v1/deployments/{id}/rollouts` with `{"template":"support@2","max_unavailable":2}`. Poll `GET /v1/rollouts/{id}`. The worker preloads the approved OCI digest on its host. The first wave contains one canary and each later wave is bounded by `max_unavailable`. A worker processes one member per dispatch pass. It waits for acknowledged work, records maintenance durably, stops the VM, and installs the requested system image, harness, CPU and memory. Every member proves the new configuration with an authenticated application boot. Agents that were stopped are stopped again after this check.
