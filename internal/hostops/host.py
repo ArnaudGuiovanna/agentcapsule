@@ -189,9 +189,12 @@ def download(url, dest, digest=None, limit=2 << 30):
             Path(out.name).unlink(missing_ok=True)
 
 
-def checksums(path):
+def checksums(path, pinned_digest=None):
+    contents = path.read_bytes()
+    if pinned_digest is not None and hashlib.sha256(contents).hexdigest() != pinned_digest:
+        raise ValueError("release checksums differ from the verified manifest")
     sums = {}
-    for line in path.read_text().splitlines():
+    for line in contents.decode("utf-8").splitlines():
         m = re.fullmatch(r"([a-f0-9]{64})  ([\w.+-]+)", line, re.ASCII)
         if not m or m[2] in sums:
             raise ValueError("invalid or duplicate release manifest entry")

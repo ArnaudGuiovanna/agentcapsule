@@ -178,15 +178,28 @@ class HostOperationTests(unittest.TestCase):
             self.assertEqual(self.api["runtime_image"](image, self.root)["reason"], "container_count")
 
     def test_image_diagnostics_rejects_an_empty_or_replaced_inventory(self):
-        active = self.api["ACTIVE"]
-        active.mkdir()
+        active = self.api["RELEASES"] / self.version
+        active.mkdir(parents=True)
+        self.api["ACTIVE"].symlink_to(active)
         index = active / "offline-images.json"
         index.write_text("[]")
-        self.api["save"](active / "bundle.json", {"version": self.version, "sha256": {index.name: self.api["sha"](index)}})
+        manifest = active / "bundle.json"
+        self.api["save"](manifest, {"version": self.version, "sha256": {index.name: self.api["sha"](index)}})
+        dist = self.state / "downloads" / self.version
+        dist.mkdir(parents=True)
+        sums = dist / "SHA256SUMS"
+        sums.write_text(self.api["sha"](manifest) + "  agentcapsule-bundle.json\n")
+        (dist / "verified-manifest.sha256").write_text(self.api["sha"](sums))
         with self.assertRaisesRegex(ValueError, "incomplete"):
             self.api["runtime_images"]()
         index.write_text("[{}]")
-        with self.assertRaisesRegex(ValueError, "differs"):
+        with self.assertRaisesRegex(ValueError, "inventory differs"):
+            self.api["runtime_images"]()
+        self.api["save"](manifest, {"version": self.version, "sha256": {index.name: self.api["sha"](index)}})
+        with self.assertRaisesRegex(ValueError, "manifest differs"):
+            self.api["runtime_images"]()
+        sums.write_text(self.api["sha"](manifest) + "  agentcapsule-bundle.json\n")
+        with self.assertRaisesRegex(ValueError, "checksums differ"):
             self.api["runtime_images"]()
 
     def test_reject_archive_traversal_and_links(self):

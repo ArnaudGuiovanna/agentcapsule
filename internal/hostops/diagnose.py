@@ -84,11 +84,20 @@ def runtime_images():
     # Resolve the activation symlink once to keep the inventory and its
     # release identity together if a concurrent upgrade switches releases.
     release = ACTIVE.resolve(strict=True)
-    bundle = read(release / "bundle.json")
+    manifest = (release / "bundle.json").read_bytes()
+    bundle = json.loads(manifest)
+    version = bundle["version"]
+    if not re.fullmatch(VERSION, version) or release != (RELEASES / version).resolve(strict=True):
+        raise ValueError("active directory differs from its release version")
+    dist = STATE / "downloads" / version
+    signed = checksums(dist / "SHA256SUMS", (dist / "verified-manifest.sha256").read_text())
+    if signed.get("agentcapsule-bundle.json") != hashlib.sha256(manifest).hexdigest():
+        raise ValueError("installed manifest differs from the signed release")
     index = release / "offline-images.json"
-    if sha(index) != bundle["sha256"].get(index.name):
+    index_data = index.read_bytes()
+    if hashlib.sha256(index_data).hexdigest() != bundle["sha256"].get(index.name):
         raise ValueError("installed image inventory differs from the release manifest")
-    inventory = read(index)
+    inventory = json.loads(index_data)
     services = {"init", "oasf", "directory", "directory-edge", "slim"}
     if "oidc/agentcapsule-oidc.service" in bundle["sha256"]:
         services.add("oidc")
