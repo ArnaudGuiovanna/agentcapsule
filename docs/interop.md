@@ -19,7 +19,7 @@ passed on KVM on 2026-11-13, with the Directory and SLIM each down in turn.
 | A2A | [Specification v1.0.1](https://github.com/a2aproject/A2A/releases/tag/v1.0.1), wire `1.0`, [Go SDK v2.8.0](https://github.com/a2aproject/a2a-go/releases/tag/v2.8.0) | Agent Cards and tasks between agents. Supported: JSON-RPC binding, `SendMessage`, `GetTask`, text and data parts and artifacts (data parts are JSON content, ADR 016). Not advertised: REST, gRPC, streaming, push notifications, resubscription, signed cards. |
 | A2A over SLIM | [slim-a2a-go v0.5.2](https://github.com/agntcy/slim-a2a-go/tree/v0.5.2), binding `a2aslimrpc/v1` | The same A2A tasks carried over SLIM. Compiles only with A2A Go SDK v2.1.0–v2.2.0, so it lives in its own module ([a2aslim](../runtime/interop/a2aslim)), as does the platform's [SLIM bridge](../runtime/slimbridge); the platform keeps v2.8.0. |
 | OASF | Schema 1.1.0 ([source v1.1.3](https://github.com/agntcy/oasf/releases/tag/v1.1.0)), [schema server v2.0.0](https://github.com/agntcy/oasf-server/releases/tag/v2.0.0) | Describes each visible agent. Skills `10301` (text completion) and `10302` (summarization), domain `111` (artificial intelligence). Validated by a private schema server, never the public one. |
-| Directory | [v1.8.0](https://github.com/agntcy/dir/releases/tag/v1.8.0) API server, Go API v1.8.0 | Private search of agent records, including stopped agents. |
+| Directory | [v1.9.1](https://github.com/agntcy/dir/releases/tag/v1.9.1) API server, Go API v1.8.0 | Private search of agent records, including stopped agents. |
 | SLIM | [Node 3.4.6](https://github.com/agntcy/slim/releases/tag/slim-v3.4.6), [Go bindings v3.3.9](https://github.com/agntcy/slim-bindings-go/tree/v3.3.9) with native core 3.4.6 | Transport between the platform's endpoints. |
 
 The services run from images pinned by digest in
@@ -28,6 +28,12 @@ locked by their `go.sum`; the SLIM native archive is verified by SHA256, as its
 published build metadata has an empty commit field.
 
 ## Decisions
+
+### Directory server qualification on 19 November 2026
+
+The v1.9.1 server works with the pinned v1.8.0 Go clients. The Linux amd64 manifest was `sha256:9cec1a875a16d1642a3c7dd603a9dc05a78af55352895135c88718ac3ce76f5b`. The tests used the release images for Directory, OASF 2.0.0 with the shipped 1.1.0 schema, and HAProxy 3.2.26. Each process used its image filesystem inside an isolated WSL Linux network with loopback connectivity.
+
+The interop probe passed publication, search, deletion, schema validation, and rejection of plaintext and unauthorized mTLS clients. The platform publisher passed revision replacement, organization-scoped search, withdrawal after an invalid skill, republication and final deletion. The v1.9.1 configuration rejects the legacy `DIRECTORY_SERVER_POLICY_ENFORCEMENT_SEARCH` and `DIRECTORY_SERVER_POLICY_ENFORCEMENT_FETCH` variables. The profile uses the operation-based OASF policy in `directory.yaml` and the platform applies tenant visibility to search results. [Directory policy migration](https://github.com/agntcy/dir/blob/a8b704fac8982a319684dee136f6330187469c79/docs/content/dir/dir-content-policy-enforcement.md#migrating-from-policyenforcement)
 
 **The platform stays the authority.** An OASF record, a Directory search
 result, an Agent Card or a SLIM name grants no right. A search needs the
@@ -91,7 +97,7 @@ platform over `capsule.v1`.
 **Network.**
 
 - **Directory and schema server.** They have no route out, so they cannot
-  reach the internet. Directory v1.8.0 always starts a libp2p host, so:
+  reach the internet. Directory v1.9.1 starts a libp2p host, so:
   - its routing is isolated: no bootstrap peer, loopback listener, no
     GossipSub, no automatic sync, no relay;
   - it must never run with host networking, because it announces itself over
