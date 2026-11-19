@@ -76,7 +76,7 @@ func readBounded(r io.Reader, limit int64) ([]byte, error) {
 	}
 	return b, err
 }
-func readFile(path string, private bool) ([]byte, error) {
+func openRegular(path string) (*os.File, error) {
 	st, err := os.Lstat(path)
 	if err != nil {
 		return nil, err
@@ -88,11 +88,19 @@ func readFile(path string, private bool) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
 	current, err := f.Stat()
 	if err != nil || !os.SameFile(st, current) {
+		f.Close()
 		return nil, errors.New("file changed while opening")
 	}
+	return f, nil
+}
+func readFile(path string, private bool) ([]byte, error) {
+	f, err := openRegular(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
 	if private {
 		if err = verifyPrivateFile(f); err != nil {
 			return nil, fmt.Errorf("%s: %w", path, err)

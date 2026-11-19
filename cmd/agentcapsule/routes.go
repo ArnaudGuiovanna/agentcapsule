@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"os"
 	"regexp"
 	"sort"
 	"strconv"
@@ -227,7 +228,17 @@ func document(path string, in io.Reader) (map[string]any, error) {
 	if path == "" {
 		return m, nil
 	}
-	data, err := readSource(path, in, false)
+	var f *os.File
+	if path != "-" {
+		var err error
+		f, err = openRegular(path)
+		if err != nil {
+			return nil, err
+		}
+		defer f.Close()
+		in = f
+	}
+	data, err := readBounded(in, maxDocument)
 	if err != nil {
 		return nil, err
 	}
@@ -239,9 +250,9 @@ func document(path string, in io.Reader) (map[string]any, error) {
 	if dec.Decode(&extra) != io.EOF {
 		return nil, errors.New("expected one document")
 	}
-	if path != "-" && hasSecret(m) {
-		if _, err = readFile(path, true); err != nil {
-			return nil, err
+	if f != nil && hasSecret(m) {
+		if err := verifyPrivateFile(f); err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
 		}
 	}
 	return m, nil
@@ -441,9 +452,13 @@ For named routes supply identifiers in route order or as named flags.`)
 }
 
 func returnsCredential(a action) bool {
-	p := strings.Split(a.path, "?")[0]
 	if a.method != "POST" {
 		return false
 	}
+	u, err := url.ParseRequestURI(a.path)
+	if err != nil {
+		return false
+	}
+	p := u.Path
 	return p == "/v1/applications" || strings.HasPrefix(p, "/v1/applications/") && (strings.HasSuffix(p, "/rotate") || strings.HasSuffix(p, "/invitations")) || strings.HasSuffix(p, "/tokens")
 }

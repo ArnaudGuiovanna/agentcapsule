@@ -95,6 +95,8 @@ The starter echoes text. For inference use an imported model-capable harness, re
 
 ## Register MonApp and verify Alice's access
 
+MonApp is the example client application for the fictional organization Acme. In this scenario a member signs in to MonApp and can use a personal assistant and the team's shared Support assistant. Substitute your application's name, issuer and callback URI when configuring your own environment. The command-line acceptance client exercises this user journey over HTTPS. [Acceptance client](../examples/monapp/verify.py)
+
 Configure the issuer, client and exact redirect URI. Put the registration document in `monapp.yaml` and the policy in `arrival.yaml`. Use the real pool, shared agent and team IDs. Give the backend access to the private registration output. Hand the developer the output of `app connection` after applying the policy. It includes the API origin, discovery URL, audience, client ID, redirects, PKCE method and authorized policy references. [Registration and policy examples](api/applications.md) · [Installation realm](../deploy/oidc/README.md)
 
 ```sh
@@ -139,3 +141,16 @@ Use `--file PATH`, `--config PATH` or `--file -` for JSON or a single YAML objec
 | 130 | Interrupted while waiting |
 
 The storage, wire protocol and binary release each carry their own version. The server verifies the complete PostgreSQL migration ledger on startup. The host update operation performs schema migration within its maintenance window. Use the tested restore path when an older binary cannot read the installed schema. [Host update](cli-host.md#update-and-recovery) · [Recovery](recovery.md)
+
+## Acceptance checks
+
+| Actor and transport | Commands or HTTP action | Observable result |
+|---|---|---|
+| Linux host administrator, locally or over SSH | `install`, `host operation resume`, `host operation wait` | An invalid signature stops activation. Resumption keeps the existing authorities. The installed worker returns the starter's echo after a restart. [Host guide](cli-host.md) |
+| Platform operator, HTTPS | `login`, `session renew`, `organization create`, `quota set` | The enrollment works once, renewal invalidates the old token, and Acme's owner can sign into a separate context. [CLI entry-point test](../cmd/agentcapsule/session_linux_test.go) |
+| Organization administrator, HTTPS | `template publish`, `deployment plan`, `deployment apply`, `pool create` | Over-quota batches reserve nothing. An interrupted admitted batch resumes with one encrypted volume per agent. [Database and KVM measurements](api/deployments.md#measured-deployment-on-wsl2-with-kvm) |
+| Organization administrator and assigned member, HTTPS | `registry import`, `alias grant`, `agent invoke`, `invocation result` | Import reaches READY. The member gets a response from the chosen model and the provider usage reflects it. [LLM API](api/llm.md) |
+| Application owner, backend and members, HTTPS | `app register`, `assignment-policy apply`, then invite, accept, invoke and change membership | Alice and Bob retain distinct personal agents across retries. Bob cannot read Alice's response, and Alice loses team access after transfer. [Reference client and expected results](api/applications.md) |
+| Organization administrator and platform operator, separate HTTPS contexts | `communication explain`, `doctor`, `support export` | The organization sees the reason for a held request. The platform archive contains aggregate worker observations and respects the content boundary. [Support archive test](../cmd/agentcapsule/status_test.go) |
+| Organization administrator, HTTPS | `rollout start`, `rollout resume`, `agent grow` | A bad canary pauses the update. Resumption reports authenticated boots on the new revision, and restored data survives an offline disk expansion. [Rollouts and volume growth](api/deployments.md#updating-a-deployed-template) |
+| Linux host administrator and CLI operator | `update apply`, `restore test`, `restore apply`, `self update` | The updated services can invoke an agent. Recovery preserves revocations and personal volume ownership. The CLI reports its new version after replacement. [Recovery procedure](cli-host.md#update-and-recovery) |
