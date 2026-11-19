@@ -29,7 +29,7 @@ UNIT_DIR = Path("/etc/systemd/system")
 ETC = Path("/etc/agentcapsule")
 SERVER = "agentcapsule-server-linux-amd64.tar.gz"
 DEBS = "agentcapsule-packages-linux-amd64.tar"
-IMAGES = "agentcapsule-images-linux-amd64.tar"
+IMAGES = "agentcapsule-images-linux-amd64.tar.gz"
 COSIGN_HASH = "424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa"
 COSIGN_URL = "https://github.com/sigstore/cosign/releases/download/v3.1.4/cosign-linux-amd64"
 OP_ID = r"host_[a-f0-9]{32}"
@@ -116,11 +116,17 @@ def checksums(path):
     return sums
 
 
-def stage(request):
+def stage(request, manifest_only=False):
     version = request["version"]
     uri = f"https://github.com/{REPO}/releases/download/{version}/"
     dest = STATE / "downloads" / version
     dest.mkdir(parents=True, exist_ok=True)
+    with (dest/"verify.lock").open("a+b") as lock:
+        fcntl.flock(lock,fcntl.LOCK_EX)
+        return verify_assets(request,manifest_only,version,uri,dest)
+
+
+def verify_assets(request,manifest_only,version,uri,dest):
     offline = Path(request["offline"]) if request.get("offline") else None
     def fetch(name, digest=None, maxsize=2 << 30):
         target = dest / name
@@ -142,23 +148,54 @@ def stage(request):
         else:
             download(uri + name, target, digest, maxsize)
         return target
-    cosign = STATE / "cosign"
-    if not cosign.exists() or sha(cosign) != COSIGN_HASH:
-        if offline:
-            verify = fetch("cosign-linux-amd64", COSIGN_HASH)
-            write_file(cosign, verify.read_bytes(), 0o700)
-        else:
-            download(COSIGN_URL, cosign, COSIGN_HASH, 240 << 20)
-            cosign.chmod(0o700)
     sums = fetch("SHA256SUMS", maxsize=8 << 20)
-    bundle = fetch("SHA256SUMS.sigstore.json", maxsize=8 << 20)
-    verify = [cosign, "verify-blob", "--bundle", bundle, "--certificate-identity",
-              f"https://github.com/{REPO}/.github/workflows/release.yml@refs/tags/{version}",
-              "--certificate-oidc-issuer", "https://token.actions.githubusercontent.com"]
-    if offline:
-        verify.extend(["--offline", "--trusted-root", request["trusted_root"]])
-    run(*verify, sums)
+    if request.get("development_key"):
+        # A private build can never claim a published release tag. The
+        # operator supplies the public key independently of the bundle.
+        if not offline or not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+-dev\.[0-9]+",version):
+            raise ValueError("local build trust requires an offline -dev.N version")
+        pub=Path(request["development_key"])
+        trusted=STATE/"development-key.sha256"
+        if trusted.exists() and trusted.read_text()!=sha(pub) or current() and not trusted.exists():
+            raise ValueError("local development signing key differs from installed trust")
+        sig=fetch("SHA256SUMS.dev.sig",maxsize=1024)
+        run("openssl","pkeyutl","-verify","-pubin","-inkey",pub,"-rawin","-in",sums,"-sigfile",sig,stdout=sys.stderr)
+        write_file(trusted,sha(pub).encode())
+    else:
+        cosign = STATE / "cosign"
+        if not cosign.exists() or sha(cosign) != COSIGN_HASH:
+            if offline:
+                verify = fetch("cosign-linux-amd64", COSIGN_HASH)
+                write_file(cosign, verify.read_bytes(), 0o700)
+            else:
+                download(COSIGN_URL, cosign, COSIGN_HASH, 240 << 20)
+                cosign.chmod(0o700)
+        bundle = fetch("SHA256SUMS.sigstore.json", maxsize=8 << 20)
+        verify = [cosign, "verify-blob", "--bundle", bundle, "--certificate-identity",
+                  f"https://github.com/{REPO}/.github/workflows/release.yml@refs/tags/{version}",
+                  "--certificate-oidc-issuer", "https://token.actions.githubusercontent.com"]
+        if offline:
+            root=request.get("trusted_root")
+            if not root:
+                root=dest/"trusted-root.json"
+                write_file(root,TRUSTED_ROOT)
+            verify.extend(["--offline", "--trusted-root", root])
+        run(*verify, sums,stdout=sys.stderr)
+    fingerprint=sha(sums)
+    pinned=dest/"verified-manifest.sha256"
+    if pinned.exists() and pinned.read_text()!=fingerprint:
+        raise ValueError("release tag changed since its first signed plan")
     digests = checksums(sums)
+    manifest = read(fetch("agentcapsule-bundle.json", digests["agentcapsule-bundle.json"], 8 << 20))
+    if manifest["schema"]!="agentcapsule.bundle/v1" or manifest["version"]!=version or manifest["platform"]!="ubuntu-24.04-amd64":
+        raise ValueError("incompatible server distribution")
+    before=read(ACTIVE/"bundle.json")["migrations"] if current() else []
+    if manifest["migrations"][:len(before)] != before:
+        raise ValueError("schema history requires restore; binary rollback cannot reverse these migrations")
+    write_file(pinned,fingerprint.encode())
+    if manifest_only:
+        return {"added_migrations":manifest["migrations"][len(before):],"server_sha256":digests[SERVER],
+                "backup_required":bool(before),"maintenance_window":bool(before),"commit":manifest["commit"]}
     for name in (SERVER, DEBS, IMAGES):
         fetch(name, digests[name])
     return dest
@@ -166,6 +203,7 @@ def stage(request):
 
 def unpack(archive, destination):
     destination.mkdir(mode=0o755)
+    destination.chmod(0o755)
     with tarfile.open(archive) as tar:
         seen = set()
         for member in tar:
@@ -176,6 +214,10 @@ def unpack(archive, destination):
             seen.add(path.as_posix())
             target = destination / path
             target.parent.mkdir(parents=True, exist_ok=True)
+            parent=target.parent
+            while parent != destination:
+                parent.chmod(0o755)
+                parent=parent.parent
             with target.open("xb") as f:
                 shutil.copyfileobj(tar.extractfile(member), f)
             target.chmod(0o755 if member.mode & 0o111 else 0o644)
@@ -283,6 +325,7 @@ def prepare_release(release, dist, version):
             raise ValueError("release directory version mismatch")
         return
     RELEASES.mkdir(mode=0o755, exist_ok=True)
+    RELEASES.chmod(0o755)
     with tempfile.TemporaryDirectory(dir=RELEASES) as tmp:
         new = Path(tmp) / "release"
         unpack(dist / SERVER, new)
@@ -311,7 +354,16 @@ WantedBy=multi-user.target
 """
     write_file(UNIT_DIR / "agentcapsule-host@.service", template.encode(), 0o644)
     run("systemctl", "daemon-reload")
-    run("systemctl", "enable", "--now", "--no-block", unit)
+    run("systemctl", "--quiet", "enable", "--now", "--no-block", unit)
+
+
+def submit(directory):
+    state(directory, state="queued",reason=None)
+    try:
+        launch(directory)
+    except (OSError,subprocess.CalledProcessError) as error:
+        state(directory,state="failed",phase="submit",reason=safe_error(error))
+        raise
 
 
 def latest():
@@ -336,6 +388,7 @@ def main(argv, cli_version):
     for p in (install, plan):
         p.add_argument("--profile", help="installation profile JSON on host")
         p.add_argument("--to")
+        p.add_argument("--development-key",help="independently trusted key for local offline -dev.N builds")
         p.add_argument("--offline", help="verified release assets on host")
         p.add_argument("--trusted-root", help="trusted Sigstore root on host")
     host = groups.add_parser("host").add_subparsers(dest="group", required=True)
@@ -366,7 +419,7 @@ def main(argv, cli_version):
         if args.sub == "resume":
             if read(directory / "status.json")["state"] != "failed":
                 raise ValueError("only a failed host operation can be resumed")
-            launch(directory)
+            submit(directory)
         while args.sub == "wait":
             report = read(directory / "status.json")
             if report["state"] == "failed":
@@ -385,8 +438,7 @@ def main(argv, cli_version):
         if read(directory / "request.json")["action"] != "update":
             raise ValueError("expected an update plan")
         if read(directory / "status.json")["state"] == "planned":
-            state(directory, state="queued")
-        launch(directory)
+            submit(directory)
         return read(directory / "status.json")
     if action in ("archive","restore"):
         if not re.fullmatch(r"agt_[a-f0-9]{32}", args.agent) or not re.fullmatch(r"arc_[a-f0-9]{32}", args.archive_id):
@@ -398,37 +450,40 @@ def main(argv, cli_version):
             request["restore"] = args.restore_id
     else:
         installed = current()
-        profile = read(Path(args.profile)) if args.profile else (read(STATE/"profile.json") if installed else {})
-        version = args.to or (cli_version if re.fullmatch(VERSION, cli_version) and action=="install" else latest())
-        if not re.fullmatch(VERSION, version):
-            raise ValueError("invalid release tag")
-        if action == "install" and installed or action == "update" and not installed:
-            raise ValueError("install requires an empty host and update requires an installed release")
-        if args.offline and not args.trusted_root:
-            raise ValueError("--offline requires --trusted-root from a trusted source")
+        profile = read(Path(args.profile)) if args.profile else (read(STATE/"profile.json") if (STATE/"profile.json").is_file() else {})
         if args.offline and not args.to and not re.fullmatch(VERSION, cli_version):
             raise ValueError("--offline requires an explicit release tag")
+        version = args.to or (cli_version if re.fullmatch(VERSION, cli_version) and (args.offline or action=="install") else latest())
+        if not re.fullmatch(VERSION, version):
+            raise ValueError("invalid release tag")
+        if action == "install" and installed and installed != version or action == "update" and not installed:
+            raise ValueError("install requires an empty host and update requires an installed release")
         profile = normalize_profile(profile)
-        if action == "update" and read(STATE/"profile.json") != profile:
-            raise ValueError("update uses the installed host profile")
-        request = {"action": action, "version":version, "from":installed, "profile":profile,
+        if action == "update":
+            installed_profile = read(STATE/"profile.json")
+            if any(installed_profile.get(k) != v for k,v in profile.items() if k not in ("pgbackrest_config","rclone_config")):
+                raise ValueError("update uses the installed host profile")
+        request = {"action": action, "version":version, "from":None if action=="install" else installed, "profile":profile,
+                   "development_key":str(Path(args.development_key).resolve()) if args.development_key else None,
                    "offline": str(Path(args.offline).resolve()) if args.offline else None,
                    "trusted_root":str(Path(args.trusted_root).resolve()) if args.trusted_root else None}
     ident = "host_" + hashlib.sha256(json.dumps(request, sort_keys=True).encode()).hexdigest()[:32]
     directory = opdir(ident)
     with (STATE/"submit.lock").open("a+") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
+        if action=="install" and current() and not (directory/"request.json").is_file():
+            raise ValueError("this installation already exists with another profile")
         directory.mkdir(mode=0o700, exist_ok=True)
         if not (directory / "status.json").exists():
             save(directory / "request.json",request)
             write_file(directory / "helper.py", HELPER_SOURCE)
-            state(directory, state="planned", action=request["action"], target=request.get("version"),
+            details=stage(request, manifest_only=True) if action in ("update","install") else {}
+            state(directory, state="planned", action=request["action"], target=request.get("version"), **details,
                   installed=current(), services_started=False, invocation_verified=False,
                   off_host_backup_verified=False, phases=phases(request["action"]))
         if action == "install" and not args.plan_only or action in ("archive","restore"):
             if read(directory/"status.json")["state"] == "planned":
-                state(directory, state="queued")
-                launch(directory)
+                submit(directory)
         return read(directory / "status.json")
 
 

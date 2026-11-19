@@ -187,6 +187,7 @@ jobs:
               agentcapsule-harness capsule-adapter agentcapsule-slim-bridge; do
             binaries+=(--binary "$dist/$name")
           done
+          for cli in "$dist"/agentcapsule-{linux,darwin,windows}-*; do binaries+=(--binary "$cli"); done
           python3 scripts/release-sbom.py --go "$(command -v go)" --output "$RUNNER_TEMP/ci/sbom" \
             "${binaries[@]}" --guest-build "$dist" \
             --harness-package "$RUNNER_TEMP/ci/a2a-harness/package"

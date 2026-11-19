@@ -59,6 +59,8 @@ BINARIES = (
     ("capsule-adapter", ".", "./cmd/capsule-adapter", True, True),
     ("agentcapsule-slim-bridge", "runtime/slimbridge", ".", True, False),
 )
+CLI_TARGETS = {f"agentcapsule-{system}-{arch}" + (".exe" if system == "windows" else ""): (system, arch)
+               for system in ("linux", "darwin", "windows") for arch in ("amd64", "arm64")}
 GUEST_FILES = ("product.initrd",)
 # The host packages whose files a build uses, recorded when dpkg is present.
 HOST_PACKAGES = ("gcc", "libc6-dev", "libcryptsetup-dev", "cryptsetup-bin", "e2fsprogs", "libc6")
@@ -155,7 +157,7 @@ def slim_library(cache, work):
 
 
 def build_round(variant, round_dir, commit, go, base_env, module_cache, epoch, native_tools, slim_cache,
-                guest_cryptsetup, log):
+                guest_cryptsetup, log, version):
     """Clone the commit and build every binary (and the guest image) in round_dir."""
     # Variant b nests the clone deeper, so that no path of the first round can match.
     src = round_dir / ("src" if variant == "a" else "elsewhere/at/another/depth/src")
@@ -182,6 +184,11 @@ def build_round(variant, round_dir, commit, go, base_env, module_cache, epoch, n
             build_env["CGO_LDFLAGS"] = f"-L{library.parent}"
         run([go, "build", *flags, "-ldflags=" + ldflags, "-o", dist / name, package], log, build_env, src / module,
             umask=umask)
+    for name, (system, arch) in CLI_TARGETS.items():
+        flags, ldflags = build_flags(True)
+        ldflags += " -X github.com/ArnaudGuiovanna/agentcapsule/internal/hostops.Version=" + version
+        run([go, "build", *flags, "-ldflags=" + ldflags, "-o", dist / name, "./cmd/agentcapsule"],
+            log, dict(env, CGO_ENABLED="0", GOOS=system, GOARCH=arch), src, umask=umask)
     if guest_cryptsetup:
         guest = round_dir / "guest"
         run(["python3", src / "scripts/build-product-guest.py", "--go", go, "--cryptsetup", guest_cryptsetup,
@@ -259,6 +266,10 @@ def main(argv=None):
                            for name, module, package, cgo, static in BINARIES},
               "rounds": {}, "reproducible": None, "status": "running"}
 
+    for name, (system, arch) in CLI_TARGETS.items():
+        record["binaries"][name] = {"module": ".", "package": "./cmd/agentcapsule", "cgo": False, "static": True,
+                                    "goos": system, "goarch": arch}
+
     def save():
         (out / "build.json").write_text(json.dumps(record, indent=2) + "\n")
 
@@ -276,11 +287,11 @@ def main(argv=None):
                                                      GOFLAGS="-mod=readonly"), ROOT)
             print(f"round {variant}: building {commit[:12]} in {round_dir}", flush=True)
             dists[variant] = build_round(variant, round_dir, commit, go, base_env, module_cache, epoch,
-                                         a.native_tools, a.slim_cache, a.guest_cryptsetup, log)
+                                         a.native_tools, a.slim_cache, a.guest_cryptsetup, log, a.version or "development")
             record["rounds"][variant] = {
                 "seconds": round(time.monotonic() - started, 1),
                 "sha256": {f.name: sha256(f) for f in sorted(dists[variant].iterdir()) if f.name in
-                           {b[0] for b in BINARIES} | set(GUEST_FILES)}}
+                           {b[0] for b in BINARIES} | set(GUEST_FILES) | CLI_TARGETS.keys()}}
             save()
         digests = [record["rounds"][v]["sha256"] for v in rounds]
         if a.twice:

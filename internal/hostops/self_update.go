@@ -58,9 +58,6 @@ func selfUpdate(ctx context.Context, args []string, out, errOut io.Writer) error
 	if !releaseVersion.MatchString(*version) {
 		return errors.New("a release tag such as v0.1.0-rc.1 is required")
 	}
-	if *offline != "" && *trust == "" {
-		return errors.New("--offline requires --trusted-root from a trusted source")
-	}
 	name := "agentcapsule-" + runtime.GOOS + "-" + runtime.GOARCH
 	if runtime.GOOS == "windows" {
 		name += ".exe"
@@ -98,6 +95,12 @@ func selfUpdate(ctx context.Context, args []string, out, errOut io.Writer) error
 			err = e
 		}
 		if err != nil {
+			return err
+		}
+	}
+	if *offline != "" && *trust == "" {
+		*trust = filepath.Join(staging, "trusted-root.json")
+		if err := os.WriteFile(*trust, trustedRoot, 0600); err != nil {
 			return err
 		}
 	}

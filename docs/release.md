@@ -23,14 +23,15 @@ version tag. A maintainer reviews it, then publishes it.
 | `SHA256SUMS.sigstore.json` | The cosign signature of `SHA256SUMS` (keyless: a certificate for the release workflow's GitHub identity, logged in Rekor). |
 | `provenance.sigstore.json` | The SLSA build provenance of every file in `SHA256SUMS`, signed by GitHub (artifact attestation). |
 
-The guest image (`product.initrd`) and `capsule-adapter` are built, described
-and scanned by the workflow but not published: they hold GPL and LGPL code
-(cryptsetup, e2fsprogs, util-linux, and glibc linked statically) whose source
-a release would have to offer. Until the product owner decides (ADR 013,
-question 4), operators build them with `scripts/build-product-guest.py` and
-the Dagger module, as today. The guest kernel and Firecracker are not
-released either: `scripts/build-guest-kernel.py` and
-`scripts/build-firecracker.py` build them.
+The release also includes six static CLI builds (Linux, macOS and Windows,
+amd64 and arm64), the Ubuntu 24.04 server bundle, its signed package and OCI
+archives, and the source archives of the exact host and guest packages. The
+server bundle contains the patched Firecracker/jailer, kernel, guest initrd
+with the reference echo harness, adapter, deploy configuration, units, public
+HTTP contract and host guide. `agentcapsule-bundle.json` records the server
+release, migration format, commit and artifact digests. Each of these
+files is covered by the release workflow signature and provenance.
+[Single-host installation and updates](cli-host.md)
 
 ## What is checked
 
