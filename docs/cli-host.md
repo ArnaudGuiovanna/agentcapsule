@@ -155,3 +155,7 @@ On 19 November 2026, a network-isolated Ubuntu 24.04 instance in WSL2 installed 
 The operator upgraded the server from `v0.1.0-dev.2` to `v0.1.0-dev.4`. PostgreSQL applied migrations 53 and 54, and the original probe agent returned a new echo. The `v0.1.0-dev.5` Linux CLI resumed the operation after fixing the Keycloak service restart. The realm's HTTPS discovery document was available again after a second, explicit service restart.
 
 MonApp's HTTP acceptance client then used the installed API, Keycloak and worker. The test provisioned three agents for Alice and Bob, checked the response from the starter harness, enforced the private-result boundary and confirmed Alice's revocation. [Application scenario](api/applications.md) · [KVM batch measurements](api/deployments.md#measured-deployment-on-wsl2-with-kvm)
+
+After the upgrade, the Ubuntu instance booted again from its existing disk. The test recorded a different guest boot ID, confirmed API and OIDC readiness over HTTPS and received a fresh echo from the original agent. The CLI archived its 128 MiB encrypted volume locally. `restore test` verified the manifest, digest, volume, copy and key. `restore apply` advanced the volume from incarnation 1 to 2 and reported zero lost outcomes. The same agent then answered a new invocation from the restored volume.
+
+These receipts cover the signed development builds listed above. The later Directory and Keycloak image updates have separate qualification results. [Candidate image qualification](release-image-qualification.md)
