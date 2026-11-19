@@ -486,7 +486,7 @@ def backup_destinations(config, includes=()):
     # A command/stanza override can redirect the periodic backup or its readback.
     # Require consistent destinations across every operation before attesting them.
     def setting(key):
-        values={s[key] for s in cfg.values() if key in s}
+        values={s[key] for s in cfg.values() if s.name.split(":",1)[0] in ("global","agentcapsule") and key in s}
         if len(values)>1:
             raise ValueError("conflicting pgBackRest destinations or encryption settings")
         return next(iter(values),"")
@@ -625,9 +625,13 @@ def backup(profile,mandatory,directory):
     if mandatory and remote and not copies:
         raise ValueError("configure and verify off-host volume shipping before updating")
     off_host=remote and bool(copies) and remote_volumes
+    status="local_repositories_verified"
+    if stores:
+        status="two_remote_repositories_verified" if off_host else "repository_separation_unverified"
+        if remote and not copies:
+            status="awaiting_volume_shipping"
     return {"off_host_backup_verified":off_host,"database_backups_verified":True,"database_backup_sets":labels,
-            "volume_shipping_verified":bool(copies),"volume_copy_checks":copies,
-            "backup_status":"two_remote_repositories_verified" if off_host else "local_repositories_verified" if not remote else "awaiting_volume_shipping"}
+            "volume_shipping_verified":bool(copies),"volume_copy_checks":copies,"backup_status":status}
 
 
 # RUNNING includes invocations that have acknowledged work and await a result.
