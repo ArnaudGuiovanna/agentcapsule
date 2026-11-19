@@ -31,6 +31,7 @@ var idempotencyOtherBody = map[string]string{
 	"POST /v1/deployment-plans":  `{"template":"matrix-base@1","count":2}`,
 	"POST /v1/pools":             `{"name":"{name}-other","deployment_id":"{fresh}"}`,
 
+	"POST /v1/applications":                                     "{other_app_config}",
 	"POST /v1/organizations":                                    `{"name":"{name}-b","initial_owner":{"issuer":"https://client.example","subject":"{name}","display_name":"X"}}`,
 	"POST /v1/harness-imports":                                  `{"reference":"ghcr.io/acme/other@sha256:{digest}"}`,
 	"POST /v1/members":                                          `{"issuer":"https://client.example","subject":"{name}-b","display_name":"X","role":"agent_user"}`,
@@ -74,6 +75,9 @@ var idempotencyOtherPath = map[string]string{
 
 // conventionActor is the first caller the route serves.
 func conventionActor(r rbacRoute) (string, bool) {
+	if r.Path == "/v1/applications/{app}/accept" {
+		return "applicant", true
+	}
 	for i, want := range strings.Fields(r.Want) {
 		if want == rbacOK || want == rbacFiltered {
 			return rbacActors[i], true
@@ -303,7 +307,7 @@ func collectIDs(v any, field string, out map[string]string) {
 			collectIDs(x, field, out)
 		}
 	case string:
-		if v != "" && (field == "id" || strings.HasSuffix(field, "_id")) {
+		if field != "client_id" && v != "" && (field == "id" || strings.HasSuffix(field, "_id")) {
 			out[v] = field
 		}
 	}

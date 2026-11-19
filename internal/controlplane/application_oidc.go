@@ -107,7 +107,7 @@ func verifyAppToken(v Application, raw string, now time.Time) (appClaims, appBin
 		}
 		return nil, ErrAuthentication
 	}, jwt.WithValidMethods([]string{"RS256"}), jwt.WithIssuer(v.Issuer), jwt.WithAudience(v.Audience), jwt.WithExpirationRequired(), jwt.WithIssuedAt(), jwt.WithTimeFunc(func() time.Time { return now }))
-	if err != nil || !t.Valid || !validOrganizationText(c.Subject, 255) || !validOrganizationText(c.ID, 200) || c.IssuedAt == nil || c.ExpiresAt.Sub(c.IssuedAt.Time) > time.Hour || !c.ExpiresAt.After(c.IssuedAt.Time) || c.client() != v.ClientID || c.AuthorizedParty != "" && c.AuthorizedParty != v.ClientID {
+	if err != nil || !t.Valid || !validOrganizationText(c.Subject, 255) || !validOrganizationText(c.ID, 200) || c.IssuedAt == nil || c.IssuedAt.Before(v.minimumIAT) || c.ExpiresAt.Sub(c.IssuedAt.Time) > time.Hour || !c.ExpiresAt.After(c.IssuedAt.Time) || c.client() != v.ClientID || c.AuthorizedParty != "" && c.AuthorizedParty != v.ClientID {
 		return c, b, ErrAuthentication
 	}
 	typ, _ := t.Header["typ"].(string)
@@ -119,7 +119,7 @@ func verifyAppToken(v Application, raw string, now time.Time) (appClaims, appBin
 		b.NotBefore = c.NotBefore.Time
 	}
 	for _, scope := range strings.Fields(c.Scope) {
-		if slices.Contains([]string{"org:read", "agent:read", "agent:invoke", "agent:content:read", "member:accept"}, scope) {
+		if slices.Contains([]string{"org:read", "agent:read", "agent:invoke", "agent:content:read", "member:accept", "member:invite"}, scope) {
 			b.Scopes = append(b.Scopes, scope)
 		}
 	}
@@ -137,11 +137,12 @@ func resolveApp(ctx context.Context, tx pgx.Tx, b appBinding) (CurrentOrganizati
 	}
 	current.Organization = o
 	err = tx.QueryRow(ctx, `SELECT p.id,p.display_name,m.role FROM applications a
+        JOIN principals signer ON signer.id=a.signing_principal AND signer.status='active'
         JOIN principals integration ON integration.id=a.id AND integration.status='active'
         JOIN app_activations v ON v.app_id=a.id AND NOT v.disabled
         JOIN principals p ON (p.tenant_id,p.id)=(v.tenant_id,v.principal_id)
         JOIN memberships m ON (m.tenant_id,m.principal_id)=(p.tenant_id,p.id)
-        WHERE a.tenant_id=$1 AND a.id=$2 AND a.generation=$3 AND p.issuer=a.issuer AND p.subject=$4
+        WHERE a.tenant_id=$1 AND a.id=$2 AND a.generation=$3 AND a.minimum_iat<=$6 AND p.issuer=a.issuer AND p.subject=$4
         AND p.status='active' AND m.status='active' AND $5>clock_timestamp() AND $6<=clock_timestamp() AND $7<=clock_timestamp()
         FOR SHARE OF a,integration,v,p,m`, b.Tenant, b.App, b.Generation, b.Subject, b.Expires, b.Issued, b.NotBefore).Scan(&current.PrincipalID, &current.DisplayName, &current.Role)
 	if errors.Is(err, pgx.ErrNoRows) {

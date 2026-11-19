@@ -90,7 +90,7 @@ const (
 	rbacLink         = "404 404 404 404 S 404 404 404 404 404 401 401 404"
 )
 
-var rbacRoutes = []rbacRoute{
+var rbacRoutes = append([]rbacRoute{
 	{Method: "GET", Path: "/v1/version", Success: 200, Want: "S S S S S S S S S S S S S", Note: "no authentication"},
 	{Method: "GET", Path: "/v1/platform/diagnostics", Success: 200, Want: rbacPlatformOnly},
 	{Method: "GET", Path: "/v1/platform/session", Success: 200, Want: rbacPlatformOnly},
@@ -222,7 +222,7 @@ var rbacRoutes = []rbacRoute{
 	{Method: "POST", Path: "/v1/me/inbox/requests/req_matrix/decline", Success: 200, Want: rbacLegacyOnly, body: `{}`, Note: "historical owner domain"},
 	{Method: "GET", Path: "/v1/agent-requests/req_matrix", Success: 200, Want: rbacLegacyOnly, Note: "historical owner domain"},
 	{Method: "POST", Path: "/v1/agent-requests/req_matrix/cancel", Success: 202, Want: rbacLegacyOnly, body: `{}`, Note: "historical owner domain"},
-}
+}, applicationRoutesMatrix...)
 
 func TestRBACMatrixIsWellFormed(t *testing.T) {
 	seen := map[string]bool{}

@@ -68,7 +68,18 @@ func (a *Accounts) Invite(ctx context.Context, p Principal, appID, key string, i
 	if p.service != nil {
 		return APIReceipt{}, ErrForbidden
 	}
-	if _, err = authorizeTenantAdminMutation(ctx, tx, p, authorization.ManageMembers); err != nil {
+	if p.app != nil {
+		if p.app.App != appID || !slices.Contains(p.app.Scopes, "member:invite") {
+			return APIReceipt{}, ErrForbidden
+		}
+		var locked string
+		if err = tx.QueryRow(ctx, "SELECT id FROM organizations WHERE id=$1 FOR UPDATE", p.TenantID).Scan(&locked); err != nil {
+			return APIReceipt{}, err
+		}
+		if _, err = authorizeTenant(ctx, tx, p, "member:invite"); err != nil {
+			return APIReceipt{}, err
+		}
+	} else if _, err = authorizeTenantAdminMutation(ctx, tx, p, authorization.ManageMembers); err != nil {
 		return APIReceipt{}, err
 	}
 	app, err := readApp(ctx, tx, p.TenantID, appID)
@@ -84,6 +95,9 @@ func (a *Accounts) Invite(ctx context.Context, p Principal, appID, key string, i
 	}
 	if pol.ApplicationID != appID || !pol.Applied {
 		return APIReceipt{}, ErrNotFound
+	}
+	if p.app != nil && !slices.Contains(pol.ManagerIDs, p.ID) {
+		return APIReceipt{}, ErrForbidden
 	}
 	if err = eligibleTeam(ctx, tx, p.TenantID, in.TeamID, pol.PolicySpec); err != nil {
 		return APIReceipt{}, err

@@ -18,6 +18,7 @@ type PolicySlot struct {
 }
 
 type PolicySpec struct {
+	ManagerIDs    []string     `json:"manager_ids,omitempty"`
 	ApplicationID string       `json:"application_id"`
 	Slots         []PolicySlot `json:"slots"`
 	AllowedTeams  []string     `json:"allowed_teams"`
@@ -79,6 +80,19 @@ func inspectPolicy(ctx context.Context, tx pgx.Tx, tenant string, v *AssignmentP
 		seen[team] = true
 		if err := eligibleTeam(ctx, tx, tenant, team, v.PolicySpec); err != nil {
 			return err
+		}
+	}
+	if len(v.ManagerIDs) > 32 {
+		return ErrInput
+	}
+	for _, id := range v.ManagerIDs {
+		var eligible bool
+		err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM app_activations a JOIN memberships m ON m.principal_id=a.principal_id WHERE a.app_id=$1 AND a.tenant_id=$2 AND a.principal_id=$3 AND NOT a.disabled AND m.status='active')`, v.ApplicationID, tenant, id).Scan(&eligible)
+		if err != nil {
+			return err
+		}
+		if !eligible {
+			return ErrNotFound
 		}
 	}
 	names := map[string]bool{}
