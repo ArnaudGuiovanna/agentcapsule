@@ -108,7 +108,7 @@ func TestDeploymentResumesWithDistinctVolumesAndImmutableTemplate(t *testing.T) 
 		t.Fatal(err)
 	}
 	defer rollback(tx)
-	if _, err = reservePoolAgent(ctx, tx, owner, pool.ID); err != nil {
+	if _, err = reservePoolAgents(ctx, tx, owner, pool.ID, 1); err != nil {
 		t.Fatal(err)
 	}
 	if err = commit(ctx, tx); err != nil {

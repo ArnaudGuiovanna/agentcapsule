@@ -281,17 +281,24 @@ func (a *Accounts) changeTeamMembership(ctx context.Context, p Principal, team, 
 	}{team, principal}
 	r, err := a.withTenantReceipt(ctx, tx, p, operation, key, in, func() (int, any, error) {
 		before, status := m.Status, 200
+		changed := before != next
 		if !exists {
 			status = 201
 			m, err = scanTeamMembership(tx.QueryRow(ctx, `INSERT INTO team_memberships(tenant_id,team_id,principal_id) VALUES($1,$2,$3) RETURNING team_id,principal_id,status,created_at`, p.TenantID, team, principal))
 		} else if before != next {
 			_, err = tx.Exec(ctx, `UPDATE team_memberships SET status=$4,source_app_id=NULL WHERE tenant_id=$1 AND team_id=$2 AND principal_id=$3`, p.TenantID, team, principal, next)
 			m.Status = next
+		} else if add {
+			// An explicit grant survives a later transfer by the application
+			// that originally enrolled the member in this team.
+			tag, e := tx.Exec(ctx, "UPDATE team_memberships SET source_app_id=NULL WHERE tenant_id=$1 AND team_id=$2 AND principal_id=$3 AND source_app_id IS NOT NULL", p.TenantID, team, principal)
+			err = e
+			changed = tag.RowsAffected() == 1
 		}
 		if err != nil {
 			return 0, nil, err
 		}
-		if err = auditTeam(ctx, tx, p, team, &principal, action, before, m.Status, before != m.Status); err != nil {
+		if err = auditTeam(ctx, tx, p, team, &principal, action, before, m.Status, changed); err != nil {
 			return 0, nil, err
 		}
 		revoked := a.store.revocations(tx, p.TenantID)

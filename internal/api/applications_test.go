@@ -3,9 +3,18 @@ package api
 import (
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -63,7 +72,7 @@ func activePolicyFixture(t *testing.T, f *rbacFixture) map[string]string {
 func signAppToken(t *testing.T, issuer, subject, audience string) string {
 	now := time.Now().UTC()
 	c := jwt.MapClaims{"iss": issuer, "aud": audience, "sub": subject, "jti": "jti-" + subject, "azp": "monapp", "typ": "Bearer",
-		"iat": now.Add(-time.Second).Unix(), "exp": now.Add(5 * time.Minute).Unix(), "scope": "openid email org:read member:accept agent:read agent:invoke agent:content:read", "email": subject + "@example.test", "email_verified": true}
+		"iat": now.Add(-time.Second).Unix(), "exp": now.Add(5 * time.Minute).Unix(), "scope": "openid email org:read member:accept member:invite agent:read agent:invoke agent:content:read", "email": subject + "@example.test", "email_verified": true}
 	v := jwt.NewWithClaims(jwt.SigningMethodRS256, c)
 	v.Header["kid"] = "test"
 	raw, err := v.SignedString(appTestSigningKey())
@@ -92,6 +101,7 @@ const appPolicyBody = `{"application_id":"{app}","allowed_teams":["{team}"],"on_
 const appInviteBody = `{"policy_id":"{policy}","team_id":"{team}","email":"alice@example.test","expires_at":"{expires}"}`
 
 var applicationRoutesMatrix = []rbacRoute{
+	{Method: "POST", Path: "/v1/pools/{pool}/expand", Success: 200, Want: "S S S 403 403 403 403 403 403 404 401 401 403", body: `{"count":1}`},
 	{Method: "GET", Path: "/v1/applications", Success: 200, Want: "S S 403 403 403 403 403 403 403 S 401 401 403"},
 	{Method: "POST", Path: "/v1/applications", Success: 201, Want: rbacCreateAdmin, body: "{app_config}", fresh: appConfigFixture},
 	{Method: "GET", Path: "/v1/applications/{app}", Success: 200, Want: rbacIdentity, fresh: appFixture},
@@ -147,5 +157,243 @@ func TestMonAppMemberLifecycle(t *testing.T) {
 	request(raw, "GET", "/v1/organizations/current", "", "", 401)
 	if !strings.Contains(request(f.token(t, "owner"), "GET", "/v1/audit", "", "", 200), "application.member_updated") {
 		t.Fatal("missing lifecycle audit")
+	}
+}
+
+// Exercise the language-neutral reference over a TLS listener. The control
+// plane, PostgreSQL and authorizations are real; the fixture worker completes
+// the admitted operation. With the live realm fixture the member sessions are
+// obtained by following the bundled provider's browser and PKCE exchanges.
+func TestMonAppHTTPReference(t *testing.T) {
+	f := newRBACFixture(t)
+	dir := t.TempDir()
+	write := func(name, content string) string {
+		t.Helper()
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	var deployment controlplane.DeploymentPlan
+	f.must(t, "owner", "POST", "/v1/deployment-plans", `{"template":"matrix-base@1","count":2}`, 201, &deployment)
+	f.must(t, "owner", "POST", "/v1/deployment-plans/"+deployment.ID+"/apply", "{}", 202, nil)
+	var pool controlplane.AgentPool
+	f.must(t, "owner", "POST", "/v1/pools", stringify(controlplane.PoolInput{Name: "personal", DeploymentID: deployment.ID}), 201, &pool)
+	rows, err := f.db.Query(t.Context(), "SELECT agent_id FROM agent_pool_members WHERE pool_id=$1", pool.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var agents []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		agents = append(agents, id)
+	}
+	rows.Close()
+	if len(agents) != 2 {
+		t.Fatal("expected a two-agent pool", agents)
+	}
+	for _, id := range agents {
+		apiProvisionAgent(t, f.l, id)
+	}
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" || !strings.HasSuffix(r.URL.Path, "/invocations") {
+			f.server.ServeHTTP(w, r)
+			return
+		}
+		rec := httptest.NewRecorder()
+		f.server.ServeHTTP(rec, r)
+		if rec.Code == 202 {
+			var inv controlplane.Invocation
+			if err := json.Unmarshal(rec.Body.Bytes(), &inv); err != nil {
+				t.Error(err)
+				return
+			}
+			f.complete(t, inv.ID)
+		}
+		for k, vals := range rec.Header() {
+			w.Header()[k] = vals
+		}
+		w.WriteHeader(rec.Code)
+		_, _ = io.Copy(w, rec.Body)
+	}))
+	defer srv.Close()
+	ca := write("api-ca.pem", string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: srv.Certificate().Raw})))
+	cfg := appTestConfig("monapp")
+	live := os.Getenv("AGENTCAPSULE_TEST_MONAPP_KEYCLOAK_DIR")
+	if live != "" {
+		cfg.Issuer = "https://localhost:19443/realms/agentcapsule"
+		data, err := os.ReadFile(filepath.Join(live, "tls.crt"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		roots := x509.NewCertPool()
+		if !roots.AppendCertsFromPEM(data) {
+			t.Fatal("empty realm root")
+		}
+		client := http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}}}
+		resp, err := client.Get(cfg.Issuer + "/protocol/openid-connect/certs")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var jwks struct {
+			Keys []struct {
+				controlplane.OIDCKey
+				Use, Alg string
+			}
+		}
+		if err = json.NewDecoder(resp.Body).Decode(&jwks); err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		cfg.VerificationKeys = nil
+		for _, k := range jwks.Keys {
+			if k.Use == "sig" && k.Alg == "RS256" {
+				cfg.VerificationKeys = append(cfg.VerificationKeys, k.OIDCKey)
+			}
+		}
+	}
+	var members []map[string]string
+	for _, name := range []string{"alice", "bob"} {
+		tokenFile := filepath.Join(dir, name+".jwt")
+		if live != "" {
+			args := []string{"../../examples/monapp/oidc-login.py", "--issuer", cfg.Issuer, "--client-id", cfg.ClientID, "--redirect-uri", cfg.RedirectURIs[0], "--username", name,
+				"--ca-file", filepath.Join(live, "tls.crt"), "--password-file", filepath.Join(live, name), "--output", tokenFile}
+			if out, err := exec.CommandContext(t.Context(), "python3", args...).CombinedOutput(); err != nil {
+				t.Fatalf("OIDC %s: %v %s", name, err, out)
+			}
+		} else {
+			write(name+".jwt", signAppToken(t, cfg.Issuer, name, cfg.Audience))
+		}
+		members = append(members, map[string]string{"email": name + "@example.test", "token_file": tokenFile})
+	}
+	conf := map[string]any{"api": srv.URL, "api_ca": ca, "application": cfg, "members": members, "admin_token_file": write("admin.jwt", f.token(t, "owner")),
+		"other_org_token_file": write("foreign.jwt", f.token(t, "foreign")), "support_team_id": rbacFreshTeam(t, f)["fresh"], "support_agent_id": f.ids["agent"], "pool_id": pool.ID, "timeout_seconds": 30}
+	path := write("scenario.json", stringify(conf))
+	output, err := exec.CommandContext(t.Context(), "python3", "../../examples/monapp/verify.py", path).CombinedOutput()
+	if err != nil {
+		t.Fatalf("reference client: %v %s", err, output)
+	}
+	t.Log(string(output))
+}
+
+func TestApplicationPoolExhaustionAndDurableReplay(t *testing.T) {
+	f := newRBACFixture(t)
+	pool := f.ids["pool"]
+	owner := f.token(t, "owner")
+	run := func(mode string, want int) (controlplane.Activation, string, string) {
+		t.Helper()
+		v := appFixture(t, f)
+		slots := []controlplane.PolicySlot{
+			{Name: "research", PoolID: pool, Permissions: []string{"read_metadata"}},
+			{Name: "admin", PoolID: pool, Permissions: []string{"read_metadata"}},
+		}
+		var pol controlplane.AssignmentPolicy
+		f.must(t, "owner", "POST", "/v1/assignment-policies/plan", stringify(controlplane.PolicySpec{ApplicationID: v["app"], Slots: slots, OnExhaustion: mode}), 201, &pol)
+		f.must(t, "owner", "POST", "/v1/assignment-policies/"+pol.ID+"/apply", "{}", 200, nil)
+		var invitation controlplane.Invitation
+		root := "/v1/applications/" + v["app"]
+		f.must(t, "owner", "POST", root+"/invitations", stringify(controlplane.InviteInput{PolicyID: pol.ID, Email: "alice@example.test", ExpiresAt: time.Now().Add(time.Hour)}), 201, &invitation)
+		token := signAppToken(t, v["issuer"], "alice", "agentcapsule-api")
+		proof := stringify(controlplane.AcceptInvitation{Proof: invitation.Proof})
+		r := call(t, f.server, "POST", root+"/accept", token, "click", proof)
+		if r.Code != want {
+			t.Fatalf("accept for %s: %d %s", mode, r.Code, r.Body.String())
+		}
+		if want != 200 {
+			if problemCode(r) != "pool_exhausted" {
+				t.Fatal(r.Body.String())
+			}
+			var n int
+			if err := f.db.QueryRow(t.Context(), "SELECT count(*) FROM app_personal_reservations WHERE policy_id=$1", pol.ID).Scan(&n); err != nil || n != 0 {
+				t.Fatal("partial allocation", n, err)
+			}
+			return controlplane.Activation{}, root, proof
+		}
+		var a controlplane.Activation
+		if err := json.Unmarshal(r.Body.Bytes(), &a); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.db.Exec(t.Context(), "DELETE FROM tenant_http_receipts WHERE tenant_id=$1 AND principal_id=$2", f.l.org.ID, a.PrincipalID); err != nil {
+			t.Fatal(err)
+		}
+		again := call(t, f.server, "POST", root+"/accept", token, "after-expiry", proof)
+		var retried controlplane.Activation
+		if again.Code != 200 || json.Unmarshal(again.Body.Bytes(), &retried) != nil || retried.ID != a.ID || stringify(a.Agents) != stringify(retried.Agents) {
+			t.Fatal(again.Code, again.Body.String())
+		}
+		return a, root, proof
+	}
+	run("refuse", 409)
+	a, root, _ := run("wait", 200)
+	if a.State != "waiting_capacity" || len(a.Agents) != 1 {
+		t.Fatal("waiter", a)
+	}
+	f.must(t, "owner", "POST", "/v1/pools/"+pool+"/expand", `{"count":1}`, 200, nil)
+	if _, err := f.db.Exec(t.Context(), "UPDATE app_activations SET retry_at=clock_timestamp() WHERE id=$1", a.ID); err != nil {
+		t.Fatal(err)
+	}
+	go f.server.accounts.RetryWaitingActivations(t.Context())
+	until := time.Now().Add(10 * time.Second)
+	for {
+		r := call(t, f.server, "GET", root+"/activations/"+a.ID, owner, "", "")
+		if r.Code != 200 || json.Unmarshal(r.Body.Bytes(), &a) != nil {
+			t.Fatal(r.Code, r.Body.String())
+		}
+		if len(a.Agents) == 2 {
+			break
+		}
+		if time.Now().After(until) {
+			t.Fatal("waiter did not resume", a)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if a.Agents["admin"] == a.Agents["research"] || a.State != "preparing" {
+		t.Fatal(a)
+	}
+	auto, _, _ := run("create", 200)
+	if len(auto.Agents) != 2 || auto.Agents["admin"] == auto.Agents["research"] {
+		t.Fatal("automatic provisioning", auto)
+	}
+	var distinct, volumes int
+	err := f.db.QueryRow(t.Context(), `SELECT count(DISTINCT r.agent_id),count(DISTINCT e.volume_id)
+      FROM app_personal_reservations r JOIN store_enrollments e ON e.agent_id=r.agent_id WHERE r.principal_id IN ($1,$2)`, a.PrincipalID, auto.PrincipalID).Scan(&distinct, &volumes)
+	if err != nil || distinct != 4 || volumes != 4 {
+		t.Fatal(distinct, volumes, err)
+	}
+}
+
+func TestAppInvitationScopeExpiryAndManager(t *testing.T) {
+	f := newRBACFixture(t)
+	v := activationFixture(t, f)
+	var manager controlplane.Activation
+	f.must(t, "owner", "GET", "/v1/applications/"+v["app"]+"/activations/"+v["activation"], "", 200, &manager)
+	var policy controlplane.AssignmentPolicy
+	f.must(t, "owner", "POST", "/v1/assignment-policies/plan", stringify(controlplane.PolicySpec{ApplicationID: v["app"], AllowedTeams: []string{v["team"]}, ManagerIDs: []string{manager.PrincipalID}, OnExhaustion: "refuse",
+		Slots: []controlplane.PolicySlot{{Name: "personal", PoolID: f.ids["pool"], Permissions: []string{"invoke"}}}}), 201, &policy)
+	f.must(t, "owner", "POST", "/v1/assignment-policies/"+policy.ID+"/apply", "{}", 200, nil)
+	root := "/v1/applications/" + v["app"]
+	in := controlplane.InviteInput{PolicyID: policy.ID, Email: "bob@example.test", TeamID: v["team"], ExpiresAt: time.Now().Add(time.Hour)}
+	var invitation controlplane.Invitation
+	f.must(t, "applicant", "POST", root+"/invitations", stringify(in), 201, &invitation)
+	in.TeamID = f.ids["team"]
+	if r := f.call(t, "applicant", "POST", root+"/invitations", "outside", stringify(in)); r.Code != 403 {
+		t.Fatal("unauthorized team", r.Code, r.Body.String())
+	}
+	if _, err := f.db.Exec(t.Context(), "UPDATE app_invitations SET expires_at=clock_timestamp() WHERE id=$1", invitation.ID); err != nil {
+		t.Fatal(err)
+	}
+	token := signAppToken(t, v["issuer"], "bob", "agentcapsule-api")
+	r := call(t, f.server, "POST", root+"/accept", token, "expired", stringify(controlplane.AcceptInvitation{Proof: invitation.Proof}))
+	if r.Code != 409 || problemCode(r) != "expired" {
+		t.Fatal("expired", r.Code, r.Body.String())
+	}
+	f.must(t, "owner", "POST", root+"/revoke", "{}", 200, nil)
+	r = call(t, f.server, "POST", root+"/accept", token, "revoked", stringify(controlplane.AcceptInvitation{Proof: invitation.Proof}))
+	if r.Code != 401 {
+		t.Fatal("revoked", r.Code, r.Body.String())
 	}
 }

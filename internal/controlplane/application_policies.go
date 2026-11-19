@@ -110,7 +110,7 @@ func inspectPolicy(ctx context.Context, tx pgx.Tx, tenant string, v *AssignmentP
 				return ErrInput
 			}
 			var n int
-			err := tx.QueryRow(ctx, `SELECT (SELECT count(*) FROM agent_pool_inventory m WHERE m.tenant_id=p.tenant_id AND m.pool_id=p.id)
+			err := tx.QueryRow(ctx, `SELECT (SELECT count(*) FROM `+assignablePoolInventory+` m WHERE m.tenant_id=p.tenant_id AND m.pool_id=p.id)
                 FROM agent_pools p WHERE p.tenant_id=$1 AND p.id=$2`, tenant, slot.PoolID).Scan(&n)
 			if errors.Is(err, pgx.ErrNoRows) {
 				return ErrNotFound
@@ -160,6 +160,9 @@ func (a *Accounts) PlanPolicy(ctx context.Context, p Principal, key string, in P
 	if _, err = authorizeTenantAdminMutation(ctx, tx, p, authorization.ManageAssignments); err != nil {
 		return APIReceipt{}, err
 	}
+	if in.AllowedTeams == nil {
+		in.AllowedTeams = []string{}
+	}
 	plan := AssignmentPolicy{PolicySpec: in}
 	if err = inspectPolicy(ctx, tx, p.TenantID, &plan); err != nil {
 		return APIReceipt{}, err
@@ -167,7 +170,10 @@ func (a *Accounts) PlanPolicy(ctx context.Context, p Principal, key string, in P
 	out, err := a.withTenantReceipt(ctx, tx, p, "policy.plan", key, in, func() (int, any, error) {
 		plan.ID = newID("pol")
 		_, err := tx.Exec(ctx, "INSERT INTO app_policies(id,tenant_id,app_id,spec) VALUES($1,$2,$3,$4)", plan.ID, p.TenantID, in.ApplicationID, in)
-		return 201, plan, err
+		if err != nil {
+			return 0, nil, err
+		}
+		return 201, plan, auditApplication(ctx, tx, p, plan.ID, "policy.planned")
 	})
 	if err != nil {
 		return APIReceipt{}, err

@@ -26,6 +26,7 @@ type auditedRoute struct {
 var auditedRoutes = map[string]auditedRoute{
 	"POST /v1/platform/sessions":                                {"platform_credential.created", "", ""},
 	"POST /v1/platform/sessions/{id}/revoke":                    {"platform_credential.revoked", "id", ""},
+	"POST /v1/pools/{id}/expand":                                {"pool.expanded", "id", ""},
 	"POST /v1/applications":                                     {"application.registered", "", ""},
 	"POST /v1/applications/{id}/rotate":                         {"application.rotate", "id", ""},
 	"POST /v1/applications/{id}/revoke":                         {"application.revoke", "id", ""},

@@ -360,6 +360,9 @@ func (a *Accounts) CreateAgentAssignment(ctx context.Context, p Principal, agent
             AND policy_id IS NULL AND principal_id IS NOT DISTINCT FROM nullif($3,'') AND team_id IS NOT DISTINCT FROM nullif($4,''))`, p.TenantID, agentID, in.PrincipalID, in.TeamID).Scan(&duplicate); err != nil {
 			return 0, nil, err
 		}
+		if err = personalTarget(ctx, tx, p.TenantID, agentID, in.PrincipalID); err != nil {
+			return 0, nil, err
+		}
 		if duplicate {
 			return 0, nil, ErrTransition
 		}

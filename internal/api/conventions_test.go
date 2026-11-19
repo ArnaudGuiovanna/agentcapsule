@@ -33,6 +33,7 @@ var idempotencyOtherBody = map[string]string{
 	"POST /v1/pools":                        `{"name":"{name}-other","deployment_id":"{fresh}"}`,
 
 	"POST /v1/applications":                                     "{other_app_config}",
+	"POST /v1/pools/{pool}/expand":                              `{"count":2}`,
 	"POST /v1/organizations":                                    `{"name":"{name}-b","initial_owner":{"issuer":"https://client.example","subject":"{name}","display_name":"X"}}`,
 	"POST /v1/harness-imports":                                  `{"reference":"ghcr.io/acme/other@sha256:{digest}"}`,
 	"POST /v1/members":                                          `{"issuer":"https://client.example","subject":"{name}-b","display_name":"X","role":"agent_user"}`,

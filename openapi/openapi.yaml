@@ -284,6 +284,29 @@ paths:
           content:
             application/json: {schema: {$ref: '#/components/schemas/AgentPool'}}
         default: {$ref: '#/components/responses/Problem'}
+  /v1/pools/{id}/expand:
+    post:
+      operationId: expandAgentPool
+      summary: Reserve additional agents from the original pool's frozen template for waiting applicants
+      description: Requires agent:create. Capacity admission is atomic. Follow the pool inventory to see provisioning progress.
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [count]
+              properties:
+                count: {type: integer, minimum: 1, maximum: 100000}
+      responses:
+        '200':
+          description: Enlarged inventory
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AgentPool'}
+        default: {$ref: '#/components/responses/Problem'}
   /v1/pools/{id}:
     get:
       summary: Read the inventory of an organization pool
@@ -1842,13 +1865,13 @@ paths:
       description: >-
         Legacy domain (acp_ token): the owner sees their agent. An authorized
         service sees only the technical metadata of legacy agents. Tenant
-        domain (delegated JWT, scope agent:read): a role org_owner, org_admin,
+        domain (delegated or OIDC access token, scope agent:read): a role org_owner, org_admin,
         agent_operator or auditor sees the metadata of all agents of its
         organization. Any other member sees only the agents on which they have
         an active assignment, direct or through a team. An agent of another
         tenant, or one that is not assigned, is absent, never denied. No
         content.
-      security: [{bearer: []}, {delegatedBearer: []}, {serviceBearer: []}]
+      security: [{bearer: []}, {memberOIDC: []}, {delegatedBearer: []}, {serviceBearer: []}]
       parameters:
         - {name: after, in: query, schema: {type: string, maxLength: 100}}
         - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 100}}
@@ -3216,7 +3239,7 @@ components:
         disabled: {type: boolean}
     AppActivation:
       type: object
-      required: [id, application_id, policy_id, principal_id, version, disabled, state, agents]
+      required: [id, application_id, policy_id, principal_id, version, disabled, state, agents, admitted_work]
       properties:
         id: {type: string}
         application_id: {type: string}
@@ -3229,6 +3252,7 @@ components:
         reason: {type: string}
         retry_after_seconds: {type: integer}
         agents: {type: object, additionalProperties: {type: string}}
+        admitted_work: {type: object, required: [pending, running], properties: {pending: {type: integer}, running: {type: integer}}}
         revocations: {$ref: '#/components/schemas/AccessRevocations'}
     AppAccessSource:
       type: object
