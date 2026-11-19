@@ -85,6 +85,11 @@ only its own.
 <!-- rbac-matrix:begin -->
 | Route | owner | admin | operator | auditor | user | team | former | unassigned | service | foreign | revoked | revoked-token | platform |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `GET /v1/version` (no authentication) | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes |
+| `GET /v1/platform/diagnostics` | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 401 | 401 | yes |
+| `GET /v1/platform/session` | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 401 | 401 | yes |
+| `POST /v1/platform/sessions` | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 401 | 401 | yes |
+| `POST /v1/platform/sessions/{id}/revoke` | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 401 | 401 | yes |
 | `GET /v1/health/live` (no authentication) | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes |
 | `GET /v1/health/ready` (no authentication) | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes |
 | `GET /v1/organizations` | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 401 | 401 | yes |
@@ -97,6 +102,18 @@ only its own.
 | `GET /v1/harness-imports/{id}` | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 401 | 401 | yes |
 | `GET /v1/harness-releases` (the platform's catalog) | yes | yes | yes | yes | 403 | 403 | 403 | 403 | yes | yes | 401 | 401 | yes |
 | `POST /v1/harness-releases/{id}/deprecate` (a disposable release) | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 401 | 401 | yes |
+| `GET /v1/system-images` | yes | yes | yes | yes | 403 | 403 | 403 | 403 | yes | yes | 401 | 401 | yes |
+| `POST /v1/system-images` | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 401 | 401 | yes |
+| `POST /v1/templates` | yes | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | yes | 401 | 401 | 403 |
+| `POST /v1/deployment-plans` | yes | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `POST /v1/deployment-plans/{id}/apply` | yes | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `GET /v1/deployments/{id}` | yes | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `POST /v1/deployments/{id}/rollouts` | yes | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `GET /v1/rollouts/{id}/members` | yes | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `GET /v1/rollouts/{id}` | yes | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `POST /v1/rollouts/{id}/resume` | yes | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `POST /v1/pools` | yes | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `GET /v1/pools/{id}` | yes | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
 | `GET /v1/organizations/current` (the caller's own organization) | yes | yes | yes | yes | yes | yes | yes | yes | yes | filtered | 401 | 401 | 403 |
 | `GET /v1/members` | yes | yes | 403 | yes | 403 | 403 | 403 | 403 | yes | filtered | 401 | 401 | 403 |
 | `POST /v1/members` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | yes | 401 | 401 | 403 |
@@ -170,6 +187,7 @@ only its own.
 | `GET /v1/operations/{id}/result` (the caller's own, else the user's) | 404 | 404 | 404 | 404 | yes | 404 | 404 | 404 | 404 | 404 | 401 | 401 | 403 |
 | `POST /v1/invocations/{id}/cancel` (a disposable invocation of the user) | 404 | 404 | 404 | 404 | yes | 404 | 404 | 404 | 404 | 404 | 401 | 401 | 404 |
 | `POST /v1/invocations/{id}/replay` (a disposable dead letter of the user) | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `GET /v1/agents/{id}/requests/{request_id}/diagnostics` | yes | yes | yes | 403 | yes | yes | 404 | 404 | yes | 404 | 401 | 401 | 400 |
 | `GET /v1/agents/{id}/held-requests` | yes | yes | yes | 403 | yes | yes | 404 | 404 | yes | 404 | 401 | 401 | 400 |
 | `POST /v1/agents/{id}/held-requests/{request_id}/accept` (a disposable held request) | yes | yes | yes | 403 | yes | yes | 404 | 404 | yes | 404 | 401 | 401 | 400 |
 | `POST /v1/agents/{id}/held-requests/{request_id}/decline` (a disposable held request) | yes | yes | yes | 403 | yes | yes | 404 | 404 | yes | 404 | 401 | 401 | 400 |
@@ -191,6 +209,19 @@ only its own.
 | `POST /v1/me/inbox/requests/{id}/decline` (historical owner domain) | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 401 | 401 | 403 |
 | `GET /v1/agent-requests/{id}` (historical owner domain) | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 401 | 401 | 403 |
 | `POST /v1/agent-requests/{id}/cancel` (historical owner domain) | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 401 | 401 | 403 |
+| `POST /v1/pools/{id}/expand` | yes | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `GET /v1/applications` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | yes | 401 | 401 | 403 |
+| `POST /v1/applications` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | yes | 401 | 401 | 403 |
+| `GET /v1/applications/{id}` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `POST /v1/applications/{id}/rotate` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `POST /v1/applications/{id}/revoke` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `POST /v1/assignment-policies/plan` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `POST /v1/assignment-policies/{id}/apply` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `POST /v1/applications/{id}/invitations` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `POST /v1/applications/{id}/accept` (requires the recipient's OIDC access token and invitation proof) | 401 | 401 | 401 | 401 | 401 | 401 | 401 | 401 | 401 | 401 | 401 | 401 | 401 |
+| `GET /v1/applications/{id}/activations/{activation_id}` (also visible to its member and application backend) | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `PUT /v1/applications/{id}/activations/{activation_id}` (also available to the authorized application backend) | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `GET /v1/access/explain` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
 <!-- rbac-matrix:end -->
 
 ## What the matrix does not show

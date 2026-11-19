@@ -392,6 +392,7 @@ def main(argv, cli_version):
         p.add_argument("--offline", help="verified release assets on host")
         p.add_argument("--trusted-root", help="trusted Sigstore root on host")
     host = groups.add_parser("host").add_subparsers(dest="group", required=True)
+    add_diagnostics(host)
     operations = host.add_parser("operation").add_subparsers(dest="sub", required=True)
     for action in ("show", "wait", "resume"):
         p = operations.add_parser(action)
@@ -413,6 +414,8 @@ def main(argv, cli_version):
         if not re.fullmatch(VERSION, target):
             raise ValueError("invalid release tag")
         return {"schema": SCHEMA, "installed": current(), "available": target, "different": current() != target}
+    if args.command == "host" and args.group == "diagnose":
+        return diagnose(args)
     if args.command == "host":
         directory = opdir(args.id)
         if args.sub == "resume":

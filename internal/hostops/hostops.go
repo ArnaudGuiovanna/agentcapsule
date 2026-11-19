@@ -23,6 +23,9 @@ var controller []byte
 //go:embed setup.py
 var setup []byte
 
+//go:embed diagnose.py
+var diagnostics []byte
+
 //go:embed trusted_root.json
 var trustedRoot []byte
 
@@ -68,7 +71,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		cmd = exec.CommandContext(ctx, "python3", "-I", "-", encoded)
 	}
 	root := []byte("import base64\nTRUSTED_ROOT=base64.b64decode('" + base64.StdEncoding.EncodeToString(trustedRoot) + "')")
-	source := bytes.Join([][]byte{root, setup, controller}, []byte("\n"))
+	source := bytes.Join([][]byte{root, setup, diagnostics, controller}, []byte("\n"))
 	program := "import base64\nHELPER_SOURCE=base64.b64decode('" + base64.StdEncoding.EncodeToString(source) + "')\nexec(compile(HELPER_SOURCE, 'agentcapsule-host', 'exec'))\n"
 	cmd.Stdin = bytes.NewBufferString(program)
 	cmd.Stdout, cmd.Stderr = stdout, stderr

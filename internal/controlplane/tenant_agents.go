@@ -357,7 +357,10 @@ func (a *Accounts) CreateAgentAssignment(ctx context.Context, p Principal, agent
 		}
 		var duplicate bool
 		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM agent_assignments WHERE tenant_id=$1 AND agent_id=$2 AND status='active'
-            AND principal_id IS NOT DISTINCT FROM nullif($3,'') AND team_id IS NOT DISTINCT FROM nullif($4,''))`, p.TenantID, agentID, in.PrincipalID, in.TeamID).Scan(&duplicate); err != nil {
+            AND policy_id IS NULL AND principal_id IS NOT DISTINCT FROM nullif($3,'') AND team_id IS NOT DISTINCT FROM nullif($4,''))`, p.TenantID, agentID, in.PrincipalID, in.TeamID).Scan(&duplicate); err != nil {
+			return 0, nil, err
+		}
+		if err = personalTarget(ctx, tx, p.TenantID, agentID, in.PrincipalID); err != nil {
 			return 0, nil, err
 		}
 		if duplicate {

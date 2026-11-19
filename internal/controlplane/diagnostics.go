@@ -39,7 +39,11 @@ type AppliedMigration struct {
 // HostDiagnostics is one worker host: its queue, its VMs, its storage
 // reservation and the storage pressure its worker last recorded.
 type HostDiagnostics struct {
-	HostID             string           `json:"host_id"`
+	HostID string `json:"host_id"`
+	HostStatistics
+}
+
+type HostStatistics struct {
 	Queue              []QueueByKind    `json:"queue"`
 	RunningVMs         int64            `json:"running_vms"`
 	UncleanStops       int64            `json:"unclean_stops"`
@@ -71,6 +75,14 @@ type CountBy struct {
 
 // Diagnostics reads the database's state for an operator's diagnostic export.
 func (s *Store) Diagnostics(ctx context.Context) (Diagnostics, error) {
+	return s.diagnostics(ctx, nil)
+}
+
+func (s *Store) PlatformDiagnostics(ctx context.Context, p Principal) (Diagnostics, error) {
+	return s.diagnostics(ctx, &p)
+}
+
+func (s *Store) diagnostics(ctx context.Context, p *Principal) (Diagnostics, error) {
 	d := Diagnostics{ExpectedMigration: len(controlPlaneMigrations), Migrations: []AppliedMigration{}, Hosts: []HostDiagnostics{},
 		AgentsByPhase: map[string]int64{}, Deliveries: []CountBy{}, Imports: []CountBy{}, FailedOperations: []CountBy{}}
 	tx, err := s.begin(ctx)
@@ -78,6 +90,11 @@ func (s *Store) Diagnostics(ctx context.Context) (Diagnostics, error) {
 		return d, err
 	}
 	defer rollback(tx)
+	if p != nil {
+		if err = authorizePlatform(ctx, tx, *p); err != nil {
+			return d, err
+		}
+	}
 	if err = tx.QueryRow(ctx, "SHOW server_version").Scan(&d.PostgreSQL); err != nil {
 		return d, err
 	}
@@ -106,7 +123,7 @@ func (s *Store) Diagnostics(ctx context.Context) (Diagnostics, error) {
 		return d, err
 	}
 	for rows.Next() {
-		h := HostDiagnostics{Queue: []QueueByKind{}, JobFailures: map[string]int64{}}
+		h := HostDiagnostics{HostStatistics: HostStatistics{Queue: []QueueByKind{}, JobFailures: map[string]int64{}}}
 		if err = rows.Scan(&h.HostID, &h.StorageLimitMiB, &h.DataPressure, &h.ImagePressure, &h.PressureObservedAt,
 			&h.StorageReservedMiB, &h.RunningVMs, &h.UncleanStops); err != nil {
 			rows.Close()

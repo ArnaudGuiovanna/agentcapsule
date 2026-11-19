@@ -139,12 +139,21 @@ func TestHTTPHeldRequests(t *testing.T) {
 		return r.RequestID
 	}
 	first, second := held("first"), held("second")
+	diagnostic := "/v1/agents/" + recipient + "/requests/" + first + "/diagnostics"
+	var detail controlplane.CommunicationDiagnostic
+	r := call(t, l.server, "GET", diagnostic, bobToken, "", "")
+	if r.Code != 200 || json.Unmarshal(r.Body.Bytes(), &detail) != nil || detail.Consent != "pending" || detail.NextCheck != "await_recipient_decision" || !detail.MandateCurrent || strings.Contains(r.Body.String(), "payload-first") {
+		t.Fatal("held diagnostic", r.Code, r.Body.String())
+	}
+	if r := call(t, l.server, "GET", diagnostic, carolToken, "", ""); r.Code != 404 {
+		t.Fatal("unassigned member learned about request", r.Code)
+	}
 	list := "/v1/agents/" + recipient + "/held-requests"
 
 	var page struct {
 		Items []controlplane.HeldRequest `json:"items"`
 	}
-	r := call(t, l.server, "GET", list, bobToken, "", "")
+	r = call(t, l.server, "GET", list, bobToken, "", "")
 	if r.Code != 200 || json.Unmarshal(r.Body.Bytes(), &page) != nil || len(page.Items) != 2 || page.Items[0].SenderAgentID != sender {
 		t.Fatal("list", r.Code, r.Body.String())
 	}

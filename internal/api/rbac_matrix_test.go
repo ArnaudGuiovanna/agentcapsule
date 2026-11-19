@@ -90,7 +90,12 @@ const (
 	rbacLink         = "404 404 404 404 S 404 404 404 404 404 401 401 404"
 )
 
-var rbacRoutes = []rbacRoute{
+var rbacRoutes = append([]rbacRoute{
+	{Method: "GET", Path: "/v1/version", Success: 200, Want: "S S S S S S S S S S S S S", Note: "no authentication"},
+	{Method: "GET", Path: "/v1/platform/diagnostics", Success: 200, Want: rbacPlatformOnly},
+	{Method: "GET", Path: "/v1/platform/session", Success: 200, Want: rbacPlatformOnly},
+	{Method: "POST", Path: "/v1/platform/sessions", Success: 201, Want: rbacPlatformOnly, body: `{"token_sha256":"{digest}"}`, fresh: rbacName},
+	{Method: "POST", Path: "/v1/platform/sessions/{fresh}/revoke", Success: 200, Want: rbacPlatformOnly, body: `{}`, fresh: rbacFreshSession, revokes: "platform_credential"},
 	{Method: "GET", Path: "/v1/health/live", Success: 200, Want: "S S S S S S S S S S S S S", Note: "no authentication"},
 	{Method: "GET", Path: "/v1/health/ready", Success: 200, Want: "S S S S S S S S S S S S S", Note: "no authentication"},
 
@@ -104,6 +109,18 @@ var rbacRoutes = []rbacRoute{
 	{Method: "GET", Path: "/v1/harness-imports/{import}", Success: 200, Want: rbacPlatformOnly},
 	{Method: "GET", Path: "/v1/harness-releases", Success: 200, Want: "S S S S 403 403 403 403 S S 401 401 S", Note: "the platform's catalog"},
 	{Method: "POST", Path: "/v1/harness-releases/{fresh}/deprecate", Success: 200, Want: rbacPlatformOnly, body: `{}`, fresh: rbacFreshRelease, Note: "a disposable release"},
+	{Method: "GET", Path: "/v1/system-images", Success: 200, Want: "S S S S 403 403 403 403 S S 401 401 S"},
+	{Method: "POST", Path: "/v1/system-images", Success: 201, Want: rbacPlatformOnly, body: `{"reference":"{name}@1","kernel_digest":"sha256:{digest}","initrd_digest":"sha256:{digest}"}`, fresh: rbacName},
+	{Method: "POST", Path: "/v1/templates", Success: 201, Want: "S S S 403 403 403 403 403 403 S 401 401 403", body: rbacTemplateBody, fresh: rbacName},
+	{Method: "POST", Path: "/v1/deployment-plans", Success: 201, Want: "S S S 403 403 403 403 403 403 404 401 401 403", body: `{"template":"matrix-base@1","count":1}`},
+	{Method: "POST", Path: "/v1/deployment-plans/{fresh}/apply", Success: 202, Want: "S S S 403 403 403 403 403 403 404 401 401 403", body: `{}`, fresh: rbacFreshDeployment},
+	{Method: "GET", Path: "/v1/deployments/{deployment}", Success: 200, Want: "S S S 403 403 403 403 403 403 404 401 401 403"},
+	{Method: "POST", Path: "/v1/deployments/{fresh}/rollouts", Success: 202, Want: rbacConfigure, body: `{"template":"matrix-base@1","max_unavailable":1}`, fresh: rbacPoolDeployment},
+	{Method: "GET", Path: "/v1/rollouts/{fresh}/members", Success: 200, Want: rbacConfigure, fresh: rbacFreshRollout},
+	{Method: "GET", Path: "/v1/rollouts/{fresh}", Success: 200, Want: rbacConfigure, fresh: rbacFreshRollout},
+	{Method: "POST", Path: "/v1/rollouts/{fresh}/resume", Success: 202, Want: rbacConfigure, body: `{}`, fresh: rbacFreshRollout},
+	{Method: "POST", Path: "/v1/pools", Success: 201, Want: "S S S 403 403 403 403 403 403 404 401 401 403", body: `{"name":"{name}","deployment_id":"{fresh}"}`, fresh: rbacPoolDeployment},
+	{Method: "GET", Path: "/v1/pools/{pool}", Success: 200, Want: "S S S 403 403 403 403 403 403 404 401 401 403"},
 	{Method: "GET", Path: "/v1/organizations/current", Success: 200, Want: "S S S S S S S S S F 401 401 403", hides: []string{"{org}"}, Note: "the caller's own organization"},
 
 	{Method: "GET", Path: "/v1/members", Success: 200, Want: "S S 403 S 403 403 403 403 S F 401 401 403", hides: []string{"{user_principal}"}},
@@ -186,6 +203,7 @@ var rbacRoutes = []rbacRoute{
 	{Method: "POST", Path: "/v1/invocations/{fresh}/cancel", Success: 200, Want: rbacSender, fresh: rbacFreshScheduled, Note: "a disposable invocation of the user"},
 	{Method: "POST", Path: "/v1/invocations/{fresh}/replay", Success: 202, Want: rbacManage, body: `{}`, fresh: rbacFreshDeadLetter, Note: "a disposable dead letter of the user"},
 
+	{Method: "GET", Path: "/v1/agents/{agent}/requests/{held}/diagnostics", Success: 200, Want: rbacDecideHeld, fresh: rbacFreshHeld},
 	{Method: "GET", Path: "/v1/agents/{agent}/held-requests", Success: 200, Want: rbacDecideHeld},
 	{Method: "POST", Path: "/v1/agents/{agent}/held-requests/{held}/accept", Success: 200, Want: rbacDecideHeld, body: `{}`, fresh: rbacFreshHeld, Note: "a disposable held request"},
 	{Method: "POST", Path: "/v1/agents/{agent}/held-requests/{held}/decline", Success: 200, Want: rbacDecideHeld, body: `{}`, fresh: rbacFreshHeld, Note: "a disposable held request"},
@@ -209,7 +227,7 @@ var rbacRoutes = []rbacRoute{
 	{Method: "POST", Path: "/v1/me/inbox/requests/req_matrix/decline", Success: 200, Want: rbacLegacyOnly, body: `{}`, Note: "historical owner domain"},
 	{Method: "GET", Path: "/v1/agent-requests/req_matrix", Success: 200, Want: rbacLegacyOnly, Note: "historical owner domain"},
 	{Method: "POST", Path: "/v1/agent-requests/req_matrix/cancel", Success: 202, Want: rbacLegacyOnly, body: `{}`, Note: "historical owner domain"},
-}
+}, applicationRoutesMatrix...)
 
 func TestRBACMatrixIsWellFormed(t *testing.T) {
 	seen := map[string]bool{}
@@ -492,6 +510,13 @@ func rbacName(t *testing.T, f *rbacFixture) map[string]string {
 	name := f.next()
 	sum := sha256.Sum256([]byte(name))
 	return map[string]string{"name": name, "digest": hex.EncodeToString(sum[:]), "expires": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)}
+}
+
+func rbacFreshSession(t *testing.T, f *rbacFixture) map[string]string {
+	identity := rbacName(t, f)
+	var result controlplane.OperatorCredential
+	f.must(t, "platform", "POST", "/v1/platform/sessions", `{"token_sha256":"`+identity["digest"]+`"}`, 201, &result)
+	return map[string]string{"fresh": result.ID}
 }
 
 func rbacFreshOrganization(t *testing.T, f *rbacFixture) map[string]string {
@@ -823,6 +848,7 @@ func newRBACFixture(t *testing.T) *rbacFixture {
 	f.ids["budget"] = rbacFreshBudget(t, f)["fresh"]
 	f.ids["call"] = rbacFreshCall(t, f)["fresh"]
 
+	rbacSetupDeployment(t, f)
 	var imported controlplane.HarnessImport
 	f.must(t, "platform", "POST", "/v1/harness-imports", `{"reference":"ghcr.io/acme/matrix@sha256:`+strings.Repeat("a", 64)+`"}`, 202, &imported)
 	f.ids["import"] = imported.ID
@@ -913,4 +939,38 @@ func TestRBACMatrix(t *testing.T) {
 			}
 		}
 	}
+}
+
+const rbacTemplateBody = `{"name":"{name}","system_image":"matrix@1","harness":{"name":"reference","version":"1.0.0"},"resources":{"vcpus":1,"memory_mib":256,"data_volume_mib":64}}`
+
+func rbacSetupDeployment(t *testing.T, f *rbacFixture) {
+	digests := controlplane.ImageDigests{Kernel: "sha256:" + strings.Repeat("c", 64), Initrd: "sha256:" + strings.Repeat("a", 64)}
+	if err := f.l.store.ReportDeploymentHost(t.Context(), "local", controlplane.HostProvisioningBudget{MaxActive: 100, VCPUs: 100, MemoryMiB: 100000, UIDSlots: 1000}, []controlplane.ImageDigests{digests}); err != nil {
+		t.Fatal(err)
+	}
+	f.must(t, "platform", "POST", "/v1/system-images", fmt.Sprintf(`{"reference":"matrix@1","kernel_digest":%q,"initrd_digest":%q}`, digests.Kernel, digests.Initrd), 201, nil)
+	f.must(t, "owner", "POST", "/v1/templates", strings.ReplaceAll(rbacTemplateBody, "{name}", "matrix-base"), 201, nil)
+	vars := rbacPoolDeployment(t, f)
+	f.ids["deployment"] = vars["fresh"]
+	var pool controlplane.AgentPool
+	f.must(t, "owner", "POST", "/v1/pools", fmt.Sprintf(`{"name":"fixture","deployment_id":%q}`, vars["fresh"]), 201, &pool)
+	f.ids["pool"] = pool.ID
+}
+func rbacFreshDeployment(t *testing.T, f *rbacFixture) map[string]string {
+	var plan controlplane.DeploymentPlan
+	f.must(t, "owner", "POST", "/v1/deployment-plans", `{"template":"matrix-base@1","count":1}`, 201, &plan)
+	return map[string]string{"fresh": plan.ID, "name": f.next()}
+}
+func rbacPoolDeployment(t *testing.T, f *rbacFixture) map[string]string {
+	vars := rbacFreshDeployment(t, f)
+	f.must(t, "owner", "POST", "/v1/deployment-plans/"+vars["fresh"]+"/apply", `{}`, 202, nil)
+	return vars
+}
+
+func rbacFreshRollout(t *testing.T, f *rbacFixture) map[string]string {
+	vars := rbacPoolDeployment(t, f)
+	var rollout controlplane.Rollout
+	f.must(t, "owner", "POST", "/v1/deployments/"+vars["fresh"]+"/rollouts", `{"template":"matrix-base@1","max_unavailable":1}`, 202, &rollout)
+	vars["fresh"] = rollout.ID
+	return vars
 }

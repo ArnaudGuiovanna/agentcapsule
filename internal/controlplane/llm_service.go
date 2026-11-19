@@ -146,7 +146,7 @@ func (s *LLMService) execute(ctx context.Context, h llmHold, q llmgateway.Reques
 // outcome: settled at the reported usage, unknown, or released.
 func (s *LLMService) settle(ctx context.Context, h llmHold, call func(llmgateway.Route) (llmgateway.Usage, error)) error {
 	route := h.route
-	usage, callErr := call(llmgateway.Route{Kind: route.Kind, BaseURL: route.BaseURL, UpstreamModel: route.UpstreamModel, Secret: route.Secret, Key: h.tenantID + "/" + h.alias})
+	usage, callErr := call(llmgateway.Route{AuthMode: route.AuthMode, Kind: route.Kind, BaseURL: route.BaseURL, UpstreamModel: route.UpstreamModel, Secret: route.Secret, Key: h.tenantID + "/" + h.alias})
 	// Bookkeeping must survive a cancelled caller context.
 	bk := context.WithoutCancel(ctx)
 	event := LLMCallEvent{Provider: route.Kind, SoftBudgets: h.res.SoftBudgets}
@@ -249,4 +249,14 @@ func (s *LLMService) ForwardFromVM(ctx context.Context, caller VMCaller, request
 		return ForwardResult{}, err
 	}
 	return ForwardResult{ForwardResponse: out, SoftBudgetExceeded: hold.res.SoftExceeded}, nil
+}
+
+// Probe is for the local worker operator diagnostic. The upstream is resolved
+// from a registered alias and the request uses the production egress policy.
+func (s *LLMService) Probe(ctx context.Context, tenant, alias string) (llmgateway.ProbeResult, error) {
+	route, err := s.accounts.ResolveLLMRoute(ctx, tenant, alias)
+	if err != nil {
+		return llmgateway.ProbeResult{}, err
+	}
+	return s.gateway.Probe(ctx, llmgateway.Route{Kind: route.Kind, BaseURL: route.BaseURL, AuthMode: route.AuthMode, UpstreamModel: route.UpstreamModel, Secret: route.Secret})
 }

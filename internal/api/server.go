@@ -67,6 +67,18 @@ func NewForHost(store *controlplane.Store, accounts *controlplane.Accounts, host
 	if err != nil {
 		return nil, err
 	}
+	s.handle("/v1/system-images", s.systemImages)
+	s.handle("/v1/templates", s.publishTemplate)
+	s.handle("/v1/deployment-plans", s.planDeployment)
+	s.handle("/v1/deployment-plans/{id}/apply", s.applyDeployment)
+	s.handle("/v1/deployments/{id}", s.showDeployment)
+	s.handle("/v1/deployments/{id}/rollouts", s.startRollout)
+	s.handle("/v1/rollouts/{id}", s.showRollout)
+	s.handle("/v1/rollouts/{id}/members", s.rolloutMembers)
+	s.handle("/v1/rollouts/{id}/resume", s.resumeRollout)
+	s.handle("/v1/pools", s.createPool)
+	s.handle("/v1/pools/{id}/expand", s.expandPool)
+	s.handle("/v1/pools/{id}", s.showPool)
 	s.handle("/v1/agents", s.agents)
 	s.handle("/v1/agents/{id}", s.agent)
 	s.handle("/v1/operations/{id}", s.operation)
@@ -85,6 +97,7 @@ func NewForHost(store *controlplane.Store, accounts *controlplane.Accounts, host
 	s.handle("/v1/agents/{id}/release", s.agentRelease)
 	s.handle("/v1/agents/{id}/directory", s.agentDirectory)
 	s.handle("/v1/agents/{id}/inbound", s.agentInbound)
+	s.handle("/v1/agents/{id}/requests/{request_id}/diagnostics", s.explainCommunication)
 	s.handle("/v1/agents/{id}/held-requests", s.heldRequests)
 	s.handle("/v1/agents/{id}/held-requests/{request_id}/accept", s.acceptHeldRequest)
 	s.handle("/v1/agents/{id}/held-requests/{request_id}/decline", s.declineHeldRequest)
@@ -118,11 +131,17 @@ func New(store *controlplane.Store, accounts *controlplane.Accounts) (*Server, e
 		return nil, controlplane.ErrInput
 	}
 	s := &Server{store: store, accounts: accounts, mux: http.NewServeMux()}
+	s.handle("/v1/version", s.version)
+	s.handle("/v1/platform/diagnostics", s.platformDiagnostics)
+	s.handle("/v1/platform/session", s.platformSession)
+	s.handle("/v1/platform/sessions", s.createPlatformSession)
+	s.handle("/v1/platform/sessions/{id}/revoke", s.revokePlatformSession)
 	s.handle("/v1/health/live", s.live)
 	s.handle("/v1/health/ready", s.ready)
 	s.handle("/v1/users", s.users)
 	s.handle("/v1/users/{id}/tokens", s.tokens)
 	s.handle("/v1/me", s.me)
+	s.applicationRoutes()
 	s.handle("/v1/members", s.members)
 	s.handle("/v1/members/{id}/role", s.changeMemberRole)
 	s.handle("/v1/members/{id}/revoke", s.revokeMember)
@@ -233,8 +252,16 @@ func quotaProblem(w http.ResponseWriter, status int, code, quota string) {
 func failure(w http.ResponseWriter, err error) {
 	var refusal *controlplane.ReplayRefusal
 	var quota *controlplane.OrganizationQuotaError
+	var shortfall *controlplane.DeploymentShortfall
 	var below *controlplane.QuotaBelowAgentError
 	switch {
+	case errors.As(err, &shortfall):
+		if recorder, ok := w.(*statusRecorder); ok {
+			recorder.problem = "deployment_capacity_exceeded"
+		}
+		w.Header().Set("Content-Type", "application/problem+json")
+		w.WriteHeader(409)
+		_ = json.NewEncoder(w).Encode(map[string]any{"type": "about:blank", "title": "Conflict", "status": 409, "code": "deployment_capacity_exceeded", "resource": shortfall.Resource, "required": shortfall.Required, "available": shortfall.Available})
 	case errors.As(err, &quota):
 		// Waiting does not help: an agent must go, or the operator raise
 		// the quota.
@@ -263,6 +290,8 @@ func failure(w http.ResponseWriter, err error) {
 		problem(w, 409, "agent_unavailable")
 	case errors.Is(err, controlplane.ErrTransition):
 		problem(w, 409, "invalid_transition")
+	case errors.Is(err, controlplane.ErrPoolExhausted):
+		problem(w, 409, "pool_exhausted")
 	case errors.Is(err, controlplane.ErrQueueFull):
 		w.Header().Set("Retry-After", "5")
 		problem(w, 429, "queue_full")

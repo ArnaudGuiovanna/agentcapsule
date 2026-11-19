@@ -18,6 +18,7 @@ import (
 // administrative actions: work given to an agent, its results, and the
 // historical owner domain. Their refusals stay out of the trail.
 var unauditedRoutes = []string{
+	"POST /v1/applications/{id}/accept",
 	"POST /v1/agents/{id}/messages", "POST /v1/agents/{id}/invocations", "POST /v1/invocations/{id}/cancel",
 	"POST /v1/attachments/{id}/link", "POST /v1/invocations/{id}/result/link",
 	"POST /v1/users", "POST /v1/users/{id}/tokens", "PUT /v1/me/messaging-settings",

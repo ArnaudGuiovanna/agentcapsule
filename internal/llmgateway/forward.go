@@ -46,7 +46,7 @@ func ForwardOutputCap(dialect string, body []byte) (int, error) {
 func (g *Gateway) Forward(ctx context.Context, route Route, dialect string, body []byte) (out ForwardResponse, err error) {
 	ctx, span := startCall(ctx, "forward", route)
 	defer func() { endCall(span, out.Usage, err) }()
-	if route.Secret == "" || route.UpstreamModel == "" {
+	if !route.validAuth() || route.UpstreamModel == "" {
 		return ForwardResponse{}, ErrInvalid
 	}
 	fields, _, err := forwardFields(dialect, body)
@@ -57,9 +57,9 @@ func (g *Gateway) Forward(ctx context.Context, route Route, dialect string, body
 	var headers map[string]string
 	switch {
 	case dialect == DialectOpenAI && route.Kind == "openai_compatible":
-		target, headers = join(route.BaseURL, "/chat/completions"), map[string]string{"Authorization": "Bearer " + route.Secret}
+		target, headers = join(route.BaseURL, "/chat/completions"), route.headers()
 	case dialect == DialectAnthropic && route.Kind == "anthropic":
-		target, headers = join(route.BaseURL, "/v1/messages"), map[string]string{"x-api-key": route.Secret, "anthropic-version": "2023-06-01"}
+		target, headers = join(route.BaseURL, "/v1/messages"), route.headers()
 	default:
 		return ForwardResponse{}, ErrDialect
 	}

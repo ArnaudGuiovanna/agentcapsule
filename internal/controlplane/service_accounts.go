@@ -46,6 +46,8 @@ func tenantScopes(p Principal) []string {
 	switch {
 	case p.delegation != nil:
 		return p.delegation.Scopes
+	case p.app != nil:
+		return p.app.Scopes
 	case p.service != nil:
 		return p.service.scopes
 	}
@@ -61,6 +63,8 @@ func tenantBound(p Principal) bool {
 	switch {
 	case p.delegation != nil:
 		return p.TenantID == p.delegation.TenantID && p.TokenID == p.delegation.TokenID
+	case p.app != nil:
+		return p.TenantID == p.app.Tenant && p.TokenID == p.app.Token
 	case p.service != nil:
 		return p.TenantID == p.service.tenantID && p.TokenID == p.service.tokenID
 	}
@@ -179,7 +183,7 @@ type IssueServiceTokenInput struct {
 }
 
 const serviceAccountColumns = `p.id,p.display_name,m.role,CASE WHEN p.status='active' AND m.status='active' THEN 'active' ELSE 'disabled' END,p.created_at`
-const serviceAccountFrom = ` FROM principals p JOIN memberships m ON (m.tenant_id,m.principal_id)=(p.tenant_id,p.id) WHERE p.tenant_id=$1 AND p.kind='service'`
+const serviceAccountFrom = ` FROM principals p JOIN memberships m ON (m.tenant_id,m.principal_id)=(p.tenant_id,p.id) WHERE p.tenant_id=$1 AND p.kind='service' AND NOT EXISTS(SELECT 1 FROM applications a WHERE a.id=p.id)`
 
 func scanServiceAccount(row pgx.Row) (ServiceAccount, error) {
 	var s ServiceAccount

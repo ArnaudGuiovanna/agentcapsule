@@ -163,6 +163,18 @@ var unresponsiveGuestsSQL string
 //go:embed migrations/0048_directory_trigger_search_path.sql
 var directoryTriggerSearchPathSQL string
 
+//go:embed migrations/0049_deployments.sql
+var deploymentsSQL string
+
+//go:embed migrations/0050_applications.sql
+var applicationsSQL string
+
+//go:embed migrations/0051_provider_auth.sql
+var providerAuthSQL string
+
+//go:embed migrations/0052_rollouts.sql
+var rolloutsSQL string
+
 // Append migrations; never edit an installed migration. The original schema
 // also upgrades pre-ledger installations, preserving its historical backfills.
 // Later calls validate its checksum without replaying DDL or those backfills.
@@ -215,6 +227,10 @@ var controlPlaneMigrations = []schemaMigration{
 	{version: 46, name: "organization-quotas", sql: organizationQuotasSQL},
 	{version: 47, name: "unresponsive-guests", sql: unresponsiveGuestsSQL},
 	{version: 48, name: "directory-trigger-search-path", sql: directoryTriggerSearchPathSQL},
+	{version: 49, name: "deployments", sql: deploymentsSQL},
+	{version: 50, name: "applications", sql: applicationsSQL},
+	{version: 51, name: "provider-auth", sql: providerAuthSQL},
+	{version: 52, name: "rollouts", sql: rolloutsSQL},
 }
 
 func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error {

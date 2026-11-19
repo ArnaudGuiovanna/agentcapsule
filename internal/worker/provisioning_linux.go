@@ -3,8 +3,14 @@
 package worker
 
 import (
+	"bufio"
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	goruntime "runtime"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
@@ -15,12 +21,16 @@ import (
 )
 
 type ProvisioningConfig struct {
+	// Optional operator budgets leave room for an on-host model and services.
+	VCPUs     int   `json:"deployment_vcpus,omitempty"`
+	MemoryMiB int64 `json:"deployment_memory_mib,omitempty"`
+
 	FirstUID uint32 `json:"first_uid"`
 	LastUID  uint32 `json:"last_uid"`
 }
 
 func (c ProvisioningConfig) valid() bool {
-	return c.FirstUID >= 10000 && c.LastUID >= c.FirstUID && c.LastUID < ^uint32(0) && c.LastUID-c.FirstUID <= 1<<20
+	return c.VCPUs >= 0 && c.MemoryMiB >= 0 && c.FirstUID >= 10000 && c.LastUID >= c.FirstUID && c.LastUID < ^uint32(0) && c.LastUID-c.FirstUID <= 1<<20
 }
 
 type provisioner struct {
@@ -50,6 +60,29 @@ func NewProvisioningPlacements(store *controlplane.Store, hostID, workerID strin
 		return nil, err
 	}
 	w.provisioning = &provisioner{keys: keys, volumes: volumes, digest: "sha256:" + opts.InitrdSHA256, config: config, runtimeRoot: opts.Root}
+	cpus := config.VCPUs
+	if cpus == 0 {
+		cpus = goruntime.NumCPU()
+	}
+	memory := config.MemoryMiB
+	if memory == 0 {
+		memory, err = availableDeploymentMemory()
+		if err != nil {
+			w.Close()
+			return nil, err
+		}
+	}
+	budget := controlplane.HostProvisioningBudget{VCPUs: cpus, MemoryMiB: memory, UIDSlots: int(config.LastUID-config.FirstUID) + 1, MaxActive: opts.MaxActive}
+	images := []controlplane.ImageDigests{{Kernel: "sha256:" + opts.KernelSHA256, Initrd: "sha256:" + opts.InitrdSHA256}}
+	for _, img := range opts.SystemImages {
+		images = append(images, controlplane.ImageDigests{Kernel: "sha256:" + img.KernelSHA256, Initrd: "sha256:" + img.InitrdSHA256})
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err = store.ReportDeploymentHost(ctx, hostID, budget, images); err != nil {
+		w.Close()
+		return nil, err
+	}
 	return w, nil
 }
 
@@ -98,6 +131,7 @@ func (w *Placements) provision(ctx context.Context, job controlplane.WorkerJob) 
 		}
 		registration := runtime.ProvisionedAgent{ID: e.AgentID, Volume: volume.Path, Device: volume.Device, Inode: volume.Inode, Resources: runtime.VMResources{VCPUs: e.Resources.VCPUs, MemoryMiB: e.Resources.MemoryMiB, VolumeMiB: e.Resources.DataVolumeMiB},
 			Harness: harness}
+		registration.SystemImage = bootImageID(e)
 		if err = w.host.RegisterProvisioned(ctx, registration, p.config.FirstUID, p.config.LastUID); err != nil {
 			return err
 		}
@@ -121,7 +155,7 @@ func (w *Placements) provision(ctx context.Context, job controlplane.WorkerJob) 
 			return err
 		}
 		run, err := w.start(ctx, e.AgentID, true)
-		if errors.Is(err, runtime.ErrCapacity) {
+		if errors.Is(err, runtime.ErrCapacity) && e.SystemImage.Kernel == "" {
 			if err = w.makeBarrierCapacity(ctx, e.AgentID); err != nil {
 				return err
 			}
@@ -172,4 +206,36 @@ func (w *Placements) provision(ctx context.Context, job controlplane.WorkerJob) 
 		// revocation since the scan above retains the job for another pass.
 		return w.authority.HoldFences(ctx, receipt, func(ctx context.Context) error { return w.store.ActivateProvisionedAgent(ctx, e) })
 	})
+}
+
+func bootImageID(e controlplane.Enrollment) *runtime.BootImageID {
+	if e.SystemImage.Kernel == "" {
+		return nil
+	}
+	return &runtime.BootImageID{Kernel: strings.TrimPrefix(e.SystemImage.Kernel, "sha256:"), Initrd: strings.TrimPrefix(e.SystemImage.Initrd, "sha256:")}
+}
+
+// Linux MemAvailable includes reclaimable page cache. MemFree alone can be
+// small immediately after importing or verifying a large guest image.
+func availableDeploymentMemory() (int64, error) {
+	f, err := os.Open("/proc/meminfo")
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	scan := bufio.NewScanner(f)
+	for scan.Scan() {
+		fields := strings.Fields(scan.Text())
+		if len(fields) == 3 && fields[0] == "MemAvailable:" && fields[2] == "kB" {
+			kb, err := strconv.ParseInt(fields[1], 10, 64)
+			if err != nil {
+				return 0, err
+			}
+			return kb / 1024, nil
+		}
+	}
+	if err := scan.Err(); err != nil {
+		return 0, err
+	}
+	return 0, fmt.Errorf("/proc/meminfo does not report MemAvailable")
 }

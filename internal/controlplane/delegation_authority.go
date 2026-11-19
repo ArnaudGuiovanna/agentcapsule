@@ -237,17 +237,9 @@ func (s *Store) ChangeDelegationAuthority(ctx context.Context, in DelegationChan
 				return out, ErrConflict
 			}
 			if !exists {
-				policy := policyOf(in.Trust)
-				err = tx.QueryRow(ctx, `INSERT INTO delegation_trusts(tenant_id,issuer,audience,fingerprint,status,minimum_iat,generation,allowed_scopes,max_ttl_nanoseconds)
-                    VALUES($1,$2,$3,$4,'active',date_trunc('second',clock_timestamp())+interval '1 second',1,$5,$6)
-                    RETURNING minimum_iat,generation`, in.TenantID, in.Issuer, in.Audience, fingerprint[:], policy.scopes, int64(policy.ttl)).Scan(&out.MinimumIAT, &out.Generation)
+				out.MinimumIAT, out.Generation, err = installTrust(ctx, tx, in.Trust, fingerprint[:])
 				if err != nil {
 					return out, err
-				}
-				for kid, key := range in.Trust.Keys {
-					if err = insertKey(ctx, tx, policy, kid, key); err != nil {
-						return out, err
-					}
 				}
 				out.Status = "active"
 				changed = true
@@ -541,4 +533,21 @@ func retireKey(ctx context.Context, tx pgx.Tx, p trustPolicy, kid string, overla
             WHERE tenant_id=$1 AND issuer=$2 AND audience=$3 AND key_id=$4`, p.tenant, p.issuer, p.audience, kid, end)
 	}
 	return err == nil, &end, err
+}
+
+func installTrust(ctx context.Context, tx pgx.Tx, trust *delegatedidentity.Trust, fingerprint []byte) (time.Time, int64, error) {
+	var minimum time.Time
+	var generation int64
+	policy := policyOf(trust)
+	err := tx.QueryRow(ctx, `INSERT INTO delegation_trusts(tenant_id,issuer,audience,fingerprint,status,minimum_iat,generation,allowed_scopes,max_ttl_nanoseconds)
+		VALUES($1,$2,$3,$4,'active',date_trunc('second',clock_timestamp())+interval '1 second',1,$5,$6)
+		RETURNING minimum_iat,generation`, trust.TenantID, trust.Issuer, trust.Audience, fingerprint, policy.scopes, int64(policy.ttl)).Scan(&minimum, &generation)
+	if err == nil {
+		for kid, key := range trust.Keys {
+			if err = insertKey(ctx, tx, policy, kid, key); err != nil {
+				break
+			}
+		}
+	}
+	return minimum, generation, err
 }
