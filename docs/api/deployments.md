@@ -43,7 +43,7 @@ On 19 November 2026, the Linux worker ran Firecracker on an Intel Core i7-9750H 
 
 During the three-agent batch, the test restarted the worker after it initialized the first volume. An already active agent from the preceding batch answered a request in 30.08 s across that interruption. Once provisioning finished, the warm agent in the new batch returned its first response in 458 ms. The test checked four distinct volume inodes and their LUKS headers. These timings represent single requests. The larger batches above were exercised in PostgreSQL.
 
-A separate KVM run exercised the rollout: a failed canary paused it, then all three agents authenticated on the corrected revision. The disk measurement run subsequently waited for a rollout slot while both slots were occupied. Its recorded batch and latency figures end before that wait.
+A separate KVM run exercised the rollout: a failed canary paused it, then all three agents authenticated on the corrected revision. The disk measurement run subsequently waited for a rollout slot while both slots were occupied. A final run of the complete test on WSL2 passed after the test released its competing VM at the end of the latency measurement. It verified the batch recovery, rejection above quota and all three authenticated rollout boots in the same run.
 
 ## Updating a deployed template
 
