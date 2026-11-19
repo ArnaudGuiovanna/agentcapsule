@@ -129,6 +129,66 @@ class HostOperationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "protocol"):
             self.api["check_migration_plan"]({}, self.bundle)
 
+    def test_check_running_image_exports_the_container_image_id(self):
+        config = b'{"architecture":"amd64","os":"linux"}'
+        expected = "sha256:" + hashlib.sha256(config).hexdigest()
+        manifest = "sha256:" + "a" * 64
+        container = "c" * 64
+        image = dict(engine="docker", service="directory", config_id=expected, ref="registry/directory@"+manifest)
+
+        def inspect(*argv):
+            if argv[1] == "ps":
+                self.assertIn("label=com.docker.compose.service=directory", argv)
+                return container
+            self.assertEqual(argv[1:3], ("container", "inspect"))
+            self.assertEqual(argv[-1], container)
+            return f"{manifest} running 0"
+
+        def export(*argv):
+            self.assertEqual(argv[:4], ("docker", "image", "save", "--output"))
+            self.assertEqual(argv[-1], manifest)
+            with tarfile.open(argv[4], "w") as archive:
+                for name, data in (("manifest.json", b'[{"Config":"config.json","RepoTags":null}]'),
+                                   ("config.json", config)):
+                    member = tarfile.TarInfo(name)
+                    member.size = len(data)
+                    archive.addfile(member, io.BytesIO(data))
+
+        with patch.dict(self.api, output=inspect, run=export):
+            report = self.api["runtime_image"](image, self.root)
+            self.assertTrue(report["verified"])
+            self.assertEqual((report["image_id"], report["expected_config_id"]), (manifest, expected))
+            wrong = dict(image, config_id="sha256:" + "b" * 64)
+            self.assertEqual(self.api["runtime_image"](wrong, self.root)["reason"], "configuration_mismatch")
+        self.assertFalse((self.root / "loaded-image.tar").exists())
+
+    def test_runtime_image_distinguishes_the_initializer_from_a_daemon(self):
+        from unittest.mock import Mock
+        image_id, container = "b" * 64, "c" * 64
+        for service, engine, state, good in (("init", "docker", "exited 0", True),
+                                             ("init", "docker", "exited 1", False),
+                                             ("oidc", "podman", "exited 0", False),
+                                             ("oidc", "podman", "running 0", True)):
+            with self.subTest(service=service, state=state):
+                inspect = Mock(side_effect=[container, image_id+" "+state])
+                image = dict(engine=engine, service=service, config_id="sha256:"+image_id, ref="signed")
+                with patch.dict(self.api, output=inspect):
+                    self.assertEqual(self.api["runtime_image"](image, self.root)["verified"], good)
+        with patch.dict(self.api, output=lambda *args: ""):
+            self.assertEqual(self.api["runtime_image"](image, self.root)["reason"], "container_count")
+
+    def test_image_diagnostics_rejects_an_empty_or_replaced_inventory(self):
+        active = self.api["ACTIVE"]
+        active.mkdir()
+        index = active / "offline-images.json"
+        index.write_text("[]")
+        self.api["save"](active / "bundle.json", {"version": self.version, "sha256": {index.name: self.api["sha"](index)}})
+        with self.assertRaisesRegex(ValueError, "incomplete"):
+            self.api["runtime_images"]()
+        index.write_text("[{}]")
+        with self.assertRaisesRegex(ValueError, "differs"):
+            self.api["runtime_images"]()
+
     def test_reject_archive_traversal_and_links(self):
         for i,(name,kind) in enumerate((("../outside",tarfile.REGTYPE),("/root/a",tarfile.REGTYPE),("link",tarfile.SYMTYPE))):
             archive=self.root/f"bad{i}.tar"

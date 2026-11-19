@@ -77,6 +77,17 @@ def main():
         save()
     def diagnostics():
         return call(["host", "diagnose", "alerts"], [])
+    def check_images(version):
+        observation = call(["host", "diagnose", "images"], [])
+        images = [{k: v for k, v in image.items() if k in {
+            "service", "engine", "reference", "expected_config_id", "container_id", "image_id",
+            "state", "exit_code", "method", "verified", "reason", "container_count"}}
+                  for image in observation["images"]]
+        report["steps"].append(dict(name="runtime images", installed=observation["installed"], images=images))
+        save()
+        if (observation["installed"] != version or observation["verified"] is not True or not images
+                or any(image["verified"] is not True for image in images)):
+            raise ValueError("service containers differ from the installed release")
     def wait(data):
         try:
             result=call(["host","operation","wait"],[data["operation_id"]])
@@ -125,6 +136,7 @@ def main():
         record("installed",installed)
         if not installed["services_started"] or not installed["invocation_verified"]:
             raise ValueError("installation did not start services and return the starter echo")
+        check_images(a.version)
         update=call(["update","plan"],["--offline",a.upgrade_offline,"--profile",a.profile,"--to",a.upgrade_version,*trust])
         if update.get("installed")!=a.version or update.get("target")!=a.upgrade_version:
             raise ValueError("update plan did not select the installed and candidate builds")
@@ -141,6 +153,7 @@ def main():
             raise ValueError("invalid starter agent")
         upgrade_boot = uuid.UUID(diagnostics()["boot_id"])
         record("upgraded reboot", verify_reboot(a.restart_command, upgrade_boot, diagnostics, ("api", "worker", "authority")))
+        check_images(a.upgrade_version)
         archive_id="arc_"+uuid.uuid4().hex
         restore_id="rst_"+uuid.uuid4().hex
         archive=["--agent",agent,"--archive-id",archive_id]

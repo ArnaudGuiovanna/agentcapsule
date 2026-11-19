@@ -119,13 +119,17 @@ def install_dependencies(dist,release):
                     raise ValueError("offline image differs from signed image index: "+image["service"])
 
 
-def saved_config(tag,expected,root):
+def saved_config(reference,expected,root):
     path=root/"loaded-image.tar"
     try:
-        run("docker","image","save","--output",path,tag)
+        run("docker","image","save","--output",path,reference)
         with tarfile.open(path) as tar:
             manifests=json.load(tar.extractfile("manifest.json"))
-            if len(manifests)!=1 or tag not in manifests[0]["RepoTags"]:
+            if len(manifests)!=1:
+                return False
+            # A save by immutable image ID can have no tags. A save by
+            # the release tag must still identify that exact tag.
+            if not re.fullmatch("sha256:[a-f0-9]{64}",reference) and reference not in (manifests[0].get("RepoTags") or []):
                 return False
             config=tar.getmember(manifests[0]["Config"])
             if not config.isfile() or config.size>4<<20:

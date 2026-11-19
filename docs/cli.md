@@ -119,6 +119,7 @@ The HTTP guide covers inviting Alice and Bob, concurrent acceptance, private res
 |---|---|---|
 | Readiness, queue and storage | `status --watch`, `doctor` in a platform context | Host sample age, storage pressure, failing jobs and the next check |
 | Host-level service state | `host diagnose alerts`, `host diagnose metrics --service worker` | systemd transitions and current Prometheus samples |
+| Container images after an install or update | `host diagnose images` | Check `verified` and each service's container state, immutable image ID and expected OCI configuration digest. The schema initializer must have exited with code zero. |
 | Filtered service events | `host diagnose journal --service api --request-id ID` | Timestamp and event names for the request |
 | Held or delayed exchange | `communication explain RECIPIENT_AGENT REQUEST_ID` | Directory state, visibility at submission, current mandate, consent, outward delivery, attempts and return delivery |
 | Backup status | `host diagnose backups` | Repository status and latest successful backup time |

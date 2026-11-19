@@ -161,6 +161,8 @@ reboots only that instance. The report records the guest boot IDs during the
 interrupted installation and after the upgrade, the recovered checkpoints,
 the encrypted-volume checks and a fresh invocation on the restored agent.
 
+Run `agentcapsule host diagnose images` to compare the service containers with the active release's image inventory. The report names each service and its immutable image ID. With Docker's containerd image store, the helper exports the image by that ID to a temporary file and checks the OCI configuration digest inside it. The disk space is released after each image. The qualification checks this report after installation and again after the upgraded guest reboots.
+
 ### Development qualification on WSL2
 
 On 19 November 2026, a network-isolated Ubuntu 24.04 instance in WSL2 installed the development assets offline and booted Firecracker on KVM. Resuming the interrupted installation preserved the original operation. The API verified the starter's echo and pgBackRest verified full encrypted backups in two local repositories. The host reported `off_host_backup_verified: false` for those destinations.

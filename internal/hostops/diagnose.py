@@ -19,6 +19,7 @@ def add_diagnostics(host):
     p.add_argument("--request-id")
     group.add_parser("alerts")
     group.add_parser("backups")
+    group.add_parser("images")
     p = group.add_parser("llm")
     p.add_argument("--organization", required=True)
     p.add_argument("--alias", required=True)
@@ -40,11 +41,73 @@ def service_observations():
     return result
 
 
+def runtime_image(image, directory):
+    engine, service = image["engine"], image["service"]
+    expected = "sha256:" + image["config_id"].removeprefix("sha256:")
+    if not re.fullmatch("sha256:[a-f0-9]{64}", expected):
+        raise ValueError("invalid release image configuration")
+    result = dict(service=service, engine=engine, reference=image["ref"], expected_config_id=expected)
+    if engine == "docker":
+        filters = ["--filter", "label=com.docker.compose.project=agentcapsule-interop",
+                   "--filter", "label=com.docker.compose.service=" + service]
+    elif engine == "podman" and service == "oidc":
+        filters = ["--filter", "name=^agentcapsule-oidc$"]
+    else:
+        raise ValueError("unsupported service image engine")
+    ids = output(engine, "ps", "--all", "--no-trunc", "--quiet", *filters).split()
+    if len(ids) != 1:
+        return dict(result, verified=False, reason="container_count", container_count=len(ids))
+    ident = ids[0]
+    if not re.fullmatch("[a-f0-9]{64}", ident):
+        raise ValueError("invalid container identity")
+    # Inspect only public identity and lifecycle fields. The full inspection
+    # also carries the service environment and credentials.
+    image_id, state, exit_code = output(engine, "container", "inspect", "--format",
+                                        "{{.Image}} {{.State.Status}} {{.State.ExitCode}}", ident).split()
+    actual = "sha256:" + image_id.removeprefix("sha256:")
+    if not re.fullmatch("sha256:[a-f0-9]{64}", actual):
+        raise ValueError("invalid container image identity")
+    result.update(container_id=ident, image_id=actual, state=state, exit_code=int(exit_code))
+    healthy = (state == "exited" and exit_code == "0") if service == "init" else state == "running"
+    if not healthy:
+        return dict(result, verified=False, reason="container_state")
+    if actual == expected:
+        return dict(result, verified=True, method="container_config_id")
+    # Docker's containerd store reports the manifest ID. Export precisely
+    # the image attached to the container, including when its tag has moved.
+    if engine == "docker" and saved_config(actual, expected.removeprefix("sha256:"), directory):
+        return dict(result, verified=True, method="container_image_export")
+    return dict(result, verified=False, reason="configuration_mismatch")
+
+
+def runtime_images():
+    # Resolve the activation symlink once to keep the inventory and its
+    # release identity together if a concurrent upgrade switches releases.
+    release = ACTIVE.resolve(strict=True)
+    bundle = read(release / "bundle.json")
+    index = release / "offline-images.json"
+    if sha(index) != bundle["sha256"].get(index.name):
+        raise ValueError("installed image inventory differs from the release manifest")
+    inventory = read(index)
+    services = {"init", "oasf", "directory", "directory-edge", "slim"}
+    if "oidc/agentcapsule-oidc.service" in bundle["sha256"]:
+        services.add("oidc")
+    if len(inventory) != len(services) or {image["service"] for image in inventory} != services:
+        raise ValueError("incomplete or duplicate service image inventory")
+    with tempfile.TemporaryDirectory(dir=STATE) as tmp:
+        images = [runtime_image(image, Path(tmp)) for image in inventory]
+    if ACTIVE.resolve(strict=True) != release:
+        raise ValueError("active release changed during image verification")
+    return dict(installed=bundle["version"], verified=all(image["verified"] for image in images), images=images)
+
+
 def diagnose(args):
     report = {"schema": "agentcapsule.host/v1", "observed_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}
     if args.sub == "alerts":
         report["boot_id"] = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
         report["services"] = service_observations()
+    elif args.sub == "images":
+        report.update(runtime_images())
     elif args.sub == "metrics":
         conn = http.client.HTTPConnection("127.0.0.1", METRIC_PORTS[args.service], timeout=5)
         try:
