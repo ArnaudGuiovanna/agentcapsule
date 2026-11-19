@@ -126,6 +126,32 @@ def stage(request, manifest_only=False):
         return verify_assets(request,manifest_only,version,uri,dest)
 
 
+def check_migration_plan(installed, candidate):
+    for bundle in (installed, candidate):
+        if (bundle.get("protocol", "v1") != "v1" or
+                bundle.get("migration_mode", "offline-exact-history") != "offline-exact-history"):
+            raise ValueError("incompatible server protocol or migration mode")
+    before = installed.get("migrations", [])
+    if candidate["migrations"][:len(before)] != before:
+        raise ValueError("schema history requires restore; binary rollback cannot reverse these migrations")
+    if "migration_ledger" not in candidate:
+        return "migration_filenames"
+    ledger = candidate["migration_ledger"]
+    if (not isinstance(ledger, list) or len(ledger) != len(candidate["migrations"]) + 1 or
+            any(not isinstance(row, dict) or row.get("version") != i or not row.get("name") or
+                not re.fullmatch("[a-f0-9]{64}", row.get("sha256", "")) for i, row in enumerate(ledger, 1))):
+        raise ValueError("invalid migration ledger in signed bundle")
+    if not installed:
+        return "initial_install"
+    expected = ledger[:len(before) + 1]
+    query = """SELECT coalesce(json_agg(json_build_object('version',version,'name',name,
+               'sha256',encode(checksum,'hex')) ORDER BY version),'[]'::json) FROM schema_migrations"""
+    actual = json.loads(postgres_scalar(read(STATE / "profile.json"), query))
+    if actual != expected or installed.get("migration_ledger", actual) != actual:
+        raise ValueError("database migration history differs from the signed build; review the restore plan")
+    return "database_ledger_verified"
+
+
 def verify_assets(request,manifest_only,version,uri,dest):
     offline = Path(request["offline"]) if request.get("offline") else None
     def fetch(name, digest=None, maxsize=2 << 30):
@@ -189,13 +215,14 @@ def verify_assets(request,manifest_only,version,uri,dest):
     manifest = read(fetch("agentcapsule-bundle.json", digests["agentcapsule-bundle.json"], 8 << 20))
     if manifest["schema"]!="agentcapsule.bundle/v1" or manifest["version"]!=version or manifest["platform"]!="ubuntu-24.04-amd64":
         raise ValueError("incompatible server distribution")
-    before=read(ACTIVE/"bundle.json")["migrations"] if current() else []
-    if manifest["migrations"][:len(before)] != before:
-        raise ValueError("schema history requires restore; binary rollback cannot reverse these migrations")
+    installed = read(ACTIVE / "bundle.json") if current() else {}
+    before = installed.get("migrations", [])
+    migration_check = check_migration_plan(installed, manifest)
     write_file(pinned,fingerprint.encode())
     if manifest_only:
         return {"added_migrations":manifest["migrations"][len(before):],"server_sha256":digests[SERVER],
-                "backup_required":bool(before),"maintenance_window":bool(before),"commit":manifest["commit"]}
+                "backup_required":bool(installed),"maintenance_window":bool(installed),"commit":manifest["commit"],
+                "migration_check":migration_check}
     for name in (SERVER, DEBS, IMAGES):
         fetch(name, digests[name])
     return dest

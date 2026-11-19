@@ -107,6 +107,28 @@ class HostOperationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "verified bundle manifest"):
             prepare(release, staged, self.version)
 
+    def test_signed_update_plan_checks_the_database_ledger_before_downloading(self):
+        from unittest.mock import Mock
+        ledger = [dict(version=i, name=n, sha256=hashlib.sha256(n.encode()).hexdigest())
+                  for i, n in enumerate(("control-plane-baseline", "organization-identity"), 1)]
+        self.bundle["migration_ledger"] = ledger
+        self.sign()
+        self.assertEqual(self.api["stage"](self.request, True)["migration_check"], "initial_install")
+        self.api["ACTIVE"].mkdir()
+        self.api["save"](self.api["ACTIVE"] / "bundle.json", dict(version="v0.0.1-dev.1", migrations=[]))
+        self.api["save"](self.state / "profile.json", {})
+        query = Mock(return_value=json.dumps(ledger[:1]).encode())
+        with patch.dict(self.api, postgres_scalar=query):
+            self.assertEqual(self.api["stage"](self.request, True)["migration_check"], "database_ledger_verified")
+            wrong = dict(ledger[0], sha256="f" * 64)
+            query.return_value = json.dumps([wrong]).encode()
+            with self.assertRaisesRegex(ValueError, "database migration history"):
+                self.api["stage"](self.request, True)
+        self.assertFalse((self.state / "downloads" / self.version / self.api["SERVER"]).exists())
+        self.bundle["protocol"] = "v2"
+        with self.assertRaisesRegex(ValueError, "protocol"):
+            self.api["check_migration_plan"]({}, self.bundle)
+
     def test_reject_archive_traversal_and_links(self):
         for i,(name,kind) in enumerate((("../outside",tarfile.REGTYPE),("/root/a",tarfile.REGTYPE),("link",tarfile.SYMTYPE))):
             archive=self.root/f"bad{i}.tar"

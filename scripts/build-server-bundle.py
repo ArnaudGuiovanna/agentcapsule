@@ -238,6 +238,7 @@ def main():
         files["host-packages.json"]=json_bytes(dict(snapshot=SNAPSHOT,packages=records))
         manifest={"schema":"agentcapsule.bundle/v1","version":build["version"],"commit":build["commit"],
                   "platform":"ubuntu-24.04-amd64","protocol":"v1","migration_mode":"offline-exact-history",
+                  "migration_ledger":json.loads(output(files["agentcapsule-admin"],"migration-manifest")),
                   "migrations":[p.name for p in sorted((ROOT/"internal/controlplane/migrations").glob("*.sql"))],
                   "sha256":{n:digest(f) if isinstance(f,Path) else hashlib.sha256(f).hexdigest() for n,f in files.items()}}
         files["bundle.json"]=json_bytes(manifest)

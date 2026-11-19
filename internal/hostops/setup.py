@@ -530,7 +530,7 @@ DRAIN_QUERY = """SELECT count(*) FROM platform_operations o
         AND i.run_at>CURRENT_TIMESTAMP AND i.released_at IS NULL))"""
 
 
-def pending_operations(profile):
+def postgres_scalar(profile, query):
     # Use the same private libpq connection string as the API. PGDATABASE in
     # psql's environment treats a connection string as a literal database name.
     # Putting it in psql's arguments would expose operator-supplied credentials.
@@ -545,19 +545,23 @@ def pending_operations(profile):
     finish = ctypes.CFUNCTYPE(None, ptr)(("PQfinish", pq))
     conn = connect(db_env(profile)["AGENTCAPSULE_DATABASE_URL"].encode())
     if not conn:
-        raise ValueError("drain could not allocate a PostgreSQL connection")
+        raise ValueError("could not allocate a PostgreSQL connection")
     try:
         if status(conn) != 0:  # CONNECTION_OK
-            raise ValueError("drain could not connect to the configured PostgreSQL database")
-        result = execute(conn, DRAIN_QUERY.encode())
+            raise ValueError("could not connect to the configured PostgreSQL database")
+        result = execute(conn, query.encode())
         try:
             if not result or result_status(result) != 2:  # PGRES_TUPLES_OK
-                raise ValueError("PostgreSQL could not report outstanding operations")
-            return int(value(result, 0, 0))
+                raise ValueError("PostgreSQL could not read the requested host operation state")
+            return value(result, 0, 0)
         finally:
             clear(result)
     finally:
         finish(conn)
+
+
+def pending_operations(profile):
+    return int(postgres_scalar(profile, DRAIN_QUERY))
 
 
 def drain(profile):

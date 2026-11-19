@@ -22,6 +22,22 @@ type schemaMigration struct {
 	sql     string
 }
 
+// MigrationRecord describes the ledger row the binary expects after a migration.
+type MigrationRecord struct {
+	Version int64  `json:"version"`
+	Name    string `json:"name"`
+	SHA256  string `json:"sha256"`
+}
+
+// MigrationManifest returns the ordered history compiled into the admin binary.
+func MigrationManifest() []MigrationRecord {
+	records := make([]MigrationRecord, len(controlPlaneMigrations))
+	for i, migration := range controlPlaneMigrations {
+		records[i] = MigrationRecord{migration.version, migration.name, fmt.Sprintf("%x", sha256.Sum256([]byte(migration.sql)))}
+	}
+	return records
+}
+
 //go:embed migrations/0002_organization_identity.sql
 var organizationIdentitySQL string
 

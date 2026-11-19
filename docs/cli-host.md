@@ -123,6 +123,13 @@ agentcapsule restore apply --agent agt_ID --archive-id arc_ID --restore-id rst_I
 ```
 
 The PaaS updater first prepares and verifies artifacts and a full backup.
+Current server bundles include the migration names and SQL checksums exported
+by the candidate admin binary, including the baseline schema. During an update,
+the CLI compares that signed history with PostgreSQL before downloading the
+server archives. The plan reports `database_ledger_verified` when the installed
+rows match. An older candidate can report `migration_filenames`, with the SQL
+checksum check deferred to the database migration. An incompatible service
+protocol or migration mode stops the plan.
 It closes admissions, waits for existing work, stops affected services,
 switches the installation symlink, applies the new binary's exact schema
 history, and sends an invocation. The worker retains the configured kernel,
