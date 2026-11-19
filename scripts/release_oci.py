@@ -2,7 +2,6 @@
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
-from http.client import IncompleteRead
 import json
 from pathlib import Path, PurePosixPath
 import re
@@ -11,14 +10,11 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
-import time
 import zipfile
-import tomllib
-from urllib.error import HTTPError, URLError
 from urllib.parse import quote
-from urllib.request import urlopen
 
 import release_tools
+from release_sources import checked_download, git_source, locked_crates
 
 ROOT = Path(__file__).resolve().parents[1]
 BUNDLE = runpy.run_path(str(ROOT / "scripts/build-server-bundle.py"))
@@ -74,51 +70,6 @@ def notices(archive, out, prefix, jars=False):
     return files
 
 
-def git_source(repository, revision, work):
-    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository) or not re.fullmatch(r"[0-9a-f]{40}", revision):
-        raise ValueError("invalid upstream Git repository or revision")
-    dest = work / f"{repository.replace('/', '-')}-{revision}.tar.gz"
-    if dest.exists():
-        return dest
-    with tempfile.TemporaryDirectory(dir=work) as temp:
-        git = ["git", "-C", temp]
-        subprocess.run([*git, "init", "--quiet", "--bare"], check=True)
-        subprocess.run([*git, "fetch", "--quiet", "--depth=1", "https://github.com/" + repository + ".git", revision], check=True)
-        actual = subprocess.check_output([*git, "rev-parse", "FETCH_HEAD^{commit}"], text=True).strip()
-        if actual != revision:
-            raise ValueError("upstream checkout differs from the pinned commit")
-        subprocess.run([*git, "archive", "--format=tar.gz", "--output", dest, revision], check=True)
-    return dest
-
-
-def checked_download(url, dest, expected, cache=None):
-    cached = cache / hashlib.sha256(url.encode()).hexdigest() if cache else None
-    if cached and cached.is_file() and BUNDLE["digest"](cached) == expected:
-        shutil.copyfile(cached, dest)
-        return dest
-    for attempt in range(3):
-        try:
-            with urlopen(url, timeout=120) as source, dest.open("wb") as dst:
-                shutil.copyfileobj(source, dst)
-            break
-        except (HTTPError, URLError, TimeoutError, IncompleteRead, ConnectionError) as err:
-            if attempt == 2 or isinstance(err, HTTPError) and err.code < 500 and err.code != 429:
-                raise
-            time.sleep(2 ** attempt)
-    if BUNDLE["digest"](dest) != expected:
-        raise ValueError("upstream source checksum mismatch for " + dest.name)
-    if cached:
-        cache.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(dir=cache, delete=False) as entry:
-            temporary = Path(entry.name)
-        try:
-            shutil.copyfile(dest, temporary)
-            temporary.replace(cached)
-        finally:
-            temporary.unlink(missing_ok=True)
-    return dest
-
-
 def native_rust_sources(archive, sources, work, notice_root, syft, sboms, source_cache):
     with tarfile.open(archive) as tree:
         lock = tree.extractfile("rust/Cargo.lock").read()
@@ -127,28 +78,12 @@ def native_rust_sources(archive, sources, work, notice_root, syft, sboms, source
     sbom = sboms / "slim-bindings-Cargo.lock.spdx.json"
     subprocess.run([syft, "scan", "file:" + str(lock_file), "--source-name", "slim-bindings-Cargo.lock",
                     "-o", "spdx-json=" + str(sbom)], env=release_tools.quiet_env(release_tools.default_cache()), check=True)
-    packages = tomllib.loads(lock.decode())["package"]
-
-    def collect(pkg):
-        if not pkg.get("source"):
-            return None
-        if pkg["source"] != "registry+https://github.com/rust-lang/crates.io-index":
-            raise ValueError("review native source registry for " + pkg["name"])
-        name, version = pkg["name"], pkg["version"]
-        if not re.fullmatch(r"[a-zA-Z0-9_-]+", name) or not re.fullmatch(r"[a-zA-Z0-9.+_-]+", version):
-            raise ValueError("invalid crate identifier")
-        filename = f"{name}-{version}.crate"
-        dest = checked_download(f"https://static.crates.io/crates/{name}/{filename}", work / filename, pkg["checksum"], source_cache)
-        with tarfile.open(dest) as tree:
+    crates = locked_crates(lock, work, source_cache=source_cache)
+    for crate in crates.values():
+        with tarfile.open(crate) as tree:
             notices(tree, notice_root, "native/crates")
-        return dest
-
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        for dest in pool.map(collect, packages):
-            if dest:
-                sources["cargo/" + dest.name] = dest
-    return {"lock_sha256": hashlib.sha256(lock).hexdigest(), "sbom": sbom.name,
-            "vendored_crates": sum(bool(pkg.get("source")) for pkg in packages)}
+    sources.update(crates)
+    return {"lock_sha256": hashlib.sha256(lock).hexdigest(), "sbom": sbom.name, "vendored_crates": len(crates)}
 
 
 def project_source(service, config, work):

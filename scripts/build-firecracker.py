@@ -82,7 +82,7 @@ def main():
                   "-p", "firecracker", "-p", "jailer", "--bin", "firecracker", "--bin", "jailer"])
     run("lock-unit-tests", [args.cargo, "test", "--locked", "--release", "--target", manifest["target"],
                            "-p", "vmm", "test_disk_backing_file_lock", "--", "--nocapture"])
-    artifacts = {}
+    artifacts = {"Cargo.lock": sha(out / "Cargo.lock")}
     for name in ("firecracker", "jailer"):
         src = target_dir / manifest["target"] / "release" / name
         shutil.copy2(src, out / name)

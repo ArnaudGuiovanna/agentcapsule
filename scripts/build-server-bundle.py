@@ -198,6 +198,31 @@ def run_owner(candidate):
     return None
 
 
+def firecracker_sources(vmm, work):
+    # Use the lockfile retained by the --locked build of firecracker and jailer.
+    from release_sources import locked_crates
+    lock = vmm / "Cargo.lock"
+    info = json.loads((vmm / "artifacts.json").read_bytes())
+    if "Cargo.lock" in info["sha256"]:
+        if digest(lock) != info["sha256"]["Cargo.lock"]:
+            raise ValueError("Firecracker build lock checksum mismatch")
+    else:
+        # Older build records only hashed the executables. Their build used
+        # the unmodified upstream lock in the pinned source tarball.
+        archive = vmm / "upstream.tgz"
+        if digest(archive) != info["upstream"]["source_sha256"]:
+            raise ValueError("Firecracker source archive checksum mismatch")
+        with tarfile.open(archive) as upstream:
+            original = upstream.extractfile("firecracker-" + info["upstream"]["version"] + "/Cargo.lock").read()
+        if original != lock.read_bytes():
+            raise ValueError("Firecracker lock differs from the pinned upstream release")
+    cargo_home = Path(os.environ.get("CARGO_HOME", Path.home() / ".cargo"))
+    sources = locked_crates(lock.read_bytes(), work, cargo_home=cargo_home,
+                            git_projects=("firecracker-microvm/micro-http",))
+    sources["firecracker-Cargo.lock"] = lock
+    return sources
+
+
 def source_archives(out,files,epoch,prefix="agentcapsule-sources"):
     parts=[]
     size=0
@@ -247,6 +272,7 @@ def main():
         src_files=matching_sources(sources,guest,src)
         src_files.update({"linux.tar.xz":a.kernel/"linux.tar.xz","kernel.config":a.kernel/"config",
                           "firecracker-upstream.tgz":a.vmm/"upstream.tgz","volume-lock.patch":a.vmm/"volume-lock.patch"})
+        src_files.update(firecracker_sources(a.vmm,work))
         source=work/"platform-source.tar"
         run("git","archive","--format=tar","-o",source,build["commit"],cwd=ROOT)
         src_files[source.name]=source

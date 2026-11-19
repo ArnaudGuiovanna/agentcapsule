@@ -74,6 +74,35 @@ class PinnedToolTest(Temporary):
         OCI.checked_download(url, dest, checksum, cache)
         self.assertEqual(TOOLS.sha256(entry), checksum)
 
+    def test_firecracker_bundle_retains_lock_and_refuses_corrupt_crate(self):
+        import os
+        from unittest.mock import patch
+
+        crate = b"fixture source"
+        checksum = hashlib.sha256(crate).hexdigest()
+        work = self.dir / "work"
+        work.mkdir()
+        vmm = self.dir / "vmm"
+        vmm.mkdir()
+        lock = vmm / "Cargo.lock"
+        lock.write_text('[[package]]\nname = "fixture"\nversion = "1.0.0"\n'
+                        'source = "registry+https://github.com/rust-lang/crates.io-index"\n'
+                        f'checksum = "{checksum}"\n')
+        (vmm / "artifacts.json").write_text(json.dumps({"sha256": {"Cargo.lock": TOOLS.sha256(lock)}}))
+        cached = self.dir / "cargo/registry/cache/index.crates.io/fixture-1.0.0.crate"
+        cached.parent.mkdir(parents=True)
+        cached.write_bytes(crate)
+        with patch.dict(os.environ, CARGO_HOME=str(self.dir / "cargo")):
+            files = OCI.BUNDLE["firecracker_sources"](vmm, work)
+            self.assertEqual(set(files), {"firecracker-Cargo.lock", "cargo/fixture-1.0.0.crate"})
+            self.assertEqual(files["cargo/fixture-1.0.0.crate"].read_bytes(), crate)
+            cached.write_bytes(b"corrupt source")
+            with self.assertRaisesRegex(ValueError, "Cargo cache checksum mismatch"):
+                OCI.BUNDLE["firecracker_sources"](vmm, work)
+            lock.write_bytes(lock.read_bytes() + b"\n")
+            with self.assertRaisesRegex(ValueError, "build lock checksum mismatch"):
+                OCI.BUNDLE["firecracker_sources"](vmm, work)
+
     def pin(self, payload, digest=None):
         archive = self.dir / "tool.tar.gz"
         member = self.dir / "member"

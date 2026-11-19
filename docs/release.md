@@ -20,6 +20,7 @@ version tag. A maintainer reviews it, then publishes it.
 | `agentcapsule-oci-sources-*.tar` | Application sources, BusyBox, distribution source packages and recipes, plus the source of the SLIM native binding and the crate archives matching its Cargo.lock. |
 | `<binary>.spdx.json` | The SPDX 2.3 SBOM of each binary. |
 | `third-party-licenses.txt`, `licenses.json` | The license and notice files of every linked module, and the license inventory. |
+| `agentcapsule-sources-*.tar` | Server and guest sources, including the Firecracker build’s Cargo.lock, checksum-verified crate archives, and the micro-http Git source at the commit recorded in the lock. |
 | `build.json` | How the binaries were built: commit, Go, C compiler, host packages, flags, both builds' digests. |
 | `dependency-audit.json`, `vulnerability-scan.json` | The dependency audit and the vulnerability scan of this release, with every allowlisted finding and its reason. |
 | `SHA256SUMS` | The SHA-256 of every file above. |
