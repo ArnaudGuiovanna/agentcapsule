@@ -91,8 +91,14 @@ def install_dependencies(dist,release):
         apt=["apt-get","-o","Dir::Etc::sourcelist="+str(sources),"-o","Dir::Etc::sourceparts=-",
              "-o","Dir::State::lists="+str(lists),"-o","Acquire::Languages=none"]
         run(*apt,"update")
-        run(*apt,"install","--no-remove","-y","--no-install-recommends",*roots,
-            env=dict(os.environ,DEBIAN_FRONTEND="noninteractive"))
+        env=dict(os.environ,DEBIAN_FRONTEND="noninteractive")
+        if output("dpkg","--audit"):
+            # A power loss can leave dpkg's status journal uncommitted. An
+            # unconfigured dependency is repaired by the same signed APT set.
+            subprocess.run(["dpkg","--configure","--pending"],env=env,check=False)
+        run(*apt,"install","--fix-broken","--no-remove","-y","--no-install-recommends",*roots,env=env)
+        if output("dpkg","--audit"):
+            raise ValueError("dpkg still reports incomplete package configuration")
     run("systemctl","enable","--now","docker.service")
     with tempfile.TemporaryDirectory(dir=STATE) as tmp:
         root=Path(tmp)/"images"
@@ -103,8 +109,28 @@ def install_dependencies(dist,release):
                 raise ValueError("unknown OCI image engine")
             run(engine,"load","--input",root/image["file"])
             actual=output(engine,"inspect","--type=image","--format","{{.Id}}",image["tag"])
-            if actual.removeprefix("sha256:") != image["config_id"].removeprefix("sha256:"):
-                raise ValueError("offline image differs from signed image index")
+            expected=image["config_id"].removeprefix("sha256:")
+            if actual.removeprefix("sha256:") != expected:
+                # Docker's containerd image store exposes a manifest digest
+                # in .Id. Ask that store for the selected manifest's config.
+                if engine!="docker" or not saved_config(image["tag"],expected,root):
+                    raise ValueError("offline image differs from signed image index: "+image["service"])
+
+
+def saved_config(tag,expected,root):
+    path=root/"loaded-image.tar"
+    try:
+        run("docker","image","save","--output",path,tag)
+        with tarfile.open(path) as tar:
+            manifests=json.load(tar.extractfile("manifest.json"))
+            if len(manifests)!=1 or tag not in manifests[0]["RepoTags"]:
+                return False
+            config=tar.getmember(manifests[0]["Config"])
+            if not config.isfile() or config.size>4<<20:
+                return False
+            return hashlib.sha256(tar.extractfile(config).read()).hexdigest()==expected
+    finally:
+        path.unlink(missing_ok=True)
 
 
 def configure_system():
@@ -141,11 +167,12 @@ def database():
     # operator's other databases. The API's role has no cluster privileges.
     folder=Path("/etc/postgresql/16/agentcapsule")
     if not folder.exists():
-        run("pg_createcluster","16","agentcapsule","--port","55432","--","--auth-local=peer")
+        run("pg_createcluster","16","agentcapsule","--port","55432","--","--auth-local=peer","--auth-host=scram-sha-256")
     hba = folder/"pg_hba.conf"
     ident = folder/"pg_ident.conf"
     for file,entries in [(ident,"agentcapsule root agentcapsule\nagentcapsule agentcapsule-api agentcapsule\n"),
-                         (hba,"local agentcapsule agentcapsule peer map=agentcapsule\n")]:
+                         (hba,"local agentcapsule agentcapsule peer map=agentcapsule\n"
+                              "host all all 127.0.0.1/32 scram-sha-256\nhost all all ::1/128 scram-sha-256\n")]:
         if not file.read_text().startswith(entries):
             write_file(file,(entries+file.read_text()).encode(),0o640)
             os.chown(file,user_id("postgres"),pwd.getpwnam("postgres").pw_gid)
@@ -212,6 +239,10 @@ def setup_interop(profile):
     cfg=read(ACTIVE/"config/slim-bridge.json")
     cfg["name"]="agentcapsule/platform/"+profile["host_id"]
     write_file(ETC/"slim-bridge.json",json.dumps(cfg).encode(),0o644)
+    setup_interop_images()
+
+
+def setup_interop_images():
     # Offline tags are generated from the pinned OCI manifests at build time.
     override={"services":{i["service"]:{"image":i["tag"]} for i in read(ACTIVE/"offline-images.json") if i["engine"]=="docker"}}
     save(ETC/"interop-images.json",override)
@@ -248,6 +279,23 @@ def environment_file(path, settings):
 
 def configure(p,version,initial):
     configure_system()
+    if not initial:
+        # A release transition preserves the operator's current credentials,
+        # transit key ring, storage and PKI configuration. Offline migrations
+        # run with the authorities stopped and must retain their identities.
+        cfg=read(ETC/"authority.json")
+        admin=ACTIVE/"agentcapsule-admin"
+        env=db_env(p)
+        run(admin,"migrate",env=env)
+        upgrade=json.loads(run_user("agentcapsule-authority",admin,"init-restore-authority",
+                           "-root",cfg["restore_authority"]["root"],"-data-root",read(ETC/"worker.json")["root"],
+                           "-key-authority-root",cfg["key_authority"]["root"],"-key-authority-id",cfg["key_authority"]["identity"],capture=True))
+        if upgrade["authority_id"]!=cfg["restore_authority"]["identity"]:
+            raise ValueError("authority identity changed during upgrade")
+        setup_oidc_unit()
+        setup_interop_images()
+        run("systemctl","daemon-reload")
+        return
     database()  # Dedicated local cluster also owns the bundled OIDC realm.
     api_tls(p)
     setup_interop(p)
@@ -288,9 +336,13 @@ def configure(p,version,initial):
     if initial:
         run(admin,"configure-host","-host-id",p["host_id"],"-storage-mib",p["storage_mib"],env=env)
         run(admin,"approve-local-harness","-name","starter","-version","1.0.0","-artifact",read(config_path)["initrd"]["path"],env=env)
-        if not (ETC/"first-enrollment.token").exists():
-            run(admin,"issue-enrollment","-platform-account",p["platform_account"],"-token-file",ETC/"first-enrollment.token",env=env)
     run("systemctl","daemon-reload")
+
+
+def issue_enrollment(p):
+    path=ETC/"first-enrollment.token"
+    run(ACTIVE/"agentcapsule-admin","issue-enrollment","-platform-account",p["platform_account"],"-token-file",path,env=db_env(p))
+    return {"enrollment_file":str(path)}
 
 
 def start_services(p):
@@ -307,7 +359,6 @@ def start_services(p):
             time.sleep(1)
     else:
         raise ValueError("HTTPS readiness did not pass")
-    run("systemctl","is-active","--quiet","agentcapsule-worker")
     port=str(p["oidc_port"])
     realm=f"https://{p['oidc_name']}:{port}/realms/agentcapsule"
     cmd=["curl","-fsS","--max-time","5","--noproxy","*","--resolve",p["oidc_name"]+":"+port+":127.0.0.1"]
@@ -322,7 +373,9 @@ def start_services(p):
         time.sleep(2)
     else:
         raise ValueError("OIDC issuer discovery did not pass")
-    return {"services_started":True, "url":f"https://{p['api_name']}:{p['api_port']}", "oidc_issuer":realm,"enrollment_file":str(ETC/"first-enrollment.token")}
+    for service in ("agentcapsule-oidc","agentcapsule-interop","agentcapsule-authority","agentcapsule-worker","agentcapsule-slim-bridge","agentcapsule-api"):
+        run("systemctl","is-active","--quiet",service)
+    return {"services_started":True, "url":f"https://{p['api_name']}:{p['api_port']}", "oidc_issuer":realm}
 
 
 def backup(profile,mandatory):
@@ -399,7 +452,7 @@ def drain(profile):
         time.sleep(2)
     else:
         raise ValueError("admissions paused; pending operations still draining")
-    run("systemctl","stop","agentcapsule-worker","agentcapsule-slim-bridge","agentcapsule-authority","agentcapsule-interop")
+    run("systemctl","stop","agentcapsule-worker","agentcapsule-slim-bridge","agentcapsule-authority","agentcapsule-interop","agentcapsule-oidc")
 
 
 def run_storage(request,directory):
@@ -414,7 +467,8 @@ def run_storage(request,directory):
         scratch=Path("/var/lib/agentcapsule-restore-tests")/directory.name
         scratch.mkdir(parents=True,exist_ok=True)
         args+=["-scratch",scratch]
-    run(*args,env=db_env(profile))
+    result=json.loads(output(*args,env=db_env(profile)))
+    return {"storage_result":result}
 
 
 def request_api(p,method,path,body=None,token=None,idempotency=None):
@@ -559,6 +613,10 @@ def setup_oidc(p):
     (ETC/"oidc").mkdir(exist_ok=True)
     (ETC/"oidc").chmod(0o755)
     install_file(ACTIVE/"oidc/realm.json",ETC/"oidc/realm.json")
+    setup_oidc_unit()
+
+
+def setup_oidc_unit():
     image=next(i for i in read(ACTIVE/"offline-images.json") if i["service"]=="oidc")
     template=(ACTIVE/"oidc/agentcapsule-oidc.service").read_text()
     if image["ref"] not in template:

@@ -209,11 +209,14 @@ func replaceExecutable(staged, current string) error {
 		return os.Rename(staged, current)
 	}
 	// Windows permits renaming a running executable but not overwriting it.
-	old := current + ".previous"
-	if err := os.Remove(old); err != nil && !os.IsNotExist(err) {
+	// A unique sibling prevents replacing an unrelated .previous file.
+	dir, err := os.MkdirTemp(filepath.Dir(current), ".agentcapsule-previous-")
+	if err != nil {
 		return err
 	}
+	old := filepath.Join(dir, filepath.Base(current))
 	if err := os.Rename(current, old); err != nil {
+		_ = os.Remove(dir)
 		return err
 	}
 	if err := os.Rename(staged, current); err != nil {
