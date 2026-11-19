@@ -199,6 +199,7 @@ var rbacRoutes = append([]rbacRoute{
 	{Method: "POST", Path: "/v1/invocations/{fresh}/cancel", Success: 200, Want: rbacSender, fresh: rbacFreshScheduled, Note: "a disposable invocation of the user"},
 	{Method: "POST", Path: "/v1/invocations/{fresh}/replay", Success: 202, Want: rbacManage, body: `{}`, fresh: rbacFreshDeadLetter, Note: "a disposable dead letter of the user"},
 
+	{Method: "GET", Path: "/v1/agents/{agent}/requests/{held}/diagnostics", Success: 200, Want: rbacDecideHeld, fresh: rbacFreshHeld},
 	{Method: "GET", Path: "/v1/agents/{agent}/held-requests", Success: 200, Want: rbacDecideHeld},
 	{Method: "POST", Path: "/v1/agents/{agent}/held-requests/{held}/accept", Success: 200, Want: rbacDecideHeld, body: `{}`, fresh: rbacFreshHeld, Note: "a disposable held request"},
 	{Method: "POST", Path: "/v1/agents/{agent}/held-requests/{held}/decline", Success: 200, Want: rbacDecideHeld, body: `{}`, fresh: rbacFreshHeld, Note: "a disposable held request"},

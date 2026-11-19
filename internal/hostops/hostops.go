@@ -23,6 +23,9 @@ var controller []byte
 //go:embed setup.py
 var setup []byte
 
+//go:embed diagnose.py
+var diagnostics []byte
+
 // Version is set by the release build.
 var Version = "development"
 
@@ -64,7 +67,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		}
 		cmd = exec.CommandContext(ctx, "python3", "-I", "-", encoded)
 	}
-	source := bytes.Join([][]byte{setup, controller}, []byte("\n"))
+	source := bytes.Join([][]byte{setup, diagnostics, controller}, []byte("\n"))
 	program := "import base64\nHELPER_SOURCE=base64.b64decode('" + base64.StdEncoding.EncodeToString(source) + "')\nexec(compile(HELPER_SOURCE, 'agentcapsule-host', 'exec'))\n"
 	cmd.Stdin = bytes.NewBufferString(program)
 	cmd.Stdout, cmd.Stderr = stdout, stderr

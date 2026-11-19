@@ -39,7 +39,11 @@ type AppliedMigration struct {
 // HostDiagnostics is one worker host: its queue, its VMs, its storage
 // reservation and the storage pressure its worker last recorded.
 type HostDiagnostics struct {
-	HostID             string           `json:"host_id"`
+	HostID string `json:"host_id"`
+	HostStatistics
+}
+
+type HostStatistics struct {
 	Queue              []QueueByKind    `json:"queue"`
 	RunningVMs         int64            `json:"running_vms"`
 	UncleanStops       int64            `json:"unclean_stops"`
@@ -119,7 +123,7 @@ func (s *Store) diagnostics(ctx context.Context, p *Principal) (Diagnostics, err
 		return d, err
 	}
 	for rows.Next() {
-		h := HostDiagnostics{Queue: []QueueByKind{}, JobFailures: map[string]int64{}}
+		h := HostDiagnostics{HostStatistics: HostStatistics{Queue: []QueueByKind{}, JobFailures: map[string]int64{}}}
 		if err = rows.Scan(&h.HostID, &h.StorageLimitMiB, &h.DataPressure, &h.ImagePressure, &h.PressureObservedAt,
 			&h.StorageReservedMiB, &h.RunningVMs, &h.UncleanStops); err != nil {
 			rows.Close()

@@ -92,6 +92,7 @@ func NewForHost(store *controlplane.Store, accounts *controlplane.Accounts, host
 	s.handle("/v1/agents/{id}/release", s.agentRelease)
 	s.handle("/v1/agents/{id}/directory", s.agentDirectory)
 	s.handle("/v1/agents/{id}/inbound", s.agentInbound)
+	s.handle("/v1/agents/{id}/requests/{request_id}/diagnostics", s.explainCommunication)
 	s.handle("/v1/agents/{id}/held-requests", s.heldRequests)
 	s.handle("/v1/agents/{id}/held-requests/{request_id}/accept", s.acceptHeldRequest)
 	s.handle("/v1/agents/{id}/held-requests/{request_id}/decline", s.declineHeldRequest)

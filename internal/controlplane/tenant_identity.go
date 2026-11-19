@@ -5,7 +5,9 @@ import (
 	"context"
 	"crypto/ed25519"
 	"errors"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/individualidentity"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/delegatedidentity"
@@ -86,6 +88,12 @@ func registeredVerifier(ctx context.Context, tx pgx.Tx, issuer, audience, kid st
 // existing anchor in UPDATE before writing. No row is created by this function.
 func resolveTenant(ctx context.Context, tx pgx.Tx, v delegatedidentity.VerifiedIdentity) (CurrentOrganization, error) {
 	var current CurrentOrganization
+	if strings.HasPrefix(v.Issuer, individualidentity.Prefix) {
+		key, ok := individualidentity.Key(v.Issuer)
+		if !ok || individualidentity.Subject(key) != v.Subject || v.Audience != v.TenantID {
+			return current, ErrAuthentication
+		}
+	}
 	o, err := scanOrganization(tx.QueryRow(ctx, `SELECT id,name,status,policy_version,created_at FROM organizations WHERE id=$1 FOR SHARE`, v.TenantID))
 	if errors.Is(err, ErrNotFound) || (err == nil && o.Status != "active") {
 		return current, ErrAuthentication

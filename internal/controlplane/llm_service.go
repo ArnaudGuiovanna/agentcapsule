@@ -250,3 +250,13 @@ func (s *LLMService) ForwardFromVM(ctx context.Context, caller VMCaller, request
 	}
 	return ForwardResult{ForwardResponse: out, SoftBudgetExceeded: hold.res.SoftExceeded}, nil
 }
+
+// Probe is for the local worker operator diagnostic. The upstream is resolved
+// from a registered alias and the request uses the production egress policy.
+func (s *LLMService) Probe(ctx context.Context, tenant, alias string) (llmgateway.ProbeResult, error) {
+	route, err := s.accounts.ResolveLLMRoute(ctx, tenant, alias)
+	if err != nil {
+		return llmgateway.ProbeResult{}, err
+	}
+	return s.gateway.Probe(ctx, llmgateway.Route{Kind: route.Kind, BaseURL: route.BaseURL, AuthMode: route.AuthMode, UpstreamModel: route.UpstreamModel, Secret: route.Secret})
+}

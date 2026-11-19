@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/hostops"
 	"io"
 	"os"
 	"os/signal"
@@ -18,6 +17,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/hostops"
 )
 
 type terminalFailure struct{ state string }
@@ -72,6 +73,9 @@ func randomKey() string {
 }
 func run(ctx context.Context, args []string, in io.Reader, out, errout io.Writer) error {
 	cli := console{in: in, out: out, errout: errout}
+	if len(args) == 1 && args[0] == "--version" {
+		args = []string{"version"}
+	}
 	if handled, err := runHostCommand(ctx, args, in, out, errout); handled {
 		return err
 	}
@@ -92,6 +96,9 @@ func run(ctx context.Context, args []string, in io.Reader, out, errout io.Writer
 			return usageError{err}
 		}
 		return cli.print(map[string]any{"release": hostops.Version, "api_major": 1, "cli_protocol": 1}, "")
+	}
+	if pos[0] == "identity" {
+		return cli.identity(pos, o)
 	}
 	dir, err := configDir()
 	if err != nil {
@@ -128,9 +135,6 @@ func run(ctx context.Context, args []string, in io.Reader, out, errout io.Writer
 	if identityCommand {
 		return cli.sessionCommand(ctx, dir, name, api, strings.Join(pos, " "), o)
 	}
-	if _, err = api.verifyToken(ctx, c.Token); err != nil {
-		return err
-	}
 	cmd := strings.Join(pos, " ")
 	if cmd == "doctor" || cmd == "support export" || cmd == "status" {
 		watch := o.take("watch") != ""
@@ -142,42 +146,67 @@ func run(ctx context.Context, args []string, in io.Reader, out, errout io.Writer
 		}
 		return cli.status(ctx, api, cmd, watch)
 	}
+	if c.SigningKey != "" {
+		c.Token, err = signPersonal(c.SigningKey, c.Organization)
+		if err != nil {
+			return err
+		}
+		api.connection.Token = c.Token
+	}
+	if _, err = api.verifyToken(ctx, c.Token); err != nil {
+		return err
+	}
 	key := o.take("idempotency-key")
 	a, err := buildAction(pos, o, in)
 	if err != nil {
 		return usageError{err}
 	}
+	if cli.outputFile == "" && returnsCredential(a) {
+		return usageError{errors.New("this command issues a credential; choose a private --output-file PATH")}
+	}
 	if a.method != "GET" {
+		for _, r := range key {
+			if r < 33 || r > 126 {
+				return usageError{errors.New("idempotency key must be printable ASCII without spaces")}
+			}
+		}
+		if len(key) > 200 {
+			return usageError{errors.New("idempotency key is too long")}
+		}
 		if key == "" {
 			key = randomKey()
 		}
 		fmt.Fprintf(errout, "context=%s target=%s method=%s path=%s idempotency_key=%s\n", name, c.URL, a.method, strings.Split(a.path, "?")[0], key)
 	}
 	for {
+		if c.SigningKey != "" {
+			c.Token, err = signPersonal(c.SigningKey, c.Organization)
+			if err != nil {
+				return err
+			}
+		}
 		r, err := api.request(ctx, a.method, a.path, key, c.Token, a.body)
 		if err != nil {
 			return err
 		}
+		if a.name == "app connection" {
+			return cli.appConnection(c, r)
+		}
 		if a.name != "operation wait" {
 			return cli.print(r.Data, r.RequestID)
 		}
-		var op struct {
-			Status string `json:"status"`
+		state, disposition, err := operationState(r.Data)
+		if err != nil {
+			return err
 		}
-		if json.Unmarshal(r.Data, &op) != nil {
-			return errors.New("invalid operation response")
-		}
-		switch op.Status {
-		case "SUCCEEDED":
-			return cli.print(r.Data, r.RequestID)
-		case "FAILED", "CANCELLED", "CANCELED", "EXPIRED":
+		if disposition != "pending" {
 			if err := cli.print(r.Data, r.RequestID); err != nil {
 				return err
 			}
-			return terminalFailure{op.Status}
-		case "PENDING", "RUNNING", "ACCEPTED", "QUEUED", "IN_PROGRESS":
-		default:
-			return fmt.Errorf("unrecognized operation status %q", op.Status)
+			if disposition == "failure" {
+				return terminalFailure{state}
+			}
+			return nil
 		}
 		delay, _ := strconv.Atoi(r.RetryAfter)
 		if delay < 1 {
@@ -188,6 +217,52 @@ func run(ctx context.Context, args []string, in io.Reader, out, errout io.Writer
 		}
 	}
 }
+func operationState(data json.RawMessage) (string, string, error) {
+	var op struct {
+		Status string `json:"status"`
+		State  string `json:"state"`
+	}
+	if err := json.Unmarshal(data, &op); err != nil {
+		return "", "", errors.New("invalid operation response")
+	}
+	state := op.Status
+	if state == "" {
+		state = op.State
+	}
+	switch strings.ToLower(state) {
+	case "ready", "succeeded", "completed":
+		return state, "success", nil
+	case "failed", "cancelled", "canceled", "expired", "lost", "rejected", "paused", "disabled", "refused":
+		return state, "failure", nil
+	case "pending", "running", "accepted", "queued", "in_progress", "planned", "provisioning", "starting", "verifying", "importing", "working", "scheduled", "preparing", "waiting_capacity":
+		return state, "pending", nil
+	default:
+		return "", "", fmt.Errorf("unrecognized operation state %q", state)
+	}
+}
+
+func (cli console) appConnection(c connection, r reply) error {
+	// Select the fields a frontend can receive even if the registration API
+	// gains additional administrative metadata later.
+	var app struct {
+		ID           string   `json:"id"`
+		Tenant       string   `json:"tenant_id"`
+		Issuer       string   `json:"issuer"`
+		ClientID     string   `json:"client_id"`
+		Audience     string   `json:"audience"`
+		RedirectURIs []string `json:"redirect_uris"`
+		Policies     []string `json:"policy_ids"`
+		Status       string   `json:"status"`
+	}
+	if json.Unmarshal(r.Data, &app) != nil || app.ID == "" || app.Issuer == "" || app.Tenant != c.Organization {
+		return errors.New("invalid application connection response")
+	}
+	return cli.print(map[string]any{"api_url": c.URL, "application_id": app.ID, "organization_id": app.Tenant, "issuer": app.Issuer,
+		"discovery_url": strings.TrimRight(app.Issuer, "/") + "/.well-known/openid-configuration", "client_id": app.ClientID,
+		"audience": app.Audience, "redirect_uris": app.RedirectURIs, "policy_ids": app.Policies, "status": app.Status,
+		"response_type": "code", "code_challenge_method": "S256"}, r.RequestID)
+}
+
 func wait(ctx context.Context, d time.Duration) error {
 	t := time.NewTimer(d)
 	defer t.Stop()
@@ -305,19 +380,51 @@ func (cli console) sessionCommand(ctx context.Context, dir, name string, api *cl
 			}
 		}
 		c.Token = ""
+		c.SigningKey = ""
 		c.Pending = ""
 		if err := saveContext(dir, name, c); err != nil {
 			return err
 		}
 		return cli.print(map[string]string{"status": "local_session_removed"}, "")
 	}
-	sf, ef := o.take("token-file"), o.take("enrollment-file")
+	sf, ef, kf := o.take("token-file"), o.take("enrollment-file"), o.take("key-file")
 	if err := o.done(); err != nil {
 		return usageError{err}
 	}
 	var proof string
 	switch cmd {
 	case "login":
+		if kf != "" {
+			if c.Kind != "organization" || sf != "" || ef != "" {
+				return errors.New("login --key-file requires an organization context and one identity source")
+			}
+			path, err := filepath.Abs(kf)
+			if err != nil {
+				return err
+			}
+			for attempt := 0; attempt < 2; attempt++ {
+				token, err := signPersonal(path, c.Organization)
+				if err != nil {
+					return err
+				}
+				who, err := api.verifyToken(ctx, token)
+				var rejected *apiError
+				if attempt == 0 && errors.As(err, &rejected) && rejected.Status == 401 {
+					if err = wait(ctx, time.Second); err != nil {
+						return err
+					}
+					continue
+				}
+				if err != nil {
+					return err
+				}
+				c.SigningKey, c.Token, c.Pending = path, "", ""
+				if err = saveContext(dir, name, c); err != nil {
+					return err
+				}
+				return cli.print(who.Data, who.RequestID)
+			}
+		}
 		if (sf == "") == (ef == "") {
 			return errors.New("login requires one of --token-file or --enrollment-file")
 		}
@@ -335,6 +442,7 @@ func (cli console) sessionCommand(ctx context.Context, dir, name string, api *cl
 			if err != nil {
 				return err
 			}
+			c.SigningKey = ""
 			c.Token = proof
 			c.Pending = ""
 			if err = saveContext(dir, name, c); err != nil {
@@ -346,7 +454,7 @@ func (cli console) sessionCommand(ctx context.Context, dir, name string, api *cl
 			return errors.New("invalid enrollment proof")
 		}
 	case "session renew":
-		if sf != "" || ef != "" {
+		if sf != "" || ef != "" || kf != "" {
 			return errors.New("renew uses the context credential")
 		}
 		proof = c.Token
@@ -391,42 +499,6 @@ func (cli console) sessionCommand(ctx context.Context, dir, name string, api *cl
 	return cli.print(r.Data, r.RequestID)
 }
 
-func (cli console) status(ctx context.Context, api *client, cmd string, watch bool) error {
-	for {
-		c := api.connection
-		report := map[string]any{}
-		r, err := api.request(ctx, "GET", "/v1/health/ready", "", "", nil)
-		if err != nil {
-			report["api"] = map[string]string{"status": "unavailable", "next_check": "check API readiness, database, authority connectivity and receipt keys"}
-			if !watch {
-				if printErr := cli.print(report, ""); printErr != nil {
-					return printErr
-				}
-				return err
-			}
-		} else {
-			report["api"] = r.Data
-			route := "/v1/platform/diagnostics"
-			if c.Kind == "organization" {
-				route = "/v1/organizations/current"
-			}
-			r, err = api.request(ctx, "GET", route, "", c.Token, nil)
-			if err != nil {
-				return err
-			}
-			report[c.Kind] = r.Data
-		}
-		if err = cli.print(report, r.RequestID); err != nil {
-			return err
-		}
-		if !watch {
-			return nil
-		}
-		if err = wait(ctx, 5*time.Second); err != nil {
-			return err
-		}
-	}
-}
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	err := run(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)

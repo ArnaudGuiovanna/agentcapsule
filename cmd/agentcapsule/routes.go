@@ -18,7 +18,9 @@ import (
 // Commands use the same HTTP contract as an application. Each brace takes
 // one positional identifier (left to right), or its named flag.
 var commands = map[string]string{
-	"organization list": "GET /organizations", "organization create": "POST /organizations", "organization show": "GET /organizations/{id}", "organization disable": "POST /organizations/{id}/disable", "organization current": "GET /organizations/current",
+	"pool expand": "POST /pools/{id}/expand", "rollout start": "POST /deployments/{deployment}/rollouts", "rollout members": "GET /rollouts/{id}/members", "rollout show": "GET /rollouts/{id}", "rollout resume": "POST /rollouts/{id}/resume",
+	"communication explain": "GET /agents/{agent}/requests/{request}/diagnostics",
+	"organization list":     "GET /organizations", "organization create": "POST /organizations", "organization show": "GET /organizations/{id}", "organization disable": "POST /organizations/{id}/disable", "organization current": "GET /organizations/current",
 	"quota show": "GET /organizations/{id}/quotas", "quota set": "PUT /organizations/{id}/quotas", "quota current": "GET /organizations/current/quotas",
 	"member list": "GET /members", "member create": "POST /members", "member role": "POST /members/{member}/role", "member revoke": "POST /members/{member}/revoke",
 	"team list": "GET /teams", "team create": "POST /teams", "team show": "GET /teams/{team}", "team disable": "POST /teams/{team}/disable", "team members": "GET /teams/{team}/members", "team add": "POST /teams/{team}/members", "team remove": "POST /teams/{team}/members/{member}/revoke",
@@ -34,7 +36,7 @@ var commands = map[string]string{
 	"directory show": "GET /agents/{agent}/directory", "directory set": "PUT /agents/{agent}/directory", "communication inbound": "GET /agents/{agent}/inbound", "communication configure": "PUT /agents/{agent}/inbound", "communication held": "GET /agents/{agent}/held-requests", "communication accept": "POST /agents/{agent}/held-requests/{id}/accept", "communication decline": "POST /agents/{agent}/held-requests/{id}/decline",
 	"operation show": "GET /operations/{id}", "operation wait": "GET /operations/{id}", "session show": "GET /platform/session", "session revoke": "POST /platform/sessions/{id}/revoke",
 	"template publish": "POST /templates", "deployment plan": "POST /deployment-plans", "deployment apply": "POST /deployment-plans/{plan}/apply", "deployment show": "GET /deployments/{id}", "pool create": "POST /pools", "pool show": "GET /pools/{id}", "system-image publish": "POST /system-images", "system-image list": "GET /system-images",
-	"app register": "POST /applications", "app list": "GET /applications", "app show": "GET /applications/{id}", "app rotate": "POST /applications/{id}/rotate", "app revoke": "POST /applications/{id}/revoke",
+	"app register": "POST /applications", "app list": "GET /applications", "app connection": "GET /applications/{id}", "app show": "GET /applications/{id}", "app rotate": "POST /applications/{id}/rotate", "app revoke": "POST /applications/{id}/revoke",
 	"assignment-policy plan": "POST /assignment-policies/plan", "assignment-policy apply": "POST /assignment-policies/{plan}/apply", "access explain": "GET /access/explain",
 }
 
@@ -157,6 +159,18 @@ func buildAction(pos []string, o options, in io.Reader) (action, error) {
 	a.name = strings.Join(pos[:2], " ")
 	spec, ok := commands[a.name]
 	args := pos[2:]
+	if a.name == "operation show" || a.name == "operation wait" {
+		kind := o.take("type")
+		byKind := map[string]string{"": "operations", "operation": "operations", "deployment": "deployments", "rollout": "rollouts", "harness-import": "harness-imports", "invocation": "invocations"}
+		if kind == "activation" {
+			byKind[kind] = "applications/{app}/activations"
+		}
+		resource, found := byKind[kind]
+		if !found {
+			return a, errors.New("unknown operation type")
+		}
+		spec = "GET /" + resource + "/{id}"
+	}
 	if pos[0] == "api" && len(pos) == 3 {
 		a.method = strings.ToUpper(pos[1])
 		a.path = pos[2]
@@ -209,6 +223,25 @@ func buildAction(pos []string, o options, in io.Reader) (action, error) {
 		if err != nil {
 			return a, err
 		}
+		if a.name == "organization create" {
+			if path := o.take("owner-file"); path != "" {
+				if _, exists := body["initial_owner"]; exists {
+					return a, errors.New("choose one initial owner")
+				}
+				data, err := readSource(path, in, false)
+				if err != nil {
+					return a, err
+				}
+				var who struct {
+					Version int               `json:"version"`
+					Data    map[string]string `json:"data"`
+				}
+				if json.Unmarshal(data, &who) != nil || who.Version != 1 || who.Data["issuer"] == "" {
+					return a, errors.New("expected the public output of identity create or show")
+				}
+				body["initial_owner"] = who.Data
+			}
+		}
 		set := func(k string, v any) error {
 			if old, exists := body[k]; exists && old != v {
 				return fmt.Errorf("conflicting value for %s", k)
@@ -222,7 +255,7 @@ func buildAction(pos []string, o options, in io.Reader) (action, error) {
 			}
 			args = args[1:]
 		}
-		for _, k := range []string{"template", "count", "active-count", "deployment", "auth-mode", "base-url", "kind", "name", "reference", "alias", "upstream-model", "provider-id"} {
+		for _, k := range []string{"template", "count", "active-count", "max-unavailable", "deployment", "auth-mode", "base-url", "kind", "name", "reference", "alias", "upstream-model", "provider-id"} {
 			v := o.take(k)
 			if v == "" {
 				continue
@@ -232,7 +265,7 @@ func buildAction(pos []string, o options, in io.Reader) (action, error) {
 			if k == "deployment" {
 				field = "deployment_id"
 			}
-			if k == "count" || k == "active-count" {
+			if k == "count" || k == "active-count" || k == "max-unavailable" {
 				n, e := strconv.Atoi(v)
 				if e != nil || n < 0 {
 					return a, fmt.Errorf("invalid --%s", k)
@@ -269,7 +302,8 @@ func listCommands(w io.Writer) {
 	fmt.Fprintln(w, `agentcapsule [--context NAME] COMMAND [--file FILE|-] [--idempotency-key KEY] [--output-file FILE]
 context add NAME --url HTTPS_ORIGIN --kind platform|organization [--organization ID] [--ca FILE]
 context use NAME | context list | context show NAME
-login --enrollment-file FILE|- | login --token-file FILE|- | session renew | logout
+identity create|show --key-file PATH --display-name NAME
+login --enrollment-file FILE|- | login --key-file PATH | login --token-file FILE|- | session renew | logout
 status [--watch] | doctor | support export --output-file FILE
 install | update check|plan|apply | self update | host operation show|wait | restore
 api METHOD /v1/path
@@ -283,4 +317,12 @@ For named routes supply identifiers in route order or as named flags.`)
 	for _, k := range keys {
 		fmt.Fprintf(w, "  %-26s %s\n", k, commands[k])
 	}
+}
+
+func returnsCredential(a action) bool {
+	p := strings.Split(a.path, "?")[0]
+	if a.method != "POST" {
+		return false
+	}
+	return p == "/v1/applications" || strings.HasPrefix(p, "/v1/applications/") && (strings.HasSuffix(p, "/rotate") || strings.HasSuffix(p, "/invitations")) || strings.HasSuffix(p, "/tokens")
 }

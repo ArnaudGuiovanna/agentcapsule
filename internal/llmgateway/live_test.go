@@ -100,3 +100,11 @@ func TestLiveTimeoutAfterSendIsOutcomeUnknownAndNotRetried(t *testing.T) {
 		t.Fatal("a possibly billed call was retried", n)
 	}
 }
+
+func TestLiveProviderCatalogProbe(t *testing.T) {
+	r := liveRoute(t)
+	got, err := live(Config{}).Probe(t.Context(), r)
+	if err != nil || !got.ModelListed || got.Model != r.UpstreamModel || got.Endpoint != r.BaseURL {
+		t.Fatal(got, err)
+	}
+}

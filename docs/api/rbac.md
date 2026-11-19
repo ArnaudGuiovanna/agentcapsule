@@ -183,6 +183,7 @@ only its own.
 | `GET /v1/operations/{id}/result` (the caller's own, else the user's) | 404 | 404 | 404 | 404 | yes | 404 | 404 | 404 | 404 | 404 | 401 | 401 | 403 |
 | `POST /v1/invocations/{id}/cancel` (a disposable invocation of the user) | 404 | 404 | 404 | 404 | yes | 404 | 404 | 404 | 404 | 404 | 401 | 401 | 404 |
 | `POST /v1/invocations/{id}/replay` (a disposable dead letter of the user) | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `GET /v1/agents/{id}/requests/{request_id}/diagnostics` | yes | yes | yes | 403 | yes | yes | 404 | 404 | yes | 404 | 401 | 401 | 400 |
 | `GET /v1/agents/{id}/held-requests` | yes | yes | yes | 403 | yes | yes | 404 | 404 | yes | 404 | 401 | 401 | 400 |
 | `POST /v1/agents/{id}/held-requests/{request_id}/accept` (a disposable held request) | yes | yes | yes | 403 | yes | yes | 404 | 404 | yes | 404 | 401 | 401 | 400 |
 | `POST /v1/agents/{id}/held-requests/{request_id}/decline` (a disposable held request) | yes | yes | yes | 403 | yes | yes | 404 | 404 | yes | 404 | 401 | 401 | 400 |

@@ -2479,6 +2479,36 @@ paths:
         '404': {$ref: '#/components/responses/Problem'}
         '409': {$ref: '#/components/responses/Problem'}  # agent_unavailable: not live (provisioning or deleted)
         default: {$ref: '#/components/responses/Problem'}
+  /v1/agents/{id}/requests/{request_id}/diagnostics:
+    get:
+      operationId: explainCommunication
+      summary: Diagnose a peer request as an authorized recipient
+      description: Requires the permission to decide on requests to this recipient. Returns metadata only.
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+        - {name: request_id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: Consent, authorization, directory and delivery observations
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [request_id, state, directory, visible_at_submission, mandate_current, consent, delivery, attempts, reply_delivery, expires_at, observed_at, next_check]
+                properties:
+                  request_id: {type: string}
+                  state: {type: string}
+                  directory: {type: string}
+                  visible_at_submission: {type: boolean}
+                  mandate_current: {type: boolean}
+                  consent: {type: string, enum: [automatic, pending, accepted, declined, ended]}
+                  delivery: {type: string}
+                  attempts: {type: integer}
+                  reply_delivery: {type: string}
+                  expires_at: {type: string, format: date-time}
+                  observed_at: {type: string, format: date-time}
+                  next_check: {type: string}
+        default: {$ref: '#/components/responses/Problem'}
   /v1/agents/{id}/held-requests:
     get:
       description: >-
@@ -3252,7 +3282,9 @@ components:
           additionalProperties: false
           required: [issuer, subject, display_name]
           properties:
-            issuer: {$ref: '#/components/schemas/RegisteredIdentity'}
+            issuer:
+              type: string
+              description: An existing identity provider, or the individual public issuer printed by agentcapsule identity create. Only a new organization's initial owner can pin this key at creation.
             subject: {$ref: '#/components/schemas/RegisteredIdentity'}
             display_name: {type: string, minLength: 1, maxLength: 100, description: "Non-blank name without control characters."}
     Member:

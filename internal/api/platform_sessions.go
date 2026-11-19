@@ -26,7 +26,21 @@ func (s *Server) platformDiagnostics(w http.ResponseWriter, r *http.Request) {
 		failure(w, err)
 		return
 	}
-	jsonResponse(w, 200, map[string]any{"observed_at": time.Now().UTC(), "diagnostics": out})
+	// Operator-defined host names are labels. API fields ending in _id
+	// carry opaque resource identifiers.
+	type host struct {
+		Name string `json:"host"`
+		controlplane.HostStatistics
+	}
+	hosts := make([]host, 0, len(out.Hosts))
+	for _, h := range out.Hosts {
+		hosts = append(hosts, host{h.HostID, h.HostStatistics})
+	}
+	diagnostics := struct {
+		controlplane.Diagnostics
+		Hosts []host `json:"hosts"`
+	}{out, hosts}
+	jsonResponse(w, 200, map[string]any{"observed_at": time.Now().UTC(), "diagnostics": diagnostics})
 }
 func (s *Server) platformSession(w http.ResponseWriter, r *http.Request) {
 	if !method(w, r, "GET") {

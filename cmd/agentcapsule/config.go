@@ -32,6 +32,7 @@ func validName(s string) bool {
 }
 
 type connection struct {
+	SigningKey   string `json:"individual_key_file,omitempty"`
 	URL          string `json:"url"`
 	Kind         string `json:"kind"`
 	Organization string `json:"organization,omitempty"`

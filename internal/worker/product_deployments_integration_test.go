@@ -54,7 +54,8 @@ func TestProductDeploymentCampaignKVM(t *testing.T) {
 		}
 		lab.request(owner(), "POST", "/v1/deployment-plans", fmt.Sprintf("plan-%d", batch), controlplane.DeploymentRequest{Template: tmpl.Reference, Count: batch, ActiveCount: desired}, 201, &plan)
 		if !plan.Admitted {
-			t.Fatal("unexpected admission refusal", plan.Checks)
+			details, _ := json.Marshal(plan.Checks)
+			t.Fatalf("batch %d admission refusal: %s", batch, details)
 		}
 		apply := "/v1/deployment-plans/" + plan.ID + "/apply"
 		lab.request(owner(), "POST", apply, "apply", struct{}{}, 202, nil)

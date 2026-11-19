@@ -120,7 +120,9 @@ func TestCLIEnrollmentAndContextIsolation(t *testing.T) {
 	if _, err := store.Authenticate(ctx, old); !errors.Is(err, controlplane.ErrAuthentication) {
 		t.Fatal("old session still usable", err)
 	}
-	out := must(`{"name":"Acme","initial_owner":{"issuer":"https://id.acme.test","subject":"alice","display_name":"Alice"}}`, "organization", "create", "--file", "-", "--idempotency-key", "acme")
+	keyPath, ownerPath := filepath.Join(dir, "owner.pem"), filepath.Join(dir, "owner.json")
+	must("", "identity", "create", "--key-file", keyPath, "--display-name", "Alice", "--output-file", ownerPath)
+	out := must("", "organization", "create", "--name", "Acme", "--owner-file", ownerPath, "--idempotency-key", "acme")
 	var org struct {
 		Data struct {
 			ID string `json:"id"`
@@ -140,6 +142,16 @@ func TestCLIEnrollmentAndContextIsolation(t *testing.T) {
 	}
 	if _, err = invoke(c.Token, "--context", "acme", "login", "--token-file", "-"); err == nil {
 		t.Fatal("platform credential accepted as an organization")
+	}
+	must("", "--context", "acme", "login", "--key-file", keyPath)
+	current := must("", "--context", "acme", "organization", "current")
+	if !strings.Contains(current, "org_owner") || !strings.Contains(current, org.Data.ID) {
+		t.Fatal("owner authorization", current)
+	}
+	must(`{"name":"Support"}`, "--context", "acme", "team", "create", "--file", "-")
+	must("", "--context", "acme", "logout")
+	if _, err = invoke("", "--context", "acme", "team", "list"); err == nil {
+		t.Fatal("logout retained personal identity")
 	}
 	stat, err := os.Stat(contextPath(dir, "wsl"))
 	if err != nil || stat.Mode().Perm() != 0600 {

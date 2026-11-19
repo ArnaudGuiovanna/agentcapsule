@@ -43,3 +43,19 @@ func TestDeploymentAndConfigurationSyntax(t *testing.T) {
 		}
 	}
 }
+
+func TestOperationStates(t *testing.T) {
+	for input, want := range map[string]string{
+		`{"status":"SUCCEEDED"}`: "success", `{"state":"completed"}`: "success", `{"state":"READY"}`: "success",
+		`{"state":"IMPORTING"}`: "pending", `{"state":"working"}`: "pending", `{"state":"scheduled"}`: "pending",
+		`{"state":"REJECTED"}`: "failure", `{"state":"lost"}`: "failure", `{"status":"paused"}`: "failure",
+	} {
+		_, got, err := operationState([]byte(input))
+		if err != nil || got != want {
+			t.Fatal(input, got, err)
+		}
+	}
+	if _, _, err := operationState([]byte(`{"status":"future_state"}`)); err == nil {
+		t.Fatal("unknown state")
+	}
+}
