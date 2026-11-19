@@ -35,12 +35,15 @@ CREATE TABLE app_activations (
     team_id text,
     version bigint NOT NULL DEFAULT 1,
     disabled boolean NOT NULL DEFAULT false,
+    retry_at timestamptz,
     UNIQUE (tenant_id,app_id,principal_id),
     UNIQUE (tenant_id,app_id,id),
     FOREIGN KEY (tenant_id,principal_id) REFERENCES principals(tenant_id,id),
     FOREIGN KEY (tenant_id,team_id) REFERENCES teams(tenant_id,id),
     FOREIGN KEY (tenant_id,app_id,policy_id) REFERENCES app_policies(tenant_id,app_id,id)
 );
+
+CREATE INDEX app_activations_retry ON app_activations(retry_at) WHERE retry_at IS NOT NULL AND NOT disabled;
 
 CREATE TABLE app_invitations (
     id text PRIMARY KEY,

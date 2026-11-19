@@ -244,6 +244,7 @@ func run(args []string) int {
 		go func() { _ = metrics.Serve(metricsListener) }()
 		defer metrics.Close()
 	}
+	go accounts.RetryWaitingActivations(ctx)
 	server := &http.Server{Addr: *listen, Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 * 1024, ErrorLog: log.New(fixedLog{}, "", 0)}
 	listener, err := net.Listen("tcp", *listen)
 	if err != nil {

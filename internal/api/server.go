@@ -123,6 +123,7 @@ func New(store *controlplane.Store, accounts *controlplane.Accounts) (*Server, e
 	s.handle("/v1/users", s.users)
 	s.handle("/v1/users/{id}/tokens", s.tokens)
 	s.handle("/v1/me", s.me)
+	s.applicationRoutes()
 	s.handle("/v1/members", s.members)
 	s.handle("/v1/members/{id}/role", s.changeMemberRole)
 	s.handle("/v1/members/{id}/revoke", s.revokeMember)
@@ -263,6 +264,8 @@ func failure(w http.ResponseWriter, err error) {
 		problem(w, 409, "agent_unavailable")
 	case errors.Is(err, controlplane.ErrTransition):
 		problem(w, 409, "invalid_transition")
+	case errors.Is(err, controlplane.ErrPoolExhausted):
+		problem(w, 409, "pool_exhausted")
 	case errors.Is(err, controlplane.ErrQueueFull):
 		w.Header().Set("Retry-After", "5")
 		problem(w, 429, "queue_full")
