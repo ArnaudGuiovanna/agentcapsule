@@ -25,6 +25,9 @@ type CurrentOrganization struct {
 // registered in PostgreSQL (ADR 001, D-01); a non-nil verifier is a fixed
 // configuration, still checked against the registered trust.
 func (s *Store) AuthenticateDelegation(ctx context.Context, verifier *delegatedidentity.Verifier, raw string) (Principal, error) {
+	if c, ok := selectApplication(raw); ok {
+		return s.authenticateApp(ctx, raw, c)
+	}
 	issuer, audience, kid, err := delegatedidentity.Select(raw)
 	if verifier == nil && err != nil {
 		return Principal{}, ErrAuthentication
@@ -169,6 +172,8 @@ func authorizeTenant(ctx context.Context, tx pgx.Tx, p Principal, scope string) 
 	var err error
 	if p.delegation != nil {
 		current, err = resolveTenant(ctx, tx, *p.delegation)
+	} else if p.app != nil {
+		current, err = resolveApp(ctx, tx, *p.app)
 	} else {
 		current, err = resolveService(ctx, tx, *p.service)
 	}

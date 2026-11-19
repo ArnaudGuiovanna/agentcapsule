@@ -45,9 +45,29 @@ type Response struct {
 
 // Route is one resolved upstream. Secret stays in memory.
 type Route struct {
+	AuthMode                             string
 	Kind, BaseURL, UpstreamModel, Secret string
 	// Key identifies the breaker bucket, normally "tenant/provider".
 	Key string
+}
+
+// The empty mode preserves callers created before explicit authentication modes.
+func (r Route) validAuth() bool {
+	return (r.AuthMode == "" || r.AuthMode == "secret") && r.Secret != "" || r.AuthMode == "none" && r.Secret == ""
+}
+func (r Route) headers() map[string]string {
+	h := map[string]string{}
+	if r.Kind == "anthropic" {
+		h["anthropic-version"] = "2023-06-01"
+	}
+	if r.AuthMode != "none" {
+		if r.Kind == "anthropic" {
+			h["x-api-key"] = r.Secret
+		} else {
+			h["Authorization"] = "Bearer " + r.Secret
+		}
+	}
+	return h
 }
 
 var (
@@ -190,7 +210,7 @@ func (r Request) valid() bool {
 func (g *Gateway) Complete(ctx context.Context, route Route, req Request) (out Response, err error) {
 	ctx, span := startCall(ctx, "complete", route)
 	defer func() { endCall(span, out.Usage, err) }()
-	if !req.valid() || route.Secret == "" || route.UpstreamModel == "" {
+	if !req.valid() || !route.validAuth() || route.UpstreamModel == "" {
 		return Response{}, ErrInvalid
 	}
 	var build func(Route, Request) (string, []byte, map[string]string, error)
@@ -316,7 +336,7 @@ func buildOpenAI(r Route, q Request) (string, []byte, map[string]string, error) 
 		payload["temperature"] = *q.Temperature
 	}
 	b, err := json.Marshal(payload)
-	return join(r.BaseURL, "/chat/completions"), b, map[string]string{"Authorization": "Bearer " + r.Secret}, err
+	return join(r.BaseURL, "/chat/completions"), b, r.headers(), err
 }
 
 func parseOpenAI(raw []byte) (Response, error) {
@@ -363,7 +383,7 @@ func buildAnthropic(r Route, q Request) (string, []byte, map[string]string, erro
 		payload["temperature"] = *q.Temperature
 	}
 	b, err := json.Marshal(payload)
-	return join(r.BaseURL, "/v1/messages"), b, map[string]string{"x-api-key": r.Secret, "anthropic-version": "2023-06-01"}, err
+	return join(r.BaseURL, "/v1/messages"), b, r.headers(), err
 }
 
 func parseAnthropic(raw []byte) (Response, error) {

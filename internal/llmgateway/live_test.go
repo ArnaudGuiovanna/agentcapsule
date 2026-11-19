@@ -24,10 +24,11 @@ func liveRoute(t *testing.T) Route {
 		t.Fatal("-tags llmlive needs AGENTCAPSULE_TEST_LLM_BASE_URL and AGENTCAPSULE_TEST_LLM_MODEL")
 	}
 	secret := os.Getenv("AGENTCAPSULE_TEST_LLM_SECRET")
+	mode := "secret"
 	if secret == "" {
-		secret = "local-model-server" // a local Ollama ignores it; the gateway requires one
+		mode = "none"
 	}
-	return Route{Kind: "openai_compatible", BaseURL: base, UpstreamModel: model, Secret: secret, Key: "live/" + model}
+	return Route{AuthMode: mode, Kind: "openai_compatible", BaseURL: base, UpstreamModel: model, Secret: secret, Key: "live/" + model}
 }
 
 // live is a gateway that may reach a model server on loopback, a local Ollama.

@@ -146,7 +146,7 @@ func (s *LLMService) execute(ctx context.Context, h llmHold, q llmgateway.Reques
 // outcome: settled at the reported usage, unknown, or released.
 func (s *LLMService) settle(ctx context.Context, h llmHold, call func(llmgateway.Route) (llmgateway.Usage, error)) error {
 	route := h.route
-	usage, callErr := call(llmgateway.Route{Kind: route.Kind, BaseURL: route.BaseURL, UpstreamModel: route.UpstreamModel, Secret: route.Secret, Key: h.tenantID + "/" + h.alias})
+	usage, callErr := call(llmgateway.Route{AuthMode: route.AuthMode, Kind: route.Kind, BaseURL: route.BaseURL, UpstreamModel: route.UpstreamModel, Secret: route.Secret, Key: h.tenantID + "/" + h.alias})
 	// Bookkeeping must survive a cancelled caller context.
 	bk := context.WithoutCancel(ctx)
 	event := LLMCallEvent{Provider: route.Kind, SoftBudgets: h.res.SoftBudgets}
