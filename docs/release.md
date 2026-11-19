@@ -38,6 +38,14 @@ Each image inventory is tied to its offline archive and the pinned reference in 
 
 ### Signed Linux development build `v0.1.0-dev.6`
 
+For local development on Ubuntu 24.04 amd64, including an Ubuntu instance in WSL2, use the Linux build mode below with the release build dependencies installed. It builds the host programs, the Linux/amd64 CLI and the guest image from the current Git commit. The version appears in `build.json` and in `agentcapsule version`. Choose a fresh output directory for each run.
+
+```sh
+python3 scripts/build-release.py --go "$(command -v go)" \
+  --linux-dev-version v0.1.0-dev.8 --twice \
+  --guest-cryptsetup /usr/sbin/cryptsetup --output /var/tmp/agentcapsule-dev8
+```
+
 Two clean builds of `f1d216d` on Ubuntu 24.04 amd64 in WSL2 produced the same eight executables and guest initrd. The development key signed an index of 41 files. Its SHA-256 is `fa277755417542dfd6ee6ac82ffd6d32cc98af8222ec7e5a201ec1d0ff5a98d2`. An independent offline verification checked the signed files, the 63 files inside the server bundle and the six pinned container references. The candidate admin binary applied 54 migrations to a fresh PostgreSQL schema and the resulting ledger matched the one shipped with the build.
 
 The release scanner checked the 19 SPDX inventories on this medium. The Ubuntu package archive and the Keycloak image account for all 12 findings that block publication, one Critical and 11 High. [Image qualification](release-image-qualification.md) · [Ubuntu package findings](#ubuntu-package-archive-19-november-2026)

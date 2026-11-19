@@ -15,6 +15,9 @@ cache, umask, time zone and locale, and every digest must match. The module
 cache is shared and checked by `go mod verify`, unless --fresh-module-cache
 gives each round its own (it then downloads every module).
 
+With --linux-dev-version, build the Linux/amd64 host programs and CLI at HEAD
+for local installation tests. The development version uses the form vX.Y.Z-dev.N.
+
 With --guest-cryptsetup, the guest image (product.initrd) is built too, by
 the commit's scripts/build-product-guest.py, twice when --twice is given. Its
 native files (cryptsetup, e2fsprogs, glibc and their libraries) are this
@@ -157,7 +160,7 @@ def slim_library(cache, work):
 
 
 def build_round(variant, round_dir, commit, go, base_env, module_cache, epoch, native_tools, slim_cache,
-                guest_cryptsetup, log, version):
+                guest_cryptsetup, log, version, cli_targets):
     """Clone the commit and build every binary (and the guest image) in round_dir."""
     # Variant b nests the clone deeper, so that no path of the first round can match.
     src = round_dir / ("src" if variant == "a" else "elsewhere/at/another/depth/src")
@@ -184,7 +187,7 @@ def build_round(variant, round_dir, commit, go, base_env, module_cache, epoch, n
             build_env["CGO_LDFLAGS"] = f"-L{library.parent}"
         run([go, "build", *flags, "-ldflags=" + ldflags, "-o", dist / name, package], log, build_env, src / module,
             umask=umask)
-    for name, (system, arch) in CLI_TARGETS.items():
+    for name, (system, arch) in cli_targets.items():
         flags, ldflags = build_flags(True)
         ldflags += " -X github.com/ArnaudGuiovanna/agentcapsule/internal/hostops.Version=" + version
         run([go, "build", *flags, "-ldflags=" + ldflags, "-o", dist / name, "./cmd/agentcapsule"],
@@ -226,7 +229,9 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--go", required=True, type=Path, help=f"Go executable ({GO_VERSION})")
     p.add_argument("--output", required=True, type=Path, help="new output directory")
-    p.add_argument("--version", help="release tag (vMAJOR.MINOR.PATCH[-PRE]); it must point at HEAD. Default: HEAD, untagged")
+    versions = p.add_mutually_exclusive_group()
+    versions.add_argument("--version", help="release tag (vMAJOR.MINOR.PATCH[-PRE]); it must point at HEAD. Default: HEAD, untagged")
+    versions.add_argument("--linux-dev-version", help="local Linux/amd64 development build at HEAD, e.g. v0.1.0-dev.1")
     p.add_argument("--twice", action="store_true", help="build in a second clean environment and compare every digest")
     p.add_argument("--fresh-module-cache", action="store_true", help="give each round an empty module cache")
     p.add_argument("--native-tools", type=Path, help="directory whose usr/include holds the libcryptsetup headers")
@@ -237,6 +242,14 @@ def main(argv=None):
     p.add_argument("--keep-rounds", action="store_true", help="keep the clones and build caches of each round")
     a = p.parse_args(argv)
 
+    cli_targets = CLI_TARGETS
+    if a.linux_dev_version:
+        if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+-dev\.[0-9]+", a.linux_dev_version):
+            p.error("--linux-dev-version must look like v0.1.0-dev.1")
+        if sys.platform != "linux" or os.uname().machine != "x86_64":
+            p.error("--linux-dev-version requires a Linux/amd64 builder")
+        cli_targets = {"agentcapsule-linux-amd64": CLI_TARGETS["agentcapsule-linux-amd64"]}
+    build_version = a.version or a.linux_dev_version
     go = a.go.resolve()
     version = subprocess.run([str(go), "env", "GOVERSION"], capture_output=True, text=True,
                              env=dict(os.environ, GOTOOLCHAIN="local"), check=True).stdout.strip()
@@ -258,7 +271,7 @@ def main(argv=None):
     shared_cache = subprocess.run([str(go), "env", "GOMODCACHE"], capture_output=True, text=True, check=True,
                                   env=dict(os.environ, GOTOOLCHAIN="local")).stdout.strip()
 
-    record = {"commit": commit, "version": a.version or "untagged", "source_date_epoch": epoch, "go": version,
+    record = {"commit": commit, "version": build_version or "untagged", "source_date_epoch": epoch, "go": version,
               "cc": first_line([os.environ.get("CC", "cc"), "--version"]), "host_packages": host_packages(),
               "flags": {"all": "-trimpath -buildvcs=true -ldflags='-s -w -buildid='",
                         "static": f"-tags={STATIC_TAGS} -ldflags='-linkmode external -extldflags -static'"},
@@ -266,7 +279,7 @@ def main(argv=None):
                            for name, module, package, cgo, static in BINARIES},
               "rounds": {}, "reproducible": None, "status": "running"}
 
-    for name, (system, arch) in CLI_TARGETS.items():
+    for name, (system, arch) in cli_targets.items():
         record["binaries"][name] = {"module": ".", "package": "./cmd/agentcapsule", "cgo": False, "static": True,
                                     "goos": system, "goarch": arch}
 
@@ -287,11 +300,12 @@ def main(argv=None):
                                                      GOFLAGS="-mod=readonly"), ROOT)
             print(f"round {variant}: building {commit[:12]} in {round_dir}", flush=True)
             dists[variant] = build_round(variant, round_dir, commit, go, base_env, module_cache, epoch,
-                                         a.native_tools, a.slim_cache, a.guest_cryptsetup, log, a.version or "development")
+                                         a.native_tools, a.slim_cache, a.guest_cryptsetup, log,
+                                         build_version or "development", cli_targets)
             record["rounds"][variant] = {
                 "seconds": round(time.monotonic() - started, 1),
                 "sha256": {f.name: sha256(f) for f in sorted(dists[variant].iterdir()) if f.name in
-                           {b[0] for b in BINARIES} | set(GUEST_FILES) | CLI_TARGETS.keys()}}
+                           record["binaries"].keys() | set(GUEST_FILES)}}
             save()
         digests = [record["rounds"][v]["sha256"] for v in rounds]
         if a.twice:
