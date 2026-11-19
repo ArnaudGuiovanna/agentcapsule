@@ -14,6 +14,230 @@ servers:
 security:
   - bearer: []
 paths:
+  /v1/version:
+    get:
+      operationId: apiVersion
+      security: []
+      responses:
+        '200':
+          description: Wire protocol compatibility, available before login
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [api_major, cli_protocol]
+                properties:
+                  api_major: {type: integer}
+                  cli_protocol: {type: integer}
+  /v1/platform/diagnostics:
+    get:
+      operationId: platformDiagnostics
+      security: [{platformBearer: []}]
+      responses:
+        '200':
+          description: Timestamped aggregate counters and host observations without tenant identifiers or content
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [observed_at, diagnostics]
+                properties:
+                  observed_at: {type: string, format: date-time}
+                  diagnostics:
+                    type: object
+                    required: [postgresql_version, migrations, hosts, agents_by_phase, deliveries, failed_operations_7d]
+                    properties:
+                      postgresql_version: {type: string}
+                      expected_migration: {type: integer}
+                      migrations: {type: array, items: {type: object}}
+                      hosts: {type: array, items: {type: object}}
+                      agents_by_phase: {type: object, additionalProperties: {type: integer}}
+                      deliveries: {type: array, items: {type: object}}
+                      failed_operations_7d: {type: array, items: {type: object}}
+                      harness_imports: {type: array, items: {type: object}}
+                      audit_retention_days: {type: integer}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/platform/session:
+    get:
+      operationId: currentPlatformSession
+      security: [{platformBearer: []}]
+      responses:
+        '200':
+          description: Current individually named platform credential
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PlatformSession'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/platform/sessions:
+    post:
+      operationId: exchangePlatformCredential
+      description: >-
+        Present an unexpired local enrollment proof or an active platform credential.
+        The client saves a random acpp_ bearer before posting its SHA-256.
+        Enrollment always consumes the proof. replace_current also consumes the
+        authenticated platform session in the same transaction. Authenticate with
+        the saved replacement to recover after a lost reply.
+      security: [{platformBearer: []}, {enrollmentBearer: []}]
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [token_sha256]
+              properties:
+                token_sha256: {type: string, pattern: '^[A-Fa-f0-9]{64}$'}
+                replace_current: {type: boolean, default: false}
+      responses:
+        '201':
+          description: Session active for twelve hours, revocations show authority replication state when configured
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/PlatformSession'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/platform/sessions/{id}/revoke:
+    post:
+      operationId: revokePlatformSession
+      security: [{platformBearer: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, additionalProperties: false}}}
+      responses:
+        '200':
+          description: Credential revoked on the primary
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, status]
+                properties:
+                  id: {type: string}
+                  status: {const: revoked}
+                  revocations: {$ref: '#/components/schemas/AccessRevocations'}
+  /v1/system-images:
+    get:
+      summary: List approved system images installed on the host
+      security: [{platformBearer: []}, {delegatedBearer: []}, {serviceBearer: []}]
+      parameters:
+        - {name: after, in: query, schema: {type: string, maxLength: 100}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 100}}
+      responses:
+        '200':
+          description: List approved system images installed on the host
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/AvailableSystemImages'}}
+        default: {$ref: '#/components/responses/Problem'}
+    post:
+      summary: Approve an immutable name and version for a kernel and initrd
+      security: [{platformBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json: {schema: {$ref: '#/components/schemas/SystemImage'}}
+      responses:
+        '201':
+          description: Approve an immutable name and version for a kernel and initrd
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/SystemImage'}}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/templates:
+    post:
+      summary: Publish an immutable organization template
+      security: [{delegatedBearer: []}]
+      description: Requires agent:create. Publishing an LLM profile also requires provider:manage.
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json: {schema: {$ref: '#/components/schemas/TemplateSpec'}}
+      responses:
+        '201':
+          description: Publish an immutable organization template
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/TemplateRevision'}}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/deployment-plans:
+    post:
+      summary: Plan a deployment against current host capacity and organization quotas
+      security: [{delegatedBearer: []}]
+      description: A plan with admitted=false lists each required and available quantity and reserves nothing. Requires agent:create.
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json: {schema: {$ref: '#/components/schemas/DeploymentRequest'}}
+      responses:
+        '201':
+          description: Plan a deployment against current host capacity and organization quotas
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/DeploymentPlan'}}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/deployment-plans/{id}/apply:
+    post:
+      summary: Apply the pinned plan atomically and enqueue provisioning
+      security: [{delegatedBearer: []}]
+      description: Requires agent:create. Capacity is rechecked under lock. A shortfall returns 409 deployment_capacity_exceeded with resource, required and available. Retries keep every logical agent and volume identity. Follow the returned id with GET /v1/deployments/{id}.
+      parameters:
+        - {$ref: '#/components/parameters/ResourceID'}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody: {$ref: '#/components/requestBodies/EmptyCommand'}
+      responses:
+        '202':
+          description: Apply the pinned plan atomically and enqueue provisioning
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/DeploymentStatus'}}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/deployments/{id}:
+    get:
+      summary: Show provisioning and active VM counts
+      security: [{delegatedBearer: []}]
+      description: Requires agent:create in the organization of this campaign.
+      parameters:
+        - {$ref: '#/components/parameters/ResourceID'}
+      responses:
+        '200':
+          description: Show provisioning and active VM counts
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/DeploymentStatus'}}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/pools:
+    post:
+      summary: Create an assignable pool from an applied deployment
+      security: [{delegatedBearer: []}]
+      description: Requires agent:create. A deployment can belong to one pool.
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json: {schema: {$ref: '#/components/schemas/AgentPoolInput'}}
+      responses:
+        '201':
+          description: Create an assignable pool from an applied deployment
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/AgentPool'}}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/pools/{id}:
+    get:
+      summary: Read the inventory of an organization pool
+      security: [{delegatedBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/ResourceID'}
+      responses:
+        '200':
+          description: Read the inventory of an organization pool
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/AgentPool'}}
+        default: {$ref: '#/components/responses/Problem'}
   /v1/health/live:
     get:
       security: []
@@ -820,11 +1044,18 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [name, kind, base_url, secret]
+              required: [name, kind, base_url]
+              oneOf:
+                - required: [secret]
+                  properties: {auth_mode: {const: secret}}
+                - required: [auth_mode]
+                  properties: {auth_mode: {const: none}}
+                  not: {required: [secret]}
               properties:
                 name: {type: string, minLength: 1, maxLength: 100}
                 kind: {type: string, enum: [openai_compatible, anthropic]}
                 base_url: {type: string, maxLength: 300}
+                auth_mode: {type: string, enum: [secret, none], default: secret}
                 secret: {type: string, minLength: 8, maxLength: 4096, writeOnly: true}
       responses:
         '201': {$ref: '#/components/responses/LlmProviderReceipt'}
@@ -2607,6 +2838,7 @@ paths:
         default: {$ref: '#/components/responses/Problem'}
 components:
   securitySchemes:
+    enrollmentBearer: {type: http, scheme: bearer, bearerFormat: opaque, description: Short-lived locally issued acpe_ proof}
     bearer:
       type: http
       scheme: bearer
@@ -2917,6 +3149,16 @@ components:
         active: {type: boolean}
         permissions: {type: array, items: {type: string}}
         sources: {type: array, items: {$ref: '#/components/schemas/AppAccessSource'}}
+    PlatformSession:
+      type: object
+      required: [id, kind, account, expires_at, status]
+      properties:
+        id: {type: string}
+        kind: {const: platform}
+        account: {type: string}
+        expires_at: {type: string, format: date-time}
+        status: {const: active}
+        revocations: {$ref: '#/components/schemas/AccessRevocations'}
     HarnessImport:
       type: object
       required: [id, reference, digest, state, attempts, created_at]
@@ -3093,6 +3335,7 @@ components:
         kind: {type: string, enum: [openai_compatible, anthropic]}
         base_url: {type: string}
         status: {type: string, enum: [active, disabled]}
+        auth_mode: {type: string, enum: [secret, none], default: secret}
         secret_generation: {type: integer, minimum: 1}
         created_at: {type: string, format: date-time}
         rotated_at: {type: string, format: date-time}
@@ -3428,6 +3671,92 @@ components:
         error: {type: string, description: The schema server's reason when publication is invalid}
         record_cid: {type: string, description: Content ID of the record in the Directory when published}
         updated_at: {type: string, format: date-time, description: Last change of the description or of its record; absent if never described}
+    SystemImage:
+      type: object
+      required: [reference, kernel_digest, initrd_digest]
+      properties:
+        reference: {type: string, description: 'Immutable name@version'}
+        kernel_digest: {type: string, pattern: '^sha256:[a-f0-9]{64}$'}
+        initrd_digest: {type: string, pattern: '^sha256:[a-f0-9]{64}$'}
+    AvailableSystemImages:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/SystemImage'}}
+    TemplateSpec:
+      type: object
+      required: [name, system_image, harness, resources]
+      properties:
+        name: {type: string, maxLength: 75}
+        system_image: {type: string}
+        harness: {$ref: '#/components/schemas/HarnessReference'}
+        resources: {$ref: '#/components/schemas/Resources'}
+        llm_profile: {type: string, description: Existing model alias granted to each instance}
+        capabilities: {type: [array, 'null'], items: {type: string, enum: [llm.invoke, agents.delegate, agents.discover]}}
+    TemplateRevision:
+      allOf:
+        - {$ref: '#/components/schemas/TemplateSpec'}
+        - type: object
+          required: [reference, revision]
+          properties:
+            reference: {type: string}
+            revision: {type: integer, minimum: 1}
+    DeploymentRequest:
+      type: object
+      required: [template, count]
+      properties:
+        template: {type: string, description: 'Immutable name@revision'}
+        count: {type: integer, minimum: 1, maximum: 100000}
+        active_count: {type: integer, minimum: 0, default: 0, description: Number to wake at provisioning}
+        resources: {$ref: '#/components/schemas/Resources'}
+    DeploymentPlan:
+      allOf:
+        - {$ref: '#/components/schemas/DeploymentRequest'}
+        - type: object
+          required: [id, admitted, checks, host_observed_at]
+          properties:
+            id: {type: string}
+            admitted: {type: boolean}
+            host_observed_at: {type: string, format: date-time}
+            checks:
+              type: array
+              items:
+                type: object
+                required: [resource, required, available]
+                properties:
+                  resource: {type: string}
+                  required: {type: integer}
+                  available: {type: [integer, 'null'], description: Null for unlimited organization quotas}
+    DeploymentStatus:
+      type: object
+      required: [id, template, status, count, active_count, provisioned, active, pending, waiting_capacity, failed]
+      properties:
+        id: {type: string}
+        template: {type: string}
+        status: {type: string, enum: [planned, provisioning, starting, ready, failed]}
+        count: {type: integer}
+        active_count: {type: integer, description: Requested warm instances}
+        provisioned: {type: integer, description: Volumes initialized and ready}
+        active: {type: integer, description: Confirmed live application VMs}
+        pending: {type: integer, description: Volumes still awaiting initialization}
+        waiting_capacity: {type: integer}
+        failed: {type: integer}
+    AgentPoolInput:
+      type: object
+      required: [name, deployment_id]
+      properties:
+        name: {type: string}
+        deployment_id: {type: string}
+    AgentPool:
+      allOf:
+        - {$ref: '#/components/schemas/AgentPoolInput'}
+        - type: object
+          required: [id, total, available, preparing]
+          properties:
+            id: {type: string}
+            total: {type: integer}
+            available: {type: integer, description: Unassigned provisioned members}
+            preparing: {type: integer, description: Unassigned members still provisioning}
     HarnessReference:
       type: object
       additionalProperties: false

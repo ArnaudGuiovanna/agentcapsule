@@ -67,6 +67,13 @@ func NewForHost(store *controlplane.Store, accounts *controlplane.Accounts, host
 	if err != nil {
 		return nil, err
 	}
+	s.handle("/v1/system-images", s.systemImages)
+	s.handle("/v1/templates", s.publishTemplate)
+	s.handle("/v1/deployment-plans", s.planDeployment)
+	s.handle("/v1/deployment-plans/{id}/apply", s.applyDeployment)
+	s.handle("/v1/deployments/{id}", s.showDeployment)
+	s.handle("/v1/pools", s.createPool)
+	s.handle("/v1/pools/{id}", s.showPool)
 	s.handle("/v1/agents", s.agents)
 	s.handle("/v1/agents/{id}", s.agent)
 	s.handle("/v1/operations/{id}", s.operation)
@@ -118,6 +125,11 @@ func New(store *controlplane.Store, accounts *controlplane.Accounts) (*Server, e
 		return nil, controlplane.ErrInput
 	}
 	s := &Server{store: store, accounts: accounts, mux: http.NewServeMux()}
+	s.handle("/v1/version", s.version)
+	s.handle("/v1/platform/diagnostics", s.platformDiagnostics)
+	s.handle("/v1/platform/session", s.platformSession)
+	s.handle("/v1/platform/sessions", s.createPlatformSession)
+	s.handle("/v1/platform/sessions/{id}/revoke", s.revokePlatformSession)
 	s.handle("/v1/health/live", s.live)
 	s.handle("/v1/health/ready", s.ready)
 	s.handle("/v1/users", s.users)
@@ -234,8 +246,16 @@ func quotaProblem(w http.ResponseWriter, status int, code, quota string) {
 func failure(w http.ResponseWriter, err error) {
 	var refusal *controlplane.ReplayRefusal
 	var quota *controlplane.OrganizationQuotaError
+	var shortfall *controlplane.DeploymentShortfall
 	var below *controlplane.QuotaBelowAgentError
 	switch {
+	case errors.As(err, &shortfall):
+		if recorder, ok := w.(*statusRecorder); ok {
+			recorder.problem = "deployment_capacity_exceeded"
+		}
+		w.Header().Set("Content-Type", "application/problem+json")
+		w.WriteHeader(409)
+		_ = json.NewEncoder(w).Encode(map[string]any{"type": "about:blank", "title": "Conflict", "status": 409, "code": "deployment_capacity_exceeded", "resource": shortfall.Resource, "required": shortfall.Required, "available": shortfall.Available})
 	case errors.As(err, &quota):
 		// Waiting does not help: an agent must go, or the operator raise
 		// the quota.

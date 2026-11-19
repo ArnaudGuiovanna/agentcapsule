@@ -40,6 +40,7 @@ type FirecrackerOptions struct {
 	Root                                                        string
 	Firecracker, Jailer, Kernel, Initrd                         string
 	FirecrackerSHA256, JailerSHA256, KernelSHA256, InitrdSHA256 string
+	SystemImages                                                []BootImage
 	MaxActive                                                   int
 	BootTimeout                                                 time.Duration
 	// DriveLimits caps the I/O of each VM's drives; zero means
@@ -74,10 +75,19 @@ type FirecrackerOptions struct {
 	ObserveControl func(context.Context, string, VMRun, bool) error
 }
 
+type BootImage struct {
+	Kernel, Initrd, KernelSHA256, InitrdSHA256 string
+}
+type BootImageID struct {
+	Kernel string `json:"kernel"`
+	Initrd string `json:"initrd"`
+}
+
 type HostAgent struct {
-	ID            string `json:"id"`
-	UID           uint32 `json:"uid"`
-	Volume        string `json:"volume"`
+	SystemImage   *BootImageID `json:"system_image,omitempty"`
+	ID            string       `json:"id"`
+	UID           uint32       `json:"uid"`
+	Volume        string       `json:"volume"`
 	Device, Inode uint64
 	Generation    uint64      `json:"generation"`
 	Fenced        bool        `json:"fenced"`
@@ -193,6 +203,16 @@ func NewFirecrackerHost(opts FirecrackerOptions) (*FirecrackerHost, error) {
 				return err
 			}
 		}
+		// Versioned artifacts are installed under their verified content digests.
+		// Existing agents keep using their pinned pair after a worker restart.
+		for _, image := range opts.SystemImages {
+			if err := cacheSystemImage(root, image); err != nil {
+				return err
+			}
+		}
+		if err := cacheSystemImage(root, BootImage{opts.Kernel, opts.Initrd, opts.KernelSHA256, opts.InitrdSHA256}); err != nil {
+			return err
+		}
 		if err := os.MkdirAll(h.cgroup, 0700); err != nil {
 			return err
 		}
@@ -204,6 +224,17 @@ func NewFirecrackerHost(opts FirecrackerOptions) (*FirecrackerHost, error) {
 	return h, err
 }
 
+func cacheSystemImage(root string, img BootImage) error {
+	for _, a := range []struct{ name, path, digest string }{{"kernel", img.Kernel, img.KernelSHA256}, {"initrd", img.Initrd, img.InitrdSHA256}} {
+		if raw, err := hex.DecodeString(a.digest); err != nil || len(raw) != sha256.Size || strings.ToLower(a.digest) != a.digest {
+			return errors.New("invalid system image digest")
+		}
+		if err := pinFile(a.path, filepath.Join(root, "bin", a.name+"-"+a.digest), a.digest); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 func pinFile(source, destination, want string) error {
 	if len(want) != 64 {
 		return errors.New("SHA-256 digest required for every runtime artifact")
@@ -973,7 +1004,18 @@ func (h *FirecrackerHost) prepare(a *HostAgent) error {
 		return err
 	}
 	for _, name := range []string{"kernel", "initrd"} {
-		source, err := os.Open(filepath.Join(h.root, "bin", name))
+		artifact := name
+		if a.SystemImage != nil {
+			digest := a.SystemImage.Kernel
+			if name == "initrd" {
+				digest = a.SystemImage.Initrd
+			}
+			if raw, err := hex.DecodeString(digest); err != nil || len(raw) != sha256.Size {
+				return errors.New("invalid system image digest")
+			}
+			artifact += "-" + digest
+		}
+		source, err := os.Open(filepath.Join(h.root, "bin", artifact))
 		if err != nil {
 			return err
 		}

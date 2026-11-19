@@ -25,6 +25,9 @@ import (
 
 func run() int {
 	fail := func(code string) int { fmt.Fprintln(os.Stderr, code); return 1 }
+	if len(os.Args) > 1 && os.Args[1] == "issue-enrollment" {
+		return issueEnrollment(os.Args[2:])
+	}
 	if len(os.Args) > 1 && os.Args[1] == "bootstrap-platform" {
 		return bootstrapPlatform(os.Args[2:])
 	}
@@ -84,7 +87,7 @@ func run() int {
 		// installation starts with bootstrap-platform (docs/bootstrap.md).
 		return fail("bootstrap_removed_use_bootstrap_platform")
 	}
-	return fail("usage: agentcapsule-admin migrate | bootstrap-platform | list-credentials | revoke-credential | configure-delegation | list-audit | abandon-provisioning | clear-agent-failure | replay-dead-letter | init-key-authority | init-restore-authority | configure-host | approve-local-harness | activate-transit-keys | transit-key-usage | set-audit-retention | diagnostics | take-over-host | reconcile")
+	return fail("usage: agentcapsule-admin migrate | bootstrap-platform | issue-enrollment | list-credentials | revoke-credential | configure-delegation | list-audit | abandon-provisioning | clear-agent-failure | replay-dead-letter | init-key-authority | init-restore-authority | configure-host | approve-local-harness | activate-transit-keys | transit-key-usage | set-audit-retention | diagnostics | take-over-host | reconcile")
 }
 
 func configureCatalog(command string, args []string) int {

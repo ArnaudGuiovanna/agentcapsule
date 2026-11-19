@@ -53,8 +53,13 @@ func newLiveLab(t *testing.T) *liveLab {
 	t.Cleanup(srv.Close)
 
 	l, c, owner := agentLab(t)
-	r, err := l.a.CreateLLMProvider(t.Context(), owner, "live", CreateLLMProviderInput{Name: "local-model-server", Kind: "openai_compatible",
-		BaseURL: srv.URL + strings.TrimRight(upstream.Path, "/"), Secret: providerSecret})
+	mode := "none"
+	secret := os.Getenv("AGENTCAPSULE_TEST_LLM_SECRET")
+	if secret != "" {
+		mode = "secret"
+	}
+	r, err := l.a.CreateLLMProvider(t.Context(), owner, "live", CreateLLMProviderInput{AuthMode: mode, Name: "local-model-server", Kind: "openai_compatible",
+		BaseURL: srv.URL + strings.TrimRight(upstream.Path, "/"), Secret: secret})
 	var p LLMProvider
 	if err != nil || r.Status != 201 || json.Unmarshal(r.Body, &p) != nil {
 		t.Fatal("create provider", err)

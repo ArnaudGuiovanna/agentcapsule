@@ -37,7 +37,7 @@ func (w *Placements) resolveHarness(ctx context.Context, e controlplane.Enrollme
 	if e.HarnessSource == "oci" {
 		return w.harnessImage(ctx, e)
 	}
-	if p := w.provisioning; p == nil || e.HarnessDigest != p.digest {
+	if p := w.provisioning; p == nil || (e.SystemImage.Initrd == "" && e.HarnessDigest != p.digest) || (e.SystemImage.Initrd != "" && e.HarnessDigest != e.SystemImage.Initrd) {
 		return nil, controlplane.ErrRelease
 	}
 	return nil, nil

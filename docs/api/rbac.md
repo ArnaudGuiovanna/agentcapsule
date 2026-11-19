@@ -85,6 +85,11 @@ only its own.
 <!-- rbac-matrix:begin -->
 | Route | owner | admin | operator | auditor | user | team | former | unassigned | service | foreign | revoked | revoked-token | platform |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `GET /v1/version` (no authentication) | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes |
+| `GET /v1/platform/diagnostics` | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 401 | 401 | yes |
+| `GET /v1/platform/session` | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 401 | 401 | yes |
+| `POST /v1/platform/sessions` | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 401 | 401 | yes |
+| `POST /v1/platform/sessions/{id}/revoke` | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 401 | 401 | yes |
 | `GET /v1/health/live` (no authentication) | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes |
 | `GET /v1/health/ready` (no authentication) | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes |
 | `GET /v1/organizations` | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 401 | 401 | yes |
@@ -97,6 +102,14 @@ only its own.
 | `GET /v1/harness-imports/{id}` | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 401 | 401 | yes |
 | `GET /v1/harness-releases` (the platform's catalog) | yes | yes | yes | yes | 403 | 403 | 403 | 403 | yes | yes | 401 | 401 | yes |
 | `POST /v1/harness-releases/{id}/deprecate` (a disposable release) | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 401 | 401 | yes |
+| `GET /v1/system-images` | yes | yes | yes | yes | 403 | 403 | 403 | 403 | yes | yes | 401 | 401 | yes |
+| `POST /v1/system-images` | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 401 | 401 | yes |
+| `POST /v1/templates` | yes | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | yes | 401 | 401 | 403 |
+| `POST /v1/deployment-plans` | yes | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `POST /v1/deployment-plans/{id}/apply` | yes | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `GET /v1/deployments/{id}` | yes | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `POST /v1/pools` | yes | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `GET /v1/pools/{id}` | yes | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
 | `GET /v1/organizations/current` (the caller's own organization) | yes | yes | yes | yes | yes | yes | yes | yes | yes | filtered | 401 | 401 | 403 |
 | `GET /v1/members` | yes | yes | 403 | yes | 403 | 403 | 403 | 403 | yes | filtered | 401 | 401 | 403 |
 | `POST /v1/members` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | yes | 401 | 401 | 403 |
