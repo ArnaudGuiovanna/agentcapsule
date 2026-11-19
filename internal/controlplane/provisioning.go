@@ -22,6 +22,7 @@ type Enrollment struct {
 	// HarnessSource is "local-approved" (the host's built-in image) or "oci"
 	// (a registry package, whose harness.ext4 has RootfsDigest).
 	HarnessSource, RootfsDigest string
+	SystemImage                 ImageDigests
 	Resources                   AgentResources
 	AutoStart                   bool
 	Initialized                 bool
@@ -157,12 +158,13 @@ func (s *Store) RevocationSubjects(ctx context.Context) ([]string, error) {
 
 const enrollmentColumns = `e.agent_id,e.operation_id,e.volume_id,x.host_id,e.stage,r.artifact_digest,r.source,coalesce(r.rootfs_digest,''),e.incarnation,
     x.vcpus,x.memory_mib,x.volume_mib,x.auto_start,
-    EXISTS(SELECT 1 FROM store_initializations i WHERE i.agent_id=e.agent_id AND i.volume_id=e.volume_id AND i.incarnation=e.incarnation)`
+    EXISTS(SELECT 1 FROM store_initializations i WHERE i.agent_id=e.agent_id AND i.volume_id=e.volume_id AND i.incarnation=e.incarnation),
+ coalesce((SELECT kernel_digest FROM system_images WHERE id=x.system_image),''),coalesce((SELECT initrd_digest FROM system_images WHERE id=x.system_image),'')`
 
 func scanEnrollment(row pgx.Row) (Enrollment, error) {
 	var e Enrollment
 	err := row.Scan(&e.AgentID, &e.OperationID, &e.VolumeID, &e.HostID, &e.Stage, &e.HarnessDigest, &e.HarnessSource, &e.RootfsDigest, &e.Incarnation,
-		&e.Resources.VCPUs, &e.Resources.MemoryMiB, &e.Resources.DataVolumeMiB, &e.AutoStart, &e.Initialized)
+		&e.Resources.VCPUs, &e.Resources.MemoryMiB, &e.Resources.DataVolumeMiB, &e.AutoStart, &e.Initialized, &e.SystemImage.Kernel, &e.SystemImage.Initrd)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = ErrStoreEnrollment
 	}

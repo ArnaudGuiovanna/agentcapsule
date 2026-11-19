@@ -109,6 +109,14 @@ var rbacRoutes = []rbacRoute{
 	{Method: "GET", Path: "/v1/harness-imports/{import}", Success: 200, Want: rbacPlatformOnly},
 	{Method: "GET", Path: "/v1/harness-releases", Success: 200, Want: "S S S S 403 403 403 403 S S 401 401 S", Note: "the platform's catalog"},
 	{Method: "POST", Path: "/v1/harness-releases/{fresh}/deprecate", Success: 200, Want: rbacPlatformOnly, body: `{}`, fresh: rbacFreshRelease, Note: "a disposable release"},
+	{Method: "GET", Path: "/v1/system-images", Success: 200, Want: "S S S S 403 403 403 403 S S 401 401 S"},
+	{Method: "POST", Path: "/v1/system-images", Success: 201, Want: rbacPlatformOnly, body: `{"reference":"{name}@1","kernel_digest":"sha256:{digest}","initrd_digest":"sha256:{digest}"}`, fresh: rbacName},
+	{Method: "POST", Path: "/v1/templates", Success: 201, Want: "S S S 403 403 403 403 403 403 S 401 401 403", body: rbacTemplateBody, fresh: rbacName},
+	{Method: "POST", Path: "/v1/deployment-plans", Success: 201, Want: "S S S 403 403 403 403 403 403 404 401 401 403", body: `{"template":"matrix-base@1","count":1}`},
+	{Method: "POST", Path: "/v1/deployment-plans/{fresh}/apply", Success: 202, Want: "S S S 403 403 403 403 403 403 404 401 401 403", body: `{}`, fresh: rbacFreshDeployment},
+	{Method: "GET", Path: "/v1/deployments/{deployment}", Success: 200, Want: "S S S 403 403 403 403 403 403 404 401 401 403"},
+	{Method: "POST", Path: "/v1/pools", Success: 201, Want: "S S S 403 403 403 403 403 403 404 401 401 403", body: `{"name":"{name}","deployment_id":"{fresh}"}`, fresh: rbacPoolDeployment},
+	{Method: "GET", Path: "/v1/pools/{pool}", Success: 200, Want: "S S S 403 403 403 403 403 403 404 401 401 403"},
 	{Method: "GET", Path: "/v1/organizations/current", Success: 200, Want: "S S S S S S S S S F 401 401 403", hides: []string{"{org}"}, Note: "the caller's own organization"},
 
 	{Method: "GET", Path: "/v1/members", Success: 200, Want: "S S 403 S 403 403 403 403 S F 401 401 403", hides: []string{"{user_principal}"}},
@@ -835,6 +843,7 @@ func newRBACFixture(t *testing.T) *rbacFixture {
 	f.ids["budget"] = rbacFreshBudget(t, f)["fresh"]
 	f.ids["call"] = rbacFreshCall(t, f)["fresh"]
 
+	rbacSetupDeployment(t, f)
 	var imported controlplane.HarnessImport
 	f.must(t, "platform", "POST", "/v1/harness-imports", `{"reference":"ghcr.io/acme/matrix@sha256:`+strings.Repeat("a", 64)+`"}`, 202, &imported)
 	f.ids["import"] = imported.ID
@@ -925,4 +934,30 @@ func TestRBACMatrix(t *testing.T) {
 			}
 		}
 	}
+}
+
+const rbacTemplateBody = `{"name":"{name}","system_image":"matrix@1","harness":{"name":"reference","version":"1.0.0"},"resources":{"vcpus":1,"memory_mib":256,"data_volume_mib":64}}`
+
+func rbacSetupDeployment(t *testing.T, f *rbacFixture) {
+	digests := controlplane.ImageDigests{Kernel: "sha256:" + strings.Repeat("c", 64), Initrd: "sha256:" + strings.Repeat("a", 64)}
+	if err := f.l.store.ReportDeploymentHost(t.Context(), "local", controlplane.HostProvisioningBudget{MaxActive: 100, VCPUs: 100, MemoryMiB: 100000, UIDSlots: 1000}, []controlplane.ImageDigests{digests}); err != nil {
+		t.Fatal(err)
+	}
+	f.must(t, "platform", "POST", "/v1/system-images", fmt.Sprintf(`{"reference":"matrix@1","kernel_digest":%q,"initrd_digest":%q}`, digests.Kernel, digests.Initrd), 201, nil)
+	f.must(t, "owner", "POST", "/v1/templates", strings.ReplaceAll(rbacTemplateBody, "{name}", "matrix-base"), 201, nil)
+	vars := rbacPoolDeployment(t, f)
+	f.ids["deployment"] = vars["fresh"]
+	var pool controlplane.AgentPool
+	f.must(t, "owner", "POST", "/v1/pools", fmt.Sprintf(`{"name":"fixture","deployment_id":%q}`, vars["fresh"]), 201, &pool)
+	f.ids["pool"] = pool.ID
+}
+func rbacFreshDeployment(t *testing.T, f *rbacFixture) map[string]string {
+	var plan controlplane.DeploymentPlan
+	f.must(t, "owner", "POST", "/v1/deployment-plans", `{"template":"matrix-base@1","count":1}`, 201, &plan)
+	return map[string]string{"fresh": plan.ID, "name": f.next()}
+}
+func rbacPoolDeployment(t *testing.T, f *rbacFixture) map[string]string {
+	vars := rbacFreshDeployment(t, f)
+	f.must(t, "owner", "POST", "/v1/deployment-plans/"+vars["fresh"]+"/apply", `{}`, 202, nil)
+	return vars
 }

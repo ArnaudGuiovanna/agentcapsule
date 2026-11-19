@@ -54,6 +54,7 @@ func (a *HostAgent) resources() VMResources {
 }
 
 type ProvisionedAgent struct {
+	SystemImage   *BootImageID
 	ID, Volume    string
 	Device, Inode uint64
 	Resources     VMResources
@@ -127,7 +128,7 @@ func (h *FirecrackerHost) RegisterProvisioned(ctx context.Context, in Provisione
 			if a.Fenced || a.SealID != "" {
 				return ErrHostFenced
 			}
-			if a.Volume != path || a.Device != in.Device || a.Inode != in.Inode || a.Resources != in.Resources || !sameHarness(a.Harness, in.Harness) || a.UID < firstUID || a.UID > lastUID || s.Uid != a.UID || s.Gid != a.UID {
+			if (a.SystemImage == nil) != (in.SystemImage == nil) || (a.SystemImage != nil && *a.SystemImage != *in.SystemImage) || a.Volume != path || a.Device != in.Device || a.Inode != in.Inode || a.Resources != in.Resources || !sameHarness(a.Harness, in.Harness) || a.UID < firstUID || a.UID > lastUID || s.Uid != a.UID || s.Gid != a.UID {
 				return errors.New("provisioned registration is immutable")
 			}
 			return nil
@@ -152,7 +153,7 @@ func (h *FirecrackerHost) RegisterProvisioned(ctx context.Context, in Provisione
 		if err = f.Sync(); err != nil {
 			return err
 		}
-		r.Agents[in.ID] = &HostAgent{ID: in.ID, UID: uid, Volume: path, Device: in.Device, Inode: in.Inode, Resources: in.Resources, Harness: in.Harness}
+		r.Agents[in.ID] = &HostAgent{SystemImage: in.SystemImage, ID: in.ID, UID: uid, Volume: path, Device: in.Device, Inode: in.Inode, Resources: in.Resources, Harness: in.Harness}
 		return h.save(r)
 	})
 }
