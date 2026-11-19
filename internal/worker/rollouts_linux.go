@@ -63,7 +63,7 @@ func (w *Placements) rolloutPass(ctx context.Context) error {
 			}
 			run, err = w.startPlacement(ctx, agent, false, nil, id)
 			if errors.Is(err, runtime.ErrCapacity) || errors.Is(err, controlplane.ErrOrganizationQuota) {
-				return nil
+				return w.store.WaitRolloutCapacity(ctx, step)
 			}
 			if err != nil {
 				if ctx.Err() != nil {

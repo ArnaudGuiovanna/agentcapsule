@@ -69,6 +69,15 @@ func TestRolloutCanaryRebootMaintenanceAndWaves(t *testing.T) {
 		if err = l.s.InstallRolloutSpec(ctx, st); err != nil {
 			t.Fatal(err)
 		}
+		if i == 0 {
+			if err = l.s.WaitRolloutCapacity(ctx, st); err != nil {
+				t.Fatal(err)
+			}
+			waiting, err := c.GetRollout(ctx, owner, id)
+			if err != nil || waiting.Status != "running" || waiting.Reason != "waiting_capacity" || waiting.Maintaining != 1 {
+				t.Fatal(waiting, err)
+			}
+		}
 		p, err := l.s.ClaimRolloutPlacement(ctx, a, c.host, "worker", id, time.Minute)
 		if err != nil {
 			t.Fatal(err)
@@ -92,7 +101,7 @@ func TestRolloutCanaryRebootMaintenanceAndWaves(t *testing.T) {
 		}
 	}
 	end, err := c.GetRollout(ctx, owner, roll.ID)
-	if err != nil || end.Status != "completed" || end.Maintaining != 0 || end.Booted != 4 || end.Updated != 4 {
+	if err != nil || end.Status != "completed" || end.Reason != "" || end.Maintaining != 0 || end.Booted != 4 || end.Updated != 4 {
 		t.Fatal(end, err)
 	}
 	for _, orig := range enrollments {

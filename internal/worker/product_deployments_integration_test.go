@@ -205,6 +205,9 @@ func TestProductDeploymentCampaignKVM(t *testing.T) {
 	if err := lab.db.QueryRow(ctx, "SELECT count(*),count(DISTINCT volume_id) FROM store_enrollments").Scan(&total, &vols); err != nil || total != 4 || vols != 4 {
 		t.Fatal(total, vols, err)
 	}
+	var sleep controlplane.AgentCreation
+	lab.request(owner(), "POST", "/v1/agents/"+activeAgent+"/sleep", "done-measuring", struct{}{}, 202, &sleep)
+	lab.awaitOperation(owner, sleep.OperationID)
 	testProductRollout(t, lab, owner, lastDeployment, tmpl)
 
 }

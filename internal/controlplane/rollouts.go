@@ -300,6 +300,14 @@ func (s *Store) ObserveRolloutBoot(ctx context.Context, st RolloutStep, generati
 	}
 	return err
 }
+
+// A validation boot waits for a physical slot or tenant allowance. Other
+// work retains its slot and a later dispatch pass retries the same member.
+func (s *Store) WaitRolloutCapacity(ctx context.Context, st RolloutStep) error {
+	_, err := s.pool.Exec(ctx, `UPDATE agent_rollouts SET reason='waiting_capacity' WHERE id=$1 AND status='running' AND EXISTS(SELECT FROM agent_rollout_steps WHERE rollout_id=$1 AND agent_id=$2 AND stage='validating')`, st.ID, st.Agent)
+	return err
+}
+
 func (s *Store) FinishRolloutStep(ctx context.Context, st RolloutStep) error {
 	tx, err := s.begin(ctx)
 	if err != nil {
@@ -317,7 +325,7 @@ func (s *Store) FinishRolloutStep(ctx context.Context, st RolloutStep) error {
 	if tag.RowsAffected() != 1 {
 		return ErrPlacement
 	}
-	_, err = tx.Exec(ctx, `UPDATE agent_rollouts u SET status='completed' WHERE u.id=$1 AND NOT EXISTS(SELECT FROM agent_rollout_steps m WHERE m.rollout_id=u.id AND m.stage<>'complete')`, st.ID)
+	_, err = tx.Exec(ctx, `UPDATE agent_rollouts u SET reason='',status=CASE WHEN EXISTS(SELECT FROM agent_rollout_steps m WHERE m.rollout_id=u.id AND m.stage<>'complete') THEN 'running' ELSE 'completed' END WHERE u.id=$1 AND status='running'`, st.ID)
 	if err != nil {
 		return err
 	}
