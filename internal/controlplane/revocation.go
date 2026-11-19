@@ -73,6 +73,11 @@ func requestDeletion(ctx context.Context, tx pgx.Tx, a agent, requestedBy string
 	if a.Phase != "LIVE" && a.Phase != "QUIESCING" {
 		return ErrUnavailable
 	}
+	// Deletion takes precedence over an expansion, including a worker retry.
+	if _, err := tx.Exec(ctx, `WITH canceled AS (UPDATE agent_volume_growth SET stage='refused',reason='agent_retired' WHERE agent_id=$1 AND stage IN ('pending','capturing','restoring') RETURNING agent_id)
+ UPDATE agent_specs SET reserved_growth_mib=0 FROM canceled WHERE agent_specs.agent_id=canceled.agent_id`, a.ID); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(ctx, "UPDATE agents SET phase='QUIESCING',discoverable=false WHERE id=$1", a.ID); err != nil {
 		return err
 	}

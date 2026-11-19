@@ -20,7 +20,7 @@ class HostOperationTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root=Path(temporary.name)
         self.api={"__name__":"host_test"}
-        for file in ("setup.py","host.py"):
+        for file in ("setup.py","diagnose.py","host.py"):
             exec(compile((HELPERS/file).read_bytes(),file,"exec"),self.api)
         self.state=self.root/"state"
         self.state.mkdir()

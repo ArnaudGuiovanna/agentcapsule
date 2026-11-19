@@ -2,8 +2,9 @@ package main
 
 import (
 	"context"
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/hostops"
 	"io"
+
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/hostops"
 )
 
 func runHostCommand(ctx context.Context, args []string, in io.Reader, out, errout io.Writer) (bool, error) {

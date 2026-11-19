@@ -3,8 +3,7 @@
 This page says how a production install keeps every hop encrypted and
 authenticated, and how to check a host before and after installing it
 (OPS-01, RUN-012). The decisions are in
-[ADR 010](adr/010-transport-security-and-preflight.md). Installation is not
-packaged yet: the services' own pages give their flags and files
+[ADR 010](adr/010-transport-security-and-preflight.md). For the packaged installation, see the [single-host guide](cli-host.md) and the [CLI walkthrough](cli.md). The services’ reference pages describe their flags and files
 ([api](api/README.md), [worker](worker.md), [interop](interop.md),
 [recovery](recovery.md)).
 

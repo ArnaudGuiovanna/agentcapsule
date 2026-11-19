@@ -30,10 +30,31 @@ Configure `provisioning.deployment_memory_mib` and `provisioning.deployment_vcpu
 
 Applying takes the organization's and host's reservation locks and rechecks quotas, storage, UID space and requested warm capacity. One transaction records every agent, volume identity and provisioning operation. Reapplying the same plan after loss of the HTTP receipt follows the original deployment. Physical work resumes from durable enrollment records. A different template revision gets a different plan. Agents created later by a pool expansion appear in pool inventory separately from the original deployment's requested count.
 
-The PostgreSQL regression `TestDeploymentBatchSizesAndQuotaBoundaries` exercises batches of 1, 50, 100 and 1,000 and checks every reserved identity. `TestDeploymentResumesWithDistinctVolumesAndImmutableTemplate` exercises concurrent apply, restart after partial initialization and a pool expansion. These counts describe logical reservations and SQL worker observations. KVM timing and physical volume measurements require the deployment host.
+The PostgreSQL regression `TestDeploymentBatchSizesAndQuotaBoundaries` exercises batches of 1, 50, 100 and 1,000 and checks every reserved identity. `TestDeploymentResumesWithDistinctVolumesAndImmutableTemplate` exercises concurrent apply, restart after partial initialization and a pool expansion.
+
+### Measured deployment on WSL2 with KVM
+
+On 19 November 2026, the Linux worker ran Firecracker on an Intel Core i7-9750H with 12 logical CPUs and 15.5 GiB of memory visible to WSL2. Each agent received its own 128 MiB LUKS volume. The table records individual observations from a run of `TestProductDeploymentCampaignKVM`. “Active in batch” counts application VMs belonging to that deployment at completion. Disk figures include every agent created up to that point.
+
+| Requested | Provisioned | Active in batch | Apply response | Time to ready | Total logical disk | Total allocated disk |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 1 | 0 | 54 ms | 9.09 s | 128 MiB | 27.34 MiB |
+| 3 | 3 | 1 | 26 ms | 33.30 s | 512 MiB | 109.40 MiB |
+
+During the three-agent batch, the test restarted the worker after it initialized the first volume. An already active agent from the preceding batch answered a request in 30.08 s across that interruption. Once provisioning finished, the warm agent in the new batch returned its first response in 458 ms. The test checked four distinct volume inodes and their LUKS headers. These timings represent single requests. The larger batches above were exercised in PostgreSQL.
+
+A separate KVM run exercised the rollout: a failed canary paused it, then all three agents authenticated on the corrected revision. The disk measurement run subsequently waited for a rollout slot while both slots were occupied. Its recorded batch and latency figures end before that wait.
 
 ## Updating a deployed template
 
 Publish a revision, then send `POST /v1/deployments/{id}/rollouts` with `{"template":"support@2","max_unavailable":2}`. Poll `GET /v1/rollouts/{id}`. The worker preloads the approved OCI digest on its host. The first wave contains one canary and each later wave is bounded by `max_unavailable`. A worker processes one member per dispatch pass. It waits for acknowledged work, records maintenance durably, stops the VM, and installs the requested system image, harness, CPU and memory. Every member proves the new configuration with an authenticated application boot. Agents that were stopped are stopped again after this check.
 
-The response reports the requested template, the number of authenticated boots on that template, completed members and members in maintenance. A failed canary pauses progression. Restore the missing artifact or correct the reported host fault, then send `POST /v1/rollouts/{id}/resume` with `{}`. A retry keeps the same rollout and agent identities. A CPU or memory update retains each original encrypted volume. A disk-size change requires a separate storage operation.
+The response reports the requested template, the number of authenticated boots on that template, completed members and members in maintenance. When a validation boot awaits a free slot or an organization allowance, the campaign stays running with reason `waiting_capacity` and retries on subsequent worker passes. A failed canary pauses progression. Restore the missing artifact or correct the reported host fault, then send `POST /v1/rollouts/{id}/resume` with `{}`. A retry keeps the same rollout and agent identities. A CPU or memory update retains each original encrypted volume. A disk-size change requires a separate storage operation.
+
+## Grow a private volume
+
+An organization administrator can request a larger size through `POST /v1/agents/{id}/volume-growth` with an idempotency key and a body such as `{"size_mib":192}`. The response gives the growth, archive and restore identifiers. Poll `GET /v1/volume-growth/{id}` for its stage.
+
+The worker requires a configured archive root and a guest supervisor that supports offline expansion. Admission reserves the additional MiB against host and organization storage. The worker checks guest support before changing the volume, waits for in-flight work, stops the VM cleanly and captures an authenticated ciphertext archive. It restores the capture into the registered inode at the new capacity and obtains a new incarnation from the independent restore authority. The restricted guest verifies the LUKS and ext4 identities, expands ext4 offline and checks its integrity. Revocation fences and the outcomes in the installed image are reconciled before the worker publishes success. The agent wakes on its next invocation.
+
+A worker restart resumes the recorded capture or restore using the original identifiers. A worker without a configured archive root reports `archive_unconfigured` for a new request. A supervisor without expansion support produces `refused` with `guest_incompatible` and releases the reservation. The original archive remains usable at its recorded capacity for a later restore into the grown volume.

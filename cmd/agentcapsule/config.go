@@ -64,15 +64,8 @@ func configDir() (string, error) {
 	if !filepath.IsAbs(dir) {
 		return "", errors.New("configuration directory must be absolute")
 	}
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	if err := ensurePrivateDir(dir); err != nil {
 		return "", err
-	}
-	st, err := os.Lstat(dir)
-	if err != nil {
-		return "", err
-	}
-	if !st.IsDir() || runtime.GOOS != "windows" && st.Mode().Perm()&0077 != 0 {
-		return "", errors.New("configuration directory must be private (0700)")
 	}
 	return dir, nil
 }
@@ -88,8 +81,8 @@ func readFile(path string, private bool) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !st.Mode().IsRegular() || private && runtime.GOOS != "windows" && st.Mode().Perm()&0077 != 0 {
-		return nil, fmt.Errorf("%s must be a regular%s file", path, map[bool]string{true: " private (0600)"}[private])
+	if !st.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s must be a regular file", path)
 	}
 	f, err := os.Open(path)
 	if err != nil {
@@ -100,11 +93,16 @@ func readFile(path string, private bool) ([]byte, error) {
 	if err != nil || !os.SameFile(st, current) {
 		return nil, errors.New("file changed while opening")
 	}
+	if private {
+		if err = verifyPrivateFile(f); err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
+	}
 	return readBounded(f, maxDocument)
 }
 func writeFile(path string, data []byte) error {
 	dir := filepath.Dir(path)
-	f, err := os.CreateTemp(dir, ".agentcapsule-*")
+	f, err := createPrivateFile(filepath.Join(dir, ".agentcapsule-"+randomKey()))
 	if err != nil {
 		return err
 	}

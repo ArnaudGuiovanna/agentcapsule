@@ -48,7 +48,7 @@ func (cli console) print(v any, id string) error {
 		}
 		// Only create new outputs. Existing configuration, credentials and
 		// support archives must survive a mistaken destination or failed write.
-		f, err := os.OpenFile(cli.outputFile, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		f, err := createPrivateFile(cli.outputFile)
 		if err != nil {
 			return err
 		}
@@ -66,12 +66,33 @@ func (cli console) print(v any, id string) error {
 	}
 	return json.NewEncoder(cli.out).Encode(envelope)
 }
+
+// finishCredentialOutput removes only the file this command reserved. The
+// destination can be renamed or replaced while a network request is in flight.
+func finishCredentialOutput(f *os.File, result error) error {
+	path := f.Name()
+	opened, statErr := f.Stat()
+	current, pathErr := os.Lstat(path)
+	same := statErr == nil && pathErr == nil && os.SameFile(opened, current)
+	if !same {
+		result = errors.Join(result, fmt.Errorf("credential destination changed: %s", path), statErr, pathErr)
+	}
+	if result == nil {
+		result = f.Sync()
+	}
+	result = errors.Join(result, f.Close())
+	if result != nil && same {
+		result = errors.Join(result, os.Remove(path))
+	}
+	return result
+}
+
 func randomKey() string {
 	var b [32]byte
 	rand.Read(b[:])
 	return base64.RawURLEncoding.EncodeToString(b[:])
 }
-func run(ctx context.Context, args []string, in io.Reader, out, errout io.Writer) error {
+func run(ctx context.Context, args []string, in io.Reader, out, errout io.Writer) (result error) {
 	cli := console{in: in, out: out, errout: errout}
 	if len(args) == 1 && args[0] == "--version" {
 		args = []string{"version"}
@@ -129,12 +150,6 @@ func run(ctx context.Context, args []string, in io.Reader, out, errout io.Writer
 		return err
 	}
 	defer api.http.CloseIdleConnections()
-	if err = api.compatible(ctx); err != nil {
-		return err
-	}
-	if identityCommand {
-		return cli.sessionCommand(ctx, dir, name, api, strings.Join(pos, " "), o)
-	}
 	cmd := strings.Join(pos, " ")
 	if cmd == "doctor" || cmd == "support export" || cmd == "status" {
 		watch := o.take("watch") != ""
@@ -146,6 +161,33 @@ func run(ctx context.Context, args []string, in io.Reader, out, errout io.Writer
 		}
 		return cli.status(ctx, api, cmd, watch)
 	}
+	if identityCommand {
+		if err = api.compatible(ctx); err != nil {
+			return err
+		}
+		return cli.sessionCommand(ctx, dir, name, api, strings.Join(pos, " "), o)
+	}
+	key := o.take("idempotency-key")
+	a, err := buildAction(pos, o, in)
+	if err != nil {
+		return usageError{err}
+	}
+	if returnsCredential(a) {
+		if cli.outputFile == "" {
+			return usageError{errors.New("this command issues a credential; choose a private --output-file PATH")}
+		}
+		f, err := createPrivateFile(cli.outputFile)
+		if err != nil {
+			return err
+		}
+		// Hold the exclusive, private file through the mutation. A successful
+		// issuer response is written into this same handle by cli.print.
+		cli.outputFile, cli.out = "", f
+		defer func() { result = finishCredentialOutput(f, result) }()
+	}
+	if err = api.compatible(ctx); err != nil {
+		return err
+	}
 	if c.SigningKey != "" {
 		c.Token, err = signPersonal(c.SigningKey, c.Organization)
 		if err != nil {
@@ -155,14 +197,6 @@ func run(ctx context.Context, args []string, in io.Reader, out, errout io.Writer
 	}
 	if _, err = api.verifyToken(ctx, c.Token); err != nil {
 		return err
-	}
-	key := o.take("idempotency-key")
-	a, err := buildAction(pos, o, in)
-	if err != nil {
-		return usageError{err}
-	}
-	if cli.outputFile == "" && returnsCredential(a) {
-		return usageError{errors.New("this command issues a credential; choose a private --output-file PATH")}
 	}
 	if a.method != "GET" {
 		for _, r := range key {
@@ -221,6 +255,7 @@ func operationState(data json.RawMessage) (string, string, error) {
 	var op struct {
 		Status string `json:"status"`
 		State  string `json:"state"`
+		Stage  string `json:"stage"`
 	}
 	if err := json.Unmarshal(data, &op); err != nil {
 		return "", "", errors.New("invalid operation response")
@@ -229,12 +264,15 @@ func operationState(data json.RawMessage) (string, string, error) {
 	if state == "" {
 		state = op.State
 	}
+	if state == "" {
+		state = op.Stage
+	}
 	switch strings.ToLower(state) {
 	case "ready", "succeeded", "completed":
 		return state, "success", nil
 	case "failed", "cancelled", "canceled", "expired", "lost", "rejected", "paused", "disabled", "refused":
 		return state, "failure", nil
-	case "pending", "running", "accepted", "queued", "in_progress", "planned", "provisioning", "starting", "verifying", "importing", "working", "scheduled", "preparing", "waiting_capacity":
+	case "pending", "running", "accepted", "queued", "in_progress", "planned", "provisioning", "starting", "verifying", "importing", "working", "scheduled", "capturing", "restoring", "preparing", "waiting_capacity":
 		return state, "pending", nil
 	default:
 		return "", "", fmt.Errorf("unrecognized operation state %q", state)

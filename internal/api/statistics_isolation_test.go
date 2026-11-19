@@ -16,6 +16,7 @@ import (
 // the platform.
 var isolationReaders = []string{"owner", "admin", "operator", "auditor", "user", "team", "former", "unassigned", "service", "revoked", "revoked-token"}
 
+var observedAt = regexp.MustCompile(`"observed_at":"[^"]*"`)
 var exportedAt = regexp.MustCompile(`"exported_at":"[^"]*"`)
 
 // isolationAnswers reads, as each reader, every GET route of the API with
@@ -37,6 +38,11 @@ func isolationAnswers(t *testing.T, f *rbacFixture, fresh map[string]map[string]
 				r := f.call(t, actor, "GET", path, "", "")
 				// An export says when it was made; nothing else may differ.
 				body := exportedAt.ReplaceAllString(strings.TrimSpace(r.Body.String()), `"exported_at":"-"`)
+				if route.Path == "/v1/agents/{agent}/requests/{held}/diagnostics" {
+					// The diagnostic is sampled again for every read. Its state,
+					// expiry, counters and next check remain tenant-isolated.
+					body = observedAt.ReplaceAllString(body, `"observed_at":"-"`)
+				}
 				answers[actor+" GET "+raw] = fmt.Sprintf("%d %s", r.Code, body)
 			}
 		}

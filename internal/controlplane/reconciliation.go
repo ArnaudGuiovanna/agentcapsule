@@ -314,7 +314,7 @@ func (s *Store) replayRecords(ctx context.Context, records []AuthorityRecord) (i
 func readerOf(kind, organization string) string {
 	switch kind {
 	case authoritylog.AccessMember, authoritylog.AccessPrincipal, authoritylog.AccessServiceToken, authoritylog.AccessTeam,
-		authoritylog.AccessTeamMembership, authoritylog.AccessAssignment, authoritylog.AccessLLMProvider:
+		authoritylog.AccessTeamMembership, authoritylog.AccessAssignment, authoritylog.AccessLLMProvider, authoritylog.AccessPersonalVolume:
 		return organization
 	}
 	return ""
@@ -399,6 +399,11 @@ func replayEffect(ctx context.Context, tx pgx.Tx, r AuthorityRecord) error {
 			}
 		case r.Kind == authoritylog.AccessTeamMembership && len(o) == 2:
 			err = exec(`UPDATE team_memberships SET status='revoked' WHERE tenant_id=$1 AND team_id=$2 AND principal_id=$3 AND status='active'`, org, o[0], o[1])
+		case r.Kind == authoritylog.AccessPersonalVolume && len(r.Objects) == 1 && len(o) == 3:
+			// Older snapshots can contain earlier grants. Only the original
+			// individual may retain a grant on this volume after promotion.
+			err = exec(`UPDATE agent_assignments SET status='revoked',revoked_at=clock_timestamp()
+				WHERE tenant_id=$1 AND agent_id=$2 AND principal_id IS DISTINCT FROM $3 AND status='active'`, org, o[0], o[2])
 		case r.Kind == authoritylog.AccessAssignment && len(o) == 1:
 			err = exec(`UPDATE agent_assignments SET status='revoked',revoked_at=clock_timestamp() WHERE tenant_id=$1 AND id=$2 AND status='active'`, org, o[0])
 		case r.Kind == authoritylog.AccessOrganization && len(o) == 1:

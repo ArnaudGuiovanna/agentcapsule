@@ -87,6 +87,9 @@ func (c *AgentCatalog) StartRollout(ctx context.Context, p Principal, dep, key s
 		if err != nil {
 			return 0, nil, err
 		}
+		if err := auditDeployment(ctx, tx, p, "rollout.started", id); err != nil {
+			return 0, nil, err
+		}
 		v, err := readRollout(ctx, tx, p.TenantID, id)
 		return 202, v, err
 	})
@@ -116,9 +119,14 @@ func (c *AgentCatalog) ResumeRollout(ctx context.Context, p Principal, id, key s
 		return APIReceipt{}, err
 	}
 	result, err := c.accounts.withTenantReceipt(ctx, tx, p, "rollout.resume/"+id, key, struct{}{}, func() (int, any, error) {
-		_, err := tx.Exec(ctx, `UPDATE agent_rollouts SET status='running',reason='' WHERE tenant_id=$1 AND id=$2 AND status='paused'`, p.TenantID, id)
+		changed, err := tx.Exec(ctx, `UPDATE agent_rollouts SET status='running',reason='' WHERE tenant_id=$1 AND id=$2 AND status='paused'`, p.TenantID, id)
 		if err != nil {
 			return 0, nil, err
+		}
+		if changed.RowsAffected() > 0 {
+			if err := auditDeployment(ctx, tx, p, "rollout.resumed", id); err != nil {
+				return 0, nil, err
+			}
 		}
 		v, err := readRollout(ctx, tx, p.TenantID, id)
 		return 202, v, err
@@ -161,17 +169,21 @@ func (s *Store) RolloutStep(ctx context.Context, id, agent, host string, running
 		return RolloutStep{}, err
 	}
 	a := agents[agent]
+	var enabled bool
 	step := RolloutStep{ID: id, Agent: agent, Host: host}
-	err = tx.QueryRow(ctx, `SELECT u.tenant_id,u.created_by,m.stage,coalesce(m.keep_running,$4),r.spec,h.id,h.artifact_digest,h.source,coalesce(h.rootfs_digest,''),i.kernel_digest,i.initrd_digest
+	err = tx.QueryRow(ctx, `SELECT u.tenant_id,u.created_by,m.stage,coalesce(m.keep_running,$4),r.spec,h.enabled,h.id,h.artifact_digest,h.source,coalesce(h.rootfs_digest,''),i.kernel_digest,i.initrd_digest
  FROM agent_rollout_steps m JOIN agent_rollouts u ON u.id=m.rollout_id JOIN agent_deployments d ON d.id=u.deployment_id
  JOIN agent_template_revisions r ON (r.tenant_id,r.name,r.revision)=(u.tenant_id,u.template_name,u.revision)
- JOIN harness_releases h ON h.id=u.release_id AND h.enabled JOIN system_images i ON i.id=r.spec->>'system_image'
- WHERE u.id=$1 AND m.agent_id=$2 AND d.host_id=$3 AND u.status='running' AND m.stage<>'complete' FOR UPDATE OF u,m`, id, agent, host, running).Scan(&step.Tenant, &step.Actor, &step.Stage, &step.KeepRunning, &step.Spec, &step.Release, &step.Target.HarnessDigest, &step.Target.HarnessSource, &step.Target.RootfsDigest, &step.Target.SystemImage.Kernel, &step.Target.SystemImage.Initrd)
+ JOIN harness_releases h ON h.id=u.release_id JOIN system_images i ON i.id=r.spec->>'system_image'
+ WHERE u.id=$1 AND m.agent_id=$2 AND d.host_id=$3 AND u.status='running' AND m.stage<>'complete' FOR UPDATE OF u,m`, id, agent, host, running).Scan(&step.Tenant, &step.Actor, &step.Stage, &step.KeepRunning, &step.Spec, &enabled, &step.Release, &step.Target.HarnessDigest, &step.Target.HarnessSource, &step.Target.RootfsDigest, &step.Target.SystemImage.Kernel, &step.Target.SystemImage.Initrd)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return step, ErrTransition
 	}
 	if err != nil {
 		return step, err
+	}
+	if !enabled {
+		return step, ErrRelease
 	}
 	if a.Phase == "PROVISIONING" {
 		return step, ErrNoWork
@@ -179,10 +191,23 @@ func (s *Store) RolloutStep(ctx context.Context, id, agent, host string, running
 	if a.Phase != "LIVE" {
 		return step, ErrUnavailable
 	}
+	if step.Stage == "verified" && step.KeepRunning && !running {
+		if _, err = tx.Exec(ctx, "UPDATE agent_rollout_steps SET stage='validating' WHERE rollout_id=$1 AND agent_id=$2", id, agent); err != nil {
+			return step, err
+		}
+		step.Stage = "validating"
+	}
 	step.Target.AgentID = agent
 	step.Target.HostID = host
 	step.Target.Resources = step.Spec.Resources
 	if step.Stage == "pending" {
+		var growing bool
+		if err = tx.QueryRow(ctx, "SELECT EXISTS(SELECT FROM agent_volume_growth WHERE agent_id=$1 AND stage IN ('pending','capturing','restoring'))", agent).Scan(&growing); err != nil {
+			return step, err
+		}
+		if growing {
+			return step, ErrNoWork
+		}
 		var busy bool
 		if err = tx.QueryRow(ctx, "SELECT "+workInProgress+" FROM agents a WHERE a.id=$1", agent).Scan(&busy); err != nil {
 			return step, err
@@ -275,6 +300,14 @@ func (s *Store) ObserveRolloutBoot(ctx context.Context, st RolloutStep, generati
 	}
 	return err
 }
+
+// A validation boot waits for a physical slot or tenant allowance. Other
+// work retains its slot and a later dispatch pass retries the same member.
+func (s *Store) WaitRolloutCapacity(ctx context.Context, st RolloutStep) error {
+	_, err := s.pool.Exec(ctx, `UPDATE agent_rollouts SET reason='waiting_capacity' WHERE id=$1 AND status='running' AND EXISTS(SELECT FROM agent_rollout_steps WHERE rollout_id=$1 AND agent_id=$2 AND stage='validating')`, st.ID, st.Agent)
+	return err
+}
+
 func (s *Store) FinishRolloutStep(ctx context.Context, st RolloutStep) error {
 	tx, err := s.begin(ctx)
 	if err != nil {
@@ -292,7 +325,7 @@ func (s *Store) FinishRolloutStep(ctx context.Context, st RolloutStep) error {
 	if tag.RowsAffected() != 1 {
 		return ErrPlacement
 	}
-	_, err = tx.Exec(ctx, `UPDATE agent_rollouts u SET status='completed' WHERE u.id=$1 AND NOT EXISTS(SELECT FROM agent_rollout_steps m WHERE m.rollout_id=u.id AND m.stage<>'complete')`, st.ID)
+	_, err = tx.Exec(ctx, `UPDATE agent_rollouts u SET reason='',status=CASE WHEN EXISTS(SELECT FROM agent_rollout_steps m WHERE m.rollout_id=u.id AND m.stage<>'complete') THEN 'running' ELSE 'completed' END WHERE u.id=$1 AND status='running'`, st.ID)
 	if err != nil {
 		return err
 	}
@@ -307,6 +340,13 @@ func (s *Store) PauseRollout(ctx context.Context, id, agent, reason string) erro
 }
 
 func allowRolloutBoot(ctx context.Context, tx pgx.Tx, agent, rollout string) error {
+	var growing bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT FROM agent_volume_growth WHERE agent_id=$1 AND stage IN ('capturing','restoring'))`, agent).Scan(&growing); err != nil {
+		return err
+	}
+	if growing {
+		return ErrPlacementBusy
+	}
 	var id, stage, status string
 	err := tx.QueryRow(ctx, `SELECT s.rollout_id,s.stage,u.status FROM agent_rollout_steps s JOIN agent_rollouts u ON u.id=s.rollout_id
  WHERE s.agent_id=$1 AND s.stage IN ('draining','validating','verified')`, agent).Scan(&id, &stage, &status)

@@ -150,3 +150,27 @@ func (s *Server) rolloutMembers(w http.ResponseWriter, r *http.Request) {
 	}
 	jsonResponse(w, http.StatusOK, map[string]any{"items": out})
 }
+
+func (s *Server) requestGrowth(w http.ResponseWriter, r *http.Request) {
+	if !method(w, r, "POST") {
+		return
+	}
+	catalogMutation(s, w, r, func(ctx context.Context, p controlplane.Principal, key string, in controlplane.GrowthInput) (controlplane.APIReceipt, error) {
+		return s.catalog.RequestGrowth(ctx, p, r.PathValue("id"), key, in)
+	})
+}
+func (s *Server) showGrowth(w http.ResponseWriter, r *http.Request) {
+	if !method(w, r, "GET") {
+		return
+	}
+	p, ok := s.principal(w, r)
+	if !ok {
+		return
+	}
+	out, err := s.catalog.GetGrowth(r.Context(), p, r.PathValue("id"))
+	if err != nil {
+		failure(w, err)
+		return
+	}
+	jsonResponse(w, http.StatusOK, out)
+}

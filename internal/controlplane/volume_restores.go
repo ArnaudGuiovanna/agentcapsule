@@ -194,6 +194,13 @@ func (s *Store) BeginVolumeRestore(ctx context.Context, restoreID, agentID, host
 	if !errors.Is(err, ErrNotFound) {
 		return plan, err
 	}
+	var otherGrowth bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT FROM agent_volume_growth WHERE agent_id=$1 AND stage IN ('pending','capturing','restoring') AND (stage<>'restoring' OR restore_id<>$2 OR archive_id<>$3))`, agentID, restoreID, archiveID).Scan(&otherGrowth); err != nil {
+		return plan, err
+	}
+	if otherGrowth {
+		return plan, ErrRestore
+	}
 	if a.Phase != "LIVE" {
 		return plan, ErrRestore
 	}

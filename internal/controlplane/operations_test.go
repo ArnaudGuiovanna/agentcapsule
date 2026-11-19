@@ -295,6 +295,8 @@ func TestAuditRetentionCoversEveryAuditTable(t *testing.T) {
         VALUES('tma_old',$1,$2,$2,'member.created','','owner',true)`, owner.TenantID, owner.ID)
 	seed(`INSERT INTO tenant_service_audit(id,tenant_id,actor_principal_id,service_principal_id,action)
         VALUES('tsa_old',$1,$2,$2,'service_account.created')`, owner.TenantID, owner.ID)
+	seed(`INSERT INTO deployment_audit(id,tenant_id,actor,target,action) VALUES('dep_old',$1,$2,'test-pool','pool.expanded')`, owner.TenantID, owner.ID)
+	seed(`INSERT INTO application_audit(id,tenant_id,actor,target,action) VALUES('app_old',$1,$2,'test-app','application.registered')`, owner.TenantID, owner.ID)
 	seed(`INSERT INTO queue_audit(id,tenant_id,actor_principal_id,action) VALUES('qa_old',$1,$2,'limits.set')`, owner.TenantID, owner.ID)
 	seed(`INSERT INTO capability_audit(id,tenant_id,actor_principal_id,action) VALUES('ca_old',$1,$2,'organization.capabilities_changed')`, owner.TenantID, owner.ID)
 	seed(`INSERT INTO platform_audit(id,action,actor,credential_id,changed) SELECT 'pa_old','platform_credential.created','operator',min(id),true FROM platform_credentials`)

@@ -60,7 +60,8 @@ type VolumeBootPlan struct {
 	UncleanStop               bool
 	// Restore is the restricted boot of an image that a restore installed:
 	// the guest moves the image's marker to the new incarnation.
-	Restore bool
+	Restore   bool
+	GrowToMiB int
 }
 
 func (s *Store) PrepareVolumeBoot(ctx context.Context, proof VMCaller, worker string) (VolumeBootPlan, error) {
@@ -107,7 +108,11 @@ func (s *Store) PrepareVolumeBoot(ctx context.Context, proof VMCaller, worker st
 				return result, err
 			}
 			if installed {
-				return VolumeBootPlan{Enrollment: e, AcknowledgeInitialization: !e.Initialized, UncleanStop: p.UncleanStop, Restore: true}, nil
+				var target int
+				if err := tx.QueryRow(ctx, "SELECT grow_to_mib FROM volume_restores WHERE agent_id=$1 AND incarnation=$2 AND step=$3", e.AgentID, int64(e.Incarnation), RestoreReconciling).Scan(&target); err != nil {
+					return result, err
+				}
+				return VolumeBootPlan{Enrollment: e, AcknowledgeInitialization: !e.Initialized, UncleanStop: p.UncleanStop, Restore: true, GrowToMiB: target}, nil
 			}
 		}
 		return result, ErrStoreEnrollment

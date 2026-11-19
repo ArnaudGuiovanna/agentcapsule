@@ -51,6 +51,7 @@ const auditUnion = `
     UNION ALL SELECT id,created_at,'llm.'||action,actor_principal_id,coalesce(subject_id,provider_id,budget_id),coalesce(alias,usage_id,''),'done','' FROM llm_audit WHERE tenant_id=$1
     UNION ALL SELECT id,created_at,action,'platform:'||actor_account,tenant_id,'','done','' FROM organization_audit WHERE tenant_id=$1 AND changed
     UNION ALL SELECT id,created_at,'delegation.'||action,'operator',tenant_id,'','done','' FROM delegation_audit WHERE tenant_id=$1 AND changed
+    UNION ALL SELECT id,created_at,action,actor,target,'','done','' FROM deployment_audit WHERE tenant_id=$1
     UNION ALL SELECT id,created_at,action,actor_principal_id,coalesce(agent_id,tenant_id),'','done','' FROM capability_audit WHERE tenant_id=$1
     UNION ALL SELECT id,created_at,'queue.'||action,actor_principal_id,tenant_id,'','done','' FROM queue_audit WHERE tenant_id=$1
     UNION ALL SELECT id,replayed_at,'invocation.replayed',coalesce(actor_principal_id,'operator'),agent_id,operation_id,'done','' FROM instruction_replays WHERE tenant_id=$1
