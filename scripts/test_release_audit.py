@@ -238,6 +238,30 @@ class ScanTest(Temporary):
 
 
 class GuestSbomTest(Temporary):
+    def test_offline_host_inventory_checks_source_digest_and_distro(self):
+        deb = self.dir / "runc_1.0_amd64.deb"
+        deb.write_bytes(b"package fixture")
+        archive = self.dir / "packages.tar"
+        with tarfile.open(archive, "w") as tar:
+            tar.add(deb, arcname=deb.name)
+        record = {"file": deb.name, "package": "runc", "version": "1.0", "source": "runc-app",
+                  "sha256": TOOLS.sha256(deb)}
+        ref = {"referenceType": "purl", "referenceLocator": "pkg:deb/runc@1.0?arch=amd64&upstream=runc-app"}
+        deb_entry = {"SPDXID": "deb", "name": "runc", "versionInfo": "1.0", "externalRefs": [ref]}
+        doc = {"packages": [{"SPDXID": "root"}, deb_entry],
+               "relationships": [{"spdxElementId": "SPDXRef-DOCUMENT", "relationshipType": "DESCRIBES",
+                                  "relatedSpdxElement": "root"}]}
+        SBOM.attribute_host_packages(doc, archive, [record], "ubuntu-24.04-amd64")
+        self.assertEqual(ref["referenceLocator"], "pkg:deb/ubuntu/runc@1.0?arch=amd64&distro=ubuntu-24.04&upstream=runc-app")
+        self.assertEqual(deb_entry["checksums"][0]["checksumValue"], TOOLS.sha256(deb))
+        with self.assertRaisesRegex(ValueError, "source package differs"):
+            SBOM.attribute_host_packages(doc, archive, [dict(record, source="runc")], "ubuntu-24.04-amd64")
+        with self.assertRaisesRegex(ValueError, "digest differs"):
+            SBOM.attribute_host_packages(doc, archive, [dict(record, sha256="0" * 64)], "ubuntu-24.04-amd64")
+        with self.assertRaisesRegex(ValueError, "incomplete"):
+            SBOM.attribute_host_packages(doc, archive, [record, dict(record, file="extra.deb", package="extra")],
+                                         "ubuntu-24.04-amd64")
+
     def test_the_guest_archive_unpacks_byte_for_byte(self):
         entries = {"init": (0o500, b"init-binary"), "sbin/cryptsetup": (0o500, b"\x7fELF..."),
                    "etc/capsule/runtime.json": (0o400, b"{}\n")}

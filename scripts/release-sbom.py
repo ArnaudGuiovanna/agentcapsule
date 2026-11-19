@@ -22,6 +22,9 @@ syft, pinned by scripts/release-tools.json, catalogs each artifact:
                        ext4 image is unpacked with debugfs, without root, and
                        cataloged (Alpine, Debian and Python packages, Go
                        binaries).
+  --host-assets DIR    the server archive and its offline Ubuntu package
+                       archive. Attribute every .deb to the distribution in
+                       bundle.json and verify it against host-packages.json.
 
 SBOMs are deterministic: their creation time is SOURCE_DATE_EPOCH (or the
 commit's time) and their namespace derives from the artifact's SHA-256, which
@@ -283,6 +286,53 @@ def drop_unversioned_debs(document, natives):
     return len(dropped)
 
 
+def attribute_host_packages(document, archive, records, platform):
+    distro = re.fullmatch(r"(ubuntu)-(\d+\.\d+)-(amd64)", platform)
+    if not distro:
+        raise ValueError(f"unknown host package platform: {platform}")
+    by_file = {p["file"]: p for p in records}
+    by_package = {(p["package"], p["version"]): p for p in records}
+    if not records or len(by_file) != len(records) or len(by_package) != len(records):
+        raise ValueError("empty or duplicate host packages")
+    with tarfile.open(archive) as packages:
+        for member in packages:
+            if not member.name.endswith(".deb"):
+                continue
+            record = by_file.pop(member.name, None)
+            if not member.isfile() or not record:
+                raise ValueError(f"unexpected archived host package: {member.name}")
+            with packages.extractfile(member) as content:
+                digest = hashlib.file_digest(content, "sha256").hexdigest()
+            if digest != record["sha256"]:
+                raise ValueError(f"host package digest differs: {member.name}")
+    root = document_root(document)
+    for pkg in document["packages"]:
+        if pkg["SPDXID"] == root:
+            continue
+        record = by_package.pop((pkg["name"], pkg.get("versionInfo")), None)
+        refs = [r for r in pkg.get("externalRefs", []) if r["referenceType"] == "purl"]
+        if not record or len(refs) != 1 or not refs[0]["referenceLocator"].startswith("pkg:deb/"):
+            raise ValueError(f"unexpected host package inventory entry: {pkg['name']}")
+        parsed = urllib.parse.urlsplit(refs[0]["referenceLocator"])
+        qualifiers = dict(urllib.parse.parse_qsl(parsed.query))
+        if qualifiers.get("arch") not in ("all", distro[3]):
+            raise ValueError(f"unexpected host package architecture: {pkg['name']}")
+        source = re.fullmatch(r"([a-z0-9.+-]+)(?: \(([^()]+)\))?", record["source"])
+        if not source:
+            raise ValueError(f"invalid Ubuntu source package: {record['source']}")
+        upstream = source[1] + ("@" + source[2] if source[2] else "")
+        if qualifiers.get("upstream", pkg["name"]) != upstream:
+            raise ValueError(f"host source package differs: {pkg['name']}")
+        qualifiers["distro"] = f"{distro[1]}-{distro[2]}"
+        name = urllib.parse.quote(pkg["name"], safe="")
+        version = urllib.parse.quote(record["version"], safe="")
+        refs[0]["referenceLocator"] = f"pkg:deb/{distro[1]}/{name}@{version}?" + urllib.parse.urlencode(sorted(qualifiers.items()))
+        pkg["checksums"] = [{"algorithm": "SHA256", "checksumValue": record["sha256"]}]
+        pkg["comment"] = f"Ubuntu {distro[2]} source package {source[1]}, version {source[2] or record['version']}."
+    if by_file or by_package:
+        raise ValueError("incomplete host package archive or inventory")
+
+
 def document_root(document):
     roots = [r["relatedSpdxElement"] for r in document["relationships"]
              if r["spdxElementId"] == "SPDXRef-DOCUMENT" and r["relationshipType"] == "DESCRIBES"]
@@ -363,6 +413,7 @@ def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--binary", action="append", default=[], type=Path)
     p.add_argument("--guest-build", type=Path)
+    p.add_argument("--host-assets", type=Path)
     p.add_argument("--harness-package", action="append", default=[], type=Path)
     p.add_argument("--extracted-debs", action="append", default=[], type=Path,
                    help="directory holding packages/*.deb extracted into it (as the guest-build tools directory)")
@@ -371,7 +422,7 @@ def main(argv=None):
     p.add_argument("--cache", type=Path, default=TOOLS.default_cache())
     p.add_argument("--output", required=True, type=Path, help="new output directory")
     a = p.parse_args(argv)
-    if not (a.binary or a.guest_build or a.harness_package):
+    if not (a.binary or a.guest_build or a.harness_package or a.host_assets):
         p.error("nothing to describe")
 
     epoch_text = os.environ.get("SOURCE_DATE_EPOCH") or subprocess.run(
@@ -406,6 +457,20 @@ def main(argv=None):
 
     with tempfile.TemporaryDirectory(prefix="sbom-", dir=out) as work:
         work = Path(work)
+        if a.host_assets:
+            server = a.host_assets / "agentcapsule-server-linux-amd64.tar.gz"
+            with tarfile.open(server) as archive:
+                manifest = json.load(archive.extractfile("bundle.json"))
+                index = archive.extractfile("host-packages.json").read()
+            if hashlib.sha256(index).hexdigest() != manifest["sha256"]["host-packages.json"]:
+                raise ValueError("host package index differs from the server manifest")
+            package_index = json.loads(index)
+            records = package_index["packages"] if isinstance(package_index, dict) else package_index
+            for artifact in (server, a.host_assets / "agentcapsule-packages-linux-amd64.tar"):
+                document = syft_spdx(syft, f"file:{artifact.resolve()}", artifact.name, manifest["version"], env)
+                if artifact != server:
+                    attribute_host_packages(document, artifact, records, manifest["platform"])
+                write(artifact.name, manifest["version"], sha256(artifact), document)
         for binary in a.binary:
             info = go_build_info(a.go, binary)
             version = a.version or info["version"] or "untagged"

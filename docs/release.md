@@ -35,6 +35,19 @@ HTTP contract and host guide. `agentcapsule-bundle.json` records the server
 release, migration format, commit and artifact digests. The release workflow signs checksums and attests the provenance of these files. GitHub allows up to 1,000 files per release and requires each to be smaller than 2 GiB. The builder splits source archives at 1,500 MiB before checking every final file. [GitHub release limits](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases)
 
 Each image inventory is tied to its offline archive and the pinned reference in the deployment configuration. The scanner applies the same image policy to the local SPDX and the registry scan. The source index records exact Red Hat SRPMs, Debian source packages, and Alpine recipes with their upstream files and packaging patches. Maven source-classifier URLs and Go module URLs identify further upstream components. [Candidate image qualification](release-image-qualification.md)
+
+### Ubuntu package archive, 19 November 2026
+
+The offline Noble snapshot used in the installation test contained 171 binary packages. The release inventory checks every archived `.deb` against the server's package index and records its SHA-256, Ubuntu release, binary version and source package. Grype 0.121.0 with the 19 November database reported six High matches, 452 Medium, 37 Low and five Negligible. The six High matches block this archive under the release policy. The six separate Keycloak matches also block the offline images. [Image qualification](release-image-qualification.md)
+
+| Binary and exact Ubuntu source | Shipped Noble version | High advisories | Ubuntu evidence |
+|---|---|---|---|
+| `docker.io` from `docker.io-app` | `29.1.3-0ubuntu3~24.04.2` | CVE-2024-41110 | Canonical fixed the application source in `27.5.1-0ubuntu3~24.04.2`. [Ubuntu advisory](https://ubuntu.com/security/CVE-2024-41110) |
+| `runc` from `runc-app` | `1.3.4-0ubuntu1~24.04.1` | CVE-2025-31133, CVE-2025-52565, CVE-2025-52881 | Canonical fixed all three in `1.3.3-0ubuntu1~24.04.2`. [USN-7851-1](https://ubuntu.com/security/notices/USN-7851-1) |
+| `containerd` from `containerd-app` | `2.2.1-0ubuntu1~24.04.4` | CVE-2026-53488 | Canonical fixed the application source in `2.2.1-0ubuntu1~24.04.3`. The shipped package changelog records the backport. [Ubuntu advisory](https://ubuntu.com/security/CVE-2026-53488) |
+| `containerd` from `containerd-app` | `2.2.1-0ubuntu1~24.04.4` | CVE-2026-39821 | Canonical lists `containerd` as needing evaluation and gives no Noble fix for `containerd-app`. The shipped ELF build information identifies `go1.24.13` and `golang.org/x/net v0.47.0`. [Ubuntu advisory](https://ubuntu.com/security/CVE-2026-39821), [Go advisory](https://pkg.go.dev/vuln/GO-2026-5026) |
+
+Grype's match details use the binary names in these six findings. Their SPDX package URLs retain the distinct Ubuntu application source names. The scanner still reports five matches whose application versions include Canonical's fixes. The remaining containerd finding requires upstream or distribution assessment.
 [Single-host installation and updates](cli-host.md)
 
 ## What is checked

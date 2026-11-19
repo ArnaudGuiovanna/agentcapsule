@@ -117,16 +117,14 @@ jobs:
           done
           for cli in "$dist"/agentcapsule-{linux,darwin,windows}-*; do binaries+=(--binary "$cli"); done
           python3 scripts/release-sbom.py --go "$(command -v go)" --version "$TAG" \
-            --output "$RUNNER_TEMP/release/sbom" "${binaries[@]}" --guest-build "$dist"
+            --output "$RUNNER_TEMP/release/sbom" "${binaries[@]}" --guest-build "$dist" \
+            --host-assets "$RUNNER_TEMP/release/assets"
 
       - name: Vulnerability scan (SBOMs and deploy images)
         run: |
           set -euo pipefail
           release="$RUNNER_TEMP/release"
           syft="$(python3 scripts/release_tools.py syft | awk '{print $3}')"
-          for file in "$release"/assets/agentcapsule-{server,packages}-linux-amd64.tar*; do
-            "$syft" scan "file:$file" -o "spdx-json=$release/sbom/$(basename "$file").spdx.json"
-          done
           "$syft" scan "file:$release/vmm/Cargo.lock" --source-name firecracker-Cargo.lock -o "spdx-json=$release/sbom/firecracker-Cargo.lock.spdx.json"
           python3 scripts/release_oci.py --assets "$release/assets" --sboms "$release/sbom"
           sboms=("$RUNNER_TEMP"/release/sbom/*.spdx.json)
