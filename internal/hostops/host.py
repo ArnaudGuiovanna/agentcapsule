@@ -296,16 +296,17 @@ def execute(directory):
                 profile = request["profile"]
                 step("verify-release", lambda: (stage(request), None)[1])
                 step("prepare-release", lambda: prepare_release(release, dist, version))
-                step("dependencies", lambda: install_dependencies(dist, release))
                 if request["action"] == "update":
                     step("backup", lambda: backup(profile, mandatory=True))
                     step("drain", lambda: drain(profile))
+                step("dependencies", lambda: install_dependencies(dist, release))
                 step("activate", lambda: activate(ACTIVE, release))
                 step("configure", lambda: configure(profile, version, request["action"] == "install"))
                 step("services", lambda: start_services(profile))
                 step("invocation", lambda: smoke(profile, directory))
                 if request["action"] == "install":
                     step("backup", lambda: backup(profile, mandatory=False))
+                    step("enrollment", lambda: issue_enrollment(profile))
                 save(STATE / "profile.json", profile)
             state(directory, state="succeeded", phase="complete")
         except Exception as e:
@@ -494,11 +495,11 @@ def main(argv, cli_version):
 def phases(action):
     if action not in ("install","update"):
         return [action]
-    steps = ["verify-release","prepare-release","dependencies"]
+    steps = ["verify-release","prepare-release"]
     if action == "update":
         steps += ["backup","drain"]
-    steps += ["activate","configure","services","invocation"]
-    return steps + (["backup"] if action == "install" else [])
+    steps += ["dependencies","activate","configure","services","invocation"]
+    return steps + (["backup","enrollment"] if action == "install" else [])
 
 
 if __name__ == "__main__":
