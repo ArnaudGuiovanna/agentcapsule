@@ -48,6 +48,9 @@ type apiError struct {
 	Code      string `json:"code"`
 	RequestID string `json:"request_id,omitempty"`
 	Quota     string `json:"quota,omitempty"`
+	Resource  string `json:"resource,omitempty"`
+	Required  *int64 `json:"required,omitempty"`
+	Available *int64 `json:"available,omitempty"`
 }
 
 func (e *apiError) Error() string {
@@ -120,6 +123,7 @@ func (c *client) request(ctx context.Context, method, route, key, token string, 
 			problem.Code = "request_failed"
 		}
 		problem.Quota = safeCode(problem.Quota)
+		problem.Resource = safeCode(problem.Resource)
 		problem.Status = res.StatusCode
 		problem.RequestID = id
 		return reply{}, &problem

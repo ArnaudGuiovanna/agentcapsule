@@ -8,9 +8,9 @@ Send requests to the installation's HTTPS URL. The API accepts JSON. All mutatio
 
 | Actor and command | HTTP request | Success |
 |---|---|---|
-| Acme owner, `app register monapp --config monapp.yaml` | `POST /v1/applications`, identity:manage | 201, application ID, OIDC parameters and backend token |
+| Acme owner, `app register monapp --config monapp.yaml --output-file backend.json` | `POST /v1/applications`, identity:manage | 201, application ID, OIDC parameters and backend token |
 | Acme owner, `app show <id>` | `GET /v1/applications/{id}` | Public client configuration, pinned public keys, applied policy IDs |
-| Acme owner, `app rotate <id>` | `POST /v1/applications/{id}/rotate` with `{}` or new `verification_keys` | Updated token, previous backend tokens revoked |
+| Acme owner, `app rotate <id> --output-file backend-next.json` | `POST /v1/applications/{id}/rotate` with `{}` or new `verification_keys` | Updated token, previous backend tokens revoked |
 | Acme owner, `app revoke <id>` | `POST /v1/applications/{id}/revoke` with `{}` | Integration disabled, including current member sessions |
 | Acme owner, `assignment-policy plan --file arrival.yaml` | `POST /v1/assignment-policies/plan`, agent:assign | 201, immutable plan ID and available inventory per pool |
 | Acme owner, `assignment-policy apply --plan <id>` | `POST /v1/assignment-policies/{id}/apply` with `{}` | Effective policy with shared team grants after validation |
@@ -29,7 +29,7 @@ Example registration body (replace the key with the real RSA public modulus of t
 }
 ```
 
-Extract `kid`, `n`, `e` and `kty` from the trusted issuer's HTTPS JWKS. The API accepts pinned RS256 signing keys of 2,048–8,192 bits and supports overlapping keys. Configure the exact same redirect URIs at the IdP. Each issuer/client pair identifies one environment and organization. The backend's credential expires after 90 days. Restrict reads of the registration/rotation response, including terminal output in scripts. The owner can list registrations with `after` and `limit` (1–100).
+Extract `kid`, `n`, `e` and `kty` from the trusted issuer's HTTPS JWKS. The API accepts pinned RS256 signing keys of 2,048–8,192 bits and supports overlapping keys. Configure the exact same redirect URIs at the IdP. Each issuer/client pair identifies one environment and organization. The backend's credential expires after 90 days. Registration and rotation require an unused private output file. Use `app connection <id>` for the developer handoff after applying the policy. The owner can list registrations with `after` and `limit` (1–100).
 
 ## Configure personal and shared slots
 

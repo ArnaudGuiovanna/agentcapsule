@@ -2,8 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestDeploymentAndConfigurationSyntax(t *testing.T) {
@@ -57,5 +60,30 @@ func TestOperationStates(t *testing.T) {
 	}
 	if _, _, err := operationState([]byte(`{"status":"future_state"}`)); err == nil {
 		t.Fatal("unknown state")
+	}
+}
+
+func TestNamedCommandsHavePublishedHTTPContracts(t *testing.T) {
+	raw, err := os.ReadFile("../../openapi/openapi.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var contract struct {
+		Paths map[string]map[string]any `yaml:"paths"`
+	}
+	if err = yaml.Unmarshal(raw, &contract); err != nil {
+		t.Fatal(err)
+	}
+	routes := map[string]bool{}
+	for path, verbs := range contract.Paths {
+		for verb := range verbs {
+			routes[strings.ToUpper(verb)+" "+param.ReplaceAllString(path, "{}")] = true
+		}
+	}
+	for cmd, spec := range commands {
+		method, path, _ := strings.Cut(spec, " ")
+		if !routes[method+" /v1"+param.ReplaceAllString(path, "{}")] {
+			t.Errorf("%s has no published contract for %s", cmd, spec)
+		}
 	}
 }

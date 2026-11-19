@@ -19,6 +19,9 @@ import (
 // one positional identifier (left to right), or its named flag.
 var commands = map[string]string{
 	"pool expand": "POST /pools/{id}/expand", "rollout start": "POST /deployments/{deployment}/rollouts", "rollout members": "GET /rollouts/{id}/members", "rollout show": "GET /rollouts/{id}", "rollout resume": "POST /rollouts/{id}/resume",
+	"app invite": "POST /applications/{app}/invitations", "activation show": "GET /applications/{app}/activations/{id}", "activation update": "PUT /applications/{app}/activations/{id}",
+	"agent grow": "POST /agents/{id}/volume-growth", "volume-growth show": "GET /volume-growth/{id}",
+	"organization capabilities": "GET /organizations/current/capabilities", "organization set-capabilities": "PUT /organizations/current/capabilities", "agent set-capabilities": "PUT /agents/{agent}/capabilities",
 	"communication explain": "GET /agents/{agent}/requests/{request}/diagnostics",
 	"organization list":     "GET /organizations", "organization create": "POST /organizations", "organization show": "GET /organizations/{id}", "organization disable": "POST /organizations/{id}/disable", "organization current": "GET /organizations/current",
 	"quota show": "GET /organizations/{id}/quotas", "quota set": "PUT /organizations/{id}/quotas", "quota current": "GET /organizations/current/quotas",
@@ -161,10 +164,7 @@ func buildAction(pos []string, o options, in io.Reader) (action, error) {
 	args := pos[2:]
 	if a.name == "operation show" || a.name == "operation wait" {
 		kind := o.take("type")
-		byKind := map[string]string{"": "operations", "operation": "operations", "deployment": "deployments", "rollout": "rollouts", "harness-import": "harness-imports", "invocation": "invocations"}
-		if kind == "activation" {
-			byKind[kind] = "applications/{app}/activations"
-		}
+		byKind := map[string]string{"": "operations", "operation": "operations", "deployment": "deployments", "rollout": "rollouts", "harness-import": "harness-imports", "invocation": "invocations", "volume-growth": "volume-growth", "activation": "applications/{app}/activations"}
 		resource, found := byKind[kind]
 		if !found {
 			return a, errors.New("unknown operation type")
@@ -255,7 +255,7 @@ func buildAction(pos []string, o options, in io.Reader) (action, error) {
 			}
 			args = args[1:]
 		}
-		for _, k := range []string{"template", "count", "active-count", "max-unavailable", "deployment", "auth-mode", "base-url", "kind", "name", "reference", "alias", "upstream-model", "provider-id"} {
+		for _, k := range []string{"template", "count", "active-count", "max-unavailable", "size-mib", "deployment", "auth-mode", "base-url", "kind", "name", "reference", "alias", "upstream-model", "provider-id"} {
 			v := o.take(k)
 			if v == "" {
 				continue
@@ -265,7 +265,7 @@ func buildAction(pos []string, o options, in io.Reader) (action, error) {
 			if k == "deployment" {
 				field = "deployment_id"
 			}
-			if k == "count" || k == "active-count" || k == "max-unavailable" {
+			if k == "count" || k == "active-count" || k == "max-unavailable" || k == "size-mib" {
 				n, e := strconv.Atoi(v)
 				if e != nil || n < 0 {
 					return a, fmt.Errorf("invalid --%s", k)

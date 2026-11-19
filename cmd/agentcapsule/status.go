@@ -109,9 +109,22 @@ func (cli console) status(ctx context.Context, api *client, cmd string, watch bo
 		report := map[string]any{}
 		r, readiness := api.request(ctx, "GET", "/v1/health/ready", "", "", nil)
 		if readiness != nil {
-			report["api"] = finding{"api", "unavailable", "check_api_database_and_authority", nil}
+			failure := finding{"api", "unreachable", "check_api_tls_and_connectivity", nil}
+			var response *apiError
+			if errors.As(readiness, &response) {
+				failure.State = response.Code
+				failure.NextCheck = "check_api_database_and_authority"
+				if response.Code == "authority_unavailable" {
+					failure.NextCheck = "check_authority_service"
+				}
+				r.RequestID = response.RequestID
+			}
+			report["api"] = failure
 		} else {
 			report["api"] = r.Data
+			if err := api.compatible(ctx); err != nil {
+				return err
+			}
 			// A watch can outlive an individual token. Sign again subject to
 			// the same server-side membership and trust checks on each poll.
 			if c.SigningKey != "" {

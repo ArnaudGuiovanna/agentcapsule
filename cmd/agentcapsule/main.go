@@ -129,12 +129,6 @@ func run(ctx context.Context, args []string, in io.Reader, out, errout io.Writer
 		return err
 	}
 	defer api.http.CloseIdleConnections()
-	if err = api.compatible(ctx); err != nil {
-		return err
-	}
-	if identityCommand {
-		return cli.sessionCommand(ctx, dir, name, api, strings.Join(pos, " "), o)
-	}
 	cmd := strings.Join(pos, " ")
 	if cmd == "doctor" || cmd == "support export" || cmd == "status" {
 		watch := o.take("watch") != ""
@@ -145,6 +139,12 @@ func run(ctx context.Context, args []string, in io.Reader, out, errout io.Writer
 			return usageError{err}
 		}
 		return cli.status(ctx, api, cmd, watch)
+	}
+	if err = api.compatible(ctx); err != nil {
+		return err
+	}
+	if identityCommand {
+		return cli.sessionCommand(ctx, dir, name, api, strings.Join(pos, " "), o)
 	}
 	if c.SigningKey != "" {
 		c.Token, err = signPersonal(c.SigningKey, c.Organization)
@@ -221,6 +221,7 @@ func operationState(data json.RawMessage) (string, string, error) {
 	var op struct {
 		Status string `json:"status"`
 		State  string `json:"state"`
+		Stage  string `json:"stage"`
 	}
 	if err := json.Unmarshal(data, &op); err != nil {
 		return "", "", errors.New("invalid operation response")
@@ -229,12 +230,15 @@ func operationState(data json.RawMessage) (string, string, error) {
 	if state == "" {
 		state = op.State
 	}
+	if state == "" {
+		state = op.Stage
+	}
 	switch strings.ToLower(state) {
 	case "ready", "succeeded", "completed":
 		return state, "success", nil
 	case "failed", "cancelled", "canceled", "expired", "lost", "rejected", "paused", "disabled", "refused":
 		return state, "failure", nil
-	case "pending", "running", "accepted", "queued", "in_progress", "planned", "provisioning", "starting", "verifying", "importing", "working", "scheduled", "preparing", "waiting_capacity":
+	case "pending", "running", "accepted", "queued", "in_progress", "planned", "provisioning", "starting", "verifying", "importing", "working", "scheduled", "capturing", "restoring", "preparing", "waiting_capacity":
 		return state, "pending", nil
 	default:
 		return "", "", fmt.Errorf("unrecognized operation state %q", state)
