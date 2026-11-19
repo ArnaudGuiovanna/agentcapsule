@@ -395,6 +395,19 @@ def worker_exclusive(args, profile, checkpoint):
             run("systemctl","start","agentcapsule-worker")
 
 
+def install_backup_config(source, directory=Path("/etc/pgbackrest")):
+    # The installer uses UMask=0077. PostgreSQL must traverse this directory
+    # when PostgreSQL's archive_command independently starts pgBackRest.
+    pg=pwd.getpwnam("postgres")
+    directory.mkdir(exist_ok=True)
+    if subprocess.run(["runuser","-u","postgres","--","test","-x",directory]).returncode:
+        os.chown(directory,0,pg.pw_gid)
+        directory.chmod(0o750)
+    conf=directory/"pgbackrest.conf"
+    install_file(source,conf,0o600,pg.pw_uid)
+    run_user("postgres","test","-r",conf)
+
+
 def backup(profile,mandatory,directory):
     config=profile["pgbackrest_config"]
     if not config:
@@ -413,8 +426,7 @@ def backup(profile,mandatory,directory):
         if not config_file.exists() or config_file.read_bytes()!=source.read_bytes():
             install_file(source,config_file)
             run("systemctl","restart","postgresql@16-agentcapsule.service")
-    conf=Path("/etc/pgbackrest/pgbackrest.conf")
-    install_file(Path(config),conf,0o600,user_id("postgres"))
+    install_backup_config(Path(config))
     pg=["pgbackrest","--stanza=agentcapsule"]
     run_user("postgres",*pg,"stanza-create")
     run_user("postgres",*pg,"check")

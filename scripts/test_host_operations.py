@@ -89,6 +89,20 @@ class HostOperationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,"archive entry"):
                 self.api["unpack"](archive,self.root/f"extraction{i}")
 
+    def test_backup_configuration_traversable_under_installer_umask(self):
+        from unittest.mock import Mock
+        src=self.root/"config"
+        src.write_bytes(b"[global]\n")
+        target=self.root/"pgbackrest"
+        target.mkdir(mode=0o700)
+        with patch("subprocess.run",return_value=Mock(returncode=1)), patch("os.chown") as chown, patch("pwd.getpwnam",return_value=Mock(pw_uid=31,pw_gid=32)):
+            self.api["run_user"]=Mock()
+            self.api["install_backup_config"](src,target)
+            self.assertEqual(target.stat().st_mode&0o777,0o750)
+            self.assertEqual((target/"pgbackrest.conf").stat().st_mode&0o777,0o600)
+            chown.assert_any_call(target,0,32)
+            self.api["run_user"].assert_called_once_with("postgres","test","-r",target/"pgbackrest.conf")
+
     def test_restore_restarts_the_worker_even_after_failure(self):
         from unittest.mock import Mock
         for previously_active in (True,False):
