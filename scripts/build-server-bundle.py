@@ -198,7 +198,7 @@ def run_owner(candidate):
     return None
 
 
-def source_archives(out,files,epoch):
+def source_archives(out,files,epoch,prefix="agentcapsule-sources"):
     parts=[]
     size=0
     for name,value in sorted(files.items()):
@@ -211,7 +211,7 @@ def source_archives(out,files,epoch):
         parts[-1][name]=value
         size+=n
     for i,group in enumerate(parts):
-        write_tar(out/f"agentcapsule-sources-{i+1:02d}.tar",group,epoch)
+        write_tar(out/f"{prefix}-{i+1:02d}.tar",group,epoch)
 
 
 def main():

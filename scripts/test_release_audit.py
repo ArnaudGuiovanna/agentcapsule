@@ -186,6 +186,29 @@ class ScanTest(Temporary):
         self.assertEqual((first["fixed_in"], first["aliases"], first["locations"]), ([], [], []))
         self.assertEqual((second["aliases"], second["fixed_in"]), (["CVE-2"], ["4.1.6"]))
 
+    def test_offline_inventory_uses_only_the_pinned_image_policy(self):
+        profile = json.loads((SCAN.ROOT / "runtime/interop/profile.json").read_text())["services"]
+        unit = (SCAN.ROOT / "deploy/oidc/agentcapsule-oidc.service").read_text()
+        profile["oidc"] = SCAN.re.search(r"quay\.io/keycloak/keycloak@sha256:[0-9a-f]{64}", unit)[0]
+        docs, records = [], []
+        for service, ref in profile.items():
+            sbom = self.dir / ("oci-" + service + ".spdx.json")
+            sbom.write_bytes(b"{}")
+            docs.append(sbom)
+            records.append({"service":service,"ref":ref,"sbom":sbom.name,"sbom_sha256":hashlib.sha256(b"{}").hexdigest()})
+        index = self.dir / "component-sources.json"
+        index.write_text(json.dumps({"images":records}))
+        policies = SCAN.offline_image_policies(index, docs)
+        self.assertEqual(policies["sbom:oci-directory"], SCAN.target_name("image", profile["directory"]))
+        docs[0].write_bytes(b"changed after inspection")
+        with self.assertRaisesRegex(ValueError, "digest"):
+            SCAN.offline_image_policies(index, docs)
+        docs[0].write_bytes(b"{}")
+        records[0]["ref"] = "unrelated@sha256:" + "a" * 64
+        index.write_text(json.dumps({"images":records}))
+        with self.assertRaisesRegex(ValueError, "pinned"):
+            SCAN.offline_image_policies(index, docs)
+
     def test_target_names(self):
         self.assertEqual(SCAN.target_name("sbom", "/x/agentcapsule-api.spdx.json"), "sbom:agentcapsule-api")
         self.assertEqual(SCAN.target_name("image", "ghcr.io/a/b:1@sha256:" + "0" * 64), "image:ghcr.io/a/b:1")
