@@ -126,13 +126,30 @@ func selfUpdate(ctx context.Context, args []string, out, errOut io.Writer) error
 	if err != nil {
 		return err
 	}
+	if err = installCLI(exe, digest, func(dst *os.File) error { return fetch(name, dst, 256<<20) }); err != nil {
+		return err
+	}
+	return json.NewEncoder(out).Encode(map[string]string{"schema": "agentcapsule.host/v1", "version": *version, "path": exe, "sha256": digest})
+}
+
+// installCLI stages the candidate beside the installed binary so a digest or
+// write failure leaves the running executable untouched.
+func installCLI(exe, digest string, writeCandidate func(*os.File) error) error {
+	mode := os.FileMode(0755)
+	if runtime.GOOS != "windows" {
+		current, err := os.Stat(exe)
+		if err != nil {
+			return err
+		}
+		mode = current.Mode().Perm()
+	}
 	dst, err := os.CreateTemp(filepath.Dir(exe), ".agentcapsule-update-")
 	if err != nil {
 		return err
 	}
 	defer os.Remove(dst.Name())
 	defer dst.Close()
-	if err := fetch(name, dst, 256<<20); err != nil {
+	if err := writeCandidate(dst); err != nil {
 		return err
 	}
 	if _, err := dst.Seek(0, io.SeekStart); err != nil {
@@ -145,7 +162,7 @@ func selfUpdate(ctx context.Context, args []string, out, errOut io.Writer) error
 	if hex.EncodeToString(hash.Sum(nil)) != digest {
 		return errors.New("CLI digest differs from signed SHA256SUMS")
 	}
-	if err = dst.Chmod(0755); err != nil {
+	if err = dst.Chmod(mode); err != nil {
 		return err
 	}
 	if err = dst.Sync(); err != nil {
@@ -154,10 +171,7 @@ func selfUpdate(ctx context.Context, args []string, out, errOut io.Writer) error
 	if err = dst.Close(); err != nil {
 		return err
 	}
-	if err = replaceExecutable(dst.Name(), exe); err != nil {
-		return err
-	}
-	return json.NewEncoder(out).Encode(map[string]string{"schema": "agentcapsule.host/v1", "version": *version, "path": exe, "sha256": digest})
+	return replaceExecutable(dst.Name(), exe)
 }
 
 func request(ctx context.Context, client *http.Client, url string) (io.ReadCloser, error) {
