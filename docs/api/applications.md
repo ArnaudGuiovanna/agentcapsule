@@ -98,7 +98,7 @@ Use a fresh test organization and two fresh identities. Prepare a pool containin
 python3 examples/monapp/oidc-login.py --issuer https://identity.acme.test/realms/agentcapsule \
   --client-id monapp --redirect-uri https://monapp.acme.test/signin/callback \
   --username alice --password-file /secure/test-alice-password --output /secure/alice.jwt
-python3 examples/monapp/verify.py scenario.json
+python3 examples/monapp/verify.py scenario.json > report.json
 ```
 
 Repeat the login for Bob. For an enterprise IdP, acquire the two access tokens using its standard browser flow. The scenario document has the following shape. Place registration parameters directly in `application`, using the registration object shown above.
@@ -120,8 +120,22 @@ Repeat the login for Bob. For an enterprise IdP, acquire the two access tokens u
 }
 ```
 
-The scenario performs concurrent acceptance, replays a lost response, checks personal exclusivity, shared access, cross-tenant isolation and private results, and then moves and offboards Alice. Finally it revokes the test application and checks Bob's still-unexpired credential. It prints resource and revocation IDs. Its inputs are HTTPS and JSON so another language can replay the same sequence. [Reference client](../../examples/monapp/verify.py)
+The client issues a short-lived invitation, waits until its declared expiration and checks for `409 expired`. A changed body with the same invitation idempotency key returns `422 idempotency_key_reused`. Alice and Bob accept their own invitations concurrently. Each retries with both the original and a fresh idempotency key. Both retries must return the same activation, principal, policy and slot-to-agent mapping. The foreign owner receives `404 not_found` for Acme's application, invitation endpoint, activation, shared agent and revocation records. [Reference client](../../examples/monapp/verify.py)
 
+The following additional inputs extend the same scenario. The report lists which optional checks ran and records the agents assigned to each personal slot.
+
+| Scenario input | Fixture | Required result |
+|---|---|---|
+| `second_personal_pool_id` | Two more available agents. This can be the same pool if it has four available agents. | Alice and Bob each retain different `personal` and `research` agents, including across acceptance retries. |
+| `refusal_pool_id` | A dedicated pool with one available or preparing agent. | Accepting a two-slot rule returns `409 pool_exhausted` and leaves the pool inventory intact. |
+| `reassigned_email_token_file` | A private, current OIDC access token for another subject of the same issuer and client, with Alice's verified address and `member:accept`. A test IdP can reassign an address after issuing its former owner a token. | After Alice consumes the invitation, the other subject receives `403 forbidden` with the same proof. |
+| `wrong_audience_token_file` | A private, current access token for the same issuer and client, issued for another API audience. | Accepting the valid proof returns `401 authentication_required`. |
+
+Following the team change and departure, the client checks that Alice loses access, her consumed invitation cannot restore membership and the revoked backend token cannot read the activation. It reads each returned revocation record by ID and reports its actual `pending` or `confirmed` state. To repeat the read-only checks after restarting the API, retain the report and supply current administrator and member credentials. Keep short-lived member tokens valid during the check so that expiration cannot explain a denial.
+
+```sh
+python3 examples/monapp/verify.py scenario.json --check-revoked report.json
+```
 
 ## Recovering a personal volume
 

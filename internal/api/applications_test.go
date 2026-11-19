@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
@@ -70,9 +71,13 @@ func activePolicyFixture(t *testing.T, f *rbacFixture) map[string]string {
 }
 
 func signAppToken(t *testing.T, issuer, subject, audience string) string {
+	return signAppTokenForEmail(t, issuer, subject, subject+"@example.test", audience)
+}
+
+func signAppTokenForEmail(t *testing.T, issuer, subject, email, audience string) string {
 	now := time.Now().UTC()
 	c := jwt.MapClaims{"iss": issuer, "aud": audience, "sub": subject, "jti": "jti-" + subject, "azp": "monapp", "typ": "Bearer",
-		"iat": now.Add(-time.Second).Unix(), "exp": now.Add(5 * time.Minute).Unix(), "scope": "openid email org:read member:accept member:invite agent:read agent:invoke agent:content:read", "email": subject + "@example.test", "email_verified": true}
+		"iat": now.Add(-time.Second).Unix(), "exp": now.Add(5 * time.Minute).Unix(), "scope": "openid email org:read member:accept member:invite agent:read agent:invoke agent:content:read", "email": email, "email_verified": true}
 	v := jwt.NewWithClaims(jwt.SigningMethodRS256, c)
 	v.Header["kid"] = "test"
 	raw, err := v.SignedString(appTestSigningKey())
@@ -176,7 +181,7 @@ func TestMonAppHTTPReference(t *testing.T) {
 		return path
 	}
 	var deployment controlplane.DeploymentPlan
-	f.must(t, "owner", "POST", "/v1/deployment-plans", `{"template":"matrix-base@1","count":2}`, 201, &deployment)
+	f.must(t, "owner", "POST", "/v1/deployment-plans", `{"template":"matrix-base@1","count":4}`, 201, &deployment)
 	f.must(t, "owner", "POST", "/v1/deployment-plans/"+deployment.ID+"/apply", "{}", 202, nil)
 	var pool controlplane.AgentPool
 	f.must(t, "owner", "POST", "/v1/pools", stringify(controlplane.PoolInput{Name: "personal", DeploymentID: deployment.ID}), 201, &pool)
@@ -193,8 +198,8 @@ func TestMonAppHTTPReference(t *testing.T) {
 		agents = append(agents, id)
 	}
 	rows.Close()
-	if len(agents) != 2 {
-		t.Fatal("expected a two-agent pool", agents)
+	if len(agents) != 4 {
+		t.Fatal("expected a four-agent pool", agents)
 	}
 	for _, id := range agents {
 		apiProvisionAgent(t, f.l, id)
@@ -272,12 +277,62 @@ func TestMonAppHTTPReference(t *testing.T) {
 	}
 	conf := map[string]any{"api": srv.URL, "api_ca": ca, "application": cfg, "members": members, "admin_token_file": write("admin.jwt", f.token(t, "owner")),
 		"other_org_token_file": write("foreign.jwt", f.token(t, "foreign")), "support_team_id": rbacFreshTeam(t, f)["fresh"], "support_agent_id": f.ids["agent"], "pool_id": pool.ID, "timeout_seconds": 30}
+	conf["second_personal_pool_id"] = pool.ID
+	conf["refusal_pool_id"] = f.ids["pool"]
+	if live == "" {
+		conf["reassigned_email_token_file"] = write("former.jwt", signAppTokenForEmail(t, cfg.Issuer, "former-alice", "alice@example.test", cfg.Audience))
+		conf["wrong_audience_token_file"] = write("wrong-audience.jwt", signAppToken(t, cfg.Issuer, "alice", "another-api"))
+	} else {
+		for key, name := range map[string]string{"reassigned_email_token_file": "former.jwt", "wrong_audience_token_file": "wrong-audience.jwt"} {
+			p := filepath.Join(live, name)
+			if _, err := os.Stat(p); err == nil {
+				conf[key] = p
+			} else if !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+		}
+	}
 	path := write("scenario.json", stringify(conf))
 	output, err := exec.CommandContext(t.Context(), "python3", "../../examples/monapp/verify.py", path).CombinedOutput()
 	if err != nil {
 		t.Fatalf("reference client: %v %s", err, output)
 	}
 	t.Log(string(output))
+	var receipts struct {
+		Member      []controlplane.AccessRevocation `json:"revocations"`
+		Application []controlplane.AccessRevocation `json:"application_revocations"`
+	}
+	if err := json.Unmarshal(output, &receipts); err != nil || len(receipts.Member) == 0 || len(receipts.Application) == 0 {
+		t.Fatal("missing durable revocations in SDK conformance output", err)
+	}
+	reportFile := write("report.json", string(output))
+	srv.Close()
+	// Force a new database connection pool and API instance to reconstruct the
+	// application's state. The same admin identities can read the persisted receipts.
+	store, err := controlplane.Open(t.Context(), f.l.dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	accounts, err := controlplane.NewAccounts(store, bytes.Repeat([]byte{0x36}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := NewForHost(store, accounts, "local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted.SetDelegatedIdentityVerifier(f.server.delegations.Load())
+	newServer := httptest.NewTLSServer(restarted)
+	defer newServer.Close()
+	conf["api"] = newServer.URL
+	conf["api_ca"] = write("restart-ca.pem", string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: newServer.Certificate().Raw})))
+	restartedConfig := write("after-restart.json", stringify(conf))
+	again, err := exec.CommandContext(t.Context(), "python3", "../../examples/monapp/verify.py", restartedConfig, "--check-revoked", reportFile).CombinedOutput()
+	if err != nil {
+		t.Fatalf("reference client after restart: %v %s", err, again)
+	}
+	t.Log(string(again))
 }
 
 func TestApplicationPoolExhaustionAndDurableReplay(t *testing.T) {
