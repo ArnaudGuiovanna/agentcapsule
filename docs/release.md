@@ -36,6 +36,12 @@ release, migration format, commit and artifact digests. The release workflow sig
 
 Each image inventory is tied to its offline archive and the pinned reference in the deployment configuration. The scanner applies the same image policy to the local SPDX and the registry scan. The source index records exact Red Hat SRPMs, Debian source packages, and Alpine recipes with their upstream files and packaging patches. Maven source-classifier URLs and Go module URLs identify further upstream components. [Candidate image qualification](release-image-qualification.md)
 
+### Signed Linux development build `v0.1.0-dev.6`
+
+Two clean builds of `f1d216d` on Ubuntu 24.04 amd64 in WSL2 produced the same eight executables and guest initrd. The development key signed an index of 41 files. Its SHA-256 is `fa277755417542dfd6ee6ac82ffd6d32cc98af8222ec7e5a201ec1d0ff5a98d2`. An independent offline verification checked the signed files, the 63 files inside the server bundle and the six pinned container references. The candidate admin binary applied 54 migrations to a fresh PostgreSQL schema and the resulting ledger matched the one shipped with the build.
+
+The release scanner checked the 19 SPDX inventories on this medium. The Ubuntu package archive and the Keycloak image account for all 12 findings that block publication, one Critical and 11 High. [Image qualification](release-image-qualification.md) · [Ubuntu package findings](#ubuntu-package-archive-19-november-2026)
+
 ### Ubuntu package archive, 19 November 2026
 
 The offline Noble snapshot used in the installation test contained 171 binary packages. The release inventory checks every archived `.deb` against the server's package index and records its SHA-256, Ubuntu release, binary version and source package. Grype 0.121.0 with the 19 November database reported six High matches, 452 Medium, 37 Low and five Negligible. The six High matches block this archive under the release policy. The six separate Keycloak matches also block the offline images. [Image qualification](release-image-qualification.md)
