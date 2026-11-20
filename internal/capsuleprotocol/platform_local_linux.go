@@ -4,6 +4,7 @@ package capsuleprotocol
 
 import (
 	"context"
+	"io"
 	"net"
 	"net/http"
 )
@@ -48,6 +49,12 @@ func (r remotePlatform) DescribeAgent(ctx context.Context, id string) (Directory
 }
 func (r remotePlatform) RequestStatus(ctx context.Context, id string) (RequestStatus, error) {
 	return r.client.RequestStatus(ctx, id)
+}
+
+// openStream relays a stream route to the host (ADR 022): the guest's
+// handler checks and copies its frames one by one.
+func (r remotePlatform) openStream(ctx context.Context, path string, body io.Reader) (*http.Response, error) {
+	return r.client.openStream(ctx, path, body)
 }
 
 // The guest's A2A endpoint reads cards and request states through this bridge.
