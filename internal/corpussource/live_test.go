@@ -1,3 +1,5 @@
+//go:build corpuslive
+
 package corpussource_test
 
 import (
@@ -46,7 +48,7 @@ func hosts(v string) []string {
 // By default it reads small public repositories anonymously, read-only,
 // over HTTPS:
 //
-//	AGENTCAPSULE_CORPUS_LIVE=1 go test ./internal/corpussource -run TestLiveForges -v
+//	go test -tags corpuslive -count=1 ./internal/corpussource -run TestLiveForges -v
 //
 // A private repository takes its owner's read-only token from a file
 // (docs/registry.md#corpus-sources):
@@ -57,10 +59,6 @@ func hosts(v string) []string {
 // Each forge's ref, LFS object ("oid:size") and extra hosts can be set too:
 // see the variables below.
 func TestLiveForges(t *testing.T) {
-	if os.Getenv("AGENTCAPSULE_CORPUS_LIVE") != "1" {
-		t.Log("set AGENTCAPSULE_CORPUS_LIVE=1 to fetch from the real forges")
-		return
-	}
 	limits := corpussource.Limits{ArchiveBytes: 256 << 20, LFSBytes: 256 << 20, LFSObjects: 100}
 	gitlabHost := liveEnv("GITLAB_HOST", "gitlab.com")
 	policy := corpussource.Policy{Rules: []corpussource.Rule{
