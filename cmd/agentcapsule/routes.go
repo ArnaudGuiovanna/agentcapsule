@@ -447,6 +447,7 @@ func listCommands(w io.Writer) {
 context add NAME --url HTTPS_ORIGIN --kind platform|organization [--organization ID] [--ca FILE]
 context use NAME | context list | context show NAME
 identity create|show --key-file PATH --display-name NAME
+corpus init DIR [--title TEXT] [--language TAG] | corpus lint DIR (local, no API)
 login --enrollment-file FILE|- | login --key-file PATH | login --token-file FILE|- | session renew | logout
 status [--watch] | doctor | support export --output-file FILE
 operation show|wait ID [--type operation|deployment|rollout|harness-import|invocation|volume-growth|activation|revocation] [--app APP_ID]

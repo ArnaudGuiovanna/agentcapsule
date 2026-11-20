@@ -121,6 +121,9 @@ func run(ctx context.Context, args []string, in io.Reader, out, errout io.Writer
 	if pos[0] == "identity" {
 		return cli.identity(pos, o)
 	}
+	if len(pos) >= 2 && pos[0] == "corpus" && (pos[1] == "init" || pos[1] == "lint") {
+		return cli.corpus(pos, o)
+	}
 	dir, err := configDir()
 	if err != nil {
 		return err

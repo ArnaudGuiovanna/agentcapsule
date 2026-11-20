@@ -115,6 +115,26 @@ Run `app verify APP_ID` in the organization's context after registration or rota
 
 The HTTP guide covers inviting Alice and Bob, concurrent acceptance, private results, changing teams, and departure. A new activation can be followed with `operation wait --type activation --app APP_ID ACTIVATION_ID`. On departure, read the admitted-work counts. Use an audit-authorized identity to inspect each returned revocation ID with `revocation show ID` or wait for its confirmation with `operation wait --type revocation ID`. The primary enforces the revocation immediately. For a membership revocation with a configured standby, `pending` means the replica has yet to record it. Once the replica catches up, the CLI returns the `confirmed` receipt and its timestamp. A single authority can confirm locally, and bearer-token revocations can also be confirmed under the degraded-mode policy. Rotate the backend token with `app rotate APP_ID --output-file monapp-next.json` or revoke the whole integration with `app revoke APP_ID`. [HTTP scenario and runner](api/applications.md) · [Revocation semantics](api/README.md#revocations-pending-and-confirmed)
 
+## Prepare a corpus repository
+
+A content author keeps documents for a corpus in a Git repository, with the manifest `agentcapsule-corpus.yaml` at the corpus's path. Two commands check that directory on the author's machine. Like `identity`, they need no context and call no API. They send nothing over the network and run no other program. [Corpus formats](corpus.md)
+
+```sh
+agentcapsule corpus init ./finance-l3 --title "Corporate finance, year 3" --language fr
+agentcapsule corpus lint ./finance-l3
+```
+
+`corpus init DIR` writes a commented manifest into `DIR` and creates `DIR` when needed. The manifest keeps every file and turns on no processing step. The command never replaces an existing manifest. `--title` defaults to the directory's name and `--language` to `en`.
+
+`corpus lint DIR` reads the manifest and the files below `DIR` as a build would. Its `data` gives:
+
+- `files`: the kept files, each with its `kind`, `bytes` and measures (`pages`, `slides`, `sheets`, `seconds`, `tokens`); `lfs` for a Git LFS pointer;
+- `ignored`: every other file with its `reason`, and the `step` that a `step_disabled` file needs;
+- `totals`: files seen, kept and ignored, bytes, files by kind, pages, slides, sheets, images, seconds of audio and of video, estimated text tokens, `unmeasured` files and Git LFS objects;
+- `aliases` named by the manifest, `warnings`, and `errors` with their closed `code` and `field`.
+
+Lint reads only headers and indexes. A measure it cannot read cheaply counts as `unmeasured`. When a build would refuse the directory, `valid` is `false`. The command prints its report and then exits with code 1.
+
 ## Diagnose and maintain
 
 | Observation | Command | What to check |
@@ -140,7 +160,7 @@ Use `--file PATH`, `--config PATH` or `--file -` for JSON or a single YAML objec
 | Exit code | Meaning |
 |---|---|
 | 0 | Command completed successfully, or a requested read returned the recorded state |
-| 1 | Local configuration, transport or host helper failed |
+| 1 | Local configuration, transport or host helper failed, or `corpus lint` found a source that a build would refuse |
 | 2 | Invalid remote CLI syntax |
 | 3 | API returned 401 or 403 |
 | 4 | Other HTTP refusal, including quota conflict or an invisible resource |
@@ -156,6 +176,7 @@ The storage, wire protocol and binary release each carry their own version. The 
 | Actor and transport | Commands or HTTP action | Observable result |
 |---|---|---|
 | Linux host administrator, locally or over SSH | `install`, `host operation resume`, `host operation wait` | An invalid signature stops activation. Resumption keeps the existing authorities. The installed worker returns the starter's echo after a restart. [Host guide](cli-host.md) |
+| Content author, locally | `corpus init`, `corpus lint` | Lint recognizes each type, lists ignored files with their reason and estimates the volumes, with no context or network. [CLI corpus test](../cmd/agentcapsule/corpus_test.go) · [Scan test](../internal/corpuspkg/source/scan_test.go) |
 | Platform operator, HTTPS | `login`, `session renew`, `organization create`, `quota set` | The enrollment works once, renewal invalidates the old token, and Acme's owner can sign into a separate context. [CLI entry-point test](../cmd/agentcapsule/session_linux_test.go) |
 | Organization administrator, HTTPS | `template publish`, `deployment plan`, `deployment apply`, `pool create` | Over-quota batches reserve nothing. An interrupted admitted batch resumes with one encrypted volume per agent. [Database and KVM measurements](api/deployments.md#measured-deployment-on-wsl2-with-kvm) |
 | Organization administrator and assigned member, HTTPS | `registry import`, `alias grant`, `agent invoke`, `invocation result` | Import reaches READY. The member gets a response from the chosen model and the provider usage reflects it. [LLM API](api/llm.md) |

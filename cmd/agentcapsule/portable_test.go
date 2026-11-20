@@ -108,6 +108,15 @@ func TestPortableCLI(t *testing.T) {
 	if err := json.Unmarshal([]byte(call("", true, "version")), &v); err != nil || v.Data.Release != version || v.Data.Major != 1 || v.Data.Protocol != 1 {
 		t.Fatal("unexpected CLI version or protocol", v, err)
 	}
+	// The local corpus commands work on every target, without a context.
+	corpus := filepath.Join(dir, "corpus sources")
+	call("", true, "corpus", "init", corpus, "--title", "Native corpus")
+	if err := os.WriteFile(filepath.Join(corpus, "notes.md"), []byte("# Notes\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if out := call("", true, "corpus", "lint", corpus); !strings.Contains(out, `"valid":true`) || !strings.Contains(out, `"path":"notes.md"`) {
+		t.Fatal("corpus lint", out)
+	}
 	var compatible atomic.Bool
 	var authenticated atomic.Int32
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
