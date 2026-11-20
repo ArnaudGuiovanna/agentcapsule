@@ -1,0 +1,221 @@
+openapi: 3.1.0
+info:
+  title: Agent Capsule API — draft of the invocation event streams (ADR 022)
+  version: 0.0.0-draft
+  description: >-
+    DRAFT, NOT SERVED. The routes and schemas that lot 4 of the streaming
+    plan adds to openapi/openapi.yaml when agentcapsule-api serves them
+    (docs/adr/022-native-streaming.md §6). Lot 4 merges the paths, the
+    events' schemas and the two problem codes into openapi/openapi.yaml,
+    adds stream.output to its Capability and TemplateSpec.capabilities
+    enums, and deletes this file. The served contract stays
+    openapi/openapi.yaml, which TestOpenAPIDescribesExactlyTheServedRoutes
+    ties to the server.
+servers:
+  - url: https://api.example.invalid
+paths:
+  /v1/invocations/{id}/events:
+    get:
+      operationId: invocationEvents
+      description: >-
+        Server-sent events of an invocation (EXT-005, ADR 022): its state,
+        the deltas and steps its harness streams, then its end. Same rights
+        as /v1/invocations/{id}/result, without the condition that a result
+        exists: the scope agent:content:read, the invocation's requester,
+        with read_content on the agent through a current assignment. Any
+        other caller gets 404, whether the invocation exists or not. The
+        rights are checked again every 10 seconds and when the organization's
+        policy_version changes; on failure, the event revoked, then the end
+        of the stream. The answer is text/event-stream from the first byte;
+        a heartbeat comment goes out every 15 seconds; the server closes
+        after 15 minutes, and the client reconnects with Last-Event-ID. An
+        agent whose harness lacks stream.output sends no delta or step:
+        state and end only. Reading the result through the end event starts
+        its retention, as reading /result does.
+      security: [{memberOIDC: []}, {delegatedBearer: []}, {serviceBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/ResourceID'}
+        - {$ref: '#/components/parameters/LastEventID'}
+      responses:
+        '200': {$ref: '#/components/responses/InvocationEvents'}
+        '400': {$ref: '#/components/responses/Problem'}  # invalid_request: a malformed Last-Event-ID
+        '403': {$ref: '#/components/responses/Problem'}  # forbidden: the credential lacks agent:content:read
+        '404': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}  # too_many_streams: 4 subscriptions of this principal to this invocation
+        '503': {$ref: '#/components/responses/Problem'}  # stream_capacity: the process's -max-event-streams reached
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/operations/{id}/events:
+    get:
+      operationId: operationEvents
+      description: >-
+        Alias of /v1/invocations/{id}/events for an invocation's operation
+        identifier, with the same rights and answers. Any other operation
+        returns 404. Tenant domain only: the legacy bearer is refused.
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/ResourceID'}
+        - {$ref: '#/components/parameters/LastEventID'}
+      responses:
+        '200': {$ref: '#/components/responses/InvocationEvents'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
+components:
+  securitySchemes:
+    serviceBearer:
+      type: http
+      scheme: bearer
+      description: As in openapi/openapi.yaml.
+    memberOIDC:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: As in openapi/openapi.yaml.
+    delegatedBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: As in openapi/openapi.yaml.
+  parameters:
+    ResourceID:
+      name: id
+      in: path
+      required: true
+      schema: {type: string, minLength: 1, maxLength: 100}
+    LastEventID:
+      name: Last-Event-ID
+      in: header
+      required: false
+      description: >-
+        The id of the last event the client received, <attempt>:<seq>. The
+        same attempt as the current one: the frames after seq. Another
+        attempt: reset, then every frame of the current attempt. Chunks past
+        their retention: state, then end. Absent: every frame of the current
+        attempt.
+      schema: {type: string, pattern: '^[0-9]{1,9}:[0-9]{1,18}$'}
+  responses:
+    InvocationEvents:
+      description: >-
+        Server-sent events. Each event is an `event:` line naming one of the
+        x-sse-events below, an optional `id:` line (<attempt>:<seq>, for
+        delta and step, and <attempt>:0 for reset), and one `data:` line
+        holding the JSON object of that event's schema. A comment line
+        `: heartbeat` goes out every 15 seconds without another event. Order:
+        state first; reset if the client's attempt is not the current one;
+        the stored frames in seq order; truncated once the attempt is
+        truncated; end last, after which the server closes. revoked ends the
+        stream at any point.
+      headers:
+        X-Request-ID: {schema: {type: string}}
+        Cache-Control: {schema: {type: string, const: no-store}}
+        X-Accel-Buffering: {schema: {type: string, const: 'no'}}
+      content:
+        text/event-stream:
+          schema: {type: string}
+          x-sse-events:
+            state: {$ref: '#/components/schemas/StateEvent'}
+            delta: {$ref: '#/components/schemas/DeltaEvent'}
+            step: {$ref: '#/components/schemas/StepEvent'}
+            reset: {$ref: '#/components/schemas/ResetEvent'}
+            truncated: {$ref: '#/components/schemas/TruncatedEvent'}
+            end: {$ref: '#/components/schemas/EndEvent'}
+            revoked: {$ref: '#/components/schemas/RevokedEvent'}
+    Problem:
+      description: >-
+        As in openapi/openapi.yaml. This draft adds two codes:
+        too_many_streams (429) and stream_capacity (503).
+      headers:
+        X-Request-ID: {schema: {type: string}}
+      content:
+        application/problem+json:
+          schema:
+            type: object
+            required: [type, title, status, code]
+            properties:
+              type: {type: string, const: 'about:blank'}
+              title: {type: string}
+              status: {type: integer}
+              code: {type: string}
+  schemas:
+    InvocationState:
+      type: string
+      enum: [scheduled, accepted, working, completed, failed, expired, canceled, lost, unknown]
+      description: The vocabulary of Invocation.state in openapi/openapi.yaml.
+    StateEvent:
+      type: object
+      additionalProperties: false
+      required: [state, attempt]
+      description: First, then at each change of the invocation's state.
+      properties:
+        state: {$ref: '#/components/schemas/InvocationState'}
+        attempt: {type: integer, minimum: 1, description: "1 at the first delivery; plus one at each rerun after a restore and each replay of a dead letter."}
+    DeltaEvent:
+      type: object
+      additionalProperties: false
+      required: [seq, text]
+      description: A fragment of the text the harness streams. id is <attempt>:<seq>.
+      properties:
+        seq: {type: integer, minimum: 1}
+        text: {type: string, minLength: 1}
+    StepEvent:
+      type: object
+      additionalProperties: false
+      required: [seq, step, state]
+      description: A step the harness announces. id is <attempt>:<seq>.
+      properties:
+        seq: {type: integer, minimum: 1}
+        step: {type: string, pattern: '^[a-z][a-z0-9_.-]{0,63}$'}
+        state: {type: string, enum: [started, done, failed]}
+        label: {type: string, minLength: 1, maxLength: 256}
+    ResetEvent:
+      type: object
+      additionalProperties: false
+      required: [attempt]
+      description: >-
+        The client's attempt is no longer the current one: the deltas and
+        steps it received are void; the current attempt's follow. id is
+        <attempt>:0.
+      properties:
+        attempt: {type: integer, minimum: 1}
+    TruncatedEvent:
+      type: object
+      additionalProperties: false
+      required: [attempt]
+      description: >-
+        The attempt reached its stream limits (2 MiB or 4,096 frames by
+        default): nothing more of it is streamed. The outcome is not changed.
+      properties:
+        attempt: {type: integer, minimum: 1}
+    EndEvent:
+      type: object
+      additionalProperties: false
+      required: [state, attempt]
+      description: >-
+        The invocation's final state; the server then closes. A completed
+        end carries the result, as /v1/invocations/{id}/result answers it,
+        when its encoded size is at most 32 KiB; otherwise
+        result_available is true and the client reads /result. Carrying the
+        result starts its retention, as /result does.
+      properties:
+        state: {type: string, enum: [completed, failed, expired, canceled, lost]}
+        attempt: {type: integer, minimum: 1}
+        error_code: {type: string, description: "As Invocation.error_code. A lost end always has one: its rerun will not run."}
+        result: {description: "The JSON result from the harness, {\"content\": [...]}."}
+        result_available: {type: boolean}
+    RevokedEvent:
+      type: object
+      additionalProperties: false
+      description: The caller's rights failed during the subscription; the server then closes.
+    Capability:
+      type: string
+      enum: [llm.invoke, agents.delegate, agents.discover, stream.output]
+      description: >-
+        llm.invoke: call the organization's models. agents.delegate: send
+        requests to other agents and follow them. agents.discover: search
+        and describe the organization's agents. stream.output: send the
+        output of a working invocation as a stream (ADR 022); shown in
+        GET /v1/agents/{id}/capabilities, so that a client knows whether the
+        agent streams.

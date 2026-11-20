@@ -323,6 +323,9 @@ def checks(spec=SPEC):
         # The other models: every reachable state of the correct instance, and
         # a counterexample from each broken one.
         apalache("invocation_completion.qnt", "invocationCompletion", "safety", 10),
+        apalache("invocation_completion.qnt", "invocationCompletionTrustsTheStream", "noDeltaAfterOutcome", 4, VIOLATION),
+        apalache("invocation_completion.qnt", "invocationCompletionAnyAttempt", "deltaMatchesCurrentAttempt", 5, VIOLATION),
+        apalache("invocation_completion.qnt", "invocationCompletionCloseFiles", "deltasNeverAnOutcome", 3, VIOLATION),
         tlc("delivery.qnt", "deliveryOk", "safety", step="stepCompact"),
         tlc("delivery.qnt", "deliveryThreeKeys", "safety", step="stepCompact"),
         tlc("delivery.qnt", "deliveryLarge", "safety", step="stepCompact", timeout=2 * 3600, heap="5G"),

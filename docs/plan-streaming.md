@@ -12,7 +12,7 @@ Les routes, trames et commandes ci-dessous sont des propositions de conception. 
 
 | Lot | État |
 |---|---|
-| 0. Contrats, ADR 022, modèle Quint | Non démarré |
+| 0. Contrats, ADR 022, modèle Quint | Fait ([ADR 022](adr/022-native-streaming.md)) |
 | 1. Passerelle : streaming fournisseur | Non démarré |
 | 2. Canal plateforme : flux LLM vers l’invité | Non démarré |
 | 3. Flux de sortie harness → plateforme | Non démarré |
