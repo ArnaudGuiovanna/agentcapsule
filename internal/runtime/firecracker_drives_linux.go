@@ -236,7 +236,7 @@ func (h *FirecrackerHost) verifyCorpora(corpora []CorpusImage) error {
 			return err
 		}
 		st, err := f.Stat()
-		if err == nil && (!st.Mode().IsRegular() || st.Mode().Perm()&0o004 == 0 || st.Mode().Perm()&0o022 != 0 || st.Size() < minCorpusBytes || st.Size()%4096 != 0) {
+		if err == nil && (!st.Mode().IsRegular() || st.Mode().Perm()&0o004 == 0 || st.Mode().Perm()&0o222 != 0 || st.Size() < minCorpusBytes || st.Size()%4096 != 0) {
 			err = errors.New("corpus image must be a world-readable, write-protected regular file of whole 4 KiB blocks")
 		}
 		if err == nil {

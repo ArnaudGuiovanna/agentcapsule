@@ -352,6 +352,10 @@ func TestCorporaAreCheckedWhenRecorded(t *testing.T) {
 	if err := os.Chmod(writable.Path, 0o666); err != nil {
 		t.Fatal(err)
 	}
+	ownerWritable := corpusImage(t, cache, "owner-writable.ext4", "cccccccc-1111-4111-8111-111111111111", 64<<10)
+	if err := os.Chmod(ownerWritable.Path, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	small := corpusImage(t, cache, "small.ext4", "bbbbbbbb-1111-4111-8111-111111111111", 32<<10)
 	other := func(c CorpusImage, change func(*CorpusImage)) CorpusImage { change(&c); return c }
 	extra := func(i int) CorpusImage {
@@ -367,6 +371,7 @@ func TestCorporaAreCheckedWhenRecorded(t *testing.T) {
 		"relative path": {other(finance, func(c *CorpusImage) { c.Path = "finance.ext4" })},
 		"missing":       {other(finance, func(c *CorpusImage) { c.Path = filepath.Join(cache, "none.ext4") })},
 		"writable":      {writable},
+		"owner write":   {ownerWritable},
 		"small":         {small},
 	} {
 		if err := h.ReplaceCorpora(t.Context(), "a", bad); err == nil {
