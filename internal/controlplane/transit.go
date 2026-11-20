@@ -230,7 +230,7 @@ type TransitReference struct {
 }
 
 func transitKind(kind string) bool {
-	return kind == "instruction" || kind == "instruction_result" || kind == "request" || kind == "reply" || kind == "owner_message"
+	return kind == "instruction" || kind == "instruction_result" || kind == "request" || kind == "reply" || kind == "owner_message" || kind == "stream_chunk"
 }
 
 // put is only used inside the domain transaction that creates its immutable

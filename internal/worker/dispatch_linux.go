@@ -70,6 +70,13 @@ func (w *Placements) DispatchPass(ctx context.Context, o DispatchOptions, attemp
 		cancel()
 	}
 	{
+		// The chunks of output streams go soon after their outcome (ADR 022).
+		purge, cancel := context.WithTimeout(ctx, attemptTimeout)
+		_, chunkErr := w.store.PurgeStreamChunks(purge, nil, w.streamRetention(), min(o.Batch*4, 1000))
+		result = errors.Join(result, chunkErr)
+		cancel()
+	}
+	{
 		// After the transit purge: an attachment goes once its invocation's own
 		// content has gone, or when it expired unused.
 		purge, cancel := context.WithTimeout(ctx, attemptTimeout)

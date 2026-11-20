@@ -22,10 +22,14 @@ const (
 	// AgentsDiscover: search and describe the organization's agents
 	// (/v1/directory/find, /v1/directory/search, /v1/directory/agent).
 	AgentsDiscover = "agents.discover"
+	// StreamOutput: send the output of a working invocation as a stream
+	// (/v1/invocations/stream, ADR 022). It answers delivered work, but the
+	// catalog shows it, so that a client knows whether the harness streams.
+	StreamOutput = "stream.output"
 )
 
 // Known returns every capability, sorted.
-func Known() []string { return []string{AgentsDelegate, AgentsDiscover, LLMInvoke} }
+func Known() []string { return []string{AgentsDelegate, AgentsDiscover, LLMInvoke, StreamOutput} }
 
 // ErrUnknown: a set names a capability this platform does not know, or one twice.
 var ErrUnknown = errors.New("unknown or repeated capability")
@@ -71,6 +75,8 @@ func ForRoute(path string) string {
 		return AgentsDelegate
 	case "/v1/directory/find", "/v1/directory/search", "/v1/directory/agent":
 		return AgentsDiscover
+	case "/v1/invocations/stream":
+		return StreamOutput
 	}
 	if strings.HasPrefix(path, "/v1/agent-requests/") && strings.HasSuffix(path, "/status") {
 		return AgentsDelegate

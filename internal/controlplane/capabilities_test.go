@@ -34,14 +34,16 @@ func TestReleasesRecordTheCapabilitiesTheyRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A manifest without the field requests every capability, the ones added
+	// since too (stream.output, ADR 022).
 	want := map[string]struct {
 		capabilities []string
 		declared     bool
 	}{
 		"skilled":   {[]string{"agents.discover", "llm.invoke"}, true},
 		"silent":    {[]string{}, true},
-		"older":     {[]string{"agents.delegate", "agents.discover", "llm.invoke"}, false},
-		"reference": {[]string{"agents.delegate", "agents.discover", "llm.invoke"}, false},
+		"older":     {[]string{"agents.delegate", "agents.discover", "llm.invoke", "stream.output"}, false},
+		"reference": {[]string{"agents.delegate", "agents.discover", "llm.invoke", "stream.output"}, false},
 	}
 	for _, v := range items {
 		w, ok := want[v.Name]

@@ -142,6 +142,10 @@ func (p *platformHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		write(http.StatusServiceUnavailable, "unavailable")
 		return
 	}
+	if r.URL.Path == OutputStreamPath {
+		p.serveOutputStream(w, r)
+		return
+	}
 	timeout := 15 * time.Second
 	if r.URL.Path == "/v1/llm/complete" || r.URL.Path == "/v1/llm/forward" {
 		// Only this route may outlive the server's short write deadline; the

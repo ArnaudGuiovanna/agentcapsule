@@ -376,6 +376,12 @@ func TestReadyChecksInstalledMigrationLedger(t *testing.T) {
 func revertTenantAgents(t *testing.T, s *Store) {
 	t.Helper()
 	if _, err := s.pool.Exec(t.Context(), `
+        DROP TABLE IF EXISTS invocation_stream_chunks, invocation_streams;
+        DROP FUNCTION IF EXISTS invocation_stream_notify_operation(), invocation_stream_notify_status(), organization_policy_notify() CASCADE;
+        ALTER TABLE owner_instructions DROP COLUMN IF EXISTS attempt;
+        ALTER TABLE transit_payloads DROP CONSTRAINT IF EXISTS transit_payloads_kind_check;
+        ALTER TABLE transit_payloads ADD CONSTRAINT transit_payloads_kind_check
+          CHECK (kind IN ('instruction','instruction_result','request','reply','owner_message'));
         DROP TABLE IF EXISTS agent_volume_growth, deployment_audit;
         ALTER TABLE IF EXISTS agent_specs DROP COLUMN IF EXISTS reserved_growth_mib;
         ALTER TABLE IF EXISTS volume_restores DROP COLUMN IF EXISTS grow_to_mib;
