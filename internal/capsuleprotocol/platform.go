@@ -147,7 +147,7 @@ func (p *platformHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	timeout := 15 * time.Second
-	if r.URL.Path == "/v1/llm/complete" || r.URL.Path == "/v1/llm/forward" {
+	if r.URL.Path == "/v1/llm/complete" || r.URL.Path == "/v1/llm/forward" || isModelStream(r.URL.Path) {
 		// Only this route may outlive the server's short write deadline; the
 		// listener's other bounds still apply.
 		timeout = LLMCallTimeout
@@ -194,7 +194,7 @@ func (p *platformHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if in.Query != nil && r.URL.Path != "/v1/directory/find" || in.Forward != nil && r.URL.Path != "/v1/llm/forward" ||
+	if in.Query != nil && r.URL.Path != "/v1/directory/find" || in.Forward != nil && r.URL.Path != "/v1/llm/forward" && r.URL.Path != ForwardLLMStreamPath ||
 		in.AgentID != "" && r.URL.Path != "/v1/directory/agent" {
 		write(http.StatusBadRequest, "invalid")
 		return
@@ -271,6 +271,11 @@ func (p *platformHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		result, err = api.PostOwner(ctx, in.Key, *in.OwnerMessage)
 		if err == nil {
 			out.OwnerReceipt = &result
+		}
+	case isModelStream(r.URL.Path):
+		err = p.serveModelStream(ctx, w, r.URL.Path, in)
+		if err == nil {
+			return
 		}
 	case r.URL.Path == "/v1/llm/complete":
 		if in.LLM == nil || in.Attachment != nil || in.Completion != nil || in.OwnerMessage != nil || in.Submission != nil || in.Reply != nil || in.RequestID != "" || in.Candidates != nil || in.Key == "" || len(in.Key) > 200 || in.LLM.Validate() != nil {

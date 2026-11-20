@@ -25,7 +25,11 @@ func (p *PlatformClient) openStream(ctx context.Context, path string, body io.Re
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Content-Type", ndjsonType)
+	contentType := ndjsonType
+	if isModelStream(path) {
+		contentType = "application/json"
+	}
+	req.Header.Set("Content-Type", contentType)
 	client := *p.client.http
 	client.Timeout = 0
 	r, err := client.Do(req)

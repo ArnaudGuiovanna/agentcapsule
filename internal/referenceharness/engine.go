@@ -41,6 +41,7 @@ type invocationWork struct {
 	Attachments []capsuleprotocol.AttachmentRef `json:"attachments,omitempty"`
 	Alias       string                          `json:"alias,omitempty"`
 	Prompt      string                          `json:"prompt,omitempty"`
+	ModelStream bool                            `json:"model_stream,omitempty"`
 	// Stream is the number of deltas of "/stream <n>" (stream.go).
 	Stream int                           `json:"stream,omitempty"`
 	Result []capsuleprotocol.TextContent `json:"result,omitempty"`
@@ -157,18 +158,22 @@ func (h *Engine) Handle(ctx context.Context, e harnessstore.Event, tx harnesssto
 			// Delivery ends here; the stream and the answer follow from Step.
 			return capsuleprotocol.WorkingResult(), nil
 		}
-		llm := len(in.Content) == 1 && strings.HasPrefix(in.Content[0].Text, "/llm ")
+		var command, args string
+		if len(in.Content) == 1 {
+			command, args, _ = strings.Cut(in.Content[0].Text, " ")
+		}
+		llm := command == "/llm" || command == "/llm-stream"
 		if llm || len(in.Attachments) > 0 {
 			if _, ok := h.platform.(WorkPlatform); !ok {
 				return ownerText("The platform channel is unavailable; files and model cannot be reached.")
 			}
 			iw := invocationWork{OperationID: in.OperationID, Attachments: in.Attachments}
 			if llm {
-				alias, prompt, _ := strings.Cut(strings.TrimSpace(strings.TrimPrefix(in.Content[0].Text, "/llm ")), " ")
+				alias, prompt, _ := strings.Cut(strings.TrimSpace(args), " ")
 				if alias == "" || strings.TrimSpace(prompt) == "" {
-					return ownerText("Usage: /llm <alias> <text>.")
+					return ownerText("Usage: " + command + " <alias> <text>.")
 				}
-				iw.Alias, iw.Prompt = alias, strings.TrimSpace(prompt)
+				iw.Alias, iw.Prompt, iw.ModelStream = alias, strings.TrimSpace(prompt), command == "/llm-stream"
 			}
 			if err = enqueue(ctx, tx, e, work{Kind: "invocation", Invocation: &iw}); err != nil {
 				return nil, err
@@ -318,6 +323,9 @@ func (h *Engine) Step(ctx context.Context) (bool, error) {
 	timeout := 15 * time.Second
 	if w.Kind == "invocation" {
 		timeout = 4 * time.Minute // attachments and a model call
+		if w.Invocation != nil && w.Invocation.ModelStream {
+			timeout = capsuleprotocol.LLMCallTimeout + 30*time.Second
+		}
 	}
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -401,7 +409,7 @@ func (h *Engine) completeInvocation(ctx context.Context, id string, subjects []s
 			clear(data)
 		}
 		if iw.Alias != "" {
-			r, err := wp.CompleteLLM(ctx, id+"/llm", capsuleprotocol.LLMRequest{Alias: iw.Alias,
+			r, err := h.modelAnswer(ctx, wp, iw, id+"/llm", capsuleprotocol.LLMRequest{Alias: iw.Alias,
 				Messages: []capsuleprotocol.LLMMessage{{Role: "user", Content: iw.Prompt}}, MaxTokens: 256})
 			switch {
 			case err != nil && transient(err):

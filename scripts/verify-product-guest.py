@@ -42,6 +42,7 @@ REQUIRED_WORKER = {"TestProductWorkerProvisioningAndEncryptedWake", "TestProduct
     "TestProductWorkerTenantRunsAPythonHarness", "TestProductWorkerTenantRunsAnAdaptedAgent", "TestProductWorkerTwoOrganizationsStayIsolated",
     "TestProductWorkerTenantAgentsTalkOverA2A", "TestProductWorkerNightlyVolumeArchives", "TestProductWorkerRestoresAgentFromArchive",
     "TestProductWorkerCarriesTheOutputStreamAndTheCancellation",
+    "TestProductWorkerCarriesALongModelStreamToTheGuest",
     "TestProductWorkerBoundsTheGuestTmp", "TestProductWorkerDeliversJSONContent", "TestProductWorkerEnforcesCapabilities",
     "TestProductWorkerDriveCeilingsHoldAgainstAFloodingGuest", "TestProductWorkerStopsBootingAGuestThatCrashesAtBoot",
     "TestProductWorkerCPUCeilingHoldsAgainstABurningGuest", "TestProductWorkerMemoryCeilingHoldsAgainstAGuestThatEatsMemory",

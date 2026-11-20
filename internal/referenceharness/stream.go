@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"iter"
 	"strconv"
 	"strings"
 	"time"
@@ -149,4 +150,63 @@ func (h *Engine) streamOutput(ctx context.Context, op string, deltas []string) e
 		return errStreamCanceled
 	}
 	return nil
+}
+
+type streamingModel interface {
+	CompleteLLMStream(context.Context, string, capsuleprotocol.LLMRequest) iter.Seq2[capsuleprotocol.LLMStreamFrame, error]
+}
+
+func (h *Engine) modelAnswer(ctx context.Context, platform WorkPlatform, iw invocationWork, key string, request capsuleprotocol.LLMRequest) (capsuleprotocol.LLMResult, error) {
+	if !iw.ModelStream {
+		return platform.CompleteLLM(ctx, key, request)
+	}
+	var result capsuleprotocol.LLMResult
+	model, ok := platform.(streamingModel)
+	if !ok {
+		return result, &capsuleprotocol.PlatformError{Code: "capability_denied"}
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var out outputStream
+	if h.openStream != nil {
+		// Output deltas are optional. Model completion also works without stream.output.
+		out, _ = h.openStream(ctx, iw.OperationID)
+		if out != nil {
+			defer out.Abort()
+			go func(s outputStream) {
+				select {
+				case <-s.Canceled():
+					cancel()
+				case <-ctx.Done():
+				}
+			}(out)
+		}
+	}
+	var answer strings.Builder
+	for frame, err := range model.CompleteLLMStream(ctx, key, request) {
+		if err != nil {
+			return result, err
+		}
+		switch frame.Type {
+		case "text":
+			if answer.Len()+len(frame.Text) > capsuleprotocol.MaxMessageContentBytes {
+				return result, &capsuleprotocol.PlatformError{Code: "invalid"}
+			}
+			answer.WriteString(frame.Text)
+			if out != nil && out.Delta(frame.Text) != nil {
+				out.Abort()
+				out = nil
+			}
+		case "end":
+			if frame.Outcome != "completed" {
+				return result, &capsuleprotocol.PlatformError{Code: "outcome_unknown"}
+			}
+			result.Text = answer.String()
+			if out != nil {
+				_, _ = out.Close(ctx)
+			}
+			return result, nil
+		}
+	}
+	return result, &capsuleprotocol.PlatformError{Code: "outcome_unknown"}
 }

@@ -17,7 +17,7 @@ import (
 
 // localStreamBridge serves the guest's platform bridge in front of a host
 // whose streams api keeps, and returns the harness's local client.
-func localStreamBridge(t *testing.T, api *streamFake) (*PlatformClient, Identity, string) {
+func localStreamBridge(t *testing.T, api PlatformAPI) (*PlatformClient, Identity, string) {
 	t.Helper()
 	remote, host, _, _ := platformFixtureFor(t, api)
 	s, err := NewLocalPlatformServer(remote)

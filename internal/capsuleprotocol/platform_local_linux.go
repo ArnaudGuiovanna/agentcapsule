@@ -96,3 +96,10 @@ func NewLocalPlatformClient(id Identity, path string) (*PlatformClient, error) {
 	}
 	return &PlatformClient{client: c}, nil
 }
+
+func (r remotePlatform) ForwardLLMStream(ctx context.Context, key string, in LLMForward, send func(LLMStreamFrame) error) error {
+	return relayModelStream(r.client.ForwardLLMStream(ctx, key, in), send)
+}
+func (r remotePlatform) CompleteLLMStream(ctx context.Context, key string, in LLMRequest, send func(LLMStreamFrame) error) error {
+	return relayModelStream(r.client.CompleteLLMStream(ctx, key, in), send)
+}

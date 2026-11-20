@@ -69,7 +69,7 @@ func Intersect(sets ...[]string) []string {
 // messages) and reading an invocation's own files.
 func ForRoute(path string) string {
 	switch path {
-	case "/v1/llm/complete", "/v1/llm/forward":
+	case "/v1/llm/complete", "/v1/llm/forward", "/v1/llm/complete/stream", "/v1/llm/forward/stream":
 		return LLMInvoke
 	case "/v1/agent-requests":
 		return AgentsDelegate

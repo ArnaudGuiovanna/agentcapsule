@@ -246,6 +246,14 @@ func (a platformAPI) CompleteInvocation(ctx context.Context, key string, in caps
 	return out, platformError(err)
 }
 
+func gatewayRequest(in capsuleprotocol.LLMRequest) llmgateway.Request {
+	q := llmgateway.Request{MaxTokens: in.MaxTokens, Temperature: in.Temperature}
+	for _, m := range in.Messages {
+		q.Messages = append(q.Messages, llmgateway.Message{Role: m.Role, Content: m.Content})
+	}
+	return q
+}
+
 // CompleteLLM serves a model call from the running capsule. Placement and
 // reservation happen under host admission; the provider call itself does not, so
 // a slow model never delays a wake, sleep or delete.
@@ -259,11 +267,7 @@ func (a platformAPI) CompleteLLM(ctx context.Context, key string, in capsuleprot
 	if svc == nil {
 		return capsuleprotocol.LLMResult{}, platformError(controlplane.ErrUnavailable)
 	}
-	q := llmgateway.Request{MaxTokens: in.MaxTokens, Temperature: in.Temperature}
-	for _, m := range in.Messages {
-		q.Messages = append(q.Messages, llmgateway.Message{Role: m.Role, Content: m.Content})
-	}
-	res, err := svc.CallFromVM(ctx, a.caller, key, in.Alias, q, a.withApplication)
+	res, err := svc.CallFromVM(ctx, a.caller, key, in.Alias, gatewayRequest(in), a.withApplication)
 	if err != nil {
 		return capsuleprotocol.LLMResult{}, platformError(err)
 	}

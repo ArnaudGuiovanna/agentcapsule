@@ -289,7 +289,7 @@ those of `/v1/llm/complete`. In addition:
   `openai_compatible` provider, an `anthropic` body only to an `anthropic`
   provider. Otherwise the code is `dialect`, and the reservation is released.
 - **Refused before any reservation** (`invalid`):
-  - a stream;
+  - `stream: true` on the unary route (use `forward/stream` for a stream);
   - several choices (`n` > 1);
   - an output cap above 1,000,000 tokens;
   - an Anthropic body without `max_tokens`;
@@ -308,3 +308,26 @@ provider selected for MVP live qualification; it does not qualify Anthropic’s
 hosted API. Evidence: `_evidence/pi-ghcr-local-20261119/verification.json`
 (the `gateway-gemma` and `metering-gemma` phases; their model is recorded
 as the local Ministral profile despite the historical phase names).
+
+
+## Model streams on the guest socket
+
+Harnesses in any language can POST JSON to the platform Unix socket.
+`/v1/llm/forward/stream` takes the identity, key and forward request used by
+`/v1/llm/forward`, with `stream: true` inside the native body.
+`/v1/llm/complete/stream` accepts the envelope of `/v1/llm/complete`.
+Both require `llm.invoke`. Read the HTTP 200 response as incremental
+`application/x-ndjson` with at most 64 KiB per line including LF.
+
+The initial `start` echoes the channel protocol and the guest identity.
+Subsequent frames have consecutive sequence numbers beginning at one.
+Forward frames carry an `event` object with native JSON in `data` and the
+optional SSE event `name`. Complete frames carry a `text` fragment.
+The last frame has type `end`. A completed end carries exact input and output
+tokens and the soft budget flag. A cut after the first event yields
+`outcome_unknown`. Losing the channel before seeing the end also leaves the
+outcome unknown. A refusal before the stream starts uses the ordinary JSON
+platform error. A settled or uncertain key never reruns the provider.
+The Go reference harness demonstrates delivery before completion with
+`/llm-stream <alias> <prompt>`. It publishes each text fragment when the
+`stream.output` capability is available and files the final answer separately.
