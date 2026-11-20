@@ -618,8 +618,27 @@ call per stream. The frames, the reasons a stream closes and the limits are in
   truncated: nothing more is stored, and the outcome is untouched.
 - **Cancellation.** Canceling the invocation, or deleting its agent, sends
   `cancel` then `closed` to the harness's open stream.
-- The client's side, `GET /v1/invocations/{id}/events`, comes with lot 4 of
-  [plan-streaming.md](../plan-streaming.md).
+
+
+### Following an invocation
+
+Open `GET /v1/invocations/{id}/events` with an organization credential and
+`Accept: text/event-stream`. Delegated and service bearers may also use
+`GET /v1/operations/{id}/events`. The requester needs the
+`agent:content:read` scope and a current assignment granting `read_content`.
+The stream sends `state` first, then stored `delta` and `step` events in
+sequence. A harness that sends no output still produces `state` and `end`.
+
+On reconnect, send the last received event ID in `Last-Event-ID`
+(`<attempt>:<seq>`). A `reset` invalidates the old attempt's output.
+`truncated` marks the end of stored frames for that attempt. A final
+`end` includes the state and, for a completed invocation, the result up to
+32 KiB. If `result_available` is true, fetch `/result` separately. Reading
+an inline result starts its retention clock.
+
+The server rechecks access on policy changes and every ten seconds. A
+`revoked` event ends the subscription. Idle streams receive a heartbeat
+every 15 seconds. Reconnect after the server's 15-minute deadline.
 
 ## Directory publication (INT-02)
 

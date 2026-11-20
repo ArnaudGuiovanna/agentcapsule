@@ -39,7 +39,8 @@ volume archives and, on the standby host, its replay.
 | Metric | Type | Labels | Meaning |
 | --- | --- | --- | --- |
 | `agentcapsule_api_requests_total` | counter | `route`, `method`, `status_class` | API requests, by route pattern (`/v1/agents/{id}`), never by the IDs in the path |
-| `agentcapsule_api_request_duration_seconds` | histogram | `route` | API latency |
+| `agentcapsule_api_request_duration_seconds` | histogram | `route` | API latency, excluding invocation event subscriptions |
+| `agentcapsule_api_streams_active` | gauge | — | Open invocation event subscriptions. Both events routes count once in `agentcapsule_api_requests_total` and the request log when the subscription closes |
 | `agentcapsule_api_access_revocations_pending` | gauge | — | Access revocations recorded with the authority service but not confirmed: the standby does not hold their record yet ([ADR 006](adr/006-authority-service.md) wave 5). Above 0 in degraded mode; it falls once the standby catches up and the API confirms them (every 5 seconds) |
 | `agentcapsule_api_access_revocation_oldest_pending_seconds` | gauge | — | How long the oldest pending revocation has waited; 0 when none. Long after degraded mode ended, the standby refuses the records: a standby of an older release ([recovery.md](recovery.md#pending-revocations)) |
 | `agentcapsule_worker_jobs_total` | counter | `kind`, `outcome` | Durable jobs processed: `done` or `retried` |

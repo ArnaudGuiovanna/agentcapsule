@@ -12,7 +12,7 @@ content), [ADR 003](003-restore-rpo.md) and
 [ADR 017](017-capacity-queue-and-dead-letter-replay.md) (reruns and replays
 under the same identifier), the model
 [invocation_completion.qnt](../../spec/invocation_completion.qnt), the
-drafts [022-streaming-api.yaml](../../openapi/drafts/022-streaming-api.yaml)
+[served API contract](../../openapi/openapi.yaml)
 and [022-streaming-platform-channel.yaml](../../openapi/drafts/022-streaming-platform-channel.yaml).
 
 ## Context
@@ -875,7 +875,7 @@ reachable state (462, depth 10) keeps `safety`.
 
 | Draft | Holds | Moves to |
 |---|---|---|
-| [openapi/drafts/022-streaming-api.yaml](../../openapi/drafts/022-streaming-api.yaml) | the two events routes, their events, the two problem codes, `stream.output` in `Capability` | lot 4 merges it into `openapi/openapi.yaml` (and `stream.output` into `TemplateSpec.capabilities`) when the routes are served, with their rows of `TestRBACMatrix`, then deletes the draft. `TestOpenAPIDescribesExactlyTheServedRoutes` reads only `openapi/openapi.yaml`, so the draft cannot break it before |
+| [openapi/openapi.yaml](../../openapi/openapi.yaml) | The public subscriptions, their events, problem codes and capability | Served by the API and exercised by the RBAC matrix |
 | [openapi/drafts/022-streaming-platform-channel.yaml](../../openapi/drafts/022-streaming-platform-channel.yaml) | the three channel routes and their frames | the channel has no OpenAPI document: lot 2 writes the model routes into [api/llm.md](../api/llm.md) (sections "VM bridge" and "Native requests from the model endpoint"), lot 3 the output stream into [api/agents-assignments.md](../api/agents-assignments.md) ("Deferred result: the `working` state", "Capabilities") and [guest/capsule-control.md](../guest/capsule-control.md) ("Capabilities on the platform channel"), as prose and examples in those pages' style; the last of them deletes the draft |
 
 Both drafts pass `openapi_spec_validator --schema 3.1`.

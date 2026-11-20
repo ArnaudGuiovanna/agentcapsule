@@ -186,6 +186,8 @@ only its own.
 | `GET /v1/agents/{id}/invocations` (a requester sees only its own) | yes | yes | yes | yes | yes | filtered | 404 | 404 | yes | 404 | 401 | 401 | 400 |
 | `GET /v1/invocations/{id}` (the caller's own, else the user's) | yes | yes | yes | yes | yes | 404 | 404 | 404 | yes | 404 | 401 | 401 | 404 |
 | `GET /v1/operations/{id}` (the caller's own, else the user's) | yes | yes | yes | yes | yes | 404 | 404 | 404 | yes | 404 | 401 | 401 | 403 |
+| `GET /v1/invocations/{id}/events` (the caller's own, else the user's) | 404 | 404 | 404 | 404 | yes | 404 | 404 | 404 | 404 | 404 | 401 | 401 | 403 |
+| `GET /v1/operations/{id}/events` (the caller's own, else the user's) | 404 | 404 | 404 | 404 | yes | 404 | 404 | 404 | 404 | 404 | 401 | 401 | 403 |
 | `GET /v1/invocations/{id}/result` (the caller's own, else the user's) | 404 | 404 | 404 | 404 | yes | 404 | 404 | 404 | 404 | 404 | 401 | 401 | 403 |
 | `GET /v1/operations/{id}/result` (the caller's own, else the user's) | 404 | 404 | 404 | 404 | yes | 404 | 404 | 404 | 404 | 404 | 401 | 401 | 403 |
 | `POST /v1/invocations/{id}/cancel` (a disposable invocation of the user) | 404 | 404 | 404 | 404 | yes | 404 | 404 | 404 | 404 | 404 | 401 | 401 | 404 |

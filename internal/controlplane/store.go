@@ -102,7 +102,11 @@ func (s *Store) begin(ctx context.Context) (pgx.Tx, error) {
 // it exclusively, so its current catalogue check cannot race a revocation's
 // intent/census commit. Never upgrade a shared transaction or hold it over RPC.
 func (s *Store) beginCensus(ctx context.Context, exclusive bool) (pgx.Tx, error) {
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	return s.beginWithOptions(ctx, exclusive, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+}
+
+func (s *Store) beginWithOptions(ctx context.Context, exclusive bool, options pgx.TxOptions) (pgx.Tx, error) {
+	tx, err := s.pool.BeginTx(ctx, options)
 	if err != nil {
 		return nil, err
 	}

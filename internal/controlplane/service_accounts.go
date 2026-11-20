@@ -110,7 +110,7 @@ func (s *Store) authenticateService(ctx context.Context, secret string) (Princip
 // access to it excludes a concurrent revocation until this transaction ends.
 func resolveService(ctx context.Context, tx pgx.Tx, b serviceBinding) (CurrentOrganization, error) {
 	var current CurrentOrganization
-	o, err := scanOrganization(tx.QueryRow(ctx, `SELECT id,name,status,policy_version,created_at FROM organizations WHERE id=$1 FOR SHARE`, b.tenantID))
+	o, err := scanOrganization(tx.QueryRow(ctx, `SELECT id,name,status,policy_version,created_at FROM organizations WHERE id=$1`+authorityLock(tx, " FOR SHARE"), b.tenantID))
 	if errors.Is(err, ErrNotFound) || (err == nil && o.Status != "active") {
 		return current, ErrAuthentication
 	}
@@ -124,8 +124,7 @@ func resolveService(ctx context.Context, tx pgx.Tx, b serviceBinding) (CurrentOr
         JOIN principals p ON (p.tenant_id,p.id)=(t.tenant_id,t.principal_id)
         JOIN memberships m ON (m.tenant_id,m.principal_id)=(p.tenant_id,p.id)
         WHERE t.id=$1 AND t.tenant_id=$2 AND p.kind='service'
-          AND t.revoked_at IS NULL AND t.expires_at>clock_timestamp()
-        FOR SHARE OF t,p,m`, b.tokenID, b.tenantID).Scan(&current.PrincipalID, &current.DisplayName, &status, &current.Role, &membership)
+          AND t.revoked_at IS NULL AND t.expires_at>clock_timestamp()`+authorityLock(tx, " FOR SHARE OF t,p,m"), b.tokenID, b.tenantID).Scan(&current.PrincipalID, &current.DisplayName, &status, &current.Role, &membership)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return CurrentOrganization{}, ErrAuthentication
 	}

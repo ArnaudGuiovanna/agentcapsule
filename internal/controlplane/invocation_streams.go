@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -426,12 +427,15 @@ type StreamChunk struct {
 type OutputStreamView struct {
 	// Status is the operation's status (PENDING, RUNNING, SUCCEEDED, FAILED,
 	// CANCELED); Working is true while the agent works on it.
-	Status    string        `json:"status"`
-	Working   bool          `json:"working"`
-	Attempt   int           `json:"attempt"`
-	LastSeq   int64         `json:"last_seq"`
-	Truncated bool          `json:"truncated"`
-	Chunks    []StreamChunk `json:"chunks"`
+	State           string        `json:"state"`
+	ErrorCode       string        `json:"error_code,omitempty"`
+	ResultAvailable bool          `json:"result_available"`
+	Status          string        `json:"status"`
+	Working         bool          `json:"working"`
+	Attempt         int           `json:"attempt"`
+	LastSeq         int64         `json:"last_seq"`
+	Truncated       bool          `json:"truncated"`
+	Chunks          []StreamChunk `json:"chunks"`
 }
 
 // ReadOutputStream opens, for the principal who requested the invocation and
@@ -441,82 +445,103 @@ type OutputStreamView struct {
 // that no result needs to exist. Anyone else gets ErrNotFound; a credential
 // without agent:content:read, ErrForbidden.
 func (c *AgentCatalog) ReadOutputStream(ctx context.Context, p Principal, op string, after int64, limit int) (OutputStreamView, error) {
+	return c.ReadOutputStreamPage(ctx, p, op, 0, after, limit)
+}
+
+// snapshotTx is used only by read-only REPEATABLE READ projections. They see
+// authority and content at the same snapshot. Mutating callers keep all the
+// normal row locks until commit.
+type snapshotTx struct{ pgx.Tx }
+
+func authorityLock(tx pgx.Tx, clause string) string {
+	if _, snapshot := tx.(snapshotTx); snapshot {
+		return ""
+	}
+	return clause
+}
+
+// ReadOutputStreamPage reads state, rights and sealed frames at one database
+// snapshot. A cursor from another attempt starts at its replacement's first
+// frame. The caller never holds a connection while writing to the subscriber.
+func (c *AgentCatalog) ReadOutputStreamPage(ctx context.Context, p Principal, op string, attempt int, after int64, limit int) (OutputStreamView, error) {
 	var out OutputStreamView
-	if p.Kind != "tenant" || !validOrganizationText(op, 100) || after < 0 || limit < 1 || limit > 64 {
+	if !validOrganizationText(op, 100) || attempt < 0 || after < 0 || limit < 1 || limit > 64 {
 		return out, ErrInput
+	}
+	if p.Kind != "tenant" {
+		return out, ErrForbidden
 	}
 	if c.transit == nil {
 		return out, ErrTransitKey
 	}
-	tx, err := c.accounts.store.begin(ctx)
+	base, err := c.accounts.store.beginWithOptions(ctx, false, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return out, err
 	}
+	tx := snapshotTx{base}
 	defer rollback(tx)
 	if _, err = authorizeTenant(ctx, tx, p, authorization.ScopeAgentContentRead); err != nil {
 		return out, err
 	}
-	var agentID, phase string
+	var agentID, phase, closeReason string
+	var waiting, lost bool
 	err = tx.QueryRow(ctx, `SELECT o.agent_id,a.phase,o.status,i.working_since IS NOT NULL AND i.completion_key IS NULL,i.attempt,
-            coalesce(s.attempt=i.attempt AND s.truncated,false),CASE WHEN s.attempt=i.attempt THEN s.last_seq ELSE 0 END
+            coalesce(s.attempt=i.attempt AND s.truncated,false),CASE WHEN s.attempt=i.attempt THEN s.last_seq ELSE 0 END,
+            i.close_reason,i.run_at IS NOT NULL AND i.released_at IS NULL,`+lostCondition+`,
+            CASE WHEN rerun.state='skipped' AND `+lostCondition+` THEN rerun.skip_reason ELSE o.error_code END,
+            EXISTS(SELECT 1 FROM transit_payloads t WHERE t.id=i.result_payload_id AND t.purged_at IS NULL
+                AND (t.purge_after IS NULL OR t.purge_after>clock_timestamp()))
         FROM owner_instructions i JOIN platform_operations o ON o.id=i.operation_id JOIN agents a ON a.id=o.agent_id
-        LEFT JOIN invocation_streams s ON s.operation_id=i.operation_id
+        LEFT JOIN invocation_streams s ON s.operation_id=i.operation_id `+rerunJoins+`
         WHERE o.id=$1 AND a.tenant_id=$2 AND o.requested_by_principal_id=$3 AND o.kind='instruction'`, op, p.TenantID, p.ID).
-		Scan(&agentID, &phase, &out.Status, &out.Working, &out.Attempt, &out.Truncated, &out.LastSeq)
+		Scan(&agentID, &phase, &out.Status, &out.Working, &out.Attempt, &out.Truncated, &out.LastSeq, &closeReason, &waiting, &lost, &out.ErrorCode, &out.ResultAvailable)
 	if errors.Is(err, pgx.ErrNoRows) || err == nil && phase != "LIVE" {
 		return OutputStreamView{}, ErrNotFound
 	}
 	if err != nil {
 		return OutputStreamView{}, err
 	}
-	perms, err := effectiveAgentPermissions(ctx, tx, p.TenantID, p.ID, agentID)
+	out.State = invocationState(out.Status, closeReason, waiting, lost)
+	if err = mayReadAgentContent(ctx, tx, p, agentID); err != nil {
+		return OutputStreamView{}, err
+	}
+	if attempt != 0 && attempt != out.Attempt {
+		after = 0
+	}
+	rows, err := tx.Query(ctx, `SELECT c.first_seq,c.last_seq,p.id,p.kind,p.ref_id,p.key_id,p.content_hash,p.ciphertext,k.key_hash,
+            (SELECT array_agg(tp.agent_id ORDER BY tp.agent_id) FROM transit_parties tp WHERE tp.payload_id=p.id),
+            (SELECT array_agg(tp.owner_user_id ORDER BY tp.agent_id) FROM transit_parties tp WHERE tp.payload_id=p.id)
+        FROM invocation_stream_chunks c JOIN transit_payloads p ON c.payload_id=p.id JOIN transit_keys k ON k.id=p.key_id
+        WHERE c.operation_id=$1 AND c.attempt=$2 AND c.last_seq>$3 AND p.purged_at IS NULL
+          AND (p.purge_after IS NULL OR p.purge_after>clock_timestamp()) ORDER BY c.first_seq LIMIT $4`, op, out.Attempt, after, limit)
 	if err != nil {
 		return OutputStreamView{}, err
 	}
-	if !authorization.CanAccessAssignedAgent(tenantAccess(p), authorization.ReadAgentContent, toPermissions(perms)) {
-		return OutputStreamView{}, ErrNotFound
-	}
-	rows, err := tx.Query(ctx, `SELECT first_seq,last_seq,payload_id FROM invocation_stream_chunks
-        WHERE operation_id=$1 AND attempt=$2 AND last_seq>$3 ORDER BY first_seq LIMIT $4`, op, out.Attempt, after, limit)
-	if err != nil {
-		return OutputStreamView{}, err
-	}
-	type stored struct {
-		first, last int64
-		payload     string
-	}
-	chunks, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (stored, error) {
-		var s stored
-		return s, r.Scan(&s.first, &s.last, &s.payload)
+	defer rows.Close()
+	out.Chunks, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (StreamChunk, error) {
+		ch := StreamChunk{Attempt: out.Attempt}
+		b := transitBinding{Version: 1, Parties: []transitParty{{agentID, p.ID}}}
+		var ciphertext, keyHash []byte
+		var agents, owners []string
+		if err := row.Scan(&ch.FirstSeq, &ch.LastSeq, &b.ID, &b.Kind, &b.Reference, &b.KeyID, &b.Hash, &ciphertext, &keyHash, &agents, &owners); err != nil {
+			return ch, err
+		}
+		if !slices.Equal(agents, []string{agentID}) || !slices.Equal(owners, []string{p.ID}) {
+			return ch, ErrNotFound
+		}
+		if b.Kind != "stream_chunk" || b.Reference != fmt.Sprintf("%s/%d/%d", op, out.Attempt, ch.FirstSeq) {
+			return ch, ErrTransitPayload
+		}
+		key, ok := c.transit.keys[b.KeyID]
+		if !ok || !bytes.Equal(keyHash, key.hash[:]) {
+			return ch, ErrTransitKey
+		}
+		body, err := openTransitPayload(key, b, ciphertext)
+		ch.Frames = body
+		return ch, err
 	})
 	if err != nil {
 		return OutputStreamView{}, err
 	}
-	out.Chunks = []StreamChunk{}
-	defer func() {
-		if err != nil {
-			for _, ch := range out.Chunks {
-				clear(ch.Frames)
-			}
-		}
-	}()
-	for _, ch := range chunks {
-		var parties []transitParty
-		if parties, err = payloadParties(ctx, tx, ch.payload); err != nil {
-			return OutputStreamView{}, err
-		}
-		if !slices.Equal(parties, []transitParty{{agentID, p.ID}}) {
-			err = ErrNotFound
-			return OutputStreamView{}, err
-		}
-		var body []byte
-		if body, err = c.transit.read(ctx, tx, ch.payload, parties); err != nil {
-			return OutputStreamView{}, err
-		}
-		out.Chunks = append(out.Chunks, StreamChunk{Attempt: out.Attempt, FirstSeq: ch.first, LastSeq: ch.last, Frames: body})
-	}
-	if err = commit(ctx, tx); err != nil {
-		return OutputStreamView{}, err
-	}
-	return out, nil
+	return out, commit(ctx, tx)
 }

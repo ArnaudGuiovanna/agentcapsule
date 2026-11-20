@@ -880,6 +880,20 @@ func (c *AgentCatalog) admitTenantInvocation(ctx context.Context, p Principal, i
 // the agent. Roles and later assignments of other members never open it. While
 // the invocation is lost, the result the database still holds stays readable.
 func (c *AgentCatalog) instructionResultTenant(ctx context.Context, p Principal, operation string) (json.RawMessage, error) {
+	return c.tenantResult(ctx, p, operation, 0)
+}
+
+// StreamResult returns a completed attempt's result when it fits the inline
+// SSE limit. A larger result is fetched separately and keeps its retention
+// clock until that fetch. A different attempt requires a fresh stream page.
+func (c *AgentCatalog) StreamResult(ctx context.Context, p Principal, operation string, attempt int) (json.RawMessage, error) {
+	if attempt < 1 {
+		return nil, ErrInput
+	}
+	return c.tenantResult(ctx, p, operation, attempt)
+}
+
+func (c *AgentCatalog) tenantResult(ctx context.Context, p Principal, operation string, attempt int) (json.RawMessage, error) {
 	if !validOrganizationText(operation, 100) {
 		return nil, ErrInput
 	}
@@ -897,7 +911,8 @@ func (c *AgentCatalog) instructionResultTenant(ctx context.Context, p Principal,
         JOIN agents a ON a.id=o.agent_id
         JOIN transit_payloads payload ON payload.id=i.result_payload_id AND payload.kind='instruction_result' AND payload.ref_id=o.id`+rerunJoins+`
         WHERE o.id=$1 AND a.tenant_id=$2 AND o.requested_by_principal_id=$3 AND o.kind='instruction'
-          AND (o.status='SUCCEEDED' OR `+lostCondition+`) AND i.result_payload_id IS NOT NULL`, operation, p.TenantID, p.ID).Scan(&payload, &agentID)
+          AND (o.status='SUCCEEDED' OR `+lostCondition+`) AND i.result_payload_id IS NOT NULL
+          AND ($4::integer=0 OR (i.attempt=$4 AND o.status='SUCCEEDED' AND NOT `+lostCondition+`))`, operation, p.TenantID, p.ID, attempt).Scan(&payload, &agentID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -925,6 +940,19 @@ func (c *AgentCatalog) instructionResultTenant(ctx context.Context, p Principal,
 	if !json.Valid(body) {
 		clear(body)
 		return nil, ErrTransitPayload
+	}
+	if attempt > 0 {
+		encoded, err := json.Marshal(json.RawMessage(body))
+		if err != nil {
+			clear(body)
+			return nil, err
+		}
+		tooLarge := len(encoded) > 32<<10
+		clear(encoded)
+		if tooLarge {
+			clear(body)
+			return nil, commit(ctx, tx)
+		}
 	}
 	if err = c.transit.delivered(ctx, tx, payload); err != nil {
 		clear(body)

@@ -418,6 +418,10 @@ func (t *Transit) read(ctx context.Context, tx pgx.Tx, id string, parties []tran
 	if err != nil {
 		return nil, err
 	}
+	return openTransitPayload(k, binding, encrypted)
+}
+
+func openTransitPayload(k transitKey, binding transitBinding, encrypted []byte) ([]byte, error) {
 	if len(encrypted) < k.cipher.NonceSize()+k.cipher.Overhead() {
 		return nil, ErrTransitPayload
 	}
