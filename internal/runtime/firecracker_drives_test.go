@@ -392,6 +392,62 @@ func TestCorporaAreCheckedWhenRecorded(t *testing.T) {
 	}
 }
 
+// A running VM keeps the corpora its boot attached: the host's record of
+// them changes only once it has stopped, and the next boot attaches the new
+// record (bindingAppliesAtNextBootTest of spec/corpus_lifecycle.qnt, the
+// runtime's half).
+func TestCorporaChangeOnlyBetweenBoots(t *testing.T) {
+	h, a, _ := limitsFixture(t)
+	cache := filepath.Join(h.root, "corpora")
+	if err := os.Mkdir(cache, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	finance := corpusImage(t, cache, "finance.ext4", financeUUID, 64<<10)
+	handbook := corpusImage(t, cache, "handbook.ext4", handbookUUID, 64<<10)
+	a.Corpora, a.Generation = []CorpusImage{finance}, 1
+	a.Run.Socket = filepath.Join(h.jail(a.Run), "vsock")
+	if err := h.save(&hostRegistry{Version: 2, Agents: map[string]*HostAgent{"a": a}}); err != nil {
+		t.Fatal(err)
+	}
+	mounted := func(run *VMRun, want CorpusImage) {
+		t.Helper()
+		jailed, err := os.Stat(filepath.Join(h.jail(run), "corpus0.ext4"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		image, err := os.Stat(want.Path)
+		if err != nil || !os.SameFile(jailed, image) {
+			t.Fatal("the VM's corpus drive is not", want.Mount, err)
+		}
+	}
+	_, corpora := preparedCorpora(t, h, a)
+	if corpora.Corpora[0].UUID != financeUUID {
+		t.Fatal("first boot", corpora)
+	}
+	if err := h.ReplaceCorpora(t.Context(), "a", []CorpusImage{handbook}); !errors.Is(err, ErrDrivesInUse) {
+		t.Fatal("a running VM's corpora were replaced", err)
+	}
+	if err := h.ReplaceCorpora(t.Context(), "a", []CorpusImage{finance}); err != nil {
+		t.Fatal("an unchanged binding must be accepted while running", err)
+	}
+	mounted(a.Run, finance)
+	// The VM stops; the new binding is recorded, and the next boot has it.
+	if err := h.locked(t.Context(), func(r *hostRegistry) error { r.Agents["a"].Run = nil; return h.save(r) }); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.ReplaceCorpora(t.Context(), "a", []CorpusImage{handbook}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.locked(t.Context(), func(r *hostRegistry) error { a = r.Agents["a"]; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	a.Run = &VMRun{Incarnation: 1, ID: "fedcba9876543210", Generation: 2, Phase: "STARTING"}
+	if _, corpora = preparedCorpora(t, h, a); corpora.Corpora[0].UUID != handbookUUID || corpora.Corpora[0].Mount != "handbook" {
+		t.Fatal("next boot", corpora)
+	}
+	mounted(a.Run, handbook)
+}
+
 // Build drives are raw, 4 KiB-aligned files beside the jails, each once.
 func TestBuildDrivesAreCheckedWhenRecorded(t *testing.T) {
 	h, a, _ := limitsFixture(t)
