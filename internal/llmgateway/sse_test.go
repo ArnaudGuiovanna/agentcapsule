@@ -52,6 +52,16 @@ func TestSSEReaderFollowsTheFormat(t *testing.T) {
 	}
 }
 
+// A stream may start with a UTF-8 byte order mark. Only that first mark is
+// skipped: one later in the stream is ordinary input.
+func TestSSEReaderHandlesAnInitialByteOrderMark(t *testing.T) {
+	text := "\uFEFFdata: first\n\n\uFEFFdata: ignored\n\ndata: last\n\n"
+	got, _, err := readAll(t, text)
+	if !errors.Is(err, io.EOF) || len(got) != 2 || got[0].data != "first" || got[1].data != "last" {
+		t.Fatalf("events = %v, err = %v", got, err)
+	}
+}
+
 // A line is at most 64 KiB and an event's data at most 60 KiB, its lines
 // joined: past either the stream is cut, so that one event always fits in a
 // channel frame.
