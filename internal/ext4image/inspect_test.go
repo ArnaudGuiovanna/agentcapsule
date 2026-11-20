@@ -162,7 +162,7 @@ func TestListRefusesWhatItCannotParse(t *testing.T) {
 		t.Fatal(err)
 	}
 	sb := sandbox.Options{TestTools: true}
-	good := `echo '/2/040755/0/0/.//'; echo '/2/040755/0/0/..//'; echo '/12/100644/0/0/a b/3/'`
+	good := `echo '/2/040755/0/0/.//'; echo '/2/040755/0/0/..//'; echo '/12/100644/0/0/a b/3/'; echo '/0/000000/0/0//0/'; echo`
 	entries, err := List(t.Context(), sb, fakeDebugfs(t, good), image, "/")
 	if err != nil || len(entries) != 1 || entries[0].Name != "a b" || entries[0].Size != 3 || !entries[0].IsRegular() {
 		t.Fatal(entries, err)

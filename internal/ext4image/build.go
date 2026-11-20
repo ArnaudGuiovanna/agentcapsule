@@ -6,8 +6,10 @@
 package ext4image
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -30,13 +32,18 @@ type Spec struct {
 	// UUID is the filesystem's UUID and its directory hash seed.
 	UUID string
 	// Options are extra mkfs.ext4 options, given before -E: features,
-	// block size, inode count.
-	Options []string
-	Paths   []string
+	// block size, inode count. Extended are extra -E options, after
+	// root_owner and hash_seed: mkfs.ext4 reads only its last -E.
+	Options  []string
+	Extended []string
+	Paths    []string
 	// Modes sets the mode (type and permission bits, as stat's st_mode) of
 	// the paths it names, after mkfs.ext4 copied Dir's.
 	Modes map[string]uint32
 }
+
+// ErrFull: the filesystem's size or inode count is too small for the tree.
+var ErrFull = errors.New("the image is too small for its tree")
 
 // SeedUUID formats the first 16 bytes of seed as a UUID, as BuildRootfs
 // derives a harness image's from its name and version.
@@ -55,10 +62,14 @@ func Build(ctx context.Context, s Spec) error {
 	}
 	env := append(os.Environ(), "E2FSPROGS_FAKE_TIME=1", "LC_ALL=C")
 	args := append([]string{"-q", "-F", "-t", "ext4", "-L", s.Label, "-U", s.UUID}, s.Options...)
-	args = append(args, "-E", "root_owner=0:0,hash_seed="+s.UUID, "-d", s.Dir, s.Out, strconv.Itoa(s.SizeMiB)+"M")
+	extended := strings.Join(append([]string{"root_owner=0:0", "hash_seed=" + s.UUID}, s.Extended...), ",")
+	args = append(args, "-E", extended, "-d", s.Dir, s.Out, strconv.Itoa(s.SizeMiB)+"M")
 	cmd := exec.CommandContext(ctx, mkfs, args...)
 	cmd.Env = env
 	if b, err := cmd.CombinedOutput(); err != nil {
+		if bytes.Contains(b, []byte("Could not allocate")) || bytes.Contains(b, []byte("No space left")) {
+			return fmt.Errorf("mkfs.ext4 failed: %w: %w: %s", err, ErrFull, firstLine(b))
+		}
 		return fmt.Errorf("mkfs.ext4 failed: %w: %s", err, firstLine(b))
 	}
 	var script strings.Builder

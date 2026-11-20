@@ -112,6 +112,9 @@ func List(ctx context.Context, sb sandbox.Options, debugfs, image, dir string) (
 			continue
 		}
 		m := lsLine.FindStringSubmatch(line)
+		if m != nil && m[1] == "0" {
+			continue // an unused entry, which the kernel skips too (lost+found's empty blocks)
+		}
 		if m == nil || !Printable(m[5]) {
 			return nil, ErrUnreadable
 		}
