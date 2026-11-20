@@ -10,6 +10,7 @@ Send requests to the installation's HTTPS URL. The API accepts JSON. All mutatio
 |---|---|---|
 | Acme owner, `app register monapp --config monapp.yaml --output-file backend.json` | `POST /v1/applications`, identity:manage | 201, application ID, OIDC parameters and backend token |
 | Acme owner, `app show <id>` | `GET /v1/applications/{id}` | Public client configuration, pinned public keys, applied policy IDs |
+| Acme owner, `app connection <id> --output-file monapp-public.json` | `GET /v1/applications/{id}` | Developer handoff with HTTPS API and issuer discovery URLs, organization and application IDs, audience, client ID, callbacks, PKCE method and applied policy IDs in `.data` |
 | Acme owner, `app verify <id> [--issuer-ca PEM_FILE]` | `GET /v1/applications/{id}`, then HTTPS discovery and JWKS at the issuer | Active registration, matching issuer and pinned RSA signing keys, advertised code flow and PKCE method |
 | Acme owner, `app rotate <id> --output-file backend-next.json` | `POST /v1/applications/{id}/rotate` with `{}` or new `verification_keys` | Updated token, previous backend tokens revoked |
 | Acme owner, `app revoke <id>` | `POST /v1/applications/{id}/revoke` with `{}` | Integration disabled, including current member sessions |
@@ -30,7 +31,11 @@ Example registration body (replace the key with the real RSA public modulus of t
 }
 ```
 
-Extract `kid`, `n`, `e` and `kty` from the trusted issuer's HTTPS JWKS. The API accepts pinned RS256 signing keys of 2,048–8,192 bits and supports overlapping keys. Configure the exact same redirect URIs at the IdP. Each issuer/client pair identifies one environment and organization. The backend's credential expires after 90 days. Registration and rotation require an unused private output file. Use `app connection <id>` for the developer handoff after applying the policy. The owner can list registrations with `after` and `limit` (1–100).
+Extract `kid`, `n`, `e` and `kty` from the trusted issuer's HTTPS JWKS. The API accepts pinned RS256 signing keys of 2,048–8,192 bits and supports overlapping keys. Configure the exact same redirect URIs at the IdP. Each issuer/client pair identifies one environment and organization. The owner can list registrations with `after` and `limit` (1–100). Export the public connection after applying the policy.
+
+The registration and rotation commands write the 90-day backend credential to `.data.provisioning_token` in a new private output file. Load this value into the MonApp backend’s secret store. Its single scope, `application:sync`, permits reading and updating activations of that registration. A human administrator or an eligible signed-in manager approves invitations. The member’s OIDC access token authorizes agent and result requests.
+
+For a routine credential rotation, run `agentcapsule app rotate APP_ID --output-file backend-next.json`. The old token is revoked when the API commits. Switch the backend to the new secret and use it to read a known activation at `GET /v1/applications/APP_ID/activations/ACTIVATION_ID` (200). The previous token receives 401 on the same route. The empty rotation body preserves the OIDC verification keys, so members can continue using their existing sessions. To replace those keys too, provide a `--file` containing `verification_keys`. Run `app verify APP_ID` against the issuer after the change.
 
 ## Configure personal and shared slots
 
@@ -91,6 +96,8 @@ Request `openid email member:accept org:read agent:read agent:invoke agent:conte
 Reusing an idempotency key with a different authenticated request returns 422. An expired unused invitation returns 409. Unknown or wrongly addressed proofs and foreign resources return 404. Invalid or expired credentials and a revoked integration's OIDC tokens return 401. A disallowed team/manager returns 403. A stale event returns 409. A revoking response can include `revocations`, showing the actual record status (pending or confirmed) when using the authority service. Poll `GET /v1/access-revocations/{id}` with an audit-authorized credential for changes.
 
 ## Run the conformance client
+
+The signed Linux workstation CLI source archive `agentcapsule-source.tar.gz` contains this guide, the sysadmin manual (`docs/cli.md`), the OpenAPI contract (`openapi/openapi.yaml`) and the two scripts in `examples/monapp/`. After verifying the release checksums, extract the archive and run the examples from its `agentcapsule/` directory. [Release verification](../release.md#verify-a-release)
 
 Use a fresh test organization and two fresh identities. Prepare a pool containing at least two assignable agents and a shared Support agent that can answer an invocation. Supply a second organization's bearer credential to check isolation. For the bundled realm the test-only browser client follows the Keycloak password form, verifies state, and writes a short-lived API access token to a newly created private file.
 

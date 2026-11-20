@@ -461,13 +461,11 @@ paths:
       operationId: getCurrentOrganization
       summary: Read your own authenticated member context
       description: >-
-        Signed delegation with scope org:read, a trust configuration installed
-        independently by the operator, and an already registered identity. All
-        active roles can read their own context. Organization, principal,
-        membership, trust, token dates and revocation are rechecked in the
-        transaction. Roles declared in the JWT grant no right. The tenant
-        comes from authentication, never from a request parameter.
-      security: [{delegatedBearer: []}]
+        Requires org:read. An activated application member, a registered
+        delegated identity or a tenant service account can read its own
+        authenticated context. The API rechecks the credential and current
+        organization, principal and membership. The tenant comes from authentication.
+      security: [{memberOIDC: []}, {delegatedBearer: []}, {serviceBearer: []}]
       responses:
         '200':
           description: Metadata of the current tenant and principal, without private content
@@ -742,7 +740,7 @@ paths:
         default: {$ref: '#/components/responses/Problem'}
     post:
       operationId: registerApplication
-      description: "Register a single OIDC client in this tenant. Requires identity:manage. The backend token expires after 90 days."
+      description: "Register a single OIDC client in this tenant. Requires identity:manage. The 90-day backend token carries only application:sync for this application."
       security: [{delegatedBearer: []}]
       parameters:
         - {$ref: '#/components/parameters/IdempotencyKey'}
@@ -775,7 +773,7 @@ paths:
   /v1/applications/{id}/rotate:
     post:
       operationId: rotateApplication
-      description: "Rotate the provisioning token and optionally replace pinned verification keys. Requires identity:manage."
+      description: "Replace the provisioning token and immediately revoke the previous backend token. An empty object preserves the pinned OIDC keys. An optional verification_keys list replaces them. Requires identity:manage."
       security: [{delegatedBearer: []}]
       parameters:
         - {name: id, in: path, required: true, schema: {type: string}}
@@ -894,7 +892,7 @@ paths:
   /v1/applications/{id}/activations/{activation_id}:
     get:
       operationId: showActivation
-      description: "Get provisioning status. Requires member:manage, the application backend token, or org:read from the member who owns the activation."
+      description: "Get provisioning status. Requires member:manage, this application’s backend token with application:sync, or org:read from the member who owns the activation."
       security: [{delegatedBearer: []}, {serviceBearer: []}, {memberOIDC: []}]
       parameters:
         - {name: id, in: path, required: true, schema: {type: string}}
@@ -908,7 +906,7 @@ paths:
         default: {$ref: '#/components/responses/Problem'}
     put:
       operationId: syncActivation
-      description: "Apply a versioned team or departure event. Requires member:manage or the application backend token. A departed member cannot be reactivated."
+      description: "Apply a versioned team or departure event. Requires member:manage or this application’s backend token with application:sync. A departed member cannot be reactivated."
       security: [{delegatedBearer: []}, {serviceBearer: []}]
       parameters:
         - {name: id, in: path, required: true, schema: {type: string}}
@@ -1976,7 +1974,7 @@ paths:
       description: >-
         Tenant domain: same visibility rule as the list. An agent the caller
         has no right on returns 404, identical to a nonexistent agent.
-      security: [{bearer: []}, {delegatedBearer: []}, {serviceBearer: []}]
+      security: [{memberOIDC: []}, {bearer: []}, {delegatedBearer: []}, {serviceBearer: []}]
       parameters: [{$ref: '#/components/parameters/ResourceID'}]
       responses:
         '200':
@@ -2314,7 +2312,7 @@ paths:
         State of an invocation (agent:read): for the requester while it still
         sees the agent through an assignment, or for a role that can read
         agent metadata. Any other case returns 404. No content.
-      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      security: [{memberOIDC: []}, {delegatedBearer: []}, {serviceBearer: []}]
       parameters: [{$ref: '#/components/parameters/ResourceID'}]
       responses:
         '200':
