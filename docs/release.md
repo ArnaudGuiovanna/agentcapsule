@@ -75,6 +75,31 @@ The `dev.12` media were built from commit `c9d1e38` on 20 November 2026 and incl
 
 All seven checks passed on the Ubuntu 24.04 WSL2/KVM installation upgraded from `dev.6`. The test verified the media signature, and the guest verified a second signature on the identical index using its existing trusted public key. The scan of the 19 inventories still reports twelve release-blocking findings, six in Ubuntu packages and six in Keycloak. [Installation qualification](cli-host.md#development-qualification-on-wsl2) · [Image findings](release-image-qualification.md)
 
+### Signed Linux workstation CLI `v0.1.0-dev.13`
+
+The Linux amd64 and arm64 CLI binaries from commit `f0aa5c0` include the fix for following an invocation that the server requeues after a restore. Both run against CLI protocol 1. The server qualified in WSL2/KVM is `v0.1.0-dev.12`.
+
+Two clean builds with Go 1.27.4 produced identical executables for each architecture. An offline rebuild from the delivered source and Go module archives reproduced both digests with an empty module cache and the Git metadata of the release commit. The signed checksum index covers ten files, including the two executables, their SPDX inventories, sources, notices, build record and CLI scan. The scan found no matches in either CLI inventory. The server is assessed separately.
+
+The Linux amd64 executable passed the native HTTPS test on WSL2. Under QEMU, the signed arm64 executable completed 49 TLS 1.3 requests in the enrollment test and submitted a single-agent resize to the API backed by PostgreSQL. The CLI returned the rollout member for the requested agent.
+
+The signed amd64 CLI also ran against the HTTPS API and PostgreSQL 18.6 with a test worker. After a volume restore requeued an invocation, `operation wait --type invocation` observed `lost` twice and then `completed` under the same ID. The command exited with code 0 and the member read the replacement result. The restore skipped a second invocation because its requester had lost access. The auditor’s CLI reported `requester_revoked` and exited with code 5.
+
+| SHA-256 | Digest |
+|---|---|
+| Signed checksum index | `e026a64d468ea44346ddc8f918e2cf7960bd370875c25cb8e90277edfe9ef2a4` |
+| Linux amd64 CLI | `ca34e21d7f721ca172f67fc9c58fffb443ccc842e7432911634856be73789a7f` |
+| Linux arm64 CLI | `9e1fd92feb4441e5a36938c8e74ec1f88a0185e4f42585515e2341d430f021c6` |
+
+Use the previously trusted development public key with SHA-256 `1305029f0b5e0aeca207bedf8cdf90470bea39826a44c06afeb75194ee70cb22`. After extracting the workstation archive, run these commands from its top-level directory.
+
+```sh
+printf '%s  %s\n' 1305029f0b5e0aeca207bedf8cdf90470bea39826a44c06afeb75194ee70cb22 dev-trust/dev.pub | sha256sum --check --strict &&
+  openssl pkeyutl -verify -pubin -inkey dev-trust/dev.pub -rawin \
+    -in assets/SHA256SUMS -sigfile assets/SHA256SUMS.dev.sig &&
+  (cd assets && sha256sum --check --strict SHA256SUMS)
+```
+
 ### Ubuntu package archive, 19 November 2026
 
 The offline Noble snapshot used in the installation test contained 171 binary packages. The release inventory checks every archived `.deb` against the server's package index and records its SHA-256, Ubuntu release, binary version and source package. Grype 0.121.0 with the 19 November database reported six High matches, 452 Medium, 37 Low and five Negligible. The six High matches block this archive under the release policy. The six separate Keycloak matches also block the offline images. [Image qualification](release-image-qualification.md)
@@ -88,7 +113,7 @@ The development media's `agentcapsule-ubuntu-sources-01.tar` contains the 108 ex
 | `containerd` from `containerd-app` | `2.2.1-0ubuntu1~24.04.4` | CVE-2026-53488 | Canonical fixed the application source in `2.2.1-0ubuntu1~24.04.3`. The shipped package changelog records the backport. [Ubuntu advisory](https://ubuntu.com/security/CVE-2026-53488) |
 | `containerd` from `containerd-app` | `2.2.1-0ubuntu1~24.04.4` | CVE-2026-39821 | Canonical lists `containerd` as needing evaluation and gives no Noble fix for `containerd-app`. The shipped ELF build information identifies `go1.24.13` and `golang.org/x/net v0.47.0`. [Ubuntu advisory](https://ubuntu.com/security/CVE-2026-39821), [Go advisory](https://pkg.go.dev/vuln/GO-2026-5026) |
 
-Grype's match details use the binary names in these six findings. Their SPDX package URLs retain the distinct Ubuntu application source names. The scanner still reports five matches whose application versions include Canonical's fixes. The remaining containerd finding requires upstream or distribution assessment.
+On 20 November, the shipped SPDX inventory was compared with independent Syft JSON and SPDX inventories built from the dpkg metadata of all 171 verified packages. The three scans produced the same 500 matches, including the same six High findings. Grype had the Ubuntu source package names and matched these six findings on binary package names. Five reported matches concern versions that include Canonical's fixes. The remaining containerd finding requires upstream or distribution assessment.
 [Single-host installation and updates](cli-host.md)
 
 ## What is checked
