@@ -13,6 +13,8 @@ The candidate contains six Linux amd64 images. Syft 1.55.0 scanned each Docker a
 
 Six matches block release. All are in Keycloak, with one Critical and five High findings. Prior reviews of HAProxy, OASF and SLIM dependencies cover 50 matches. Directory v1.9.1 resolves the two outstanding detections of GO-2026-6860 in v1.8.0 and scans clean across its 214 packages.
 
+On 20 November 2026 the pull request scan command also ran locally in WSL against the six pinned Linux amd64 registry images. It read the Keycloak image from the OIDC systemd unit. Each scanned image's configuration digest matched the signed `dev.12` inventory. With the same vulnerability database and policy, the command exited with code 1 on the same six Keycloak findings. The other five images passed the existing policy.
+
 ## Release decisions
 
 The six findings below require an updated Keycloak image that passes the release scan.
