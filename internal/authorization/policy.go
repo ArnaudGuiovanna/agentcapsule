@@ -42,6 +42,10 @@ const (
 	InvokeAgent              Action = "agent.invoke"
 	ReadAgentContent         Action = "agent.read_content"
 	ManageIdentities         Action = "identity.manage"
+	// ManageCorpus and ReadCorpus cover corpora, their builds, releases and
+	// source credentials (ADR 023 §11).
+	ManageCorpus Action = "corpus.manage"
+	ReadCorpus   Action = "corpus.read"
 )
 
 const (
@@ -65,6 +69,8 @@ const (
 	ScopeQuotaManage      = "quota:manage"
 	ScopeAgentInvoke      = "agent:invoke"
 	ScopeAgentContentRead = "agent:content:read"
+	ScopeCorpusManage     = "corpus:manage"
+	ScopeCorpusRead       = "corpus:read"
 )
 
 // AccessContext is a snapshot of already authenticated, authoritative state.
@@ -103,11 +109,11 @@ func RoleAllows(role Role, action Action) bool {
 	switch action {
 	case ReadOrganizationMetadata, ReadMemberMetadata, ReadTeamMetadata, ReadAudit, ReadUsage:
 		return role == OrgOwner || role == OrgAdmin || role == Auditor
-	case ReadAgentMetadata:
+	case ReadAgentMetadata, ReadCorpus:
 		return role == OrgOwner || role == OrgAdmin || role == AgentOperator || role == Auditor
 	case CreateAgent, ConfigureAgent, WakeAgent, SleepAgent:
 		return role == OrgOwner || role == OrgAdmin || role == AgentOperator
-	case ManageMembers, ManageTeams, ManageAssignments, DeleteAgent, ManageProviders, ManageQuotas, ManageIdentities:
+	case ManageMembers, ManageTeams, ManageAssignments, DeleteAgent, ManageProviders, ManageQuotas, ManageIdentities, ManageCorpus:
 		return role == OrgOwner || role == OrgAdmin
 	default:
 		return false
@@ -154,6 +160,10 @@ func RequiredScope(action Action) (string, bool) {
 		return ScopeAgentInvoke, true
 	case ReadAgentContent:
 		return ScopeAgentContentRead, true
+	case ManageCorpus:
+		return ScopeCorpusManage, true
+	case ReadCorpus:
+		return ScopeCorpusRead, true
 	default:
 		return "", false
 	}
@@ -257,5 +267,5 @@ var DelegableScopes = []string{
 	ScopeOrganizationRead, ScopeMemberRead, ScopeMemberManage, ScopeTeamRead, ScopeTeamManage,
 	ScopeAgentRead, ScopeAgentCreate, ScopeAgentAssign, ScopeAgentOperate, ScopeAgentDelete,
 	ScopeAgentManage, ScopeAgentInvoke, ScopeAgentContentRead, ScopeProviderManage, ScopeQuotaManage,
-	ScopeAuditRead, ScopeUsageRead,
+	ScopeAuditRead, ScopeUsageRead, ScopeCorpusManage, ScopeCorpusRead,
 }
