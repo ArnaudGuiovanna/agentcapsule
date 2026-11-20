@@ -12,8 +12,8 @@ import (
 const lintManifest = `schema: agentcapsule.corpus-source/v1
 title: Finance
 language: fr
-include: [courses, "videos/**", "data/**", notes.md, readme.txt, images, "audio/**", "lfs/**", "tools/**", "nomatch/**"]
-exclude: ["**/drafts/**", "never/**"]
+include: [courses, "courses/**", "videos/**", "data/**", notes.md, readme.txt, images, "audio/**", "lfs/**", "tools/**", "nomatch/**"]
+exclude: ["**/drafts/**", "courses/drafts/**", "never/**"]
 processing:
   transcription: {alias: transcribe}
 documents:

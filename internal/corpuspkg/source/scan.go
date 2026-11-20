@@ -201,20 +201,15 @@ func Scan(fsys fs.FS, o Options) (Result, error) {
 			ignore(c.path, ReasonCorrection, "")
 			continue
 		}
-		in, out := firstMatch(include, c.path), firstMatch(exclude, c.path)
-		if in >= 0 {
-			includeUsed[in] = true
-		}
-		if in >= 0 && out >= 0 {
-			excludeUsed[out] = true
-		}
+		included := markMatchingPatterns(include, includeUsed, c.path)
+		excluded := included && markMatchingPatterns(exclude, excludeUsed, c.path)
 		kind := KindOf(c.path)
 		_, stepOn := steps[NeededStep(kind)]
 		switch {
-		case in < 0:
+		case !included:
 			ignore(c.path, ReasonNotIncluded, "")
 			continue
-		case out >= 0:
+		case excluded:
 			ignore(c.path, ReasonExcluded, "")
 			continue
 		case kind == KindOther:
@@ -316,13 +311,15 @@ func validPatterns(patterns []string) []string {
 	return out
 }
 
-func firstMatch(patterns []string, name string) int {
+func markMatchingPatterns(patterns []string, used []bool, name string) bool {
+	matched := false
 	for i, p := range patterns {
 		if Match(p, name) {
-			return i
+			used[i] = true
+			matched = true
 		}
 	}
-	return -1
+	return matched
 }
 
 // examine reads a kept file's head: a Git LFS pointer stands for its object;
