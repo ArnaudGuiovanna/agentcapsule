@@ -22,10 +22,13 @@ import (
 
 // hostTraps are programs a host could run a package's content with: an
 // interpreter, a mount, a loop device, a container runtime, a filesystem
-// tool that writes. Each one, in this test's PATH, announces itself.
+// tool that writes; and, for a corpus's sources (ADR 023 §4), an archiver,
+// Git, a media or document converter. Each one, in this test's PATH,
+// announces itself.
 var hostTraps = []string{"sh", "bash", "dash", "busybox", "env", "python3", "perl", "mount", "umount", "losetup", "chroot", "unshare",
 	"nsenter", "mkfs.ext4", "mke2fs", "e2fsck", "fsck", "fuse2fs", "resize2fs", "tune2fs", "tar", "unsquashfs", "cp", "ln", "harness",
-	"firecracker", "jailer", "docker", "podman", "runc", "crun", "cosign", "oras", "skopeo", "cryptsetup"}
+	"firecracker", "jailer", "docker", "podman", "runc", "crun", "cosign", "oras", "skopeo", "cryptsetup",
+	"gzip", "gunzip", "unzip", "git", "git-lfs", "ffmpeg", "pdftotext", "soffice"}
 
 // REG-007: the host pulls a package, validates it and boots it in a VM;
 // nothing else runs it. The package here would announce any run on the

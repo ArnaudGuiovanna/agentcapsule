@@ -125,6 +125,9 @@ type LFSOptions struct {
 	// BeforeBatch, when set, runs before each batch call; an error stops
 	// the fetch (the worker's storage pressure check).
 	BeforeBatch func() error
+	// Fetched, when set, is told the size of each object downloaded, not
+	// of those an earlier attempt verified.
+	Fetched func(bytes int64)
 }
 
 // LFS downloads the pointers' objects into dir/lfs.bin through the forge's
@@ -132,8 +135,9 @@ type LFSOptions struct {
 // transfer, at most 100 objects per call), each from the href the forge
 // answers, to the forge or one of the rule's LFS hosts. Each object's size
 // and sha256 must be its pointer's, or the fetch fails as ErrIntegrity. An
-// object verified by an earlier attempt, listed in dir/lfs.verified, is not
-// downloaded again. Once every object is verified, it hashes the drive.
+// object verified by an earlier attempt, listed in dir/lfs.verified once on
+// disk, is not downloaded again. Once every object is verified, it hashes
+// the drive.
 func (f *Fetcher) LFS(ctx context.Context, s Source, token Token, pointers []Pointer, dir string, o LFSOptions) (LFSDrive, error) {
 	c, err := f.client(s)
 	if err != nil {
@@ -173,21 +177,20 @@ func (f *Fetcher) LFS(ctx context.Context, s Source, token Token, pointers []Poi
 				return LFSDrive{}, err
 			}
 		}
-		if err = c.lfsBatch(ctx, s, token, batch, drive); err != nil {
-			return LFSDrive{}, err
-		}
-		// The objects are on disk before the journal says so.
-		if err = drive.Sync(); err != nil {
-			return LFSDrive{}, err
-		}
-		var lines bytes.Buffer
-		for _, obj := range batch {
-			lines.WriteString(obj.OID + "\n")
-		}
-		if _, err = journal.Write(lines.Bytes()); err != nil {
-			return LFSDrive{}, err
-		}
-		if err = journal.Sync(); err != nil {
+		err = c.lfsBatch(ctx, s, token, batch, drive, func(obj LFSObject) error {
+			// The object is on disk before the journal says so.
+			if err := drive.Sync(); err != nil {
+				return err
+			}
+			if _, err := journal.Write([]byte(obj.OID + "\n")); err != nil {
+				return err
+			}
+			if o.Fetched != nil {
+				o.Fetched(obj.Length)
+			}
+			return journal.Sync()
+		})
+		if err != nil {
 			return LFSDrive{}, err
 		}
 	}
@@ -266,8 +269,8 @@ type batchObject struct {
 }
 
 // lfsBatch asks the batch API for the objects, then downloads each into its
-// place in the drive.
-func (c *client) lfsBatch(ctx context.Context, s Source, token Token, objs []LFSObject, drive *os.File) error {
+// place in the drive, and calls verified once it checked it.
+func (c *client) lfsBatch(ctx context.Context, s Source, token Token, objs []LFSObject, drive *os.File, verified func(LFSObject) error) error {
 	type wanted struct {
 		OID  string `json:"oid"`
 		Size int64  `json:"size"`
@@ -327,6 +330,9 @@ func (c *client) lfsBatch(ctx context.Context, s Source, token Token, objs []LFS
 			return fmt.Errorf("%w: the forge's size of an LFS object", ErrIntegrity)
 		}
 		if err = c.lfsObject(ctx, b.Actions.Download.Href, b.Actions.Download.Header, token, o, drive); err != nil {
+			return err
+		}
+		if err = verified(o); err != nil {
 			return err
 		}
 	}

@@ -168,7 +168,7 @@ func TestAlteredLFSObjectIsRefused(t *testing.T) {
 }
 
 // A retry downloads only what an earlier attempt did not verify: a cut in
-// the second batch leaves the first batch's objects, which are not fetched
+// the second batch leaves every object before it, which is not fetched
 // again.
 func TestLFSResumesWithoutDownloadingVerifiedObjects(t *testing.T) {
 	l := newLab(t, limits)
@@ -195,10 +195,10 @@ func TestLFSResumesWithoutDownloadingVerifiedObjects(t *testing.T) {
 			fetched[oid]++
 		}
 	}
-	if len(fetched) != 20 {
-		t.Fatal("the retry fetched", len(fetched), "objects, not the 20 of the second batch")
+	if len(fetched) != 10 {
+		t.Fatal("the retry fetched", len(fetched), "objects, not the 10 from the cut on")
 	}
-	for _, o := range idx.Objects[:100] {
+	for _, o := range idx.Objects[:110] {
 		if fetched[o.OID] != 0 {
 			t.Fatal("a verified object was fetched again")
 		}
