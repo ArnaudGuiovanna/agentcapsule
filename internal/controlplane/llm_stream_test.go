@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -380,5 +381,29 @@ func TestReplayingAStreamKeyInFlightNeverReachesTheProvider(t *testing.T) {
 	}
 	if _, state, _, _ := s.usage(t, "orphan"); state != "unknown" {
 		t.Fatal("orphan", state)
+	}
+}
+
+// A call reserved under a host admission that then fails never runs: its key
+// is given back, so that its replay finds no running call and makes the
+// orphan reservation unknown.
+func TestAFailedAdmissionGivesTheKeyBack(t *testing.T) {
+	s := newStreamLab(t, 1)
+	lost := errors.New("the hold was lost")
+	admission := func(ctx context.Context, fn func(context.Context) error) error {
+		if err := fn(ctx); err != nil {
+			return err
+		}
+		return lost
+	}
+	body := []byte(`{"messages":[{"role":"user","content":"hi"}],"stream":true,"max_tokens":32}`)
+	if _, err := s.svc.ForwardStreamFromVM(t.Context(), s.caller, "adm", "fast", "openai", body, admission, func(llmgateway.Event) error { return nil }); !errors.Is(err, lost) {
+		t.Fatal(err)
+	}
+	if _, err := s.svc.ForwardStreamFromVM(t.Context(), s.caller, "adm", "fast", "openai", body, nil, func(llmgateway.Event) error { return nil }); !errors.Is(err, llmgateway.ErrOutcomeUnknown) {
+		t.Fatal(err)
+	}
+	if _, state, _, _ := s.usage(t, "adm"); state != "unknown" || s.calls.Load() != 0 {
+		t.Fatal("the key stayed held after a failed admission", state, s.calls.Load())
 	}
 }

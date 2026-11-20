@@ -35,3 +35,10 @@ func (k *inflightKeys) release(key string) {
 	defer k.mu.Unlock()
 	delete(k.keys, key)
 }
+
+// release gives back the hold's request key, if it holds one.
+func (h llmHold) release() {
+	if h.done != nil {
+		h.done()
+	}
+}

@@ -158,7 +158,7 @@ func (s *LLMService) execute(ctx context.Context, h llmHold, q llmgateway.Reques
 // settle runs one provider call for an admitted hold and records its single
 // outcome: settled at the reported usage, unknown, or released.
 func (s *LLMService) settle(ctx context.Context, h llmHold, call func(llmgateway.Route) (llmgateway.Usage, error)) error {
-	defer h.done()
+	defer h.release()
 	route := h.route
 	usage, callErr := call(llmgateway.Route{AuthMode: route.AuthMode, Kind: route.Kind, BaseURL: route.BaseURL, UpstreamModel: route.UpstreamModel, Secret: route.Secret, Key: h.tenantID + "/" + h.alias})
 	// Bookkeeping must survive a cancelled caller context.
@@ -223,8 +223,8 @@ func (s *LLMService) admitFromVM(ctx context.Context, caller VMCaller, requestKe
 	} else {
 		err = admission(ctx, step)
 	}
-	if err != nil && hold.done != nil {
-		hold.done() // reserved, then the admission failed: no call runs
+	if err != nil {
+		hold.release() // reserved, then the admission failed: no call runs
 	}
 	return hold, err
 }
