@@ -51,7 +51,9 @@ func TestProductDeploymentCampaignKVM(t *testing.T) {
 		}
 		lab.worker.Close()
 	})
+	volumeDir := filepath.Join(lab.root, "volumes")
 	for _, batch := range []int{1, 3} {
+		ioStart := readDeploymentIO(volumeDir)
 		start := time.Now()
 		var plan controlplane.DeploymentPlan
 		desired := 0
@@ -143,6 +145,8 @@ func TestProductDeploymentCampaignKVM(t *testing.T) {
 			lab.request(owner(), "GET", "/v1/deployments/"+plan.ID, "", nil, 200, &result)
 			return result.Status == "ready"
 		})
+		ioEnd := readDeploymentIO(volumeDir)
+		logDeploymentIO(t, batch, ioStart, ioEnd)
 		if result.Provisioned != batch || result.Active != desired || result.WaitingCapacity != 0 {
 			t.Fatal(result)
 		}
