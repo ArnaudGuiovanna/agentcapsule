@@ -8,6 +8,7 @@ package llmgateway
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -101,6 +102,11 @@ type Config struct {
 	// allows. Empty, the default: the gateway connects to public addresses
 	// only, checked after DNS resolution (ADR 010).
 	AllowInternal Allowlist
+	// A stream's bounds (ADR 022), in place of Timeout: up to the provider's
+	// first byte, per attempt (60 s); between two of its events, a comment
+	// line included (60 s); in total, retries included (300 s, the platform
+	// channel's capsuleprotocol.LLMCallTimeout).
+	StreamFirstByte, StreamIdle, StreamTotal time.Duration
 }
 
 type Gateway struct {
@@ -137,6 +143,9 @@ func newGateway(c Config, t TestOptions) *Gateway {
 	if c.MaxResponse <= 0 {
 		c.MaxResponse = 4 << 20
 	}
+	c.StreamFirstByte = cmp.Or(max(c.StreamFirstByte, 0), 60*time.Second)
+	c.StreamIdle = cmp.Or(max(c.StreamIdle, 0), 60*time.Second)
+	c.StreamTotal = cmp.Or(max(c.StreamTotal, 0), 300*time.Second)
 	if c.Now == nil {
 		c.Now = time.Now
 	}
