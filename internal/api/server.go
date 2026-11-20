@@ -158,6 +158,9 @@ func New(store *controlplane.Store, accounts *controlplane.Accounts) (*Server, e
 	s.handle("/v1/llm/providers", s.llmProviders)
 	s.handle("/v1/llm/providers/{id}/rotate", s.rotateLLMProvider)
 	s.handle("/v1/llm/providers/{id}/disable", s.disableLLMProvider)
+	s.handle("/v1/source-credentials", s.sourceCredentials)
+	s.handle("/v1/source-credentials/{id}/rotate", s.rotateSourceCredential)
+	s.handle("/v1/source-credentials/{id}/disable", s.disableSourceCredential)
 	s.handle("/v1/llm/aliases", s.llmAliases)
 	s.handle("/v1/llm/budgets", s.llmBudgets)
 	s.handle("/v1/llm/budgets/{id}/disable", s.disableLLMBudget)
@@ -323,6 +326,8 @@ func failure(w http.ResponseWriter, err error) {
 		problem(w, 409, "agent_already_exists")
 	case errors.Is(err, controlplane.ErrOrganizationNameTaken):
 		problem(w, 409, "organization_name_taken")
+	case errors.Is(err, controlplane.ErrSourceCredentialNameTaken):
+		problem(w, 409, "source_credential_name_taken")
 	case errors.Is(err, controlplane.ErrRelease):
 		problem(w, 422, "harness_unavailable")
 	case errors.Is(err, controlplane.ErrStorageCapacity):

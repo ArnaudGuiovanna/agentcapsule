@@ -47,6 +47,8 @@ var idempotencyOtherBody = map[string]string{
 	"POST /v1/llm/providers":                                    `{"name":"{name}-b","kind":"openai_compatible","base_url":"https://llm.example.org/v1","secret":"matrix-credential-0123456789"}`,
 	"POST /v1/llm/providers/{fresh}/rotate":                     `{"secret":"matrix-credential-other-0123"}`,
 	"POST /v1/llm/aliases":                                      `{"alias":"{name}-b","provider_id":"{provider}","upstream_model":"model-x"}`,
+	"POST /v1/source-credentials":                               `{"name":"{name}-b","kind":"gitlab","host":"gitlab.example.org","secret":"matrix-forge-token-0123456789"}`,
+	"POST /v1/source-credentials/{fresh}/rotate":                `{"secret":"matrix-forge-token-other-0123"}`,
 	"POST /v1/llm/aliases/{fresh}/access":                       `{"access":"organization"}`,
 	"POST /v1/llm/aliases/{fresh}/prices":                       `{"input_micro_per_mtok":3,"output_micro_per_mtok":4}`,
 	"POST /v1/llm/aliases/{fresh}/grants":                       `{"agent_id":"{sender}"}`,

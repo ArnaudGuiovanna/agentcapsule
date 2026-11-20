@@ -155,6 +155,10 @@ var rbacRoutes = append([]rbacRoute{
 	{Method: "POST", Path: "/v1/llm/providers/{fresh}/rotate", revokes: "llm_provider", Success: 200, Want: rbacManage, body: `{"secret":"matrix-credential-rotated-0123"}`, fresh: rbacFreshProvider, Note: "a disposable provider"},
 	{Method: "POST", Path: "/v1/llm/providers/{fresh}/disable", revokes: "llm_provider", Success: 200, Want: rbacManage, body: `{}`, fresh: rbacFreshProvider, Note: "a disposable provider"},
 	{Method: "GET", Path: "/v1/llm/aliases", Success: 200, Want: "S S 403 403 403 403 403 403 403 F 401 401 403", hides: []string{"{alias}"}},
+	{Method: "GET", Path: "/v1/source-credentials", Success: 200, Want: "S S 403 403 403 403 403 403 403 F 401 401 403", hides: []string{"{source_credential}"}},
+	{Method: "POST", Path: "/v1/source-credentials", Success: 201, Want: rbacCreateAdmin, body: `{"name":"{name}","kind":"gitlab","host":"gitlab.example.org","secret":"matrix-forge-token-0123456789"}`, fresh: rbacName},
+	{Method: "POST", Path: "/v1/source-credentials/{fresh}/rotate", Success: 200, Want: rbacManage, body: `{"secret":"matrix-forge-token-rotated-0123"}`, fresh: rbacFreshSourceCredential, Note: "a disposable credential"},
+	{Method: "POST", Path: "/v1/source-credentials/{fresh}/disable", Success: 200, Want: rbacManage, body: `{}`, fresh: rbacFreshSourceCredential, Note: "a disposable credential"},
 	{Method: "POST", Path: "/v1/llm/aliases", Success: 201, Want: rbacManage, body: `{"alias":"{name}","provider_id":"{provider}","upstream_model":"model-x"}`, fresh: rbacName},
 	{Method: "POST", Path: "/v1/llm/aliases/{fresh}/disable", Success: 200, Want: rbacManage, body: `{}`, fresh: rbacFreshAlias, Note: "a disposable alias"},
 	{Method: "POST", Path: "/v1/llm/aliases/{fresh}/access", Success: 200, Want: rbacManage, body: `{"access":"listed"}`, fresh: rbacFreshAlias, Note: "a disposable alias"},
@@ -582,6 +586,12 @@ func rbacFreshProvider(t *testing.T, f *rbacFixture) map[string]string {
 	return map[string]string{"fresh": p.ID}
 }
 
+func rbacFreshSourceCredential(t *testing.T, f *rbacFixture) map[string]string {
+	var c controlplane.SourceCredential
+	f.must(t, "owner", "POST", "/v1/source-credentials", `{"name":"`+f.next()+`","kind":"gitlab","host":"gitlab.example.org","secret":"matrix-forge-token-0123456789"}`, 201, &c)
+	return map[string]string{"fresh": c.ID}
+}
+
 func rbacFreshAlias(t *testing.T, f *rbacFixture) map[string]string {
 	alias := f.next()
 	f.must(t, "owner", "POST", "/v1/llm/aliases", `{"alias":"`+alias+`","provider_id":"`+f.ids["provider"]+`","upstream_model":"model-x"}`, 201, nil)
@@ -857,6 +867,7 @@ func newRBACFixture(t *testing.T) *rbacFixture {
 	f.ids["alias"] = rbacFreshAlias(t, f)["fresh"]
 	f.ids["budget"] = rbacFreshBudget(t, f)["fresh"]
 	f.ids["call"] = rbacFreshCall(t, f)["fresh"]
+	f.ids["source_credential"] = rbacFreshSourceCredential(t, f)["fresh"]
 
 	rbacSetupDeployment(t, f)
 	var imported controlplane.HarnessImport
