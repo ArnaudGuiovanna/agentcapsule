@@ -16,8 +16,9 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
 )
 
-// linkOrCopy shares a read-only file with a jail by hard link, or copies it
-// when the registry cache lives on another filesystem.
+// linkOrCopy shares a read-only harness image with a jail by hard link, or
+// copies it when the registry cache lives on another filesystem. A corpus
+// image or a build drive is never copied (linkShared).
 func linkOrCopy(src, dst string) error {
 	err := os.Link(src, dst)
 	if !errors.Is(err, syscall.EXDEV) {
@@ -63,6 +64,8 @@ type ProvisionedAgent struct {
 	Device, Inode uint64
 	Resources     VMResources
 	Harness       *HarnessImage
+	// Corpora are mounted from the first boot, in this order (ADR 023 §5).
+	Corpora []CorpusImage
 }
 
 // validHarness: an absolute regular file the VMM can read, a digest and an
@@ -103,6 +106,9 @@ func (h *FirecrackerHost) RegisterProvisioned(ctx context.Context, in Provisione
 	if err := validHarness(in.Harness); err != nil {
 		return err
 	}
+	if err := h.verifyCorpora(in.Corpora); err != nil {
+		return err
+	}
 	return h.locked(ctx, func(r *hostRegistry) error {
 		path, err := filepath.Abs(in.Volume)
 		if err != nil {
@@ -132,7 +138,7 @@ func (h *FirecrackerHost) RegisterProvisioned(ctx context.Context, in Provisione
 			if a.Fenced || a.SealID != "" {
 				return ErrHostFenced
 			}
-			if (a.SystemImage == nil) != (in.SystemImage == nil) || (a.SystemImage != nil && *a.SystemImage != *in.SystemImage) || a.Volume != path || a.Device != in.Device || a.Inode != in.Inode || a.Resources != in.Resources || !sameHarness(a.Harness, in.Harness) || a.UID < firstUID || a.UID > lastUID || s.Uid != a.UID || s.Gid != a.UID {
+			if (a.SystemImage == nil) != (in.SystemImage == nil) || (a.SystemImage != nil && *a.SystemImage != *in.SystemImage) || a.Volume != path || a.Device != in.Device || a.Inode != in.Inode || a.Resources != in.Resources || !sameHarness(a.Harness, in.Harness) || !sameCorpora(a.Corpora, in.Corpora) || a.UID < firstUID || a.UID > lastUID || s.Uid != a.UID || s.Gid != a.UID {
 				return errors.New("provisioned registration is immutable")
 			}
 			return nil
@@ -157,7 +163,8 @@ func (h *FirecrackerHost) RegisterProvisioned(ctx context.Context, in Provisione
 		if err = f.Sync(); err != nil {
 			return err
 		}
-		r.Agents[in.ID] = &HostAgent{SystemImage: in.SystemImage, ID: in.ID, UID: uid, Volume: path, Device: in.Device, Inode: in.Inode, Resources: in.Resources, Harness: in.Harness}
+		r.Agents[in.ID] = &HostAgent{SystemImage: in.SystemImage, ID: in.ID, UID: uid, Volume: path, Device: in.Device, Inode: in.Inode, Resources: in.Resources, Harness: in.Harness,
+			Corpora: slices.Clone(in.Corpora)}
 		return h.save(r)
 	})
 }
