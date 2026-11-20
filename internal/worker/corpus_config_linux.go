@@ -93,6 +93,26 @@ func (c ServiceConfig) OpenCorpusSources() (*CorpusSources, error) {
 	return out, os.Chmod(out.Staging, 0o700)
 }
 
+// OpenCorpusFetcher connects the configured forge client to leased build work.
+func (c ServiceConfig) OpenCorpusFetcher(store *controlplane.Store, worker string) (*CorpusFetcher, error) {
+	sources, err := c.OpenCorpusSources()
+	if err != nil || sources == nil {
+		return nil, err
+	}
+	if c.Corpus.Builder == nil {
+		return nil, nil
+	}
+	harness := c.Corpus.Builder.Harness
+	if harness.Name == "" || harness.Version == "" {
+		return nil, ErrCorpusConfiguration
+	}
+	accounts, err := c.openBridgeAccounts(store)
+	if err != nil {
+		return nil, err
+	}
+	return NewCorpusFetcher(corpusFetchStore{store, c.HostID, harness.Name + "@" + harness.Version}, sources.Fetcher, accounts, sources.Staging, worker)
+}
+
 // corpusSources validates the corpus section and changes nothing.
 func (c ServiceConfig) corpusSources() (*CorpusSources, error) {
 	k := c.Corpus

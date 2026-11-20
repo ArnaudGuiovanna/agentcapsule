@@ -44,6 +44,14 @@ func (c ServiceConfig) OpenLLM(s *controlplane.Store, requireHTTPS bool) (*contr
 	if err != nil {
 		return nil, err
 	}
+	accounts, err := c.openBridgeAccounts(s)
+	if err != nil {
+		return nil, err
+	}
+	return controlplane.NewLLMService(accounts, llmgateway.New(gateway))
+}
+
+func (c ServiceConfig) openBridgeAccounts(s *controlplane.Store) (*controlplane.Accounts, error) {
 	if !filepath.IsAbs(c.LLM.ReceiptKey) {
 		return nil, operatorconfig.ErrPrivateFile
 	}
@@ -52,11 +60,7 @@ func (c ServiceConfig) OpenLLM(s *controlplane.Store, requireHTTPS bool) (*contr
 		return nil, err
 	}
 	defer clear(key)
-	accounts, err := controlplane.NewAccounts(s, key)
-	if err != nil {
-		return nil, err
-	}
-	return controlplane.NewLLMService(accounts, llmgateway.New(gateway))
+	return controlplane.NewAccounts(s, key)
 }
 
 // EnableLLM attaches the model gateway once, like EnableTransit.

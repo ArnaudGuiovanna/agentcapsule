@@ -60,11 +60,13 @@ func (e *QuotaBelowAgentError) Is(target error) bool { return target == ErrQuota
 
 // OrganizationQuotas are an organization's limits; nil is no limit.
 type OrganizationQuotas struct {
-	MaxAgents     *int   `json:"max_agents"`
-	MaxActiveVMs  *int   `json:"max_active_vms"`
-	MaxVCPUs      *int   `json:"max_vcpus"`
-	MaxMemoryMiB  *int64 `json:"max_memory_mib"`
-	MaxStorageMiB *int64 `json:"max_storage_mib"`
+	MaxCorpusBuilds     *int   `json:"max_corpus_builds"`
+	MaxCorpusStorageMiB *int64 `json:"max_corpus_storage_mib"`
+	MaxAgents           *int   `json:"max_agents"`
+	MaxActiveVMs        *int   `json:"max_active_vms"`
+	MaxVCPUs            *int   `json:"max_vcpus"`
+	MaxMemoryMiB        *int64 `json:"max_memory_mib"`
+	MaxStorageMiB       *int64 `json:"max_storage_mib"`
 }
 
 // OrganizationUsage is what the organization holds now. Agents and storage
@@ -72,11 +74,13 @@ type OrganizationQuotas struct {
 // included. Active VMs, vCPUs and RAM count its VMs booted for work that are
 // starting, running or stopping, on every host.
 type OrganizationUsage struct {
-	Agents     int   `json:"agents"`
-	StorageMiB int64 `json:"storage_mib"`
-	ActiveVMs  int   `json:"active_vms"`
-	VCPUs      int   `json:"vcpus"`
-	MemoryMiB  int64 `json:"memory_mib"`
+	CorpusBuilds     int   `json:"corpus_builds"`
+	CorpusStorageMiB int64 `json:"corpus_storage_mib"`
+	Agents           int   `json:"agents"`
+	StorageMiB       int64 `json:"storage_mib"`
+	ActiveVMs        int   `json:"active_vms"`
+	VCPUs            int   `json:"vcpus"`
+	MemoryMiB        int64 `json:"memory_mib"`
 }
 
 // OrganizationQuotaStatus is an organization's limits and usage.
@@ -91,7 +95,7 @@ type OrganizationQuotaStatus struct {
 func (q OrganizationQuotas) valid() bool {
 	within := func(v *int64, lo, hi int64) bool { return v == nil || (*v >= lo && *v <= hi) }
 	small := func(v *int, lo, hi int) bool { return v == nil || (*v >= lo && *v <= hi) }
-	return small(q.MaxAgents, 1, 100000) && small(q.MaxActiveVMs, 1, 100000) && small(q.MaxVCPUs, 1, 1000000) &&
+	return small(q.MaxCorpusBuilds, 0, 100000) && within(q.MaxCorpusStorageMiB, 0, 1<<40) && small(q.MaxAgents, 1, 100000) && small(q.MaxActiveVMs, 1, 100000) && small(q.MaxVCPUs, 1, 1000000) &&
 		within(q.MaxMemoryMiB, 128, 1<<30) && within(q.MaxStorageMiB, 64, 1<<40)
 }
 
@@ -106,8 +110,8 @@ func lockOrganizationQuota(ctx context.Context, tx pgx.Tx, tenant string) error 
 func organizationQuotas(ctx context.Context, tx pgx.Tx, tenant string) (OrganizationQuotas, *time.Time, error) {
 	var q OrganizationQuotas
 	var at time.Time
-	err := tx.QueryRow(ctx, `SELECT max_agents,max_active_vms,max_vcpus,max_memory_mib,max_storage_mib,updated_at
-        FROM organization_quotas WHERE tenant_id=$1`, tenant).Scan(&q.MaxAgents, &q.MaxActiveVMs, &q.MaxVCPUs, &q.MaxMemoryMiB, &q.MaxStorageMiB, &at)
+	err := tx.QueryRow(ctx, `SELECT max_agents,max_active_vms,max_vcpus,max_memory_mib,max_storage_mib,max_corpus_builds,max_corpus_storage_mib,updated_at
+        FROM organization_quotas WHERE tenant_id=$1`, tenant).Scan(&q.MaxAgents, &q.MaxActiveVMs, &q.MaxVCPUs, &q.MaxMemoryMiB, &q.MaxStorageMiB, &q.MaxCorpusBuilds, &q.MaxCorpusStorageMiB, &at)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return q, nil, nil
 	}
@@ -129,6 +133,12 @@ func organizationUsage(ctx context.Context, tx pgx.Tx, tenant, except string) (O
         FROM agents a JOIN agent_specs x ON x.agent_id=a.id JOIN agent_placements p ON p.agent_id=a.id
         WHERE a.tenant_id=$1 AND a.id<>$2 AND `+workVMs, tenant, except).
 		Scan(&u.Agents, &u.StorageMiB, &u.ActiveVMs, &u.VCPUs, &u.MemoryMiB)
+	if err != nil {
+		return u, err
+	}
+	bytes, builds, err := corpusOccupation(ctx, tx, tenant)
+	u.CorpusStorageMiB = (bytes + 1048575) >> 20
+	u.CorpusBuilds = builds
 	return u, err
 }
 
@@ -308,11 +318,11 @@ func (a *Accounts) SetOrganizationQuotas(ctx context.Context, p Principal, id, k
 		if err != nil {
 			return 0, nil, err
 		}
-		if _, err = tx.Exec(ctx, `INSERT INTO organization_quotas(tenant_id,max_agents,max_active_vms,max_vcpus,max_memory_mib,max_storage_mib,updated_by)
-            VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (tenant_id) DO UPDATE SET max_agents=EXCLUDED.max_agents,
+		if _, err = tx.Exec(ctx, `INSERT INTO organization_quotas(tenant_id,max_agents,max_active_vms,max_vcpus,max_memory_mib,max_storage_mib,updated_by,max_corpus_builds,max_corpus_storage_mib)
+            VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (tenant_id) DO UPDATE SET max_agents=EXCLUDED.max_agents,
             max_active_vms=EXCLUDED.max_active_vms,max_vcpus=EXCLUDED.max_vcpus,max_memory_mib=EXCLUDED.max_memory_mib,
-            max_storage_mib=EXCLUDED.max_storage_mib,updated_by=EXCLUDED.updated_by,updated_at=clock_timestamp()`,
-			id, in.MaxAgents, in.MaxActiveVMs, in.MaxVCPUs, in.MaxMemoryMiB, in.MaxStorageMiB, p.ID); err != nil {
+            max_storage_mib=EXCLUDED.max_storage_mib,max_corpus_builds=EXCLUDED.max_corpus_builds,max_corpus_storage_mib=EXCLUDED.max_corpus_storage_mib,updated_by=EXCLUDED.updated_by,updated_at=clock_timestamp()`,
+			id, in.MaxAgents, in.MaxActiveVMs, in.MaxVCPUs, in.MaxMemoryMiB, in.MaxStorageMiB, p.ID, in.MaxCorpusBuilds, in.MaxCorpusStorageMiB); err != nil {
 			return 0, nil, err
 		}
 		if err = auditOrganization(ctx, tx, p, id, "organization.quotas_set", set == nil || !sameQuotas(before, in)); err != nil {
@@ -329,6 +339,6 @@ func (a *Accounts) SetOrganizationQuotas(ctx context.Context, p Principal, id, k
 func sameQuotas(a, b OrganizationQuotas) bool {
 	eq := func(x, y *int) bool { return (x == nil) == (y == nil) && (x == nil || *x == *y) }
 	eq64 := func(x, y *int64) bool { return (x == nil) == (y == nil) && (x == nil || *x == *y) }
-	return eq(a.MaxAgents, b.MaxAgents) && eq(a.MaxActiveVMs, b.MaxActiveVMs) && eq(a.MaxVCPUs, b.MaxVCPUs) &&
+	return eq(a.MaxCorpusBuilds, b.MaxCorpusBuilds) && eq64(a.MaxCorpusStorageMiB, b.MaxCorpusStorageMiB) && eq(a.MaxAgents, b.MaxAgents) && eq(a.MaxActiveVMs, b.MaxActiveVMs) && eq(a.MaxVCPUs, b.MaxVCPUs) &&
 		eq64(a.MaxMemoryMiB, b.MaxMemoryMiB) && eq64(a.MaxStorageMiB, b.MaxStorageMiB)
 }

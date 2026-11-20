@@ -8,12 +8,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpussource/repository"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 
@@ -82,20 +82,8 @@ func (f *Fetcher) client(s Source) (*client, error) {
 	return f.clients[rule.Host], nil
 }
 
-var (
-	commitPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
-	refPattern    = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._/+-]{0,254}$`)
-)
-
-// ValidCommit: 40 lowercase hexadecimal digits.
-func ValidCommit(s string) bool { return commitPattern.MatchString(s) }
-
-// ValidRef: a branch, tag or commit name the forges' APIs take in a path,
-// in the subset of git check-ref-format that needs no quoting.
-func ValidRef(ref string) bool {
-	return refPattern.MatchString(ref) && !strings.Contains(ref, "..") && !strings.Contains(ref, "//") &&
-		!strings.HasSuffix(ref, "/") && !strings.HasSuffix(ref, ".") && !strings.HasSuffix(ref, ".lock") && !strings.Contains(ref, "/.")
-}
+func ValidCommit(s string) bool { return repository.ValidCommit(s) }
+func ValidRef(s string) bool    { return repository.ValidRef(s) }
 
 // pathEscape escapes each segment of a slash-separated name.
 func pathEscape(s string) string {

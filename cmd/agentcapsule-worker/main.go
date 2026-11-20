@@ -226,7 +226,7 @@ func run() int {
 	// Events, one JSON object per line, from a closed vocabulary (OPS-02):
 	// progress on standard output, retries and failures on standard error.
 	vocabulary := map[string][]string{"event": {"maintenance_started", "maintenance_complete", "maintenance_retry", "wake_budget_exhausted",
-		"harness_import_retry", "directory_publish_retry", "slim_callback_stopped", "job_done", "job_retried",
+		"harness_import_retry", "corpus_fetch_retry", "directory_publish_retry", "slim_callback_stopped", "job_done", "job_retried",
 		"volume_archive_captured", "volume_archive_retry", "volume_archive_purged", "delivery_dead", "agent_failed"},
 		"reason": append(append(append(worker.RetryReasons(), worker.ArchiveRetryReasons()...), worker.DeadDeliveryReasons()...), worker.AgentFailureReasons()...),
 		"kind":   append(worker.JobKinds(), worker.DeadDeliveryKinds()...), "vm": worker.ArchiveVMs()}
@@ -304,10 +304,20 @@ func run() int {
 			return fail("llm_unavailable")
 		}
 	}
-	// The corpus section is checked at start; its fetcher runs once the
-	// builds' store exists (ADR 023 §4).
-	if _, err = c.OpenCorpusSources(); err != nil {
+	fetcher, err := c.OpenCorpusFetcher(s, workerID)
+	if err != nil {
 		return fail("corpus_configuration_invalid")
+	}
+	if fetcher != nil && !archiveRequested {
+		fetcher.Pressure = pressure.Refuse
+		fetcher.Telemetry = worker.NewCorpusTelemetry(registry)
+		go func() {
+			_ = fetcher.Run(ctx, maintenance.Interval, func(error) {
+				if ctx.Err() == nil {
+					problems.Event("corpus_fetch_retry")
+				}
+			})
+		}()
 	}
 	importer, err := c.OpenRegistry(s, workerID)
 	if errors.Is(err, worker.ErrInspection) {
