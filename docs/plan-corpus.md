@@ -18,7 +18,7 @@ Les routes, formats et commandes ci-dessous sont des propositions de conception.
 
 | Lot | État |
 |---|---|
-| 0. Contrats, ADR 023, modèle Quint | Non démarré |
+| 0. Contrats, ADR 023, modèle Quint | Fait (ADR 023, brouillon OpenAPI `openapi/drafts/corpora.yaml`, COR-001 à COR-009 en `not met`, `spec/corpus_lifecycle.qnt`) |
 | 1. Formats et paquet | Non démarré |
 | 2. Passerelle multimodale | Non démarré |
 | 3. Sources Git | Non démarré |

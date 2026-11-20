@@ -384,8 +384,10 @@ by Python) **does not change**: a harness discovers its corpora by listing
   and **checks its UUID** against `uuid`. Any mismatch, a missing device or
   an unreadable superblock refuses the boot: the guest exits before starting
   the harness, a failed boot (ADR 012). This guards against any shift in
-  drive order; `HarnessDevice="/dev/vdb"` (`internal/capsuleprotocol/initrd.go:21`)
-  becomes the index the boot file gives.
+  drive order. The registry harness stays drive 1, `HarnessDevice="/dev/vdb"`
+  (`internal/capsuleprotocol/initrd.go:21`); corpora and build drives come
+  after it, at the indexes the boot file gives, and start at 1 when the
+  harness is built in.
 - It mounts each corpus `ro,nosuid,nodev,noexec,noatime` at
   `/corpus/<mount>` in the harness root, or in the initramfs root for a
   built-in harness. `/corpus` itself is a read-only empty directory when the
@@ -863,8 +865,13 @@ tries, boots and stops, rollouts, eviction. Its invariants:
 Its eight runs are in [projections.md](../../spec/projections.md), `pending`
 until lots 4 and 6 project them. `scripts/check-models.py` checks every
 reachable state of `corpusLifecycleOk` (TLC) and a counterexample from each
-broken instance (Apalache). Not modelled: several hosts, quotas, fetching,
-the builder, agent deletion, mount names.
+broken instance (Apalache). On November 20, 2026: `safety` holds in all
+1,011,740 reachable states (depth 19, 57 s), and each broken instance fails
+its invariant within 2 to 4 steps; `quint run` finds the same
+counterexamples, and none in 200,000 traces of 40 steps of the correct
+instance (evidence kept locally under `quint/results/chantiers/corpus-lot0/`).
+Not modelled: several hosts, quotas, fetching, the builder, agent deletion,
+mount names.
 
 ## Plan facts checked
 
