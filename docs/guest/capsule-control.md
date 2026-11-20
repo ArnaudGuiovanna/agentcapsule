@@ -206,11 +206,102 @@ content type (ADR 016).
 ### Capabilities on the platform channel
 
 Each platform channel route that needs a capability (`llm.invoke`,
-`agents.delegate`, `agents.discover`; `capability.ForRoute`) is checked on
-the host before the call reaches its effect: the platform API implements
-`CapabilityAPI`, which reads the agent's effective set (harness ∩
-organization ∩ agent) in PostgreSQL at each call. A refusal is
-`capability_denied` (HTTP 403). The guest's own bridge has no gate.
+`agents.delegate`, `agents.discover`, `stream.output`;
+`capability.ForRoute`) is checked on the host before the call reaches its
+effect: the platform API implements `CapabilityAPI`, which reads the agent's
+effective set (harness ∩ organization ∩ agent) in PostgreSQL at each call. A
+refusal is `capability_denied` (HTTP 403). The guest's own bridge has no gate.
+
+### The output stream (`POST /v1/invocations/stream`)
+
+A harness that answered `working` may stream the output of that invocation
+while it works ([ADR 022](../adr/022-native-streaming.md) §5): text deltas
+and steps, which the requester's client can follow. Deltas are never the
+outcome: the harness still files it with `POST /v1/invocations/complete`.
+The route needs `stream.output`.
+
+The call is **full duplex**, over one connection, for the stream's whole
+life. The harness writes NDJSON frames in the request body
+(`Content-Type: application/x-ndjson`, one strict JSON object per line, at
+most 64 KiB with its newline); the platform answers its own frames in the
+response body as it goes.
+
+```json
+{"type":"open","protocol":"capsule.v1","identity":{…},"operation_id":"op_…"}
+{"type":"step","seq":1,"step":"retrieval","state":"started","label":"Searching the course"}
+{"type":"delta","seq":2,"text":"The NPV is computed "}
+{"type":"delta","seq":3,"text":"by discounting…"}
+{"type":"close"}
+```
+
+| Harness frame | Fields | Rules |
+|---|---|---|
+| `open` | `protocol`, `identity`, `operation_id`, optional `attempt` | first line, within 5 seconds; `attempt` only when opening again |
+| `delta` | `seq`, `text` | non-empty UTF-8 without NUL |
+| `step` | `seq`, `step`, `state`, optional `label` | `step` matches `^[a-z][a-z0-9_.-]{0,63}$`; `state` is `started`, `done` or `failed`; `label` 1 to 256 bytes without control characters |
+| `close` | — | ends the stream; nothing is stored |
+
+`seq` is per attempt: 1 for the first frame, then the previous plus one. A
+gap, a regression, an unknown field or type, a second `open` or a frame over
+64 KiB closes the stream `invalid`.
+
+```json
+{"type":"opened","protocol":"capsule.v1","identity":{…},"attempt":1,"seq":0}
+{"type":"ack","seq":3}
+{"type":"cancel"}
+{"type":"closed","reason":"terminal"}
+```
+
+| Platform frame | When |
+|---|---|
+| `opened` | first: the attempt the stream is bound to, and the last `seq` stored for it (the next frame carries `seq` + 1) |
+| `ack` | after each stored chunk: every frame up to `seq` is stored |
+| `cancel` | the requester canceled the invocation, or its agent is being deleted; `closed` follows |
+| `closed` | last, with its `reason` |
+
+| `closed.reason` | Why | Open again? |
+|---|---|---|
+| `done` | answer to `close`, after the last `ack` | — |
+| `terminal` | the invocation has its outcome (completed, failed, canceled) | no |
+| `expired` | its `result_due_at` passed | no |
+| `reset` | a rerun or a replay started a newer attempt, or `open` named an old one | no, for that attempt |
+| `revoked` | the caller is no longer the agent's current boot | no |
+| `invalid` | a malformed frame, a gap in `seq` | — |
+| `truncated` | the attempt stored 2 MiB or 4,096 frames: nothing more is stored for it | no |
+| `idle` | no frame from the harness for 60 seconds | yes |
+| `unavailable` | the worker stops, or PostgreSQL failed | yes |
+
+A refused opening is the channel's usual JSON answer, before any frame:
+`unauthorized` and `capability_denied` (403), `not_found` (404), `invalid`
+(400: the first line is not a valid `open`, or came late), `transition` (409:
+not working, answered at delivery, canceled), `expired` (409), `unavailable`
+(503, also when the VM's 16 slots are taken).
+
+- **The opening** runs in one transaction under the locks of a completion:
+  the caller is the agent's current boot, the invocation is working and
+  before its due time; the stream binds to the invocation's current attempt.
+  The host's admission and `stream.output` are checked once, at the opening;
+  the stream then runs outside the admission and holds one of the VM's 16
+  slots until it closes.
+- **Each chunk is checked again.** The worker coalesces frames into chunks
+  (150 ms or 4 KiB, `output_streams` in [worker.md](../worker.md)); each
+  chunk's transaction checks the boot, the working state, the due time and
+  the attempt again before it stores anything. No frame is stored after the
+  outcome, nor into another attempt.
+- **Close before filing.** Frames still being coalesced when the outcome
+  commits are dropped: a harness sends `close`, waits for `closed done`, then
+  posts its completion.
+- **Opening again.** After `idle`, `unavailable` or a broken connection, the
+  harness opens again naming the `attempt` it was given, and sends again the
+  frames after the `seq` that `opened` gives.
+- **The bridge.** capsule-init's local server relays the stream frame by
+  frame, both ways, checking and flushing each frame, with a deadline per
+  frame; it does not decode and call again. It answers a host refusal as the
+  host gave it.
+- **Go.** `PlatformClient.OpenOutputStream(ctx, operationID)` returns an
+  `OutputStreamWriter`: `Delta`, `Step`, `Close` (sends `close`, waits for
+  `closed`), `Acked`, `Canceled`, `Done` and `Reason`;
+  `ReopenOutputStream(ctx, operationID, attempt)` opens again.
 
 ## Rebuilding and switching images
 

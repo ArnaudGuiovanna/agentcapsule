@@ -3778,8 +3778,8 @@ components:
             json: {description: "Any JSON value but null, nested at most 32 levels."}
     Capability:
       type: string
-      enum: [llm.invoke, agents.delegate, agents.discover]
-      description: "llm.invoke: call the organization's models. agents.delegate: send requests to other agents and follow them. agents.discover: search and describe the organization's agents."
+      enum: [llm.invoke, agents.delegate, agents.discover, stream.output]
+      description: "llm.invoke: call the organization's models. agents.delegate: send requests to other agents and follow them. agents.discover: search and describe the organization's agents. stream.output: stream the output of a working invocation (ADR 022); a client may follow it."
     CapabilityPolicy:
       type: object
       additionalProperties: false
@@ -3903,7 +3903,7 @@ components:
         harness: {$ref: '#/components/schemas/HarnessReference'}
         resources: {$ref: '#/components/schemas/Resources'}
         llm_profile: {type: string, description: Existing model alias granted to each instance}
-        capabilities: {type: [array, 'null'], items: {type: string, enum: [llm.invoke, agents.delegate, agents.discover]}}
+        capabilities: {type: [array, 'null'], items: {type: string, enum: [llm.invoke, agents.delegate, agents.discover, stream.output]}}
     TemplateRevision:
       allOf:
         - {$ref: '#/components/schemas/TemplateSpec'}

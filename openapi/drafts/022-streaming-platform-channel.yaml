@@ -1,19 +1,19 @@
 openapi: 3.1.0
 info:
-  title: capsule.v1 platform channel — draft of the stream routes (ADR 022)
+  title: capsule.v1 platform channel — draft of the model stream routes (ADR 022)
   version: 0.0.0-draft
   description: >-
-    DRAFT, NOT SERVED. The three routes that lots 2 and 3 of the streaming
-    plan add to the platform channel (docs/adr/022-native-streaming.md §4,
-    §5). The platform channel is not the public API and has no OpenAPI
-    document: it is served by the worker to each VM over mTLS on vsock, and
-    relayed in the guest by capsule-init on a local Unix socket. Its routes
-    are described in prose in docs/api/llm.md (model calls),
-    docs/api/agents-assignments.md (deferred results, capabilities) and
-    docs/guest/capsule-control.md. Lot 2 writes the two model stream routes
-    into docs/api/llm.md, lot 3 the output stream into
-    docs/api/agents-assignments.md and docs/guest/capsule-control.md; the
-    last of them deletes this file. Every request carries the channel's
+    DRAFT, NOT SERVED. The two model stream routes that lot 2 of the
+    streaming plan adds to the platform channel
+    (docs/adr/022-native-streaming.md §4). The platform channel is not the
+    public API and has no OpenAPI document: it is served by the worker to
+    each VM over mTLS on vsock, and relayed in the guest by capsule-init on
+    a local Unix socket. Its routes are described in prose in
+    docs/api/llm.md (model calls), docs/api/agents-assignments.md (deferred
+    results, capabilities) and docs/guest/capsule-control.md. Lot 3 moved
+    the output stream (POST /v1/invocations/stream) into
+    docs/guest/capsule-control.md and docs/api/agents-assignments.md; lot 2
+    writes these two routes into docs/api/llm.md, then deletes this file. Every request carries the channel's
     envelope (protocol, identity), and every answer gives it back. A refusal
     before the first frame is the channel's usual JSON answer with a code;
     a stream is application/x-ndjson, one strict JSON object per line, each
@@ -88,51 +88,6 @@ paths:
         '409': {$ref: '#/components/responses/Refusal'}
         '429': {$ref: '#/components/responses/Refusal'}
         '503': {$ref: '#/components/responses/Refusal'}
-  /v1/invocations/stream:
-    post:
-      operationId: invocationOutputStream
-      description: >-
-        The output stream of a working invocation, full duplex: the harness
-        writes its frames in the request body while the platform writes its
-        control frames in the answer. The first line is open, within 5
-        seconds. The opening checks, in one transaction under the agent's and
-        the invocation's locks: the caller is the agent's current boot; the
-        invocation is working (acknowledged working, no outcome, before
-        result_due_at); attempt, if given, is the current one. It binds the
-        stream to the current attempt. Capability stream.output, checked
-        before. Each chunk the worker stores (every 150 ms or 4 KiB) checks
-        the same again, and the attempt's limits (2 MiB, 4,096 frames). The
-        stream holds one of the VM's 16 slots; it closes after 60 seconds
-        without a frame from the harness. Deltas are never an outcome: the
-        result still comes from POST /v1/invocations/complete.
-      requestBody:
-        required: true
-        content:
-          application/x-ndjson:
-            schema:
-              oneOf:
-                - {$ref: '#/components/schemas/OpenFrame'}
-                - {$ref: '#/components/schemas/DeltaFrame'}
-                - {$ref: '#/components/schemas/StepFrame'}
-                - {$ref: '#/components/schemas/CloseFrame'}
-      responses:
-        '200':
-          description: >-
-            Control frames, one per line: opened first, ack after each stored
-            chunk, cancel when the invocation is canceled, closed last.
-          content:
-            application/x-ndjson:
-              schema:
-                oneOf:
-                  - {$ref: '#/components/schemas/OpenedFrame'}
-                  - {$ref: '#/components/schemas/AckFrame'}
-                  - {$ref: '#/components/schemas/CancelFrame'}
-                  - {$ref: '#/components/schemas/ClosedFrame'}
-        '400': {$ref: '#/components/responses/Refusal'}  # invalid: the first line is not a valid open, or late
-        '403': {$ref: '#/components/responses/Refusal'}  # unauthorized (not the current boot), capability_denied
-        '404': {$ref: '#/components/responses/Refusal'}  # not_found: not this agent's invocation
-        '409': {$ref: '#/components/responses/Refusal'}  # transition (not working), expired (failed or past due)
-        '503': {$ref: '#/components/responses/Refusal'}  # unavailable
 components:
   securitySchemes:
     vmTLS:
@@ -255,77 +210,3 @@ components:
         output_tokens: {type: integer, minimum: 0}
         soft_budget_exceeded: {type: boolean}
         finish_reason: {type: string, description: "complete only."}
-    OpenFrame:
-      type: object
-      additionalProperties: false
-      required: [type, protocol, identity, operation_id]
-      properties:
-        type: {const: open}
-        protocol: {type: string, const: capsule.v1}
-        identity: {$ref: '#/components/schemas/Identity'}
-        operation_id: {type: string, minLength: 1, maxLength: 100}
-        attempt: {type: integer, minimum: 1, description: "Absent at a first opening. When the harness opens again, the attempt its opened frame gave."}
-    DeltaFrame:
-      type: object
-      additionalProperties: false
-      required: [type, seq, text]
-      properties:
-        type: {const: delta}
-        seq: {type: integer, minimum: 1, description: "Per attempt: 1 first, then the previous seq plus one."}
-        text: {type: string, minLength: 1, description: "UTF-8 without NUL."}
-    StepFrame:
-      type: object
-      additionalProperties: false
-      required: [type, seq, step, state]
-      properties:
-        type: {const: step}
-        seq: {type: integer, minimum: 1}
-        step: {type: string, pattern: '^[a-z][a-z0-9_.-]{0,63}$'}
-        state: {type: string, enum: [started, done, failed]}
-        label: {type: string, minLength: 1, maxLength: 256, description: "UTF-8 without control characters, at most 256 bytes."}
-    CloseFrame:
-      type: object
-      additionalProperties: false
-      required: [type]
-      properties:
-        type: {const: close}
-    OpenedFrame:
-      type: object
-      additionalProperties: false
-      required: [type, protocol, identity, attempt, seq]
-      properties:
-        type: {const: opened}
-        protocol: {type: string, const: capsule.v1}
-        identity: {$ref: '#/components/schemas/Identity'}
-        attempt: {type: integer, minimum: 1, description: "The attempt the stream is bound to."}
-        seq: {type: integer, minimum: 0, description: "The last seq stored for the attempt, 0 if none: the next frame carries seq + 1."}
-    AckFrame:
-      type: object
-      additionalProperties: false
-      required: [type, seq]
-      properties:
-        type: {const: ack}
-        seq: {type: integer, minimum: 1, description: "Every frame up to seq is stored."}
-    CancelFrame:
-      type: object
-      additionalProperties: false
-      required: [type]
-      description: The requester canceled the invocation, or its agent is being deleted; closed follows.
-      properties:
-        type: {const: cancel}
-    ClosedFrame:
-      type: object
-      additionalProperties: false
-      required: [type, reason]
-      properties:
-        type: {const: closed}
-        reason:
-          type: string
-          enum: [done, terminal, expired, reset, revoked, invalid, truncated, idle, unavailable]
-          description: >-
-            done: answer to close. terminal: the invocation has its outcome.
-            expired: result_due_at passed. reset: a newer attempt, or open
-            named an old one. revoked: the caller's boot is no longer
-            current. invalid: a malformed frame or a seq gap. truncated: the
-            attempt's limits. idle: 60 seconds without a frame. unavailable:
-            the worker or PostgreSQL; the harness may open again.

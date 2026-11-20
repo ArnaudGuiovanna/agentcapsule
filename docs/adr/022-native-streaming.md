@@ -995,7 +995,6 @@ Changes this record makes to the plan, each keeping its guarantees:
     the harness's side only, and the catalog tells the client what to expect.
 16. **`LLM_CALL_TIMEOUT` becomes 310 s**, the Go client's, rather than 300 s:
     the client's bound must outlast the channel's 300 s.
-
 Lot 1 (the gateway) adds:
 
 17. **A replay leaves a running call's reservation alone** (§3: "a
@@ -1044,6 +1043,54 @@ Lot 1 (the gateway) adds:
     `agentcapsule_llm_stream_first_event_seconds` through the optional
     `controlplane.LLMStreamObserver`: only with the model bridge on, as the
     other `agentcapsule_llm_*` metrics.
+
+Lot 3 (the output stream) adds these changes.
+
+23. **The worker's stream interface** (lot 3): `OutputStream` gains
+    `Closing()`, the reason an opening closes at once (`reset`, `truncated`),
+    and closes with `Close(reason, dropped)`, so that the worker counts the
+    frames still buffered at the close and ends the stream's span with its
+    `closed` reason. `Append` and `Signals` give `canceled` (not a `closed`
+    reason) for a cancellation: the host then sends `cancel`, then `closed`
+    `terminal`. The worker's settings reach the host through an optional
+    `OutputStreamTuning`.
+24. **A newer attempt is reported first.** A chunk's transaction checks what
+    §5.6 says, but reports `reset` before the working state: a rerun queues
+    the invocation again, which is no outcome. The checks are the same.
+25. **`opened` after a stale attempt** carries the current attempt and its
+    last `seq`, then `closed` `reset`.
+26. **Stored frames are re-encoded** as they were checked (compact JSON,
+    without HTML escapes), not stored byte for byte: what is stored is what
+    was checked. Their encoded size counts against `max_bytes`.
+27. **A chunk's payload is dated at once**: `transit_payloads` requires
+    `delivered_at` with `purge_after`, so both are set at insert
+    (`purge_after` = `result_due_at` + retention). Chunk payloads are
+    deleted, never left as tombstones.
+28. **The guest's bridge waits 305 s** (`MaxOutputStreamIdle` + 5 s) for a
+    frame either way, so that the host's idle bound, which the worker sets,
+    decides, and the bridge relays `closed` `idle`. A malformed frame from the
+    harness closes the stream `invalid` at the bridge; the host sees the call
+    end and stores the frames before it.
+29. **The opening reads `open` first**, then checks `stream.output`: the
+    frame carries the identity the channel checks before anything. The
+    capability is still checked before the opening's transaction.
+30. **`AgentCatalog.ReadOutputStream`** reads the chunks of the current
+    attempt after a position, for the requester only, with the rights of
+    `/result` minus the result (§6.3). The PostgreSQL tests read chunks with
+    it; lot 4's subscriber reads can build on it.
+31. **An agent being deleted** is, for the purge, one whose phase is
+    `QUIESCING`, `DELETING` or `DELETED`.
+32. **`pgnotify` is built by lot 3**, minimal: `Listener` (`New`, `Run`,
+    `Subscribe`, `Connected`) implements `Hub`, with the one-second poll and
+    the reconnection of §6.5. The worker listens on
+    `agentcapsule_invocation_stream` only; lot 4 extends it for the API.
+33. **The span** names the call `output_stream`; its outcomes gain `done`,
+    `terminal`, `reset`, `revoked`, `truncated` and `idle`. A stream that
+    ends without a `closed` frame (the harness went away) is `unavailable`.
+34. **The Go harness API** is `PlatformClient.OpenOutputStream(ctx,
+    operationID)` and `ReopenOutputStream(ctx, operationID, attempt)`; the
+    writer's `Close(ctx)` sends `close` and waits for `closed`, so that no
+    buffered frame is dropped by the outcome filed after it.
 
 ## Consequences
 

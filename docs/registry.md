@@ -43,8 +43,10 @@ capabilities: [llm.invoke]            # optional; see below
 
 `capabilities` lists what the harness asks the platform for over its
 platform channel: `llm.invoke`, `agents.delegate`, `agents.discover`
-([ADR 016](adr/016-content-links-capabilities.md)). The importer records the
-list on the release; an unknown name rejects the package. An empty list asks
+([ADR 016](adr/016-content-links-capabilities.md)), `stream.output`
+([ADR 022](adr/022-native-streaming.md)). The importer records the
+list on the release; an unknown name rejects the package: a platform older
+than ADR 022 rejects a manifest that requests `stream.output`. An empty list asks
 for nothing. A manifest without the field predates it and is treated as
 asking for every capability. The agent gets the intersection of this list and
 its organization's and its own policies
