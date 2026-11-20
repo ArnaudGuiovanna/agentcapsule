@@ -3360,6 +3360,7 @@ components:
           items: {$ref: '#/components/schemas/Capability'}
           description: "What the release's harness.yaml requests (ADR 016)."
         capabilities_declared: {type: boolean, description: "false for a manifest that predates the field, or a locally approved release: it is treated as requesting every capability."}
+        base: {type: string, enum: [agentcapsule-guest/1, agentcapsule-guest/2], description: "The guest base harness.yaml names; agentcapsule-guest/1 for a locally approved release. Only base 2 has the /corpus mount point (ADR 023)."}
         state: {type: string, enum: [READY, DEPRECATED]}
         created_at: {type: string, format: date-time}
         deprecated_at: {type: string, format: date-time}
@@ -3889,6 +3890,11 @@ components:
         reference: {type: string, description: 'Immutable name@version'}
         kernel_digest: {type: string, pattern: '^sha256:[a-f0-9]{64}$'}
         initrd_digest: {type: string, pattern: '^sha256:[a-f0-9]{64}$'}
+        features:
+          type: array
+          uniqueItems: true
+          items: {type: string, enum: [corpus.mount]}
+          description: "What the image's capsule-init can do beyond the base guest, fixed at approval; default none. corpus.mount: it mounts corpora (ADR 023). Always present in answers."
     AvailableSystemImages:
       type: object
       required: [items]
