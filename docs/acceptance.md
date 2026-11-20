@@ -112,7 +112,7 @@ Earlier failed attempts are retained separately and do not count as passes.
 
 ## Summary
 
-Of the 67 requirements of §4: 65 met, 0 partial, 2 not met, 0 needs KVM (2026-11-20). EXT-005 and LLM-009, added on 2026-11-20 with [ADR 022](adr/022-native-streaming.md), are not built yet.
+Of the 67 requirements of §4: 65 met, 1 partial, 1 not met, 0 needs KVM (2026-11-20). EXT-005 and LLM-009, added on 2026-11-20 with [ADR 022](adr/022-native-streaming.md), are being built: LLM-009's gateway half is.
 
 | Part | Met | Partial | Not met | Needs KVM |
 |---|---|---|---|---|
@@ -121,13 +121,13 @@ Of the 67 requirements of §4: 65 met, 0 partial, 2 not met, 0 needs KVM (2026-1
 | Harness registry and supply chain | 10 | 0 | 0 | 0 |
 | Capsules and runtime | 12 | 0 | 0 | 0 |
 | Invocations and events | 10 | 0 | 0 | 0 |
-| LLM gateway | 8 | 0 | 1 | 0 |
+| LLM gateway | 8 | 1 | 0 | 0 |
 | Discovery and inter-agent communication | 12 | 0 | 0 | 0 |
 | Content, capabilities and clients | 4 | 0 | 1 | 0 |
 | API conventions | 8 | 1 | 0 | 0 |
 | The MVP outcome as one scenario | 5 | 2 | 0 | 0 |
 | Deployment and operations | 17 | 6 | 0 | 0 |
-| **All rows** | **102** | **9** | **2** | **0** |
+| **All rows** | **102** | **10** | **1** | **0** |
 
 ## Requirements
 
@@ -220,7 +220,7 @@ authentication, never from a request body.
 | LLM-006 | Quota errors explicit; no reboot loop | met | [`TestModelErrorsReachTheGuestAndLeaveItsVMRunning`](../internal/worker/llm_quota_test.go) (PG): through capsule-init's local bridge, the boot's mTLS platform channel and the worker's platform API, a hard budget, a 429, a provider refusal and an outage with an open breaker reach the guest as `quota_exceeded`, `rate_limited`, `rejected` and `unavailable`; the placement stays the same running boot, no guest failure counts against a restart budget smaller than the errors, no job appears, a dispatch pass changes nothing, no boot is counted, and the next call succeeds; [`TestModelBridgeErrorsCrossAsEnumeratedCodesOnly`](../internal/worker/llm_errors_test.go) (unit): `quota_exceeded`, `rate_limited`; [`TestPlatformOutcomesBecomeSDKErrors`](../internal/agentadapter/model_test.go) (unit); [`TestRetriesOnlyBeforeAcceptanceAndNeverOnDefiniteRefusal`](../internal/llmgateway/gateway_test.go), [`TestBreakerOpensThenProbesOnce`](../internal/llmgateway/gateway_test.go) (unit) | — (a test runtime stands for the host driver: Firecracker's admission and control after a model error run only on KVM, and no product test makes a guest's model call fail) |
 | LLM-007 | Effective on the next request | met | [`TestLLMRotationAndDisableApplyToTheNextCall`](../internal/controlplane/llm_providers_test.go) (PG): the next route resolution uses the new key, a disabled provider is gone; [`TestLLMRoutesDoNotCrossTenantsAndAliasDisableIsImmediate`](../internal/controlplane/llm_providers_test.go) (PG); [`TestLLMProviderEndpointsNeverReturnTheCredential`](../internal/api/llm_test.go) (PG) | — (the key is resolved at each call; no test checks the header sent after a rotation) |
 | LLM-008 | Redaction tests pass | met | [`TestNoSecretInA2AMessagesOrLogsAroundAModelCall`](../internal/api/secrets_leak_test.go) (PG): during real gateway calls and a request and its reply between two agents of an organization, the events delivered to both agents, the answers on their platform channels (model calls, `DescribeAgent`, `RequestStatus`, submission, reply, completion), the API's, the worker's and the process's logs and the metrics hold no provider key, platform credential, service token or delegation JWT, and no table holds a bearer token or JWT; [`TestLLMProviderEndpointsNeverReturnTheCredential`](../internal/api/llm_test.go) (PG): API answers; [`TestFreeTextNeverReachesMetricsOrLogs`](../internal/telemetry/telemetry_test.go) (unit): metrics and logs; [`TestLLMBridgeCarriesOnlyAnAliasAndTypedOutcomes`](../internal/capsuleprotocol/platform_test.go) (unit) | — (the A2A messages are those the platform delivers; the bytes on the SLIM link between hosts and a real VM's A2A endpoint are not searched) |
-| LLM-009 | First event reaches the harness before generation ends; a cut stays reconcilable, never billed twice | not met | — | Built by lots 1 and 2 of the streaming plan ([ADR 022](adr/022-native-streaming.md) §3, §4): the gateway's provider streams, with no retry after the first byte and an unknown outcome on a cut; the model streams of the platform channel. No test yet |
+| LLM-009 | First event reaches the harness before generation ends; a cut stays reconcilable, never billed twice | partial | [`TestAStreamCutAfterTheFirstByteIsUnknownAndNeverRetried`](../internal/llmgateway/stream_test.go), [`TestAStreamRetriesOnlyBeforeTheFirstByte`](../internal/llmgateway/stream_test.go), [`TestTheBreakerJudgesAStreamAtItsEnd`](../internal/llmgateway/stream_test.go) (unit): the gateway relays each provider event as it comes, never retries after the first byte, and a cut, an idle stream, a stream without usage or too big has an unknown outcome; [`TestAModelStreamSettlesTheExactUsage`](../internal/controlplane/llm_stream_test.go), [`TestACutModelStreamStaysUnknownAndReconcilable`](../internal/controlplane/llm_stream_test.go), [`TestReplayingAStreamKeyInFlightNeverReachesTheProvider`](../internal/controlplane/llm_stream_test.go) (PG): exact settlement, a cut unknown and settled by the organization, a key never sent twice; [`TestLiveStreamOfBothDialectsRelaysEventsAndUsage`](../internal/llmgateway/live_stream_test.go), [`TestLiveModelStreamCutStaysUnknownAndReconcilable`](../internal/controlplane/llm_live_stream_test.go) (`llmlive`, Ollama, both APIs) | The platform channel's model streams (lot 2 of the streaming plan, ADR 022 §4): the first event reaching the harness through the guest |
 
 ### Discovery and inter-agent communication
 

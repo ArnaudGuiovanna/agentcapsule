@@ -74,6 +74,7 @@ volume archives and, on the standby host, its replay.
 | `agentcapsule_llm_refusals_total` | counter | `reason` (`budget_tokens`, `budget_cost`, `unpriced`, `alias_access`) | Calls refused before any reservation. Every series is served from zero |
 | `agentcapsule_llm_budget_soft_exceeded_total` | counter | `unit` (`tokens`, `cost`) | Calls that went past a soft budget; a call past two counts twice. Every series is served from zero |
 | `agentcapsule_llm_unresolved_calls` | gauge | — | Calls of unknown outcome, across the installation, that wait for their organization to settle or release them |
+| `agentcapsule_llm_stream_first_event_seconds` | histogram | — | Time from a model stream's provider request to its first event ([ADR 022](adr/022-native-streaming.md) §3), buckets 0.1 to 60 s. A stream is a call for `agentcapsule_llm_calls_total` |
 | `agentcapsule_authority_service_holds` | gauge | `kind` | Holds the authority service grants now: `binding`, `key`, `fences`, `revocation`, `activation` ([ADR 006](adr/006-authority-service.md#the-hold)) |
 | `agentcapsule_authority_service_hold_expired_total` | counter | `kind` | Holds the service ended at their cap (30 seconds for a publish, `max_key_hold` for a key), closing their connection |
 | `agentcapsule_authority_service_refused_peers_total` | counter | `socket` | Connections the service closed at accept because of their peer's account: `worker`, `api` |
@@ -255,7 +256,7 @@ a trace starts at the API.
 | `worker.boot` | worker, internal | `worker.wake`, or the job | `agentcapsule.boot.purpose` (`work`, `fence`), `agentcapsule.outcome` (`started`, `failed`, `guest_failed`, `capacity`, `organization_quota`); pseudonym `agentcapsule.agent` |
 | `worker.deliver` | worker, internal | `worker.job` | `agentcapsule.delivery.kind` (`invocation`, `agent_message`), `agentcapsule.delivery.transport` (`vsock`, `slim`), `agentcapsule.outcome`, `agentcapsule.retry_reason`; pseudonym `agentcapsule.agent` |
 | `platform.call` | worker, server | see below | `agentcapsule.platform.call`, `agentcapsule.outcome` (`ok`, or the code the guest receives), `agentcapsule.trace.origin` (`delivery`, `work`, `none`); pseudonym `agentcapsule.agent` |
-| `llm.call` | worker, client | `platform.call` | `agentcapsule.llm.provider`, `agentcapsule.llm.entry` (`complete`, `forward`), `agentcapsule.outcome`, `agentcapsule.llm.attempts`, `agentcapsule.llm.input_tokens`, `agentcapsule.llm.output_tokens` |
+| `llm.call` | worker, client | `platform.call` | `agentcapsule.llm.provider`, `agentcapsule.llm.entry` (`complete`, `forward`), `agentcapsule.llm.mode` (`unary`, `stream`), `agentcapsule.outcome` (`stream_cut`: a stream cut after the provider's first byte, of unknown outcome), `agentcapsule.llm.attempts`, `agentcapsule.llm.input_tokens`, `agentcapsule.llm.output_tokens` |
 | `authority.call` | API and worker, client | the span it runs under | `agentcapsule.authority.op`, `agentcapsule.outcome` (`ok`, `outage`, or the service's error code), `agentcapsule.authority.held` for a hold; the work done under a hold is its child |
 
 A guest's platform call is a child of the delivery to its agent in progress

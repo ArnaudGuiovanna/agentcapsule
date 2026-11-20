@@ -996,6 +996,55 @@ Changes this record makes to the plan, each keeping its guarantees:
 16. **`LLM_CALL_TIMEOUT` becomes 310 s**, the Go client's, rather than 300 s:
     the client's bound must outlast the channel's 300 s.
 
+Lot 1 (the gateway) adds:
+
+17. **A replay leaves a running call's reservation alone** (§3: "a
+    reservation still `reserved` becomes unknown"). A stream runs up to
+    300 s, so a harness that lost its connection replays its key while the
+    stream still runs. Marking the reservation unknown then let the
+    organization release it at once (`resolveLLMOutcome` accepts any
+    `unknown` call), before the stream settled: the call's cost was lost.
+    `LLMService` now holds each request key in its process from the
+    admission to the recorded outcome. A replay meanwhile answers
+    `outcome_unknown`, never reaches the provider, and leaves the
+    reservation to the running call. A `reserved` key that no call of the
+    process holds (its worker died) becomes unknown at its replay, as
+    before. Unary calls share the keys, so the rule holds for them too.
+18. **`start` goes out with the first relayed frame** (§4.3: "once the
+    provider's first byte has come"). The gateway calls `sink` with events
+    only. `ForwardStreamFromVM` and `CompleteStreamFromVM` return an error
+    only when nothing was relayed, and an `LLMStreamEnd` (`completed` or
+    `outcome_unknown`) once something was. A stream cut between the
+    provider's first byte and its first event is then the refusal
+    `outcome_unknown` (409), not `start` and an `end`: the harness learns
+    the same thing, and lot 2 needs no other hook. A stream that completes
+    without a relayed frame (no text for `complete`) is `start`, then `end`.
+19. **A provider's error event is not relayed** (Anthropic's `error`, an
+    OpenAI chunk with `error`): it ends the stream with an unknown outcome,
+    since a provider's message never reaches the guest on the other routes.
+    Anthropic's `message_stop` is relayed only once the usage is complete
+    (`message_start`, and a `message_delta` with `output_tokens`), so that a
+    client never takes a stream without usage for a whole answer. A usage
+    field above 10^12 tokens, which the accounting refuses, is a cut.
+20. **Bounds that keep a frame within 64 KiB.** An event's name is a token
+    of at most 64 bytes (`[A-Za-z0-9_.:-]`) and its data valid UTF-8.
+    `CompleteStream` gives fragments of at most 8 KiB
+    (`llmgateway.MaxStreamText`), split between two characters, so that a
+    `text` frame fits even with every character escaped. Lot 2 writes an
+    event's data unescaped (an encoder with `SetEscapeHTML(false)`, or the
+    bytes as they are): `json.Marshal` escapes `<`, `>` and `&` in six bytes
+    and could pass 64 KiB.
+21. **A caller that leaves is not the provider's failure.** A `sink` error,
+    or a caller whose context ends after the first byte, releases a
+    half-open probe without a verdict. A cut, a timeout, a stream past its
+    bounds or without its usage counts as a failure, as §3 says.
+22. **The setting's error and the metric.** A stream setting out of bounds
+    stops the worker with `llm_configuration_invalid`, the code of the
+    `llm` section. The worker's `LLMTelemetry` serves
+    `agentcapsule_llm_stream_first_event_seconds` through the optional
+    `controlplane.LLMStreamObserver`: only with the model bridge on, as the
+    other `agentcapsule_llm_*` metrics.
+
 ## Consequences
 
 - The guest changes in lots 2, 3 and 5: `internal/capsuleprotocol`,
