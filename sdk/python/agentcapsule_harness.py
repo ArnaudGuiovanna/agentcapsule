@@ -46,6 +46,7 @@ import sqlite3
 import struct
 import threading
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
@@ -56,7 +57,7 @@ MAX_BOOT_BYTES = 4096
 MAX_INVOCATION_ATTACHMENTS = 8
 MAX_ATTACHMENT_BYTES = 8 << 20
 MAX_OUTCOME_QUERY = 1024
-LLM_CALL_TIMEOUT = 130.0
+LLM_CALL_TIMEOUT = 310.0
 CALL_TIMEOUT = 20.0
 
 WORKING = {"status": "working"}
@@ -617,6 +618,62 @@ class Platform:
             raise ProtocolError("llm result")
         return out["llm_result"]
 
+    def complete_llm_stream(self, key: str, alias: str, messages: List[Dict[str, str]],
+                            max_tokens: int = 0, temperature: Optional[float] = None):
+        """Yield start, text and end frames for one metered model call."""
+        request = {"alias": alias, "messages": messages}
+        if max_tokens:
+            request["max_tokens"] = max_tokens
+        if temperature is not None:
+            request["temperature"] = temperature
+        return self._model_stream("complete", key, {"llm": request})
+
+    def forward_llm_stream(self, key: str, alias: str, dialect: str, body: Dict[str, Any]):
+        """Yield the provider's native event frames and the final usage."""
+        if not isinstance(body, dict) or body.get("stream") is not True:
+            raise ProtocolError("a forwarded stream must request streaming")
+        return self._model_stream("forward", key, {"forward": {"alias": alias, "dialect": dialect, "body": body}})
+
+    def _model_stream(self, entry, key, request):
+        envelope = dict(request, idempotency_key=key, protocol=PROTOCOL, identity=self.identity.to_json())
+        raw = json.dumps(envelope, separators=(",", ":"), allow_nan=False).encode()
+        if len(raw) > MAX_MESSAGE_BYTES:
+            raise ProtocolError("request too large")
+        conn = _UnixHTTPConnection(self.path, LLM_CALL_TIMEOUT)
+        timer = None
+        sent = False
+        try:
+            conn.connect()
+            sock = conn.sock
+            timer = threading.Timer(LLM_CALL_TIMEOUT, _end_socket, (sock,))
+            timer.daemon = True
+            timer.start()
+            sent = True
+            conn.request("POST", "/v1/llm/" + entry + "/stream", body=raw,
+                         headers={"Content-Type": "application/json", "Accept": "application/x-ndjson"})
+            with conn.getresponse() as response:
+                _stream_response(response, self.identity)
+                frame = _read_frame(response)
+                _keys(frame, {"type", "protocol", "identity"}, set())
+                if frame["type"] != "start" or frame["protocol"] != PROTOCOL or Identity.from_json(frame["identity"]) != self.identity:
+                    raise ProtocolError("model stream identity")
+                sock.settimeout(65.0)
+                yield frame
+                seq = 1
+                while True:
+                    frame = _read_frame(response)
+                    _model_frame(frame, entry, seq)
+                    yield frame
+                    if frame["type"] == "end":
+                        break
+                    seq += 1
+        except (OSError, http.client.HTTPException, EOFError) as exc:
+            raise PlatformError("outcome_unknown" if sent else "unavailable") from exc
+        finally:
+            if timer is not None:
+                timer.cancel()
+            conn.close()
+
     def find_agents(self, skills: List[int]) -> List[Dict[str, Any]]:
         """Finds agents of this agent's organization that offer any of the
         OASF skills (class IDs, schema 1.1.0) in the private Directory. Each
@@ -650,6 +707,280 @@ class Platform:
         if not isinstance(out.get("completion"), dict) or out["completion"].get("operation_id") != operation_id:
             raise ProtocolError("completion receipt")
         return out["completion"]
+
+
+_MAX_FRAME = 64 << 10
+_CLOSED_REASONS = {"done", "terminal", "expired", "reset", "revoked", "invalid", "truncated", "idle", "unavailable"}
+
+
+def _end_socket(sock):
+    try:
+        sock.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass
+
+
+def _stream_response(response, identity):
+    if response.status != 200:
+        raw = response.read(MAX_MESSAGE_BYTES + 1)
+        if len(raw) > MAX_MESSAGE_BYTES:
+            raise ProtocolError("stream refusal too large")
+        error = _strict_json(raw)
+        if not isinstance(error, dict) or error.get("protocol") != PROTOCOL or Identity.from_json(error.get("identity")) != identity:
+            raise ProtocolError("stream refusal identity")
+        raise PlatformError(str(error.get("code") or "unavailable"))
+    if response.headers.get_content_type() != "application/x-ndjson":
+        raise ProtocolError("stream content type")
+
+
+def _read_frame(response):
+    raw = response.readline(_MAX_FRAME + 1)
+    if not raw or not raw.endswith(b"\n"):
+        if len(raw) <= _MAX_FRAME:
+            raise EOFError("stream ended inside a frame")
+    if len(raw) > _MAX_FRAME:
+        raise ProtocolError("stream frame too large")
+    value = _strict_json(raw)
+    if not isinstance(value, dict):
+        raise ProtocolError("stream frame")
+    return value
+
+
+def _model_frame(frame, entry, seq):
+    if not _uint(frame.get("seq")) or frame["seq"] != seq:
+        raise ProtocolError("model stream sequence")
+    kind = frame.get("type")
+    if kind == "text" and entry == "complete":
+        _keys(frame, {"type", "seq", "text"}, set())
+        if not isinstance(frame["text"], str) or not frame["text"]:
+            raise ProtocolError("model text")
+    elif kind == "event" and entry == "forward":
+        _keys(frame, {"type", "seq", "event"}, set())
+        event = frame["event"]
+        _keys(event, {"data"}, {"name"})
+        if not isinstance(event["data"], dict) or ("name" in event and (not isinstance(event["name"], str) or event["name"] and not re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", event["name"]))):
+            raise ProtocolError("provider event")
+    elif kind == "end" and frame.get("outcome") == "outcome_unknown":
+        _keys(frame, {"type", "seq", "outcome"}, set())
+    elif kind == "end" and frame.get("outcome") == "completed":
+        _keys(frame, {"type", "seq", "outcome", "input_tokens", "output_tokens", "soft_budget_exceeded"},
+              {"finish_reason"} if entry == "complete" else set())
+        if not (_uint(frame["input_tokens"]) and _uint(frame["output_tokens"]) and isinstance(frame["soft_budget_exceeded"], bool)):
+            raise ProtocolError("stream usage")
+        if "finish_reason" in frame and not isinstance(frame["finish_reason"], str):
+            raise ProtocolError("stream finish reason")
+    else:
+        raise ProtocolError("model stream frame type")
+
+
+class OutputStream:
+    """An invocation's duplex output channel. Use it as a context manager.
+
+    The writer retains unacknowledged frames. After a transport break the
+    next write or close reopens the same attempt and sends only missing frames.
+    """
+
+    def __init__(self, platform, operation_id, attempt=None):
+        if not isinstance(operation_id, str) or not 0 < len(operation_id.encode()) <= 100:
+            raise ProtocolError("operation ID")
+        if attempt is not None and (not _uint(attempt) or attempt < 1):
+            raise ProtocolError("stream attempt")
+        self.platform, self.operation_id, self.attempt = platform, operation_id, attempt
+        self._seq = self._acked = 0
+        self._pending = {}
+        self._pending_bytes = 0
+        self._lock = threading.Lock()
+        self._updates = threading.Condition()
+        self._conn = self._socket = self._response = self._reader = None
+        self._broken = self._cancelled = self._reader_started = False
+        self._error = self.reason = None
+
+    @property
+    def cancelled(self):
+        with self._updates:
+            return self._cancelled
+
+    def __enter__(self):
+        self._connect()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            if exc_type is None:
+                self.close()
+        finally:
+            self._disconnect()
+
+    def _chunk(self, raw):
+        self._socket.sendall(("%x\r\n" % len(raw)).encode() + raw + b"\r\n")
+
+    def _disconnect(self):
+        if self._socket is not None:
+            _end_socket(self._socket)
+        if self._reader is not None:
+            self._reader.join()
+        if self._response is not None:
+            self._response.close()
+        if self._conn is not None:
+            self._conn.close()
+        self._conn = self._socket = self._response = self._reader = None
+
+    def _connect(self):
+        self._disconnect()
+        with self._updates:
+            self._check()
+        conn = _UnixHTTPConnection(self.platform.path, CALL_TIMEOUT)
+        self._conn = conn
+        try:
+            conn.putrequest("POST", "/v1/invocations/stream")
+            conn.putheader("Content-Type", "application/x-ndjson")
+            conn.putheader("Transfer-Encoding", "chunked")
+            conn.endheaders()
+            self._socket = conn.sock
+            opening = dict(type="open", protocol=PROTOCOL, identity=self.platform.identity.to_json(), operation_id=self.operation_id)
+            if self.attempt is not None:
+                opening["attempt"] = self.attempt
+            self._chunk(_output_line(opening))
+            response = conn.getresponse()
+            self._response = response
+            _stream_response(response, self.platform.identity)
+            first = _read_frame(response)
+            _keys(first, {"type", "protocol", "identity", "attempt", "seq"}, set())
+            if (first["type"] != "opened" or first["protocol"] != PROTOCOL or
+                    Identity.from_json(first["identity"]) != self.platform.identity or
+                    not _uint(first["attempt"]) or first["attempt"] < 1 or not _uint(first["seq"])):
+                raise ProtocolError("output stream opening")
+            if self.attempt is not None and self.attempt != first["attempt"]:
+                raise PlatformError("reset")
+            if self._reader_started and not self._acked <= first["seq"] <= self._seq:
+                raise ProtocolError("reopened output sequence")
+            self.attempt = first["attempt"]
+            self._seq = max(first["seq"], self._seq)
+            self._ack(first["seq"])
+            self._broken = False
+            self._reader_started = True
+            self._socket.settimeout(310.0)
+            pending = list(self._pending.values())
+            self._reader = threading.Thread(target=self._controls, daemon=True)
+            self._reader.start()
+            for raw in pending:
+                self._chunk(raw)
+        except BaseException:
+            self._disconnect()
+            raise
+
+    def _ack(self, seq):
+        self._acked = seq
+        for key in list(self._pending):
+            if key > seq:
+                break
+            self._pending_bytes -= len(self._pending.pop(key))
+
+    def _controls(self):
+        try:
+            while True:
+                frame = _read_frame(self._response)
+                with self._updates:
+                    kind = frame.get("type")
+                    if kind == "ack":
+                        _keys(frame, {"type", "seq"}, set())
+                        if not _uint(frame["seq"]) or not self._acked <= frame["seq"] <= self._seq:
+                            raise ProtocolError("output acknowledgment")
+                        self._ack(frame["seq"])
+                    elif kind == "cancel" and not self._cancelled:
+                        _keys(frame, {"type"}, set())
+                        self._cancelled = True
+                    elif kind == "closed":
+                        _keys(frame, {"type", "reason"}, set())
+                        if frame["reason"] not in _CLOSED_REASONS:
+                            raise ProtocolError("output close reason")
+                        self.reason = frame["reason"]
+                        self._updates.notify_all()
+                        return
+                    else:
+                        raise ProtocolError("output control frame")
+                    self._updates.notify_all()
+        except (OSError, EOFError, http.client.HTTPException):
+            with self._updates:
+                self._broken = True
+                self._updates.notify_all()
+        except Exception as exc:
+            with self._updates:
+                self._error = exc
+                self._updates.notify_all()
+
+    def _check(self):
+        if self._error:
+            raise self._error
+        if self.reason or self._cancelled:
+            raise PlatformError(self.reason or "canceled")
+
+    def _write(self, fields):
+        with self._lock:
+            if self._conn is None:
+                raise ProtocolError("output stream is not open")
+            with self._updates:
+                self._check()
+                seq = self._seq + 1
+                raw = _output_line(dict(fields, seq=seq))
+                if len(self._pending) >= 4096 or self._pending_bytes + len(raw) > 16 << 20:
+                    raise PlatformError("unavailable")
+                self._pending[seq] = raw
+                self._pending_bytes += len(raw)
+                self._seq = seq
+                broken = self._broken
+            if not broken:
+                try:
+                    self._chunk(raw)
+                    return
+                except OSError:
+                    pass
+            self._connect()
+
+    def delta(self, text):
+        if not isinstance(text, str) or not text or "\0" in text:
+            raise ProtocolError("output delta")
+        self._write({"type": "delta", "text": text})
+
+    def step(self, name, state, label=None):
+        if not isinstance(name, str) or not re.fullmatch("[a-z][a-z0-9_.-]{0,63}", name) or state not in ("started", "done", "failed"):
+            raise ProtocolError("output step")
+        frame = {"type": "step", "step": name, "state": state}
+        if label is not None:
+            if not isinstance(label, str) or not label or len(label.encode()) > 256 or any(unicodedata.category(c) == "Cc" for c in label):
+                raise ProtocolError("output step label")
+            frame["label"] = label
+        self._write(frame)
+
+    def close(self):
+        with self._lock:
+            for trial in range(2):
+                with self._updates:
+                    if self._error:
+                        raise self._error
+                    if self.reason:
+                        return self.reason
+                if self._broken or trial:
+                    self._connect()
+                try:
+                    self._chunk(b'{"type":"close"}\n')
+                    self._socket.sendall(b"0\r\n\r\n")
+                except OSError:
+                    continue
+                with self._updates:
+                    self._updates.wait_for(lambda: self.reason or self._broken or self._error, CALL_TIMEOUT)
+                    if self._error:
+                        raise self._error
+                    if self.reason:
+                        return self.reason
+            raise PlatformError("unavailable")
+
+
+def _output_line(frame):
+    raw = json.dumps(frame, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode() + b"\n"
+    if len(raw) > _MAX_FRAME:
+        raise ProtocolError("output frame too large")
+    return raw
 
 
 # --- control server --------------------------------------------------------
@@ -935,6 +1266,12 @@ class Harness:
         self._background: Optional[Callable[["Harness"], bool]] = None
         self._wake = threading.Event()
         self._stop = threading.Event()
+
+    def output_stream(self, operation_id: str, attempt: Optional[int] = None) -> OutputStream:
+        """Open the output stream of a working invocation from a background handler."""
+        if self.platform is None:
+            raise PlatformError("unavailable")
+        return OutputStream(self.platform, operation_id, attempt)
 
     @property
     def agent_id(self) -> str:
