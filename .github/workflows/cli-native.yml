@@ -1,0 +1,61 @@
+name: Native portable CLI
+
+on:
+  workflow_call:
+    inputs:
+      release:
+        type: string
+        default: ''
+      checksum-index:
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  cli:
+    name: CLI on ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-24.04, target: linux-amd64}
+          - {os: ubuntu-24.04-arm, target: linux-arm64}
+          - {os: macos-15-intel, target: darwin-amd64}
+          - {os: macos-15, target: darwin-arm64}
+          - {os: windows-2025, target: windows-amd64}
+          - {os: windows-11-arm, target: windows-arm64}
+    env:
+      CGO_ENABLED: '0'
+      GOTOOLCHAIN: local
+      GOENV: 'off'
+      GOWORK: 'off'
+      GOFLAGS: -mod=readonly
+      AGENTCAPSULE_TEST_TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Test the native CLI build and commands
+        if: inputs.release == ''
+        run: go test -count=1 ./cmd/agentcapsule
+      - name: Fetch the portable files from the release build
+        if: inputs.release != ''
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: portable-release-files
+          path: ${{ runner.temp }}/portable-release-files
+      - name: Verify and execute the release binary on its native platform
+        if: inputs.release != ''
+        env:
+          AGENTCAPSULE_TEST_RELEASE: ${{ inputs.release }}
+          AGENTCAPSULE_TEST_RELEASE_DIR: ${{ runner.temp }}/portable-release-files
+          AGENTCAPSULE_TEST_RELEASE_INDEX: ${{ inputs.checksum-index }}
+        run: go test -v -count=1 -run '^TestPortableCLI$' ./cmd/agentcapsule

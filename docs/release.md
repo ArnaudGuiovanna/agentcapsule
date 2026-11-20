@@ -35,6 +35,16 @@ with the reference echo harness, adapter, deploy configuration, units, public
 HTTP contract and host guide. `agentcapsule-bundle.json` records the server
 release, migration format, commit and artifact digests. The release workflow signs checksums and attests the provenance of these files. GitHub allows up to 1,000 files per release and requires each to be smaller than 2 GiB. The builder splits source archives at 1,500 MiB before checking every final file. [GitHub release limits](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases)
 
+Before signing a tag, the release workflow runs the six packaged CLIs on
+native amd64 and arm64 runners for Linux, macOS and Windows. Each runner
+verifies its executable against the build job’s checksum index, checks the
+embedded target, commit and release version, and exercises an HTTPS session
+across separate CLI processes. The test rejects an incompatible API before
+sending credentials, then logs in with a trusted test CA and reads the current
+organization from the saved private context. The signing job verifies the
+same index digest. Pull requests run this scenario with native builds.
+[Native runner platforms](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
+
 Each image inventory is tied to its offline archive and the pinned reference in the deployment configuration. The scanner applies the same image policy to the local SPDX and the registry scan. The source index records exact Red Hat SRPMs, Debian source packages, and Alpine recipes with their upstream files and packaging patches. Maven source-classifier URLs and Go module URLs identify further upstream components. [Candidate image qualification](release-image-qualification.md)
 
 ### Signed Linux development build `v0.1.0-dev.6`
