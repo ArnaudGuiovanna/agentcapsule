@@ -6,12 +6,22 @@ name: Release
 # token that can sign or write. It assembles the offline host distribution. The sign job signs the checksums with cosign
 # (keyless, GitHub's OIDC identity) and attests their SLSA provenance. The
 # publish job creates a draft release, which a maintainer reviews and publishes.
+#
+# A rehearsal (workflow_dispatch on a branch) runs the build and the native
+# CLI tests under a pre-release tag created on the runner only, never pushed;
+# it signs and publishes nothing. It checks a fix before a version is tagged.
 
 on:
   push:
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+'
       - 'v[0-9]+.[0-9]+.[0-9]+-*'
+  workflow_dispatch:
+    inputs:
+      rehearsal:
+        description: 'Tag to rehearse, local to the runner, such as v0.0.1-rehearsal.1'
+        required: true
+        type: string
 
 permissions: {}
 
@@ -29,6 +39,7 @@ env:
   # internal/volumestore links -l:libcryptsetup.so.12, which Go refuses in a
   # #cgo directive unless this pattern allows it.
   CGO_LDFLAGS_ALLOW: '-l:libcryptsetup\.so\.12'
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.rehearsal || github.ref_name }}
 
 jobs:
   build:
@@ -55,11 +66,18 @@ jobs:
 
       - name: Check the tag
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ env.RELEASE_TAG }}
         run: |
           set -euo pipefail
-          test "$GITHUB_REF_TYPE" = tag
           python3 -c 'import re, sys; sys.exit(not re.fullmatch(r"v\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?", sys.argv[1]))' "$TAG"
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            # A rehearsal: tag the branch head on this runner only (the
+            # checkout keeps no credentials, so nothing can be pushed).
+            case "$TAG" in *-rehearsal.*) ;; *) echo "a rehearsal tag must contain -rehearsal." >&2; exit 1 ;; esac
+            git tag "$TAG" HEAD
+            exit 0
+          fi
+          test "$GITHUB_REF_TYPE" = tag
           test "$(git rev-parse "$TAG^{commit}")" = "$(git rev-parse HEAD)"
           # Only a commit of main is released.
           git merge-base --is-ancestor HEAD origin/main
@@ -75,9 +93,16 @@ jobs:
           Check-Valid-Until: no
           EOF
           sudo apt-get update
+          # Bring the runner's packages to the snapshot's versions. The guest
+          # image copies glibc, cryptsetup, e2fsprogs and their libraries from
+          # this host, and the server bundle ships the snapshot's sources of
+          # exactly those versions; the runner image can lag behind it.
+          sudo DEBIAN_FRONTEND=noninteractive apt-get upgrade --yes -o Dpkg::Options::=--force-confold
           sudo apt-get install --yes --no-install-recommends \
             build-essential libcryptsetup-dev cryptsetup-bin e2fsprogs musl-tools cmake pkg-config \
-            bison flex libelf-dev libssl-dev bc xz-utils skopeo
+            bison flex libelf-dev libssl-dev bc xz-utils skopeo libseccomp-dev
+          libc="$(dpkg-query -W -f='${Version}' libc6)"
+          test "$libc" = "$(apt-cache policy libc6 | awk '/Candidate:/ {print $2}')"
 
       - name: Dependency audit (govulncheck on every Go module, licenses)
         run: |
@@ -88,7 +113,7 @@ jobs:
 
       - name: Build the binaries and the guest image twice, and compare
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ env.RELEASE_TAG }}
         run: |
           python3 scripts/build-release.py --go "$(command -v go)" --version "$TAG" \
             --twice --fresh-module-cache --guest-cryptsetup /usr/sbin/cryptsetup \
@@ -108,7 +133,7 @@ jobs:
 
       - name: SBOMs
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ env.RELEASE_TAG }}
         run: |
           set -euo pipefail
           dist="$RUNNER_TEMP/release/build/dist"
@@ -171,6 +196,17 @@ jobs:
           cat SHA256SUMS
           echo "checksum-index=$(sha256sum SHA256SUMS | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
+      - name: Keep the logs of a failed build
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-build-logs
+          retention-days: 7
+          if-no-files-found: ignore
+          path: |
+            ${{ runner.temp }}/release/**/*.log
+            ${{ runner.temp }}/release/**/summary.json
+
       - name: Keep the six release binaries and the index for native execution
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -202,12 +238,13 @@ jobs:
       contents: read
     uses: ./.github/workflows/cli-native.yml
     with:
-      release: ${{ github.ref_name }}
+      release: ${{ github.event_name == 'workflow_dispatch' && inputs.rehearsal || github.ref_name }}
       checksum-index: ${{ needs.build.outputs.checksum-index }}
 
   sign:
     name: Sign the checksums and attest the provenance
     needs: [build, native-cli]
+    if: github.event_name == 'push'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
@@ -276,6 +313,7 @@ jobs:
   publish:
     name: Create the draft release
     needs: [build, sign]
+    if: github.event_name == 'push'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
