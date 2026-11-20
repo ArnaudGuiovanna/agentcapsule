@@ -279,7 +279,7 @@ the items listed after the table.
 | pgBackRest 2.58 and rclone 1.60.1 (CI) | SHA-256 in `scripts/fetch-backup-tools.py`, from a fixed Ubuntu snapshot |
 | SeaweedFS, OpenSSH (sftp) and Prometheus images (CI) | Digest |
 | GitHub Actions | Commit SHA |
-| Dagger CLI and gitleaks (CI) | SHA-256 in [ci.yml](../.github/workflows/ci.yml) |
+| Dagger CLI and Gitleaks (CI) | SHA-256 in the [CI workflow](../.github/workflows/ci.yml) and [Gitleaks action](../.github/actions/scan-secrets/action.yml), respectively |
 | Python tools | `--require-hashes` requirement files |
 | Quint tools | `spec/package-lock.json` integrity hashes |
 | Harness base images | Digest in each Dockerfile and in the Dagger module |

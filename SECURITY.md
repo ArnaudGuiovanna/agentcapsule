@@ -65,7 +65,7 @@ an SPDX SBOM. [docs/release.md](docs/release.md#verify-a-release) says how to ve
 
 ## Secrets in this repository
 
-CI scans every change and the full history with [gitleaks](https://github.com/gitleaks/gitleaks).
+GitHub Actions runs Gitleaks on pushes to every branch and tag, and on pull requests. It scans the full checked-out history, redacts findings and fails the check when it detects a secret. [Push workflow](.github/workflows/secret-push.yml) · [Main and pull request workflow](.github/workflows/ci.yml)
 Test fixtures that look like credentials are fake and marked `gitleaks:allow` on
 their line. Never commit operator configuration, keys or tokens; the `.gitignore`
 excludes the usual local paths (`.env`, `secrets/`, `*.pem`, `*.key`).
