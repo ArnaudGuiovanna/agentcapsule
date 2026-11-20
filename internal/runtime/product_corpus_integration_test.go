@@ -208,19 +208,24 @@ func (l *corpusLab) agent(harness *HarnessImage, corpora ...CorpusImage) string 
 	if err = l.h.RegisterProvisioned(t.Context(), registration, 62300, 62399); err != nil {
 		t.Fatal(err)
 	}
+	// A new volume is initialized during a restricted boot. Stop that
+	// generation before starting the ordinary boot used by the harness.
+	l.generation[id] = 1
+	run, err := l.h.StartForFence(t.Context(), id, l.generation[id])
+	if err != nil || !run.FenceOnly {
+		t.Fatal("restricted filesystem initialization", err)
+	}
+	l.stop(id)
+	l.mu.Lock()
+	l.initialize[id] = false
+	l.mu.Unlock()
 	return id
 }
 
-// start boots id's next generation.
+// start boots id's next ordinary generation.
 func (l *corpusLab) start(id string) (VMRun, error) {
 	l.generation[id]++
-	run, err := l.h.Start(l.t.Context(), id, l.generation[id])
-	if err == nil {
-		l.mu.Lock()
-		l.initialize[id] = false
-		l.mu.Unlock()
-	}
-	return run, err
+	return l.h.Start(l.t.Context(), id, l.generation[id])
 }
 
 func (l *corpusLab) stop(id string) {

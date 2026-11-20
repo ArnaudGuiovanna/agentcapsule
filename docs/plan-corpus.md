@@ -14,15 +14,15 @@ Les routes, formats et commandes ci-dessous sont des propositions de conception.
 
 ## Suivi du chantier
 
-**20 novembre 2026 · Non démarré.** Le plan s’appuie sur l’état du dépôt à `321143b` (release `v0.0.1`).
+**20 novembre 2026 · Lots 1 à 4 intégrés.** Le plan s’appuie sur l’état du dépôt à `321143b` (release `v0.0.1`).
 
 | Lot | État |
 |---|---|
-| 0. Contrats, ADR 023, modèle Quint | Fait (ADR 023, brouillon OpenAPI `openapi/drafts/corpora.yaml`, COR-001 à COR-009 en `not met`, `spec/corpus_lifecycle.qnt`) |
-| 1. Formats et paquet | Non démarré |
-| 2. Passerelle multimodale | Non démarré |
-| 3. Sources Git | Non démarré |
-| 4. Disques supplémentaires et montage dans l’invité | Fait, KVM à exécuter (liste ordonnée de disques, `drive_limits.corpus`, refus EXDEV et contrôle `corpus_cache_filesystem`, `corpora.json`, contrôle de l’UUID dans `capsule-init`, ABI `agentcapsule-guest/2`, migration 0056 : `system_images.features` et `harness_releases.base` ; 5 tests KVM `TestProductGuest*` écrits ; noyau inchangé ; écarts C14 à C20 de l’ADR 023) |
+| 0. Contrats, ADR 023, modèle Quint | Fait (ADR 023, brouillon OpenAPI `openapi/drafts/corpora.yaml`, exigences COR-001 à COR-009, `spec/corpus_lifecycle.qnt`) |
+| 1. Formats et paquet | Validé. Le lint local et la reproductibilité de l’image ext4 passent. |
+| 2. Passerelle multimodale | Intégrée. Comptage et règlement validés sur PostgreSQL. La recette sur fournisseurs réels reste ouverte. |
+| 3. Sources Git | Intégré. La récupération par SHA, les objets LFS et les identifiants de source passent les tests locaux. La recette GitHub et GitLab reste ouverte. |
+| 4. Disques supplémentaires et montage dans l’invité | Validé sur KVM le 20 novembre 2026. Les cinq tests du lot couvrent le partage entre trois VM, les montages en lecture seule, le refus d’un mauvais UUID, l’ordre des disques et la compatibilité de la base 1. La migration `0058_corpus_mounts` enregistre les fonctionnalités de l’image et la base du harness. |
 | 5. Agent de construction | Non démarré |
 | 6. Publication, liaison et cache | Non démarré |
 | 7. CLI et documentation | Non démarré |

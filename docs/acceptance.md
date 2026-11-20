@@ -112,7 +112,7 @@ Earlier failed attempts are retained separately and do not count as passes.
 
 ## Summary
 
-Of the 74 requirements of §4: 65 met, 0 partial, 9 not met, 0 needs KVM (2026-11-20). The 9 not met are the corpus requirements (COR), specified on 2026-11-20 and not built yet.
+Of the 74 requirements in §4, 67 are met, 2 are partial and 5 are not met as of 2026-11-20.
 
 | Part | Met | Partial | Not met | Needs KVM |
 |---|---|---|---|---|
@@ -124,11 +124,11 @@ Of the 74 requirements of §4: 65 met, 0 partial, 9 not met, 0 needs KVM (2026-1
 | LLM gateway | 8 | 0 | 0 | 0 |
 | Discovery and inter-agent communication | 12 | 0 | 0 | 0 |
 | Content, capabilities and clients | 4 | 0 | 0 | 0 |
-| Corpora | 0 | 0 | 9 | 0 |
+| Corpora | 2 | 2 | 5 | 0 |
 | API conventions | 8 | 1 | 0 | 0 |
 | The MVP outcome as one scenario | 5 | 2 | 0 | 0 |
 | Deployment and operations | 17 | 6 | 0 | 0 |
-| **All rows** | **102** | **9** | **9** | **0** |
+| **All rows** | **104** | **11** | **5** | **0** |
 
 ## Requirements
 
@@ -250,20 +250,19 @@ authentication, never from a request body.
 
 ### Corpora
 
-Specified by [ADR 023](adr/023-corpora.md) and planned in
-[plan-corpus.md](plan-corpus.md); nothing is built yet. The last column names
-the lot whose tests will prove the row.
+[ADR 023](adr/023-corpora.md) defines the corpus contracts. The
+[implementation plan](plan-corpus.md) tracks each lot and its qualification.
 
 | ID | Acceptance | Status | Proof | Missing |
 |---|---|---|---|---|
-| COR-001 | Build pinned to its commit SHA; token encrypted, never shown, logged or sent to another host | not met | — | Corpus lot 3: archives of public and private GitHub and GitLab repositories pinned to their SHA; the credential's sealing, rotation and redaction; a redirect to an undeclared host refused |
+| COR-001 | Build pinned to its commit SHA; token encrypted, never shown, logged or sent to another host | partial | [`TestSourceCredentialsAreSealedAndWriteOnly`](../internal/controlplane/source_credentials_test.go) (PostgreSQL), [`TestArchivesOfPublicAndPrivateRepositoriesPinnedOnACommit`](../internal/corpussource/fetch_test.go) and [`TestRedirectToAnUndeclaredHostIsRefused`](../internal/corpussource/fetch_test.go) (local forge) | Run the public and private repository checks against GitHub and GitLab |
 | COR-002 | `QUEUED` to `REVIEW` tracked; cancel and 24 h limit tested | not met | — | Corpus lots 5 and 6: the build's states, counters and `operation wait --type corpus-build`; cancellation purges its files |
 | COR-003 | Report, `INDEX.md` and a try on a test agent while `REVIEW` | not met | — | Corpus lots 5 and 6: the review bundle read by the API; `try` on a KVM agent |
 | COR-004 | `name:version` maps to one digest; another refused (`version_conflict`) | not met | — | Corpus lot 6: PG test of publication; model run `corpusLifecycleOk.versionConflictTest` pending |
-| COR-005 | Three VMs share one inode; `ro,noexec` under `/corpus/`; a wrong disk refused | not met | — | Corpus lot 4: KVM tests of the shared image, the mount options and the UUID check |
+| COR-005 | Three VMs share one inode; `ro,noexec` under `/corpus/`; a wrong disk refused | met | [`TestProductGuestSharesOneCorpusImageAcrossThreeVMs`](../internal/runtime/product_corpus_integration_test.go), [`TestProductGuestMountsCorporaReadOnlyAndNoExec`](../internal/runtime/product_corpus_integration_test.go) and [`TestProductGuestRefusesACorpusOfAnotherUUID`](../internal/runtime/product_corpus_integration_test.go) passed on KVM on 2026-11-20 | — |
 | COR-006 | Another organization's corpus cannot be bound, tried or seen | not met | — | Corpus lot 6: RBAC matrix rows and PG tests of cross-organization binding; model run `corpusLifecycleOk.crossOrganizationBindingRefusedTest` pending |
-| COR-007 | The builder has no network; every model call metered to the organization's aliases | not met | — | Corpus lots 2 and 5: PG metering of `embed`, `transcribe` and `ocr`; a KVM build whose costs reach the right budget |
-| COR-008 | Archives and LFS objects stay opaque on the host; trap programs never run | not met | — | Corpus lot 3: the corpus traps in `TestTheHostNeverRunsWhatAPackageHolds`; an altered LFS object refused |
+| COR-007 | The builder has no network; every model call metered to the organization's aliases | partial | [`TestEmbeddingsSettleTheProviderTokensAndCountInTokenBudgets`](../internal/controlplane/llm_media_test.go), [`TestTranscriptionCountsSecondsInCostBudgetsOnly`](../internal/controlplane/llm_media_test.go) and [`TestOCRCountsPagesAtThePriceOfItsReservation`](../internal/controlplane/llm_media_test.go) (PostgreSQL) | Run the isolated builder on KVM and check the resulting budget entries |
+| COR-008 | Archives and LFS objects stay opaque on the host; trap programs never run | met | [`TestTheHostNeverRunsWhatACorpusSourceHolds`](../internal/worker/corpus_content_test.go) checks the unmodified archive and LFS bytes and the host command traps. [`TestAlteredLFSObjectIsRefused`](../internal/corpussource/lfs_test.go) checks the digest. | — |
 | COR-009 | A pinned image stays; a deprecated, unpinned one leaves the cache | not met | — | Corpus lot 6: KVM test of a rollout to version 4, then eviction of version 3 once deprecated and unpinned; model run `corpusLifecycleOk.deprecatedImageLeavesOnceUnpinnedTest` pending |
 
 ### API conventions

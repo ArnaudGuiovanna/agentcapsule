@@ -99,15 +99,14 @@ it. Planned in [docs/plan-corpus.md](docs/plan-corpus.md); the contracts,
 decisions D-C1 to D-C9 and the changes to the plan are in
 [ADR 023](docs/adr/023-corpora.md), the model in
 [spec/corpus_lifecycle.qnt](spec/corpus_lifecycle.qnt) (2026-11-20).
-Requirements COR-001 to COR-009 of [docs/product.md](docs/product.md#corpora)
-are not met.
+The [acceptance matrix](docs/acceptance.md#corpora) records the evidence for COR-001 through COR-009.
 
 | ID | Item | Status | Remaining |
 |---|---|---|---|
-| COR-01 | Formats `agentcapsule.corpus-source/v1` and `agentcapsule.corpus/v1`, `internal/corpuspkg`, reproducible ext4 shared with `harnesspkg`, local `corpus init` and `corpus lint` (lot 1) | Not started | All |
-| COR-02 | Multimodal gateway: platform channel routes `/v1/llm/embed`, `/v1/llm/transcribe`, `/v1/llm/ocr`, alias operations, prices per second of audio and per page (lot 2) | Not started | All; live qualification on Ollama and a hosted provider |
-| COR-03 | Git sources: sealed read-only source credentials, host rules, forge archives pinned by commit, LFS objects by digest, the host never decoding a source (lot 3) | Not started | All |
-| COR-04 | Extra drives: corpus drives shared by hard link, `corpora.json` and the UUID check in `capsule-init`, guest ABI `agentcapsule-guest/2`, system image features (lot 4) | In progress | The KVM tests of the product guest (written, not run); a guest image with the new `capsule-init` |
+| COR-01 | Formats `agentcapsule.corpus-source/v1` and `agentcapsule.corpus/v1`, `internal/corpuspkg`, reproducible ext4 shared with `harnesspkg`, local `corpus init` and `corpus lint` (lot 1) | Done | — |
+| COR-02 | Multimodal gateway: platform channel routes `/v1/llm/embed`, `/v1/llm/transcribe`, `/v1/llm/ocr`, alias operations, prices per second of audio and per page (lot 2) | In progress | Exercise each route against a real model provider |
+| COR-03 | Git sources: sealed read-only source credentials, host rules, forge archives pinned by commit, LFS objects by digest, the host never decoding a source (lot 3) | In progress | Fetch public and private repositories on real GitHub and GitLab forges |
+| COR-04 | Extra drives: corpus drives shared by hard link, `corpora.json` and the UUID check in `capsule-init`, guest ABI `agentcapsule-guest/2`, system image features (lot 4) | Done | Five product guest tests passed on KVM on 2026-11-20 |
 | COR-05 | Builder agent: one hidden agent per organization, harness `agentcapsule-corpus-builder`, phases `scan`, `convert`, `package`, conversion cache, the worker's image checks and review bundle (lot 5) | Not started | All; KVM build of a mixed repository |
 | COR-06 | Publication, binding and cache: API, try, publish, deprecate, templates and rollouts, eviction of unpinned images, corpus quotas, RBAC and audit (lot 6) | Not started | All; KVM rollout and eviction |
 | COR-07 | CLI, docs, Python SDK helpers, `capsule-adapter`'s optional corpus MCP server, enrichers (lots 7 to 9) | Not started | All |

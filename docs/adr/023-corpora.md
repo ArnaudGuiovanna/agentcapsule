@@ -969,7 +969,7 @@ Lot 4 changed these, each keeping the guarantees above:
 
 - **C14. A release records its guest base.** §5.4 binds corpora only to a
   release of base 2, but `harness_releases` did not record the base.
-  Migration 0056 adds `harness_releases.base` (base 1 for existing and
+  Migration `0058_corpus_mounts` on the corpus branch adds `harness_releases.base` (base 1 for existing and
   locally approved releases); the importer records `harness.yaml`'s base,
   and `GET /v1/harness-releases` shows it. The check lot 6 calls is
   `corporaMountable` (`internal/controlplane/corpus_images.go`): a base-2
