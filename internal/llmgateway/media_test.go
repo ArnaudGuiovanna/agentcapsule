@@ -95,6 +95,16 @@ func TestEmbedAsksForBase64AndKeepsTheInputOrder(t *testing.T) {
 	}
 }
 
+func TestEmbeddingCoordinatesMustBeNumbers(t *testing.T) {
+	if _, err := parseEmbeddings([]byte(`{"data":[{"embedding":[1,null,2]}]}`), 1); !errors.Is(err, ErrInvalid) {
+		t.Fatal("expected an invalid coordinate", err)
+	}
+	out, err := parseEmbeddings([]byte(`{"data":[{"embedding":[1,0,2]}]}`), 1)
+	if err != nil || !bytes.Equal(out.Embeddings[0], floats(1, 0, 2)) {
+		t.Fatal("a numeric zero must be preserved", out, err)
+	}
+}
+
 func TestEmbedAnswerThatCannotBeAccountedIsOutcomeUnknown(t *testing.T) {
 	big := base64.StdEncoding.EncodeToString(make([]byte, 16<<10))
 	for name, reply := range map[string]string{

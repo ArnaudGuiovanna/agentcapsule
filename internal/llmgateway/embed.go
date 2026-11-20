@@ -96,16 +96,16 @@ func vectorBytes(raw json.RawMessage) ([]byte, bool) {
 		}
 		return b, true
 	}
-	var floats []float64
+	var floats []*float64
 	if json.Unmarshal(raw, &floats) != nil || len(floats) == 0 {
 		return nil, false
 	}
 	b := make([]byte, 0, 4*len(floats))
 	for _, f := range floats {
-		if math.IsNaN(f) || math.IsInf(f, 0) || math.Abs(f) > math.MaxFloat32 {
+		if f == nil || math.Abs(*f) > math.MaxFloat32 {
 			return nil, false
 		}
-		b = binary.LittleEndian.AppendUint32(b, math.Float32bits(float32(f)))
+		b = binary.LittleEndian.AppendUint32(b, math.Float32bits(float32(*f)))
 	}
 	return b, true
 }
