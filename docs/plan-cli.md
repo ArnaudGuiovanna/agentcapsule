@@ -22,6 +22,8 @@ Les commandes et les nouvelles routes ci-dessous sont des propositions de concep
 
 **Depuis le média `dev.12`.** Le commit `1d0fcf8` corrige `operation wait --type invocation` après une restauration. Le CLI attend le résultat quand le serveur a remis l’invocation en file. Si le demandeur a perdu ses droits, il affiche le motif et renvoie le code de sortie 5. Le comportement a été vérifié sous WSL avec le binaire CLI sur HTTPS et les tests de restauration sur PostgreSQL. Ce correctif reste à inclure dans la prochaine distribution.
 
+Le scénario MonApp vérifie aussi le transfert de Support vers Ventes. Après une nouvelle connexion Keycloak, Alice retrouve ses agents personnels et l’agent de Ventes. Bob conserve son accès à Support. Le workflow de release exige désormais un test des six exécutables sur leur système et leur architecture avant signature. Son test Linux amd64 a réussi sous WSL sur le binaire signé de `dev.12`. Les résultats natifs des autres plateformes restent à obtenir. [Scénario MonApp](api/applications.md) · [Contrôles du workflow](release.md)
+
 ## 1. Parcours à livrer
 
 | Qui | Action | Résultat visible |
