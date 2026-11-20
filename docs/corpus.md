@@ -347,3 +347,5 @@ The worker then keeps the image in its cache, in
 | Image | 16 GiB by default (`corpus.max_image_mib` of the worker) |
 | Directories of an image | 100,000 |
 | LFS objects of one build | 10,000 and 20 GiB by default |
+
+[Build, review and publish with the CLI](cli.md#build-and-publish-a-corpus)

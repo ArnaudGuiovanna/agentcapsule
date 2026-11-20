@@ -184,3 +184,39 @@ The storage, wire protocol and binary release each carry their own version. The 
 | Organization administrator and platform operator, separate HTTPS contexts | `communication explain`, `doctor`, `support export` | The organization sees the reason for a held request. The platform archive contains aggregate worker observations and respects the content boundary. [Support archive test](../cmd/agentcapsule/status_test.go) |
 | Organization administrator, HTTPS | `rollout start`, `rollout resume`, `agent grow` | A bad canary pauses the update. Resumption reports authenticated boots on the new revision, and restored data survives an offline disk expansion. [Rollouts and volume growth](api/deployments.md#updating-a-deployed-template) |
 | Linux host administrator and CLI operator | `update apply`, `restore test`, `restore apply`, `self update` | The updated services can invoke an agent. Recovery preserves revocations and personal volume ownership. The CLI reports its new version after replacement. [Recovery procedure](cli-host.md#update-and-recovery) |
+
+
+## Build and publish a corpus
+
+Prepare a source repository with `agentcapsule corpus init DIR`, edit its
+manifest and inspect the selection with `agentcapsule corpus lint DIR`.
+Use an organization context with `corpus:manage` for the build.
+
+```sh
+agentcapsule source-credential create --name school --kind gitlab \
+  --host gitlab.example.org --secret-file - < school-readonly.token
+agentcapsule corpus create finance --git https://gitlab.example.org/school/finance \
+  --ref main --path cours --credential school --idempotency-key finance-create
+build=$(agentcapsule corpus build finance --idempotency-key finance-build-7 | jq -er '.data.id')
+agentcapsule operation wait --type corpus-build "$build"
+agentcapsule corpus-build files "$build" --status failed
+agentcapsule corpus-build index "$build" --output-file INDEX.md
+agentcapsule corpus-build try "$build" --agent "$test_agent" --mount finance
+agentcapsule corpus-build publish "$build" --version 3 --idempotency-key finance-v3
+agentcapsule corpus versions finance --include-deprecated
+```
+
+Corpus names and source credential names are resolved in the current
+organization. You can also pass their IDs. For a public custom forge include
+`--kind github` or `--kind gitlab`. A build can override the source ref
+with `--ref` or pin a commit with `--commit`. Use `corpus-build show`
+for counters and costs and `corpus-build review` for available review
+files. Exporting the index creates a new private Markdown file. Without
+`--output-file` the CLI returns its text in the JSON envelope.
+
+The wait exits with 0 at REVIEW or PUBLISHED, 5 at FAILED, CANCELED or
+EXPIRED, and 130 on interrupt. Bind a published release in the template's
+`corpora` array or use `agent set-corpora AGENT --file bindings.json`.
+The guest applies the binding at its next boot. Use `agent corpora AGENT`
+to inspect it and `corpus-release deprecate RELEASE_ID` to close a
+release to new bindings. [Corpora](corpus.md) · [HTTP API](api/corpora.md)

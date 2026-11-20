@@ -205,6 +205,9 @@ func run(ctx context.Context, args []string, in io.Reader, out, errout io.Writer
 	if _, err = api.verifyToken(ctx, c.Token); err != nil {
 		return err
 	}
+	if err = api.resolveCorpusAction(ctx, &a, c.Token); err != nil {
+		return err
+	}
 	if a.method != "GET" {
 		for _, r := range key {
 			if r < 33 || r > 126 {
@@ -226,9 +229,17 @@ func run(ctx context.Context, args []string, in io.Reader, out, errout io.Writer
 				return err
 			}
 		}
-		r, err := api.request(ctx, a.method, a.path, key, c.Token, a.body)
+		var r reply
+		if a.name == "corpus-build index" {
+			r, err = api.requestAccept(ctx, a.method, a.path, key, c.Token, a.body, "text/markdown")
+		} else {
+			r, err = api.request(ctx, a.method, a.path, key, c.Token, a.body)
+		}
 		if err != nil {
 			return err
+		}
+		if a.name == "corpus-build index" || a.name == "corpus-build files" {
+			return cli.corpusReview(a, r)
 		}
 		if a.name == "app connection" || a.name == "app verify" {
 			return cli.applicationCommand(ctx, a, c, r, issuerCA)
@@ -276,7 +287,7 @@ func operationState(data json.RawMessage) (string, string, error) {
 		state = op.Stage
 	}
 	switch strings.ToLower(state) {
-	case "ready", "succeeded", "completed", "confirmed":
+	case "review", "published", "ready", "succeeded", "completed", "confirmed":
 		return state, "success", nil
 	case "lost":
 		// A restore queues a rerun under the same ID unless it records a skip reason.
@@ -286,7 +297,7 @@ func operationState(data json.RawMessage) (string, string, error) {
 		return state, "failure", nil
 	case "failed", "cancelled", "canceled", "expired", "rejected", "paused", "disabled", "refused":
 		return state, "failure", nil
-	case "pending", "running", "accepted", "queued", "in_progress", "planned", "provisioning", "starting", "verifying", "importing", "working", "scheduled", "capturing", "restoring", "preparing", "waiting_capacity":
+	case "fetching", "scanning", "fetching_lfs", "converting", "packaging", "pending", "running", "accepted", "queued", "in_progress", "planned", "provisioning", "starting", "verifying", "importing", "working", "scheduled", "capturing", "restoring", "preparing", "waiting_capacity":
 		return state, "pending", nil
 	default:
 		return "", "", fmt.Errorf("unrecognized operation state %q", state)

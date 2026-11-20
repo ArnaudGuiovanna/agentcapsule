@@ -117,6 +117,10 @@ func TestPortableCLI(t *testing.T) {
 	if out := call("", true, "corpus", "lint", corpus); !strings.Contains(out, `"valid":true`) || !strings.Contains(out, `"path":"notes.md"`) {
 		t.Fatal("corpus lint", out)
 	}
+	const corID = "cor_00000000000000000000000000000011"
+	const credID = "scr_00000000000000000000000000000012"
+	const buildID = "cbd_00000000000000000000000000000013"
+	var submitted, polled atomic.Int32
 	var compatible atomic.Bool
 	var authenticated atomic.Int32
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -138,6 +142,46 @@ func TestPortableCLI(t *testing.T) {
 			}
 			authenticated.Add(1)
 			io.WriteString(w, `{"organization":{"id":"org_native"}}`)
+		case "GET /v1/source-credentials":
+			fmt.Fprintf(w, `{"items":[{"name":"finance-key","id":%q,"kind":"gitlab"}]}`, credID)
+		case "POST /v1/corpora":
+			var in struct {
+				Name   string
+				Source map[string]string
+			}
+			if json.NewDecoder(r.Body).Decode(&in) != nil || in.Name != "finance" || in.Source["credential_id"] != credID || in.Source["kind"] != "gitlab" || in.Source["path"] != "cours" || r.Header.Get("Idempotency-Key") == "" {
+				t.Errorf("invalid creation %#v", in)
+			}
+			fmt.Fprintf(w, `{"id":%q}`, corID)
+		case "GET /v1/corpora":
+			if r.URL.Query().Get("name") != "finance" {
+				t.Error("missing name filter")
+			}
+			fmt.Fprintf(w, `{"items":[{"name":"finance","id":%q}]}`, corID)
+		case "POST /v1/corpora/" + corID + "/builds":
+			submitted.Add(1)
+			w.WriteHeader(202)
+			fmt.Fprintf(w, `{"id":%q,"state":"QUEUED"}`, buildID)
+		case "GET /v1/corpus-builds/" + buildID:
+			if polled.Add(1) == 1 {
+				fmt.Fprint(w, `{"state":"FETCHING_LFS"}`)
+			} else {
+				fmt.Fprint(w, `{"state":"REVIEW"}`)
+			}
+		case "GET /v1/corpus-builds/" + buildID + "/review-file":
+			if r.URL.Query().Get("path") == "INDEX.md" {
+				w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+				fmt.Fprint(w, "# Finance\n")
+			} else {
+				fmt.Fprintf(w, `{"schema":"agentcapsule.corpus-report/v1","build_id":%q,"commit":"0000000000000000000000000000000000000000","files":[],"totals":{}}`, buildID)
+			}
+		case "POST /v1/corpus-builds/" + buildID + "/try", "POST /v1/corpus-builds/" + buildID + "/publish", "POST /v1/corpus-releases/rel/deprecate":
+			fmt.Fprint(w, `{}`)
+		case "GET /v1/corpus-releases":
+			if r.URL.Query().Get("corpus_id") != corID {
+				t.Error("unexpected release filter", r.URL.RawQuery)
+			}
+			fmt.Fprint(w, `{"items":[]}`)
 		default:
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 			http.NotFound(w, r)
@@ -162,4 +206,26 @@ func TestPortableCLI(t *testing.T) {
 	if out := call("", true, "organization", "current"); !strings.Contains(out, `"org_native"`) || authenticated.Load() < 2 {
 		t.Fatal("a fresh CLI process did not use its saved organization session", out)
 	}
+	call("", true, "corpus", "create", "finance", "--git", "https://gitlab.example.org/school/finance", "--ref", "main", "--path", "cours", "--credential", "finance-key")
+	call("", true, "corpus", "build", "finance")
+	call("", true, "operation", "wait", "--type", "corpus-build", buildID)
+	if submitted.Load() != 1 || polled.Load() != 2 {
+		t.Fatal("build and wait", submitted.Load(), polled.Load())
+	}
+	out := call("", true, "corpus-build", "files", buildID, "--status", "failed")
+	if !strings.Contains(out, `"items":[]`) {
+		t.Fatal("filtered report", out)
+	}
+	index := filepath.Join(dir, "review.md")
+	call("", true, "corpus-build", "index", buildID, "--output-file", index)
+	data, err := os.ReadFile(index)
+	if err != nil || string(data) != "# Finance\n" {
+		t.Fatal("exported review index", err, string(data))
+	}
+	call("", false, "corpus-build", "index", buildID, "--output-file", index)
+	call("", true, "corpus-build", "try", buildID, "--agent", "agent")
+	call("", true, "corpus-build", "publish", buildID, "--version", "3")
+	call("", true, "corpus", "versions", "finance")
+	call("", true, "corpus-release", "deprecate", "rel")
+
 }

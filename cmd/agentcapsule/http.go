@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -87,6 +88,9 @@ func validRoute(route string) bool {
 	return !strings.Contains(strings.ToLower(u.EscapedPath()), "%2f")
 }
 func (c *client) request(ctx context.Context, method, route, key, token string, body []byte) (reply, error) {
+	return c.requestAccept(ctx, method, route, key, token, body, "application/json")
+}
+func (c *client) requestAccept(ctx context.Context, method, route, key, token string, body []byte, accept string) (reply, error) {
 	if !validRoute(route) {
 		return reply{}, errors.New("expected a canonical /v1/ API path")
 	}
@@ -98,7 +102,7 @@ func (c *client) request(ctx context.Context, method, route, key, token string, 
 	if err != nil {
 		return reply{}, errors.New("invalid HTTP request")
 	}
-	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Accept", accept)
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
@@ -135,6 +139,14 @@ func (c *client) request(ctx context.Context, method, route, key, token string, 
 		problem.Status = res.StatusCode
 		problem.RequestID = id
 		return reply{}, &problem
+	}
+	if accept == "text/markdown" {
+		media, _, err := mime.ParseMediaType(res.Header.Get("Content-Type"))
+		if err != nil || media != accept {
+			return reply{}, errors.New("expected the review index as Markdown")
+		}
+		raw, err := readBounded(res.Body, 1<<20)
+		return reply{Data: raw, RequestID: id}, err
 	}
 	raw, err := readBounded(res.Body, 32<<20)
 	if err != nil {

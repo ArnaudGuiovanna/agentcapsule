@@ -21,6 +21,29 @@ import (
 var commands = map[string]string{
 	"access explain": "GET /access/explain",
 
+	"corpus list":               "GET /corpora",
+	"corpus create":             "POST /corpora",
+	"corpus show":               "GET /corpora/{corpus}",
+	"corpus build":              "POST /corpora/{corpus}/builds",
+	"corpus versions":           "GET /corpus-releases",
+	"corpus-build list":         "GET /corpus-builds",
+	"corpus-build show":         "GET /corpus-builds/{id}",
+	"corpus-build cancel":       "POST /corpus-builds/{id}/cancel",
+	"corpus-build review":       "GET /corpus-builds/{id}/review",
+	"corpus-build files":        "GET /corpus-builds/{id}/review-file",
+	"corpus-build index":        "GET /corpus-builds/{id}/review-file",
+	"corpus-build try":          "POST /corpus-builds/{id}/try",
+	"corpus-build publish":      "POST /corpus-builds/{id}/publish",
+	"corpus-release list":       "GET /corpus-releases",
+	"corpus-release show":       "GET /corpus-releases/{id}",
+	"corpus-release deprecate":  "POST /corpus-releases/{id}/deprecate",
+	"source-credential list":    "GET /source-credentials",
+	"source-credential create":  "POST /source-credentials",
+	"source-credential rotate":  "POST /source-credentials/{id}/rotate",
+	"source-credential disable": "POST /source-credentials/{id}/disable",
+	"agent corpora":             "GET /agents/{id}/corpora",
+	"agent set-corpora":         "POST /agents/{id}/corpora",
+
 	"activation show":   "GET /applications/{app}/activations/{id}",
 	"activation update": "PUT /applications/{app}/activations/{id}",
 
@@ -198,7 +221,7 @@ func parse(args []string) ([]string, options, error) {
 			return nil, nil, fmt.Errorf("duplicate --%s", k)
 		}
 		switch k {
-		case "json", "help", "watch", "non-interactive":
+		case "json", "help", "watch", "non-interactive", "include-deprecated":
 			if equal {
 				return nil, nil, fmt.Errorf("--%s takes no value", k)
 			}
@@ -284,8 +307,9 @@ func hasSecret(val any) bool {
 var param = regexp.MustCompile(`\{([a-z_]+)\}`)
 
 type action struct {
-	name, method, path string
-	body               []byte
+	name, method, path                   string
+	body                                 []byte
+	corpusRef, credentialRef, fileStatus string
 }
 
 func buildAction(pos []string, o options, in io.Reader) (action, error) {
@@ -305,6 +329,7 @@ func buildAction(pos []string, o options, in io.Reader) (action, error) {
 			"rollout":        "rollouts",
 			"harness-import": "harness-imports",
 			"invocation":     "invocations",
+			"corpus-build":   "corpus-builds",
 			"volume-growth":  "volume-growth",
 			"activation":     "applications/{app}/activations",
 			"revocation":     "access-revocations",
@@ -338,6 +363,9 @@ func buildAction(pos []string, o options, in io.Reader) (action, error) {
 			if val == "" || val == "." || val == ".." || strings.ContainsAny(val, "/\\?#\r\n") {
 				return a, fmt.Errorf("invalid or missing %s", match[1])
 			}
+			if match[1] == "corpus" {
+				a.corpusRef = val
+			}
 			a.path = strings.Replace(a.path, match[0], url.PathEscape(val), 1)
 		}
 	}
@@ -347,6 +375,47 @@ func buildAction(pos []string, o options, in io.Reader) (action, error) {
 	if a.method == "GET" {
 		u, _ := url.ParseRequestURI(a.path)
 		q := u.Query()
+		if a.name == "corpus versions" {
+			a.corpusRef = o.take("corpus")
+			if a.corpusRef == "" && len(args) > 0 {
+				a.corpusRef, args = args[0], args[1:]
+			}
+			if a.corpusRef == "" {
+				return a, errors.New("provide a corpus name or ID")
+			}
+			q.Set("corpus_id", a.corpusRef)
+		}
+		if a.name == "corpus-build files" {
+			a.fileStatus = o.take("status")
+			if a.fileStatus != "" && a.fileStatus != "converted" && a.fileStatus != "cached" && a.fileStatus != "skipped" && a.fileStatus != "failed" {
+				return a, errors.New("invalid corpus file status")
+			}
+			q.Set("path", "report.json")
+		}
+		if a.name == "corpus-build index" {
+			q.Set("path", "INDEX.md")
+		}
+		if a.name == "corpus list" {
+			if v := o.take("name"); v != "" {
+				q.Set("name", v)
+			}
+		}
+		if a.name == "corpus-build list" {
+			if v := o.take("state"); v != "" {
+				q.Set("state", v)
+			}
+		}
+		if a.name == "corpus-build list" || a.name == "corpus-release list" {
+			if v := o.take("corpus"); v != "" {
+				a.corpusRef = v
+				q.Set("corpus_id", v)
+			}
+		}
+		if a.name == "corpus versions" || a.name == "corpus-release list" {
+			if o.take("include-deprecated") != "" {
+				q.Set("include_deprecated", "true")
+			}
+		}
 		for _, key := range []string{"limit", "after", "period", "from", "to", "member", "agent", "cursor", "status", "action"} {
 			if v := o.take(key); v != "" {
 				q.Set(key, v)
@@ -393,11 +462,14 @@ func buildAction(pos []string, o options, in io.Reader) (action, error) {
 			body[k] = v
 			return nil
 		}
-		if (a.name == "app register" || a.name == "pool create") && len(args) > 0 {
+		if (a.name == "app register" || a.name == "pool create" || a.name == "corpus create") && len(args) > 0 {
 			if err = set("name", args[0]); err != nil {
 				return a, err
 			}
 			args = args[1:]
+		}
+		if err = buildCorpusOptions(&a, o, body, set); err != nil {
+			return a, err
 		}
 		for _, k := range []string{"template", "count", "active-count", "max-unavailable", "size-mib", "vcpus", "memory-mib", "deployment", "auth-mode", "base-url", "kind", "name", "reference", "alias", "upstream-model", "provider-id"} {
 			v := o.take(k)
@@ -450,7 +522,7 @@ identity create|show --key-file PATH --display-name NAME
 corpus init DIR [--title TEXT] [--language TAG] | corpus lint DIR (local, no API)
 login --enrollment-file FILE|- | login --key-file PATH | login --token-file FILE|- | session renew | logout
 status [--watch] | doctor | support export --output-file FILE
-operation show|wait ID [--type operation|deployment|rollout|harness-import|invocation|volume-growth|activation|revocation] [--app APP_ID]
+operation show|wait ID [--type operation|deployment|rollout|harness-import|invocation|volume-growth|activation|revocation|corpus-build] [--app APP_ID]
 install [--ssh USER@HOST] [--plan-only] (see install --help)
 update check|plan|apply | self update | host operation show|wait | restore
 app verify APP_ID [--issuer-ca PEM_FILE]
