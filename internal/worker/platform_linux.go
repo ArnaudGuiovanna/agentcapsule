@@ -34,6 +34,10 @@ type platformAPI struct {
 	// traces records each call's span (OPR-3); nil or returning nil
 	// without traces.
 	traces func() *workerTracing
+	// output serves the output streams (ADR 022); nil or returning nil
+	// without them. streamTelemetry counts them.
+	output          func() *outputStreams
+	streamTelemetry func() *streamTelemetry
 }
 
 // withApplication checks the current boot's negotiated contract under host
