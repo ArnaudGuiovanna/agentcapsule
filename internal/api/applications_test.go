@@ -261,10 +261,12 @@ func TestMonAppHTTPReference(t *testing.T) {
 			}
 		}
 	}
-	var members []map[string]string
+	var members []map[string]any
 	for _, name := range []string{"alice", "bob"} {
 		tokenFile := filepath.Join(dir, name+".jwt")
+		member := map[string]any{"email": name + "@example.test", "token_file": tokenFile}
 		if live != "" {
+			member["keycloak_login"] = map[string]string{"username": name, "password_file": filepath.Join(live, name), "ca_file": filepath.Join(live, "tls.crt")}
 			args := []string{"../../examples/monapp/oidc-login.py", "--issuer", cfg.Issuer, "--client-id", cfg.ClientID, "--redirect-uri", cfg.RedirectURIs[0], "--username", name,
 				"--ca-file", filepath.Join(live, "tls.crt"), "--password-file", filepath.Join(live, name), "--output", tokenFile}
 			if out, err := exec.CommandContext(t.Context(), "python3", args...).CombinedOutput(); err != nil {
@@ -273,10 +275,11 @@ func TestMonAppHTTPReference(t *testing.T) {
 		} else {
 			write(name+".jwt", signAppToken(t, cfg.Issuer, name, cfg.Audience))
 		}
-		members = append(members, map[string]string{"email": name + "@example.test", "token_file": tokenFile})
+		members = append(members, member)
 	}
 	conf := map[string]any{"api": srv.URL, "api_ca": ca, "application": cfg, "members": members, "admin_token_file": write("admin.jwt", f.token(t, "owner")),
 		"other_org_token_file": write("foreign.jwt", f.token(t, "foreign")), "support_team_id": rbacFreshTeam(t, f)["fresh"], "support_agent_id": f.ids["agent"], "pool_id": pool.ID, "timeout_seconds": 30}
+	conf["sales_agent_id"] = f.activeAgent(t, f.next())
 	conf["second_personal_pool_id"] = pool.ID
 	conf["refusal_pool_id"] = f.ids["pool"]
 	if live == "" {
@@ -299,11 +302,26 @@ func TestMonAppHTTPReference(t *testing.T) {
 	}
 	t.Log(string(output))
 	var receipts struct {
+		Transfer struct {
+			FromTeam    string                          `json:"from_team_id"`
+			ToTeam      string                          `json:"to_team_id"`
+			Revocations []controlplane.AccessRevocation `json:"revocations"`
+		} `json:"transfer"`
+		Checks      map[string]bool                 `json:"optional_checks"`
 		Member      []controlplane.AccessRevocation `json:"revocations"`
 		Application []controlplane.AccessRevocation `json:"application_revocations"`
 	}
 	if err := json.Unmarshal(output, &receipts); err != nil || len(receipts.Member) == 0 || len(receipts.Application) == 0 {
 		t.Fatal("missing durable revocations in SDK conformance output", err)
+	}
+	moved := receipts.Transfer
+	if moved.FromTeam == "" || moved.ToTeam == "" || moved.FromTeam == moved.ToTeam ||
+		len(moved.Revocations) != 1 || moved.Revocations[0].Kind != "team_membership" {
+		t.Fatal("missing durable team transfer", moved)
+	}
+	if !receipts.Checks["sales_agent"] || receipts.Checks["fresh_member_sessions"] != (live != "") ||
+		receipts.Checks["fresh_session_after_app_revoke"] != (live != "") {
+		t.Fatal("missing Sales or session check", receipts.Checks)
 	}
 	reportFile := write("report.json", string(output))
 	srv.Close()

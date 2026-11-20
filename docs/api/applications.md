@@ -101,7 +101,7 @@ python3 examples/monapp/oidc-login.py --issuer https://identity.acme.test/realms
 python3 examples/monapp/verify.py scenario.json > report.json
 ```
 
-Repeat the login for Bob. For an enterprise IdP, acquire the two access tokens using its standard browser flow. The scenario document has the following shape. Place registration parameters directly in `application`, using the registration object shown above.
+Repeat the login for Bob. For an enterprise IdP, acquire each member’s access token using its standard browser flow. The scenario document has the following shape. Place registration parameters directly in `application`, using the registration object shown above.
 
 ```json
 {
@@ -130,8 +130,13 @@ The following additional inputs extend the same scenario. The report lists which
 | `refusal_pool_id` | A dedicated pool with one available or preparing agent. | Accepting a two-slot rule returns `409 pool_exhausted` and leaves the pool inventory intact. |
 | `reassigned_email_token_file` | A private, current OIDC access token for another subject of the same issuer and client, with Alice's verified address and `member:accept`. A test IdP can reassign an address after issuing its former owner a token. | After Alice consumes the invitation, the other subject receives `403 forbidden` with the same proof. |
 | `wrong_audience_token_file` | A private, current access token for the same issuer and client, issued for another API audience. | Accepting the valid proof returns `401 authentication_required`. |
+| `sales_team_id` | An existing active destination team. If omitted, the administrator creates a Sales team through the API and needs team-management permission. | The version 2 event moves Alice from Support to Sales. Replaying the event and reading the activation return the Sales team and the original personal slots. |
+| `sales_agent_id` | A distinct, ready shared agent that can answer a Sales invocation. | Alice gains Sales access after the transfer and can retrieve her new result. Bob completes a new Support invocation and cannot read the Sales agent or result. |
+| `members[].keycloak_login` | Bundled test realm login, e.g. `{"username":"alice","password_file":"/secure/alice-password","ca_file":"/secure/identity-ca.pem"}`. The first registered callback is used unless `redirect_uri` is supplied. Configure Bob likewise. | A fresh browser and PKCE exchange after each event verifies the permissions of separate OIDC sessions. |
 
-Following the team change and departure, the client checks that Alice loses access, her consumed invitation cannot restore membership and the revoked backend token cannot read the activation. It reads each returned revocation record by ID and reports its actual `pending` or `confirmed` state. To repeat the read-only checks after restarting the API, retain the report and supply current administrator and member credentials. Keep short-lived member tokens valid during the check so that expiration cannot explain a denial.
+Alice’s original token loses access to the Support agent and her previous Support result as soon as the backend transfers her. Her personal agents remain accessible. With `keycloak_login` configured, Alice repeats these reads in a new session. After the version 3 departure, both of her existing sessions and a newly issued token receive `401 authentication_required`. The test submits a new invocation, replays a stale transfer and reads the final disabled activation. Bob can still open Support until the whole application is revoked. A subsequent Bob login then receives the same 401. A client for another OIDC provider can reproduce these assertions with a fresh authorization-code/PKCE flow at each event. The report records which session checks ran, the transfer, and the counts of admitted work at departure.
+
+The client also checks that Alice’s consumed invitation cannot restore membership and the revoked backend token cannot read the activation. It reads each returned revocation record by ID and reports its actual `pending` or `confirmed` state. To repeat the read-only checks after restarting the API, retain the report and supply current administrator and member credentials. Keep short-lived member tokens valid during the check so that expiration cannot explain a denial.
 
 ```sh
 python3 examples/monapp/verify.py scenario.json --check-revoked report.json

@@ -7,8 +7,10 @@ import json
 import os
 from pathlib import Path
 import ssl
+import subprocess
 import sys
 import time
+from tempfile import TemporaryDirectory
 from urllib import error, parse, request
 from uuid import uuid4
 
@@ -96,7 +98,7 @@ def verify_revoked(config, report):
                 (claims.get('client_id') or claims.get('azp')) != config['application']['client_id']):
             raise ValueError('supply a current member token issued for the registered MonApp client')
         problem(api.call(token, 'GET', 'agents', status=401), 'authentication_required')
-    receipts = report['revocations'] + report['application_revocations']
+    receipts = report.get('transfer', {}).get('revocations', []) + report['revocations'] + report['application_revocations']
     states = {}
     for receipt in receipts:
         path = 'access-revocations/' + receipt['id']
@@ -129,6 +131,40 @@ def check_pool_refusal(api, admin, token, app_id, email, pool):
         raise RuntimeError('refused activation consumed a pool agent')
 
 
+def sign_in_again(config, member, previous):
+    """Obtain another browser session with the bundled realm after a lifecycle event."""
+    options = member['keycloak_login']
+    app = config['application']
+    with TemporaryDirectory() as directory:
+        token_path = Path(directory, 'access.jwt')
+        args = [sys.executable, str(Path(__file__).with_name('oidc-login.py')),
+                '--issuer', app['issuer'], '--client-id', app['client_id'],
+                '--redirect-uri', options.get('redirect_uri', app['redirect_uris'][0]),
+                '--username', options['username'], '--password-file', options['password_file'],
+                '--output', str(token_path)]
+        if options.get('ca_file'):
+            args.extend(['--ca-file', options['ca_file']])
+        subprocess.run(args, check=True)
+        token = credential(token_path)
+    before, after = live_claims(previous), live_claims(token)
+    audience = after['aud'] if isinstance(after['aud'], list) else [after['aud']]
+    if (token == previous or after['iss'] != app['issuer'] or after['sub'] != before['sub'] or
+            app['audience'] not in audience or (after.get('azp') or after.get('client_id')) != app['client_id'] or
+            'agent:read' not in after.get('scope', '').split() or
+            (before.get('sid') and (not after.get('sid') or before['sid'] == after['sid']))):
+        raise ValueError('expected a separate session for the same member and client')
+    return token
+
+
+def invoke_and_read(api, token, agent, text, timeout):
+    response = api.call(token, 'POST', 'agents/' + agent + '/invocations',
+                        {'content': [{'type': 'text', 'text': text}]}, 202)
+    path = 'invocations/' + response['id']
+    api.wait(token, path, 'completed', ('accepted', 'scheduled', 'working'), timeout)
+    api.call(token, 'GET', path + '/result')
+    return response['id']
+
+
 def verify(config):
     api = MonApp(config)
     admin = credential(config['admin_token_file'])
@@ -141,6 +177,10 @@ def verify(config):
     app = 'applications/' + registration['id']
     backend = registration['provisioning_token']
     team, shared = config['support_team_id'], config['support_agent_id']
+    sales = config.get('sales_team_id') or api.call(admin, 'POST', 'teams', {'name': 'Sales ' + str(uuid4())}, 201)['id']
+    sales_agent = config.get('sales_agent_id')
+    if sales == team or sales_agent == shared:
+        raise ValueError('use distinct Support and Sales teams and shared agents')
     perms = ['read_metadata', 'invoke', 'read_content']
     personal = {'personal': config['pool_id']}
     if config.get('second_personal_pool_id'):
@@ -149,8 +189,10 @@ def verify(config):
         check_pool_refusal(api, admin, tokens[0], registration['id'], members[0]['email'], config['refusal_pool_id'])
     slots = [{'name': name, 'pool_id': pool, 'permissions': perms} for name, pool in personal.items()]
     slots.append({'name': 'support', 'team_id': team, 'agent_id': shared, 'permissions': perms})
+    if sales_agent:
+        slots.append({'name': 'sales', 'team_id': sales, 'agent_id': sales_agent, 'permissions': perms})
     plan = api.call(admin, 'POST', 'assignment-policies/plan', {
-        'application_id': registration['id'], 'on_exhaustion': 'refuse', 'allowed_teams': [team],
+        'application_id': registration['id'], 'on_exhaustion': 'refuse', 'allowed_teams': [team, sales],
         'slots': slots}, 201)
     api.call(admin, 'POST', f'assignment-policies/{plan["id"]}/apply', {})
     def invite(member, seconds):
@@ -219,34 +261,73 @@ def verify(config):
         problem(api.call(tokens[1], 'GET', 'agents/' + alice['agents'][name], status=404), 'not_found')
     api.call(foreign, 'GET', 'agents/' + shared, status=404)
     api.call(backend, 'GET', 'agents/' + shared, status=403)
-    result = api.call(tokens[0], 'POST', 'agents/' + shared + '/invocations',
-                      {'content': [{'type': 'text', 'text': 'MonApp acceptance'}]}, 202)
-    invocation = 'invocations/' + result['id']
-    api.wait(tokens[0], invocation, 'completed', ('accepted', 'scheduled', 'working'),
-             config.get('timeout_seconds', 180))
-    api.call(tokens[0], 'GET', invocation + '/result')
-    api.call(tokens[1], 'GET', invocation + '/result', status=404)
+    timeout = config.get('timeout_seconds', 180)
+    invocation_id = invoke_and_read(api, tokens[0], shared, 'MonApp acceptance', timeout)
+    private_result = 'invocations/' + invocation_id + '/result'
+    problem(api.call(tokens[1], 'GET', private_result, status=404), 'not_found')
 
     target = app + '/activations/' + alice['id']
-    api.call(backend, 'PUT', target, {'version': 2})
-    api.call(tokens[0], 'GET', 'agents/' + shared, status=404)
-    for name in personal:
-        api.call(tokens[0], 'GET', 'agents/' + alice['agents'][name])
+    if sales_agent:
+        for token in tokens:
+            problem(api.call(token, 'GET', 'agents/' + sales_agent, status=404), 'not_found')
+    event = {'version': 2, 'team_id': sales}
+    key = str(uuid4())
+    moved = api.call(backend, 'PUT', target, event, key=key)
+    expected = {name: alice['agents'][name] for name in personal}
+    if sales_agent:
+        expected['sales'] = sales_agent
+    for state in (moved, api.call(backend, 'PUT', target, event, key=key), api.call(backend, 'GET', target)):
+        if (state['version'] != 2 or state['state'] != 'ready' or state['team_id'] != sales or
+                state['principal_id'] != alice['principal_id'] or state['agents'] != expected):
+            raise RuntimeError('team transfer did not preserve the requested activation and personal slots')
+    alice_sessions = [tokens[0]]
+    if members[0].get('keycloak_login'):
+        alice_sessions.append(sign_in_again(config, members[0], tokens[0]))
+    for token in alice_sessions:
+        problem(api.call(token, 'GET', 'agents/' + shared, status=404), 'not_found')
+        problem(api.call(token, 'POST', 'agents/' + shared + '/invocations',
+                         {'content': [{'type': 'text', 'text': 'Removed Support access'}]}, 404), 'not_found')
+        problem(api.call(token, 'GET', private_result, status=404), 'not_found')
+        for agent in expected.values():
+            api.call(token, 'GET', 'agents/' + agent)
+    invoke_and_read(api, tokens[1], shared, 'Bob still belongs to Support', timeout)
+    if sales_agent:
+        problem(api.call(tokens[1], 'GET', 'agents/' + sales_agent, status=404), 'not_found')
+        sales_id = invoke_and_read(api, alice_sessions[-1], sales_agent, 'Sales acceptance', timeout)
+        problem(api.call(tokens[1], 'GET', 'invocations/' + sales_id + '/result', status=404), 'not_found')
     left = api.call(backend, 'PUT', target, {'version': 3, 'disabled': True})
-    api.call(backend, 'PUT', target, {'version': 2, 'team_id': team}, status=409)
-    api.call(tokens[0], 'GET', 'agents', status=401)
+    if members[0].get('keycloak_login'):
+        alice_sessions.append(sign_in_again(config, members[0], alice_sessions[-1]))
+    for token in alice_sessions:
+        live_claims(token)
+        problem(api.call(token, 'GET', 'agents', status=401), 'authentication_required')
+    problem(api.call(alice_sessions[-1], 'POST', 'agents/' + expected['personal'] + '/invocations',
+                     {'content': [{'type': 'text', 'text': 'After departure'}]}, 401), 'authentication_required')
+    problem(api.call(backend, 'PUT', target, {'version': 2, 'team_id': team}, status=409), 'invalid_transition')
+    final = api.call(backend, 'GET', target)
+    if final['version'] != 3 or final['state'] != 'disabled':
+        raise RuntimeError('stale transfer changed the departed activation')
+    api.call(tokens[1], 'GET', 'agents/' + shared)
     audit = api.call(admin, 'GET', 'audit?limit=100')['items']
     if not any(e['action'] == 'application.member_updated' and e['target'] == alice['id'] for e in audit):
         raise RuntimeError('missing application offboarding audit record')
     problem(api.call(tokens[0], 'POST', app + '/accept', wrong, 403), 'forbidden')
     revoked = api.call(admin, 'POST', app + '/revoke', {})
     problem(api.call(backend, 'GET', target, status=401), 'authentication_required')
+    if members[1].get('keycloak_login'):
+        bob_new = sign_in_again(config, members[1], tokens[1])
+        problem(api.call(bob_new, 'GET', 'agents', status=401), 'authentication_required')
     report = {
         'schema_version': 1, 'application_id': registration['id'], 'activations': [alice['id'], bob['id']],
         'personal_slots': {a['id']: {name: a['agents'][name] for name in personal} for a in (alice, bob)},
-        'invocation_id': result['id'], 'departure': left['state'], 'revocations': left.get('revocations', []),
+        'transfer': {'from_team_id': team, 'to_team_id': sales, 'version': moved['version'],
+                     'agents': moved['agents'], 'revocations': moved.get('revocations', [])},
+        'invocation_id': invocation_id, 'departure': left['state'], 'admitted_work': left['admitted_work'],
+        'revocations': left.get('revocations', []),
         'application_revocations': revoked.get('revocations', []),
-        'optional_checks': {'pool_refusal': bool(config.get('refusal_pool_id')),
+        'optional_checks': {'sales_agent': bool(sales_agent), 'fresh_member_sessions': bool(members[0].get('keycloak_login')),
+                            'fresh_session_after_app_revoke': bool(members[1].get('keycloak_login')),
+                            'pool_refusal': bool(config.get('refusal_pool_id')),
                             'wrong_audience': bool(config.get('wrong_audience_token_file')),
                             'reassigned_email': bool(config.get('reassigned_email_token_file'))},
     }
