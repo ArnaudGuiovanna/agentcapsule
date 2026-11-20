@@ -295,6 +295,16 @@ func installRolloutTemplate(ctx context.Context, tx pgx.Tx, st RolloutStep) erro
 	if err != nil {
 		return err
 	}
+	bindings, err := resolveCorpusBindings(ctx, tx, st.Tenant, st.Host, st.Spec.Corpora, false)
+	if err != nil {
+		return err
+	}
+	changes := &pgx.Batch{}
+	changes.Queue("DELETE FROM agent_corpora WHERE agent_id=$1", st.Agent)
+	insertCorpusBindings(changes, st.Tenant, []string{st.Agent}, bindings)
+	if err = tx.SendBatch(ctx, changes).Close(); err != nil {
+		return err
+	}
 	if previous != nil {
 		if _, err = tx.Exec(ctx, "UPDATE llm_alias_grants SET status='revoked',revoked_at=clock_timestamp(),revoked_by=$2 WHERE id=$1 AND status='active'", *previous, st.Actor); err != nil {
 			return err

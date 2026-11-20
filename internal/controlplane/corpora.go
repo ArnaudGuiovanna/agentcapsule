@@ -197,7 +197,7 @@ func (a *Accounts) CreateCorpus(ctx context.Context, p Principal, key string, in
 	})
 }
 func corpusPage[T any](ctx context.Context, tx pgx.Tx, limit int, scan func(pgx.Row) (T, error), sql string, args ...any) ([]T, error) {
-	if limit < 1 || limit > 200 {
+	if limit < 1 || limit > 201 {
 		return nil, ErrInput
 	}
 	rows, err := tx.Query(ctx, sql, args...)

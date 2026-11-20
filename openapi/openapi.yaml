@@ -1218,6 +1218,378 @@ paths:
       responses:
         '200': {$ref: '#/components/responses/LlmProviderReceipt'}
         default: {$ref: '#/components/responses/Problem'}
+  /v1/corpora:
+    get:
+      operationId: listCorpora
+      summary: List the organization's corpora
+      description: Requires corpus:read.
+      parameters:
+        - {name: name, in: query, schema: {$ref: '#/components/schemas/Name'}}
+        - {name: after, in: query, schema: {type: string, maxLength: 100}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 100}}
+      responses:
+        '200':
+          description: Page sorted by identifier
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/Corpus'}}
+                  next: {type: string}
+        default: {$ref: '#/components/responses/Problem'}
+    post:
+      operationId: createCorpus
+      summary: Declare a corpus from a Git repository
+      description: >-
+        Requires corpus:manage. Audited corpus.created. The source does not
+        change afterwards. A credential that is unknown, disabled, or of
+        another kind or host answers 422 source_credential_unavailable; a name
+        the organization uses answers 409 corpus_name_taken.
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, source]
+              properties:
+                name: {$ref: '#/components/schemas/Name'}
+                title: {type: string, maxLength: 200}
+                source: {$ref: '#/components/schemas/CorpusSource'}
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Corpus'}
+        '409': {$ref: '#/components/responses/Problem'}  # corpus_name_taken
+        '422': {$ref: '#/components/responses/Problem'}  # source_credential_unavailable
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/corpora/{id}:
+    get:
+      operationId: getCorpus
+      summary: One corpus
+      description: Requires corpus:read.
+      parameters: [{$ref: '#/components/parameters/ResourceID'}]
+      responses:
+        '200':
+          description: Corpus
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Corpus'}
+        '404': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/corpora/{id}/builds:
+    post:
+      operationId: requestCorpusBuild
+      summary: Start an asynchronous build of a commit
+      description: >-
+        Requires corpus:manage. Answers 202 with the build, QUEUED; follow it
+        with GET /v1/corpus-builds/{id} or `agentcapsule operation wait --type
+        corpus-build`. ref defaults to the corpus's; commit pins a SHA and
+        skips the resolution; at most one of them. Builds of one organization
+        run one at a time. Audited corpus_build.requested. Refused with 409
+        organization_quota_exceeded (quota max_corpus_builds or
+        max_corpus_storage_mib) and 503 storage_pressure before anything is
+        recorded.
+      parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                ref: {type: string, minLength: 1, maxLength: 255}
+                commit: {type: string, pattern: '^[0-9a-f]{40}$'}
+      responses:
+        '202':
+          description: Build accepted, or initial receipt replayed
+          headers:
+            Idempotency-Replayed: {schema: {type: boolean}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CorpusBuild'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}  # organization_quota_exceeded
+        '503': {$ref: '#/components/responses/Problem'}  # storage_pressure
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/corpus-builds:
+    get:
+      operationId: listCorpusBuilds
+      summary: List builds
+      description: Requires corpus:read.
+      parameters:
+        - {name: corpus_id, in: query, schema: {type: string, maxLength: 100}}
+        - {name: state, in: query, schema: {$ref: '#/components/schemas/CorpusBuildState'}}
+        - {name: after, in: query, schema: {type: string, maxLength: 100}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 100}}
+      responses:
+        '200':
+          description: Page, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/CorpusBuild'}}
+                  next: {type: string}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/corpus-builds/{id}:
+    get:
+      operationId: getCorpusBuild
+      summary: State, commit, counters and costs of a build
+      description: Requires corpus:read.
+      parameters: [{$ref: '#/components/parameters/ResourceID'}]
+      responses:
+        '200':
+          description: Build
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CorpusBuild'}
+        '404': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/corpus-builds/{id}/cancel:
+    post:
+      operationId: cancelCorpusBuild
+      summary: Cancel a build before publication
+      description: >-
+        Requires corpus:manage. Purges its staging files, its output and, in
+        REVIEW, its review bundle; removes its try bindings at the agents'
+        next boot. A final build answers 409 invalid_transition. Audited
+        corpus_build.canceled.
+      parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody: {$ref: '#/components/requestBodies/EmptyCommand'}
+      responses:
+        '200':
+          description: Canceled, or initial receipt replayed
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CorpusBuild'}
+        '409': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/corpus-builds/{id}/review:
+    get:
+      operationId: listCorpusBuildReview
+      summary: The files of a build's review bundle
+      description: >-
+        Requires corpus:manage. INDEX.md, report.json and each document's
+        README.md, read out of the image by the worker, at most 8 MiB in
+        total. 404 before REVIEW and after the bundle is purged.
+      parameters: [{$ref: '#/components/parameters/ResourceID'}]
+      responses:
+        '200':
+          description: Bundle
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, truncated]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [path, bytes, sha256]
+                      properties:
+                        path: {type: string, maxLength: 1024}
+                        bytes: {type: integer, minimum: 0, maximum: 1048576}
+                        sha256: {type: string, pattern: '^[0-9a-f]{64}$'}
+                  truncated: {type: boolean, description: The bundle reached 8 MiB and stops there}
+        '404': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/corpus-builds/{id}/review-file:
+    get:
+      operationId: getCorpusBuildReviewFile
+      summary: One file of a build's review bundle
+      description: Requires corpus:manage. `corpus-build index` reads path=INDEX.md; `corpus-build files` reads path=report.json and filters it.
+      parameters:
+        - {$ref: '#/components/parameters/ResourceID'}
+        - {name: path, in: query, required: true, schema: {type: string, minLength: 1, maxLength: 1024}}
+      responses:
+        '200':
+          description: The file as stored; Cache-Control no-store
+          content:
+            text/markdown: {schema: {type: string}}
+            application/json: {schema: {type: object}}
+        '404': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/corpus-builds/{id}/try:
+    post:
+      operationId: tryCorpusBuild
+      summary: Bind a build in REVIEW to an agent of the organization, at its next boot
+      description: >-
+        Requires corpus:manage and agent:manage. Replaces the agent's binding
+        of the same corpus. A build not in REVIEW answers 409
+        invalid_transition; an agent that cannot mount corpora 422
+        corpus_incompatible. Audited corpus_build.tried.
+      parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [agent_id]
+              properties:
+                agent_id: {type: string, minLength: 1, maxLength: 100}
+                mount: {$ref: '#/components/schemas/Mount'}
+      responses:
+        '200':
+          description: Bound at the next boot
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AgentCorpora'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        '422': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/corpus-builds/{id}/publish:
+    post:
+      operationId: publishCorpusBuild
+      summary: Publish a build in REVIEW as an immutable name:version
+      description: >-
+        Requires corpus:manage. 201 creates the release; 200 answers the
+        existing release when name:version already holds this build's
+        digest; 409 version_conflict when it holds another; 409
+        invalid_transition when the build is not in REVIEW. A build publishes
+        at most once. Audited corpus_build.published.
+      parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [version]
+              properties:
+                version: {$ref: '#/components/schemas/Version'}
+      responses:
+        '200':
+          description: The version already holds this digest
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CorpusRelease'}
+        '201':
+          description: Published
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CorpusRelease'}
+        '409': {$ref: '#/components/responses/Problem'}  # version_conflict, invalid_transition
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/corpus-releases:
+    get:
+      operationId: listCorpusReleases
+      summary: List releases
+      description: Requires corpus:read. Deprecated releases only with include_deprecated=true.
+      parameters:
+        - {name: corpus_id, in: query, schema: {type: string, maxLength: 100}}
+        - {name: include_deprecated, in: query, schema: {type: boolean, default: false}}
+        - {name: after, in: query, schema: {type: string, maxLength: 100}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 100}}
+      responses:
+        '200':
+          description: Page sorted by corpus, then version
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/CorpusRelease'}}
+                  next: {type: string}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/corpus-releases/{id}:
+    get:
+      operationId: getCorpusRelease
+      summary: One release
+      description: Requires corpus:read.
+      parameters: [{$ref: '#/components/parameters/ResourceID'}]
+      responses:
+        '200':
+          description: Release
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CorpusRelease'}
+        '404': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/corpus-releases/{id}/deprecate:
+    post:
+      operationId: deprecateCorpusRelease
+      summary: Stop new bindings of a release
+      description: >-
+        Requires corpus:manage. Agents already bound keep it. Its image
+        leaves the host's cache once nothing pins it. Idempotent; audited
+        corpus_release.deprecated once.
+      parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody: {$ref: '#/components/requestBodies/EmptyCommand'}
+      responses:
+        '200':
+          description: Deprecated, or initial receipt replayed
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CorpusRelease'}
+        '404': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/agents/{id}/corpora:
+    get:
+      operationId: getAgentCorpora
+      summary: An agent's corpus binding
+      description: Requires agent:read and corpus:read.
+      parameters: [{$ref: '#/components/parameters/ResourceID'}]
+      responses:
+        '200':
+          description: Binding
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AgentCorpora'}
+        '404': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
+    post:
+      operationId: setAgentCorpora
+      summary: Replace an agent's corpus binding, at its next boot
+      description: >-
+        Requires agent:manage and corpus:read. Each release must be of the
+        organization, not deprecated, and on the agent's host (422
+        corpus_unavailable); the agent's harness and system image must mount
+        corpora (422 corpus_incompatible). A running VM keeps its corpora
+        until it stops. Audited agent.corpora_changed; no policy version
+        change.
+      parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [corpora]
+              properties:
+                corpora: {type: array, maxItems: 4, items: {$ref: '#/components/schemas/CorpusBinding'}}
+      responses:
+        '200':
+          description: Binding replaced (or unchanged), or initial receipt replayed
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - {$ref: '#/components/schemas/AgentCorpora'}
+                  - type: object
+                    required: [previous]
+                    properties:
+                      previous: {type: array, items: {$ref: '#/components/schemas/AgentCorpusEntry'}}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}  # agent_unavailable
+        '422': {$ref: '#/components/responses/Problem'}  # corpus_unavailable, corpus_incompatible
+        default: {$ref: '#/components/responses/Problem'}
   /v1/source-credentials:
     get:
       operationId: listSourceCredentials
@@ -3294,6 +3666,143 @@ components:
         application/json:
           schema: {type: object, additionalProperties: false}
   schemas:
+    Name:
+      type: string
+      pattern: '^[a-z0-9][a-z0-9._-]{0,99}$'
+    Mount:
+      type: string
+      pattern: '^[a-z0-9][a-z0-9_-]{0,62}$'
+      description: Directory under /corpus/; defaults to the corpus name when that name is a valid mount
+    Version:
+      type: integer
+      minimum: 1
+      maximum: 2147483647
+    Digest:
+      type: string
+      pattern: '^sha256:[0-9a-f]{64}$'
+    CorpusSource:
+      type: object
+      additionalProperties: false
+      required: [kind, url, ref]
+      properties:
+        kind: {type: string, enum: [github, gitlab]}
+        url: {type: string, maxLength: 512, description: 'https://<host>/<repository>, no user, query or fragment', example: 'https://gitlab.example.org/school/finance-l3'}
+        ref: {type: string, minLength: 1, maxLength: 255, description: Branch, tag or commit resolved to a commit at each build}
+        path: {type: string, maxLength: 1024, description: Clean relative directory holding agentcapsule-corpus.yaml; default the repository root}
+        credential_id: {type: string, maxLength: 100, description: A source credential of the same kind and host; absent for a public repository}
+    Corpus:
+      type: object
+      required: [id, name, source, created_at]
+      properties:
+        id: {type: string}
+        name: {$ref: '#/components/schemas/Name'}
+        title: {type: string}
+        source: {$ref: '#/components/schemas/CorpusSource'}
+        latest_build_id: {type: string}
+        latest_release: {$ref: '#/components/schemas/CorpusReleaseReference'}
+        created_at: {type: string, format: date-time}
+    CorpusBuildState:
+      type: string
+      enum: [QUEUED, FETCHING, SCANNING, FETCHING_LFS, CONVERTING, PACKAGING, REVIEW, PUBLISHED, FAILED, CANCELED, EXPIRED]
+    CorpusBuild:
+      type: object
+      required: [id, corpus_id, state, attempts, created_at]
+      properties:
+        id: {type: string}
+        corpus_id: {type: string}
+        state: {$ref: '#/components/schemas/CorpusBuildState'}
+        requested_ref: {type: string}
+        commit: {type: string, pattern: '^[0-9a-f]{40}$'}
+        builder: {type: string, description: The builder harness release, name@version}
+        archive_bytes: {type: integer, minimum: 0}
+        lfs_objects: {type: integer, minimum: 0}
+        lfs_bytes: {type: integer, minimum: 0}
+        files:
+          type: object
+          properties:
+            total: {type: integer, minimum: 0}
+            converted: {type: integer, minimum: 0}
+            cached: {type: integer, minimum: 0}
+            skipped: {type: integer, minimum: 0}
+            failed: {type: integer, minimum: 0}
+        estimate:
+          type: object
+          description: The builder's scan estimate
+          properties:
+            llm_calls: {type: integer, minimum: 0}
+            input_tokens: {type: integer, minimum: 0}
+            audio_seconds: {type: integer, minimum: 0}
+            pages: {type: integer, minimum: 0}
+        costs:
+          type: object
+          description: The builder's metered model calls while the build ran
+          properties:
+            llm_calls: {type: integer, minimum: 0}
+            input_tokens: {type: integer, minimum: 0}
+            output_tokens: {type: integer, minimum: 0}
+            audio_seconds: {type: integer, minimum: 0}
+            pages: {type: integer, minimum: 0}
+            cost_micros: {type: [integer, 'null'], minimum: 0, description: Null when an alias used is unpriced}
+        image_bytes: {type: integer, minimum: 0}
+        image_digest: {$ref: '#/components/schemas/Digest'}
+        error_code:
+          type: string
+          enum: [policy, not_found, access_denied, integrity, too_large, invalid_manifest, builder_failed, invalid_image, timeout, unavailable, storage_pressure, quota_exceeded]
+        release_id: {type: string}
+        attempts: {type: integer, minimum: 0}
+        created_at: {type: string, format: date-time}
+        deadline_at: {type: string, format: date-time}
+        review_at: {type: string, format: date-time}
+        review_expires_at: {type: string, format: date-time}
+        completed_at: {type: string, format: date-time}
+    CorpusReleaseReference:
+      type: object
+      required: [id, name, version]
+      properties:
+        id: {type: string}
+        name: {$ref: '#/components/schemas/Name'}
+        version: {$ref: '#/components/schemas/Version'}
+    CorpusRelease:
+      type: object
+      required: [id, corpus_id, name, version, digest, image_bytes, build_id, commit, state, created_at]
+      properties:
+        id: {type: string}
+        corpus_id: {type: string}
+        name: {$ref: '#/components/schemas/Name'}
+        version: {$ref: '#/components/schemas/Version'}
+        digest: {$ref: '#/components/schemas/Digest'}
+        image_bytes: {type: integer, minimum: 0}
+        build_id: {type: string}
+        commit: {type: string, pattern: '^[0-9a-f]{40}$'}
+        builder: {type: string}
+        host_id: {type: string, description: The host whose cache holds the image (one host in this version)}
+        state: {type: string, enum: [active, deprecated]}
+        created_at: {type: string, format: date-time}
+        deprecated_at: {type: string, format: date-time}
+    CorpusBinding:
+      type: object
+      additionalProperties: false
+      required: [name, version]
+      properties:
+        name: {$ref: '#/components/schemas/Name'}
+        version: {$ref: '#/components/schemas/Version'}
+        mount: {$ref: '#/components/schemas/Mount'}
+    AgentCorpusEntry:
+      type: object
+      required: [mount]
+      description: A release, or a build in REVIEW bound by a try
+      properties:
+        mount: {$ref: '#/components/schemas/Mount'}
+        release: {$ref: '#/components/schemas/CorpusReleaseReference'}
+        build_id: {type: string}
+        digest: {$ref: '#/components/schemas/Digest'}
+    AgentCorpora:
+      type: object
+      required: [agent_id, corpora, applies]
+      properties:
+        agent_id: {type: string}
+        corpora: {type: array, maxItems: 4, items: {$ref: '#/components/schemas/AgentCorpusEntry'}}
+        applies: {type: string, enum: [next_boot]}
     PlatformSession:
       type: object
       required: [id, kind, account, expires_at, status]
@@ -3730,6 +4239,8 @@ components:
         are starting, running or stopping, on every host. A boot only for a
         barrier (a fence, a provisioning, a restore) is not counted.
       properties:
+        max_corpus_builds: {type: [integer, 'null'], minimum: 0}
+        max_corpus_storage_mib: {type: [integer, 'null'], minimum: 0}
         max_agents: {type: [integer, 'null'], minimum: 1, maximum: 100000, description: "Agents the organization may hold. Past it, POST /v1/agents answers 409 organization_quota_exceeded."}
         max_active_vms: {type: [integer, 'null'], minimum: 1, maximum: 100000, description: "VMs of its agents that may run at once. Past it, work waits (QUEUED, queue_reason organization_quota), then dies at its deadline with capacity_unavailable."}
         max_vcpus: {type: [integer, 'null'], minimum: 1, maximum: 1000000, description: "vCPUs those VMs may reserve. Past it, work waits. Creating an agent that alone needs more is refused."}
@@ -4078,6 +4589,7 @@ components:
       type: object
       required: [name, system_image, harness, resources]
       properties:
+        corpora: {type: array, maxItems: 4, items: {$ref: '#/components/schemas/CorpusBinding'}}
         name: {type: string, maxLength: 75}
         system_image: {type: string}
         harness: {$ref: '#/components/schemas/HarnessReference'}

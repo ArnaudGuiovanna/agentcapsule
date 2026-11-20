@@ -143,6 +143,22 @@ only its own.
 | `POST /v1/llm/providers/{id}/rotate` (a disposable provider) | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
 | `POST /v1/llm/providers/{id}/disable` (a disposable provider) | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
 | `GET /v1/llm/aliases` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | filtered | 401 | 401 | 403 |
+| `GET /v1/corpora` | yes | yes | yes | yes | 403 | 403 | 403 | 403 | 403 | filtered | 401 | 401 | 403 |
+| `POST /v1/corpora` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | yes | 401 | 401 | 403 |
+| `GET /v1/corpora/{id}` | yes | yes | yes | yes | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `POST /v1/corpora/{id}/builds` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `GET /v1/corpus-builds` | yes | yes | yes | yes | 403 | 403 | 403 | 403 | 403 | filtered | 401 | 401 | 403 |
+| `GET /v1/corpus-builds/{id}` | yes | yes | yes | yes | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `POST /v1/corpus-builds/{id}/cancel` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `GET /v1/corpus-builds/{id}/review` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `GET /v1/corpus-builds/{id}/review-file` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `POST /v1/corpus-builds/{id}/try` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `POST /v1/corpus-builds/{id}/publish` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `GET /v1/corpus-releases` | yes | yes | yes | yes | 403 | 403 | 403 | 403 | 403 | filtered | 401 | 401 | 403 |
+| `GET /v1/corpus-releases/{id}` | yes | yes | yes | yes | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `POST /v1/corpus-releases/{id}/deprecate` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `GET /v1/agents/{id}/corpora` | yes | yes | yes | yes | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `POST /v1/agents/{id}/corpora` | yes | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
 | `GET /v1/source-credentials` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | filtered | 401 | 401 | 403 |
 | `POST /v1/source-credentials` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | yes | 401 | 401 | 403 |
 | `POST /v1/source-credentials/{id}/rotate` (a disposable credential) | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |

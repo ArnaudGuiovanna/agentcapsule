@@ -158,6 +158,20 @@ func New(store *controlplane.Store, accounts *controlplane.Accounts) (*Server, e
 	s.handle("/v1/llm/providers", s.llmProviders)
 	s.handle("/v1/llm/providers/{id}/rotate", s.rotateLLMProvider)
 	s.handle("/v1/llm/providers/{id}/disable", s.disableLLMProvider)
+	s.handle("/v1/corpora", s.corpora)
+	s.handle("/v1/corpora/{id}", s.corpus)
+	s.handle("/v1/corpora/{id}/builds", s.requestCorpusBuild)
+	s.handle("/v1/corpus-builds", s.corpusBuilds)
+	s.handle("/v1/corpus-builds/{id}", s.corpusBuild)
+	s.handle("/v1/corpus-builds/{id}/cancel", s.cancelCorpusBuild)
+	s.handle("/v1/corpus-builds/{id}/review", s.corpusBuildReview)
+	s.handle("/v1/corpus-builds/{id}/review-file", s.corpusBuildReviewFile)
+	s.handle("/v1/corpus-builds/{id}/try", s.tryCorpusBuild)
+	s.handle("/v1/corpus-builds/{id}/publish", s.publishCorpusBuild)
+	s.handle("/v1/corpus-releases", s.corpusReleases)
+	s.handle("/v1/corpus-releases/{id}", s.corpusRelease)
+	s.handle("/v1/corpus-releases/{id}/deprecate", s.deprecateCorpusRelease)
+	s.handle("/v1/agents/{id}/corpora", s.agentCorpora)
 	s.handle("/v1/source-credentials", s.sourceCredentials)
 	s.handle("/v1/source-credentials/{id}/rotate", s.rotateSourceCredential)
 	s.handle("/v1/source-credentials/{id}/disable", s.disableSourceCredential)
@@ -327,6 +341,16 @@ func failure(w http.ResponseWriter, err error) {
 		problem(w, 409, "agent_already_exists")
 	case errors.Is(err, controlplane.ErrOrganizationNameTaken):
 		problem(w, 409, "organization_name_taken")
+	case errors.Is(err, controlplane.ErrCorpusNameTaken):
+		problem(w, 409, "corpus_name_taken")
+	case errors.Is(err, controlplane.ErrCorpusUnavailable):
+		problem(w, 422, "corpus_unavailable")
+	case errors.Is(err, controlplane.ErrSourceCredentialUnavailable):
+		problem(w, 422, "source_credential_unavailable")
+	case errors.Is(err, controlplane.ErrCorpusVersionConflict):
+		problem(w, 409, "version_conflict")
+	case errors.Is(err, controlplane.ErrCorpusIncompatible):
+		problem(w, 422, "corpus_incompatible")
 	case errors.Is(err, controlplane.ErrSourceCredentialNameTaken):
 		problem(w, 409, "source_credential_name_taken")
 	case errors.Is(err, controlplane.ErrRelease):

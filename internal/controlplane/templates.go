@@ -133,6 +133,7 @@ func (c *AgentCatalog) SystemImages(ctx context.Context, p Principal, after stri
 }
 
 type TemplateSpec struct {
+	Corpora      []CorpusBinding  `json:"corpora,omitempty"`
 	Name         string           `json:"name"`
 	SystemImage  string           `json:"system_image"`
 	Harness      HarnessReference `json:"harness"`
@@ -185,6 +186,14 @@ func validateTemplate(ctx context.Context, tx pgx.Tx, tenant, host string, s Tem
 	if err != nil {
 		return "", err
 	}
+	if len(s.Corpora) > 0 {
+		if err = corporaMountable(ctx, tx, release, s.SystemImage); err != nil {
+			return "", err
+		}
+		if _, err = resolveCorpusBindings(ctx, tx, tenant, host, s.Corpora, true); err != nil {
+			return "", err
+		}
+	}
 	if s.LLMProfile != "" {
 		var alias string
 		err = tx.QueryRow(ctx, `SELECT m.alias FROM llm_model_aliases m JOIN llm_providers p ON (p.tenant_id,p.id)=(m.tenant_id,m.provider_id) WHERE m.tenant_id=$1 AND m.alias=$2 AND m.status='active' AND p.status='active' FOR SHARE OF m,p`, tenant, s.LLMProfile).Scan(&alias)
@@ -196,6 +205,11 @@ func validateTemplate(ctx context.Context, tx pgx.Tx, tenant, host string, s Tem
 }
 func (c *AgentCatalog) PublishTemplate(ctx context.Context, p Principal, key string, in TemplateSpec) (APIReceipt, error) {
 	return c.templateMutation(ctx, p, key, "template.publish", in, func(tx pgx.Tx) (int, any, error) {
+		if len(in.Corpora) > 0 {
+			if err := corpusPermission(ctx, tx, p, authorization.ReadCorpus); err != nil {
+				return 0, nil, err
+			}
+		}
 		if _, err := validateTemplate(ctx, tx, p.TenantID, c.host, in); err != nil {
 			return 0, nil, err
 		}
@@ -494,6 +508,13 @@ func (plan *reservationPlan) reserveAgents(ctx context.Context, tx pgx.Tx, p Pri
 	b.Queue(`INSERT INTO platform_operations(id,requested_by_principal_id,agent_id,host_id,seq,kind) SELECT op,$3,id,$4,1,'provision' FROM unnest($1::text[],$2::text[]) i(id,op)`, ids, ops, p.ID, plan.host)
 	b.Queue(`INSERT INTO store_enrollments(agent_id,operation_id,volume_id) SELECT * FROM unnest($1::text[],$2::text[],$3::text[])`, ids, ops, vols)
 	b.Queue(`INSERT INTO tenant_agent_audit(id,tenant_id,actor_principal_id,agent_id,action) SELECT audit,$2,$3,id,'agent.created' FROM unnest($1::text[],$4::text[]) i(id,audit)`, ids, p.TenantID, p.ID, deploymentIDs("audit", len(ids)))
+	if len(plan.spec.Corpora) > 0 {
+		bindings, err := resolveCorpusBindings(ctx, tx, p.TenantID, plan.host, plan.spec.Corpora, true)
+		if err != nil {
+			return nil, err
+		}
+		insertCorpusBindings(b, p.TenantID, ids, bindings)
+	}
 	if plan.spec.Capabilities != nil {
 		b.Queue(`INSERT INTO agent_capability_policies(agent_id,allowed,updated_by) SELECT id,$2,$3 FROM unnest($1::text[]) id`, ids, plan.spec.Capabilities, p.ID)
 	}

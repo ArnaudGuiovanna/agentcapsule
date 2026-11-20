@@ -80,7 +80,8 @@ func (t *Transit) checkKey(ctx context.Context, tx pgx.Tx, id string) (transitKe
 // and an attachment not purged, which is sealed with a transit key too.
 func (t *Transit) checkCoverage(ctx context.Context, tx pgx.Tx) error {
 	rows, err := tx.Query(ctx, `SELECT key_id FROM transit_payloads WHERE purged_at IS NULL
-        UNION SELECT key_id FROM attachments WHERE status<>'purged' ORDER BY key_id`)
+        UNION SELECT key_id FROM attachments WHERE status<>'purged'
+        UNION SELECT key_id FROM corpus_review_files ORDER BY key_id`)
 	if err != nil {
 		return err
 	}

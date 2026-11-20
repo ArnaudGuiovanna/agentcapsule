@@ -155,6 +155,22 @@ var rbacRoutes = append([]rbacRoute{
 	{Method: "POST", Path: "/v1/llm/providers/{fresh}/rotate", revokes: "llm_provider", Success: 200, Want: rbacManage, body: `{"secret":"matrix-credential-rotated-0123"}`, fresh: rbacFreshProvider, Note: "a disposable provider"},
 	{Method: "POST", Path: "/v1/llm/providers/{fresh}/disable", revokes: "llm_provider", Success: 200, Want: rbacManage, body: `{}`, fresh: rbacFreshProvider, Note: "a disposable provider"},
 	{Method: "GET", Path: "/v1/llm/aliases", Success: 200, Want: "S S 403 403 403 403 403 403 403 F 401 401 403", hides: []string{"{alias}"}},
+	{Method: "GET", Path: "/v1/corpora", Success: 200, Want: "S S S S 403 403 403 403 403 F 401 401 403", hides: []string{"{corpus}"}},
+	{Method: "POST", Path: "/v1/corpora", Success: 201, Want: rbacCreateAdmin, body: `{"name":"{name}","source":{"kind":"github","url":"https://github.com/matrix/school","ref":"main"}}`, fresh: rbacName},
+	{Method: "GET", Path: "/v1/corpora/{corpus}", Success: 200, Want: "S S S S 403 403 403 403 403 404 401 401 403"},
+	{Method: "POST", Path: "/v1/corpora/{corpus}/builds", Success: 202, Want: rbacManage, body: `{}`},
+	{Method: "GET", Path: "/v1/corpus-builds", Success: 200, Want: "S S S S 403 403 403 403 403 F 401 401 403", hides: []string{"{review}"}},
+	{Method: "GET", Path: "/v1/corpus-builds/{review}", Success: 200, Want: "S S S S 403 403 403 403 403 404 401 401 403"},
+	{Method: "POST", Path: "/v1/corpus-builds/{fresh}/cancel", Success: 200, Want: rbacManage, body: `{}`, fresh: rbacFreshCorpusBuild},
+	{Method: "GET", Path: "/v1/corpus-builds/{review}/review", Success: 200, Want: rbacManage},
+	{Method: "GET", Path: "/v1/corpus-builds/{review}/review-file?path=INDEX.md", Success: 200, Want: rbacManage},
+	{Method: "POST", Path: "/v1/corpus-builds/{review}/try", Success: 200, Want: rbacManage, body: `{"agent_id":"{corpus_agent}","mount":"matrix"}`},
+	{Method: "POST", Path: "/v1/corpus-builds/{fresh}/publish", Success: 201, Want: rbacManage, body: `{"version":1}`, fresh: rbacFreshCorpusReview},
+	{Method: "GET", Path: "/v1/corpus-releases", Success: 200, Want: "S S S S 403 403 403 403 403 F 401 401 403", hides: []string{"{corpus_release}"}},
+	{Method: "GET", Path: "/v1/corpus-releases/{corpus_release}", Success: 200, Want: "S S S S 403 403 403 403 403 404 401 401 403"},
+	{Method: "POST", Path: "/v1/corpus-releases/{fresh}/deprecate", Success: 200, Want: rbacManage, body: `{}`, fresh: rbacFreshCorpusRelease},
+	{Method: "GET", Path: "/v1/agents/{agent}/corpora", Success: 200, Want: "S S S S 403 403 403 403 403 404 401 401 403"},
+	{Method: "POST", Path: "/v1/agents/{agent}/corpora", Success: 200, Want: rbacConfigure, body: `{"corpora":[]}`},
 	{Method: "GET", Path: "/v1/source-credentials", Success: 200, Want: "S S 403 403 403 403 403 403 403 F 401 401 403", hides: []string{"{source_credential}"}},
 	{Method: "POST", Path: "/v1/source-credentials", Success: 201, Want: rbacCreateAdmin, body: `{"name":"{name}","kind":"gitlab","host":"gitlab.example.org","secret":"matrix-forge-token-0123456789"}`, fresh: rbacName},
 	{Method: "POST", Path: "/v1/source-credentials/{fresh}/rotate", Success: 200, Want: rbacManage, body: `{"secret":"matrix-forge-token-rotated-0123"}`, fresh: rbacFreshSourceCredential, Note: "a disposable credential"},
@@ -587,6 +603,36 @@ func rbacFreshProvider(t *testing.T, f *rbacFixture) map[string]string {
 	return map[string]string{"fresh": p.ID}
 }
 
+func rbacFreshCorpusBuild(t *testing.T, f *rbacFixture) map[string]string {
+	t.Helper()
+	var c controlplane.Corpus
+	f.must(t, "owner", "POST", "/v1/corpora", fmt.Sprintf(`{"name":%q,"source":{"kind":"github","url":"https://github.com/matrix/school","ref":"main"}}`, f.next()), 201, &c)
+	var b controlplane.CorpusBuild
+	f.must(t, "owner", "POST", "/v1/corpora/"+c.ID+"/builds", "{}", 202, &b)
+	return map[string]string{"fresh": b.ID, "corpus": c.ID}
+}
+func rbacFreshCorpusReview(t *testing.T, f *rbacFixture) map[string]string {
+	t.Helper()
+	vars := rbacFreshCorpusBuild(t, f)
+	j := controlplane.CorpusWork{ID: vars["fresh"], Phase: "PACKAGING", Token: f.next()}
+	if err := f.db.QueryRow(t.Context(), `UPDATE corpus_builds SET state='PACKAGING',host_id='local',commit_sha=repeat('a',40),builder='builder@1',lease_token=$2,lease_until=now()+interval '1 hour' WHERE id=$1 RETURNING tenant_id`, j.ID, j.Token).Scan(&j.Tenant); err != nil {
+		t.Fatal(err)
+	}
+	r := controlplane.CorpusResult{Bytes: 4096, UUID: "11111111-1111-1111-1111-111111111111", Digest: "sha256:" + strings.Repeat("a", 64), Files: map[string][]byte{"report.json": []byte("{}"), "INDEX.md": []byte("# Contents")}}
+	if err := f.transit.CompleteCorpusReview(t.Context(), j, r); err != nil {
+		t.Fatal(err)
+	}
+	return vars
+}
+func rbacFreshCorpusRelease(t *testing.T, f *rbacFixture) map[string]string {
+	t.Helper()
+	vars := rbacFreshCorpusReview(t, f)
+	var release controlplane.CorpusRelease
+	f.must(t, "owner", "POST", "/v1/corpus-builds/"+vars["fresh"]+"/publish", `{"version":1}`, 201, &release)
+	vars["fresh"] = release.ID
+	return vars
+}
+
 func rbacFreshSourceCredential(t *testing.T, f *rbacFixture) map[string]string {
 	var c controlplane.SourceCredential
 	f.must(t, "owner", "POST", "/v1/source-credentials", `{"name":"`+f.next()+`","kind":"gitlab","host":"gitlab.example.org","secret":"matrix-forge-token-0123456789"}`, 201, &c)
@@ -871,6 +917,14 @@ func newRBACFixture(t *testing.T) *rbacFixture {
 	f.ids["source_credential"] = rbacFreshSourceCredential(t, f)["fresh"]
 
 	rbacSetupDeployment(t, f)
+	corpusFixture := rbacFreshCorpusReview(t, f)
+	f.ids["review"], f.ids["corpus"] = corpusFixture["fresh"], corpusFixture["corpus"]
+	f.ids["corpus_release"] = rbacFreshCorpusRelease(t, f)["fresh"]
+	f.ids["corpus_agent"] = f.activeAgent(t, f.next())
+	if _, err := f.db.Exec(t.Context(), "UPDATE agent_specs SET system_image='matrix@1' WHERE agent_id=$1", f.ids["corpus_agent"]); err != nil {
+		t.Fatal(err)
+	}
+
 	var imported controlplane.HarnessImport
 	f.must(t, "platform", "POST", "/v1/harness-imports", `{"reference":"ghcr.io/acme/matrix@sha256:`+strings.Repeat("a", 64)+`"}`, 202, &imported)
 	f.ids["import"] = imported.ID
@@ -970,7 +1024,7 @@ func rbacSetupDeployment(t *testing.T, f *rbacFixture) {
 	if err := f.l.store.ReportDeploymentHost(t.Context(), "local", controlplane.HostProvisioningBudget{MaxActive: 100, VCPUs: 100, MemoryMiB: 100000, UIDSlots: 1000}, []controlplane.ImageDigests{digests}); err != nil {
 		t.Fatal(err)
 	}
-	f.must(t, "platform", "POST", "/v1/system-images", fmt.Sprintf(`{"reference":"matrix@1","kernel_digest":%q,"initrd_digest":%q}`, digests.Kernel, digests.Initrd), 201, nil)
+	f.must(t, "platform", "POST", "/v1/system-images", fmt.Sprintf(`{"reference":"matrix@1","kernel_digest":%q,"initrd_digest":%q,"features":["corpus.mount"]}`, digests.Kernel, digests.Initrd), 201, nil)
 	f.must(t, "owner", "POST", "/v1/templates", strings.ReplaceAll(rbacTemplateBody, "{name}", "matrix-base"), 201, nil)
 	vars := rbacPoolDeployment(t, f)
 	f.ids["deployment"] = vars["fresh"]
