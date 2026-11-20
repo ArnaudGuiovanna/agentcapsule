@@ -191,4 +191,5 @@ TLC with four workers; evidence kept locally under
 | `credential_renewal.qnt` | Credential replacement of a live boot |
 | `service_progress.qnt` (+ `_controls`, `_test`) | Progress of observation and notification slots. A restore may deliver a request or a notification again before the run stabilizes (ADR 008) |
 | `invocation_completion.qnt` | Deferred results: an agent acknowledges "working" and posts one outcome; expiry, cancellation and deletion race to exactly one outcome |
+| `corpus_lifecycle.qnt` | Corpus builds, immutable releases, bindings applied at boot, the organization boundary and the host's image cache: eviction never removes a pinned image ([ADR 023](../docs/adr/023-corpora.md)) |
 | `bounded.qnt`, `induction.qnt`, `protocol_induction.qnt`, `liveness.qnt` | Depth-bounded wrappers, inductive invariants and temporal checks over the original relations |
