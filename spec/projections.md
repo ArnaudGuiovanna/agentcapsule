@@ -175,6 +175,20 @@ in the ordinary unit tests.
 | `fencingOk.effectBeforeFenceTest` | partial | `TestFenceWaitsForEffectTransaction`, `TestProcessCrashRecovery/fence-committed` | A process crash, not a power loss. |
 | `fencingOk.fenceBeforeEffectTest` | full | `TestFenceSurvivesReopenAndRejectsEitherParticipant` |  |
 
+### `invocation_completion.qnt`
+
+The runs of the output stream ([ADR 022](../docs/adr/022-native-streaming.md)) wait for its code: lot 3 of the streaming plan writes their PostgreSQL projections, under the conventional names (`TestOpenStreamOnlyWhileWorking` for `openStreamOnlyWhileWorkingTest`), and moves these rows to `full`.
+
+| Run or witness | Status | Go projection | Notes |
+|---|---|---|---|
+| `invocationCompletion.openStreamOnlyWhileWorkingTest` | pending | — | The opening transaction of `POST /v1/invocations/stream` (lot 3): refused before `working`, from an old boot, past `result_due_at`, for an attempt no longer current, and after the outcome. |
+| `invocationCompletion.noChunkAfterTheOutcomeTest` | pending | — | Lot 3: a chunk committed after `POST /v1/invocations/complete` is refused although the stream is open; the harness receives `closed` `terminal`. |
+| `invocationCompletion.cancelStopsTheChunksTest` | pending | — | Lot 3: after the requester's cancellation, the next chunk is refused and the harness receives `cancel`. |
+| `invocationCompletion.rerunDropsTheOldAttemptTest` | pending | — | Lot 3: a restore's rerun (`queueRerun`) increments the attempt and deletes the old attempt's chunks; the old stream's next chunk is refused, and an opening that names the old attempt too. |
+| `invocationCompletion.closingTheStreamIsNotAnOutcomeTest` | pending | — | Lot 3: a `close` frame leaves the invocation `working`; its deadline still ends it `failed` `work_timeout`, without a result. |
+| `invocationCompletionModel.staleStreamWitness` | model-only | — | Reachability target of the simulation (`--witnesses`), not a behaviour. |
+| `invocationCompletionModel.streamOpenAtOutcomeWitness` | model-only | — | Reachability target of the simulation (`--witnesses`), not a behaviour. |
+
 ### `leased_delivery.qnt`
 
 | Run or witness | Status | Go projection | Notes |
