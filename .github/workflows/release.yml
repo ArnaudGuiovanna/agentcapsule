@@ -95,7 +95,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends \
             build-essential libcryptsetup-dev cryptsetup-bin e2fsprogs musl-tools cmake pkg-config \
-            bison flex libelf-dev libssl-dev bc xz-utils skopeo
+            bison flex libelf-dev libssl-dev bc xz-utils skopeo libseccomp-dev
 
       - name: Dependency audit (govulncheck on every Go module, licenses)
         run: |
