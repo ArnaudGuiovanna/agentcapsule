@@ -177,15 +177,15 @@ in the ordinary unit tests.
 
 ### `invocation_completion.qnt`
 
-The runs of the output stream ([ADR 022](../docs/adr/022-native-streaming.md)) wait for its code: lot 3 of the streaming plan writes their PostgreSQL projections, under the conventional names (`TestOpenStreamOnlyWhileWorking` for `openStreamOnlyWhileWorkingTest`), and moves these rows to `full`.
+The runs of the output stream ([ADR 022](../docs/adr/022-native-streaming.md)) are projected on PostgreSQL by lot 3 of the streaming plan (`invocation_streams_test.go`): the model's `openStream` is `OpenOutputStreamFromVM`, `appendDelta` one chunk's transaction (`AppendOutputStreamFromVM`), `resetAttempt` a rerun's `newAttempt`, and `closeStream` the end of the stream in the worker's memory, which stores nothing.
 
 | Run or witness | Status | Go projection | Notes |
 |---|---|---|---|
-| `invocationCompletion.openStreamOnlyWhileWorkingTest` | pending | — | The opening transaction of `POST /v1/invocations/stream` (lot 3): refused before `working`, from an old boot, past `result_due_at`, for an attempt no longer current, and after the outcome. |
-| `invocationCompletion.noChunkAfterTheOutcomeTest` | pending | — | Lot 3: a chunk committed after `POST /v1/invocations/complete` is refused although the stream is open; the harness receives `closed` `terminal`. |
-| `invocationCompletion.cancelStopsTheChunksTest` | pending | — | Lot 3: after the requester's cancellation, the next chunk is refused and the harness receives `cancel`. |
-| `invocationCompletion.rerunDropsTheOldAttemptTest` | pending | — | Lot 3: a restore's rerun (`queueRerun`) increments the attempt and deletes the old attempt's chunks; the old stream's next chunk is refused, and an opening that names the old attempt too. |
-| `invocationCompletion.closingTheStreamIsNotAnOutcomeTest` | pending | — | Lot 3: a `close` frame leaves the invocation `working`; its deadline still ends it `failed` `work_timeout`, without a result. |
+| `invocationCompletion.openStreamOnlyWhileWorkingTest` | full | `TestOpenStreamOnlyWhileWorking` | The opening transaction of `POST /v1/invocations/stream`: refused before `working` (`transition`), from another boot (`unauthorized`), past `result_due_at` and after the expiry (`expired`), after the outcome and a cancellation (`transition`); an attempt no longer current opens and closes at once (`reset`). |
+| `invocationCompletion.noChunkAfterTheOutcomeTest` | full | `TestNoChunkAfterTheOutcome` | A chunk after `POST /v1/invocations/complete` is refused (`terminal`) although the stream is open; the stream's signal says `terminal`; the result is the filed answer, never the deltas. |
+| `invocationCompletion.cancelStopsTheChunksTest` | full | `TestCancelStopsTheChunks` | After the requester's cancellation, or the agent's deletion, the next chunk is refused; the signal says `canceled`, from which the worker sends `cancel`, then `closed` `terminal`. |
+| `invocationCompletion.rerunDropsTheOldAttemptTest` | full | `TestRerunDropsTheOldAttempt`, `TestReplayStartsANewAttempt` | A restore's rerun (`queueRerun`) increments the attempt and deletes the old attempt's chunks and payloads in its transaction; once the rerun works again, the old attempt's next chunk is refused (`reset`) and an opening that names it closes at once; the new attempt streams from seq 1. A dead letter's replay starts an attempt too. |
+| `invocationCompletion.closingTheStreamIsNotAnOutcomeTest` | full | `TestClosingTheStreamIsNotAnOutcome` | The end of a stream leaves the invocation `working` without a result; its deadline still ends it `failed` `work_timeout`, without a result, and a later chunk is refused (`expired`). |
 | `invocationCompletionModel.staleStreamWitness` | model-only | — | Reachability target of the simulation (`--witnesses`), not a behaviour. |
 | `invocationCompletionModel.streamOpenAtOutcomeWitness` | model-only | — | Reachability target of the simulation (`--witnesses`), not a behaviour. |
 

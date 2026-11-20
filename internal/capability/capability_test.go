@@ -24,7 +24,7 @@ func TestVocabularyAndIntersection(t *testing.T) {
 	if got := Intersect(Known(), []string{}); len(got) != 0 || got == nil {
 		t.Fatal("an empty policy allows nothing", got)
 	}
-	if !reflect.DeepEqual(Known(), []string{AgentsDelegate, AgentsDiscover, LLMInvoke}) {
+	if !reflect.DeepEqual(Known(), []string{AgentsDelegate, AgentsDiscover, LLMInvoke, StreamOutput}) {
 		t.Fatal(Known())
 	}
 }
@@ -42,6 +42,7 @@ func TestRouteCapabilities(t *testing.T) {
 		"/v1/directory/agent":               AgentsDiscover,
 		"/v1/agent-requests/arq_1/reply":    "",
 		"/v1/invocations/complete":          "",
+		"/v1/invocations/stream":            StreamOutput,
 		"/v1/attachments/read":              "",
 		"/v1/owner/messages":                "",
 		"/v1/health":                        "",
