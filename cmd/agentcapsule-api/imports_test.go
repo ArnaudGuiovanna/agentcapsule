@@ -79,8 +79,18 @@ func guestCode(t *testing.T, module string) []string {
 // hostImporter downloads, inspects and builds harness packages: the worker's
 // importer, the image checks that run e2fsprogs, and their sandbox. The API
 // only records an import request, checking the reference's syntax
-// (internal/ociregistry/reference).
-var hostImporter = []string{"internal/ociregistry", "internal/harnesspkg", "internal/sandbox"}
+// (internal/ociregistry/reference). The same holds for corpus images
+// (internal/ext4image, internal/corpuspkg).
+var hostImporter = []string{"internal/ociregistry", "internal/harnesspkg", "internal/sandbox", "internal/ext4image", "internal/corpuspkg"}
+
+// corpusSourceReaders parse a corpus's manifest and measure its source
+// files: the builder calls them in its VM, the CLI on the author's machine.
+// No code of the host does (ADR 023, REG-007): the API does not link them,
+// and the worker, which links the package for its vocabulary, never calls
+// them.
+var corpusSourceReaders = map[string][]string{
+	"internal/corpuspkg/source": {"ParseManifest", "Scan", "Measure", "ParsePointer", "Template"},
+}
 
 // apiStoreRoutes are the only packages through which the API may still link
 // the guest's event store (internal/harnessstore) and the SQLite driver,
@@ -131,8 +141,8 @@ func importers(t *testing.T, module string, packages ...string) map[string][]str
 // the guest's event store and SQLite only through apiStoreRoutes.
 func TestAPILinksNoRuntimeWorkerOrGuestCode(t *testing.T) {
 	module := goModule(t)
-	denied := append(append(guestCode(t, module), hostRuntime...), hostImporter...)
-	deps(t, module, append(hostRuntime, hostImporter...)...) // fails when one is renamed or gone
+	denied := append(append(append(guestCode(t, module), hostRuntime...), hostImporter...), "internal/corpuspkg/source")
+	deps(t, module, append(hostRuntime, append(hostImporter, "internal/corpuspkg/source")...)...) // fails when one is renamed or gone
 	linked := deps(t, module, "cmd/agentcapsule-api")
 	if !slices.Contains(linked, "internal/api") {
 		t.Fatal("go list does not see the API's own packages", linked)
@@ -185,10 +195,19 @@ var workerStarts = map[string]struct {
 	"internal/sandbox/sandbox_linux.go": {1, "this executable again, as the sandbox's helper, in new namespaces: for debugfs -R stat, " +
 		"read-only, on a downloaded image before it is accepted (harnesspkg.InspectRootfs), and debugfs -V at start"},
 	"internal/sandbox/helper_linux.go":             {1, "the helper, confined, executes that debugfs"},
-	"internal/harnesspkg/build.go":                 {2, "mkfs.ext4 and debugfs -w, which build a package: the publisher's side, never called by the worker"},
+	"internal/ext4image/build.go":                  {2, "mkfs.ext4 and debugfs -w, which build a harness or corpus image: the publisher's side or the corpus builder's VM, never called by the worker"},
 	"internal/runtime/firecracker_limits_linux.go": {1, "the pinned jailer, which starts the pinned Firecracker: the boot"},
 	"internal/preflight/preflight_linux.go":        {1, "the pinned Firecracker and jailer with --version"},
 	"internal/worker/host_restore_linux.go":        {1, "the archive shipper the operator names with -archive-fetch"},
+}
+
+// imageBuilders are the functions that build a harness package or an image,
+// by package: the publisher and the corpus builder call them, the worker
+// never does. These packages build on one another.
+var imageBuilders = map[string][]string{
+	"internal/harnesspkg": {"BuildRootfs", "WritePackage"},
+	"internal/ext4image":  {"Build"},
+	"internal/corpuspkg":  {"BuildImage"},
 }
 
 // processStarts are the calls that start a program, by package path, and
@@ -272,8 +291,10 @@ func TestWorkerStartsOnlyTheProgramsItNames(t *testing.T) {
 				switch p := imported[x.Name]; {
 				case slices.Contains(processStarts[p], sel.Sel.Name):
 					found[site]++
-				case p == module+"/internal/harnesspkg" && (sel.Sel.Name == "BuildRootfs" || sel.Sel.Name == "WritePackage"):
+				case slices.Contains(imageBuilders[strings.TrimPrefix(p, module+"/")], sel.Sel.Name) && imageBuilders[pkg] == nil:
 					building = append(building, site+": "+sel.Sel.Name)
+				case slices.Contains(corpusSourceReaders[strings.TrimPrefix(p, module+"/")], sel.Sel.Name):
+					building = append(building, site+": "+sel.Sel.Name+" reads a corpus source")
 				}
 				return true
 			})
@@ -293,6 +314,6 @@ func TestWorkerStartsOnlyTheProgramsItNames(t *testing.T) {
 		}
 	}
 	if len(building) != 0 {
-		t.Error("the worker's code builds packages:", building)
+		t.Error("the worker's code builds packages or reads corpus sources:", building)
 	}
 }

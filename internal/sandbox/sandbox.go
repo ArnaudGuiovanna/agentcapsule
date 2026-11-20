@@ -44,6 +44,9 @@ const (
 	// maxOutput bounds the standard output kept; the rest is read and
 	// discarded.
 	maxOutput = 1 << 20
+	// MaxOutput is maxOutput for callers: an output of that length may have
+	// been cut.
+	MaxOutput = maxOutput
 	// addressSpace bounds the program's virtual memory (RLIMIT_AS): debugfs
 	// needs about 24 MiB on the images measured; a mapping past it fails.
 	addressSpace = 256 << 20
