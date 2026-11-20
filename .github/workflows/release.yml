@@ -141,6 +141,8 @@ jobs:
           release="$RUNNER_TEMP/release"
           assets="$release/assets"
           cp "$release"/build/dist/agentcapsule-{linux,darwin,windows}-* "$assets"/
+          # The `curl | sh` installer of the workstation CLI, signed with the rest.
+          install -m 0644 install.sh "$assets/install.sh"
           cp "$release"/sbom/*.spdx.json "$assets"/
           for name in agentcapsule-api agentcapsule-worker agentcapsule-admin agentcapsule-authority \
               agentcapsule-harness agentcapsule-slim-bridge; do
@@ -304,7 +306,15 @@ jobs:
           cat > "$RUNNER_TEMP/notes.md" <<EOF
           Agent Capsule $TAG, built from $GITHUB_SHA.
 
-          [Download and verify the workstation CLI](https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_SHA/docs/release.md#verify-a-release).
+          Install the workstation CLI on Linux or macOS (or Git Bash on Windows):
+
+              curl -fsSL https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/install.sh | sh -s -- --version $TAG
+
+          The script checks the executable against SHA256SUMS, and the signature
+          of SHA256SUMS when cosign is installed (--require-signature makes it
+          mandatory). Then run \`agentcapsule install --help\`.
+
+          [Download and verify the workstation CLI by hand](https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_SHA/docs/release.md#verify-a-release).
           [Install the matching server bundle](https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_SHA/docs/cli-host.md).
 
           The dependency audit and the vulnerability scan of this release are

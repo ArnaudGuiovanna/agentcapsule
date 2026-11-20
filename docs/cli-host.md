@@ -1,7 +1,13 @@
 # Install and operate a single host
 
-Download and verify the workstation CLI for the release you want. Run
-`agentcapsule version` and `agentcapsule install --help` on that workstation.
+Download and verify the workstation CLI for the release you want, for example
+with the release's installer:
+
+```sh
+curl -fsSL https://github.com/ArnaudGuiovanna/agentcapsule/releases/download/v0.0.1/install.sh | sh -s -- --version v0.0.1 --require-signature
+```
+
+Run `agentcapsule version` and `agentcapsule install --help` on that workstation.
 The released CLI uses its own tag to locate the server bundle on GitHub.
 Use `--to TAG` to select another exact release. [Download and verify the CLI](release.md#verify-a-release)
 

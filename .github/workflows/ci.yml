@@ -146,6 +146,8 @@ jobs:
             > "$RUNNER_TEMP/shellcheck"
           chmod +x "$RUNNER_TEMP/shellcheck"
           "$actionlint" -shellcheck="$RUNNER_TEMP/shellcheck" -pyflakes= -color
+          # The CLI installer runs under any POSIX sh (curl | sh).
+          "$RUNNER_TEMP/shellcheck" --shell=sh - < install.sh
 
       - name: Dependency audit (govulncheck on every Go module, licenses)
         run: |

@@ -10,7 +10,7 @@ Use the portable `agentcapsule` binary on the administrator's workstation. A pla
 | Accept an invitation, invoke an agent, read a result | MonApp's public HTTP contract | Member's verified OIDC identity and current rights |
 | Replace the workstation binary | `self update` | Signature, release digest and local filesystem access |
 
-Choose the CLI for your OS and architecture and verify the downloaded binary against the signed checksums. The install guide describes the host profile, offline assets, checkpointed operations, systemd restart and service, invocation and backup checks. [Release verification](release.md#verify-a-release) · [Host installation](cli-host.md)
+Install the CLI with `curl -fsSL https://github.com/ArnaudGuiovanna/agentcapsule/releases/latest/download/install.sh | sh`, or choose the CLI for your OS and architecture and verify the downloaded binary against the signed checksums yourself. The install guide describes the host profile, offline assets, checkpointed operations, systemd restart and service, invocation and backup checks. [Release verification](release.md#verify-a-release) · [Host installation](cli-host.md)
 
 ## Enroll the platform operator and hand Acme to its owner
 
