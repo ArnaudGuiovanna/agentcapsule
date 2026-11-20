@@ -19,10 +19,10 @@ import (
 var (
 	outcomeDone  = []string{"done", "retried"}
 	platformCall = []string{"validate", "submit", "reply", "search", "post_owner", "read_attachment", "complete_invocation",
-		"llm_complete", "llm_forward", "describe_agent", "request_status"}
+		"llm_complete", "llm_forward", "describe_agent", "request_status", "llm_embed", "llm_transcribe", "llm_ocr"}
 	// platformOutcomes are "ok" and the codes platformError answers with.
 	platformOutcomes = []string{"ok", "unavailable", "invalid", "unauthorized", "not_found", "mandate", "conflict", "expired", "transition",
-		"commit_unknown", "quota_exceeded", "rate_limited", "rejected", "outcome_unknown", "dialect"}
+		"commit_unknown", "quota_exceeded", "rate_limited", "rejected", "outcome_unknown", "dialect", "unsupported"}
 
 	jobSpan = telemetry.NewSpanType("worker.job", telemetry.SpanConsumer, telemetry.SpanAttributes{
 		Codes: []telemetry.Label{{Name: "agentcapsule.job.kind", Values: jobKinds}, {Name: "agentcapsule.outcome", Values: outcomeDone},

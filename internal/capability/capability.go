@@ -14,7 +14,8 @@ import (
 )
 
 const (
-	// LLMInvoke: call the organization's models (/v1/llm/complete, /v1/llm/forward).
+	// LLMInvoke: call the organization's models (/v1/llm/complete, /v1/llm/forward,
+	// /v1/llm/embed, /v1/llm/transcribe, /v1/llm/ocr).
 	LLMInvoke = "llm.invoke"
 	// AgentsDelegate: send requests to other agents and follow them
 	// (/v1/agent-requests, /v1/agent-requests/{id}/status).
@@ -65,7 +66,7 @@ func Intersect(sets ...[]string) []string {
 // messages) and reading an invocation's own files.
 func ForRoute(path string) string {
 	switch path {
-	case "/v1/llm/complete", "/v1/llm/forward":
+	case "/v1/llm/complete", "/v1/llm/forward", "/v1/llm/embed", "/v1/llm/transcribe", "/v1/llm/ocr":
 		return LLMInvoke
 	case "/v1/agent-requests":
 		return AgentsDelegate

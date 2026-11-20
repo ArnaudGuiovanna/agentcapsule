@@ -8,14 +8,14 @@ import (
 )
 
 // callSpan is one logical model call (OPR-3): the provider's kind, the
-// gateway's entry (complete, forward), the outcome, the upstream attempts
+// gateway's entry (complete, forward, embed, transcribe, ocr), the outcome, the upstream attempts
 // and the tokens the provider reported. Never a prompt, a model name, an
 // address or a credential.
 var callSpan = telemetry.NewSpanType("llm.call", telemetry.SpanClient, telemetry.SpanAttributes{
 	Codes: []telemetry.Label{{Name: "agentcapsule.llm.provider", Values: []string{"openai_compatible", "anthropic"}},
-		{Name: "agentcapsule.llm.entry", Values: []string{"complete", "forward"}},
+		{Name: "agentcapsule.llm.entry", Values: []string{"complete", "forward", "embed", "transcribe", "ocr"}},
 		{Name: "agentcapsule.outcome", Values: []string{"ok", "invalid", "unavailable", "rate_limited", "rejected", "address_refused",
-			"outcome_unknown", "dialect", "canceled"}}},
+			"outcome_unknown", "dialect", "unsupported", "canceled"}}},
 	Ints: []string{"agentcapsule.llm.attempts", "agentcapsule.llm.input_tokens", "agentcapsule.llm.output_tokens"}})
 
 func startCall(ctx context.Context, entry string, route Route) (context.Context, *telemetry.Span) {
@@ -46,6 +46,8 @@ func endCall(span *telemetry.Span, usage Usage, err error) {
 		outcome = "outcome_unknown"
 	case errors.Is(err, ErrDialect):
 		outcome = "dialect"
+	case errors.Is(err, ErrUnsupported):
+		outcome = "unsupported"
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		outcome = "canceled"
 	default:

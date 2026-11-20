@@ -200,6 +200,9 @@ var personalVolumeHoldsSQL string
 //go:embed migrations/0055_agent_resize.sql
 var agentResizeSQL string
 
+//go:embed migrations/0056_llm_operations.sql
+var llmOperationsSQL string
+
 // Append migrations; never edit an installed migration. The original schema
 // also upgrades pre-ledger installations, preserving its historical backfills.
 // Later calls validate its checksum without replaying DDL or those backfills.
@@ -259,6 +262,7 @@ var controlPlaneMigrations = []schemaMigration{
 	{version: 53, name: "volume-growth", sql: volumeGrowthSQL},
 	{version: 54, name: "personal-volume-holds", sql: personalVolumeHoldsSQL},
 	{version: 55, name: "agent-resize", sql: agentResizeSQL},
+	{version: 56, name: "llm-operations", sql: llmOperationsSQL},
 }
 
 func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error {

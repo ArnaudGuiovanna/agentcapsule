@@ -63,7 +63,7 @@ func safePlatformCode(err error) string {
 	if errors.As(err, &remote) {
 		switch remote.Code {
 		case "unauthorized", "not_found", "unavailable", "mandate", "conflict", "expired", "transition", "commit_unknown", "invalid",
-			"quota_exceeded", "rate_limited", "rejected", "outcome_unknown", "dialect", "capability_denied":
+			"quota_exceeded", "rate_limited", "rejected", "outcome_unknown", "dialect", "capability_denied", "unsupported":
 			return remote.Code
 		}
 	}
@@ -85,6 +85,9 @@ type platformRequest struct {
 	Query        *DirectoryQuery       `json:"query,omitempty"`
 	Forward      *LLMForward           `json:"forward,omitempty"`
 	AgentID      string                `json:"agent_id,omitempty"`
+	Embed        *LLMEmbed             `json:"embed,omitempty"`
+	Transcribe   *LLMTranscribe        `json:"transcribe,omitempty"`
+	OCR          *LLMOCR               `json:"ocr,omitempty"`
 }
 type platformResponse struct {
 	Protocol      string             `json:"protocol"`
@@ -100,6 +103,10 @@ type platformResponse struct {
 	Forwarded     *LLMForwardResult  `json:"forwarded,omitempty"`
 	Described     *DirectoryAgent    `json:"described,omitempty"`
 	RequestStatus *RequestStatus     `json:"request_status,omitempty"`
+
+	EmbedResult      *LLMEmbedResult      `json:"embed_result,omitempty"`
+	TranscribeResult *LLMTranscribeResult `json:"transcribe_result,omitempty"`
+	OCRResult        *LLMOCRResult        `json:"ocr_result,omitempty"`
 }
 type platformHandler struct {
 	id        Identity
@@ -143,7 +150,7 @@ func (p *platformHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	timeout := 15 * time.Second
-	if r.URL.Path == "/v1/llm/complete" || r.URL.Path == "/v1/llm/forward" {
+	if r.URL.Path == "/v1/llm/complete" || r.URL.Path == "/v1/llm/forward" || llmMediaRoute(r.URL.Path) {
 		// Only this route may outlive the server's short write deadline; the
 		// listener's other bounds still apply.
 		timeout = LLMCallTimeout
@@ -191,7 +198,8 @@ func (p *platformHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if in.Query != nil && r.URL.Path != "/v1/directory/find" || in.Forward != nil && r.URL.Path != "/v1/llm/forward" ||
-		in.AgentID != "" && r.URL.Path != "/v1/directory/agent" {
+		in.AgentID != "" && r.URL.Path != "/v1/directory/agent" || in.Embed != nil && r.URL.Path != "/v1/llm/embed" ||
+		in.Transcribe != nil && r.URL.Path != "/v1/llm/transcribe" || in.OCR != nil && r.URL.Path != "/v1/llm/ocr" {
 		write(http.StatusBadRequest, "invalid")
 		return
 	}
@@ -298,6 +306,8 @@ func (p *platformHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			out.Forwarded = &result
 		}
+	case llmMediaRoute(r.URL.Path):
+		err = p.serveLLMMedia(ctx, r.URL.Path, &in, &out)
 	case r.URL.Path == "/v1/attachments/read":
 		if in.Attachment == nil || in.LLM != nil || in.Completion != nil || in.OwnerMessage != nil || in.Submission != nil || in.Reply != nil || in.RequestID != "" || in.Candidates != nil || in.Key != "" ||
 			!ValidAttachmentID(in.Attachment.ID) || in.Attachment.Index < 0 || in.Attachment.Index >= MaxAttachmentBytes/AttachmentSegmentBytes {
@@ -370,7 +380,7 @@ func (p *platformHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusServiceUnavailable
 		case "quota_exceeded", "rate_limited":
 			status = http.StatusTooManyRequests
-		case "invalid", "dialect":
+		case "invalid", "dialect", "unsupported":
 			status = http.StatusBadRequest
 		}
 		write(status, code)

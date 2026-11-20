@@ -58,6 +58,11 @@ MAX_ATTACHMENT_BYTES = 8 << 20
 MAX_OUTCOME_QUERY = 1024
 LLM_CALL_TIMEOUT = 130.0
 CALL_TIMEOUT = 20.0
+MAX_LLM_EMBED_INPUTS = 64
+MAX_LLM_EMBED_INPUT_BYTES = 32 << 10
+MAX_LLM_MEDIA_BYTES = 700 << 10
+MAX_LLM_AUDIO_SECONDS = 600
+MAX_LLM_OCR_PAGES = 8
 
 WORKING = {"status": "working"}
 
@@ -616,6 +621,63 @@ class Platform:
         if not isinstance(out.get("llm_result"), dict):
             raise ProtocolError("llm result")
         return out["llm_result"]
+
+    def embed_llm(self, key: str, alias: str, inputs: List[str]) -> Dict[str, Any]:
+        """Asks the alias's embedding model for one vector per input (1 to 64
+        strings of at most 32 KiB). Returns embeddings (lists of floats, in
+        the order of inputs), dimensions, input_tokens. The alias must declare
+        the embed operation, otherwise PlatformError("unsupported")."""
+        if (not isinstance(inputs, list) or not 1 <= len(inputs) <= MAX_LLM_EMBED_INPUTS
+                or any(not isinstance(s, str) or not s or len(s.encode("utf-8")) > MAX_LLM_EMBED_INPUT_BYTES for s in inputs)):
+            raise ProtocolError("embedding inputs")
+        out = self._call("/v1/llm/embed", {"idempotency_key": key, "embed": {"alias": alias, "input": inputs}}, LLM_CALL_TIMEOUT)
+        r = out.get("embed_result")
+        if not isinstance(r, dict) or not isinstance(r.get("embeddings"), list) or len(r["embeddings"]) != len(inputs) \
+                or type(r.get("dimensions")) is not int or r["dimensions"] < 1:
+            raise ProtocolError("embedding result")
+        vectors = []
+        for v in r["embeddings"]:
+            raw = base64.b64decode(v, validate=True) if isinstance(v, str) else b""
+            if len(raw) != 4 * r["dimensions"]:
+                raise ProtocolError("embedding result")
+            vectors.append(list(struct.unpack("<%df" % r["dimensions"], raw)))
+        return dict(r, embeddings=vectors)
+
+    def transcribe_llm(self, key: str, alias: str, audio: bytes, audio_format: str, duration_seconds: int,
+                       language: Optional[str] = None, prompt: Optional[str] = None) -> Dict[str, Any]:
+        """Transcribes one audio segment (mp3, wav, flac, ogg, m4a or webm; at
+        most 700 KiB and 600 s, whose duration the caller declares). Returns
+        text, segments (start, end, text) and duration_seconds, the settled
+        duration. Split longer audio first."""
+        if not isinstance(audio, (bytes, bytearray)) or not 1 <= len(audio) <= MAX_LLM_MEDIA_BYTES \
+                or type(duration_seconds) is not int or not 1 <= duration_seconds <= MAX_LLM_AUDIO_SECONDS:
+            raise ProtocolError("audio")
+        req: Dict[str, Any] = {"alias": alias, "audio": base64.b64encode(bytes(audio)).decode("ascii"), "format": audio_format,
+                               "duration_seconds": duration_seconds}
+        if language:
+            req["language"] = language
+        if prompt:
+            req["prompt"] = prompt
+        out = self._call("/v1/llm/transcribe", {"idempotency_key": key, "transcribe": req}, LLM_CALL_TIMEOUT)
+        r = out.get("transcribe_result")
+        if not isinstance(r, dict) or not isinstance(r.get("text"), str) or type(r.get("duration_seconds")) is not int:
+            raise ProtocolError("transcription result")
+        return r
+
+    def ocr_llm(self, key: str, alias: str, document: bytes, media_type: str, pages: int) -> Dict[str, Any]:
+        """Recognizes the pages of one image or PDF (image/png, image/jpeg,
+        image/webp or application/pdf; at most 700 KiB and 8 pages, whose
+        number the caller declares). Returns pages (index, markdown) and
+        pages_processed, the settled page count."""
+        if not isinstance(document, (bytes, bytearray)) or not 1 <= len(document) <= MAX_LLM_MEDIA_BYTES \
+                or type(pages) is not int or not 1 <= pages <= MAX_LLM_OCR_PAGES:
+            raise ProtocolError("document")
+        req = {"alias": alias, "document": base64.b64encode(bytes(document)).decode("ascii"), "media_type": media_type, "pages": pages}
+        out = self._call("/v1/llm/ocr", {"idempotency_key": key, "ocr": req}, LLM_CALL_TIMEOUT)
+        r = out.get("ocr_result")
+        if not isinstance(r, dict) or not isinstance(r.get("pages"), list) or type(r.get("pages_processed")) is not int:
+            raise ProtocolError("ocr result")
+        return r
 
     def find_agents(self, skills: List[int]) -> List[Dict[str, Any]]:
         """Finds agents of this agent's organization that offer any of the

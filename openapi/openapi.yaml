@@ -1259,6 +1259,9 @@ paths:
                 input_micro_per_mtok: {type: integer, minimum: 0, maximum: 1000000000000, description: Estimated price per million input tokens}
                 output_micro_per_mtok: {type: integer, minimum: 0, maximum: 1000000000000, description: Estimated price per million output tokens}
                 access: {type: string, enum: [organization, listed], default: organization, description: "`listed`: only the agents the alias's grants name may call it"}
+                operations: {$ref: '#/components/schemas/LlmOperations'}
+                audio_micro_per_minute: {type: integer, minimum: 0, maximum: 1000000000000, description: Estimated price per minute of audio transcribed}
+                ocr_micro_per_page: {type: integer, minimum: 0, maximum: 1000000000000, description: Estimated price per page of OCR}
       responses:
         '201': {$ref: '#/components/responses/LlmAliasReceipt'}
         default: {$ref: '#/components/responses/Problem'}
@@ -1309,9 +1312,12 @@ paths:
       summary: Replace an alias's estimation prices
       description: >-
         Requires provider:manage and current role org_owner or org_admin.
-        Both prices are required, in micro-units of the organization's
-        currency per million tokens; zero is a free model. A call keeps the
-        prices of its reservation. A disabled alias returns 409.
+        Both token prices are required, in micro-units of the organization's
+        currency per million tokens; zero is a free model. The prices per
+        minute of audio and per OCR page are optional: the body replaces the
+        whole list, so a unit price left out makes that unit unpriced, and a
+        hard cost budget then refuses its calls. A call keeps the prices of
+        its reservation. A disabled alias returns 409.
       security: [{delegatedBearer: []}, {serviceBearer: []}]
       parameters:
         - {name: alias, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 100}}
@@ -1327,6 +1333,38 @@ paths:
               properties:
                 input_micro_per_mtok: {type: integer, minimum: 0, maximum: 1000000000000}
                 output_micro_per_mtok: {type: integer, minimum: 0, maximum: 1000000000000}
+                audio_micro_per_minute: {type: integer, minimum: 0, maximum: 1000000000000}
+                ocr_micro_per_page: {type: integer, minimum: 0, maximum: 1000000000000}
+      responses:
+        '200': {$ref: '#/components/responses/LlmAliasReceipt'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/llm/aliases/{alias}/operations:
+    post:
+      operationId: setLlmAliasOperations
+      summary: Replace the operations an alias's model serves
+      description: >-
+        Requires provider:manage and current role org_owner or org_admin.
+        A platform channel route the alias does not declare is refused
+        before any reservation, with the channel code `unsupported`:
+        `chat` for /v1/llm/complete and /v1/llm/forward, `embed`,
+        `transcribe` and `ocr` for their routes. `vision` is informative.
+        An anthropic provider serves `chat` and `vision` only (400
+        otherwise). Takes effect on the next reservation. A disabled alias
+        returns 409.
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters:
+        - {name: alias, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 100}}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [operations]
+              properties:
+                operations: {$ref: '#/components/schemas/LlmOperations'}
       responses:
         '200': {$ref: '#/components/responses/LlmAliasReceipt'}
         default: {$ref: '#/components/responses/Problem'}
@@ -1505,9 +1543,11 @@ paths:
       summary: Settle a call of unknown outcome
       description: >-
         Requires quota:manage and current role org_owner or org_admin. The
-        usage read in the provider's account, priced at the call's
-        reservation. A resolved call, or one that may still be running,
-        returns 409.
+        usage read in the provider's account, in the call's units, priced at
+        the call's reservation: tokens for chat and embed (an embedding has
+        no output tokens), audio_seconds for transcribe, pages for ocr; an
+        amount in another unit returns 400. A resolved call, or one that may
+        still be running, returns 409.
       security: [{delegatedBearer: []}, {serviceBearer: []}]
       parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
       requestBody:
@@ -1517,10 +1557,11 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required: [input_tokens, output_tokens]
               properties:
                 input_tokens: {type: integer, minimum: 0, maximum: 1000000000000}
                 output_tokens: {type: integer, minimum: 0, maximum: 1000000000000}
+                audio_seconds: {type: integer, minimum: 0, maximum: 1000000000000}
+                pages: {type: integer, minimum: 0, maximum: 1000000000000}
       responses:
         '200': {$ref: '#/components/responses/LlmCallReceipt'}
         default: {$ref: '#/components/responses/Problem'}
@@ -3526,16 +3567,21 @@ components:
         revoked_at: {type: string, format: date-time}
     LlmCall:
       type: object
-      required: [id, agent_id, alias, state, reserved_tokens, reserved_cost_micro, created_at]
+      required: [id, agent_id, alias, operation, state, reserved_tokens, reserved_cost_micro, created_at]
       properties:
         id: {type: string}
         agent_id: {type: string}
         alias: {type: string}
+        operation: {type: string, enum: [chat, embed, transcribe, ocr]}
         state: {type: string, enum: [reserved, unknown, settled, released]}
         reserved_tokens: {type: integer}
+        reserved_audio_seconds: {type: integer, description: The declared duration of a transcription}
+        reserved_pages: {type: integer, description: The declared pages of an OCR call}
         reserved_cost_micro: {type: integer}
         input_tokens: {type: integer}
         output_tokens: {type: integer}
+        audio_seconds: {type: integer, description: Settled seconds of a transcription}
+        pages: {type: integer, description: Settled pages of an OCR call}
         estimated_cost_micro: {type: integer, description: Absent when the alias had no prices at reservation}
         created_at: {type: string, format: date-time}
         resolved_at: {type: string, format: date-time}
@@ -3684,7 +3730,8 @@ components:
           type: array
           items:
             type: object
-            required: [agent_id, alias, calls, settled_input_tokens, settled_output_tokens, pending_tokens, unknown_outcome_tokens, estimated_cost_micro, pending_cost_micro, unknown_outcome_cost_micro]
+            required: [agent_id, alias, calls, settled_input_tokens, settled_output_tokens, pending_tokens, unknown_outcome_tokens, estimated_cost_micro, pending_cost_micro, unknown_outcome_cost_micro,
+              settled_audio_seconds, settled_pages]
             properties:
               agent_id: {type: string}
               alias: {type: string}
@@ -3696,13 +3743,18 @@ components:
               estimated_cost_micro: {type: integer, description: Settled calls}
               pending_cost_micro: {type: integer, description: Reserved cost of calls in flight}
               unknown_outcome_cost_micro: {type: integer, description: Reserved cost of calls of unknown outcome}
+              settled_audio_seconds: {type: integer, description: Seconds of audio of settled transcriptions}
+              settled_pages: {type: integer, description: Pages of settled OCR calls}
         totals:
           type: object
           description: The organization's sum of the lines, with the same fields except agent_id and alias.
     LlmAlias:
       type: object
-      required: [alias, provider_id, upstream_model, status, created_at, input_micro_per_mtok, output_micro_per_mtok, priced, access]
+      required: [alias, provider_id, upstream_model, status, created_at, input_micro_per_mtok, output_micro_per_mtok, priced, access, operations]
       properties:
+        operations: {$ref: '#/components/schemas/LlmOperations'}
+        audio_micro_per_minute: {type: integer, description: "Price per minute of audio; absent, transcription is unpriced"}
+        ocr_micro_per_page: {type: integer, description: "Price per OCR page; absent, OCR is unpriced"}
         input_micro_per_mtok: {type: integer}
         output_micro_per_mtok: {type: integer}
         priced: {type: boolean, description: "The organization set the prices; zero prices are then a free model"}
@@ -3712,6 +3764,17 @@ components:
         upstream_model: {type: string}
         status: {type: string, enum: [active, disabled]}
         created_at: {type: string, format: date-time}
+    LlmOperations:
+      type: array
+      description: >-
+        What the alias's model serves, in this order: chat (/v1/llm/complete
+        and /v1/llm/forward), vision (informative), embed, transcribe, ocr
+        (their platform channel routes). Each at most once; chat only by
+        default.
+      minItems: 1
+      maxItems: 5
+      uniqueItems: true
+      items: {type: string, enum: [chat, vision, embed, transcribe, ocr]}
     ServiceAccount:
       type: object
       required: [id, name, role, status, created_at]
