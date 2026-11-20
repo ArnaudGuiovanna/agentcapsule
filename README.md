@@ -42,7 +42,7 @@ hosts and governs; the harness you bring decides what the agent does.
 > [!WARNING]
 > **MVP built, not released and not yet proven on a server.**
 >
-> - 63 of the 65 MVP acceptance criteria are met ([docs/acceptance.md](docs/acceptance.md)). The last two need a live run against GHCR and one against a model provider's own API.
+> - All 65 MVP acceptance criteria are met ([docs/acceptance.md](docs/acceptance.md)): signed import from GHCR and live calls through Ollama with a local model passed on November 19. Anthropic’s hosted API is not part of that live qualification.
 > - Every KVM campaign has passed, but on a single development machine. No release is published, and no install has run on a production host.
 >
 > Do not run it in production yet. See [ROADMAP.md](ROADMAP.md).

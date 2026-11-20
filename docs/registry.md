@@ -204,16 +204,35 @@ AGENTCAPSULE_TEST_GHCR_REFERENCE=ghcr.io/<owner>/<name>:<version>@sha256:<digest
 go test -tags ghcrlive -run TestLiveGHCR ./internal/worker
 ```
 
-`TestLiveGHCRImport` imports the public harness package that the variable
+`TestLiveGHCRImport` imports the harness package that the variable
 names, with the assertions of the local-registry test: `READY` with a
 release, read-only files in the cache, nothing left to do.
+For a private package, set `AGENTCAPSULE_TEST_GHCR_USERNAME` and supply its
+token through `AGENTCAPSULE_REGISTRY_PASSWORD`, never a command-line argument.
+Set `AGENTCAPSULE_TEST_GHCR_PUBLISHER_KEY` to a publisher's PEM public key
+to require that publisher's signature before downloading the image.
+`AGENTCAPSULE_TEST_GHCR_EXPORT` can name a new directory into which the test
+copies the verified package. It can then feed `--pi-harness` in the KVM
+campaign: compare its checksums with the published package before running it.
+The KVM scenario imports those same bytes through its own local registry;
+the preceding live test is the proof of the GHCR import.
 `TestLiveGHCRRejectsAnImageThatIsNotAHarness` needs no variable: it gets an
 anonymous token from GHCR, fetches the manifest of a public image that is not a
 harness package, and checks that it is rejected as `integrity` before any
 layer. The rule for GHCR names its blob CDN,
-`pkg-containers.githubusercontent.com`. On 2026-11-16 the second test passed;
-the first needs a harness package published publicly on GHCR, which the
-project does not publish yet.
+`pkg-containers.githubusercontent.com`. Both tests passed on 2026-11-19
+with a signed private Pi qualification
+package in `ghcr.io/arnaudguiovanna/agentcapsule/pi-agent`. This is a test
+package, not a published platform release. The qualified package is pinned to:
+
+```text
+ghcr.io/arnaudguiovanna/agentcapsule/pi-agent:qualification-20261119T150746Z@sha256:d6853fcce563d413c35961e2e9e0377df517214d1aea8319b42411a63a9b5d85
+```
+
+The exported package then passed the Pi KVM scenario with local Ollama on
+2026-11-19. Its adapter uses the static cgo/SQLite build from
+`scripts/build-adapted-harness.py`; a build with `CGO_ENABLED=0` can compile
+but cannot open the SQLite store at startup.
 
 ## Running an imported release
 
