@@ -278,7 +278,15 @@ class BinaryRollbackTests(unittest.TestCase):
         ns["db_env"] = self.api["db_env"]
         self.api["postgres_scalar"] = ns["postgres_scalar"]
         self.ledger = json.loads(subprocess.check_output([self.binaries[NEW],"migration-manifest"]))
-        self.migrations = sorted(f.name for f in (ROOT/"internal/controlplane/migrations").glob("*.sql"))
+        # Two compatible older binaries can be tested from a newer checkout.
+        # Package exactly the SQL files that match the candidate's embedded ledger.
+        migration_dir = ROOT / "internal/controlplane/migrations"
+        files = {int(path.name.split("_", 1)[0]): path for path in migration_dir.glob("*.sql")}
+        self.migrations = []
+        for row in self.ledger[1:]:
+            path = files[row["version"]]
+            self.assertEqual(digest(path.read_bytes()), row["sha256"], path.name)
+            self.migrations.append(path.name)
         # The older admin predates migration-manifest. Read the schema that
         # its compiled migrations actually wrote before cloning the database.
         old_schema = json.loads(sql(src, """SELECT json_agg(json_build_object('version',version,
