@@ -169,7 +169,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 }
 
 type agent struct {
-	ID, Owner, Phase, Mode string
+	ID, Owner, Phase, Mode, Kind string
 	// Tenant is empty for historical owner-domain agents.
 	Tenant  string
 	Visible bool
@@ -180,7 +180,7 @@ type agent struct {
 // mutations while allowing FK KEY SHARE checks: concurrent deletion manifests
 // must not deadlock by referencing each other's already-locked agent rows.
 func lockAgents(ctx context.Context, tx pgx.Tx, ids ...string) (map[string]agent, error) {
-	rows, err := tx.Query(ctx, `SELECT id, coalesce(owner_user_id,''), phase, inbound_mode, discoverable, coalesce(tenant_id,'')
+	rows, err := tx.Query(ctx, `SELECT id, coalesce(owner_user_id,''), phase, inbound_mode, discoverable, coalesce(tenant_id,''), kind
         FROM agents WHERE id = ANY($1) ORDER BY id FOR NO KEY UPDATE`, ids)
 	if err != nil {
 		return nil, err
@@ -189,7 +189,7 @@ func lockAgents(ctx context.Context, tx pgx.Tx, ids ...string) (map[string]agent
 	agents := make(map[string]agent)
 	for rows.Next() {
 		var a agent
-		if err := rows.Scan(&a.ID, &a.Owner, &a.Phase, &a.Mode, &a.Visible, &a.Tenant); err != nil {
+		if err := rows.Scan(&a.ID, &a.Owner, &a.Phase, &a.Mode, &a.Visible, &a.Tenant, &a.Kind); err != nil {
 			return nil, err
 		}
 		agents[a.ID] = a

@@ -305,6 +305,7 @@ func TestAuditRetentionCoversEveryAuditTable(t *testing.T) {
 	seed(`INSERT INTO instruction_replays(id,operation_id,agent_id,tenant_id,actor_kind,request_key,previous_reason,expires_at)
         SELECT 'ir_old',id,agent_id,$2,'operator','old','expired',clock_timestamp() FROM platform_operations WHERE agent_id=$1`, agent, owner.TenantID)
 	seed(`INSERT INTO tenant_refusal_audit(id,tenant_id,actor_principal_id,action,target,reason) VALUES('tra_old',$1,$2,'team.created',$1,'forbidden')`, owner.TenantID, owner.ID)
+	seed(`INSERT INTO corpora(id,tenant_id,name,source_kind,source_url,source_ref,source_path) VALUES('cor_old',$1,'course','github','https://github.com/fixture/course','main','')`, owner.TenantID)
 	seed(`INSERT INTO corpus_audit(id,tenant_id,actor_principal_id,action,corpus_id) VALUES('cora_old',$1,$2,'corpus.created','cor_old')`, owner.TenantID, owner.ID)
 	for _, a := range auditTables {
 		if count(t, l.s, a.table) == 0 {

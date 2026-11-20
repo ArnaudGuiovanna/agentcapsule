@@ -69,7 +69,7 @@ func (t *Transit) CompleteCorpusReview(ctx context.Context, j CorpusWork, r Corp
 	if t == nil {
 		return ErrTransitKey
 	}
-	if j.Phase != "PACKAGING" || !reference.ValidDigest(r.Digest) || r.Bytes <= 0 || r.UUID == "" || len(r.Files["INDEX.md"]) == 0 || len(r.Files["report.json"]) == 0 {
+	if j.Phase != "PACKAGING" || !reference.ValidDigest(r.Digest) || r.Bytes <= 0 || !capsuleprotocol.ValidUUID(r.UUID) || len(r.Files["INDEX.md"]) == 0 || len(r.Files["report.json"]) == 0 {
 		return ErrInput
 	}
 	var total int
@@ -125,7 +125,7 @@ func (t *Transit) CompleteCorpusReview(ctx context.Context, j CorpusWork, r Corp
 		}
 	}
 	tag, err := tx.Exec(ctx, `UPDATE corpus_builds SET state='REVIEW',image_digest=$4,image_uuid=$5,image_bytes=$6,review_truncated=$7,
- review_at=clock_timestamp(),review_expires_at=clock_timestamp()+interval '30 days'`+corpusNext+corpusLease, j.ID, j.Token, j.Phase, r.Digest, r.UUID, r.Bytes, r.Truncated)
+ review_at=clock_timestamp(),review_expires_at=clock_timestamp()+interval '30 days',costs=`+corpusCosts+corpusNext+corpusLease, j.ID, j.Token, j.Phase, r.Digest, r.UUID, r.Bytes, r.Truncated)
 	if err != nil {
 		return err
 	}

@@ -127,11 +127,11 @@ const workVMs = `p.state IN ('STARTING','RUNNING','STOPPING') AND NOT p.fence_on
 func organizationUsage(ctx context.Context, tx pgx.Tx, tenant, except string) (OrganizationUsage, error) {
 	var u OrganizationUsage
 	err := tx.QueryRow(ctx, `SELECT
-        (SELECT count(*) FROM agents a WHERE a.tenant_id=$1 AND a.phase<>'DELETED'),
-        (SELECT coalesce(sum(x.volume_mib+x.reserved_growth_mib),0) FROM agents a JOIN agent_specs x ON x.agent_id=a.id WHERE a.tenant_id=$1 AND a.phase<>'DELETED'),
+        (SELECT count(*) FROM agents a WHERE a.tenant_id=$1 AND a.kind='agent' AND a.phase<>'DELETED'),
+        (SELECT coalesce(sum(x.volume_mib+x.reserved_growth_mib),0) FROM agents a JOIN agent_specs x ON x.agent_id=a.id WHERE a.tenant_id=$1 AND a.kind='agent' AND a.phase<>'DELETED'),
         count(*),coalesce(sum(x.vcpus),0),coalesce(sum(x.memory_mib),0)
         FROM agents a JOIN agent_specs x ON x.agent_id=a.id JOIN agent_placements p ON p.agent_id=a.id
-        WHERE a.tenant_id=$1 AND a.id<>$2 AND `+workVMs, tenant, except).
+        WHERE a.tenant_id=$1 AND a.kind='agent' AND a.id<>$2 AND `+workVMs, tenant, except).
 		Scan(&u.Agents, &u.StorageMiB, &u.ActiveVMs, &u.VCPUs, &u.MemoryMiB)
 	if err != nil {
 		return u, err
@@ -196,7 +196,7 @@ func checkCreationQuota(ctx context.Context, tx pgx.Tx, tenant string, r AgentRe
 // agent's and its placement's locks, and reserves the boot in the same
 // transaction when this passes.
 func checkBootQuota(ctx context.Context, tx pgx.Tx, a agent) error {
-	if a.Tenant == "" {
+	if a.Tenant == "" || a.Kind == "corpus_builder" {
 		return nil
 	}
 	if err := lockOrganizationQuota(ctx, tx, a.Tenant); err != nil {
@@ -308,7 +308,7 @@ func (a *Accounts) SetOrganizationQuotas(ctx context.Context, p Principal, id, k
 		var vcpus int
 		var memory int64
 		if err := tx.QueryRow(ctx, `SELECT coalesce(max(x.vcpus),0),coalesce(max(x.memory_mib),0)
-            FROM agents a JOIN agent_specs x ON x.agent_id=a.id WHERE a.tenant_id=$1 AND a.phase IN ('PROVISIONING','LIVE')`, id).Scan(&vcpus, &memory); err != nil {
+            FROM agents a JOIN agent_specs x ON x.agent_id=a.id WHERE a.tenant_id=$1 AND a.kind='agent' AND a.phase IN ('PROVISIONING','LIVE')`, id).Scan(&vcpus, &memory); err != nil {
 			return 0, nil, err
 		}
 		if name := firstOf(overInt(in.MaxVCPUs, vcpus, "max_vcpus"), over(in.MaxMemoryMiB, memory, "max_memory_mib")); name != "" {

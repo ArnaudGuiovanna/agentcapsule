@@ -13,7 +13,7 @@ progress), REG-005, REG-006, REG-007, RUN-010 and the COR requirements of the
 (drive limits), [ADR 016](016-content-links-capabilities.md) (JSON content,
 capabilities), [ADR 021](021-organization-quotas.md) (organization quotas),
 the model [corpus_lifecycle.qnt](../../spec/corpus_lifecycle.qnt), and the
-OpenAPI draft [openapi/drafts/corpora.yaml](../../openapi/drafts/corpora.yaml).
+Served contract in [openapi/openapi.yaml](../../openapi/openapi.yaml).
 
 ## Context
 
@@ -490,6 +490,10 @@ decode ends the build `FAILED builder_failed`.
   Once the streaming plan's lot 3 is built, the builder also emits `step`
   events per file, relayed by its SSE hub (lot 4 there).
 
+The packaged ext4 image keeps a canonical report for reproducibility. The per-build report records the actual build ID and the cached or converted status of each file. The guest puts this report in the output drive after the filesystem. At the very end of the allocated drive it writes a 48-byte footer with eight ASCII bytes `ACRPT001`, an unsigned 64-bit big-endian JSON length, and the raw 32-byte SHA-256 of that JSON. The JSON immediately precedes the footer and occupies at most 1 MiB. The guest must leave room for both when choosing the filesystem size.
+
+The worker verifies the length, non-overlap with the filesystem, digest, report schema, build ID and commit. It retains the exact report bytes in the encrypted review bundle. Only the first `image_bytes` bytes enter the package and its digest. The worker preserves the raw output until the review transaction commits, so an interrupted publication can be retried.
+
 ### 6.4 The worker's checks after `package`
 
 1. Truncates `output.ext4` to `image_bytes` (at most `max_image_mib`; a larger
@@ -564,7 +568,7 @@ an asynchronous route (202, listed by `TestAsynchronousRoutesAreListed`),
 followed by `GET /v1/corpus-builds/{id}` and by
 `agentcapsule operation wait --type corpus-build` (exit 0 for `REVIEW` or
 `PUBLISHED`, 5 for `FAILED`, `CANCELED` or `EXPIRED`, 130 on interruption).
-The OpenAPI draft is [openapi/drafts/corpora.yaml](../../openapi/drafts/corpora.yaml).
+The endpoints are specified in [openapi/openapi.yaml](../../openapi/openapi.yaml).
 
 `source.url` is `https://<host>/<repository>` (no user, query or fragment;
 GitLab subgroups allowed); `kind` is `github` or `gitlab`; `path` is a clean
@@ -1037,7 +1041,7 @@ Lot 4 changed these, each keeping the guarantees above:
 | 3. Git sources | §3, §4 |
 | 4. Drives and guest mount | §5 |
 | 5. Builder agent | §6, §7.1, §7.5, §7.6 |
-| 6. Publication, binding and cache | §7.2 to §7.4, §8 to §11, §14, §15; it moves the paths of [openapi/drafts/corpora.yaml](../../openapi/drafts/corpora.yaml) into `openapi/openapi.yaml` as it serves them |
+| 6. Publication, binding and cache | §7.2 to §7.4, §8 to §11, §14, §15; endpoints in [openapi/openapi.yaml](../../openapi/openapi.yaml) |
 | 7. CLI and docs | the plan's §7, §16, the CLI's `--type corpus-build` |
 | 8. SDK and adapter | reading `/corpus/` |
 | 9. Enrichers | `ext/` (§2.2) |

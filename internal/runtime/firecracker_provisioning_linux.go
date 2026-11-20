@@ -236,19 +236,26 @@ func (h *FirecrackerHost) HarnessImagesInUse(ctx context.Context) (map[string]bo
 // (agentcapsule-worker -collect-garbage). It takes the host's lock, as the
 // worker does. A root without a registry has no agent.
 func HarnessImagesInUseAt(ctx context.Context, root string) (map[string]bool, error) {
+	h, err := registeredHost(root)
+	if h == nil || err != nil {
+		return map[string]bool{}, err
+	}
+	return h.HarnessImagesInUse(ctx)
+}
+func registeredHost(root string) (*FirecrackerHost, error) {
 	abs, err := filepath.Abs(root)
 	if err != nil {
 		return nil, err
 	}
 	if _, err = os.Lstat(filepath.Join(abs, "registry.json")); errors.Is(err, os.ErrNotExist) {
-		return map[string]bool{}, nil
+		return nil, nil
 	} else if err != nil {
 		return nil, err
 	}
 	if real, err := filepath.EvalSymlinks(abs); err != nil || real != abs {
 		return nil, errors.New("runtime root must not contain symlinks")
 	}
-	return (&FirecrackerHost{root: abs}).HarnessImagesInUse(ctx)
+	return &FirecrackerHost{root: abs}, nil
 }
 
 // SetRolloutProfile changes only a stopped, unsealed agent. Its encrypted

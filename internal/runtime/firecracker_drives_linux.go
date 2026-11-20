@@ -380,3 +380,24 @@ func CreateBuildOutput(path string, bytes int64) error {
 	}
 	return errors.Join(err, f.Close())
 }
+
+// CorpusImagesInUseAt reads the exact boot mounts of running VMs, under the
+// same host lock used to install drives and change an agent's running state.
+func CorpusImagesInUseAt(ctx context.Context, root string) (map[string]bool, error) {
+	h, err := registeredHost(root)
+	if err != nil || h == nil {
+		return map[string]bool{}, err
+	}
+	images := map[string]bool{}
+	err = h.locked(ctx, func(r *hostRegistry) error {
+		for _, a := range r.Agents {
+			if a.Run != nil {
+				for _, c := range a.Corpora {
+					images[c.Digest] = true
+				}
+			}
+		}
+		return nil
+	})
+	return images, err
+}

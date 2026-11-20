@@ -145,7 +145,7 @@ func corpusRead[T any](ctx context.Context, a *Accounts, p Principal, action aut
 	}
 	return v, commit(ctx, tx)
 }
-func (a *Accounts) corpusMutation(ctx context.Context, p Principal, action authorization.Action, key, op string, in any, change func(pgx.Tx) (int, any, error)) (APIReceipt, error) {
+func (a *Accounts) corpusMutation(ctx context.Context, p Principal, action authorization.Action, key, op string, in any, change func(pgx.Tx) (int, any, error), extra ...authorization.Action) (APIReceipt, error) {
 	tx, err := a.store.begin(ctx)
 	if err != nil {
 		return APIReceipt{}, err
@@ -153,6 +153,11 @@ func (a *Accounts) corpusMutation(ctx context.Context, p Principal, action autho
 	defer rollback(tx)
 	if _, err = authorizeTenantAdminMutation(ctx, tx, p, action); err != nil {
 		return APIReceipt{}, err
+	}
+	for _, required := range extra {
+		if err = corpusPermission(ctx, tx, p, required); err != nil {
+			return APIReceipt{}, err
+		}
 	}
 	out, err := a.withTenantReceipt(ctx, tx, p, op, key, in, func() (int, any, error) { return change(tx) })
 	if err != nil {

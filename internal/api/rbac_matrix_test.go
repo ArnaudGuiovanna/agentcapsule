@@ -163,7 +163,7 @@ var rbacRoutes = append([]rbacRoute{
 	{Method: "GET", Path: "/v1/corpus-builds/{review}", Success: 200, Want: "S S S S 403 403 403 403 403 404 401 401 403"},
 	{Method: "POST", Path: "/v1/corpus-builds/{fresh}/cancel", Success: 200, Want: rbacManage, body: `{}`, fresh: rbacFreshCorpusBuild},
 	{Method: "GET", Path: "/v1/corpus-builds/{review}/review", Success: 200, Want: rbacManage},
-	{Method: "GET", Path: "/v1/corpus-builds/{review}/review-file?path=INDEX.md", Success: 200, Want: rbacManage},
+	{Method: "GET", Path: "/v1/corpus-builds/{review}/review-file?path=report.json", Success: 200, Want: rbacManage},
 	{Method: "POST", Path: "/v1/corpus-builds/{review}/try", Success: 200, Want: rbacManage, body: `{"agent_id":"{corpus_agent}","mount":"matrix"}`},
 	{Method: "POST", Path: "/v1/corpus-builds/{fresh}/publish", Success: 201, Want: rbacManage, body: `{"version":1}`, fresh: rbacFreshCorpusReview},
 	{Method: "GET", Path: "/v1/corpus-releases", Success: 200, Want: "S S S S 403 403 403 403 403 F 401 401 403", hides: []string{"{corpus_release}"}},

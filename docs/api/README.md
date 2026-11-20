@@ -1,5 +1,7 @@
 # Go API: installation, accounts and agents
 
+[Building, reviewing and mounting corpora](corpora.md)
+
 The API serves organizations: the platform operator's administration
 ([organizations.md](organizations.md)), and each organization's members,
 teams, agents, invocations and models ([tenant authentication](tenant-identity.md),

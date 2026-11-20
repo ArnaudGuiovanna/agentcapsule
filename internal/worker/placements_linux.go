@@ -23,6 +23,7 @@ import (
 )
 
 type Placements struct {
+	corpusCache *corpusImageCache
 	// authority is both authorities: in production the authority service's
 	// client, in tests restoreauthority.Local too. nil on a laboratory host
 	// without authorities.
@@ -298,6 +299,11 @@ func (w *Placements) startWithClaim(ctx context.Context, id string, forFence boo
 	}
 	if _, running := runs[id]; !running {
 		if _, err := w.Reconcile(ctx); err != nil {
+			return runtime.VMRun{}, err
+		}
+	}
+	if _, running := runs[id]; !running && !forFence && (w.corpusCache != nil || w.provisioning != nil) {
+		if err := w.syncCorpora(ctx, id); err != nil {
 			return runtime.VMRun{}, err
 		}
 	}

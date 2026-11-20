@@ -183,7 +183,7 @@ type IssueServiceTokenInput struct {
 }
 
 const serviceAccountColumns = `p.id,p.display_name,m.role,CASE WHEN p.status='active' AND m.status='active' THEN 'active' ELSE 'disabled' END,p.created_at`
-const serviceAccountFrom = ` FROM principals p JOIN memberships m ON (m.tenant_id,m.principal_id)=(p.tenant_id,p.id) WHERE p.tenant_id=$1 AND p.kind='service' AND NOT EXISTS(SELECT 1 FROM applications a WHERE a.id=p.id)`
+const serviceAccountFrom = ` FROM principals p JOIN memberships m ON (m.tenant_id,m.principal_id)=(p.tenant_id,p.id) WHERE p.tenant_id=$1 AND p.kind='service' AND NOT EXISTS(SELECT 1 FROM agents a WHERE a.builder_principal=p.id) AND NOT EXISTS(SELECT 1 FROM applications a WHERE a.id=p.id)`
 
 func scanServiceAccount(row pgx.Row) (ServiceAccount, error) {
 	var s ServiceAccount

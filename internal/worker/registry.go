@@ -53,10 +53,13 @@ var (
 // bridge's user, and the host's accounts and groups: the program must own
 // nothing and belong to no group (6 is disk on Debian, with /dev/sd*).
 func (c ServiceConfig) inspection(asRoot bool) (sandbox.Options, error) {
-	uid := c.Registry.InspectionUID
 	if !asRoot {
 		return sandbox.Options{}, nil
 	}
+	if c.Registry == nil {
+		return sandbox.Options{}, ErrInspectionUID
+	}
+	uid := c.Registry.InspectionUID
 	p, slim := c.Provisioning, c.SLIM
 	switch id := strconv.FormatUint(uint64(uid), 10); {
 	case !sandbox.Reservable(uid):

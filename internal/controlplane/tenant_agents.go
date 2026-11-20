@@ -236,7 +236,7 @@ func (c *AgentCatalog) listTenant(ctx context.Context, p Principal, after string
 	}
 	administrative := authorization.CanAdminister(tenantAccess(p), authorization.Role(current.Role), authorization.ReadAgentMetadata)
 	rows, err := tx.Query(ctx, "SELECT "+tenantAgentColumns+", "+effectivePermissions+agentViewFrom+
-		`WHERE a.tenant_id=$1 AND a.phase<>'DELETED' AND a.id>$3 ORDER BY a.id`, p.TenantID, p.ID, after)
+		`WHERE a.tenant_id=$1 AND a.kind='agent' AND a.phase<>'DELETED' AND a.id>$3 ORDER BY a.id`, p.TenantID, p.ID, after)
 	if err != nil {
 		return nil, err
 	}
@@ -274,7 +274,7 @@ func (c *AgentCatalog) getTenant(ctx context.Context, p Principal, id string) (T
 	}
 	var perms []string
 	v, err := scanTenantAgent(tx.QueryRow(ctx, "SELECT "+tenantAgentColumns+", "+effectivePermissions+agentViewFrom+
-		`WHERE a.tenant_id=$1 AND a.id=$3 AND a.phase<>'DELETED'`, p.TenantID, p.ID, id), &perms)
+		`WHERE a.tenant_id=$1 AND a.kind='agent' AND a.id=$3 AND a.phase<>'DELETED'`, p.TenantID, p.ID, id), &perms)
 	if err != nil {
 		return TenantAgent{}, err
 	}
@@ -614,7 +614,7 @@ func tenantAgentForUpdate(ctx context.Context, tx pgx.Tx, p Principal, id string
 		return agent{}, "", err
 	}
 	a, ok := agents[id]
-	if !ok || a.Tenant != p.TenantID {
+	if !ok || a.Tenant != p.TenantID || a.Kind == "corpus_builder" {
 		return agent{}, "", ErrNotFound
 	}
 	var host string

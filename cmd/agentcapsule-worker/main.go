@@ -226,7 +226,7 @@ func run() int {
 	// Events, one JSON object per line, from a closed vocabulary (OPS-02):
 	// progress on standard output, retries and failures on standard error.
 	vocabulary := map[string][]string{"event": {"maintenance_started", "maintenance_complete", "maintenance_retry", "wake_budget_exhausted",
-		"harness_import_retry", "corpus_fetch_retry", "directory_publish_retry", "slim_callback_stopped", "job_done", "job_retried",
+		"harness_import_retry", "corpus_fetch_retry", "corpus_build_retry", "directory_publish_retry", "slim_callback_stopped", "job_done", "job_retried",
 		"volume_archive_captured", "volume_archive_retry", "volume_archive_purged", "delivery_dead", "agent_failed"},
 		"reason": append(append(append(worker.RetryReasons(), worker.ArchiveRetryReasons()...), worker.DeadDeliveryReasons()...), worker.AgentFailureReasons()...),
 		"kind":   append(worker.JobKinds(), worker.DeadDeliveryKinds()...), "vm": worker.ArchiveVMs()}
@@ -308,9 +308,30 @@ func run() int {
 	if err != nil {
 		return fail("corpus_configuration_invalid")
 	}
+	if cache := c.CorpusCachePath(); cache != "" {
+		if err = w.EnableCorpusCache(cache); err != nil {
+			return fail("corpus_configuration_invalid")
+		}
+	}
+	if fetcher != nil && transit == nil {
+		return fail("corpus_requires_transit")
+	}
 	if fetcher != nil && !archiveRequested {
 		fetcher.Pressure = pressure.Refuse
 		fetcher.Telemetry = worker.NewCorpusTelemetry(registry)
+		builder, err := c.OpenCorpusBuilder(w, transit, fetcher.Telemetry)
+		if err != nil {
+			return fail("corpus_configuration_invalid")
+		}
+		builder.Observe(registry)
+		go func() {
+			_ = builder.Run(ctx, maintenance.Interval, func(error) {
+				if ctx.Err() == nil {
+					problems.Event("corpus_build_retry")
+				}
+			})
+		}()
+
 		go func() {
 			_ = fetcher.Run(ctx, maintenance.Interval, func(error) {
 				if ctx.Err() == nil {

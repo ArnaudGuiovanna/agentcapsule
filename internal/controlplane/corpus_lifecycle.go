@@ -70,6 +70,9 @@ func (a *Accounts) CancelCorpusBuild(ctx context.Context, p Principal, id, key s
 		case "PUBLISHED", "FAILED", "EXPIRED", "CANCELED":
 			return 0, nil, ErrTransition
 		}
+		if err = cancelCorpusInvocation(ctx, tx, id); err != nil {
+			return 0, nil, err
+		}
 		if _, err = tx.Exec(ctx, `UPDATE corpus_builds SET state='CANCELED',completed_at=clock_timestamp(),lease_token=NULL,lease_until=NULL WHERE id=$1`, id); err != nil {
 			return 0, nil, err
 		}
@@ -82,6 +85,18 @@ func (a *Accounts) CancelCorpusBuild(ctx context.Context, p Principal, id, key s
 		}
 		return 200, b, auditCorpus(ctx, tx, p, "corpus_build.canceled", b.CorpusID, id, "", "")
 	})
+}
+func cancelCorpusInvocation(ctx context.Context, tx pgx.Tx, build string) error {
+	var op string
+	err := tx.QueryRow(ctx, "SELECT coalesce(invocation_id,'') FROM corpus_builds WHERE id=$1", build).Scan(&op)
+	if err != nil || op == "" {
+		return err
+	}
+	if _, err = tx.Exec(ctx, "UPDATE agent_mailboxes SET delivery_state='CANCELED',lease_token='',lease_until=NULL WHERE instruction_id=$1 AND delivery_state='PENDING'", op); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, "UPDATE platform_operations SET status='CANCELED',error_code='canceled',completed_at=clock_timestamp() WHERE id=$1 AND status IN ('PENDING','RUNNING')", op)
+	return err
 }
 func purgeCorpusReview(ctx context.Context, tx pgx.Tx, id string) error {
 	if _, err := tx.Exec(ctx, "DELETE FROM agent_corpora WHERE build_id=$1", id); err != nil {
@@ -168,6 +183,10 @@ func (s *Store) ExpireCorpusBuilds(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	for _, id := range ids {
+		if err = cancelCorpusInvocation(ctx, tx, id); err != nil {
+			return 0, err
+		}
+
 		if err = purgeCorpusReview(ctx, tx, id); err != nil {
 			return 0, err
 		}
@@ -186,9 +205,40 @@ func (s *Store) CorpusImagesInUse(ctx context.Context, host string) ([]string, e
  UNION SELECT cr.digest FROM agent_rollouts u JOIN agent_template_revisions tr ON (tr.tenant_id,tr.name,tr.revision)=(u.tenant_id,u.template_name,u.revision)
  CROSS JOIN LATERAL jsonb_array_elements(coalesce(tr.spec->'corpora','[]')) ref JOIN corpora c ON c.name=ref->>'name'
  JOIN corpus_releases cr ON cr.corpus_id=c.id AND cr.version=(ref->>'version')::int
- WHERE c.tenant_id=u.tenant_id AND cr.host_id=$1 AND u.status='running'`, host)
+ WHERE c.tenant_id=u.tenant_id AND cr.host_id=$1 AND u.status<>'completed'`, host)
 	if err != nil {
 		return nil, err
 	}
 	return pgx.CollectRows(rows, pgx.RowTo[string])
+}
+
+// CorpusStagingFinished distinguishes removable builds from active downloads
+// and from directories not owned by this host.
+func (s *Store) CorpusStagingFinished(ctx context.Context, host, build string) (bool, error) {
+	var done bool
+	err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM corpus_builds WHERE host_id=$1 AND id=$2 AND state IN ('REVIEW','PUBLISHED','FAILED','CANCELED','EXPIRED'))`, host, build).Scan(&done)
+	return done, err
+}
+
+// CorpusBuildOutcomes counts durable transitions. A published build did
+// reach review, even if its worker restarted before the next metrics scrape.
+func (s *Store) CorpusBuildOutcomes(ctx context.Context, host string) (map[string]int64, error) {
+	rows, err := s.pool.Query(ctx, `SELECT outcome,count(*) FROM (
+ SELECT 'review'::text AS outcome FROM corpus_builds WHERE review_at IS NOT NULL AND host_id=$1
+ UNION ALL SELECT CASE WHEN state='FAILED' THEN error_code ELSE lower(state) END FROM corpus_builds
+ WHERE (host_id=$1 OR host_id IS NULL) AND state IN ('FAILED','CANCELED','EXPIRED')) t GROUP BY outcome`, host)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int64{}
+	for rows.Next() {
+		var code string
+		var n int64
+		if err = rows.Scan(&code, &n); err != nil {
+			return nil, err
+		}
+		out[code] = n
+	}
+	return out, rows.Err()
 }

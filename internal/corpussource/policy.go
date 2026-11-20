@@ -16,11 +16,10 @@ package corpussource
 import (
 	"errors"
 	"fmt"
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpussource/repository"
 	"net"
-
 	"strings"
 
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpussource/repository"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmgateway"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/ociregistry/reference"
 )
@@ -128,7 +127,7 @@ func (p Policy) Validate() error {
 				return fmt.Errorf("%w: repository %q", ErrPolicy, prefix)
 			}
 			for _, part := range strings.Split(name, "/") {
-				if !repository.Segment.MatchString(part) || strings.Trim(part, ".") == "" {
+				if !repository.ValidSegment(part) {
 					return fmt.Errorf("%w: repository prefix %q", ErrPolicy, prefix)
 				}
 			}

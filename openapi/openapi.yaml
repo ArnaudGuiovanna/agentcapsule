@@ -4254,8 +4254,10 @@ components:
         limits: {$ref: '#/components/schemas/OrganizationQuotas'}
         usage:
           type: object
-          required: [agents, storage_mib, active_vms, vcpus, memory_mib]
+          required: [agents, storage_mib, active_vms, vcpus, memory_mib, corpus_builds, corpus_storage_mib]
           properties:
+            corpus_builds: {type: integer, minimum: 0}
+            corpus_storage_mib: {type: integer, minimum: 0}
             agents: {type: integer}
             storage_mib: {type: integer}
             active_vms: {type: integer}

@@ -93,6 +93,13 @@ func (c ServiceConfig) OpenCorpusSources() (*CorpusSources, error) {
 	return out, os.Chmod(out.Staging, 0o700)
 }
 
+func (c ServiceConfig) CorpusCachePath() string {
+	if c.Corpus == nil {
+		return ""
+	}
+	return cmp.Or(c.Corpus.Cache, filepath.Join(c.Root, "corpora"))
+}
+
 // OpenCorpusFetcher connects the configured forge client to leased build work.
 func (c ServiceConfig) OpenCorpusFetcher(store *controlplane.Store, worker string) (*CorpusFetcher, error) {
 	sources, err := c.OpenCorpusSources()

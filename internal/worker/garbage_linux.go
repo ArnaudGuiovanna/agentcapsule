@@ -25,8 +25,9 @@ import (
 // harmless; a leftover is removed only once untouched for an hour, so a
 // capture or a download in progress is left alone.
 type GarbageCollection struct {
-	Store  *controlplane.Store
-	HostID string
+	CorpusCache, CorpusStaging, RuntimeRoot string
+	Store                                   *controlplane.Store
+	HostID                                  string
 	// Archives is the host's archive root, nil without the archives
 	// section; Keep, its retention per agent.
 	Archives *volumearchive.Store
@@ -50,6 +51,7 @@ type ArchiveGarbage struct {
 
 // GarbageReport is a collection's outcome: nil parts are not configured.
 type GarbageReport struct {
+	Corpora  *ImageGarbage   `json:"corpora,omitempty"`
 	Archives *ArchiveGarbage `json:"archives,omitempty"`
 	Images   *ImageGarbage   `json:"images,omitempty"`
 }
@@ -57,7 +59,7 @@ type GarbageReport struct {
 // Found reports whether the collection removed, or would remove, anything.
 func (r GarbageReport) Found() bool {
 	a, i := r.Archives, r.Images
-	return a != nil && (len(a.Retention) > 0 || len(a.Deleted) > 0 || a.Leftovers > 0) ||
+	return r.Corpora != nil && (len(r.Corpora.Unused) > 0 || r.Corpora.Leftovers > 0) || a != nil && (len(a.Retention) > 0 || len(a.Deleted) > 0 || a.Leftovers > 0) ||
 		i != nil && (len(i.Unused) > 0 || i.Leftovers > 0)
 }
 
@@ -84,6 +86,16 @@ func (g GarbageCollection) Run(ctx context.Context, dryRun bool) (GarbageReport,
 		collected, err := images.collect(ctx, g.HostID, g.InUse, leftoverAge, dryRun)
 		r.Images = &collected
 		if err != nil {
+			return r, err
+		}
+	}
+	if g.CorpusCache != "" {
+		v, err := newCorpusCache(g.CorpusCache).collect(ctx, g.Store, g.HostID, g.RuntimeRoot, dryRun)
+		r.Corpora = &v
+		if err != nil {
+			return r, err
+		}
+		if err = g.cleanCorpusStaging(ctx, dryRun, &v); err != nil {
 			return r, err
 		}
 	}
@@ -160,6 +172,13 @@ func (c ServiceConfig) GarbageCollection(s *controlplane.Store) (GarbageCollecti
 			return g, err
 		}
 	}
+	if c.Corpus != nil {
+		cs, err := c.corpusSources()
+		if err != nil {
+			return g, err
+		}
+		g.CorpusCache, g.CorpusStaging, g.RuntimeRoot = cs.Cache, cs.Staging, c.Root
+	}
 	if c.Registry != nil {
 		g.ImageCache = c.Registry.Cache
 		if g.ImageCache == "" {
@@ -172,4 +191,42 @@ func (c ServiceConfig) GarbageCollection(s *controlplane.Store) (GarbageCollecti
 		g.InUse = func(ctx context.Context) (map[string]bool, error) { return runtime.HarnessImagesInUseAt(ctx, root) }
 	}
 	return g, nil
+}
+
+func (g GarbageCollection) cleanCorpusStaging(ctx context.Context, dry bool, out *ImageGarbage) error {
+	entries, err := os.ReadDir(g.CorpusStaging)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if !e.IsDir() || !buildID.MatchString(e.Name()) {
+			continue
+		}
+		done, err := g.Store.CorpusStagingFinished(ctx, g.HostID, e.Name())
+		if err != nil {
+			return err
+		}
+		if !done {
+			continue
+		}
+		dir := filepath.Join(g.CorpusStaging, e.Name())
+		bytes, _, err := treeUsage(dir)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if !dry {
+			if err = removeTree(dir); err != nil {
+				return err
+			}
+		}
+		out.Leftovers++
+		out.Bytes += bytes
+	}
+	return nil
 }

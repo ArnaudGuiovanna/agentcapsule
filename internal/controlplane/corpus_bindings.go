@@ -118,9 +118,6 @@ func (a *Accounts) SetAgentCorpora(ctx context.Context, p Principal, id, key str
 		return APIReceipt{}, ErrInput
 	}
 	return a.corpusMutation(ctx, p, authorization.ConfigureAgent, key, "agent.corpora/"+id, entries, func(tx pgx.Tx) (int, any, error) {
-		if err := corpusPermission(ctx, tx, p, authorization.ReadCorpus); err != nil {
-			return 0, nil, err
-		}
 		host, err := lockBindingAgent(ctx, tx, p, id, len(entries) > 0)
 		if err != nil {
 			return 0, nil, err
@@ -145,7 +142,7 @@ func (a *Accounts) SetAgentCorpora(ctx context.Context, p Principal, id, key str
 		}
 		v.Previous = previous.Corpora
 		return 200, v, auditTenantAgent(ctx, tx, p, id, nil, "agent.corpora_changed")
-	})
+	}, authorization.ReadCorpus)
 }
 
 type TryCorpusInput struct {
@@ -158,9 +155,6 @@ func (a *Accounts) TryCorpusBuild(ctx context.Context, p Principal, build, key s
 		return APIReceipt{}, ErrInput
 	}
 	return a.corpusMutation(ctx, p, authorization.ManageCorpus, key, "corpus.try/"+build, in, func(tx pgx.Tx) (int, any, error) {
-		if _, err := authorizeTenantAdminMutation(ctx, tx, p, authorization.ConfigureAgent); err != nil {
-			return 0, nil, err
-		}
 		var corpus, name, state, host string
 		var available bool
 		err := tx.QueryRow(ctx, `SELECT b.corpus_id,c.name,b.state,coalesce(b.host_id,''),coalesce(b.review_expires_at>clock_timestamp(),false) FROM corpus_builds b JOIN corpora c ON c.id=b.corpus_id WHERE b.id=$1 AND b.tenant_id=$2 FOR UPDATE OF b`, build, p.TenantID).Scan(&corpus, &name, &state, &host, &available)
@@ -202,5 +196,18 @@ func (a *Accounts) TryCorpusBuild(ctx context.Context, p Principal, build, key s
 			return 0, nil, err
 		}
 		return 200, v, auditCorpus(ctx, tx, p, "corpus_build.tried", corpus, build, "", in.AgentID)
-	})
+	}, authorization.ConfigureAgent)
+}
+
+// BootCorpus is a tenant-checked disk to resolve on the agent's host at boot.
+type BootCorpus struct{ ReleaseID, Digest, UUID, Mount string }
+
+func (s *Store) BootCorpora(ctx context.Context, id, host string) ([]BootCorpus, error) {
+	rows, err := s.pool.Query(ctx, `SELECT coalesce(ac.release_id,ac.build_id),coalesce(r.digest,b.image_digest),coalesce(r.image_uuid,b.image_uuid)::text,ac.mount
+ FROM agent_corpora ac JOIN agent_specs x ON x.agent_id=ac.agent_id LEFT JOIN corpus_releases r ON r.id=ac.release_id LEFT JOIN corpus_builds b ON b.id=ac.build_id
+ WHERE ac.agent_id=$1 AND x.host_id=$2 AND (b.id IS NULL OR b.state='PUBLISHED' OR b.state='REVIEW' AND b.review_expires_at>clock_timestamp()) ORDER BY ac.position`, id, host)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowToStructByPos[BootCorpus])
 }

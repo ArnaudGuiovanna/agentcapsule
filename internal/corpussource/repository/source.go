@@ -4,10 +4,11 @@ package repository
 import (
 	"errors"
 	"fmt"
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/ociregistry/reference"
 	"net/url"
 	"regexp"
 	"strings"
+
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/ociregistry/reference"
 )
 
 var ErrPolicy = errors.New("invalid corpus source")
@@ -21,8 +22,11 @@ const (
 var (
 	validHost = reference.ValidHost
 	// A repository's path segment, as GitHub and GitLab allow them.
-	Segment = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$`)
+	segment = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9._-]{0,99}$`)
 )
+
+// ValidSegment checks a single component of a forge repository path.
+func ValidSegment(p string) bool { return segment.MatchString(p) && strings.Trim(p, ".") != "" }
 
 // ValidRepository: owner/name on GitHub, group/[subgroup/...]name on GitLab;
 // no segment that is "." or "..", no ".git" suffix, at most 20 segments.
@@ -32,7 +36,7 @@ func ValidRepository(r string, kind string) bool {
 		return false
 	}
 	for _, p := range parts {
-		if !Segment.MatchString(p) || strings.Trim(p, ".") == "" {
+		if !ValidSegment(p) {
 			return false
 		}
 	}
