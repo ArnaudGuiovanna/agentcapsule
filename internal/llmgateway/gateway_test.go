@@ -195,3 +195,29 @@ func TestRequireHTTPSRefusesPlainHTTPBeforeSending(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestProbeUsesProviderPolicyAndCredentials(t *testing.T) {
+	for _, tc := range []struct{ protocol, mode, secret, path, bearer, key string }{
+		{"openai_compatible", "none", "", "/models", "", ""},
+		{"openai_compatible", "", "local-test", "/models", "Bearer local-test", ""},
+		{"anthropic", "secret", "local-test", "/v1/models", "", "local-test"},
+	} {
+		t.Run(tc.protocol+"-"+tc.mode, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != tc.path || r.Method != "GET" || r.Header.Get("Authorization") != tc.bearer || r.Header.Get("x-api-key") != tc.key {
+					t.Error("unexpected catalog request or authentication")
+				}
+				io.WriteString(w, `{"data":[{"id":"model"}]}`)
+			}))
+			defer srv.Close()
+			r := Route{Kind: tc.protocol, AuthMode: tc.mode, Secret: tc.secret, BaseURL: srv.URL, UpstreamModel: "model"}
+			if _, err := New(Config{}).Probe(t.Context(), r); !errors.Is(err, ErrAddressRefused) {
+				t.Fatal("probe bypassed egress policy", err)
+			}
+			got, err := fast(Config{}).Probe(t.Context(), r)
+			if err != nil || !got.ModelListed || got.HTTPStatus != 200 {
+				t.Fatal(got, err)
+			}
+		})
+	}
+}

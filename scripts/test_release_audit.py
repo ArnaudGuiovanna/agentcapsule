@@ -11,14 +11,17 @@ release-audit job runs the real tools.
 import datetime
 import hashlib
 import importlib.util
+import io
 import json
 from pathlib import Path
 import shutil
 import stat
+import subprocess
 import sys
 import tarfile
 import tempfile
 import unittest
+from unittest.mock import patch
 
 SCRIPTS = Path(__file__).resolve().parent
 sys.dont_write_bytecode = True
@@ -35,6 +38,7 @@ TOOLS = load("release_tools", "release_tools.py")
 SCAN = load("scan_artifacts", "scan-artifacts.py")
 SBOM = load("release_sbom", "release-sbom.py")
 AUDIT = load("audit_dependencies", "audit-dependencies.py")
+OCI = load("release_oci", "release_oci.py")
 GUEST = load("build_product_guest", "build-product-guest.py")
 TODAY = datetime.date(2026, 11, 16)
 
@@ -51,6 +55,57 @@ class Temporary(unittest.TestCase):
 
 
 class PinnedToolTest(Temporary):
+    def test_source_cache_reuses_only_digest_verified_bytes(self):
+        source = self.dir / "upstream"
+        source.write_bytes(b"upstream source")
+        url = source.as_uri()
+        checksum = TOOLS.sha256(source)
+        cache = self.dir / "cache"
+        dest = self.dir / "download"
+        OCI.checked_download(url, dest, checksum, cache)
+        entry, = cache.iterdir()
+        self.assertEqual(entry.read_bytes(), source.read_bytes())
+        source.unlink()
+        dest.unlink()
+        OCI.checked_download(url, dest, checksum, cache)
+        self.assertEqual(TOOLS.sha256(dest), checksum)
+        entry.write_bytes(b"corrupted")
+        source.write_bytes(b"different source")
+        with self.assertRaisesRegex(ValueError, "checksum mismatch"):
+            OCI.checked_download(url, dest, checksum, cache)
+        source.write_bytes(b"upstream source")
+        OCI.checked_download(url, dest, checksum, cache)
+        self.assertEqual(TOOLS.sha256(entry), checksum)
+
+    def test_firecracker_bundle_retains_lock_and_refuses_corrupt_crate(self):
+        import os
+        from unittest.mock import patch
+
+        crate = b"fixture source"
+        checksum = hashlib.sha256(crate).hexdigest()
+        work = self.dir / "work"
+        work.mkdir()
+        vmm = self.dir / "vmm"
+        vmm.mkdir()
+        lock = vmm / "Cargo.lock"
+        lock.write_text('[[package]]\nname = "fixture"\nversion = "1.0.0"\n'
+                        'source = "registry+https://github.com/rust-lang/crates.io-index"\n'
+                        f'checksum = "{checksum}"\n')
+        (vmm / "artifacts.json").write_text(json.dumps({"sha256": {"Cargo.lock": TOOLS.sha256(lock)}}))
+        cached = self.dir / "cargo/registry/cache/index.crates.io/fixture-1.0.0.crate"
+        cached.parent.mkdir(parents=True)
+        cached.write_bytes(crate)
+        with patch.dict(os.environ, CARGO_HOME=str(self.dir / "cargo")):
+            files = OCI.BUNDLE["firecracker_sources"](vmm, work)
+            self.assertEqual(set(files), {"firecracker-Cargo.lock", "cargo/fixture-1.0.0.crate"})
+            self.assertEqual(files["cargo/fixture-1.0.0.crate"].read_bytes(), crate)
+            cached.write_bytes(b"corrupt source")
+            with self.assertRaisesRegex(ValueError, "Cargo cache checksum mismatch"):
+                OCI.BUNDLE["firecracker_sources"](vmm, work)
+            lock.write_bytes(lock.read_bytes() + b"\n")
+            with self.assertRaisesRegex(ValueError, "build lock checksum mismatch"):
+                OCI.BUNDLE["firecracker_sources"](vmm, work)
+
     def pin(self, payload, digest=None):
         archive = self.dir / "tool.tar.gz"
         member = self.dir / "member"
@@ -157,6 +212,11 @@ class AllowlistTest(Temporary):
 
 
 class ScanTest(Temporary):
+    def oidc_unit(self):
+        path = self.dir / TOOLS.OIDC_UNIT
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+
     def test_deploy_images_must_be_pinned_by_digest(self):
         deploy = self.dir / "deploy" / "interop"
         deploy.mkdir(parents=True)
@@ -164,14 +224,71 @@ class ScanTest(Temporary):
         (deploy / "compose.yml").write_text(
             f"services:\n  a:\n    image: ghcr.io/x/a:1@sha256:{digest}\n  b:\n    image: docker.io/library/b:2\n")
         (deploy / "notes.txt").write_text("image: not/yaml:1\n")
+        shutil.copyfile(SCAN.ROOT / TOOLS.OIDC_UNIT, self.oidc_unit())
         pinned, unpinned = SCAN.deploy_images(self.dir)
-        self.assertEqual(list(pinned), [f"ghcr.io/x/a:1@sha256:{digest}"])
+        self.assertEqual(set(pinned), {f"ghcr.io/x/a:1@sha256:{digest}", TOOLS.oidc_image()})
         self.assertEqual(unpinned, ["deploy/interop/compose.yml: docker.io/library/b:2"])
 
     def test_the_repository_deploy_images_are_all_pinned(self):
         pinned, unpinned = SCAN.deploy_images()
         self.assertEqual(unpinned, [])
-        self.assertGreater(len(pinned), 0)
+        profile = json.loads((SCAN.ROOT / "runtime/interop/profile.json").read_text())
+        for image in profile["services"].values():
+            self.assertEqual(pinned[image], "deploy/interop/compose.yml")
+        self.assertEqual(pinned[TOOLS.oidc_image()], str(TOOLS.OIDC_UNIT))
+
+    def test_deploy_scan_refuses_an_absent_or_unpinned_oidc_image(self):
+        discover = SCAN.deploy_images
+        unit = self.oidc_unit()
+        ref = "quay.io/keycloak/keycloak@sha256:" + "a" * 64
+        run = "ExecStart=/usr/bin/podman run "
+        with patch.object(SCAN, "deploy_images", lambda: discover(self.dir)):
+            args = ["--deploy-images", "--output", str(self.dir / "out")]
+            with self.assertRaises(FileNotFoundError):
+                SCAN.main(args)
+            for directive in (
+                "# " + run + ref,
+                run + "quay.io/keycloak/keycloak:latest start",
+                run + ref + "a start",
+                run + "--name " + ref + " another/image start",
+                run + "another/image start " + ref,
+                run + ref + "\n" + run + ref,
+            ):
+                with self.subTest(directive=directive):
+                    unit.write_text("[Unit]\nDescription=" + ref + "\n[Service]\n" + directive + "\n")
+                    with self.assertRaisesRegex(ValueError, "Podman"):
+                        SCAN.main(args)
+
+    def test_deploy_scan_invokes_grype_for_pinned_keycloak_and_compose(self):
+        registry = []
+        oidc = TOOLS.oidc_image()
+
+        def grype(args, **kwargs):
+            if args[1:3] == ["db", "status"]:
+                return subprocess.CompletedProcess(args, 0, stdout="{}")
+            self.assertEqual(args[-2:], ["--platform", "linux/amd64"])
+            source = args[1]
+            registry.append(source)
+            matches = []
+            if source == "registry:" + oidc:
+                matches.append({"vulnerability": {"id": "TEST-1", "severity": "High"},
+                                "artifact": {"name": "fixture"}})
+            report = Path(args[args.index("-o") + 1].removeprefix("json="))
+            report.write_text(json.dumps({"matches": matches}))
+            return subprocess.CompletedProcess(args, 0)
+
+        out = self.dir / "out"
+        allowlist = self.write_json("allowlist.json", {"entries": []})
+        with (patch.object(SCAN.TOOLS, "tool", return_value="grype"),
+              patch.object(SCAN.subprocess, "run", grype), patch("sys.stdout", new_callable=io.StringIO)):
+            self.assertEqual(SCAN.main(["--deploy-images", "--no-db-update", "--allowlist", str(allowlist),
+                                        "--output", str(out), "--cache", str(self.dir / "cache")]), 1)
+        profile = json.loads((SCAN.ROOT / "runtime/interop/profile.json").read_text())
+        self.assertCountEqual(registry, ["registry:" + ref for ref in [*profile["services"].values(), oidc]])
+        summary = json.loads((out / "summary.json").read_text())
+        keycloak = next(t for t in summary["targets"] if t["name"] == SCAN.target_name("image", oidc))
+        self.assertTrue(keycloak["blocking"])
+        self.assertEqual([f["id"] for f in keycloak["blocked"]], ["TEST-1"])
 
     def test_grype_matches_with_null_fields_are_normalized(self):
         report = {"matches": [{
@@ -186,12 +303,63 @@ class ScanTest(Temporary):
         self.assertEqual((first["fixed_in"], first["aliases"], first["locations"]), ([], [], []))
         self.assertEqual((second["aliases"], second["fixed_in"]), (["CVE-2"], ["4.1.6"]))
 
+    def test_offline_inventory_uses_only_the_pinned_image_policy(self):
+        profile = json.loads((SCAN.ROOT / "runtime/interop/profile.json").read_text())["services"]
+        profile["oidc"] = TOOLS.oidc_image()
+        docs, records = [], []
+        for service, ref in profile.items():
+            sbom = self.dir / ("oci-" + service + ".spdx.json")
+            sbom.write_bytes(b"{}")
+            docs.append(sbom)
+            records.append({"service":service,"ref":ref,"sbom":sbom.name,"sbom_sha256":hashlib.sha256(b"{}").hexdigest()})
+        index = self.dir / "component-sources.json"
+        index.write_text(json.dumps({"images":records}))
+        policies = SCAN.offline_image_policies(index, docs)
+        self.assertEqual(policies["sbom:oci-directory"], SCAN.target_name("image", profile["directory"]))
+        self.assertEqual(policies["sbom:oci-oidc"], SCAN.target_name("image", profile["oidc"]))
+        index.write_text(json.dumps({"images": [r for r in records if r["service"] != "oidc"]}))
+        with self.assertRaisesRegex(ValueError, "missing offline"):
+            SCAN.offline_image_policies(index, docs)
+        index.write_text(json.dumps({"images": records}))
+        docs[0].write_bytes(b"changed after inspection")
+        with self.assertRaisesRegex(ValueError, "digest"):
+            SCAN.offline_image_policies(index, docs)
+        docs[0].write_bytes(b"{}")
+        records[0]["ref"] = "unrelated@sha256:" + "a" * 64
+        index.write_text(json.dumps({"images":records}))
+        with self.assertRaisesRegex(ValueError, "pinned"):
+            SCAN.offline_image_policies(index, docs)
+
     def test_target_names(self):
         self.assertEqual(SCAN.target_name("sbom", "/x/agentcapsule-api.spdx.json"), "sbom:agentcapsule-api")
         self.assertEqual(SCAN.target_name("image", "ghcr.io/a/b:1@sha256:" + "0" * 64), "image:ghcr.io/a/b:1")
 
 
 class GuestSbomTest(Temporary):
+    def test_offline_host_inventory_checks_source_digest_and_distro(self):
+        deb = self.dir / "runc_1.0_amd64.deb"
+        deb.write_bytes(b"package fixture")
+        archive = self.dir / "packages.tar"
+        with tarfile.open(archive, "w") as tar:
+            tar.add(deb, arcname=deb.name)
+        record = {"file": deb.name, "package": "runc", "version": "1.0", "source": "runc-app",
+                  "sha256": TOOLS.sha256(deb)}
+        ref = {"referenceType": "purl", "referenceLocator": "pkg:deb/runc@1.0?arch=amd64&upstream=runc-app"}
+        deb_entry = {"SPDXID": "deb", "name": "runc", "versionInfo": "1.0", "externalRefs": [ref]}
+        doc = {"packages": [{"SPDXID": "root"}, deb_entry],
+               "relationships": [{"spdxElementId": "SPDXRef-DOCUMENT", "relationshipType": "DESCRIBES",
+                                  "relatedSpdxElement": "root"}]}
+        SBOM.attribute_host_packages(doc, archive, [record], "ubuntu-24.04-amd64")
+        self.assertEqual(ref["referenceLocator"], "pkg:deb/ubuntu/runc@1.0?arch=amd64&distro=ubuntu-24.04&upstream=runc-app")
+        self.assertEqual(deb_entry["checksums"][0]["checksumValue"], TOOLS.sha256(deb))
+        with self.assertRaisesRegex(ValueError, "source package differs"):
+            SBOM.attribute_host_packages(doc, archive, [dict(record, source="runc")], "ubuntu-24.04-amd64")
+        with self.assertRaisesRegex(ValueError, "digest differs"):
+            SBOM.attribute_host_packages(doc, archive, [dict(record, sha256="0" * 64)], "ubuntu-24.04-amd64")
+        with self.assertRaisesRegex(ValueError, "incomplete"):
+            SBOM.attribute_host_packages(doc, archive, [record, dict(record, file="extra.deb", package="extra")],
+                                         "ubuntu-24.04-amd64")
+
     def test_the_guest_archive_unpacks_byte_for_byte(self):
         entries = {"init": (0o500, b"init-binary"), "sbin/cryptsetup": (0o500, b"\x7fELF..."),
                    "etc/capsule/runtime.json": (0o400, b"{}\n")}

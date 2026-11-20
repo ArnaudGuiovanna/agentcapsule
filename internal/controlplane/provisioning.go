@@ -22,6 +22,7 @@ type Enrollment struct {
 	// HarnessSource is "local-approved" (the host's built-in image) or "oci"
 	// (a registry package, whose harness.ext4 has RootfsDigest).
 	HarnessSource, RootfsDigest string
+	SystemImage                 ImageDigests
 	Resources                   AgentResources
 	AutoStart                   bool
 	Initialized                 bool
@@ -59,7 +60,8 @@ type VolumeBootPlan struct {
 	UncleanStop               bool
 	// Restore is the restricted boot of an image that a restore installed:
 	// the guest moves the image's marker to the new incarnation.
-	Restore bool
+	Restore   bool
+	GrowToMiB int
 }
 
 func (s *Store) PrepareVolumeBoot(ctx context.Context, proof VMCaller, worker string) (VolumeBootPlan, error) {
@@ -106,7 +108,11 @@ func (s *Store) PrepareVolumeBoot(ctx context.Context, proof VMCaller, worker st
 				return result, err
 			}
 			if installed {
-				return VolumeBootPlan{Enrollment: e, AcknowledgeInitialization: !e.Initialized, UncleanStop: p.UncleanStop, Restore: true}, nil
+				var target int
+				if err := tx.QueryRow(ctx, "SELECT grow_to_mib FROM volume_restores WHERE agent_id=$1 AND incarnation=$2 AND step=$3", e.AgentID, int64(e.Incarnation), RestoreReconciling).Scan(&target); err != nil {
+					return result, err
+				}
+				return VolumeBootPlan{Enrollment: e, AcknowledgeInitialization: !e.Initialized, UncleanStop: p.UncleanStop, Restore: true, GrowToMiB: target}, nil
 			}
 		}
 		return result, ErrStoreEnrollment
@@ -157,12 +163,13 @@ func (s *Store) RevocationSubjects(ctx context.Context) ([]string, error) {
 
 const enrollmentColumns = `e.agent_id,e.operation_id,e.volume_id,x.host_id,e.stage,r.artifact_digest,r.source,coalesce(r.rootfs_digest,''),e.incarnation,
     x.vcpus,x.memory_mib,x.volume_mib,x.auto_start,
-    EXISTS(SELECT 1 FROM store_initializations i WHERE i.agent_id=e.agent_id AND i.volume_id=e.volume_id AND i.incarnation=e.incarnation)`
+    EXISTS(SELECT 1 FROM store_initializations i WHERE i.agent_id=e.agent_id AND i.volume_id=e.volume_id AND i.incarnation=e.incarnation),
+ coalesce((SELECT kernel_digest FROM system_images WHERE id=x.system_image),''),coalesce((SELECT initrd_digest FROM system_images WHERE id=x.system_image),'')`
 
 func scanEnrollment(row pgx.Row) (Enrollment, error) {
 	var e Enrollment
 	err := row.Scan(&e.AgentID, &e.OperationID, &e.VolumeID, &e.HostID, &e.Stage, &e.HarnessDigest, &e.HarnessSource, &e.RootfsDigest, &e.Incarnation,
-		&e.Resources.VCPUs, &e.Resources.MemoryMiB, &e.Resources.DataVolumeMiB, &e.AutoStart, &e.Initialized)
+		&e.Resources.VCPUs, &e.Resources.MemoryMiB, &e.Resources.DataVolumeMiB, &e.AutoStart, &e.Initialized, &e.SystemImage.Kernel, &e.SystemImage.Initrd)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = ErrStoreEnrollment
 	}
@@ -484,7 +491,16 @@ func (s *Store) ActivateProvisionedAgent(ctx context.Context, wanted Enrollment)
 	if tag.RowsAffected() != 1 {
 		return ErrStoreEnrollment
 	}
+	// Deployment members share a durable warm target. Standalone autostart
+	// still requests one ordinary wake on successful enrollment.
 	if e.AutoStart {
+		var member bool
+		if err := tx.QueryRow(ctx, "SELECT EXISTS(SELECT FROM agent_deployment_members WHERE agent_id=$1)", e.AgentID).Scan(&member); err != nil {
+			return err
+		}
+		if member {
+			return commit(ctx, tx)
+		}
 		var seq int64
 		if err = tx.QueryRow(ctx, `UPDATE agent_specs SET next_operation_seq=next_operation_seq+1
             WHERE agent_id=$1 RETURNING next_operation_seq`, e.AgentID).Scan(&seq); err != nil {

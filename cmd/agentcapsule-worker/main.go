@@ -51,6 +51,8 @@ func run() int {
 	collect := flag.Bool("collect-garbage", false, "remove the archives past retention, the archives of deleted agents and the unused cached harness images, then exit")
 	dryRun := flag.Bool("dry-run", false, "with -collect-garbage: print what it would remove, remove nothing")
 	confirm := flag.String("confirm", "", "with -collect-garbage: repeat this host's host_id; not needed with -dry-run")
+	probeAlias := flag.String("probe-llm-alias", "", "diagnose this registered model alias, without generating content")
+	probeOrg := flag.String("probe-organization", "", "organization of the model alias")
 	flag.Parse()
 	fail := func(code string) int { fmt.Fprintln(os.Stderr, code); return 1 }
 	if *path == "" || flag.NArg() != 0 {
@@ -79,6 +81,12 @@ func run() int {
 	}
 	if mode == operatorconfig.Development {
 		fmt.Fprintln(os.Stderr, operatorconfig.DevelopmentWarning)
+	}
+	if *probeAlias != "" || *probeOrg != "" {
+		if flag.NFlag() != 3 || *probeAlias == "" || *probeOrg == "" {
+			return fail("probe_configuration_invalid")
+		}
+		return providerProbe(*path, mode, *probeOrg, *probeAlias)
 	}
 	if *check {
 		return runPreflight(*path, mode)

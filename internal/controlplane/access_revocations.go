@@ -153,12 +153,16 @@ func (r *revocations) add(ctx context.Context, kind, organization string, object
 const maxRecordObjects = 16 << 10
 
 func (r *revocations) addOne(ctx context.Context, kind, organization string, objects [][]string) error {
+	return r.appendRecord(ctx, AccessRecord{ID: newID("arv"), Kind: kind, Organization: organization, Objects: objects})
+}
+
+func (r *revocations) appendRecord(ctx context.Context, record AccessRecord) error {
+	kind, organization, objects := record.Kind, record.Organization, record.Objects
 	recorder := r.store.recorder()
 	if _, known := authoritylog.AccessBearer(kind); !known || !authoritylog.ValidAccessObjects(objects) ||
 		(organization != "" && !authoritylog.ValidAccessText(organization)) {
 		return ErrInput
 	}
-	record := AccessRecord{ID: newID("arv"), Kind: kind, Organization: organization, Objects: objects}
 	wait, cancel := context.WithTimeout(ctx, recordTimeout)
 	receipt, err := recorder.RecordAccess(wait, record)
 	cancel()

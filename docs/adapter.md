@@ -154,6 +154,15 @@ calls were metered for the agent. The key file holds the key alone, readable by
 its owner only; the campaign checks it by the platform's rules and records only
 that a key was given.
 
+On 2026-11-19, Pi 1.5.0 passed this KVM scenario again through local Ollama
+with `forteim-ministral3-text-gpu-8k:20261030` (Ministral 3 3B, tools enabled,
+8,192-token context). Its signed private package was first imported from
+GHCR, then the verified exported bytes were imported through the KVM lab’s
+local registry. All three answers and metering passed. The adapter was built
+with the existing builder’s static cgo/SQLite flags; disabling cgo leaves an
+unusable SQLite driver. The combined local evidence is
+`_evidence/pi-ghcr-local-final-20261119/qualification.json`.
+
 ## Configuration (`adapter.json`)
 
 Strict JSON, unknown fields refused, at most 64 KiB.

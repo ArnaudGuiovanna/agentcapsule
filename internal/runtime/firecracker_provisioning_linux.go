@@ -4,6 +4,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"io"
 	"os"
@@ -32,6 +33,9 @@ func linkOrCopy(src, dst string) error {
 		return err
 	}
 	if _, err = io.Copy(out, in); err == nil {
+		err = out.Chmod(0444)
+	}
+	if err == nil {
 		err = out.Sync()
 	}
 	return errors.Join(err, out.Close())
@@ -54,6 +58,7 @@ func (a *HostAgent) resources() VMResources {
 }
 
 type ProvisionedAgent struct {
+	SystemImage   *BootImageID
 	ID, Volume    string
 	Device, Inode uint64
 	Resources     VMResources
@@ -127,7 +132,7 @@ func (h *FirecrackerHost) RegisterProvisioned(ctx context.Context, in Provisione
 			if a.Fenced || a.SealID != "" {
 				return ErrHostFenced
 			}
-			if a.Volume != path || a.Device != in.Device || a.Inode != in.Inode || a.Resources != in.Resources || !sameHarness(a.Harness, in.Harness) || a.UID < firstUID || a.UID > lastUID || s.Uid != a.UID || s.Gid != a.UID {
+			if (a.SystemImage == nil) != (in.SystemImage == nil) || (a.SystemImage != nil && *a.SystemImage != *in.SystemImage) || a.Volume != path || a.Device != in.Device || a.Inode != in.Inode || a.Resources != in.Resources || !sameHarness(a.Harness, in.Harness) || a.UID < firstUID || a.UID > lastUID || s.Uid != a.UID || s.Gid != a.UID {
 				return errors.New("provisioned registration is immutable")
 			}
 			return nil
@@ -152,7 +157,7 @@ func (h *FirecrackerHost) RegisterProvisioned(ctx context.Context, in Provisione
 		if err = f.Sync(); err != nil {
 			return err
 		}
-		r.Agents[in.ID] = &HostAgent{ID: in.ID, UID: uid, Volume: path, Device: in.Device, Inode: in.Inode, Resources: in.Resources, Harness: in.Harness}
+		r.Agents[in.ID] = &HostAgent{SystemImage: in.SystemImage, ID: in.ID, UID: uid, Volume: path, Device: in.Device, Inode: in.Inode, Resources: in.Resources, Harness: in.Harness}
 		return h.save(r)
 	})
 }
@@ -237,4 +242,59 @@ func HarnessImagesInUseAt(ctx context.Context, root string) (map[string]bool, er
 		return nil, errors.New("runtime root must not contain symlinks")
 	}
 	return (&FirecrackerHost{root: abs}).HarnessImagesInUse(ctx)
+}
+
+// SetRolloutProfile changes only a stopped, unsealed agent. Its encrypted
+// device, inode, volume size and dedicated UID stay bound to the same agent.
+func (h *FirecrackerHost) SetRolloutProfile(ctx context.Context, agent, rollout string, resources VMResources, system *BootImageID, harness *HarnessImage) error {
+	if rollout == "" || system == nil || !resources.valid() {
+		return ErrGeneration
+	}
+	if err := validHarness(harness); err != nil {
+		return err
+	}
+	for _, a := range []struct{ name, digest string }{{"kernel", system.Kernel}, {"initrd", system.Initrd}} {
+		if raw, err := hex.DecodeString(a.digest); err != nil || len(raw) != 32 {
+			return ErrGeneration
+		}
+		f, err := os.Stat(filepath.Join(h.root, "bin", a.name+"-"+a.digest))
+		if err != nil {
+			return err
+		}
+		if !f.Mode().IsRegular() {
+			return ErrGeneration
+		}
+	}
+	return h.setStoppedRolloutProfile(ctx, agent, rollout, resources, system, harness)
+}
+
+// ResizeRollout keeps the installed image and harness, including legacy agents
+// that use this host's built-in image without an explicit system-image pin.
+func (h *FirecrackerHost) ResizeRollout(ctx context.Context, agent, rollout string, resources VMResources) error {
+	if rollout == "" || !resources.valid() {
+		return ErrGeneration
+	}
+	return h.setStoppedRolloutProfile(ctx, agent, rollout, resources, nil, nil)
+}
+
+func (h *FirecrackerHost) setStoppedRolloutProfile(ctx context.Context, agent, rollout string, resources VMResources, system *BootImageID, harness *HarnessImage) error {
+	return h.locked(ctx, func(r *hostRegistry) error {
+		a := r.Agents[agent]
+		if a == nil || a.Fenced || a.SealID != "" || a.VolumeRemoved {
+			return ErrHostFenced
+		}
+		if a.Resources.VolumeMiB != resources.VolumeMiB {
+			return ErrGeneration
+		}
+		if a.Run != nil {
+			return ErrHarnessInUse
+		}
+		a.Rollout = rollout
+		a.Resources = resources
+		if system != nil {
+			a.SystemImage = system
+			a.Harness = harness
+		}
+		return h.save(r)
+	})
 }

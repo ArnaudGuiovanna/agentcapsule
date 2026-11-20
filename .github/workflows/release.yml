@@ -3,7 +3,7 @@ name: Release
 # Cuts a release from a version tag, and only from one: see docs/release.md.
 # The build job builds every binary and the guest image twice and compares
 # them, audits the dependencies, writes the SBOMs and scans them; it holds no
-# token that can sign or write. It publishes the host binaries only. The sign job signs the checksums with cosign
+# token that can sign or write. It assembles the offline host distribution. The sign job signs the checksums with cosign
 # (keyless, GitHub's OIDC identity) and attests their SLSA provenance. The
 # publish job creates a draft release, which a maintainer reviews and publishes.
 
@@ -34,7 +34,9 @@ jobs:
   build:
     name: Build twice, audit, SBOMs and scans
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 180
+    outputs:
+      checksum-index: ${{ steps.assets.outputs.checksum-index }}
     permissions:
       contents: read
     steps:
@@ -64,9 +66,18 @@ jobs:
 
       - name: Install native headers and the guest image's tools
         run: |
+          sudo tee /etc/apt/sources.list.d/ubuntu.sources >/dev/null <<'EOF'
+          Types: deb deb-src
+          URIs: https://snapshot.ubuntu.com/ubuntu/20261113T000000Z
+          Suites: noble noble-updates noble-security
+          Components: main universe
+          Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+          Check-Valid-Until: no
+          EOF
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends \
-            build-essential libcryptsetup-dev cryptsetup-bin e2fsprogs
+            build-essential libcryptsetup-dev cryptsetup-bin e2fsprogs musl-tools cmake pkg-config \
+            bison flex libelf-dev libssl-dev bc xz-utils skopeo
 
       - name: Dependency audit (govulncheck on every Go module, licenses)
         run: |
@@ -83,6 +94,18 @@ jobs:
             --twice --fresh-module-cache --guest-cryptsetup /usr/sbin/cryptsetup \
             --output "$RUNNER_TEMP/release/build"
 
+      - name: Build the patched VMM, guest kernel and server distribution
+        run: |
+          set -euo pipefail
+          release="$RUNNER_TEMP/release"
+          rustup toolchain install 1.97.0 --profile minimal --target x86_64-unknown-linux-musl
+          python3 scripts/build-firecracker.py --output "$release/vmm" --target-dir "$RUNNER_TEMP/firecracker-target"
+          rm -rf -- "$RUNNER_TEMP/firecracker-target"
+          python3 scripts/build-guest-kernel.py --output "$release/kernel"
+          rm -rf -- "$release/kernel/source" "$release/kernel/build"
+          python3 scripts/build-server-bundle.py --build "$release/build" --out "$release/assets" \
+            --vmm "$release/vmm" --kernel "$release/kernel" --licenses "$release/audit/third-party-licenses.txt"
+
       - name: SBOMs
         env:
           TAG: ${{ github.ref_name }}
@@ -94,51 +117,99 @@ jobs:
               agentcapsule-harness capsule-adapter agentcapsule-slim-bridge; do
             binaries+=(--binary "$dist/$name")
           done
+          for cli in "$dist"/agentcapsule-{linux,darwin,windows}-*; do binaries+=(--binary "$cli"); done
           python3 scripts/release-sbom.py --go "$(command -v go)" --version "$TAG" \
-            --output "$RUNNER_TEMP/release/sbom" "${binaries[@]}" --guest-build "$dist"
+            --output "$RUNNER_TEMP/release/sbom" "${binaries[@]}" --guest-build "$dist" \
+            --host-assets "$RUNNER_TEMP/release/assets"
 
       - name: Vulnerability scan (SBOMs and deploy images)
         run: |
           set -euo pipefail
+          release="$RUNNER_TEMP/release"
+          syft="$(python3 scripts/release_tools.py syft | awk '{print $3}')"
+          "$syft" scan "file:$release/vmm/Cargo.lock" --source-name firecracker-Cargo.lock -o "spdx-json=$release/sbom/firecracker-Cargo.lock.spdx.json"
+          python3 scripts/release_oci.py --assets "$release/assets" --sboms "$release/sbom"
           sboms=("$RUNNER_TEMP"/release/sbom/*.spdx.json)
           python3 scripts/scan-artifacts.py --output "$RUNNER_TEMP/release/scan" \
-            "${sboms[@]/#/--sbom=}" --deploy-images
+            "${sboms[@]/#/--sbom=}" --offline-image-index "$release/assets/component-sources.json" --deploy-images
 
       - name: Assemble the release files and their checksums
+        id: assets
         run: |
-          # The guest image and capsule-adapter are built, described and
-          # scanned above but not published: they carry GPL and LGPL code
-          # whose source a release would have to offer (ADR 013, question 4).
+          # Include the corresponding sources and notices alongside the server bundle.
           set -euo pipefail
           release="$RUNNER_TEMP/release"
           assets="$release/assets"
-          mkdir "$assets"
+          cp "$release"/build/dist/agentcapsule-{linux,darwin,windows}-* "$assets"/
+          # The `curl | sh` installer of the workstation CLI, signed with the rest.
+          install -m 0644 install.sh "$assets/install.sh"
+          cp "$release"/sbom/*.spdx.json "$assets"/
           for name in agentcapsule-api agentcapsule-worker agentcapsule-admin agentcapsule-authority \
               agentcapsule-harness agentcapsule-slim-bridge; do
             cp "$release/build/dist/$name" "$release/sbom/$name.spdx.json" "$assets"/
           done
+          verifier="$(python3 scripts/release_tools.py cosign | awk '{print $3}')"
+          cp "$verifier" "$assets/cosign-linux-amd64"
           cp "$release/build/build.json" "$assets/build.json"
           cp "$release/audit/third-party-licenses.txt" "$release/audit/licenses.json" "$assets"/
           cp "$release/audit/summary.json" "$assets/dependency-audit.json"
           cp "$release/scan/summary.json" "$assets/vulnerability-scan.json"
           cd "$assets"
+          # GitHub accepts at most 1000 files, each strictly below 2 GiB.
+          # Reserve three entries for SHA256SUMS and the two Sigstore bundles.
+          python3 - <<'PYTHON'
+          from pathlib import Path
+          files = list(Path(".").iterdir())
+          if len(files) + 3 > 1000:
+              raise SystemExit("Too many GitHub release files")
+          for file in files:
+              if file.name.startswith(".") or not file.is_file() or file.is_symlink() or file.stat().st_size >= 2**31:
+                  raise SystemExit(f"Invalid or oversized release asset: {file.name}")
+          PYTHON
           LC_ALL=C sha256sum -- * > "$release/SHA256SUMS"
           mv "$release/SHA256SUMS" SHA256SUMS
           cat SHA256SUMS
+          echo "checksum-index=$(sha256sum SHA256SUMS | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Keep the six release binaries and the index for native execution
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: portable-release-files
+          retention-days: 7
+          compression-level: 0
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/release/assets/SHA256SUMS
+            ${{ runner.temp }}/release/assets/agentcapsule-linux-amd64
+            ${{ runner.temp }}/release/assets/agentcapsule-linux-arm64
+            ${{ runner.temp }}/release/assets/agentcapsule-darwin-amd64
+            ${{ runner.temp }}/release/assets/agentcapsule-darwin-arm64
+            ${{ runner.temp }}/release/assets/agentcapsule-windows-amd64.exe
+            ${{ runner.temp }}/release/assets/agentcapsule-windows-arm64.exe
 
       - name: Keep the release files for the signing job
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-files
           retention-days: 7
+          compression-level: 0
           if-no-files-found: error
           path: ${{ runner.temp }}/release/assets/
 
+  native-cli:
+    needs: build
+    permissions:
+      contents: read
+    uses: ./.github/workflows/cli-native.yml
+    with:
+      release: ${{ github.ref_name }}
+      checksum-index: ${{ needs.build.outputs.checksum-index }}
+
   sign:
     name: Sign the checksums and attest the provenance
-    needs: build
+    needs: [build, native-cli]
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 45
     permissions:
       contents: read
       id-token: write
@@ -156,9 +227,12 @@ jobs:
           path: ${{ runner.temp }}/assets
 
       - name: Check every file against SHA256SUMS
+        env:
+          NATIVE_CHECKSUM_INDEX: ${{ needs.build.outputs.checksum-index }}
         working-directory: ${{ runner.temp }}/assets
         run: |
           set -euo pipefail
+          test "$(sha256sum SHA256SUMS | cut -d' ' -f1)" = "$NATIVE_CHECKSUM_INDEX"
           sha256sum --strict -c SHA256SUMS
           # Nothing that the checksums do not cover.
           present="$(for f in *; do [ "$f" = SHA256SUMS ] || printf '%s\n' "$f"; done | sort)"
@@ -203,7 +277,7 @@ jobs:
     name: Create the draft release
     needs: [build, sign]
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 60
     permissions:
       contents: write
     steps:
@@ -232,8 +306,18 @@ jobs:
           cat > "$RUNNER_TEMP/notes.md" <<EOF
           Agent Capsule $TAG, built from $GITHUB_SHA.
 
-          Verify the files before use: docs/release.md, "Verify a release". The
-          dependency audit and the vulnerability scan of this release are
+          Install the workstation CLI on Linux or macOS (or Git Bash on Windows):
+
+              curl -fsSL https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/install.sh | sh -s -- --version $TAG
+
+          The script checks the executable against SHA256SUMS, and the signature
+          of SHA256SUMS when cosign is installed (--require-signature makes it
+          mandatory). Then run \`agentcapsule install --help\`.
+
+          [Download and verify the workstation CLI by hand](https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_SHA/docs/release.md#verify-a-release).
+          [Install the matching server bundle](https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_SHA/docs/cli-host.md).
+
+          The dependency audit and the vulnerability scan of this release are
           dependency-audit.json and vulnerability-scan.json; findings accepted by
           scripts/vulnerability-allowlist.json are listed there with their reason.
           EOF

@@ -23,7 +23,7 @@ type preparedVolume struct {
 
 func volumeCommand(plan controlplane.VolumeBootPlan) (capsuleprotocol.VolumeBoot, error) {
 	v := capsuleprotocol.VolumeBoot{Incarnation: plan.Enrollment.Incarnation, VolumeID: plan.Enrollment.VolumeID, Initialize: plan.Initialize, PreviousShutdown: capsuleprotocol.ShutdownClean,
-		Restore: plan.Restore}
+		Restore: plan.Restore, GrowToMiB: plan.GrowToMiB}
 	if plan.UncleanStop {
 		v.PreviousShutdown = capsuleprotocol.ShutdownUnclean
 	}

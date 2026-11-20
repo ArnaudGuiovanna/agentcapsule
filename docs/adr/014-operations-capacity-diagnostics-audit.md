@@ -168,10 +168,11 @@ alike, at most every ten minutes and in batches, and records each purge in
 
 `-tags ghcrlive` builds two tests that reach GHCR; without the tag they are
 not compiled, so CI and the PostgreSQL campaign stay offline and skip
-nothing. `TestLiveGHCRImport` imports the public package that
+nothing. `TestLiveGHCRImport` imports the package that
 `AGENTCAPSULE_TEST_GHCR_REFERENCE` names, with the local-registry test's
-assertions. The project publishes no harness package on GHCR yet, so it could
-not run here. `TestLiveGHCRRejectsAnImageThatIsNotAHarness` passed on
+assertions. Both tests passed on 2026-11-19 with a signed private Pi package;
+credentials and the trusted publisher key are opt-in environment settings
+documented in [registry.md](../registry.md#live-test-on-ghcr). `TestLiveGHCRRejectsAnImageThatIsNotAHarness` passed on
 2026-11-16: an anonymous token from GHCR, the manifest of a public image
 fetched and checked against its digest, and a rejection as `integrity` before
 any layer.

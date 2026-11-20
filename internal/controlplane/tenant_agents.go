@@ -176,7 +176,7 @@ func (c *AgentCatalog) reserveTenant(ctx context.Context, p Principal, key strin
 		}
 		var available bool
 		err = tx.QueryRow(ctx, `SELECT storage_limit_mib>0 AND storage_limit_mib >= $2::bigint +
-            (SELECT coalesce(sum(x.volume_mib),0) FROM agent_specs x JOIN agents a ON a.id=x.agent_id WHERE x.host_id=$1 AND a.phase<>'DELETED')
+            (SELECT coalesce(sum(x.volume_mib+x.reserved_growth_mib),0) FROM agent_specs x JOIN agents a ON a.id=x.agent_id WHERE x.host_id=$1 AND a.phase<>'DELETED')
             FROM worker_hosts WHERE host_id=$1`, c.host, r.DataVolumeMiB).Scan(&available)
 		if err != nil {
 			return 0, nil, err
@@ -357,7 +357,10 @@ func (a *Accounts) CreateAgentAssignment(ctx context.Context, p Principal, agent
 		}
 		var duplicate bool
 		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM agent_assignments WHERE tenant_id=$1 AND agent_id=$2 AND status='active'
-            AND principal_id IS NOT DISTINCT FROM nullif($3,'') AND team_id IS NOT DISTINCT FROM nullif($4,''))`, p.TenantID, agentID, in.PrincipalID, in.TeamID).Scan(&duplicate); err != nil {
+            AND policy_id IS NULL AND principal_id IS NOT DISTINCT FROM nullif($3,'') AND team_id IS NOT DISTINCT FROM nullif($4,''))`, p.TenantID, agentID, in.PrincipalID, in.TeamID).Scan(&duplicate); err != nil {
+			return 0, nil, err
+		}
+		if err = personalTarget(ctx, tx, p.TenantID, agentID, in.PrincipalID); err != nil {
 			return 0, nil, err
 		}
 		if duplicate {
@@ -621,6 +624,30 @@ func tenantAgentForUpdate(ctx context.Context, tx pgx.Tx, p Principal, id string
 		return agent{}, "", err
 	}
 	return a, host, nil
+}
+
+// Resolve the tenant-visible host before consulting an idempotency receipt.
+// A replay does not need capacity on the original host.
+func maintenanceHost(ctx context.Context, tx pgx.Tx, p Principal, id string) (string, error) {
+	var host string
+	err := tx.QueryRow(ctx, "SELECT x.host_id FROM agent_specs x JOIN agents a ON a.id=x.agent_id WHERE a.tenant_id=$1 AND a.id=$2", p.TenantID, id).Scan(&host)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return host, err
+}
+
+// Maintenance admissions budget the host before locking the agent, like a
+// warm boot. Recheck after the locks in case a takeover moved this volume.
+func lockMaintenanceAgent(ctx context.Context, tx pgx.Tx, p Principal, id, host string) (agent, error) {
+	if err := lockWorkerHost(ctx, tx, host); err != nil {
+		return agent{}, err
+	}
+	a, current, err := tenantAgentForUpdate(ctx, tx, p, id)
+	if err == nil && current != host {
+		err = ErrPlacementBusy
+	}
+	return a, err
 }
 
 // requestLifecycleTenant records an ordered wake or sleep command for a tenant

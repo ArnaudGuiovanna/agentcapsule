@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -60,6 +61,40 @@ func TestRestoreFromShippedCopies(t *testing.T) {
 	if err = json.Unmarshal(raw, &stores); err != nil {
 		t.Fatal(err)
 	}
+	t.Run("reopen_the_LUKS_copy_from_each_store", func(t *testing.T) {
+		l := newRestoreLab(t, inProcess)
+		runtimeRoot := filepath.Join(t.TempDir(), "runtime")
+		volume := l.luksVolume(l.e, runtimeRoot)
+		archive := l.captureFile(volume, "arc_"+strings.Repeat("6", 32))
+		state := t.TempDir()
+		cmd := append(stores.command(stores.HostConfig), "--archive-root="+l.archives.Root(), "ship",
+			"--textfile-directory="+state, "--state-directory="+state)
+		if log, err := exec.CommandContext(t.Context(), cmd[0], cmd[1:]...).CombinedOutput(); err != nil {
+			t.Fatalf("ship: %s: %v", log, err)
+		}
+		if err := os.RemoveAll(l.archives.Root()); err != nil {
+			t.Fatal(err)
+		}
+		for _, store := range []string{"s3", "standby"} {
+			root := filepath.Join(t.TempDir(), "fetched")
+			cmd := append(stores.command(stores.StandbyConfig), "--archive-root="+root, "fetch", "--store="+store, "--archive="+archive.ID)
+			if log, err := exec.CommandContext(t.Context(), cmd[0], cmd[1:]...).CombinedOutput(); err != nil {
+				t.Fatalf("fetch from %s: %s: %v", store, log, err)
+			}
+			fetched, err := volumearchive.New(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			check := RestoreTest{Store: l.store, HostID: "local", Authority: l.authority, RuntimeRoot: runtimeRoot,
+				Archives: fetched, Scratch: t.TempDir()}
+			report, err := check.Run(t.Context(), l.e.AgentID, archive.ID)
+			if err != nil || report.ArchiveID != archive.ID || report.AgentID != l.e.AgentID ||
+				!slices.Equal(report.Checked, []string{"manifest", "digest", "volume", "copy", "key"}) {
+				t.Fatalf("reopen copy from %s: %+v, %v", store, report, err)
+			}
+			t.Logf("%s restored %d verified LUKS bytes", store, report.Size)
+		}
+	})
 	l := newRestoreLab(t, inProcess)
 	kept := l.deliver("before-the-archives")
 	older := l.capture("arc_" + strings.Repeat("1", 31) + "0")

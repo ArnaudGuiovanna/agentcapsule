@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -31,8 +32,21 @@ func TestProvisionedResourcesReachVMConfiguration(t *testing.T) {
 	}
 	h := &FirecrackerHost{root: root, cgroup: filepath.Join(root, "groups")}
 	a := &HostAgent{ID: "a", UID: 60000, Volume: volume, Resources: VMResources{VCPUs: 3, MemoryMiB: 768, VolumeMiB: 128}, Run: &VMRun{ID: "0123456789abcdef", Generation: 1, Phase: "STARTING"}}
-	if err := h.prepare(a); err != nil {
-		t.Fatal(err)
+	func() {
+		old := syscall.Umask(0077)
+		defer syscall.Umask(old)
+		if err := h.prepare(a); err != nil {
+			t.Fatal(err)
+		}
+	}()
+	for _, name := range []string{"kernel", "initrd", "config.json"} {
+		info, err := os.Stat(filepath.Join(h.jail(a.Run), name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0444 {
+			t.Fatalf("jailer input %s mode %o", name, info.Mode().Perm())
+		}
 	}
 	b, err := os.ReadFile(filepath.Join(h.jail(a.Run), "config.json"))
 	if err != nil {

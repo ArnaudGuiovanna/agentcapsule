@@ -87,7 +87,7 @@ func (s *Store) ClaimRenewalPlacement(ctx context.Context, r CredentialRenewal, 
 	if r.Generation == 0 {
 		return Placement{}, ErrNoRenewal
 	}
-	return s.claimPlacement(ctx, r.AgentID, r.HostID, worker, lease, false, r.Generation)
+	return s.claimPlacement(ctx, r.AgentID, r.HostID, worker, lease, placementIntent{renewal: r.Generation})
 }
 
 // ObserveRenewalSatisfied must follow the host's durable RUNNING publication,

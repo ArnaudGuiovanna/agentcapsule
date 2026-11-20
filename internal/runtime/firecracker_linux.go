@@ -40,8 +40,13 @@ type FirecrackerOptions struct {
 	Root                                                        string
 	Firecracker, Jailer, Kernel, Initrd                         string
 	FirecrackerSHA256, JailerSHA256, KernelSHA256, InitrdSHA256 string
+	SystemImages                                                []BootImage
 	MaxActive                                                   int
-	BootTimeout                                                 time.Duration
+	// Provisioning hosts also enforce the CPU and memory budget reported to
+	// the planner. Preprovisioned hosts without these limits use MaxActive.
+	HostVCPUs     int
+	HostMemoryMiB int64
+	BootTimeout   time.Duration
 	// DriveLimits caps the I/O of each VM's drives; zero means
 	// DefaultDriveLimits (CAP-03, ADR 012).
 	DriveLimits DriveLimits
@@ -74,10 +79,20 @@ type FirecrackerOptions struct {
 	ObserveControl func(context.Context, string, VMRun, bool) error
 }
 
+type BootImage struct {
+	Kernel, Initrd, KernelSHA256, InitrdSHA256 string
+}
+type BootImageID struct {
+	Kernel string `json:"kernel"`
+	Initrd string `json:"initrd"`
+}
+
 type HostAgent struct {
-	ID            string `json:"id"`
-	UID           uint32 `json:"uid"`
-	Volume        string `json:"volume"`
+	Rollout       string       `json:"rollout,omitempty"`
+	SystemImage   *BootImageID `json:"system_image,omitempty"`
+	ID            string       `json:"id"`
+	UID           uint32       `json:"uid"`
+	Volume        string       `json:"volume"`
 	Device, Inode uint64
 	Generation    uint64      `json:"generation"`
 	Fenced        bool        `json:"fenced"`
@@ -100,6 +115,7 @@ type HarnessImage struct {
 }
 
 type VMRun struct {
+	Rollout     string `json:"rollout,omitempty"`
 	Incarnation uint64 `json:"incarnation"`
 	ID          string `json:"id"`
 	Generation  uint64 `json:"generation"`
@@ -193,6 +209,16 @@ func NewFirecrackerHost(opts FirecrackerOptions) (*FirecrackerHost, error) {
 				return err
 			}
 		}
+		// Versioned artifacts are installed under their verified content digests.
+		// Existing agents keep using their pinned pair after a worker restart.
+		for _, image := range opts.SystemImages {
+			if err := cacheSystemImage(root, image); err != nil {
+				return err
+			}
+		}
+		if err := cacheSystemImage(root, BootImage{opts.Kernel, opts.Initrd, opts.KernelSHA256, opts.InitrdSHA256}); err != nil {
+			return err
+		}
 		if err := os.MkdirAll(h.cgroup, 0700); err != nil {
 			return err
 		}
@@ -204,6 +230,17 @@ func NewFirecrackerHost(opts FirecrackerOptions) (*FirecrackerHost, error) {
 	return h, err
 }
 
+func cacheSystemImage(root string, img BootImage) error {
+	for _, a := range []struct{ name, path, digest string }{{"kernel", img.Kernel, img.KernelSHA256}, {"initrd", img.Initrd, img.InitrdSHA256}} {
+		if raw, err := hex.DecodeString(a.digest); err != nil || len(raw) != sha256.Size || strings.ToLower(a.digest) != a.digest {
+			return errors.New("invalid system image digest")
+		}
+		if err := pinFile(a.path, filepath.Join(root, "bin", a.name+"-"+a.digest), a.digest); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 func pinFile(source, destination, want string) error {
 	if len(want) != 64 {
 		return errors.New("SHA-256 digest required for every runtime artifact")
@@ -260,6 +297,23 @@ func syncDir(path string) error {
 	}
 	defer f.Close()
 	return f.Sync()
+}
+
+// The caller holds the registry lock and has reconciled exited runs. Include
+// a VM whose startup is in progress and the same 256 MiB of VMM headroom per
+// guest used by the cgroup limit and the deployment planner.
+func (h *FirecrackerHost) hasBootCapacity(r *hostRegistry, requested VMResources) bool {
+	slots, cpus, memory := 1, requested.VCPUs, int64(requested.MemoryMiB+256)
+	for _, other := range r.Agents {
+		if other.Run != nil {
+			v := other.resources()
+			slots++
+			cpus += v.VCPUs
+			memory += int64(v.MemoryMiB + 256)
+		}
+	}
+	return slots <= h.opts.MaxActive && (h.opts.HostVCPUs == 0 || cpus <= h.opts.HostVCPUs) &&
+		(h.opts.HostMemoryMiB == 0 || memory <= h.opts.HostMemoryMiB)
 }
 
 func (h *FirecrackerHost) locked(ctx context.Context, fn func(*hostRegistry) error) error {
@@ -796,13 +850,7 @@ func (h *FirecrackerHost) start(ctx context.Context, id string, generation uint6
 			if err := h.recover(ctx, r); err != nil {
 				return err
 			}
-			active := 0
-			for _, other := range r.Agents {
-				if other.Run != nil {
-					active++
-				}
-			}
-			if active >= h.opts.MaxActive {
+			if !h.hasBootCapacity(r, a.resources()) {
 				return ErrCapacity
 			}
 			st, err := os.Stat(a.Volume)
@@ -841,7 +889,7 @@ func (h *FirecrackerHost) start(ctx context.Context, id string, generation uint6
 			if incarnation == 0 || incarnation > 1<<63-1 {
 				return ErrGeneration
 			}
-			run := &VMRun{Incarnation: incarnation, ID: hex.EncodeToString(nonce), Generation: generation, Phase: "STARTING", FenceOnly: fenceOnly}
+			run := &VMRun{Rollout: a.Rollout, Incarnation: incarnation, ID: hex.EncodeToString(nonce), Generation: generation, Phase: "STARTING", FenceOnly: fenceOnly}
 			run.Socket = filepath.Join(h.jail(run), "vsock")
 			a.Generation = generation
 			a.Run = run
@@ -973,7 +1021,18 @@ func (h *FirecrackerHost) prepare(a *HostAgent) error {
 		return err
 	}
 	for _, name := range []string{"kernel", "initrd"} {
-		source, err := os.Open(filepath.Join(h.root, "bin", name))
+		artifact := name
+		if a.SystemImage != nil {
+			digest := a.SystemImage.Kernel
+			if name == "initrd" {
+				digest = a.SystemImage.Initrd
+			}
+			if raw, err := hex.DecodeString(digest); err != nil || len(raw) != sha256.Size {
+				return errors.New("invalid system image digest")
+			}
+			artifact += "-" + digest
+		}
+		source, err := os.Open(filepath.Join(h.root, "bin", artifact))
 		if err != nil {
 			return err
 		}
@@ -987,10 +1046,15 @@ func (h *FirecrackerHost) prepare(a *HostAgent) error {
 		if err == nil && name == "initrd" && h.opts.AuthenticatedControl {
 			err = appendControlConfig(f, guest, a.Harness)
 		}
+		// The worker runs with UMask=0077. The jailer drops privileges before
+		// Firecracker reads these files inside its per-run private directory.
+		if err == nil {
+			err = f.Chmod(0444)
+		}
 		if err == nil {
 			err = f.Sync()
 		}
-		f.Close()
+		err = errors.Join(err, f.Close())
 		if err != nil {
 			return err
 		}
@@ -1028,7 +1092,11 @@ func (h *FirecrackerHost) prepare(a *HostAgent) error {
 	if err != nil {
 		return err
 	}
-	if err = os.WriteFile(filepath.Join(root, "config.json"), b, 0444); err != nil {
+	configPath := filepath.Join(root, "config.json")
+	if err = os.WriteFile(configPath, b, 0600); err != nil {
+		return err
+	}
+	if err = os.Chmod(configPath, 0444); err != nil {
 		return err
 	}
 	if err = os.Mkdir(h.group(run), 0700); err != nil {

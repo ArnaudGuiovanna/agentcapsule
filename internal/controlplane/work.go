@@ -191,6 +191,10 @@ func (s *Store) CompleteWork(ctx context.Context, j WorkerJob) error {
 }
 
 func (s *Store) RetryWork(ctx context.Context, j WorkerJob, delay time.Duration) error {
+	return s.RetryWorkWithCapacity(ctx, j, delay, false)
+}
+
+func (s *Store) RetryWorkWithCapacity(ctx context.Context, j WorkerJob, delay time.Duration, capacity bool) error {
 	if delay < time.Microsecond || delay > 24*time.Hour {
 		return errors.New("invalid worker retry delay")
 	}
@@ -200,9 +204,9 @@ func (s *Store) RetryWork(ctx context.Context, j WorkerJob, delay time.Duration)
 	}
 	defer rollback(tx)
 	tag, err := tx.Exec(ctx, `UPDATE worker_jobs SET available_at=clock_timestamp()+$5*interval '1 microsecond',
-        failures=least(failures+1,30),lease_token='',lease_until=NULL
+        failures=least(failures+1,30),lease_token='',lease_until=NULL,capacity_wait=$6
         WHERE host_id=$1 AND kind=$2 AND object_id=$3 AND lease_token=$4 AND lease_until>clock_timestamp()`,
-		j.HostID, j.Kind, j.ID, j.Token, delay.Microseconds())
+		j.HostID, j.Kind, j.ID, j.Token, delay.Microseconds(), capacity)
 	if err != nil {
 		return err
 	}

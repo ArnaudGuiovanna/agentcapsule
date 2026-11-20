@@ -9,6 +9,7 @@
 # /etc/agentcapsule/interop (the layout of make-certs.sh), then
 #   docker compose -f /opt/agentcapsule/interop/compose.yml pull
 [Unit]
+ConditionPathExists=!/var/lib/agentcapsule-install/maintenance
 Description=Agent Capsule interoperability services (OASF, Directory, SLIM node)
 Documentation=https://github.com/ArnaudGuiovanna/agentcapsule/blob/main/docs/interop.md#running-on-a-host
 Requires=docker.service

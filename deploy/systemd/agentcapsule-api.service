@@ -1,0 +1,26 @@
+[Unit]
+Description=AgentCapsule HTTPS control plane
+After=network-online.target postgresql.service agentcapsule-authority.service
+Wants=network-online.target agentcapsule-authority.service
+ConditionPathExists=!/var/lib/agentcapsule-install/maintenance
+ConditionPathExists=!/var/lib/agentcapsule-install/admissions-paused
+
+[Service]
+Type=exec
+User=agentcapsule-api
+SupplementaryGroups=agentcapsule-authority-clients
+EnvironmentFile=/etc/agentcapsule/api.env
+ExecStart=/opt/agentcapsule/agentcapsule-api -listen ${API_LISTEN} -host-id ${HOST_ID} -tls-cert /etc/agentcapsule/api.crt -tls-key /etc/agentcapsule/api.key -tls-server-name ${API_NAME} -receipt-key-file /etc/agentcapsule/api-receipt.key -authority-socket /run/agentcapsule-authority/api.sock -restore-authority-id ${RESTORE_AUTHORITY} -key-authority-id ${KEY_AUTHORITY} -transit-active-key initial -transit-key initial=/etc/agentcapsule/api-transit.key -metrics-listen 127.0.0.1:9464
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+UMask=0077
+LimitCORE=0
+
+[Install]
+WantedBy=multi-user.target

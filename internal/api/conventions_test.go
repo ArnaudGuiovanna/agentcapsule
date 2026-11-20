@@ -25,6 +25,17 @@ var conventionNotMutations = map[string]string{
 // idempotencyOtherBody is, for each mutation that takes input, another valid
 // input for the same path: the first call's key with it is refused.
 var idempotencyOtherBody = map[string]string{
+	"POST /v1/agents/{fresh}/resize":        `{"vcpus":3,"memory_mib":512}`,
+	"POST /v1/agents/{fresh}/volume-growth": `{"size_mib":256}`,
+	"POST /v1/deployments/{fresh}/rollouts": `{"template":"matrix-base@1","max_unavailable":2}`,
+	"POST /v1/platform/sessions":            `{"token_sha256":"{digest}","replace_current":true}`,
+	"POST /v1/templates":                    strings.ReplaceAll(rbacTemplateBody, "{name}", "{name}-other"),
+	"POST /v1/system-images":                `{"reference":"{name}@2","kernel_digest":"sha256:{digest}","initrd_digest":"sha256:{digest}"}`,
+	"POST /v1/deployment-plans":             `{"template":"matrix-base@1","count":2}`,
+	"POST /v1/pools":                        `{"name":"{name}-other","deployment_id":"{fresh}"}`,
+
+	"POST /v1/applications":                                     "{other_app_config}",
+	"POST /v1/pools/{pool}/expand":                              `{"count":2}`,
 	"POST /v1/organizations":                                    `{"name":"{name}-b","initial_owner":{"issuer":"https://client.example","subject":"{name}","display_name":"X"}}`,
 	"POST /v1/harness-imports":                                  `{"reference":"ghcr.io/acme/other@sha256:{digest}"}`,
 	"POST /v1/members":                                          `{"issuer":"https://client.example","subject":"{name}-b","display_name":"X","role":"agent_user"}`,
@@ -68,6 +79,9 @@ var idempotencyOtherPath = map[string]string{
 
 // conventionActor is the first caller the route serves.
 func conventionActor(r rbacRoute) (string, bool) {
+	if r.Path == "/v1/applications/{app}/accept" {
+		return "applicant", true
+	}
 	for i, want := range strings.Fields(r.Want) {
 		if want == rbacOK || want == rbacFiltered {
 			return rbacActors[i], true
@@ -204,14 +218,19 @@ type asyncRoute struct{ field, follow string }
 // asyncRoutes lists every route that answers 202 (CONV-4), the legacy
 // domain's aside.
 var asyncRoutes = map[string]asyncRoute{
-	"POST /v1/harness-imports":            {"id", "/v1/harness-imports/{id}"},
-	"POST /v1/agents":                     {"operation_id", "/v1/operations/{id}"},
-	"DELETE /v1/agents/{fresh}":           {"operation_id", "/v1/operations/{id}"},
-	"POST /v1/agents/{agent}/wake":        {"operation_id", "/v1/operations/{id}"},
-	"POST /v1/agents/{agent}/sleep":       {"operation_id", "/v1/operations/{id}"},
-	"POST /v1/agents/{agent}/messages":    {"operation_id", "/v1/operations/{id}"},
-	"POST /v1/agents/{agent}/invocations": {"id", "/v1/invocations/{id}"},
-	"POST /v1/invocations/{fresh}/replay": {"id", "/v1/invocations/{id}"},
+	"POST /v1/agents/{fresh}/resize":          {"id", "/v1/rollouts/{id}"},
+	"POST /v1/agents/{fresh}/volume-growth":   {"id", "/v1/volume-growth/{id}"},
+	"POST /v1/deployments/{fresh}/rollouts":   {"id", "/v1/rollouts/{id}"},
+	"POST /v1/rollouts/{fresh}/resume":        {"id", "/v1/rollouts/{id}"},
+	"POST /v1/deployment-plans/{fresh}/apply": {"id", "/v1/deployments/{id}"},
+	"POST /v1/harness-imports":                {"id", "/v1/harness-imports/{id}"},
+	"POST /v1/agents":                         {"operation_id", "/v1/operations/{id}"},
+	"DELETE /v1/agents/{fresh}":               {"operation_id", "/v1/operations/{id}"},
+	"POST /v1/agents/{agent}/wake":            {"operation_id", "/v1/operations/{id}"},
+	"POST /v1/agents/{agent}/sleep":           {"operation_id", "/v1/operations/{id}"},
+	"POST /v1/agents/{agent}/messages":        {"operation_id", "/v1/operations/{id}"},
+	"POST /v1/agents/{agent}/invocations":     {"id", "/v1/invocations/{id}"},
+	"POST /v1/invocations/{fresh}/replay":     {"id", "/v1/invocations/{id}"},
 }
 
 // TestAsynchronousRoutesAreListed keeps asyncRoutes complete: every route of
@@ -296,7 +315,7 @@ func collectIDs(v any, field string, out map[string]string) {
 			collectIDs(x, field, out)
 		}
 	case string:
-		if v != "" && (field == "id" || strings.HasSuffix(field, "_id")) {
+		if field != "client_id" && v != "" && (field == "id" || strings.HasSuffix(field, "_id")) {
 			out[v] = field
 		}
 	}

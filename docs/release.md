@@ -3,7 +3,7 @@
 This page says what a release of Agent Capsule contains, what is checked
 before one is published, how a maintainer cuts one and how a user verifies
 one. The decisions behind it are in
-[ADR 013](adr/013-release-supply-chain.md). No release has been cut yet.
+[ADR 013](adr/013-release-supply-chain.md). The first release is `v0.0.1`.
 
 ## What a release contains
 
@@ -15,22 +15,109 @@ version tag. A maintainer reviews it, then publishes it.
 |---|---|
 | `agentcapsule-api`, `agentcapsule-worker`, `agentcapsule-admin`, `agentcapsule-authority`, `agentcapsule-slim-bridge` | The host programs, linux/amd64, linked dynamically against glibc 2.39 or newer (Ubuntu 24.04). The worker also needs `libcryptsetup.so.12`. |
 | `agentcapsule-harness` | The harness package tool (pack, push, sign, verify), static. |
+| `install.sh` | The `curl \| sh` installer of the workstation CLI ([Verify a release](#verify-a-release)). |
+| `oci-<service>.spdx.json` | Inventory of the exact container image distributed for the service. |
+| `component-sources.json`, `component-notices.tar.gz` | Component versions, package source locations, SHA-256 identities and notices copied from application sources, container layers, Java archives and native Rust dependencies. |
+| `agentcapsule-oci-sources-*.tar` | Application sources, BusyBox, distribution source packages and recipes, plus the source of the SLIM native binding and the crate archives matching its Cargo.lock. |
 | `<binary>.spdx.json` | The SPDX 2.3 SBOM of each binary. |
 | `third-party-licenses.txt`, `licenses.json` | The license and notice files of every linked module, and the license inventory. |
+| `agentcapsule-sources-*.tar` | Server and guest sources, including the Firecracker build’s Cargo.lock, checksum-verified crate archives, and the micro-http Git source at the commit recorded in the lock. |
 | `build.json` | How the binaries were built: commit, Go, C compiler, host packages, flags, both builds' digests. |
 | `dependency-audit.json`, `vulnerability-scan.json` | The dependency audit and the vulnerability scan of this release, with every allowlisted finding and its reason. |
 | `SHA256SUMS` | The SHA-256 of every file above. |
 | `SHA256SUMS.sigstore.json` | The cosign signature of `SHA256SUMS` (keyless: a certificate for the release workflow's GitHub identity, logged in Rekor). |
 | `provenance.sigstore.json` | The SLSA build provenance of every file in `SHA256SUMS`, signed by GitHub (artifact attestation). |
 
-The guest image (`product.initrd`) and `capsule-adapter` are built, described
-and scanned by the workflow but not published: they hold GPL and LGPL code
-(cryptsetup, e2fsprogs, util-linux, and glibc linked statically) whose source
-a release would have to offer. Until the product owner decides (ADR 013,
-question 4), operators build them with `scripts/build-product-guest.py` and
-the Dagger module, as today. The guest kernel and Firecracker are not
-released either: `scripts/build-guest-kernel.py` and
-`scripts/build-firecracker.py` build them.
+The release also includes six static CLI builds (Linux, macOS and Windows,
+amd64 and arm64), the Ubuntu 24.04 server bundle, its signed package and OCI
+archives, and the source archives of the exact host and guest packages. The
+server bundle contains the patched Firecracker/jailer, kernel, guest initrd
+with the reference echo harness, adapter, deploy configuration, units, public
+HTTP contract and host guide. `agentcapsule-bundle.json` records the server
+release, migration format, commit and artifact digests. The release workflow signs checksums and attests the provenance of these files. GitHub allows up to 1,000 files per release and requires each to be smaller than 2 GiB. The builder splits source archives at 1,500 MiB before checking every final file. [GitHub release limits](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases)
+
+Before signing a tag, the release workflow runs the six packaged CLIs on
+native amd64 and arm64 runners for Linux, macOS and Windows. Each runner
+verifies its executable against the build job’s checksum index, checks the
+embedded target, commit and release version, and exercises an HTTPS session
+across separate CLI processes. The test rejects an incompatible API before
+sending credentials, then logs in with a trusted test CA and reads the current
+organization from the saved private context. The signing job verifies the
+same index digest. Pull requests run this scenario with native builds.
+[Native runner platforms](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
+
+Each image inventory is tied to its offline archive and the pinned reference in the deployment configuration. The scanner applies the same image policy to the local SPDX and the registry scan. The source index records exact Red Hat SRPMs, Debian source packages, and Alpine recipes with their upstream files and packaging patches. Maven source-classifier URLs and Go module URLs identify further upstream components. [Candidate image qualification](release-image-qualification.md)
+
+### Signed Linux development build `v0.1.0-dev.6`
+
+For local development on Ubuntu 24.04 amd64, including an Ubuntu instance in WSL2, use the Linux build mode below with the release build dependencies installed. It builds the host programs, the Linux/amd64 CLI and the guest image from the current Git commit. The version appears in `build.json` and in `agentcapsule version`. Choose a fresh output directory for each run.
+
+```sh
+python3 scripts/build-release.py --go "$(command -v go)" \
+  --linux-dev-version v0.1.0-dev.8 --twice \
+  --guest-cryptsetup /usr/sbin/cryptsetup --output /var/tmp/agentcapsule-dev8
+```
+
+Two clean builds of `f1d216d` on Ubuntu 24.04 amd64 in WSL2 produced the same eight executables and guest initrd. The development key signed an index of 41 files. Its SHA-256 is `fa277755417542dfd6ee6ac82ffd6d32cc98af8222ec7e5a201ec1d0ff5a98d2`. An independent offline verification checked the signed files, the 63 files inside the server bundle and the six pinned container references. The candidate admin binary applied 54 migrations to a fresh PostgreSQL schema and the resulting ledger matched the one shipped with the build.
+
+The release scanner checked the 19 SPDX inventories on this medium. The Ubuntu package archive and the Keycloak image account for all 12 findings that block publication, one Critical and 11 High. [Image qualification](release-image-qualification.md) · [Ubuntu package findings](#ubuntu-package-archive-19-november-2026)
+
+### Signed Linux development build `v0.1.0-dev.11`
+
+On 20 November 2026, two clean Ubuntu 24.04 amd64 builds of commit `b14a85f` in WSL2 produced identical bytes for all eight Linux executables and `product.initrd`. The development signing key used for `dev.6` signed an index of 44 files totaling 2,548,341,450 bytes. The SHA-256 of `SHA256SUMS` is `34cfec44601cbc3b4f21c38c4970bc6fd1d10eec0f39e45c9cd14dd419a3a38a`. The offline reader verified the signature, extracted the server bundle and checked all 63 files. Its manifest declares the binary rollback contract `agentcapsule-state/v1` and 54 PostgreSQL migration records. The installation and restored-agent exercise used the earlier `dev.6` media. [WSL installation and recovery](cli-host.md#development-qualification-on-wsl2)
+
+The Linux/arm64 CLI from the same commit ran under QEMU 10.2.1 in WSL2 against a native Linux HTTPS API and PostgreSQL. The test observed 49 TLS 1.3 requests across enrollment, context isolation, key rotation and logout. It also checked that the client rejected an untrusted certificate authority and an overly permissive context file. The arm64 executable's SHA-256 was `f51294db614ecadba7c631b31523b0957c7e06a85cd1242aebc9161a96f47777`.
+
+The scan of the 19 SPDX inventories found one Critical and eleven High matches that block publication. The six Ubuntu package matches and six Keycloak matches are detailed below and in the image qualification. [Image findings](release-image-qualification.md)
+
+### Signed Linux development build `v0.1.0-dev.12`
+
+The `dev.12` media were built from commit `c9d1e38` on 20 November 2026 and include the single-agent CPU and memory resize command. Two clean Noble amd64 builds in WSL2 produced identical digests for all eight executables and the guest initrd. The signed index covers 45 files totaling 2,548,385,505 bytes. Its SHA-256 is `fa2c3251ff15891de35e2ce1a27f160f9c5c36a13e6563dfd3981668e1cc8d41`. The offline reader checked all 63 server files. PostgreSQL applied all 55 migrations and its ledger matched the signed record, including the new `agent-resize` migration. [CLI progress](plan-cli.md#suivi-du-chantier)
+
+All seven checks passed on the Ubuntu 24.04 WSL2/KVM installation upgraded from `dev.6`. The test verified the media signature, and the guest verified a second signature on the identical index using its existing trusted public key. The scan of the 19 inventories still reports twelve release-blocking findings, six in Ubuntu packages and six in Keycloak. [Installation qualification](cli-host.md#development-qualification-on-wsl2) · [Image findings](release-image-qualification.md)
+
+### Signed Linux workstation CLI `v0.1.0-dev.13`
+
+The Linux amd64 and arm64 CLI binaries from commit `f0aa5c0` include the fix for following an invocation that the server requeues after a restore. Both run against CLI protocol 1. The server qualified in WSL2/KVM is `v0.1.0-dev.12`.
+
+Two clean builds with Go 1.27.4 produced identical executables for each architecture. An offline rebuild from the delivered source and Go module archives reproduced both digests with an empty module cache and the Git metadata of the release commit. The signed checksum index covers ten files, including the two executables, their SPDX inventories, sources, notices, build record and CLI scan. The scan found no matches in either CLI inventory. The server is assessed separately.
+
+The Linux amd64 executable passed the native HTTPS test on WSL2. Under QEMU, the signed arm64 executable completed 49 TLS 1.3 requests in the enrollment test and submitted a single-agent resize to the API backed by PostgreSQL. The CLI returned the rollout member for the requested agent.
+
+The signed amd64 CLI also ran against the HTTPS API and PostgreSQL 18.6 with a test worker. After a volume restore requeued an invocation, `operation wait --type invocation` observed `lost` twice and then `completed` under the same ID. The command exited with code 0 and the member read the replacement result. The restore skipped a second invocation because its requester had lost access. The auditor’s CLI reported `requester_revoked` and exited with code 5.
+
+| SHA-256 | Digest |
+|---|---|
+| Signed checksum index | `e026a64d468ea44346ddc8f918e2cf7960bd370875c25cb8e90277edfe9ef2a4` |
+| Linux amd64 CLI | `ca34e21d7f721ca172f67fc9c58fffb443ccc842e7432911634856be73789a7f` |
+| Linux arm64 CLI | `9e1fd92feb4441e5a36938c8e74ec1f88a0185e4f42585515e2341d430f021c6` |
+
+Use the previously trusted development public key with SHA-256 `1305029f0b5e0aeca207bedf8cdf90470bea39826a44c06afeb75194ee70cb22`. After extracting the workstation archive, run these commands from its top-level directory.
+
+```sh
+printf '%s  %s\n' 1305029f0b5e0aeca207bedf8cdf90470bea39826a44c06afeb75194ee70cb22 dev-trust/dev.pub | sha256sum --check --strict &&
+  openssl pkeyutl -verify -pubin -inkey dev-trust/dev.pub -rawin \
+    -in assets/SHA256SUMS -sigfile assets/SHA256SUMS.dev.sig &&
+  (cd assets && sha256sum --check --strict SHA256SUMS)
+```
+
+### Ubuntu package archive, 19 November 2026
+
+The offline Noble snapshot used in the installation test contained 171 binary packages. The release inventory checks every archived `.deb` against the server's package index and records its SHA-256, Ubuntu release, binary version and source package. Grype 0.121.0 with the 19 November database reported six High matches, 452 Medium, 37 Low and five Negligible. The six High matches block this archive under the release policy. The six separate Keycloak matches also block the offline images. [Image qualification](release-image-qualification.md)
+
+The development media's `agentcapsule-ubuntu-sources-01.tar` contains the 108 exact Ubuntu source versions for those 171 packages. Its `ubuntu-source-index.json` maps each binary to its source name and version. The qualification checked all 349 source files against the signed Noble indexes and the corresponding `.dsc` files, then read the finished tar back. The tar SHA-256 is `8f621aceab2ce35552afc9a8f63014624352ab3b1a8dbadbf7761b776c8ff5e4`.
+
+| Binary and exact Ubuntu source | Shipped Noble version | High advisories | Ubuntu evidence |
+|---|---|---|---|
+| `docker.io` from `docker.io-app` | `29.1.3-0ubuntu3~24.04.2` | CVE-2024-41110 | Canonical fixed the application source in `27.5.1-0ubuntu3~24.04.2`. [Ubuntu advisory](https://ubuntu.com/security/CVE-2024-41110) |
+| `runc` from `runc-app` | `1.3.4-0ubuntu1~24.04.1` | CVE-2025-31133, CVE-2025-52565, CVE-2025-52881 | Canonical fixed all three in `1.3.3-0ubuntu1~24.04.2`. [USN-7851-1](https://ubuntu.com/security/notices/USN-7851-1) |
+| `containerd` from `containerd-app` | `2.2.1-0ubuntu1~24.04.4` | CVE-2026-53488 | Canonical fixed the application source in `2.2.1-0ubuntu1~24.04.3`. The shipped package changelog records the backport. [Ubuntu advisory](https://ubuntu.com/security/CVE-2026-53488) |
+| `containerd` from `containerd-app` | `2.2.1-0ubuntu1~24.04.4` | CVE-2026-39821 | Canonical lists `containerd` as needing evaluation and gives no Noble fix for `containerd-app`. The shipped ELF build information identifies `go1.24.13` and `golang.org/x/net v0.47.0`. [Ubuntu advisory](https://ubuntu.com/security/CVE-2026-39821), [Go advisory](https://pkg.go.dev/vuln/GO-2026-5026) |
+
+For `v0.0.1`, these six matches and the six Keycloak matches are accepted by reviewed entries in [the allowlist](../scripts/vulnerability-allowlist.json), which expire on 20 January 2027. On 20 November the 13 November snapshot was still current for these packages: Ubuntu had published no newer `docker.io`, `runc` or `containerd` for Noble. Five matches concern versions that already include Canonical's fix. The containerd finding in Go's `idna` is not reached: the installer loads every image from the signed offline archive and starts it by digest with `--pull never`, so containerd resolves no registry host name.
+
+On 20 November, the shipped SPDX inventory was compared with independent Syft JSON and SPDX inventories built from the dpkg metadata of all 171 verified packages. The three scans produced the same 500 matches, including the same six High findings. Grype had the Ubuntu source package names and matched these six findings on binary package names. Five reported matches concern versions that include Canonical's fixes. The remaining containerd finding requires upstream or distribution assessment.
+[Single-host installation and updates](cli-host.md)
 
 ## What is checked
 
@@ -198,7 +285,7 @@ Not reproducible yet, and why:
 - **The harness packages.** The Dagger module installs Alpine packages
   (`gcc`, `musl-dev`, `e2fsprogs`) without pinning their versions; their
   reproducibility is not checked.
-- **The guest kernel and Firecracker.** Not studied.
+- **The guest kernel and Firecracker.** The release builds them from the recorded sources and configuration. Their separate builds have no two-builder reproducibility result.
 
 ## Cut a release
 
@@ -241,37 +328,95 @@ deleting them, and Actions allowed to create releases.
 
 ## Verify a release
 
-Download the files you need, with `SHA256SUMS` and `SHA256SUMS.sigstore.json`.
-`<repository>` below is the release page's repository, as
-`<owner>/<name>`; `v0.1.0` is the version.
+### With the installer
 
-1. **The signature of the checksums** ([cosign](https://github.com/sigstore/cosign) 2.4 or newer):
+`install.sh`, published with each release, performs the checks of steps 1 to 3
+below for the workstation CLI. It runs under any POSIX shell:
 
-   ```bash
-   cosign verify-blob --bundle SHA256SUMS.sigstore.json \
-     --certificate-identity "https://github.com/<repository>/.github/workflows/release.yml@refs/tags/v0.1.0" \
-     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-     SHA256SUMS
+```sh
+curl -fsSL https://github.com/ArnaudGuiovanna/agentcapsule/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/ArnaudGuiovanna/agentcapsule/releases/download/v0.0.1/install.sh | sh -s -- --version v0.0.1 --require-signature
+```
+
+The script selects the executable from `uname` (Linux or macOS, amd64 or
+arm64; Windows under Git Bash or MSYS2). It takes the latest release unless
+`--version` names one, and downloads the executable with `SHA256SUMS`. When
+`cosign` is on PATH, the script verifies `SHA256SUMS.sigstore.json` against the
+release workflow's identity for that exact tag and stops on failure.
+`--require-signature` refuses to continue without cosign. The executable is
+installed only when `SHA256SUMS` lists its name exactly once with its digest.
+The default directory is `~/.local/bin`, or `/usr/local/bin` as root; `--dir`
+selects another. An existing CLI is replaced only after every check passes.
+Without cosign, the digest check protects against a damaged download but not
+against a compromised release: verify the signature as in step 2 before
+trusting the CLI with a production host. `scripts/test_install_cli.py` tests
+these refusals. Later updates use `agentcapsule self update`, which
+always verifies the signature with cosign.
+
+### By hand
+
+Choose the published tag you intend to install and the asset for the workstation
+that will run the CLI. On Linux and macOS, `uname -m` reports `x86_64` or
+`aarch64`/`arm64`. On Windows, use the system type in Settings → System → About.
+[AgentCapsule releases](https://github.com/ArnaudGuiovanna/agentcapsule/releases)
+
+| Workstation | Intel/AMD 64-bit | Arm 64-bit |
+|---|---|---|
+| Linux | `agentcapsule-linux-amd64` | `agentcapsule-linux-arm64` |
+| macOS | `agentcapsule-darwin-amd64` | `agentcapsule-darwin-arm64` |
+| Windows | `agentcapsule-windows-amd64.exe` | `agentcapsule-windows-arm64.exe` |
+
+1. In an empty directory, download the selected asset, `SHA256SUMS` and
+   `SHA256SUMS.sigstore.json` from that release. With an independently installed
+   GitHub CLI, the following are POSIX shell commands. On Windows PowerShell
+   assign `$tag` and `$asset` instead. Replace the two example values.
+
+   ```sh
+   tag='RELEASE_TAG'
+   asset='agentcapsule-linux-amd64'
+   gh release download "$tag" --repo ArnaudGuiovanna/agentcapsule -p "$asset" -p SHA256SUMS -p SHA256SUMS.sigstore.json
    ```
 
-   It proves that `SHA256SUMS` was signed by the release workflow of that
-   repository for that tag.
+2. Verify the checksum index with an independently trusted cosign 2.4 or newer.
+   The signer must match the project workflow and selected tag. Continue only
+   when this command exits successfully. [Cosign](https://github.com/sigstore/cosign)
 
-2. **The files**:
-
-   ```bash
-   sha256sum --ignore-missing -c SHA256SUMS
+   ```sh
+   cosign verify-blob --bundle SHA256SUMS.sigstore.json --certificate-identity "https://github.com/ArnaudGuiovanna/agentcapsule/.github/workflows/release.yml@refs/tags/$tag" --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS
    ```
 
-3. **The provenance** ([GitHub CLI](https://cli.github.com/) 2.49 or newer):
+3. Verify the **selected executable** under its original release filename.
+   Save the following as `verify-cli.py` in the download directory. It requires
+   exactly one matching entry in the authenticated index and checks the bytes
+   you will execute.
 
-   ```bash
-   gh attestation verify agentcapsule-api --repo <repository> \
-     --signer-workflow <repository>/.github/workflows/release.yml
+   ```python
+   import hashlib, pathlib, sys
+   path = pathlib.Path(sys.argv[1])
+   lines = pathlib.Path("SHA256SUMS").read_text(encoding="ascii").splitlines()
+   entries = [line for line in lines if line.partition("  ")[2] == path.name]
+   digest = hashlib.sha256(path.read_bytes()).hexdigest()
+   if entries != [digest + "  " + path.name]:
+       sys.exit("Checksum verification failed for " + path.name)
+   print("Verified", path.name)
    ```
 
-   Offline, add `--bundle provenance.sigstore.json`. The provenance names the
-   workflow, the commit and the run that built the file.
+   Run `python3 verify-cli.py "$asset"` (Windows: `py -3 verify-cli.py "$asset"`)
+   and continue only on `Verified <filename>`.
+
+   To verify the build provenance as well, download `provenance.sigstore.json`
+   from the same release and run the following with GitHub CLI 2.49 or newer.
+   The provenance names the workflow, commit and run that built the selected file.
+
+   ```sh
+   gh attestation verify "$asset" --repo ArnaudGuiovanna/agentcapsule --signer-workflow ArnaudGuiovanna/agentcapsule/.github/workflows/release.yml --bundle provenance.sigstore.json
+   ```
+
+   On Linux or macOS, install the verified file as `agentcapsule` in a directory
+   on your PATH with mode 0755. On Windows, rename the verified file to
+   `agentcapsule.exe` and place it on PATH. Run `agentcapsule version` to see
+   the release tag, then `agentcapsule install --help` on the workstation.
+   [Install the matching server bundle](cli-host.md)
 
 4. **The SBOM.** `agentcapsule-api.spdx.json` describes the binary whose
    SHA-256 its root element carries. To scan it yourself:
@@ -282,8 +427,8 @@ Download the files you need, with `SHA256SUMS` and `SHA256SUMS.sigstore.json`.
    version that `build.json` names:
 
    ```bash
-   git clone https://github.com/<repository> && cd <name> && git checkout v0.1.0
-   python3 scripts/build-release.py --go <go-1.27.4> --version v0.1.0 --output /tmp/rebuild
+   git clone https://github.com/ArnaudGuiovanna/agentcapsule && cd agentcapsule && git checkout "$tag"
+   python3 scripts/build-release.py --go /path/to/go --version "$tag" --output /tmp/rebuild
    sha256sum /tmp/rebuild/dist/agentcapsule-api
    ```
 
@@ -294,11 +439,22 @@ Download the files you need, with `SHA256SUMS` and `SHA256SUMS.sigstore.json`.
 
 - The CI job proves reproducibility on one runner, not between two
   independent builders.
-- The release workflow has not run yet: it needs a tag on GitHub. Its steps
-  that need no GitHub identity were run locally (see ADR 013, Validation).
+- The release workflow's first run is the one for `v0.0.1`. Its steps that
+  need no GitHub identity were first run locally (see ADR 013, Validation).
 - The provenance is SLSA Build Level 2: GitHub signs it, but the build runs
   in the repository's own workflow, not in an isolated reusable one.
 - The guest image's native packages are scanned with the build host's
-  distribution data; the guest kernel and Firecracker are not scanned.
-- Vulnerabilities of the SLIM native library's Rust dependencies are not
-  scanned: its published archive carries no SBOM.
+  distribution data. The release scans the Firecracker workspace dependency lock. The kernel build has no configuration-specific vulnerability inventory.
+- The SLIM native library has an inventory of the source revision and the Rust dependency lock. The lock also contains optional and build dependencies. It describes the upstream source tree and cannot identify every crate linked into the prebuilt native library.
+
+### Binary rollback compatibility
+
+The signed server manifest contains a `binary_rollback_epoch`. Bump the value
+in `scripts/build-server-bundle.py` whenever an older server could misinterpret
+persistent state, guest or authority protocols, revocations, destroyed keys,
+exclusive volume ownership or security policy after the new server has run.
+Use a fresh epoch even when the database schema and HTTP API are unchanged.
+Within an epoch the host helper separately checks the full SQL ledger,
+external dependencies, guest runtime and host configuration before it accepts
+a binary rollback. The build and its own signed version remain independently
+identifiable. [Host rollback procedure](cli-host.md#update-and-recovery)

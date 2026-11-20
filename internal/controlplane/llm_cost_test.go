@@ -235,6 +235,7 @@ func TestLLMAccessAndCostMigrationKeepsExistingInstallations(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err = b.s.pool.Exec(t.Context(), `
+        ALTER TABLE agent_specs DROP CONSTRAINT agent_specs_template_grant_id_fkey;
         DROP TABLE llm_alias_grants;
         DROP INDEX llm_usage_unresolved;
         ALTER TABLE llm_audit DROP CONSTRAINT llm_audit_references, DROP CONSTRAINT llm_audit_action_check,
@@ -250,6 +251,9 @@ func TestLLMAccessAndCostMigrationKeepsExistingInstallations(t *testing.T) {
 	}
 	if _, err = b.s.pool.Exec(t.Context(), llmAccessAndCostSQL); err != nil {
 		t.Fatal("migrate", err)
+	}
+	if _, err = b.s.pool.Exec(t.Context(), "ALTER TABLE agent_specs ADD FOREIGN KEY (template_grant_id) REFERENCES llm_alias_grants(id)"); err != nil {
+		t.Fatal("restore later schema dependency", err)
 	}
 	aliases, err := b.a.ListLLMAliases(t.Context(), b.owner, "", 10)
 	if err != nil || len(aliases) != 2 {

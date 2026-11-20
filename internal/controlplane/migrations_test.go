@@ -376,6 +376,18 @@ func TestReadyChecksInstalledMigrationLedger(t *testing.T) {
 func revertTenantAgents(t *testing.T, s *Store) {
 	t.Helper()
 	if _, err := s.pool.Exec(t.Context(), `
+        DROP TABLE IF EXISTS agent_volume_growth, deployment_audit;
+        ALTER TABLE IF EXISTS agent_specs DROP COLUMN IF EXISTS reserved_growth_mib;
+        ALTER TABLE IF EXISTS volume_restores DROP COLUMN IF EXISTS grow_to_mib;
+        DROP TABLE IF EXISTS agent_rollout_steps, agent_rollouts;
+        ALTER TABLE agent_specs DROP COLUMN IF EXISTS template_grant_id, DROP COLUMN IF EXISTS system_image;
+        DROP VIEW IF EXISTS agent_pool_inventory, available_pool_members;
+        ALTER TABLE agent_assignments DROP COLUMN IF EXISTS policy_id;
+        ALTER TABLE team_memberships DROP COLUMN IF EXISTS source_app_id;
+        DROP TABLE IF EXISTS app_personal_reservations, app_invitations, app_activations, app_policies, application_audit, applications;
+        DROP TABLE IF EXISTS agent_pool_members, agent_pools, agent_deployment_members, agent_deployments,
+          agent_template_revisions, host_system_images, deployment_hosts, system_images;
+        ALTER TABLE worker_jobs DROP COLUMN IF EXISTS capacity_wait;
         DROP TABLE IF EXISTS organization_quotas;
         ALTER TABLE IF EXISTS organization_audit DROP CONSTRAINT IF EXISTS organization_audit_action_check;
         ALTER TABLE IF EXISTS organization_audit ADD CONSTRAINT organization_audit_action_check
@@ -386,6 +398,7 @@ func revertTenantAgents(t *testing.T, s *Store) {
         DROP TABLE IF EXISTS authority_reconciliations;
         ALTER TABLE http_receipts DROP COLUMN IF EXISTS key_day;
         ALTER TABLE tenant_http_receipts DROP COLUMN IF EXISTS key_day;
+        DROP VIEW IF EXISTS personal_volume_holds;
         DROP TABLE IF EXISTS access_revocations;
         DROP FUNCTION IF EXISTS preserve_access_revocation();
         DROP TABLE IF EXISTS volume_relocations, host_takeovers;

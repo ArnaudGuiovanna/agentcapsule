@@ -185,6 +185,13 @@ func run(args []string) int {
 		if err != nil {
 			return fail("database_schema_unavailable")
 		}
+		// A database restored on the same host may have the current epoch
+		// and predate a personal volume allocation. Replay its external
+		// ownership evidence before the listener or allocation loop opens.
+		s.RecordAccessWith(authorities)
+		if err = s.SyncPersonalVolumeHolds(ctx, authorities); err != nil {
+			return fail("personal_volume_reconciliation_failed")
+		}
 	}
 	handler, err := api.NewForHost(s, accounts, *hostID)
 	if err == nil && (len(transitFiles) != 0 || *activeTransit != "") {
@@ -216,7 +223,6 @@ func run(args []string) int {
 		// Every revoking transaction appends its record to the service
 		// before it commits, and the pending ones are confirmed once the
 		// standby holds them (docs/adr/006-authority-service.md §7).
-		s.RecordAccessWith(authorities)
 		go handler.ConfirmRevocations(ctx, 5*time.Second)
 	}
 	// One event per request on standard output: its X-Request-ID, route
@@ -244,6 +250,7 @@ func run(args []string) int {
 		go func() { _ = metrics.Serve(metricsListener) }()
 		defer metrics.Close()
 	}
+	go accounts.RetryWaitingActivations(ctx)
 	server := &http.Server{Addr: *listen, Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 * 1024, ErrorLog: log.New(fixedLog{}, "", 0)}
 	listener, err := net.Listen("tcp", *listen)
 	if err != nil {

@@ -104,14 +104,19 @@ func displayName(v string) bool {
 	return utf8.ValidString(v) && utf8.RuneCountInString(v) <= 100 && strings.TrimSpace(v) != "" && strings.IndexFunc(v, unicode.IsControl) < 0
 }
 
+func validArtifactDigest(digest string) bool {
+	if !strings.HasPrefix(digest, "sha256:") || len(digest) != 71 || strings.ToLower(digest) != digest {
+		return false
+	}
+	_, err := hex.DecodeString(digest[7:])
+	return err == nil
+}
+
 // RegisterLocalRelease records a trusted operator approval of a digest. This
 // does not fetch or validate an OCI artifact; the worker must verify the pinned
 // artifact against this digest before provisioning. A version cannot be rebound.
 func (s *Store) RegisterLocalRelease(ctx context.Context, ref HarnessReference, digest string) (string, error) {
-	if !catalogName(ref.Name) || !catalogName(ref.Version) || !strings.HasPrefix(digest, "sha256:") || len(digest) != 71 || strings.ToLower(digest) != digest {
-		return "", ErrInput
-	}
-	if _, err := hex.DecodeString(digest[7:]); err != nil {
+	if !catalogName(ref.Name) || !catalogName(ref.Version) || !validArtifactDigest(digest) {
 		return "", ErrInput
 	}
 	tx, err := s.begin(ctx)
@@ -150,7 +155,7 @@ func (s *Store) ConfigureHostStorage(ctx context.Context, host string, limitMiB 
 		return err
 	}
 	var reserved int64
-	if err = tx.QueryRow(ctx, `SELECT coalesce(sum(volume_mib),0) FROM agent_specs x JOIN agents a ON a.id=x.agent_id WHERE x.host_id=$1 AND a.phase<>'DELETED'`, host).Scan(&reserved); err != nil {
+	if err = tx.QueryRow(ctx, `SELECT coalesce(sum(volume_mib+reserved_growth_mib),0) FROM agent_specs x JOIN agents a ON a.id=x.agent_id WHERE x.host_id=$1 AND a.phase<>'DELETED'`, host).Scan(&reserved); err != nil {
 		return err
 	}
 	if reserved > limitMiB {
@@ -250,7 +255,7 @@ func (c *AgentCatalog) Reserve(ctx context.Context, p Principal, key string, in 
 		}
 		var available bool
 		err = tx.QueryRow(ctx, `SELECT storage_limit_mib>0 AND storage_limit_mib >= $2::bigint +
-            (SELECT coalesce(sum(x.volume_mib),0) FROM agent_specs x JOIN agents a ON a.id=x.agent_id WHERE x.host_id=$1 AND a.phase<>'DELETED')
+            (SELECT coalesce(sum(x.volume_mib+x.reserved_growth_mib),0) FROM agent_specs x JOIN agents a ON a.id=x.agent_id WHERE x.host_id=$1 AND a.phase<>'DELETED')
             FROM worker_hosts WHERE host_id=$1`, c.host, r.DataVolumeMiB).Scan(&available)
 		if err != nil {
 			return 0, nil, err

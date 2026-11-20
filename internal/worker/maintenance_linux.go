@@ -49,8 +49,16 @@ func (w *Placements) RunMaintenance(ctx context.Context, opts MaintenanceOptions
 		if opts.Dispatch != nil && ctx.Err() == nil {
 			err = errors.Join(err, w.DispatchPass(ctx, *opts.Dispatch, opts.AttemptTimeout))
 		}
+		if w.provisioning != nil && opts.Archives == nil && ctx.Err() == nil {
+			attempt, cancel := context.WithTimeout(ctx, opts.AttemptTimeout)
+			err = errors.Join(err, w.GrowthPass(attempt, nil))
+			cancel()
+		}
 		if opts.Archives != nil && ctx.Err() == nil {
 			// Each capture reports itself; only a failed selection joins err.
+			attempt, cancel := context.WithTimeout(ctx, opts.Archives.Timeout)
+			err = errors.Join(err, w.GrowthPass(attempt, opts.Archives.Store))
+			cancel()
 			err = errors.Join(err, w.ArchivePass(ctx, opts.Archives))
 		}
 		if opts.Report != nil {

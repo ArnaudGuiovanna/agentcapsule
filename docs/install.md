@@ -3,8 +3,7 @@
 This page says how a production install keeps every hop encrypted and
 authenticated, and how to check a host before and after installing it
 (OPS-01, RUN-012). The decisions are in
-[ADR 010](adr/010-transport-security-and-preflight.md). Installation is not
-packaged yet: the services' own pages give their flags and files
+[ADR 010](adr/010-transport-security-and-preflight.md). For the packaged installation, see the [single-host guide](cli-host.md) and the [CLI walkthrough](cli.md). The services’ reference pages describe their flags and files
 ([api](api/README.md), [worker](worker.md), [interop](interop.md),
 [recovery](recovery.md)).
 
@@ -280,7 +279,7 @@ the items listed after the table.
 | pgBackRest 2.58 and rclone 1.60.1 (CI) | SHA-256 in `scripts/fetch-backup-tools.py`, from a fixed Ubuntu snapshot |
 | SeaweedFS, OpenSSH (sftp) and Prometheus images (CI) | Digest |
 | GitHub Actions | Commit SHA |
-| Dagger CLI and gitleaks (CI) | SHA-256 in [ci.yml](../.github/workflows/ci.yml) |
+| Dagger CLI and Gitleaks (CI) | SHA-256 in the [CI workflow](../.github/workflows/ci.yml) and [Gitleaks action](../.github/actions/scan-secrets/action.yml), respectively |
 | Python tools | `--require-hashes` requirement files |
 | Quint tools | `spec/package-lock.json` integrity hashes |
 | Harness base images | Digest in each Dockerfile and in the Dagger module |

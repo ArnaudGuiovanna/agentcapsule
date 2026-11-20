@@ -29,6 +29,7 @@ type VolumeBoot struct {
 	UUID             string        `json:"uuid"`
 	Initialize       bool          `json:"initialize"`
 	PreviousShutdown ShutdownState `json:"previous_shutdown"`
+	GrowToMiB        int           `json:"grow_to_mib,omitempty"`
 	Restore          bool          `json:"restore,omitempty"`
 }
 
@@ -41,7 +42,7 @@ func (v VolumeBoot) Validate() error {
 
 func (v VolumeBoot) valid() bool {
 	if v.Incarnation == 0 || v.Incarnation > 1<<63-1 || !v.PreviousShutdown.Valid() || len(v.VolumeID) != 36 || !strings.HasPrefix(v.VolumeID, "vol_") ||
-		(v.Restore && v.Initialize) {
+		(v.Restore && v.Initialize) || (v.GrowToMiB != 0 && (v.GrowToMiB < 64 || v.GrowToMiB > 32768 || v.Initialize)) {
 		return false
 	}
 	h := v.VolumeID[4:]
@@ -150,6 +151,10 @@ func (s *VolumeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		write(http.StatusUnauthorized, VolumeBoot{}, "unauthenticated")
 		return
 	}
+	if r.Method == http.MethodGet && r.URL.Path == "/v1/volume/growth" && r.URL.RawQuery == "" {
+		write(http.StatusOK, VolumeBoot{}, "volume_growth_v1")
+		return
+	}
 	if r.URL.Path == "/v1/lifecycle/quiesce" {
 		s.serveQuiesce(w, r)
 		return
@@ -197,6 +202,14 @@ func (s *VolumeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	restore := r.Header.Get("X-Capsule-Restore")
 	v := VolumeBoot{VolumeID: r.Header.Get("X-Capsule-Volume"), UUID: r.Header.Get("X-Capsule-UUID"), Initialize: flag == "true", PreviousShutdown: ShutdownState(r.Header.Get("X-Capsule-Previous-Shutdown")),
 		Restore: restore == "true"}
+	if target := r.Header.Get("X-Capsule-Grow-To-MiB"); target != "" {
+		n, err := strconv.Atoi(target)
+		if err != nil || n < 64 || n > 32768 {
+			write(http.StatusBadRequest, VolumeBoot{}, "invalid_volume")
+			return
+		}
+		v.GrowToMiB = n
+	}
 	var incarnationErr error
 	v.Incarnation, incarnationErr = strconv.ParseUint(r.Header.Get("X-Capsule-Incarnation"), 10, 63)
 	if incarnationErr != nil || !v.valid() || (flag != "true" && flag != "false") || (restore != "" && restore != "true" && restore != "false") {
@@ -207,7 +220,7 @@ func (s *VolumeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		write(http.StatusForbidden, v, "stale_incarnation")
 		return
 	}
-	if (v.Initialize || v.Restore) && !s.credentials.Identity.FenceOnly {
+	if (v.Initialize || v.Restore || v.GrowToMiB != 0) && !s.credentials.Identity.FenceOnly {
 		write(http.StatusForbidden, v, "fence_only")
 		return
 	}
@@ -270,7 +283,7 @@ func (c *Client) OpenVolume(ctx context.Context, v VolumeBoot, key []byte) error
 	if !v.valid() || len(key) != 32 || v.Incarnation != c.identity.Incarnation {
 		return ErrProtocol
 	}
-	if (v.Initialize || v.Restore) && !c.identity.FenceOnly {
+	if (v.Initialize || v.Restore || v.GrowToMiB != 0) && !c.identity.FenceOnly {
 		return ErrFenceOnly
 	}
 	body := &keyBody{}
@@ -288,6 +301,9 @@ func (c *Client) OpenVolume(ctx context.Context, v VolumeBoot, key []byte) error
 	r.Header.Set("X-Capsule-UUID", v.UUID)
 	r.Header.Set("X-Capsule-Initialize", strconv.FormatBool(v.Initialize))
 	r.Header.Set("X-Capsule-Restore", strconv.FormatBool(v.Restore))
+	if v.GrowToMiB != 0 {
+		r.Header.Set("X-Capsule-Grow-To-MiB", strconv.Itoa(v.GrowToMiB))
+	}
 	r.Header.Set("X-Capsule-Previous-Shutdown", string(v.PreviousShutdown))
 	resp, err := c.http.Do(r)
 	if err != nil {
@@ -310,6 +326,29 @@ func (c *Client) OpenVolume(ctx context.Context, v VolumeBoot, key []byte) error
 	}
 	if out.Volume != v {
 		return ErrIdentity
+	}
+	return nil
+}
+
+// RequireVolumeGrowth checks the authenticated supervisor before an operator
+// captures or changes the volume. Older guests can continue ordinary boots.
+func (c *Client) RequireVolumeGrowth(ctx context.Context) error {
+	r, err := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint("/v1/volume/growth"), nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.http.Do(r)
+	if err != nil {
+		return errors.Join(ErrTransport, err)
+	}
+	defer resp.Body.Close()
+	var out volumeResponse
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4097))
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode != http.StatusOK || len(raw) > 4096 || decode(bytes.NewReader(raw), &out) != nil || out.Protocol != Version || out.Identity != c.identity || out.Code != "volume_growth_v1" {
+		return ErrUnsupportedProtocol
 	}
 	return nil
 }

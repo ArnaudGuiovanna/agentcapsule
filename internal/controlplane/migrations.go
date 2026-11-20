@@ -22,6 +22,22 @@ type schemaMigration struct {
 	sql     string
 }
 
+// MigrationRecord describes the ledger row the binary expects after a migration.
+type MigrationRecord struct {
+	Version int64  `json:"version"`
+	Name    string `json:"name"`
+	SHA256  string `json:"sha256"`
+}
+
+// MigrationManifest returns the ordered history compiled into the admin binary.
+func MigrationManifest() []MigrationRecord {
+	records := make([]MigrationRecord, len(controlPlaneMigrations))
+	for i, migration := range controlPlaneMigrations {
+		records[i] = MigrationRecord{migration.version, migration.name, fmt.Sprintf("%x", sha256.Sum256([]byte(migration.sql)))}
+	}
+	return records
+}
+
 //go:embed migrations/0002_organization_identity.sql
 var organizationIdentitySQL string
 
@@ -163,6 +179,27 @@ var unresponsiveGuestsSQL string
 //go:embed migrations/0048_directory_trigger_search_path.sql
 var directoryTriggerSearchPathSQL string
 
+//go:embed migrations/0049_deployments.sql
+var deploymentsSQL string
+
+//go:embed migrations/0050_applications.sql
+var applicationsSQL string
+
+//go:embed migrations/0051_provider_auth.sql
+var providerAuthSQL string
+
+//go:embed migrations/0052_rollouts.sql
+var rolloutsSQL string
+
+//go:embed migrations/0053_volume_growth.sql
+var volumeGrowthSQL string
+
+//go:embed migrations/0054_personal_volume_holds.sql
+var personalVolumeHoldsSQL string
+
+//go:embed migrations/0055_agent_resize.sql
+var agentResizeSQL string
+
 // Append migrations; never edit an installed migration. The original schema
 // also upgrades pre-ledger installations, preserving its historical backfills.
 // Later calls validate its checksum without replaying DDL or those backfills.
@@ -215,6 +252,13 @@ var controlPlaneMigrations = []schemaMigration{
 	{version: 46, name: "organization-quotas", sql: organizationQuotasSQL},
 	{version: 47, name: "unresponsive-guests", sql: unresponsiveGuestsSQL},
 	{version: 48, name: "directory-trigger-search-path", sql: directoryTriggerSearchPathSQL},
+	{version: 49, name: "deployments", sql: deploymentsSQL},
+	{version: 50, name: "applications", sql: applicationsSQL},
+	{version: 51, name: "provider-auth", sql: providerAuthSQL},
+	{version: 52, name: "rollouts", sql: rolloutsSQL},
+	{version: 53, name: "volume-growth", sql: volumeGrowthSQL},
+	{version: 54, name: "personal-volume-holds", sql: personalVolumeHoldsSQL},
+	{version: 55, name: "agent-resize", sql: agentResizeSQL},
 }
 
 func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error {

@@ -22,6 +22,7 @@ import (
 // LLMProvider is the metadata of a tenant's upstream provider. The credential
 // is write-only: no field, receipt or audit event ever carries it back.
 type LLMProvider struct {
+	AuthMode   string     `json:"auth_mode"`
 	ID         string     `json:"id"`
 	Name       string     `json:"name"`
 	Kind       string     `json:"kind"`
@@ -50,10 +51,11 @@ type LLMAlias struct {
 }
 
 type CreateLLMProviderInput struct {
-	Name    string `json:"name"`
-	Kind    string `json:"kind"`
-	BaseURL string `json:"base_url"`
-	Secret  string `json:"secret"`
+	AuthMode string `json:"auth_mode,omitempty"`
+	Name     string `json:"name"`
+	Kind     string `json:"kind"`
+	BaseURL  string `json:"base_url"`
+	Secret   string `json:"secret"`
 }
 
 type CreateLLMAliasInput struct {
@@ -79,6 +81,7 @@ var ErrProviderAddress = fmt.Errorf("%w: the provider URL names an internal addr
 // LLMRoute is what the gateway needs for one call. It holds a decrypted
 // credential and must stay in the gateway process memory.
 type LLMRoute struct {
+	AuthMode                     string
 	Kind, BaseURL, UpstreamModel string
 	Secret                       string
 }
@@ -136,11 +139,11 @@ func secretDigest(s string) string {
 	return hex.EncodeToString(h[:])
 }
 
-const providerColumns = `id,name,kind,base_url,status,secret_generation,created_at,rotated_at`
+const providerColumns = `id,name,kind,base_url,status,secret_generation,created_at,rotated_at,auth_mode`
 
 func scanProvider(row pgx.Row) (LLMProvider, error) {
 	var v LLMProvider
-	err := row.Scan(&v.ID, &v.Name, &v.Kind, &v.BaseURL, &v.Status, &v.Generation, &v.CreatedAt, &v.RotatedAt)
+	err := row.Scan(&v.ID, &v.Name, &v.Kind, &v.BaseURL, &v.Status, &v.Generation, &v.CreatedAt, &v.RotatedAt, &v.AuthMode)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = ErrNotFound
 	}
@@ -154,7 +157,10 @@ func auditLLM(ctx context.Context, tx pgx.Tx, p Principal, provider string, alia
 }
 
 func (a *Accounts) CreateLLMProvider(ctx context.Context, p Principal, key string, in CreateLLMProviderInput) (APIReceipt, error) {
-	if !validOrganizationText(in.Name, 100) || (in.Kind != "openai_compatible" && in.Kind != "anthropic") || !validProviderSecret(in.Secret) {
+	if in.AuthMode == "" {
+		in.AuthMode = "secret"
+	}
+	if !validOrganizationText(in.Name, 100) || (in.Kind != "openai_compatible" && in.Kind != "anthropic") || !(in.AuthMode == "none" && in.Secret == "" || in.AuthMode == "secret" && validProviderSecret(in.Secret)) {
 		return APIReceipt{}, ErrInput
 	}
 	if err := checkProviderURL(in.BaseURL); err != nil {
@@ -173,8 +179,12 @@ func (a *Accounts) CreateLLMProvider(ctx context.Context, p Principal, key strin
 	}{in.Name, in.Kind, in.BaseURL, secretDigest(in.Secret)}
 	r, err := a.withTenantReceipt(ctx, tx, p, "llm.provider.create", key, hashed, func() (int, any, error) {
 		id := newID("llmp")
-		v, err := scanProvider(tx.QueryRow(ctx, `INSERT INTO llm_providers(id,tenant_id,name,kind,base_url,secret_ciphertext,created_by)
-            VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING `+providerColumns, id, p.TenantID, in.Name, in.Kind, in.BaseURL, a.sealProviderSecret(p.TenantID, id, 1, in.Secret), p.ID))
+		sealed := []byte{}
+		if in.AuthMode == "secret" {
+			sealed = a.sealProviderSecret(p.TenantID, id, 1, in.Secret)
+		}
+		v, err := scanProvider(tx.QueryRow(ctx, `INSERT INTO llm_providers(id,tenant_id,name,kind,base_url,secret_ciphertext,created_by,auth_mode)
+            VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING `+providerColumns, id, p.TenantID, in.Name, in.Kind, in.BaseURL, sealed, p.ID, in.AuthMode))
 		if err != nil {
 			return 0, nil, err
 		}
@@ -204,15 +214,15 @@ func (a *Accounts) RotateLLMProviderSecret(ctx context.Context, p Principal, id,
 		return APIReceipt{}, err
 	}
 	var generation int64
-	var status string
-	if err = tx.QueryRow(ctx, `SELECT secret_generation,status FROM llm_providers WHERE tenant_id=$1 AND id=$2 FOR UPDATE`, p.TenantID, id).Scan(&generation, &status); errors.Is(err, pgx.ErrNoRows) {
+	var status, authMode string
+	if err = tx.QueryRow(ctx, `SELECT secret_generation,status,auth_mode FROM llm_providers WHERE tenant_id=$1 AND id=$2 FOR UPDATE`, p.TenantID, id).Scan(&generation, &status, &authMode); errors.Is(err, pgx.ErrNoRows) {
 		return APIReceipt{}, ErrNotFound
 	} else if err != nil {
 		return APIReceipt{}, err
 	}
 	hashed := struct{ ID, SecretSHA256 string }{id, secretDigest(secret)}
 	r, err := a.withTenantReceipt(ctx, tx, p, "llm.provider.rotate", key, hashed, func() (int, any, error) {
-		if status != "active" {
+		if status != "active" || authMode != "secret" {
 			return 0, nil, ErrTransition
 		}
 		v, err := scanProvider(tx.QueryRow(ctx, `UPDATE llm_providers SET secret_ciphertext=$3,secret_generation=$4,rotated_at=clock_timestamp()
@@ -489,19 +499,21 @@ func (a *Accounts) ResolveLLMRoute(ctx context.Context, tenantID, alias string) 
 	var providerID string
 	var generation int64
 	var sealed []byte
-	err = tx.QueryRow(ctx, `SELECT p.id,p.kind,p.base_url,m.upstream_model,p.secret_generation,p.secret_ciphertext
+	err = tx.QueryRow(ctx, `SELECT p.id,p.kind,p.base_url,m.upstream_model,p.secret_generation,p.secret_ciphertext,p.auth_mode
         FROM organizations o JOIN llm_model_aliases m ON m.tenant_id=o.id
         JOIN llm_providers p ON (p.tenant_id,p.id)=(m.tenant_id,m.provider_id)
         WHERE o.id=$1 AND o.status='active' AND m.alias=$2 AND m.status='active' AND p.status='active' FOR SHARE OF m, p`, tenantID, alias).
-		Scan(&providerID, &r.Kind, &r.BaseURL, &r.UpstreamModel, &generation, &sealed)
+		Scan(&providerID, &r.Kind, &r.BaseURL, &r.UpstreamModel, &generation, &sealed, &r.AuthMode)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return LLMRoute{}, ErrNotFound
 	}
 	if err != nil {
 		return LLMRoute{}, err
 	}
-	if r.Secret, err = a.openProviderSecret(tenantID, providerID, generation, sealed); err != nil {
-		return LLMRoute{}, err
+	if r.AuthMode == "secret" {
+		if r.Secret, err = a.openProviderSecret(tenantID, providerID, generation, sealed); err != nil {
+			return LLMRoute{}, err
+		}
 	}
 	return r, commit(ctx, tx)
 }

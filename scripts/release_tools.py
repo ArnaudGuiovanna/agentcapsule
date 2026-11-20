@@ -26,6 +26,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -37,9 +38,39 @@ ROOT = SCRIPTS.parent
 PINS = SCRIPTS / "release-tools.json"
 TOOLS_MODULE = SCRIPTS / "tools"
 ALLOWLIST = SCRIPTS / "vulnerability-allowlist.json"
+OIDC_UNIT = Path("deploy/oidc/agentcapsule-oidc.service")
 # An exception is reviewed again at least this often.
 MAX_ALLOWLIST_DAYS = 90
 ALLOWLIST_FIELDS = ("ids", "package", "reason", "expires")
+
+
+def oidc_image(root=ROOT):
+    """Return the literal image argument of this deployment's Podman ExecStart."""
+    path = root / OIDC_UNIT
+    commands = []
+    section = None
+    for line in path.read_text().replace("\\\n", " ").splitlines():
+        line = line.strip()
+        if line.startswith("["):
+            section = line
+        key, sep, value = line.partition("=")
+        if section == "[Service]" and sep and key.strip() == "ExecStart":
+            commands.append(shlex.split(value))
+    if len(commands) != 1 or commands[0][:2] != ["/usr/bin/podman", "run"]:
+        raise ValueError(f"{path}: expected one Podman run ExecStart")
+    # All long options in this unit use --flag=value except --rm and
+    # --name. Consume separate option operands before inspecting IMAGE.
+    arguments = iter(commands[0][2:])
+    for arg in arguments:
+        if arg in ("--name", "-v", "--volume"):
+            next(arguments, None)
+        elif arg == "--rm" or (arg.startswith("--") and "=" in arg):
+            continue
+        elif re.fullmatch(r"quay\.io/keycloak/keycloak@sha256:[a-f0-9]{64}", arg):
+            return arg
+        else:
+            break
+    raise ValueError(f"{path}: expected a digest-pinned Keycloak image as the Podman image argument")
 
 
 def load_allowlist(path=ALLOWLIST, today=None):

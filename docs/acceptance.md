@@ -77,8 +77,13 @@ which had failed that morning with guest v28 on faults fixed since
 (8e61c85, 6fc5ae0), and
 [`TestProductWorkerDeletesAnAgentWhoseHarnessNeverAnswers`](../internal/worker/product_stuck_deletion_integration_test.go),
 never run before.
-Pi on a real model last passed on 2026-11-13: it needs a model server or a
-provider key.
+Pi on a real model last passed on 2026-11-19 with local Ollama
+`forteim-ministral3-text-gpu-8k:20261030`, Pi 1.5.0 and guest v30. Its signed
+package was imported from GHCR and exported with identical checksums; the
+KVM scenario then imported those bytes through its local registry. It read
+the attached file, kept its session between invocations and after sleep/wake,
+and metered its model calls. Evidence:
+`_evidence/pi-ghcr-local-final-20261119/qualification.json`.
 The control and runtime tests of `verify-runtime.py` last passed on
 2026-11-18, at 1b4a7c3 with control guest v8 and the guest kernel 6.1.188
 (`quint/results/runtime-20261118T131446Z`): the 41 runtime tests, the 24
@@ -93,24 +98,36 @@ a fix of the sandbox's helper: 11 of 11
 A met row that rests on a KVM test holds for the code of the run it cites
 ([below](#kvm-runs-the-mvp-still-needs)).
 
+On 2026-11-19, REG-002 passed against GHCR with a signed private Pi package.
+The product owner selected Ollama for live model qualification, then a local
+model after `gemma4:cloud` refused calls with HTTP 402. All three gateway
+and four PostgreSQL metering tests passed with
+`forteim-ministral3-text-gpu-8k:20261030`, satisfying LLM-002 alongside the
+adapters’ existing mock tests. This does not qualify Anthropic’s hosted API.
+The same qualification also passed Pi’s KVM scenario with its signed GHCR
+package, rebuilt using the supported static cgo/SQLite adapter build. The
+combined evidence is `_evidence/pi-ghcr-local-final-20261119/qualification.json`;
+it references the successful GHCR/Pi run and the seven successful LLM tests.
+Earlier failed attempts are retained separately and do not count as passes.
+
 ## Summary
 
-Of the 65 requirements of §4: 63 met, 2 partial, 0 not met, 0 needs KVM.
+Of the 65 requirements of §4: 65 met, 0 partial, 0 not met, 0 needs KVM (2026-11-19).
 
 | Part | Met | Partial | Not met | Needs KVM |
 |---|---|---|---|---|
 | Organizations, identity and authorization | 9 | 0 | 0 | 0 |
 | Isolation | 7 | 0 | 0 | 0 |
-| Harness registry and supply chain | 9 | 1 | 0 | 0 |
+| Harness registry and supply chain | 10 | 0 | 0 | 0 |
 | Capsules and runtime | 12 | 0 | 0 | 0 |
 | Invocations and events | 10 | 0 | 0 | 0 |
-| LLM gateway | 7 | 1 | 0 | 0 |
+| LLM gateway | 8 | 0 | 0 | 0 |
 | Discovery and inter-agent communication | 12 | 0 | 0 | 0 |
 | Content, capabilities and clients | 4 | 0 | 0 | 0 |
 | API conventions | 8 | 1 | 0 | 0 |
 | The MVP outcome as one scenario | 5 | 2 | 0 | 0 |
 | Deployment and operations | 17 | 6 | 0 | 0 |
-| **All rows** | **100** | **11** | **0** | **0** |
+| **All rows** | **102** | **9** | **0** | **0** |
 
 ## Requirements
 
@@ -149,7 +166,7 @@ authentication, never from a request body.
 | ID | Acceptance | Status | Proof | Missing |
 |---|---|---|---|---|
 | REG-001 | Asynchronous, tracked by `operation_id` | met | [`TestHarnessImportBecomesAnImmutableRelease`](../internal/controlplane/harness_registry_test.go) (PG): 202 `IMPORTING`, claimed by a worker, then `READY`; [`TestHTTPHarnessImportsAreForThePlatformAndReleasesForMembers`](../internal/api/harness_test.go) (PG): 202, replay, `GET /v1/harness-imports/{id}`; [`TestWorkerImportsVerifiedPackagesIntoTheCache`](../internal/worker/registry_test.go) (PG) | — (tracked by the import's `id`, not a field named `operation_id`) |
-| REG-002 | Same test passes on GHCR and a local registry | partial | [`TestPackageRoundTripThroughARegistryWithTokenAndCDN`](../internal/ociregistry/registry_test.go) (unit): a registry with a token service and a CDN redirect, as GHCR does; [`TestSignedImportsNeedATrustedPublisher`](../internal/ociregistry/signature_test.go) (unit): with and without the referrers API; the Dagger `check` in CI, against `registry:2` | No run against GHCR itself (REG-02) |
+| REG-002 | Same test passes on GHCR and a local registry | met | [`TestWorkerImportsVerifiedPackagesIntoTheCache`](../internal/worker/registry_test.go) (PG, local registry); [`TestLiveGHCRImport`](../internal/worker/ghcr_live_test.go), [`TestLiveGHCRRejectsAnImageThatIsNotAHarness`](../internal/worker/ghcr_live_test.go) (live GHCR 2026-11-19): private Pi package imported by digest with its publisher signature required, a release in `READY`, immutable cached files, and a foreign image rejected before its layers; exported files match the published checksums | — (qualification package, not a platform release) |
 | REG-003 | Tampered or incompatible package rejected | met | [`TestTamperedOrIncompatiblePackagesAreRejected`](../internal/ociregistry/registry_test.go) (unit): altered blob, wrong type, extra or reordered layer, oversized image, aarch64, lying checksums; [`TestManifestIsStrict`](../internal/harnesspkg/package_test.go) (unit); [`TestWorkerImportsVerifiedPackagesIntoTheCache`](../internal/worker/registry_test.go) (PG): `REJECTED integrity`, nothing cached | — |
 | REG-004 | Arbitrary or SSRF-style references refused | met | [`TestPolicyRefusesUnapprovedAndUnsafeReferences`](../internal/ociregistry/registry_test.go) (unit): unapproved registry, link-local address, unpinned reference, loopback dial; [`TestRedirectsAndTokensOnlyToApprovedHosts`](../internal/ociregistry/registry_test.go) (unit); [`TestWorkerImportsVerifiedPackagesIntoTheCache`](../internal/worker/registry_test.go) (PG): `REJECTED policy` with no pull | — |
 | REG-005 | `name:version` maps to a stable digest; no overwrite | met | [`TestHarnessImportBecomesAnImmutableRelease`](../internal/controlplane/harness_registry_test.go) (PG): another digest is `REJECTED version_conflict`; [`TestConcurrentImportsOfOneVersionYieldOneRelease`](../internal/controlplane/harness_registry_test.go) (PG) | — |
@@ -196,7 +213,7 @@ authentication, never from a request body.
 | ID | Acceptance | Status | Proof | Missing |
 |---|---|---|---|---|
 | LLM-001 | No mandatory provider | met | [`TestEstimatedCostIsExactAtTheBounds`](../internal/controlplane/llm_cost_test.go) (PG): three aliases on two providers in one organization; [`TestProductWorkerTwoOrganizationsStayIsolated`](../internal/worker/product_organizations_integration_test.go) (KVM 2026-11-18): an organization without a provider runs its agent; [`TestModelBridgeIsUnavailableUntilEnabled`](../internal/worker/llm_errors_test.go) (unit) | — |
-| LLM-002 | Mock tests plus optional live tests | partial | [`TestOpenAIAdapterWireFormatAndUsage`](../internal/llmgateway/gateway_test.go), [`TestAnthropicAdapterWireFormat`](../internal/llmgateway/gateway_test.go), [`TestForwardAnthropicCountsCachedInput`](../internal/llmgateway/forward_test.go) (unit); [`TestLiveOfficialSDKsThroughTheModelEndpoint`](../internal/agentadapter/live_test.go) (optional, `verify-adapter.py` against a local model) | No live test against Anthropic's own API (LLM-02); no recorded live run of the `Complete` path of the Anthropic adapter |
+| LLM-002 | Mock tests plus optional live tests | met | [`TestOpenAIAdapterWireFormatAndUsage`](../internal/llmgateway/gateway_test.go), [`TestAnthropicAdapterWireFormat`](../internal/llmgateway/gateway_test.go), [`TestForwardAnthropicCountsCachedInput`](../internal/llmgateway/forward_test.go) (unit); [`TestLiveProviderCompletesAndReportsUsage`](../internal/llmgateway/live_test.go), [`TestLiveUnknownModelIsRejectedWithoutOpeningTheBreaker`](../internal/llmgateway/live_test.go), [`TestLiveTimeoutAfterSendIsOutcomeUnknownAndNotRetried`](../internal/llmgateway/live_test.go), [`TestLiveModelCallIsSettledAtTheProviderReportedUsage`](../internal/controlplane/llm_live_test.go), [`TestLiveHardBudgetRefusesBeforeTheProvider`](../internal/controlplane/llm_live_test.go), [`TestLiveProviderRefusalReleasesTheReservation`](../internal/controlplane/llm_live_test.go), [`TestLiveCallCutAfterSendingStaysCountedAsUnknown`](../internal/controlplane/llm_live_test.go) (live Ollama and PG 2026-11-19): all seven passed with local `forteim-ministral3-text-gpu-8k:20261030` | Live provider selected by the product owner: Ollama local; Anthropic remains covered by its mock contract tests, not a live call to its hosted API |
 | LLM-003 | No key in volumes, snapshots or traces | met | [`TestProviderKeysReachOnlyTheProvider`](../internal/api/secrets_leak_test.go) (PG, real authority service): three planted keys (created, rotated, Anthropic) and real gateway calls to a mock provider that echoes the key in every refusal (401, 429, 500, a timeout, forwarded requests, a hard budget), from two organization agents over their platform channels; no form of a key (whole, fragment, hex, base64) is in any row of the schema, the API's and the worker's logs and metrics, the HTTP answers, what each guest received and its volume archive, or the authorities' catalogue, replica and a snapshot taken after the calls; [`TestLLMProviderSecretsStayWriteOnlyAndEncrypted`](../internal/controlplane/llm_providers_test.go) (PG): the stored ciphertext, the answers, the audit and the stored receipt hold no key; [`TestLLMBridgeCarriesOnlyAnAliasAndTypedOutcomes`](../internal/capsuleprotocol/platform_test.go) (unit): a key never crosses to the VM; [`TestProductWorkerTenantAsyncInvocationWithFileAndModel`](../internal/worker/product_tenant_integration_test.go) (KVM 2026-11-18): the key is added on the host | — (the archived image stands for the guest's volume: a LUKS volume a real guest wrote needs KVM; PostgreSQL's WAL and backups are not searched, only its rows; there is no distributed tracing: the traces are the logs and metrics) |
 | LLM-004 | Unauthorized agents refused | met | [`TestDeniedAliasNeverReachesTheProvider`](../internal/controlplane/llm_access_test.go) (PG): no reservation, no provider call; [`TestListedAliasServesOnlyGrantedAgentsAndTeams`](../internal/controlplane/llm_access_test.go) (PG); [`TestModelCallFromAVMIsBoundToItsTenantAndPlacement`](../internal/controlplane/llm_vm_test.go) (PG): a stale VM refused; [`TestPlatformChannelEnforcesCapabilities`](../internal/capsuleprotocol/platform_capability_test.go) (unit): a model call without `llm.invoke` is refused before it reaches the gateway; [`TestEffectiveCapabilitiesAreTheIntersection`](../internal/controlplane/capabilities_test.go) (PG); [`TestProductWorkerEnforcesCapabilities`](../internal/worker/product_content_integration_test.go) (KVM 2026-11-18): from a real VM, a model call is refused (`capability_denied`) when the harness did not request `llm.invoke`, and from the next call when the organization no longer allows it | — |
 | LLM-005 | Per-period metrics; hard and soft caps | met | [`TestAliasBudgetsBindOnlyTheirModel`](../internal/controlplane/llm_periods_test.go) (PG): a budget on an alias, alone or for one agent, binds only the calls to that alias, hard or soft, and the usage is reported per agent and per alias; [`TestBudgetPeriodsRollOver`](../internal/controlplane/llm_periods_test.go) (PG): once its UTC day or month rolls over, a period's calls stop counting, the hard cap admits again and the usage starts from zero; [`TestScopedAndSoftBudgets`](../internal/controlplane/llm_budgets_test.go) (PG): an agent's hard cap refuses, an organization's soft cap flags; [`TestHardCostBudgetReservesSettlesAndRefusesBeforeTheProvider`](../internal/controlplane/llm_cost_test.go), [`TestAgentCostBudgetAndSoftCostCap`](../internal/controlplane/llm_cost_test.go) (PG); [`TestModelCallMetricsAndEventsCarryNoTenant`](../internal/worker/llm_telemetry_test.go) (unit) | — (the periods are the UTC day and month; the code has no hourly budget) |
@@ -252,7 +269,7 @@ tests and campaigns that together show it.
 | ID | Clause | Status | Proof | Missing |
 |---|---|---|---|---|
 | OUT-1 | On one KVM-capable host | partial | [verify-install.py](../scripts/verify-install.py) (script): the binaries installed from scratch, the worker's preflight passing every check on this machine with the artifacts; [`TestMandatoryOnAGoodFakeHost`](../internal/preflight/preflight_test.go) (unit) | Only one host, under WSL2, has been used. No production host; `-preflight` never ran as root (the worker's checks at start did, in the runtime campaign of 2026-11-18) |
-| OUT-2 | An administrator imports several harnesses (Go plus Python or TypeScript) | met | [`TestProductWorkerTenantRunsAnImportedHarness`](../internal/worker/product_registry_integration_test.go) (KVM 2026-11-18): Go, through `POST /v1/harness-imports`; [`TestProductWorkerTenantRunsAPythonHarness`](../internal/worker/product_registry_integration_test.go) (KVM 2026-11-18): Python; [`TestProductWorkerTenantRunsPiOnARealModel`](../internal/worker/product_adapter_integration_test.go) (KVM 2026-11-13): Pi on Node.js | Each test has its own lab: no single run imports both. The registry is in-process over plain HTTP, and the test runs the import itself |
+| OUT-2 | An administrator imports several harnesses (Go plus Python or TypeScript) | met | [`TestProductWorkerTenantRunsAnImportedHarness`](../internal/worker/product_registry_integration_test.go) (KVM 2026-11-18): Go, through `POST /v1/harness-imports`; [`TestProductWorkerTenantRunsAPythonHarness`](../internal/worker/product_registry_integration_test.go) (KVM 2026-11-18): Python; [`TestProductWorkerTenantRunsPiOnARealModel`](../internal/worker/product_adapter_integration_test.go) (KVM 2026-11-19): Pi on Node.js, with its verified GHCR package and local Ollama | Each test has its own lab: no single run imports both. The registry is in-process over plain HTTP, and the test runs the import itself |
 | OUT-3 | Creates isolated agents for two organizations | met | [`TestProductWorkerTwoOrganizationsStayIsolated`](../internal/worker/product_organizations_integration_test.go) (KVM 2026-11-18): organizations created by `POST /v1/organizations`, separate VMs, users, volumes and keys; [`TestRBACMatrix`](../internal/api/rbac_matrix_test.go) (PG) | The trusts are written to the store, not by `configure-delegation`; [verify-install.py](../scripts/verify-install.py) covers that step without VMs |
 | OUT-4 | Uses them over HTTPS | met | [`TestAPIBinariesBootstrapServeAndShutdown`](../internal/api/server_test.go) (PG); [`TestServerCertificateServesTLSAndReloads`](../internal/operatorconfig/transport_test.go) (unit); [verify-failover.py](../scripts/verify-failover.py) and [verify-install.py](../scripts/verify-install.py) (script): the API binary over HTTPS; the KVM product labs serve the API over TLS (`httptest.NewTLSServer`), and every product worker test drove its VMs through it, [`TestProductWorkerTwoOrganizationsStayIsolated`](../internal/worker/product_organizations_integration_test.go) and [`TestProductWorkerTenantFlagshipJourney`](../internal/worker/product_flagship_integration_test.go) among them (KVM 2026-11-18) | — (the labs serve the API's handler with Go's test TLS server, not the API binary with its certificate) |
 | OUT-5 | Stops and wakes them without data loss | met | [`TestProductWorkerProvisioningAndEncryptedWake`](../internal/worker/product_provisioning_integration_test.go) (KVM 2026-11-18): clean and forced stops; [`TestProductWorkerTenantRunsAPythonHarness`](../internal/worker/product_registry_integration_test.go) (KVM 2026-11-18): state kept across sleep and wake | — |
@@ -453,9 +470,11 @@ real model is optional), and all passed, on the development machine
   runtime tests, the capacity tests of ADR 017 and ADR 021 and the
   recovery of PostgreSQL among them, for the first time since 2026-11-09.
 
+On 2026-11-19, [`TestProductWorkerTenantRunsPiOnARealModel`](../internal/worker/product_adapter_integration_test.go)
+also passed with the signed Pi package imported from GHCR and a local Ollama
+model. The source and image hashes are in the qualification evidence above.
+
 Still to run:
-- [`TestProductWorkerTenantRunsPiOnARealModel`](../internal/worker/product_adapter_integration_test.go)
-  (OUT-2), with a model server or a provider key: last passed 2026-11-13.
 - The worker started by its unit from the install of `verify-install.py`,
   as root (OPS-01).
 - The capacity benchmark on a server, with load on the VMs (DEP-5).

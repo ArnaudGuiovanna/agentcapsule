@@ -287,3 +287,10 @@ those of `/v1/llm/complete`. In addition:
   (`cache_creation_input_tokens`, `cache_read_input_tokens`) counts as input. An
   answer that cannot be read, or that exceeds 960 KiB, was still produced: its
   outcome is `outcome_unknown`.
+
+On 2026-11-19, all seven gateway and PostgreSQL live tests passed through
+Ollama with local `forteim-ministral3-text-gpu-8k:20261030`. This is the
+provider selected for MVP live qualification; it does not qualify Anthropic’s
+hosted API. Evidence: `_evidence/pi-ghcr-local-20261119/verification.json`
+(the `gateway-gemma` and `metering-gemma` phases; their model is recorded
+as the local Ministral profile despite the historical phase names).

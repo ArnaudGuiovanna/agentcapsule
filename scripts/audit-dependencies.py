@@ -65,7 +65,7 @@ MODULES = (
 )
 # (module directory, packages, build tags) linked into what a release ships.
 SHIPPED = (
-    (".", ["./cmd/agentcapsule-api", "./cmd/agentcapsule-worker", "./cmd/agentcapsule-admin",
+    (".", ["./cmd/agentcapsule", "./cmd/agentcapsule-api", "./cmd/agentcapsule-worker", "./cmd/agentcapsule-admin",
            "./cmd/agentcapsule-authority", "./cmd/agentcapsule-harness", "./cmd/capsule-adapter",
            "./cmd/capsule-init", "./cmd/capsule-echo", "./examples/a2a-agent"], ("", STATIC_TAGS)),
     ("runtime/slimbridge", ["."], ("",)),

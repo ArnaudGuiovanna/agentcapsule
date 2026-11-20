@@ -484,7 +484,8 @@ def main():
         # ---- 1. Build and install (bootstrap.md, Before you start).
         run.step("build", "docs/bootstrap.md#before-you-start", "build every binary from the tracked sources, install them into the prefix")
         src = work / "src"
-        listed = subprocess.run(["git", "ls-files", "-z", "--", "go.mod", "go.sum", "cmd", "internal"], cwd=ROOT,
+        # deploy/oidc is the Go package that embeds the OIDC container helper for internal/hostops.
+        listed = subprocess.run(["git", "ls-files", "-z", "--", "go.mod", "go.sum", "cmd", "internal", "deploy/oidc"], cwd=ROOT,
                                 capture_output=True, check=True).stdout.decode().split("\0")
         for name in filter(None, listed):
             target = src / name

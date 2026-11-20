@@ -413,8 +413,8 @@ func (s *Store) PinnedHarnessReleases(ctx context.Context, host string) ([]Harne
 	if !catalogName(host) {
 		return nil, ErrInput
 	}
-	rows, err := s.pool.Query(ctx, `SELECT `+releaseColumns+` FROM harness_releases r WHERE r.source='oci' AND EXISTS(
-            SELECT 1 FROM agent_specs x JOIN agents a ON a.id=x.agent_id WHERE x.release_id=r.id AND x.host_id=$1 AND a.phase<>'DELETED')
+	rows, err := s.pool.Query(ctx, `SELECT `+releaseColumns+` FROM harness_releases r WHERE r.source='oci' AND (EXISTS(
+            SELECT 1 FROM agent_specs x JOIN agents a ON a.id=x.agent_id WHERE x.release_id=r.id AND x.host_id=$1 AND a.phase<>'DELETED') OR EXISTS(SELECT 1 FROM agent_rollouts u JOIN agent_deployments d ON d.id=u.deployment_id WHERE d.host_id=$1 AND u.release_id=r.id AND u.status<>'completed'))
         ORDER BY r.name,r.version`, host)
 	if err != nil {
 		return nil, err

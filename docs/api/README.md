@@ -345,6 +345,7 @@ The routes that revoke, and the record each appends:
 | `POST /v1/agents/{id}/assignments/{assignment_id}/revoke`, `/replace`, `/reassign` | `assignment` | the revoked or replaced assignment |
 | `POST /v1/llm/providers/{id}/rotate` | `llm_provider` | the provider, `generation`, the previous credential's generation |
 | `POST /v1/llm/providers/{id}/disable` | `llm_provider` | the provider |
+| Personal volume allocation during invitation acceptance or retry | `personal_volume` | agent ID, immutable volume ID, member ID. Allocation requires confirmation. |
 | `POST /v1/organizations/{id}/disable` (platform) | `organization` | the organization |
 | `agentcapsule-admin revoke-credential` | `platform_credential`, or `api_token` for a legacy service credential | the credential |
 | `agentcapsule-admin configure-delegation` | `delegated_token` (`revoke-token`); `delegation_trust` (`revoke-trust`; `rotate`: `generation` and the new one; `retire-key`: `key`, the key and its end) | the issuer, then the token ID or the audience |

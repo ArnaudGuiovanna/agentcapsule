@@ -53,6 +53,8 @@ def main():
         shutil.copy2(ROOT / name, sources / name)
     shutil.copytree(ROOT / "internal", sources / "internal")
     shutil.copytree(ROOT / "cmd", sources / "cmd")
+    # The Go package that embeds the OIDC container helper for internal/hostops.
+    shutil.copytree(ROOT / "deploy/oidc", sources / "deploy/oidc")
     # The Python harness SDK and example, run by the Go conformance tests.
     for name in ("sdk", "examples"):
         shutil.copytree(ROOT / name, sources / name, ignore=shutil.ignore_patterns("__pycache__"))
@@ -94,6 +96,7 @@ def main():
     for name in ["AGENTCAPSULE_PG_CHILD", "AGENTCAPSULE_PG_CHILD_DSN", "AGENTCAPSULE_PG_RECOVERY",
                  "CAPSULE_CRASH_POINT", "CAPSULE_CRASH_DB", "AGENTCAPSULE_VOLUME_CHILD", "AGENTCAPSULE_KEY_CHILD"]:
         env.pop(name, None)
+    env["AGENTCAPSULE_TEST_PG_BIN"] = str(pg_bin)
     if args.library_path:
         env["LD_LIBRARY_PATH"] = args.library_path
     results = []
@@ -163,6 +166,11 @@ def main():
                              "-c", "unix_socket_permissions=0700", "-c", "fsync=on",
                              "-c", "full_page_writes=on", "-c", "synchronous_commit=on",
                              "-c", "shared_buffers=32MB", "-c", "max_connections=40",
+                             # Every store test migrates a fresh schema and drops it with
+                             # CASCADE, which locks each of its objects; with the CLI's
+                             # migrations, parallel drops overflowed the default lock
+                             # table (64 per connection: "out of shared memory").
+                             "-c", "max_locks_per_transaction=256",
                              # Crash recovery syncs the whole data directory first; syncfs
                              # does it per filesystem instead of per file, with the same
                              # durability, so that phase stays short on a busy host.

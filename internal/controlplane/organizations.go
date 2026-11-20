@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"strings"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authoritylog"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/individualidentity"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -93,6 +95,27 @@ func (a *Accounts) CreateOrganization(ctx context.Context, p Principal, key stri
 		}
 		if _, err = tx.Exec(ctx, `INSERT INTO memberships(tenant_id,principal_id,role) VALUES($1,$2,'org_owner')`, o.ID, owner); err != nil {
 			return 0, nil, err
+		}
+		// A newly created organization may pin the initial owner's personal
+		// public key. Existing organizations and enterprise issuers retain
+		// their separately installed authority.
+		if strings.HasPrefix(in.InitialOwner.Issuer, individualidentity.Prefix) {
+			pub, ok := individualidentity.Key(in.InitialOwner.Issuer)
+			if !ok || in.InitialOwner.Subject != individualidentity.Subject(pub) {
+				return 0, nil, ErrInput
+			}
+			policy := trustPolicy{tenant: o.ID, issuer: in.InitialOwner.Issuer, audience: o.ID, scopes: individualidentity.Scopes(), ttl: individualidentity.Lifetime}
+			trust := policy.trust(map[string]ed25519.PublicKey{individualidentity.KeyID: pub})
+			fingerprint, err := policy.fingerprint(trust.Keys)
+			if err != nil {
+				return 0, nil, err
+			}
+			if _, err = tx.Exec(ctx, "INSERT INTO delegation_issuers(tenant_id,issuer) VALUES($1,$2)", o.ID, policy.issuer); err != nil {
+				return 0, nil, err
+			}
+			if _, _, err = installTrust(ctx, tx, &trust, fingerprint); err != nil {
+				return 0, nil, err
+			}
 		}
 		if err = auditOrganization(ctx, tx, p, o.ID, "organization.created", true); err != nil {
 			return 0, nil, err

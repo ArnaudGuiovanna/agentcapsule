@@ -1,5 +1,5 @@
 // Package directory publishes organization agents to the private AGNTCY
-// Directory (v1.8.0, OASF schema 1.1.0) and searches it. The Directory is an
+// Directory (server v1.9.1, client v1.8.0, OASF schema 1.1.0) and searches it. The Directory is an
 // index: PostgreSQL stays the source of truth, and every search hit is checked
 // there again (controlplane.FindDirectoryAgentsFromVM).
 //

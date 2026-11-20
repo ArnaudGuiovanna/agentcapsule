@@ -35,20 +35,22 @@ const (
 	AccessMandate         = "mandate"
 	AccessDelegationTrust = "delegation_trust"
 	AccessLLMProvider     = "llm_provider"
+	// AccessPersonalVolume permanently removes an agent volume from shared inventory.
+	AccessPersonalVolume = "personal_volume"
 )
 
 // accessBearer classifies every kind: true for a bearer token.
 var accessBearer = map[string]bool{
 	AccessAPIToken: true, AccessServiceToken: true, AccessPlatformCredential: true, AccessDelegatedToken: true, AccessBlanket: true,
 	AccessMember: false, AccessPrincipal: false, AccessOrganization: false, AccessTeam: false, AccessTeamMembership: false,
-	AccessAssignment: false, AccessMandate: false, AccessDelegationTrust: false, AccessLLMProvider: false,
+	AccessAssignment: false, AccessMandate: false, AccessDelegationTrust: false, AccessLLMProvider: false, AccessPersonalVolume: false,
 }
 
 // AccessKinds lists every kind of access revocation record.
 func AccessKinds() []string {
 	return []string{AccessAPIToken, AccessServiceToken, AccessPlatformCredential, AccessDelegatedToken, AccessBlanket,
 		AccessMember, AccessPrincipal, AccessOrganization, AccessTeam, AccessTeamMembership, AccessAssignment,
-		AccessMandate, AccessDelegationTrust, AccessLLMProvider}
+		AccessMandate, AccessDelegationTrust, AccessLLMProvider, AccessPersonalVolume}
 }
 
 // AccessBearer reports whether kind is a bearer token's, and whether kind is

@@ -1,0 +1,21 @@
+[Unit]
+Description=AgentCapsule Firecracker worker
+After=network-online.target postgresql.service agentcapsule-authority.service agentcapsule-interop.service
+Wants=network-online.target agentcapsule-authority.service agentcapsule-interop.service
+ConditionPathExists=!/var/lib/agentcapsule-install/maintenance
+
+[Service]
+Type=exec
+EnvironmentFile=/etc/agentcapsule/worker.env
+ExecStart=/opt/agentcapsule/agentcapsule-worker -config /etc/agentcapsule/worker.json
+Restart=on-failure
+RestartSec=5
+# The jailer manages cgroup v2 limits for each microVM. Restarting this
+# service preserves those processes for worker adoption.
+Delegate=yes
+KillMode=process
+UMask=0077
+LimitCORE=0
+
+[Install]
+WantedBy=multi-user.target

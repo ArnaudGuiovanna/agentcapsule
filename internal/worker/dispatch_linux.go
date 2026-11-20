@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/runtime"
 )
 
 type DispatchOptions struct {
@@ -77,6 +78,11 @@ func (w *Placements) DispatchPass(ctx context.Context, o DispatchOptions, attemp
 		cancel()
 	}
 	result = errors.Join(result, w.purgeAudit(ctx, attemptTimeout))
+	if w.provisioning != nil {
+		step, cancel := context.WithTimeout(ctx, attemptTimeout)
+		result = errors.Join(result, w.rolloutPass(step))
+		cancel()
+	}
 	for range o.Batch {
 		if ctx.Err() != nil {
 			return errors.Join(result, ctx.Err())
@@ -84,6 +90,9 @@ func (w *Placements) DispatchPass(ctx context.Context, o DispatchOptions, attemp
 		attempt, cancel := context.WithTimeout(ctx, attemptTimeout)
 		job, err := w.store.ClaimWork(attempt, w.hostID, o.WorkLease)
 		if errors.Is(err, controlplane.ErrNoWork) {
+			if w.provisioning != nil {
+				result = errors.Join(result, w.warmDeployment(attempt))
+			}
 			cancel()
 			break
 		}
@@ -109,12 +118,34 @@ func (w *Placements) DispatchPass(ctx context.Context, o DispatchOptions, attemp
 		if err == nil {
 			err = w.store.CompleteWork(finish, job)
 		} else {
-			err = errors.Join(err, w.store.RetryWork(finish, job, o.backoff(job.Failures)))
+			err = errors.Join(err, w.store.RetryWorkWithCapacity(finish, job, o.backoff(job.Failures), errors.Is(err, runtime.ErrCapacity)))
 		}
 		finishCancel()
 		result = errors.Join(result, err)
 	}
 	return result
+}
+
+// Replenish at most one VM after ordinary work. A warm boot may use a free
+// slot, but it has no delivery or operation that justifies evicting a VM.
+func (w *Placements) warmDeployment(ctx context.Context) error {
+	id, err := w.store.NextWarmAgent(ctx, w.hostID)
+	if errors.Is(err, controlplane.ErrNoWork) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	err = w.host.WithBarrier(ctx, id, func(ctx context.Context) error {
+		_, err := w.startWithClaim(ctx, id, false, func(ctx context.Context) (controlplane.Placement, error) {
+			return w.store.ClaimWarmPlacement(ctx, id, w.hostID, w.workerID, w.lease)
+		})
+		return err
+	})
+	if errors.Is(err, controlplane.ErrNoWork) || errors.Is(err, controlplane.ErrOrganizationQuota) || errors.Is(err, runtime.ErrCapacity) {
+		return nil
+	}
+	return err
 }
 
 // auditPurgeEvery spaces the purges of the audit trail: its retention is
