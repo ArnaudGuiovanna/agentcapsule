@@ -3,7 +3,7 @@
 This page says what a release of Agent Capsule contains, what is checked
 before one is published, how a maintainer cuts one and how a user verifies
 one. The decisions behind it are in
-[ADR 013](adr/013-release-supply-chain.md). No release has been cut yet.
+[ADR 013](adr/013-release-supply-chain.md). The first release is `v0.0.1`.
 
 ## What a release contains
 
@@ -15,6 +15,7 @@ version tag. A maintainer reviews it, then publishes it.
 |---|---|
 | `agentcapsule-api`, `agentcapsule-worker`, `agentcapsule-admin`, `agentcapsule-authority`, `agentcapsule-slim-bridge` | The host programs, linux/amd64, linked dynamically against glibc 2.39 or newer (Ubuntu 24.04). The worker also needs `libcryptsetup.so.12`. |
 | `agentcapsule-harness` | The harness package tool (pack, push, sign, verify), static. |
+| `install.sh` | The `curl \| sh` installer of the workstation CLI ([Verify a release](#verify-a-release)). |
 | `oci-<service>.spdx.json` | Inventory of the exact container image distributed for the service. |
 | `component-sources.json`, `component-notices.tar.gz` | Component versions, package source locations, SHA-256 identities and notices copied from application sources, container layers, Java archives and native Rust dependencies. |
 | `agentcapsule-oci-sources-*.tar` | Application sources, BusyBox, distribution source packages and recipes, plus the source of the SLIM native binding and the crate archives matching its Cargo.lock. |
@@ -112,6 +113,8 @@ The development media's `agentcapsule-ubuntu-sources-01.tar` contains the 108 ex
 | `runc` from `runc-app` | `1.3.4-0ubuntu1~24.04.1` | CVE-2025-31133, CVE-2025-52565, CVE-2025-52881 | Canonical fixed all three in `1.3.3-0ubuntu1~24.04.2`. [USN-7851-1](https://ubuntu.com/security/notices/USN-7851-1) |
 | `containerd` from `containerd-app` | `2.2.1-0ubuntu1~24.04.4` | CVE-2026-53488 | Canonical fixed the application source in `2.2.1-0ubuntu1~24.04.3`. The shipped package changelog records the backport. [Ubuntu advisory](https://ubuntu.com/security/CVE-2026-53488) |
 | `containerd` from `containerd-app` | `2.2.1-0ubuntu1~24.04.4` | CVE-2026-39821 | Canonical lists `containerd` as needing evaluation and gives no Noble fix for `containerd-app`. The shipped ELF build information identifies `go1.24.13` and `golang.org/x/net v0.47.0`. [Ubuntu advisory](https://ubuntu.com/security/CVE-2026-39821), [Go advisory](https://pkg.go.dev/vuln/GO-2026-5026) |
+
+For `v0.0.1`, these six matches and the six Keycloak matches are accepted by reviewed entries in [the allowlist](../scripts/vulnerability-allowlist.json), which expire on 20 January 2027. On 20 November the 13 November snapshot was still current for these packages: Ubuntu had published no newer `docker.io`, `runc` or `containerd` for Noble. Five matches concern versions that already include Canonical's fix. The containerd finding in Go's `idna` is not reached: the installer loads every image from the signed offline archive and starts it by digest with `--pull never`, so containerd resolves no registry host name.
 
 On 20 November, the shipped SPDX inventory was compared with independent Syft JSON and SPDX inventories built from the dpkg metadata of all 171 verified packages. The three scans produced the same 500 matches, including the same six High findings. Grype had the Ubuntu source package names and matched these six findings on binary package names. Five reported matches concern versions that include Canonical's fixes. The remaining containerd finding requires upstream or distribution assessment.
 [Single-host installation and updates](cli-host.md)
@@ -325,6 +328,33 @@ deleting them, and Actions allowed to create releases.
 
 ## Verify a release
 
+### With the installer
+
+`install.sh`, published with each release, performs the checks of steps 1 to 3
+below for the workstation CLI. It runs under any POSIX shell:
+
+```sh
+curl -fsSL https://github.com/ArnaudGuiovanna/agentcapsule/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/ArnaudGuiovanna/agentcapsule/releases/download/v0.0.1/install.sh | sh -s -- --version v0.0.1 --require-signature
+```
+
+The script selects the executable from `uname` (Linux or macOS, amd64 or
+arm64; Windows under Git Bash or MSYS2). It takes the latest release unless
+`--version` names one, and downloads the executable with `SHA256SUMS`. When
+`cosign` is on PATH, the script verifies `SHA256SUMS.sigstore.json` against the
+release workflow's identity for that exact tag and stops on failure.
+`--require-signature` refuses to continue without cosign. The executable is
+installed only when `SHA256SUMS` lists its name exactly once with its digest.
+The default directory is `~/.local/bin`, or `/usr/local/bin` as root; `--dir`
+selects another. An existing CLI is replaced only after every check passes.
+Without cosign, the digest check protects against a damaged download but not
+against a compromised release: verify the signature as in step 2 before
+trusting the CLI with a production host. `scripts/test_install_cli.py` tests
+these refusals. Later updates use `agentcapsule self update`, which
+always verifies the signature with cosign.
+
+### By hand
+
 Choose the published tag you intend to install and the asset for the workstation
 that will run the CLI. On Linux and macOS, `uname -m` reports `x86_64` or
 `aarch64`/`arm64`. On Windows, use the system type in Settings → System → About.
@@ -409,8 +439,8 @@ that will run the CLI. On Linux and macOS, `uname -m` reports `x86_64` or
 
 - The CI job proves reproducibility on one runner, not between two
   independent builders.
-- The release workflow has not run yet: it needs a tag on GitHub. Its steps
-  that need no GitHub identity were run locally (see ADR 013, Validation).
+- The release workflow's first run is the one for `v0.0.1`. Its steps that
+  need no GitHub identity were first run locally (see ADR 013, Validation).
 - The provenance is SLSA Build Level 2: GitHub signs it, but the build runs
   in the repository's own workflow, not in an isolated reusable one.
 - The guest image's native packages are scanned with the build host's

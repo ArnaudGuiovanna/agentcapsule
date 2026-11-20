@@ -12,13 +12,14 @@
 </p>
 
 <p align="center">
-  <a href="docs/acceptance.md"><img alt="Status: MVP, pre-release" src="https://img.shields.io/badge/status-MVP%2C%20pre--release-5B616C?style=flat-square"></a>
+  <a href="https://github.com/ArnaudGuiovanna/agentcapsule/releases/tag/v0.0.1"><img alt="Release v0.0.1, early" src="https://img.shields.io/badge/release-v0.0.1%20(early)-5B616C?style=flat-square"></a>
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-1B1E24?style=flat-square"></a>
   <img alt="Go 1.27.4" src="https://img.shields.io/badge/go-1.27.4-1B1E24?style=flat-square&logo=go&logoColor=F3F4F1">
   <img alt="Runs on Linux with KVM" src="https://img.shields.io/badge/runs%20on-Linux%20%2B%20KVM-1B1E24?style=flat-square">
 </p>
 
 <p align="center">
+  <a href="#install">Install</a> ·
   <a href="#what-works-today">What works</a> ·
   <a href="#architecture">Architecture</a> ·
   <a href="#building-and-testing">Build</a> ·
@@ -40,10 +41,12 @@ that keeps provider credentials outside the VM and enforces budgets. The platfor
 hosts and governs; the harness you bring decides what the agent does.
 
 > [!WARNING]
-> **MVP built, not released and not yet proven on a server.**
+> **Version 0.0.1 is out: the first release of the platform and its CLI. It is early and not yet proven on a server.**
 >
 > - All 65 MVP acceptance criteria are met ([docs/acceptance.md](docs/acceptance.md)): signed import from GHCR and live calls through Ollama with a local model passed on November 19. Anthropic’s hosted API is not part of that live qualification.
-> - Every KVM campaign has passed, but on a single development machine. No release is published, and no install has run on a production host.
+> - Every KVM campaign and the CLI's install, upgrade and restore runs have passed, but on a single development machine. No install has run on a production host, and no backup has been restored on a physically separate host.
+> - The CLI runs on Linux, macOS and Windows. Outside Linux, only the release workflow's native tests have checked it.
+> - The release accepts 12 known findings in third-party packages of the server bundle: Keycloak, and Ubuntu's container runtime. Each is reviewed in [the allowlist](scripts/vulnerability-allowlist.json) until 20 January 2027.
 >
 > Do not run it in production yet. See [ROADMAP.md](ROADMAP.md).
 
@@ -57,6 +60,48 @@ hosts and governs; the harness you bring decides what the agent does.
 | **Invocation** | A task sent to an agent, queued, delivered in order and answered privately. |
 | **Assignment** | The explicit permission for someone to see, invoke or read an agent. |
 | **Mandate** | A bounded authorization for one agent to delegate work to another. |
+
+## Install
+
+**1. The CLI, on your workstation** (Linux or macOS; on Windows, Git Bash):
+
+```sh
+curl -fsSL https://github.com/ArnaudGuiovanna/agentcapsule/releases/latest/download/install.sh | sh
+agentcapsule version
+```
+
+The script downloads the executable for your system from the latest release. It installs it in `~/.local/bin` (`/usr/local/bin` as root) only if its digest matches the release's `SHA256SUMS`. When [cosign](https://github.com/sigstore/cosign) is on your PATH, it also checks that `SHA256SUMS` was signed by this repository's release workflow for that tag. Append `-s -- --require-signature` to `sh` to make the signature mandatory, or `-s -- --version v0.0.1` to pin a release. [Verify by hand](docs/release.md#verify-a-release)
+
+**2. The platform, on an Ubuntu 24.04 amd64 host with KVM and systemd.** Run it from the workstation over SSH (the account needs non-interactive sudo), or as root on the host:
+
+```sh
+agentcapsule install --ssh admin@host --plan-only   # checks the host and the signed release
+agentcapsule install --ssh admin@host               # installs, prints an operation ID
+agentcapsule host operation wait OPERATION_ID --ssh admin@host
+```
+
+The CLI installs the signed server bundle of its own release: PostgreSQL, the API, the worker, the patched Firecracker, the guest image, Keycloak, Directory, SLIM and the backups. A reboot or a dropped SSH session does not lose the installation: it resumes. The result proves each step separately: services started, a starter microVM answered, backups configured. TLS names, certificates, storage and an external PostgreSQL are set in a profile. [Host guide](docs/cli-host.md)
+
+**3. Administer it** from the workstation over HTTPS. The host keeps a single-use enrollment token for the first platform operator in `/etc/agentcapsule/first-enrollment.token`. With the default self-signed certificate, the CA to trust is `/etc/agentcapsule/api.crt`:
+
+```sh
+agentcapsule context add prod --url https://agents.example.org:9443 --kind platform --ca api.crt
+agentcapsule --context prod login --enrollment-file first-enrollment.token
+agentcapsule --context prod status
+agentcapsule --context prod doctor
+agentcapsule --context prod organization create --name Acme --owner-file acme-owner.json --idempotency-key create-acme
+```
+
+Commands cover organizations, quotas, members, teams, agents and deployments, LLM providers and budgets, harness imports, audit, backups and restores (`agentcapsule help`). Host updates and the CLI's own update use the signed releases as well:
+
+```sh
+agentcapsule update check
+agentcapsule update plan --to vX.Y.Z
+agentcapsule update apply --plan OPERATION_ID
+agentcapsule self update
+```
+
+[Administration guide](docs/cli.md)
 
 ## What works today
 
@@ -151,6 +196,7 @@ hosts and governs; the harness you bring decides what the agent does.
 
 | Binary | Role |
 |---|---|
+| `agentcapsule` | The CLI, for Linux, macOS and Windows. It installs, updates and restores a host, and administers the platform over HTTPS ([docs/cli.md](docs/cli.md)). |
 | `agentcapsule-api` | The HTTP API ([OpenAPI 3.1](openapi/openapi.yaml)). |
 | `agentcapsule-worker` | Places and supervises VMs, delivers work, serves the platform channel, provisions encrypted volumes. |
 | `agentcapsule-admin` | Local, trusted installation commands (bootstrap, keys, host configuration). No network listener. |
@@ -210,7 +256,7 @@ They are described in [scripts/README.md](scripts/README.md):
 
 ## Running
 
-No release is published yet: build from source. A host install is documented step by step, but it has not yet been run on a production host. [docs/install.md](docs/install.md#what-a-real-host-still-has-to-show) says what such a host still has to show. The building blocks:
+Install a host with the CLI from a release, as described in [Install](#install). No install has run on a production host yet. [docs/install.md](docs/install.md#what-a-real-host-still-has-to-show) lists what a real host still has to show. To assemble a host by hand, or from source, use these building blocks:
 
 - [docs/install.md](docs/install.md): TLS on every hop, production and
   development modes, and the host preflight.
@@ -234,6 +280,7 @@ and an A2A agent (`a2a-agent`).
 | Topic | Where |
 |---|---|
 | Product goals and MVP requirements | [docs/product.md](docs/product.md) |
+| The CLI: installing a host, administering the platform | [docs/cli-host.md](docs/cli-host.md), [docs/cli.md](docs/cli.md) |
 | Status and remaining work | [ROADMAP.md](ROADMAP.md) |
 | MVP acceptance, requirement by requirement | [docs/acceptance.md](docs/acceptance.md) |
 | Metrics, alerts, traces and audit | [docs/observability.md](docs/observability.md) |
@@ -266,6 +313,7 @@ deploy/       private interoperability services, backup, standby, monitoring and
 scripts/      builds, CI checks and KVM/PostgreSQL verification campaigns
 sdk/python/   Python harness SDK (capsule.v1, standard library only)
 examples/     example harnesses and adapted agents
+install.sh    the CLI installer (curl | sh), published with each release
 .dagger/      reference Dagger module: builds, publishes, signs and verifies harnesses
 ```
 
