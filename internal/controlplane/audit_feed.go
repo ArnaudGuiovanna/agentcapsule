@@ -54,6 +54,8 @@ const auditUnion = `
     UNION ALL SELECT id,created_at,action,actor,target,'','done','' FROM deployment_audit WHERE tenant_id=$1
     UNION ALL SELECT id,created_at,action,actor_principal_id,coalesce(agent_id,tenant_id),'','done','' FROM capability_audit WHERE tenant_id=$1
     UNION ALL SELECT id,created_at,'queue.'||action,actor_principal_id,tenant_id,'','done','' FROM queue_audit WHERE tenant_id=$1
+    UNION ALL SELECT id,created_at,action,actor_principal_id,coalesce(agent_id,release_id,build_id,corpus_id,source_credential_id),
+      coalesce(CASE WHEN agent_id IS NOT NULL OR release_id IS NOT NULL THEN build_id END,CASE WHEN build_id IS NOT NULL THEN corpus_id END,''),'done','' FROM corpus_audit WHERE tenant_id=$1
     UNION ALL SELECT id,replayed_at,'invocation.replayed',coalesce(actor_principal_id,'operator'),agent_id,operation_id,'done','' FROM instruction_replays WHERE tenant_id=$1
     UNION ALL SELECT id,created_at,action,actor_principal_id,target,reference,'refused',reason FROM tenant_refusal_audit WHERE tenant_id=$1`
 

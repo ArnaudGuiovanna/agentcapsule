@@ -29,15 +29,21 @@ const DirectoryClientName = "agentcapsule-control-plane"
 var ErrClearTextRegistry = errors.New("a local registry rule uses plain HTTP; production refuses it")
 
 // CheckProductionTransport refuses what production does not allow in this
-// configuration: a local registry rule, which downloads over plain HTTP and
-// would send its credentials in clear.
+// configuration: a local registry or corpus source rule, which downloads
+// over plain HTTP and would send its credentials in clear.
 func (c ServiceConfig) CheckProductionTransport() error {
-	if c.Registry == nil {
-		return nil
+	if c.Registry != nil {
+		for _, r := range c.Registry.Rules {
+			if r.Local {
+				return ErrClearTextRegistry
+			}
+		}
 	}
-	for _, r := range c.Registry.Rules {
-		if r.Local {
-			return ErrClearTextRegistry
+	if c.Corpus != nil {
+		for _, r := range c.Corpus.Sources.Rules {
+			if r.Local {
+				return ErrClearTextCorpusSource
+			}
 		}
 	}
 	return nil
@@ -92,7 +98,7 @@ func (c ServiceConfig) Preflight(ctx context.Context, h preflight.Host, mode ope
 	}
 	if c.Registry != nil {
 		switch err := c.CheckProductionTransport(); {
-		case err == nil:
+		case !errors.Is(err, ErrClearTextRegistry):
 			out = append(out, preflight.Result{Check: "registry", Status: preflight.OK, Detail: "every registry rule uses HTTPS"})
 		case mode == operatorconfig.Production:
 			out = append(out, preflight.Result{Check: "registry", Status: preflight.Fail, Detail: "a registry rule is local: plain HTTP",
@@ -102,6 +108,9 @@ func (c ServiceConfig) Preflight(ctx context.Context, h preflight.Host, mode ope
 				Fix: "drop \"local\" in production"})
 		}
 		out = append(out, c.inspectionCheck(ctx, sandbox.AsRoot()))
+	}
+	if c.Corpus != nil {
+		out = append(out, c.corpusCheck(mode))
 	}
 	return append(out, preflight.Database(ctx, mode, dsn))
 }

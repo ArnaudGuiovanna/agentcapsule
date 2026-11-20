@@ -28,6 +28,8 @@ type Accounts struct {
 	// Purpose-bound key for LLM provider credentials, derived from the
 	// installation key so that no extra operator file is required.
 	llm cipher.AEAD
+	// Purpose-bound key for corpus source credentials (ADR 023 §3.1).
+	sources cipher.AEAD
 	// Purpose-bound key that seals temporary download links (ADR 016).
 	links cipher.AEAD
 	// days encrypts new receipts with the key of their day, from the
@@ -67,7 +69,17 @@ func NewAccounts(store *Store, receiptKey []byte) (*Accounts, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Accounts{store: store, cipher: aead, keyHash: sha256.Sum256(receiptKey), llm: llmAEAD, links: linkAEAD}, nil
+	sources := hmac.New(sha256.New, receiptKey)
+	sources.Write([]byte("agentcapsule.source-credential-secret.v1"))
+	sourceBlock, err := aes.NewCipher(sources.Sum(nil))
+	if err != nil {
+		return nil, err
+	}
+	sourceAEAD, err := cipher.NewGCM(sourceBlock)
+	if err != nil {
+		return nil, err
+	}
+	return &Accounts{store: store, cipher: aead, keyHash: sha256.Sum256(receiptKey), llm: llmAEAD, sources: sourceAEAD, links: linkAEAD}, nil
 }
 
 var ErrReceiptKey = errors.New("receipt key does not match this installation")

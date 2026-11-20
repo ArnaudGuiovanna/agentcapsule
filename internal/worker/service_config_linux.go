@@ -107,6 +107,8 @@ type ServiceConfig struct {
 	// system past which new agents and imports are refused (OPS-03): 0.5 to
 	// 0.95, DefaultStoragePressure (0.80) when absent.
 	StoragePressure float64 `json:"storage_pressure,omitempty"`
+	// Corpus enables corpus builds on this host (ADR 023 §3.2).
+	Corpus *ServiceCorpus `json:"corpus,omitempty"`
 }
 
 // Pressure watches the root's file system, which holds the volumes, and the

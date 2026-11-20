@@ -16,7 +16,7 @@ var problemCodes = []string{"agent_already_exists", "agent_unavailable", "attach
 	"attachment_unavailable", "attachments_purged", "audit_export_too_large", "authentication_required", "authority_not_reconciled", "authority_unavailable", "closure_pending", "expired", "forbidden",
 	"harness_unavailable", "idempotency_key_in_progress", "idempotency_key_required", "idempotency_key_reused", "idempotency_receipt_unreadable", "incomplete_body", "input_purged", "invalid_json",
 	"invalid_path", "invalid_request", "invalid_transition", "json_required", "media_type_required", "method_not_allowed", "not_found",
-	"organization_name_taken", "organization_quota_exceeded", "outcome_unknown", "pool_exhausted", "provider_address_not_allowed", "queue_full", "quota_below_agent", "request_too_large", "requester_revoked", "storage_capacity_unavailable",
+	"organization_name_taken", "organization_quota_exceeded", "outcome_unknown", "pool_exhausted", "provider_address_not_allowed", "queue_full", "quota_below_agent", "request_too_large", "requester_revoked", "source_credential_name_taken", "storage_capacity_unavailable",
 	"storage_pressure", "temporarily_unavailable"}
 
 var (

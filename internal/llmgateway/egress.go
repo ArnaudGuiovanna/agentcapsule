@@ -116,6 +116,13 @@ func (l Allowlist) covers(name string, port uint16, a netip.Addr) bool {
 	return false
 }
 
+// Allows reports whether the list allows the internal address a, reached as
+// host:port. The corpus source client (internal/corpussource) reads its
+// operator's list, corpus.sources.allowed_internal_hosts, in this syntax.
+func (l Allowlist) Allows(host string, port uint16, a netip.Addr) bool {
+	return l.covers(normalName(host), port, addrpolicy.Effective(a))
+}
+
 // egress is the gateway's address policy. It applies when a connection is
 // opened, after DNS resolution (addrpolicy.Dialer): a public name that
 // resolves to an internal address is refused like the address itself.

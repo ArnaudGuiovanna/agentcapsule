@@ -124,7 +124,9 @@ func run() int {
 	if err != nil {
 		return fail("configuration_invalid")
 	}
-	if mode == operatorconfig.Production && c.CheckProductionTransport() != nil {
+	if err = c.CheckProductionTransport(); mode == operatorconfig.Production && errors.Is(err, worker.ErrClearTextCorpusSource) {
+		return fail("corpus_local_rule_refused_in_production")
+	} else if mode == operatorconfig.Production && err != nil {
 		return fail("registry_local_rule_refused_in_production")
 	}
 	// RUN-012: no Firecracker without KVM, a compatible kernel, cgroup v2, room
@@ -301,6 +303,11 @@ func run() int {
 		if err = w.EnableLLM(llm); err != nil {
 			return fail("llm_unavailable")
 		}
+	}
+	// The corpus section is checked at start; its fetcher runs once the
+	// builds' store exists (ADR 023 §4).
+	if _, err = c.OpenCorpusSources(); err != nil {
+		return fail("corpus_configuration_invalid")
 	}
 	importer, err := c.OpenRegistry(s, workerID)
 	if errors.Is(err, worker.ErrInspection) {

@@ -3,9 +3,10 @@ openapi: 3.1.0
 #
 # The served contract is openapi/openapi.yaml, which must describe exactly the
 # routes agentcapsule-api serves (TestOpenAPIDescribesExactlyTheServedRoutes).
-# These routes are not served yet, so they live here. Corpus lot 3 moves the
-# source-credential paths, and lot 6 every other path, into
-# openapi/openapi.yaml as it serves them, together with:
+# These routes are not served yet, so they live here. Corpus lot 3 moved the
+# source-credential paths (and the SourceCredential schema) into
+# openapi/openapi.yaml; lot 6 moves every other path as it serves them,
+# together with:
 #   - their schemas, into components.schemas;
 #   - their rows in docs/api/rbac.md and TestRBACMatrix, and each mutation in
 #     auditedRoutes (internal/api/refusals.go);
@@ -31,92 +32,6 @@ security:
   - delegatedBearer: []
   - serviceBearer: []
 paths:
-  /v1/source-credentials:
-    get:
-      operationId: listSourceCredentials
-      summary: List the organization's source credentials (metadata only)
-      description: Requires corpus:manage. The secret is never returned.
-      parameters:
-        - {name: after, in: query, schema: {type: string, maxLength: 100}}
-        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 100}}
-      responses:
-        '200':
-          description: Page sorted by identifier
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [items]
-                properties:
-                  items: {type: array, items: {$ref: '#/components/schemas/SourceCredential'}}
-                  next: {type: string}
-        default: {$ref: '#/components/responses/Problem'}
-    post:
-      operationId: createSourceCredential
-      summary: Store a read-only forge token, sealed
-      description: >-
-        Requires corpus:manage. The secret is sealed with AES-GCM under a key
-        derived from the installation's receipt key; only the worker opens it,
-        when it fetches. Audited source_credential.created.
-      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              required: [name, kind, host, secret]
-              properties:
-                name: {$ref: '#/components/schemas/Name'}
-                kind: {type: string, enum: [github, gitlab]}
-                host: {type: string, minLength: 1, maxLength: 253, example: gitlab.example.org}
-                secret: {type: string, minLength: 1, maxLength: 4096, writeOnly: true}
-      responses:
-        '201':
-          description: Stored; the answer carries no secret
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/SourceCredential'}
-        '409': {$ref: '#/components/responses/Problem'}  # source_credential_name_taken
-        default: {$ref: '#/components/responses/Problem'}
-  /v1/source-credentials/{id}/rotate:
-    post:
-      operationId: rotateSourceCredential
-      summary: Replace the secret; the generation grows by one
-      description: Requires corpus:manage. Audited source_credential.rotated. A disabled credential answers 409 invalid_transition.
-      parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              required: [secret]
-              properties:
-                secret: {type: string, minLength: 1, maxLength: 4096, writeOnly: true}
-      responses:
-        '200':
-          description: Rotated
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/SourceCredential'}
-        default: {$ref: '#/components/responses/Problem'}
-  /v1/source-credentials/{id}/disable:
-    post:
-      operationId: disableSourceCredential
-      summary: Disable a credential and erase its ciphertext
-      description: Requires corpus:manage. Idempotent. Audited source_credential.disabled. Builds that need it fail access_denied.
-      parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
-      requestBody: {$ref: '#/components/requestBodies/EmptyCommand'}
-      responses:
-        '200':
-          description: Disabled
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/SourceCredential'}
-        default: {$ref: '#/components/responses/Problem'}
   /v1/corpora:
     get:
       operationId: listCorpora
@@ -547,19 +462,6 @@ components:
     Digest:
       type: string
       pattern: '^sha256:[0-9a-f]{64}$'
-    SourceCredential:
-      type: object
-      required: [id, name, kind, host, generation, status, created_at]
-      properties:
-        id: {type: string}
-        name: {$ref: '#/components/schemas/Name'}
-        kind: {type: string, enum: [github, gitlab]}
-        host: {type: string}
-        generation: {type: integer, minimum: 1}
-        status: {type: string, enum: [active, disabled]}
-        created_at: {type: string, format: date-time}
-        rotated_at: {type: string, format: date-time}
-        disabled_at: {type: string, format: date-time}
     CorpusSource:
       type: object
       additionalProperties: false

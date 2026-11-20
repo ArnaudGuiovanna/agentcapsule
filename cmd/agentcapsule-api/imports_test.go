@@ -80,8 +80,8 @@ func guestCode(t *testing.T, module string) []string {
 // importer, the image checks that run e2fsprogs, and their sandbox. The API
 // only records an import request, checking the reference's syntax
 // (internal/ociregistry/reference). The same holds for corpus images
-// (internal/ext4image, internal/corpuspkg).
-var hostImporter = []string{"internal/ociregistry", "internal/harnesspkg", "internal/sandbox", "internal/ext4image", "internal/corpuspkg"}
+// (internal/ext4image, internal/corpuspkg) and fetching their sources (internal/corpussource).
+var hostImporter = []string{"internal/ociregistry", "internal/harnesspkg", "internal/sandbox", "internal/ext4image", "internal/corpuspkg", "internal/corpussource"}
 
 // corpusSourceReaders parse a corpus's manifest and measure its source
 // files: the builder calls them in its VM, the CLI on the author's machine.
@@ -187,7 +187,9 @@ func TestWorkerLinksNoHarnessCode(t *testing.T) {
 
 // workerStarts is every place in the worker's code that starts a program,
 // with the programs and why. None takes a package's content: a harness runs
-// only in its VM (REG-007, RUN-010).
+// only in its VM (REG-007, RUN-010). The corpus code starts none: it fetches
+// a repository's bytes and hands them to the builder's VM (ADR 023 §4,
+// TestCorpusSourcesAreNeverDecodedOnTheHost).
 var workerStarts = map[string]struct {
 	sites int
 	why   string
@@ -208,6 +210,60 @@ var imageBuilders = map[string][]string{
 	"internal/harnesspkg": {"BuildRootfs", "WritePackage"},
 	"internal/ext4image":  {"Build"},
 	"internal/corpuspkg":  {"BuildImage"},
+}
+
+// corpusFetching is the worker's corpus source code, by package: the client
+// of the forges, whole, and the fetcher's files of the worker. It handles a
+// repository's bytes, which the host never decodes.
+var corpusFetching = map[string][]string{
+	"internal/corpussource": nil,
+	"internal/worker":       {"corpus_fetch.go", "corpus_config_linux.go"},
+}
+
+// decoders are the packages that read inside an archive, decompress, or
+// start a program: none of them may handle a corpus's sources on the host.
+var decoders = []string{"archive/tar", "archive/zip", "compress/gzip", "compress/flate", "compress/zlib", "compress/bzip2", "compress/lzw",
+	"os/exec", "plugin", "syscall", "golang.org/x/sys/unix"}
+
+// REG-007, RUN-010, ADR 023 §4: the worker links the corpus source client,
+// and its code imports no archive reader, no decompressor and nothing that
+// starts a program; workerStarts names none of its files. The fetch itself
+// is observed in internal/worker (TestTheHostNeverRunsWhatACorpusSourceHolds).
+func TestCorpusSourcesAreNeverDecodedOnTheHost(t *testing.T) {
+	module := goModule(t)
+	if !slices.Contains(deps(t, module, "cmd/agentcapsule-worker"), "internal/corpussource") {
+		t.Fatal("the worker does not link the corpus source client")
+	}
+	checked := 0
+	for pkg, only := range corpusFetching {
+		out, err := exec.CommandContext(t.Context(), "go", "list", "-f", "{{.Dir}}|{{join .GoFiles \",\"}}", module+"/"+pkg).Output()
+		if err != nil {
+			t.Fatal("go list", pkg, err)
+		}
+		dir, files, _ := strings.Cut(strings.TrimSpace(string(out)), "|")
+		for _, name := range strings.Split(files, ",") {
+			if only != nil && !slices.Contains(only, name) {
+				continue
+			}
+			checked++
+			site := pkg + "/" + name
+			file, err := parser.ParseFile(token.NewFileSet(), filepath.Join(dir, name), nil, parser.ImportsOnly)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, spec := range file.Imports {
+				if p, _ := strconv.Unquote(spec.Path.Value); slices.Contains(decoders, p) {
+					t.Errorf("%s imports %s", site, p)
+				}
+			}
+			if _, ok := workerStarts[site]; ok {
+				t.Errorf("workerStarts names corpus code: %s", site)
+			}
+		}
+	}
+	if checked < 6 {
+		t.Fatal("too few corpus files checked:", checked)
+	}
 }
 
 // processStarts are the calls that start a program, by package path, and

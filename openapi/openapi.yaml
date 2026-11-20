@@ -1218,6 +1218,96 @@ paths:
       responses:
         '200': {$ref: '#/components/responses/LlmProviderReceipt'}
         default: {$ref: '#/components/responses/Problem'}
+  /v1/source-credentials:
+    get:
+      operationId: listSourceCredentials
+      summary: List the organization's source credentials (metadata only)
+      description: >-
+        Requires corpus:manage and current role org_owner or org_admin. The
+        secret is never returned.
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters:
+        - {name: after, in: query, schema: {type: string, maxLength: 100}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 100}}
+      responses:
+        '200':
+          description: Page sorted by identifier
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/SourceCredential'}}
+        default: {$ref: '#/components/responses/Problem'}
+    post:
+      operationId: createSourceCredential
+      summary: Store a read-only forge token, sealed
+      description: >-
+        Requires corpus:manage and current role org_owner or org_admin. The
+        secret is sealed with AES-GCM under a key derived from the
+        installation's receipt key, bound to the organization, the credential
+        and its generation; only the worker opens it, when it fetches a
+        corpus's sources. It is never returned, logged or audited. The host is
+        checked for its syntax only: a worker refuses a build whose
+        credential's host matches none of its source rules (policy). A name
+        the organization already uses answers 409
+        source_credential_name_taken. Audited source_credential.created.
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, kind, host, secret]
+              properties:
+                name: {type: string, pattern: '^[a-z0-9][a-z0-9._-]{0,99}$'}
+                kind: {type: string, enum: [github, gitlab]}
+                host: {type: string, minLength: 1, maxLength: 253, description: 'A DNS name in lower case, with an optional port', example: gitlab.example.org}
+                secret: {type: string, minLength: 1, maxLength: 4096, pattern: '^[!-~]+$', writeOnly: true, description: Visible ASCII; a read-only token}
+      responses:
+        '201': {$ref: '#/components/responses/SourceCredentialReceipt'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/source-credentials/{id}/rotate:
+    post:
+      operationId: rotateSourceCredential
+      summary: Replace the secret; the generation grows by one
+      description: >-
+        Requires corpus:manage. The next fetch uses the new secret. A disabled
+        credential answers 409 invalid_transition. Audited
+        source_credential.rotated.
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [secret]
+              properties:
+                secret: {type: string, minLength: 1, maxLength: 4096, pattern: '^[!-~]+$', writeOnly: true}
+      responses:
+        '200': {$ref: '#/components/responses/SourceCredentialReceipt'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/source-credentials/{id}/disable:
+    post:
+      operationId: disableSourceCredential
+      summary: Disable a credential and erase its secret
+      description: >-
+        Requires corpus:manage. Permanent and idempotent. A build that needs
+        the credential then fails access_denied; create another credential to
+        replace it. Audited source_credential.disabled.
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody: {$ref: '#/components/requestBodies/EmptyCommand'}
+      responses:
+        '200': {$ref: '#/components/responses/SourceCredentialReceipt'}
+        default: {$ref: '#/components/responses/Problem'}
   /v1/llm/aliases:
     get:
       operationId: listLlmAliases
@@ -3093,6 +3183,13 @@ components:
       content:
         application/json:
           schema: {$ref: '#/components/schemas/LlmProvider'}
+    SourceCredentialReceipt:
+      description: Source credential stored, rotated or disabled, or the first answer replayed. Never the secret
+      headers:
+        Idempotency-Replayed: {schema: {type: boolean}}
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/SourceCredential'}
     LlmAliasReceipt:
       description: Alias created/disabled, or initial response replayed
       headers:
@@ -3540,6 +3637,20 @@ components:
         secret_generation: {type: integer, minimum: 1}
         created_at: {type: string, format: date-time}
         rotated_at: {type: string, format: date-time}
+    SourceCredential:
+      type: object
+      description: A read-only forge token's metadata (ADR 023 §3.1); the secret is write-only
+      required: [id, name, kind, host, generation, status, created_at]
+      properties:
+        id: {type: string}
+        name: {type: string}
+        kind: {type: string, enum: [github, gitlab]}
+        host: {type: string}
+        generation: {type: integer, minimum: 1}
+        status: {type: string, enum: [active, disabled]}
+        created_at: {type: string, format: date-time}
+        rotated_at: {type: string, format: date-time}
+        disabled_at: {type: string, format: date-time}
     LlmBudget:
       type: object
       required: [id, period, mode, status, created_at]

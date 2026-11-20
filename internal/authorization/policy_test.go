@@ -39,6 +39,8 @@ func TestAdministrativeRoles(t *testing.T) {
 		{authorization.ManageProviders, [5]bool{true, true, false, false, false}},
 		{authorization.ManageQuotas, [5]bool{true, true, false, false, false}},
 		{authorization.ManageIdentities, [5]bool{true, true, false, false, false}},
+		{authorization.ManageCorpus, [5]bool{true, true, false, false, false}},
+		{authorization.ReadCorpus, [5]bool{true, true, true, false, true}},
 		{authorization.InvokeAgent, [5]bool{}},
 		{authorization.ReadAgentContent, [5]bool{}},
 	}
@@ -104,6 +106,8 @@ func TestPublicScopesDoNotImplyOtherOperations(t *testing.T) {
 		{authorization.SleepAgent, "agent:operate"},
 		{authorization.DeleteAgent, "agent:delete"},
 		{authorization.ConfigureAgent, "agent:manage"},
+		{authorization.ManageCorpus, "corpus:manage"},
+		{authorization.ReadCorpus, "corpus:read"},
 	}
 	scopes := []string{"org:read", "organization:read", "team:read", "team:manage", "member:read", "member:manage", "agent:create", "agent:operate", "agent:delete", "agent:manage", "*", "agent:*", ""}
 	for _, test := range tests {
@@ -249,6 +253,12 @@ func TestDelegableScopesAreAClosedRegistry(t *testing.T) {
 		seen[scope] = true
 		if scope == authorization.ScopeIdentityManage || scope == "platform:admin" || strings.ContainsAny(scope, "*") {
 			t.Errorf("scope %s must never be delegable to a technical account", scope)
+		}
+	}
+	// ADR 023 §11: a technical account may manage or read corpora.
+	for _, scope := range []string{"corpus:manage", "corpus:read"} {
+		if !seen[scope] {
+			t.Errorf("scope %s is not delegable", scope)
 		}
 	}
 }
