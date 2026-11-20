@@ -185,10 +185,19 @@ var workerStarts = map[string]struct {
 	"internal/sandbox/sandbox_linux.go": {1, "this executable again, as the sandbox's helper, in new namespaces: for debugfs -R stat, " +
 		"read-only, on a downloaded image before it is accepted (harnesspkg.InspectRootfs), and debugfs -V at start"},
 	"internal/sandbox/helper_linux.go":             {1, "the helper, confined, executes that debugfs"},
-	"internal/harnesspkg/build.go":                 {2, "mkfs.ext4 and debugfs -w, which build a package: the publisher's side, never called by the worker"},
+	"internal/ext4image/build.go":                  {2, "mkfs.ext4 and debugfs -w, which build a harness or corpus image: the publisher's side or the corpus builder's VM, never called by the worker"},
 	"internal/runtime/firecracker_limits_linux.go": {1, "the pinned jailer, which starts the pinned Firecracker: the boot"},
 	"internal/preflight/preflight_linux.go":        {1, "the pinned Firecracker and jailer with --version"},
 	"internal/worker/host_restore_linux.go":        {1, "the archive shipper the operator names with -archive-fetch"},
+}
+
+// imageBuilders are the functions that build a harness package or an image,
+// by package: the publisher and the corpus builder call them, the worker
+// never does. These packages build on one another.
+var imageBuilders = map[string][]string{
+	"internal/harnesspkg": {"BuildRootfs", "WritePackage"},
+	"internal/ext4image":  {"Build"},
+	"internal/corpuspkg":  {"BuildImage"},
 }
 
 // processStarts are the calls that start a program, by package path, and
@@ -272,7 +281,7 @@ func TestWorkerStartsOnlyTheProgramsItNames(t *testing.T) {
 				switch p := imported[x.Name]; {
 				case slices.Contains(processStarts[p], sel.Sel.Name):
 					found[site]++
-				case p == module+"/internal/harnesspkg" && (sel.Sel.Name == "BuildRootfs" || sel.Sel.Name == "WritePackage"):
+				case slices.Contains(imageBuilders[strings.TrimPrefix(p, module+"/")], sel.Sel.Name) && imageBuilders[pkg] == nil:
 					building = append(building, site+": "+sel.Sel.Name)
 				}
 				return true

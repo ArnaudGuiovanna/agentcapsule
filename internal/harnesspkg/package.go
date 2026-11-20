@@ -13,7 +13,6 @@ package harnesspkg
 import (
 	"bytes"
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -27,6 +26,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/capability"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/ext4image"
 )
 
 const (
@@ -188,24 +188,8 @@ func CheckRootfs(f *os.File, size, max int64) error {
 	if size < MinRootfsBytes || size > max || size%4096 != 0 {
 		return invalid("harness.ext4 size")
 	}
-	sb := make([]byte, 1024)
-	if _, err := f.ReadAt(sb, 1024); err != nil {
-		return invalid("harness.ext4 superblock unreadable")
-	}
-	if binary.LittleEndian.Uint16(sb[0x38:]) != 0xEF53 {
-		return invalid("harness.ext4 is not an ext4 filesystem")
-	}
-	logBlock := binary.LittleEndian.Uint32(sb[0x18:])
-	if logBlock > 6 {
-		return invalid("harness.ext4 block size")
-	}
-	blockSize := int64(1024) << logBlock
-	blocks := int64(binary.LittleEndian.Uint32(sb[0x04:]))
-	if binary.LittleEndian.Uint32(sb[0x60:])&0x80 != 0 { // INCOMPAT_64BIT: high half is meaningful
-		blocks |= int64(binary.LittleEndian.Uint32(sb[0x150:])) << 32
-	}
-	if blocks < 1 || blocks > size/blockSize {
-		return invalid("harness.ext4 is larger than its file")
+	if _, err := ext4image.ReadSuperblock(f, size); err != nil {
+		return invalid("harness.ext4 %s", err.(*ext4image.SuperblockError).Reason)
 	}
 	return nil
 }

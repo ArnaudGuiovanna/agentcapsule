@@ -4,17 +4,16 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
-	"fmt"
 	"io"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/ext4image"
 )
 
 // BuildRootfs creates a read-only harness filesystem from srcDir with
@@ -28,13 +27,8 @@ func BuildRootfs(ctx context.Context, m HarnessManifest, srcDir, out string, siz
 	if sizeMiB < 1 || sizeMiB > 64<<10 {
 		return invalid("rootfs size")
 	}
-	mkfs, err := exec.LookPath("mkfs.ext4")
-	if err != nil {
-		return fmt.Errorf("mkfs.ext4 (e2fsprogs) is required to build a harness: %w", err)
-	}
-	debugfs, err := exec.LookPath("debugfs")
-	if err != nil {
-		return fmt.Errorf("debugfs (e2fsprogs) is required to build a harness: %w", err)
+	if err := ext4image.CheckTools("a harness"); err != nil {
+		return err
 	}
 	// Stage a copy with fixed timestamps, so checkout times do not leak in.
 	stage, err := os.MkdirTemp("", "harness-rootfs-")
@@ -50,31 +44,9 @@ func BuildRootfs(ctx context.Context, m HarnessManifest, srcDir, out string, siz
 		return err
 	}
 	seed := sha256.Sum256([]byte(m.Name + "\x00" + m.Version))
-	uuid := fmt.Sprintf("%x-%x-%x-%x-%x", seed[0:4], seed[4:6], seed[6:8], seed[8:10], seed[10:16])
-	env := append(os.Environ(), "E2FSPROGS_FAKE_TIME=1", "LC_ALL=C")
-	cmd := exec.CommandContext(ctx, mkfs, "-q", "-F", "-t", "ext4", "-L", "harness", "-U", uuid,
-		"-O", "^has_journal", "-E", "root_owner=0:0,hash_seed="+uuid, "-d", stage, out, strconv.Itoa(sizeMiB)+"M")
-	cmd.Env = env
-	if b, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("mkfs.ext4 failed: %w: %s", err, firstLine(b))
-	}
-	// Every inode belongs to root and carries the same times, whoever built it
-	// and whenever: mkfs copies change times and nanoseconds from the staging
-	// copy, which cannot be set there. debugfs edits the image file directly;
-	// nothing is mounted.
-	var script strings.Builder
-	for _, p := range append([]string{"/", "/lost+found"}, paths...) {
-		fmt.Fprintf(&script, "sif \"%s\" uid 0\nsif \"%s\" gid 0\n", p, p)
-		for _, field := range []string{"atime", "mtime", "ctime", "crtime"} {
-			fmt.Fprintf(&script, "sif \"%s\" %s @1\nsif \"%s\" %s_extra 0\n", p, field, p, field)
-		}
-	}
-	fix := exec.CommandContext(ctx, debugfs, "-w", "-f", "-", out)
-	fix.Env, fix.Stdin = env, strings.NewReader(script.String())
-	if b, err := fix.CombinedOutput(); err != nil {
-		return fmt.Errorf("debugfs failed: %w: %s", err, firstLine(b))
-	}
-	return nil
+	uuid := ext4image.SeedUUID(seed)
+	return ext4image.Build(ctx, ext4image.Spec{Kind: "a harness", Dir: stage, Out: out, SizeMiB: sizeMiB,
+		Label: "harness", UUID: uuid, Options: []string{"-O", "^has_journal"}, Paths: paths})
 }
 
 // stageTree copies regular files, directories and symlinks with their modes
@@ -207,13 +179,4 @@ func WritePackage(dir string, m HarnessManifest) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(dir, ChecksumsFile), append(sums, '\n'), 0o644)
-}
-
-func firstLine(b []byte) string {
-	for i, c := range b {
-		if c == '\n' || i >= 200 {
-			return string(b[:i])
-		}
-	}
-	return string(b)
 }
