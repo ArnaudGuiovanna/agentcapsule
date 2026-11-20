@@ -19,7 +19,7 @@ func TestBootArchiveCarriesTheHarnessLaunchOnlyWhenGiven(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer f.Close()
-		if err = AppendBootConfig(f, guest, h); err != nil {
+		if err = AppendBootConfig(f, guest, h, nil); err != nil {
 			return nil, err
 		}
 		return os.ReadFile(f.Name())

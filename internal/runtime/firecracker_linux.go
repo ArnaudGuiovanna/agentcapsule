@@ -1044,7 +1044,7 @@ func (h *FirecrackerHost) prepare(a *HostAgent) error {
 		_, err = io.Copy(f, source)
 		source.Close()
 		if err == nil && name == "initrd" && h.opts.AuthenticatedControl {
-			err = appendControlConfig(f, guest, a.Harness)
+			err = appendControlConfig(f, guest, a.Harness, nil)
 		}
 		// The worker runs with UMask=0077. The jailer drops privileges before
 		// Firecracker reads these files inside its per-run private directory.
