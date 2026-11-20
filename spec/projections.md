@@ -145,6 +145,19 @@ in the ordinary unit tests.
 | `concurrentWitnessWrongRequestFenceGuard.guardTest` | full | `TestConcurrentWitnessWrongRequestFenceGuard` |  |
 | `concurrentWitnessWrongRequestFenceBroken` | model-only | — | Broken configuration: Go has no switch that removes the guard. |
 
+### `corpus_lifecycle.qnt`
+
+| Run or witness | Status | Go projection | Notes |
+|---|---|---|---|
+| `corpusLifecycleOk.versionConflictTest` | pending | — | Corpus lot 6 ([ADR 023](../docs/adr/023-corpora.md) §7.3): a PG test of `POST /v1/corpus-builds/{id}/publish`, another digest under a taken version is `409 version_conflict`. |
+| `corpusLifecycleOk.sameDigestAnswersTheReleaseTest` | pending | — | Corpus lot 6: the same digest under a taken version answers the existing release. |
+| `corpusLifecycleOk.publishedBuildDoesNotPublishAgainTest` | pending | — | Corpus lot 6: a build that left `REVIEW` gets `409 invalid_transition`. |
+| `corpusLifecycleOk.crossOrganizationBindingRefusedTest` | pending | — | Corpus lot 6: binding, try or template naming another organization's corpus is refused as unknown (404); lot 10's isolation exercise. |
+| `corpusLifecycleOk.bindingAppliesAtNextBootTest` | pending | — | Corpus lots 4 and 6: `POST /v1/agents/{id}/corpora` on a running agent changes nothing in its VM until it boots again (KVM). |
+| `corpusLifecycleOk.tryMountsABuildInReviewTest` | pending | — | Corpus lot 6: a try pins the build's image; its expiry removes the binding, and the image leaves only once the VM stops. |
+| `corpusLifecycleOk.deprecatedImageLeavesOnceUnpinnedTest` | pending | — | Corpus lot 6: the KVM test of the plan's §6 (eviction of version 3 once deprecated and no longer pinned). |
+| `corpusLifecycleOk.sharedDigestStaysWhileEitherPinsItTest` | pending | — | Corpus lot 6: the cache is keyed by digest; a pin of either organization keeps the file. |
+
 ### `credential_renewal.qnt`
 
 | Run or witness | Status | Go projection | Notes |

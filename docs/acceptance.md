@@ -112,7 +112,7 @@ Earlier failed attempts are retained separately and do not count as passes.
 
 ## Summary
 
-Of the 65 requirements of §4: 65 met, 0 partial, 0 not met, 0 needs KVM (2026-11-19).
+Of the 74 requirements of §4: 65 met, 0 partial, 9 not met, 0 needs KVM (2026-11-20). The 9 not met are the corpus requirements (COR), specified on 2026-11-20 and not built yet.
 
 | Part | Met | Partial | Not met | Needs KVM |
 |---|---|---|---|---|
@@ -124,10 +124,11 @@ Of the 65 requirements of §4: 65 met, 0 partial, 0 not met, 0 needs KVM (2026-1
 | LLM gateway | 8 | 0 | 0 | 0 |
 | Discovery and inter-agent communication | 12 | 0 | 0 | 0 |
 | Content, capabilities and clients | 4 | 0 | 0 | 0 |
+| Corpora | 0 | 0 | 9 | 0 |
 | API conventions | 8 | 1 | 0 | 0 |
 | The MVP outcome as one scenario | 5 | 2 | 0 | 0 |
 | Deployment and operations | 17 | 6 | 0 | 0 |
-| **All rows** | **102** | **9** | **0** | **0** |
+| **All rows** | **102** | **9** | **9** | **0** |
 
 ## Requirements
 
@@ -246,6 +247,24 @@ authentication, never from a request body.
 | EXT-002 | Right agent only; cross-tenant refused | met | [`TestHTTPAttachmentReachesOnlyTheAgentItWasUploadedFor`](../internal/api/content_test.go) (PG): a file uploaded for agent A, attached by the same member to an invocation of agent B of the same organization, gets `409 attachment_unavailable`; nothing is admitted and the file stays for A; [`TestAttachmentReachesOnlyItsRunningInvocationEncrypted`](../internal/controlplane/attachments_test.go) (PG): only the recipient's current VM, while its invocation runs; [`TestAttachmentUploadRulesAreEnforcedBeforeStoring`](../internal/controlplane/attachments_test.go) (PG): MIME, size, hash; [`TestRBACMatrix`](../internal/api/rbac_matrix_test.go) (PG): another organization gets 404 on the file; [`TestProductWorkerTwoOrganizationsStayIsolated`](../internal/worker/product_organizations_integration_test.go) (KVM 2026-11-18): cross-tenant refused | — |
 | EXT-003 | Matches manifest and policy | met | [`TestHTTPCapabilityCatalogAndPolicies`](../internal/api/content_test.go) (PG): an agent's catalog shows what its harness requests, what its organization and the agent allow, and the effective set; [`TestEffectiveCapabilitiesAreTheIntersection`](../internal/controlplane/capabilities_test.go), [`TestReleasesRecordTheCapabilitiesTheyRequest`](../internal/controlplane/capabilities_test.go) (PG); [`TestManifestDeclaresItsCapabilities`](../internal/harnesspkg/package_test.go) (unit); [`TestPlatformChannelEnforcesCapabilities`](../internal/capsuleprotocol/platform_capability_test.go) (unit): a call outside the effective set is refused; [`TestProductWorkerEnforcesCapabilities`](../internal/worker/product_content_integration_test.go) (KVM 2026-11-18): a harness that requests nothing has an empty effective set, and its model call from a real VM is refused | — |
 | EXT-008 | Every MVP feature usable without a UI | met | [`TestHTTPExamplesRunAsWritten`](../internal/api/examples_test.go) (PG): [examples.md](api/examples.md) runs as written over HTTPS, 46 calls on 39 routes: a harness import, members, agents, assignments, invocations and their polling, files and download links, wake and sleep, held requests from other agents, a technical account and its revocation, models and budgets, the audit trail and its export, deletion; each answer is compared with the one the page shows; [`TestExampleChecksRefuseWhatTheyCannotVouchFor`](../internal/api/examples_test.go) (unit): a command the test cannot run, or an answer unlike the page's, fails it; [`TestRBACMatrixCoversEveryRoute`](../internal/api/rbac_matrix_test.go) (unit): every feature is an HTTP route; [verify-install.py](../scripts/verify-install.py) (script): the install and an organization's first steps by CLI and curl | — (the test reads curl's and jq's options rather than run the programs; teams, schedules, release changes and replays of dead letters have no example) |
+
+### Corpora
+
+Specified by [ADR 023](adr/023-corpora.md) and planned in
+[plan-corpus.md](plan-corpus.md); nothing is built yet. The last column names
+the lot whose tests will prove the row.
+
+| ID | Acceptance | Status | Proof | Missing |
+|---|---|---|---|---|
+| COR-001 | Build pinned to its commit SHA; token encrypted, never shown, logged or sent to another host | not met | — | Corpus lot 3: archives of public and private GitHub and GitLab repositories pinned to their SHA; the credential's sealing, rotation and redaction; a redirect to an undeclared host refused |
+| COR-002 | `QUEUED` to `REVIEW` tracked; cancel and 24 h limit tested | not met | — | Corpus lots 5 and 6: the build's states, counters and `operation wait --type corpus-build`; cancellation purges its files |
+| COR-003 | Report, `INDEX.md` and a try on a test agent while `REVIEW` | not met | — | Corpus lots 5 and 6: the review bundle read by the API; `try` on a KVM agent |
+| COR-004 | `name:version` maps to one digest; another refused (`version_conflict`) | not met | — | Corpus lot 6: PG test of publication; model run `corpusLifecycleOk.versionConflictTest` pending |
+| COR-005 | Three VMs share one inode; `ro,noexec` under `/corpus/`; a wrong disk refused | not met | — | Corpus lot 4: KVM tests of the shared image, the mount options and the UUID check |
+| COR-006 | Another organization's corpus cannot be bound, tried or seen | not met | — | Corpus lot 6: RBAC matrix rows and PG tests of cross-organization binding; model run `corpusLifecycleOk.crossOrganizationBindingRefusedTest` pending |
+| COR-007 | The builder has no network; every model call metered to the organization's aliases | not met | — | Corpus lots 2 and 5: PG metering of `embed`, `transcribe` and `ocr`; a KVM build whose costs reach the right budget |
+| COR-008 | Archives and LFS objects stay opaque on the host; trap programs never run | not met | — | Corpus lot 3: the corpus traps in `TestTheHostNeverRunsWhatAPackageHolds`; an altered LFS object refused |
+| COR-009 | A pinned image stays; a deprecated, unpinned one leaves the cache | not met | — | Corpus lot 6: KVM test of a rollout to version 4, then eviction of version 3 once deprecated and unpinned; model run `corpusLifecycleOk.deprecatedImageLeavesOnceUnpinnedTest` pending |
 
 ### API conventions
 

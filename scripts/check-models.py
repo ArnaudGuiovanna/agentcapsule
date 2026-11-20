@@ -394,6 +394,16 @@ def checks(spec=SPEC):
         tlc("fair_admission.qnt", "fairAdmissionExclusive", "progress", temporal=True),
         tlc("fair_admission.qnt", "fairAdmissionWriterPriority", "progress", VIOLATION, temporal=True),
         tlc("fair_admission.qnt", "fairAdmissionReaderPriority", "progress", VIOLATION, temporal=True),
+        tlc("corpus_lifecycle.qnt", "corpusLifecycleOk", "safety",
+            scope="every reachable state: two organizations, three builds, three releases, two agents, one host"),
+        apalache("corpus_lifecycle.qnt", "corpusLifecycleNoVersionCheck", "publishedIsImmutable", 4, VIOLATION),
+        apalache("corpus_lifecycle.qnt", "corpusLifecycleNoReviewCheck", "buildPublishesAtMostOnce", 3, VIOLATION),
+        apalache("corpus_lifecycle.qnt", "corpusLifecycleNoOrganizationCheck",
+                 "bootsOnlyBoundCorporaOfItsOrganization", 3, VIOLATION),
+        apalache("corpus_lifecycle.qnt", "corpusLifecycleHotSwap", "bindingChangesAtBootOnly", 3, VIOLATION),
+        apalache("corpus_lifecycle.qnt", "corpusLifecycleNoPinCheck", "gcNeverRemovesPinned", 2, VIOLATION),
+        apalache("corpus_lifecycle.qnt", "corpusLifecycleEvictsActive", "gcNeverRemovesPinned", 4, VIOLATION,
+                 scope="every execution of 4 steps; the plan's first rule, an active release unpinned"),
     ]
 
 

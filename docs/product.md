@@ -253,6 +253,24 @@ request body.
 | EXT-003 | Catalog of capabilities declared by each harness | Matches manifest and policy |
 | EXT-008 | Admin CLI and HTTP examples | Every MVP feature usable without a UI |
 
+### Corpora
+
+An organization's documents, fetched from a Git repository, converted and
+published as an immutable image that its agents mount read-only
+([ADR 023](adr/023-corpora.md)).
+
+| ID | Requirement | Acceptance |
+|---|---|---|
+| COR-001 | Import from a GitHub or GitLab repository, pinned by commit, with a read-only token | Build pinned to its commit SHA; token encrypted, never shown, logged or sent to another host |
+| COR-002 | Asynchronous build with states and counters | `QUEUED` to `REVIEW` tracked; cancel and 24 h limit tested |
+| COR-003 | Review before publication | Report, `INDEX.md` and a try on a test agent while `REVIEW` |
+| COR-004 | Immutable releases | `name:version` maps to one digest; another refused (`version_conflict`) |
+| COR-005 | One read-only image shared by every VM that mounts it | Three VMs share one inode; `ro,noexec` under `/corpus/`; a wrong disk refused |
+| COR-006 | Corpora isolated per organization | Another organization's corpus cannot be bound, tried or seen |
+| COR-007 | Inference only through the gateway | The builder has no network; every model call metered to the organization's aliases |
+| COR-008 | The host never decodes a source | Archives and LFS objects stay opaque on the host; trap programs never run |
+| COR-009 | Eviction keeps every pinned image | A pinned image stays; a deprecated, unpinned one leaves the cache |
+
 ### API conventions
 
 Versioned `/v1` JSON over HTTPS, specified in OpenAPI 3.1
