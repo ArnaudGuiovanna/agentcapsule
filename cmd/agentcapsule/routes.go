@@ -89,6 +89,7 @@ var commands = map[string]string{
 	"invocation cancel": "POST /invocations/{id}/cancel",
 	"invocation replay": "POST /invocations/{id}/replay",
 	"invocation result": "GET /invocations/{id}/result",
+	"invocation watch":  "GET /invocations/{id}/events",
 	"invocation show":   "GET /invocations/{id}",
 
 	"key issue":  "POST /service-accounts/{account}/tokens",
@@ -198,7 +199,7 @@ func parse(args []string) ([]string, options, error) {
 			return nil, nil, fmt.Errorf("duplicate --%s", k)
 		}
 		switch k {
-		case "json", "help", "watch", "non-interactive":
+		case "json", "help", "watch", "text", "non-interactive":
 			if equal {
 				return nil, nil, fmt.Errorf("--%s takes no value", k)
 			}
@@ -448,6 +449,7 @@ context add NAME --url HTTPS_ORIGIN --kind platform|organization [--organization
 context use NAME | context list | context show NAME
 identity create|show --key-file PATH --display-name NAME
 login --enrollment-file FILE|- | login --key-file PATH | login --token-file FILE|- | session renew | logout
+invocation watch ID [--text] | agent invoke AGENT --file FILE --watch [--text]
 status [--watch] | doctor | support export --output-file FILE
 operation show|wait ID [--type operation|deployment|rollout|harness-import|invocation|volume-growth|activation|revocation] [--app APP_ID]
 install [--ssh USER@HOST] [--plan-only] (see install --help)

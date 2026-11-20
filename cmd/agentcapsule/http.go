@@ -123,18 +123,7 @@ func (c *client) request(ctx context.Context, method, route, key, token string, 
 	defer res.Body.Close()
 	id := safeCode(res.Header.Get("X-Request-ID"))
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		var problem apiError
-		raw, _ := readBounded(res.Body, 16384)
-		_ = json.Unmarshal(raw, &problem)
-		problem.Code = safeCode(problem.Code)
-		if problem.Code == "" {
-			problem.Code = "request_failed"
-		}
-		problem.Quota = safeCode(problem.Quota)
-		problem.Resource = safeCode(problem.Resource)
-		problem.Status = res.StatusCode
-		problem.RequestID = id
-		return reply{}, &problem
+		return reply{}, responseError(res, id)
 	}
 	raw, err := readBounded(res.Body, 32<<20)
 	if err != nil {
@@ -147,6 +136,20 @@ func (c *client) request(ctx context.Context, method, route, key, token string, 
 		return reply{}, errors.New("expected a JSON API response")
 	}
 	return reply{raw, id, res.Header.Get("Retry-After")}, nil
+}
+func responseError(res *http.Response, id string) *apiError {
+	var problem apiError
+	raw, _ := readBounded(res.Body, 16384)
+	_ = json.Unmarshal(raw, &problem)
+	problem.Code = safeCode(problem.Code)
+	if problem.Code == "" {
+		problem.Code = "request_failed"
+	}
+	problem.Quota = safeCode(problem.Quota)
+	problem.Resource = safeCode(problem.Resource)
+	problem.Status = res.StatusCode
+	problem.RequestID = id
+	return &problem
 }
 func (c *client) compatible(ctx context.Context) error {
 	r, err := c.request(ctx, "GET", "/v1/version", "", "", nil)

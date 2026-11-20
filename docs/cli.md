@@ -53,6 +53,25 @@ agentcapsule team create --name Support --idempotency-key create-support
 
 A platform operator can rotate their session with `session renew` and invalidate it with `logout`. If an exchange response is lost, repeating the command recovers the credential already persisted privately on the workstation. Organization logout clears the local login. Membership and issuer revocation are separate server operations.
 
+## Follow an invocation as it streams
+
+```sh
+agentcapsule agent invoke "$agent" --file request.json --watch
+agentcapsule invocation watch "$invocation" --text
+```
+
+The first command submits once and follows the returned invocation. The
+second attaches to existing work. Both write one JSON object per event
+to stdout, for example `{"version":1,"event":"delta","data":{"seq":1,"text":"Hello"}}`.
+Add `--text` for the deltas' text alone. Use JSON lines to handle a
+`reset`, which discards the previous attempt's output.
+
+The client reconnects after a cut using the last complete event ID. Idle
+connections time out after 45 seconds. Completion exits with 0, a failed,
+expired, canceled or permanently lost invocation or a revoked subscription
+with 5, and an interrupt with 130. HTTP refusals retain the usual exit
+codes 3 (authentication or authorization) and 4 (other HTTP errors).
+
 ## Select inference and provision a pool
 
 1. From the verified release manifest, publish the kernel and initrd pair that the organization will use. The reference in this example is `ubuntu@1`. Check that the worker reports the approved image.
