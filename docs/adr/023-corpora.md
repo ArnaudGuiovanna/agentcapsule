@@ -965,6 +965,49 @@ each change keeps the plan's guarantees.
   make the cached package change after the fact. PostgreSQL maps
   `name:version` to the digest.
 
+Lot 4 changed these, each keeping the guarantees above:
+
+- **C14. A release records its guest base.** §5.4 binds corpora only to a
+  release of base 2, but `harness_releases` did not record the base.
+  Migration 0056 adds `harness_releases.base` (base 1 for existing and
+  locally approved releases); the importer records `harness.yaml`'s base,
+  and `GET /v1/harness-releases` shows it. The check lot 6 calls is
+  `corporaMountable` (`internal/controlplane/corpus_images.go`): a base-2
+  release, or the image's built-in harness, on an image declaring
+  `corpus.mount`; otherwise `ErrCorpusIncompatible`.
+- **C15. The guest refuses corpora for a base-1 harness.** A harness of
+  base 1 has no `/corpus` in its image. If a record still gives it corpora,
+  `capsule-init` refuses the boot rather than start the harness without
+  them.
+- **C16. The host checks an image's UUID when it records it.**
+  `ReplaceCorpora` and `RegisterProvisioned` read each image's superblock
+  and refuse a UUID other than the record's: a wrong record fails at once,
+  not at each boot against the agent's restart budget. The guest's check
+  stays: it guards the drive order inside the VM.
+- **C17. The file system check is a hard-link probe, and covers staging.**
+  `link(2)` refuses another mount of the same file system too, which a
+  comparison of device numbers misses. `runtime.CheckLinkable` links a probe
+  file into `<root>/jails` and removes it. The preflight check
+  `corpus_cache_filesystem` is `worker.CorpusFilesystemCheck(root, cache,
+  staging)`. Build drives are hard linked as corpus images are, so
+  `corpus.staging` obeys the same rule as `corpus.cache`. The `corpus`
+  section of the worker's configuration is lot 3's: the check runs from
+  `MandatoryPreflight` once that section exists.
+- **C18. A zero drive rate takes its default.** A `DriveLimits` without
+  `Corpus`, from code or a test that predates corpora, would fail
+  validation; each zero rate now takes its default, as each number of the
+  worker's configuration already did.
+- **C19. `/corpus` is a read-only tmpfs.** The `/corpus` of a registry
+  harness is in its read-only image, where no mount point can be created.
+  `capsule-init` mounts a small tmpfs at `/corpus` in its own root, creates
+  one directory per corpus, mounts the corpora, remounts the tmpfs
+  read-only, and binds it at the harness's `/corpus`. A base-2 harness then
+  never sees files of its own image under `/corpus`.
+- **C20. `schema.sql` does not follow the migrations.** §15 says it does;
+  it is migration 1, the baseline, embedded and checksummed
+  (`internal/controlplane/migrations.go`): editing it would change an
+  installed migration. Migrations alone change the schema.
+
 ## Questions for the product owner
 
 1. **Who reads the review bundle.** It holds the organization's documents

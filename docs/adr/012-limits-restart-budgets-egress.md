@@ -62,9 +62,12 @@ volume that is a file, and counts reads and writes together.
 |---|---|---|---|
 | The agent's volume | 64 MiB/s | 2000/s | none |
 | A registry harness image | 128 MiB/s | 4000/s | the image's size, so a boot can read it whole at full speed |
+| A corpus image ([ADR 023](023-corpora.md)) | 128 MiB/s | 4000/s | the image's size, at most 256 MiB: a corpus of several GiB is read on demand |
+| A corpus build's drives (the builder's source, LFS objects and output) | the volume's | the volume's | none |
 
 These are defaults, **pending the product owner**. The operator sets others
-per host in the worker's configuration (`drive_limits`), from 1 MiB/s to
+per host in the worker's configuration (`drive_limits`: `volume`, `harness`
+and `corpus`), from 1 MiB/s to
 4 GiB/s and from 10 to 1,000,000 operations a second. A guest also reads and
 writes its tmpfs `/tmp` and `/run`, which live in its RAM and stay within it.
 
@@ -284,8 +287,9 @@ and a decision on which secrets such a guest may still hold. It is **P1**.
 Unit tests (`go test -race`):
 - `internal/runtime`: `TestDrivesHaveIOCeilings`, `TestDriveLimitsAreBounded`,
   `TestGuestsHaveNoNetwork`, `TestBootFailureIsTheGuestsOnlyWhenTheGuestFailed`,
-  `TestControlAnswers`.
-- `internal/worker`: `TestRestartBudgetAndDriveLimitsConfiguration`,
+  `TestControlAnswers`, `TestCorpusDrivesFollowTheHarnessInBindingOrder`,
+  `TestTheCorpusBurstIsCapped`, `TestDriveLimitsHaveACorpusRate`.
+- `internal/worker`: `TestRestartBudgetAndDriveLimitsConfiguration`, `TestCorpusDriveLimitsConfiguration`,
   `TestRetryReasons`, `TestPassesOfAGuestThatFailsAtBoot`,
   `TestProcIOMovedCountsReadsAndWrites`.
 - `cmd/capsule-echo`: `TestTestBehaviours`, `TestFloodStaysWithinItsSpan`,

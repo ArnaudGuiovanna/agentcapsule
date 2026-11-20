@@ -131,7 +131,10 @@ refuses, and again every 100 ms. `never-files` answers every invocation
 "working", loops on it and never files its outcome. `never-returns` never
 returns from an invocation whose text says "never return": it holds its
 store's write transaction until the harness stops, and answers other
-invocations (ADR 012, question 7). Without arguments it
+invocations (ADR 012, question 7). `probe-corpus` answers an event whose
+body is `probe-corpus` with what it sees of `/corpus`: each mount's
+options, its `marker.txt`, and whether a write or an execution there
+succeeds (the KVM tests of corpora). Without arguments it
 behaves as above.
 
 **Harness from the registry.** When the host attaches a harness drive (an agent
@@ -144,6 +147,65 @@ paths as the built-in harness. The decrypted data directory is bound at
 `/harness/var/lib/agent` only while the harness process lives, so the encrypted
 volume can still be closed during quiesce. Without that file, the harness built
 into the platform image runs as before.
+
+## Corpora
+
+A corpus is an organization's knowledge, published as a read-only ext4 image
+([ADR 023](../adr/023-corpora.md)). A VM mounts at most 4 corpora, each at
+`/corpus/<mount>`; the harness finds them by listing `/corpus`. The harness's
+boot record on FD 3 does not change.
+
+**Drive order.** The data volume is drive 0 (`/dev/vda`). A registry harness
+is drive 1 (`/dev/vdb`). Corpora follow in the order of the agent's binding,
+then, for the builder only, its build drives: `source`, `lfs` when the build
+has LFS objects, and `output`. With the built-in harness, the extra drives
+start at drive 1. Drive `n` is `/dev/vd` plus the `n`-th letter.
+
+**Boot file.** The host appends `/etc/capsule/corpora.json` to the boot
+archive when the VM has corpora or build drives. `capsule-init` reads it as
+the other boot files: root's, private, at most 64 KiB, decoded strictly
+(unknown fields and trailing data refused). An agent with a registry
+harness and two corpora:
+
+```json
+{"schema": "agentcapsule.guest-corpora/v1",
+ "corpora": [{"index": 2, "mount": "finance", "uuid": "1b4e28ba-2fa1-4d3b-a3f5-ef19b5a7633b"},
+             {"index": 3, "mount": "handbook", "uuid": "6fa459ea-ee8a-4ca4-894e-db77e160355e"}]}
+```
+
+The builder has `"corpora": []` and a `build` object with `source`, `lfs`
+and `output`, each with its `index` and its size in `bytes`. Indexes must
+follow the harness drive, with no gap; a mount matches
+`^[a-z0-9][a-z0-9_-]{0,62}$`; mounts and UUIDs are distinct.
+
+**Mount.** Before the harness starts, `capsule-init` reads the ext4
+superblock of each corpus drive and compares its UUID with `corpora.json`.
+A different UUID, a missing device or an unreadable superblock ends the boot:
+the guest restarts, and the worker counts a failed boot. A shift in the drive
+order therefore never mounts the wrong corpus. Each corpus is then mounted
+`ro,nosuid,nodev,noexec,noatime` on a read-only tmpfs at `/corpus`. For a
+registry harness, `/corpus` is bound read-only at its own `/corpus`; for the
+built-in harness it is in the initramfs root. Without corpora, `/corpus` is an
+empty read-only directory.
+
+**Guest base.** A harness of base `agentcapsule-guest/2` has the mount point
+`/corpus`; a harness of base `agentcapsule-guest/1` does not, boots as before,
+and its boot is refused if it is given corpora. See
+[../registry.md](../registry.md).
+
+**Build drives.** For the builder, `capsule-init` checks each build drive's
+size against `corpora.json` (a raw drive has no UUID; the builder checks the
+digests), then creates `/dev/corpus/source` and `/dev/corpus/lfs` (mode
+0400) and `/dev/corpus/output` (mode 0600), owned by the harness user. The
+`/dev/vd*` nodes stay root's.
+
+**System image.** A system image whose `capsule-init` does this declares the
+feature `corpus.mount` when it is approved
+([api/deployments.md](../api/deployments.md)). An older `capsule-init` would
+ignore `corpora.json` and boot without the corpora; the control plane binds
+corpora only to agents on an image with the feature. The guest kernel needs
+nothing new: ext4 and virtio-blk are built in, and the extra drives appear as
+the volume and harness drives do.
 
 ## Image and KVM run
 
@@ -167,7 +229,11 @@ sudo python3 scripts/verify-product-guest.py --help
 its own temporary volumes, keys, cgroups and VMs. It checks two independent
 encrypted guests, replay and barriers after a forced stop, the refusal of a
 wrong key and the refusal of a VMM without a lock **before** key delivery. It
-also checks that the key is absent from the boot's initrd. It does not touch
+also checks that the key is absent from the boot's initrd. For corpora, it
+checks one image shared by three VMs (one inode, each VMM under `LOCK_SH`),
+the mount seen from the harness (`ro`, `noexec`), the refusal of a drive of
+another UUID, the drive order with and without a registry harness, and a
+base-1 harness unchanged. It does not touch
 user databases, mounts no guest volume on the host, and returns logs to the
 calling account. Credentials, private volumes and keys are not copied into the
 evidence. The optional worker checks create a temporary PostgreSQL cluster

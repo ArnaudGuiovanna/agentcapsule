@@ -626,7 +626,10 @@ before setting `max_active`.
 Each VM's drives have I/O ceilings, enforced by Firecracker's rate limiter
 ([ADR 012](adr/012-limits-restart-budgets-egress.md)): by default 64 MiB/s
 and 2000 operations a second on the agent's volume, 128 MiB/s and 4000 on a
-registry harness image, which a boot may first read whole at full speed. The
+registry harness image, which a boot may first read whole at full speed, and
+128 MiB/s and 4000 on each corpus image, whose first 256 MiB at most may be
+read at full speed ([ADR 023](adr/023-corpora.md)). A corpus build's drives
+take the volume's ceilings. The
 VM has no network device and its VMM no network namespace but its own: the
 guest's only way out is the platform channel. Each VMM's cgroup bounds its
 CPU to the VM's vCPUs (`cpu.max`), its memory to the VM's and 256 MiB more,
@@ -673,7 +676,8 @@ add to the configuration (every worker of a host the same):
 ```json
 "drive_limits": {
   "volume": { "bandwidth_mib_per_second": 64, "iops": 2000 },
-  "harness": { "bandwidth_mib_per_second": 128, "iops": 4000 }
+  "harness": { "bandwidth_mib_per_second": 128, "iops": 4000 },
+  "corpus": { "bandwidth_mib_per_second": 128, "iops": 4000 }
 },
 "restart_budget": { "failures": 5, "window": "1h" }
 ```
@@ -683,6 +687,16 @@ and from 10 to 1,000,000 operations a second; a budget from 1 to 100
 failures within 1 minute to 24 hours. The operator sees
 `agentcapsule_worker_agents_failed`, the event `agent_failed` and the alert
 `AgentCapsuleAgentFailed` ([observability.md](observability.md)).
+
+**Corpus images are never copied.** A harness image on another file system
+than `<root>/jails` is copied into each VM's jail. A corpus image or a
+corpus build's drive is only hard linked: every VM bound to it shares one
+inode, under a shared lock ([ADR 023](adr/023-corpora.md) §5.1). So
+`corpus.cache` and `corpus.staging` must be on the file system, and the
+mount, of `root`. With a `corpus` section, the preflight check
+`corpus_cache_filesystem` refuses the worker's start otherwise; it links a
+probe file from each directory, or its nearest existing parent, into
+`<root>/jails`. A boot whose link still fails is refused, never copied.
 
 ## The authority service
 
