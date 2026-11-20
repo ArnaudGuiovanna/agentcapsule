@@ -298,7 +298,17 @@ func buildAction(pos []string, o options, in io.Reader) (action, error) {
 	args := pos[2:]
 	if a.name == "operation show" || a.name == "operation wait" {
 		kind := o.take("type")
-		byKind := map[string]string{"": "operations", "operation": "operations", "deployment": "deployments", "rollout": "rollouts", "harness-import": "harness-imports", "invocation": "invocations", "volume-growth": "volume-growth", "activation": "applications/{app}/activations"}
+		byKind := map[string]string{
+			"":               "operations",
+			"operation":      "operations",
+			"deployment":     "deployments",
+			"rollout":        "rollouts",
+			"harness-import": "harness-imports",
+			"invocation":     "invocations",
+			"volume-growth":  "volume-growth",
+			"activation":     "applications/{app}/activations",
+			"revocation":     "access-revocations",
+		}
 		resource, found := byKind[kind]
 		if !found {
 			return a, errors.New("unknown operation type")
@@ -439,6 +449,7 @@ context use NAME | context list | context show NAME
 identity create|show --key-file PATH --display-name NAME
 login --enrollment-file FILE|- | login --key-file PATH | login --token-file FILE|- | session renew | logout
 status [--watch] | doctor | support export --output-file FILE
+operation show|wait ID [--type operation|deployment|rollout|harness-import|invocation|volume-growth|activation|revocation] [--app APP_ID]
 install | update check|plan|apply | self update | host operation show|wait | restore
 app verify APP_ID [--issuer-ca PEM_FILE]
 api METHOD /v1/path

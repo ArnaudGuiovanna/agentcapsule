@@ -273,7 +273,7 @@ func operationState(data json.RawMessage) (string, string, error) {
 		state = op.Stage
 	}
 	switch strings.ToLower(state) {
-	case "ready", "succeeded", "completed":
+	case "ready", "succeeded", "completed", "confirmed":
 		return state, "success", nil
 	case "lost":
 		// A restore queues a rerun under the same ID unless it records a skip reason.

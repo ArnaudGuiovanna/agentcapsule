@@ -20,6 +20,8 @@ func TestDeploymentAndConfigurationSyntax(t *testing.T) {
 		{[]string{"deployment", "apply", "--plan", "plan_3"}, "", "/v1/deployment-plans/plan_3/apply", nil},
 		{[]string{"app", "register", "monapp", "--config", "-"}, "issuer: https://id.example.org", "/v1/applications", map[string]any{"name": "monapp", "issuer": "https://id.example.org"}},
 		{[]string{"access", "explain", "--member", "alice", "--agent", "support"}, "", "/v1/access/explain?agent=support&member=alice", nil},
+		{[]string{"operation", "show", "--type", "revocation", "arv_1"}, "", "/v1/access-revocations/arv_1", nil},
+		{[]string{"operation", "wait", "--type", "revocation", "arv_1"}, "", "/v1/access-revocations/arv_1", nil},
 	} {
 		pos, opts, err := parse(test.args)
 		if err != nil {
@@ -53,6 +55,7 @@ func TestOperationStates(t *testing.T) {
 		`{"status":"SUCCEEDED"}`: "success", `{"state":"completed"}`: "success", `{"state":"READY"}`: "success",
 		`{"state":"IMPORTING"}`: "pending", `{"state":"working"}`: "pending", `{"state":"scheduled"}`: "pending",
 		`{"state":"REJECTED"}`: "failure", `{"status":"paused"}`: "failure",
+		`{"kind":"member","state":"pending"}`: "pending", `{"kind":"member","state":"confirmed"}`: "success",
 		`{"state":"lost","result_available":true}`:               "pending",
 		`{"state":"lost","error_code":"requester_revoked"}`:      "failure",
 		`{"state":"completed","lost_at":"2026-11-19T09:00:00Z"}`: "success",
