@@ -19,6 +19,7 @@ type LLMService struct {
 	accounts *Accounts
 	gateway  *llmgateway.Gateway
 	observer atomic.Pointer[observerBox]
+	inflight inflightKeys
 }
 
 type observerBox struct{ LLMObserver }
@@ -96,10 +97,12 @@ func (s *LLMService) Call(ctx context.Context, tenantID, agentID, alias, request
 }
 
 // llmHold is an admitted call: a resolved route and a live reservation.
+// done releases its request key once its outcome is recorded (settle).
 type llmHold struct {
 	tenantID, alias string
 	route           LLMRoute
 	res             LLMReservation
+	done            func()
 }
 
 // admit resolves the alias and reserves budget. Nothing has reached the
@@ -109,24 +112,34 @@ func (s *LLMService) admit(ctx context.Context, tenantID, agentID, alias, reques
 	if err != nil {
 		return llmHold{}, err
 	}
+	// A call with this key runs in this process: it may have reached the
+	// provider, and records its own outcome.
+	key := inflightKey(tenantID, agentID, requestKey)
+	if !s.inflight.claim(key) {
+		return llmHold{}, llmgateway.ErrOutcomeUnknown
+	}
+	done := func() { s.inflight.release(key) }
 	res, err := s.accounts.ReserveLLM(ctx, tenantID, agentID, alias, requestKey, input, output)
 	var refused *LLMRefusal
 	if errors.As(err, &refused) {
 		s.observe(LLMCallEvent{Provider: route.Kind, Outcome: "refused", Reason: refused.Reason, Period: refused.Period, Scope: refused.Scope})
 	}
 	if err != nil {
+		done()
 		return llmHold{}, err
 	}
 	if res.Replayed {
-		// A reservation still "reserved" means an earlier attempt may have sent
-		// the call before dying: count it as uncertain, never as free.
+		done()
+		// A reservation still "reserved" that no call of this process holds
+		// means an earlier attempt may have sent the call before dying: count
+		// it as uncertain, never as free.
 		if res.State == "reserved" {
 			_ = s.accounts.MarkLLMUnknown(ctx, tenantID, res.ID)
 			return llmHold{}, llmgateway.ErrOutcomeUnknown
 		}
 		return llmHold{}, ErrLLMAlreadyProcessed
 	}
-	return llmHold{tenantID: tenantID, alias: alias, route: route, res: res}, nil
+	return llmHold{tenantID: tenantID, alias: alias, route: route, res: res, done: done}, nil
 }
 
 // execute calls the provider and settles, marks unknown or releases.
@@ -145,6 +158,7 @@ func (s *LLMService) execute(ctx context.Context, h llmHold, q llmgateway.Reques
 // settle runs one provider call for an admitted hold and records its single
 // outcome: settled at the reported usage, unknown, or released.
 func (s *LLMService) settle(ctx context.Context, h llmHold, call func(llmgateway.Route) (llmgateway.Usage, error)) error {
+	defer h.done()
 	route := h.route
 	usage, callErr := call(llmgateway.Route{AuthMode: route.AuthMode, Kind: route.Kind, BaseURL: route.BaseURL, UpstreamModel: route.UpstreamModel, Secret: route.Secret, Key: h.tenantID + "/" + h.alias})
 	// Bookkeeping must survive a cancelled caller context.
@@ -208,6 +222,9 @@ func (s *LLMService) admitFromVM(ctx context.Context, caller VMCaller, requestKe
 		err = step(ctx)
 	} else {
 		err = admission(ctx, step)
+	}
+	if err != nil && hold.done != nil {
+		hold.done() // reserved, then the admission failed: no call runs
 	}
 	return hold, err
 }
