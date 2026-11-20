@@ -325,37 +325,68 @@ deleting them, and Actions allowed to create releases.
 
 ## Verify a release
 
-Download the files you need, with `SHA256SUMS` and `SHA256SUMS.sigstore.json`.
-`<repository>` below is the release page's repository, as
-`<owner>/<name>`; `v0.1.0` is the version.
+Choose the published tag you intend to install and the asset for the workstation
+that will run the CLI. On Linux and macOS, `uname -m` reports `x86_64` or
+`aarch64`/`arm64`. On Windows, use the system type in Settings → System → About.
+[AgentCapsule releases](https://github.com/ArnaudGuiovanna/agentcapsule/releases)
 
-1. **The signature of the checksums** ([cosign](https://github.com/sigstore/cosign) 2.4 or newer):
+| Workstation | Intel/AMD 64-bit | Arm 64-bit |
+|---|---|---|
+| Linux | `agentcapsule-linux-amd64` | `agentcapsule-linux-arm64` |
+| macOS | `agentcapsule-darwin-amd64` | `agentcapsule-darwin-arm64` |
+| Windows | `agentcapsule-windows-amd64.exe` | `agentcapsule-windows-arm64.exe` |
 
-   ```bash
-   cosign verify-blob --bundle SHA256SUMS.sigstore.json \
-     --certificate-identity "https://github.com/<repository>/.github/workflows/release.yml@refs/tags/v0.1.0" \
-     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-     SHA256SUMS
+1. In an empty directory, download the selected asset, `SHA256SUMS` and
+   `SHA256SUMS.sigstore.json` from that release. With an independently installed
+   GitHub CLI, the following are POSIX shell commands. On Windows PowerShell
+   assign `$tag` and `$asset` instead. Replace the two example values.
+
+   ```sh
+   tag='RELEASE_TAG'
+   asset='agentcapsule-linux-amd64'
+   gh release download "$tag" --repo ArnaudGuiovanna/agentcapsule -p "$asset" -p SHA256SUMS -p SHA256SUMS.sigstore.json
    ```
 
-   It proves that `SHA256SUMS` was signed by the release workflow of that
-   repository for that tag.
+2. Verify the checksum index with an independently trusted cosign 2.4 or newer.
+   The signer must match the project workflow and selected tag. Continue only
+   when this command exits successfully. [Cosign](https://github.com/sigstore/cosign)
 
-2. **The files**:
-
-   ```bash
-   sha256sum --ignore-missing -c SHA256SUMS
+   ```sh
+   cosign verify-blob --bundle SHA256SUMS.sigstore.json --certificate-identity "https://github.com/ArnaudGuiovanna/agentcapsule/.github/workflows/release.yml@refs/tags/$tag" --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS
    ```
 
-3. **The provenance** ([GitHub CLI](https://cli.github.com/) 2.49 or newer):
+3. Verify the **selected executable** under its original release filename.
+   Save the following as `verify-cli.py` in the download directory. It requires
+   exactly one matching entry in the authenticated index and checks the bytes
+   you will execute.
 
-   ```bash
-   gh attestation verify agentcapsule-api --repo <repository> \
-     --signer-workflow <repository>/.github/workflows/release.yml
+   ```python
+   import hashlib, pathlib, sys
+   path = pathlib.Path(sys.argv[1])
+   lines = pathlib.Path("SHA256SUMS").read_text(encoding="ascii").splitlines()
+   entries = [line for line in lines if line.partition("  ")[2] == path.name]
+   digest = hashlib.sha256(path.read_bytes()).hexdigest()
+   if entries != [digest + "  " + path.name]:
+       sys.exit("Checksum verification failed for " + path.name)
+   print("Verified", path.name)
    ```
 
-   Offline, add `--bundle provenance.sigstore.json`. The provenance names the
-   workflow, the commit and the run that built the file.
+   Run `python3 verify-cli.py "$asset"` (Windows: `py -3 verify-cli.py "$asset"`)
+   and continue only on `Verified <filename>`.
+
+   To verify the build provenance as well, download `provenance.sigstore.json`
+   from the same release and run the following with GitHub CLI 2.49 or newer.
+   The provenance names the workflow, commit and run that built the selected file.
+
+   ```sh
+   gh attestation verify "$asset" --repo ArnaudGuiovanna/agentcapsule --signer-workflow ArnaudGuiovanna/agentcapsule/.github/workflows/release.yml --bundle provenance.sigstore.json
+   ```
+
+   On Linux or macOS, install the verified file as `agentcapsule` in a directory
+   on your PATH with mode 0755. On Windows, rename the verified file to
+   `agentcapsule.exe` and place it on PATH. Run `agentcapsule version` to see
+   the release tag, then `agentcapsule install --help` on the workstation.
+   [Install the matching server bundle](cli-host.md)
 
 4. **The SBOM.** `agentcapsule-api.spdx.json` describes the binary whose
    SHA-256 its root element carries. To scan it yourself:
@@ -366,8 +397,8 @@ Download the files you need, with `SHA256SUMS` and `SHA256SUMS.sigstore.json`.
    version that `build.json` names:
 
    ```bash
-   git clone https://github.com/<repository> && cd <name> && git checkout v0.1.0
-   python3 scripts/build-release.py --go <go-1.27.4> --version v0.1.0 --output /tmp/rebuild
+   git clone https://github.com/ArnaudGuiovanna/agentcapsule && cd agentcapsule && git checkout "$tag"
+   python3 scripts/build-release.py --go /path/to/go --version "$tag" --output /tmp/rebuild
    sha256sum /tmp/rebuild/dist/agentcapsule-api
    ```
 

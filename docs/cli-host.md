@@ -1,25 +1,27 @@
 # Install and operate a single host
 
-Download the CLI for your OS and architecture from the selected GitHub release.
-Verify its digest against the signed `SHA256SUMS` before renaming it to
-`agentcapsule`. The release guide gives the exact cosign certificate identity,
-issuer and provenance checks. [Release verification](release.md#verify-a-release)
+Download and verify the workstation CLI for the release you want. Run
+`agentcapsule version` and `agentcapsule install --help` on that workstation.
+The released CLI uses its own tag to locate the server bundle on GitHub.
+Use `--to TAG` to select another exact release. [Download and verify the CLI](release.md#verify-a-release)
 
 The target is Ubuntu 24.04 amd64 with systemd, cgroup v2, KVM and persistent
 local storage. Run the command as root on the target, or pass
 `--ssh USER@HOST` from Linux, macOS or Windows. SSH uses the operator's SSH
 configuration, known host keys and non-interactive sudo on the target. SSH
-host aliases and all profile paths refer to the selected target.
+host aliases come from the workstation configuration. The profile and offline
+asset paths refer to files on the selected target.
 
 ```sh
-agentcapsule install --to v0.1.0-rc.1 --profile /root/platform.json --plan-only
-agentcapsule install --to v0.1.0-rc.1 --profile /root/platform.json
-agentcapsule host operation show host_ID
-agentcapsule host operation wait host_ID
-agentcapsule host operation resume host_ID
+agentcapsule install --ssh admin@host --profile /root/platform.json --plan-only
+agentcapsule install --ssh admin@host --profile /root/platform.json
+agentcapsule host operation wait host_ID --ssh admin@host
 ```
 
-The first two commands identify the same operation. The helper records its
+The plan verifies the signed release metadata. The second command returns the
+same `operation_id` and starts installation. Use that ID in place of
+`host_ID` to wait for the result. Omit `--profile` to use the defaults
+described below. The helper records its
 input, checkpoints and outcome under `/var/lib/agentcapsule-install`. The
 systemd instance continues after SSH disconnects and resumes after reboot.
 On a failed phase read `journalctl -u agentcapsule-host@host_ID`, fix the
@@ -84,9 +86,19 @@ authority recovery material independently. [Recovery](recovery.md)
 
 ## Verify and load offline assets
 
-On the connected station obtain `agentcapsule-bundle.json`, the server bundle,
-package tar, OCI image archive, `SHA256SUMS`, `SHA256SUMS.sigstore.json` and the pinned cosign Linux
-binary under the name `cosign-linux-amd64`. Copy these files onto the target. The CLI embeds the Sigstore trusted root
+For a private release or an offline target, download the host assets on a
+connected workstation with an existing GitHub CLI login authorized to read the
+release. Set `tag` to the verified CLI's release tag. Use an empty directory.
+
+```sh
+gh release download "$tag" --repo ArnaudGuiovanna/agentcapsule --dir assets \
+  -p agentcapsule-bundle.json -p agentcapsule-server-linux-amd64.tar.gz \
+  -p agentcapsule-packages-linux-amd64.tar -p agentcapsule-images-linux-amd64.tar.gz \
+  -p cosign-linux-amd64 -p SHA256SUMS -p SHA256SUMS.sigstore.json
+```
+
+Copy the seven files to one directory on the Ubuntu target, for example
+`/srv/agentcapsule-release`. The CLI embeds the Sigstore trusted root
 whose verified TUF target SHA-256 is
 `6494e21ea73fa7ee769f85f57d5a3e6a08725eae1e38c755fc3517c9e6bc0b66`.
 Use `--trusted-root` to select an independently trusted replacement. The CLI
@@ -99,7 +111,8 @@ references and the runtime verifies the loaded image's config digest.
 Preflight checks the OS, cgroup controllers and KVM before large downloads.
 
 ```sh
-agentcapsule install --offline /srv/rc1 --trusted-root /root/trusted_root.json --to v0.1.0-rc.1
+agentcapsule install --ssh admin@host --offline /srv/agentcapsule-release --to "$tag" --plan-only
+agentcapsule install --ssh admin@host --offline /srv/agentcapsule-release --to "$tag"
 ```
 
 Local development builds accept `--development-key /root/dev.pub` with

@@ -304,8 +304,10 @@ jobs:
           cat > "$RUNNER_TEMP/notes.md" <<EOF
           Agent Capsule $TAG, built from $GITHUB_SHA.
 
-          Verify the files before use: docs/release.md, "Verify a release". The
-          dependency audit and the vulnerability scan of this release are
+          [Download and verify the workstation CLI](https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_SHA/docs/release.md#verify-a-release).
+          [Install the matching server bundle](https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_SHA/docs/cli-host.md).
+
+          The dependency audit and the vulnerability scan of this release are
           dependency-audit.json and vulnerability-scan.json; findings accepted by
           scripts/vulnerability-allowlist.json are listed there with their reason.
           EOF
