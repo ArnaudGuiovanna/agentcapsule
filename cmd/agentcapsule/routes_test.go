@@ -52,7 +52,10 @@ func TestOperationStates(t *testing.T) {
 	for input, want := range map[string]string{
 		`{"status":"SUCCEEDED"}`: "success", `{"state":"completed"}`: "success", `{"state":"READY"}`: "success",
 		`{"state":"IMPORTING"}`: "pending", `{"state":"working"}`: "pending", `{"state":"scheduled"}`: "pending",
-		`{"state":"REJECTED"}`: "failure", `{"state":"lost"}`: "failure", `{"status":"paused"}`: "failure",
+		`{"state":"REJECTED"}`: "failure", `{"status":"paused"}`: "failure",
+		`{"state":"lost","result_available":true}`:               "pending",
+		`{"state":"lost","error_code":"requester_revoked"}`:      "failure",
+		`{"state":"completed","lost_at":"2026-11-19T09:00:00Z"}`: "success",
 	} {
 		_, got, err := operationState([]byte(input))
 		if err != nil || got != want {

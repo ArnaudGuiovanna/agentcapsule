@@ -257,9 +257,10 @@ func run(ctx context.Context, args []string, in io.Reader, out, errout io.Writer
 }
 func operationState(data json.RawMessage) (string, string, error) {
 	var op struct {
-		Status string `json:"status"`
-		State  string `json:"state"`
-		Stage  string `json:"stage"`
+		Status    string `json:"status"`
+		State     string `json:"state"`
+		Stage     string `json:"stage"`
+		ErrorCode string `json:"error_code"`
 	}
 	if err := json.Unmarshal(data, &op); err != nil {
 		return "", "", errors.New("invalid operation response")
@@ -274,7 +275,13 @@ func operationState(data json.RawMessage) (string, string, error) {
 	switch strings.ToLower(state) {
 	case "ready", "succeeded", "completed":
 		return state, "success", nil
-	case "failed", "cancelled", "canceled", "expired", "lost", "rejected", "paused", "disabled", "refused":
+	case "lost":
+		// A restore queues a rerun under the same ID unless it records a skip reason.
+		if op.ErrorCode == "" {
+			return state, "pending", nil
+		}
+		return state, "failure", nil
+	case "failed", "cancelled", "canceled", "expired", "rejected", "paused", "disabled", "refused":
 		return state, "failure", nil
 	case "pending", "running", "accepted", "queued", "in_progress", "planned", "provisioning", "starting", "verifying", "importing", "working", "scheduled", "capturing", "restoring", "preparing", "waiting_capacity":
 		return state, "pending", nil

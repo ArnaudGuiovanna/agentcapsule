@@ -147,6 +147,8 @@ Use `--file PATH`, `--config PATH` or `--file -` for JSON or a single YAML objec
 | 5 | A followed operation failed, expired or paused |
 | 130 | Interrupted while waiting |
 
+After a volume restore, `operation wait --type invocation ID` continues polling the same invocation if the server queued a rerun. A `lost` response with an `error_code` means the server skipped the rerun. The CLI prints that response and exits with code 5.
+
 The storage, wire protocol and binary release each carry their own version. The server verifies the complete PostgreSQL migration ledger on startup. The host update operation performs schema migration within its maintenance window. Use the tested restore path when an older binary cannot read the installed schema. [Host update](cli-host.md#update-and-recovery) · [Recovery](recovery.md)
 
 ## Acceptance checks
