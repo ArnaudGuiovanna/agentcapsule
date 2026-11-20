@@ -291,11 +291,27 @@ func TestACorpusImageIsNeverCopied(t *testing.T) {
 		t.Fatal("the corpus image was copied into the jail", err)
 	}
 	// The same refusal before the image is ever recorded.
-	if err = CheckSharedFilesystem(h.root, other); !errors.Is(err, ErrCorpusFilesystem) {
+	jails := filepath.Join(h.root, "jails")
+	if err = CheckLinkable(jails, other); !errors.Is(err, ErrCorpusFilesystem) {
 		t.Fatal("check of the corpus cache's file system", err)
 	}
-	if err = CheckSharedFilesystem(h.root, filepath.Join(h.root, "releases")); err != nil {
+	if err = CheckLinkable(jails, image.Path); !errors.Is(err, ErrCorpusFilesystem) {
+		t.Fatal("check of a corpus image's file system", err)
+	}
+	if err = CheckLinkable(jails, filepath.Join(h.root, "releases")); err != nil {
 		t.Fatal("a cache beside the jails", err)
+	}
+	// The probes leave nothing behind.
+	for _, dir := range []string{jails, other, filepath.Join(h.root, "releases")} {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range entries {
+			if strings.HasPrefix(e.Name(), ".link-probe-") {
+				t.Fatal("a probe link was left in", dir)
+			}
+		}
 	}
 }
 

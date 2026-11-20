@@ -4,6 +4,8 @@ package runtime
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -141,24 +143,48 @@ func linkShared(src, dst string) error {
 	return err
 }
 
-// CheckSharedFilesystem refuses each path that is not on the file system of
-// root/jails, where corpus images and build drives are hard linked: the
-// worker's preflight checks its corpus cache and staging with it.
-func CheckSharedFilesystem(root string, paths ...string) error {
-	var jails syscall.Stat_t
-	if err := syscall.Stat(filepath.Join(root, "jails"), &jails); err != nil {
-		return err
-	}
+// CheckLinkable tells whether each path can be hard linked into dir, as a
+// corpus image or a build drive is into a jail (dir: root/jails). A file is
+// linked itself; for a directory, a new empty file in it. Each probe link is
+// removed at once. Otherwise ErrCorpusFilesystem: link(2) refuses another
+// file system, and another mount of the same one. The worker's preflight
+// checks its corpus cache and staging with it.
+func CheckLinkable(dir string, paths ...string) error {
 	for _, p := range paths {
-		var st syscall.Stat_t
-		if err := syscall.Stat(p, &st); err != nil {
+		if err := checkLinkable(dir, p); err != nil {
 			return err
-		}
-		if st.Dev != jails.Dev {
-			return ErrCorpusFilesystem
 		}
 	}
 	return nil
+}
+
+func checkLinkable(dir, p string) error {
+	st, err := os.Lstat(p)
+	if err != nil {
+		return err
+	}
+	if st.IsDir() {
+		f, err := os.CreateTemp(p, ".link-probe-")
+		if err != nil {
+			return err
+		}
+		f.Close()
+		defer os.Remove(f.Name())
+		p = f.Name()
+	} else if !st.Mode().IsRegular() {
+		return errors.New("not a regular file")
+	}
+	nonce := make([]byte, 8)
+	if _, err = rand.Read(nonce); err != nil {
+		return err
+	}
+	probe := filepath.Join(dir, ".link-probe-"+hex.EncodeToString(nonce))
+	if err = os.Link(p, probe); errors.Is(err, syscall.EXDEV) {
+		return ErrCorpusFilesystem
+	} else if err != nil {
+		return err
+	}
+	return os.Remove(probe)
 }
 
 // cleanAbs: an absolute clean path.
@@ -223,7 +249,7 @@ func (h *FirecrackerHost) verifyCorpora(corpora []CorpusImage) error {
 		if err != nil {
 			return err
 		}
-		if err = CheckSharedFilesystem(h.root, c.Path); err != nil {
+		if err = CheckLinkable(filepath.Join(h.root, "jails"), c.Path); err != nil {
 			return err
 		}
 	}
@@ -301,7 +327,7 @@ func (h *FirecrackerHost) SetBuildDrives(ctx context.Context, id string, b *Buil
 				return errors.New("a build drive must be a regular file of whole 4 KiB blocks")
 			}
 		}
-		if err := CheckSharedFilesystem(h.root, paths...); err != nil {
+		if err := CheckLinkable(filepath.Join(h.root, "jails"), paths...); err != nil {
 			return err
 		}
 	}
