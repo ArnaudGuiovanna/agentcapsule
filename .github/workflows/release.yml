@@ -93,9 +93,16 @@ jobs:
           Check-Valid-Until: no
           EOF
           sudo apt-get update
+          # Bring the runner's packages to the snapshot's versions. The guest
+          # image copies glibc, cryptsetup, e2fsprogs and their libraries from
+          # this host, and the server bundle ships the snapshot's sources of
+          # exactly those versions; the runner image can lag behind it.
+          sudo DEBIAN_FRONTEND=noninteractive apt-get upgrade --yes -o Dpkg::Options::=--force-confold
           sudo apt-get install --yes --no-install-recommends \
             build-essential libcryptsetup-dev cryptsetup-bin e2fsprogs musl-tools cmake pkg-config \
             bison flex libelf-dev libssl-dev bc xz-utils skopeo libseccomp-dev
+          libc="$(dpkg-query -W -f='${Version}' libc6)"
+          test "$libc" = "$(apt-cache policy libc6 | awk '/Candidate:/ {print $2}')"
 
       - name: Dependency audit (govulncheck on every Go module, licenses)
         run: |
