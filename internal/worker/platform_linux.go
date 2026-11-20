@@ -112,6 +112,9 @@ func platformError(err error) error {
 		code = "invalid"
 	case errors.Is(err, llmgateway.ErrDialect):
 		code = "dialect"
+	case errors.Is(err, llmgateway.ErrUnsupported):
+		// The alias does not declare the route's operation (ADR 023 §12).
+		code = "unsupported"
 	}
 	return &capsuleprotocol.PlatformError{Code: code}
 }

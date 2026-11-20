@@ -35,6 +35,9 @@ func TestRouteCapabilities(t *testing.T) {
 	for path, want := range map[string]string{
 		"/v1/llm/complete":                  LLMInvoke,
 		"/v1/llm/forward":                   LLMInvoke,
+		"/v1/llm/embed":                     LLMInvoke,
+		"/v1/llm/transcribe":                LLMInvoke,
+		"/v1/llm/ocr":                       LLMInvoke,
 		"/v1/agent-requests":                AgentsDelegate,
 		"/v1/agent-requests/arq_1/status":   AgentsDelegate,
 		"/v1/directory/find":                AgentsDiscover,

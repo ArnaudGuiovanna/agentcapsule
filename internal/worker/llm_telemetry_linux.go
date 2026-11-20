@@ -13,7 +13,7 @@ import (
 var (
 	llmProviders = []string{"openai_compatible", "anthropic"}
 	llmOutcomes  = []string{"settled", "released", "unknown"}
-	llmRefusals  = []string{"budget_tokens", "budget_cost", "unpriced", "alias_access"}
+	llmRefusals  = []string{"budget_tokens", "budget_cost", "unpriced", "alias_access", "unsupported"}
 	llmUnits     = []string{"tokens", "cost"}
 	llmPeriods   = []string{"day", "month"}
 	llmScopes    = []string{"organization", "agent", "alias", "agent_alias"}
@@ -28,6 +28,8 @@ var (
 type LLMTelemetry struct {
 	calls, tokens, cost, refusals, soft *telemetry.Counter
 	problems                            *telemetry.Logger
+	// Seconds of audio and OCR pages of settled calls (ADR 023 §12).
+	audioSeconds, pages *telemetry.Counter
 }
 
 // NewLLMTelemetry registers the metrics. unresolved counts, at each scrape,
@@ -41,11 +43,14 @@ func NewLLMTelemetry(registry *telemetry.Registry, problems *telemetry.Logger, u
 			provider, telemetry.Label{Name: "direction", Values: []string{"input", "output"}}),
 		cost: registry.Counter("agentcapsule_llm_estimated_cost_micro_total", "Estimated cost of settled model calls, in micro-units of each organization's own currency, by provider kind.",
 			provider),
-		refusals: registry.Counter("agentcapsule_llm_refusals_total", "Model calls refused before any reservation, by reason (budget_tokens, budget_cost, unpriced, alias_access).",
+		refusals: registry.Counter("agentcapsule_llm_refusals_total", "Model calls refused before any reservation, by reason (budget_tokens, budget_cost, unpriced, alias_access, unsupported).",
 			telemetry.Label{Name: "reason", Values: llmRefusals}),
 		soft: registry.Counter("agentcapsule_llm_budget_soft_exceeded_total", "Model calls that went past a soft budget, by its unit (tokens, cost); a call past two counts twice.",
 			telemetry.Label{Name: "unit", Values: llmUnits}),
 		problems: problems,
+		audioSeconds: registry.Counter("agentcapsule_llm_audio_seconds_total", "Seconds of audio of settled transcriptions, as the provider reported them, by provider kind.",
+			provider),
+		pages: registry.Counter("agentcapsule_llm_ocr_pages_total", "Pages of settled OCR calls, as the provider reported them, by provider kind.", provider),
 	}
 	// Served from zero, so that increase() sees the first one.
 	for _, r := range llmRefusals {
@@ -87,6 +92,8 @@ func (m *LLMTelemetry) ObserveLLM(e controlplane.LLMCallEvent) {
 		m.tokens.Add(float64(e.InputTokens), e.Provider, "input")
 		m.tokens.Add(float64(e.OutputTokens), e.Provider, "output")
 		m.cost.Add(float64(e.CostMicro), e.Provider)
+		m.audioSeconds.Add(float64(e.AudioSeconds), e.Provider)
+		m.pages.Add(float64(e.Pages), e.Provider)
 	}
 }
 
