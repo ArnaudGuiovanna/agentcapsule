@@ -80,6 +80,8 @@ func run() (result error) {
 		handle = neverReturns(b.Identity.AgentID, handle, ctx)
 	} else if act := hostile[mode.hostile]; act != nil {
 		handle = afterFirstAnswer(handle, hostileDelay, func() { act(ctx) })
+	} else if mode.probeCorpus {
+		handle = probeCorpusOf(handle, "/corpus", "/proc/self/mountinfo")
 	}
 	s, err := capsuleprotocol.NewLocalServer(b.Identity, b.PreviousShutdown, store, handle)
 	if err != nil {

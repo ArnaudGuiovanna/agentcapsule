@@ -44,6 +44,13 @@ import (
 //	                       "never return": it holds its store's write
 //	                       transaction until the harness stops. It answers
 //	                       other invocations as usual.
+//
+// One more (probe_corpus.go) reports the corpora it sees (ADR 023 §5):
+//
+//	probe-corpus           answers an event whose body is "probe-corpus"
+//	                       with its view of /corpus: each mount's options,
+//	                       marker, and whether a write or an execution
+//	                       there succeeds. It echoes other events.
 type behaviour struct {
 	crashAtBoot bool
 	floodChunk  int
@@ -53,6 +60,7 @@ type behaviour struct {
 	hostile      string
 	neverFiles   bool
 	neverReturns bool
+	probeCorpus  bool
 }
 
 var errTmpUnbounded = errors.New("/tmp took the whole fill (test behaviour)")
@@ -113,6 +121,8 @@ func parseBehaviour(args []string) (behaviour, error) {
 		return behaviour{neverFiles: true}, nil
 	case len(args) == 1 && args[0] == "never-returns":
 		return behaviour{neverReturns: true}, nil
+	case len(args) == 1 && args[0] == "probe-corpus":
+		return behaviour{probeCorpus: true}, nil
 	}
 	return behaviour{}, errors.New("unknown test behaviour")
 }
