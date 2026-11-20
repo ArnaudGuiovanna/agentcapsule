@@ -63,6 +63,8 @@ The scan of the 19 SPDX inventories found one Critical and eleven High matches t
 
 The `dev.12` media were built from commit `c9d1e38` on 20 November 2026 and include the single-agent CPU and memory resize command. Two clean Noble amd64 builds in WSL2 produced identical digests for all eight executables and the guest initrd. The signed index covers 45 files totaling 2,548,385,505 bytes. Its SHA-256 is `fa2c3251ff15891de35e2ce1a27f160f9c5c36a13e6563dfd3981668e1cc8d41`. The offline reader checked all 63 server files. PostgreSQL applied all 55 migrations and its ledger matched the signed record, including the new `agent-resize` migration. [CLI progress](plan-cli.md#suivi-du-chantier)
 
+All seven checks passed on the Ubuntu 24.04 WSL2/KVM installation upgraded from `dev.6`. The test verified the media signature, and the guest verified a second signature on the identical index using its existing trusted public key. The scan of the 19 inventories still reports twelve release-blocking findings, six in Ubuntu packages and six in Keycloak. [Installation qualification](cli-host.md#development-qualification-on-wsl2) · [Image findings](release-image-qualification.md)
+
 ### Ubuntu package archive, 19 November 2026
 
 The offline Noble snapshot used in the installation test contained 171 binary packages. The release inventory checks every archived `.deb` against the server's package index and records its SHA-256, Ubuntu release, binary version and source package. Grype 0.121.0 with the 19 November database reported six High matches, 452 Medium, 37 Low and five Negligible. The six High matches block this archive under the release policy. The six separate Keycloak matches also block the offline images. [Image qualification](release-image-qualification.md)

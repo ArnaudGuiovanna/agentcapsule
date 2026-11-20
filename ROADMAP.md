@@ -109,7 +109,7 @@ a production host yet.
 
 ## Release validation
 
-The CLI workstream is estimated at 90% overall and 95% for WSL development as of 20 November 2026. The implementation plan tracks the signed media, KVM exercises, MonApp results and public release blockers. [CLI progress](docs/plan-cli.md#suivi-du-chantier)
+The CLI workstream is estimated at 95% overall as of 20 November 2026. All seven WSL development checks passed on the signed `dev.12` media, including the guest reboot, Firecracker resize, starter volume restore and MonApp. Twelve scan findings block the public release. A restore from a separate physical host and native macOS and Windows CLI runs are still open. [CLI progress](docs/plan-cli.md#suivi-du-chantier)
 
 | ID | Item | Status | Remaining |
 |---|---|---|---|
