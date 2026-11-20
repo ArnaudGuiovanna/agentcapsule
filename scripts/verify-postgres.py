@@ -166,6 +166,11 @@ def main():
                              "-c", "unix_socket_permissions=0700", "-c", "fsync=on",
                              "-c", "full_page_writes=on", "-c", "synchronous_commit=on",
                              "-c", "shared_buffers=32MB", "-c", "max_connections=40",
+                             # Every store test migrates a fresh schema and drops it with
+                             # CASCADE, which locks each of its objects; with the CLI's
+                             # migrations, parallel drops overflowed the default lock
+                             # table (64 per connection: "out of shared memory").
+                             "-c", "max_locks_per_transaction=256",
                              # Crash recovery syncs the whole data directory first; syncfs
                              # does it per filesystem instead of per file, with the same
                              # durability, so that phase stays short on a busy host.
