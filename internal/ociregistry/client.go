@@ -3,7 +3,6 @@ package ociregistry
 import (
 	"context"
 	"crypto/sha256"
-	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
@@ -65,25 +64,12 @@ func newClientOn(rule Rule, timeout time.Duration, n network) *client {
 	if dialer.Connect == nil {
 		dialer.Connect = (&net.Dialer{Timeout: 10 * time.Second}).DialContext
 	}
-	transport := &http.Transport{
-		Proxy:                 nil,
-		DialContext:           dialer.DialContext,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: 30 * time.Second,
-		MaxIdleConns:          4,
-		IdleConnTimeout:       30 * time.Second,
-		ForceAttemptHTTP2:     true,
-	}
-	if n.rootCAs != nil {
-		transport.TLSClientConfig = &tls.Config{RootCAs: n.rootCAs, MinVersion: tls.VersionTLS12}
-	}
 	c := &client{rule: rule, auth: map[string]string{}}
-	c.http = &http.Client{Transport: transport, Timeout: timeout, CheckRedirect: func(req *http.Request, via []*http.Request) error {
-		if len(via) >= 3 {
-			return fmt.Errorf("%w: too many redirects", ErrPolicy)
-		}
-		if !c.allowedURL(req.URL, c.rule.BlobHosts) {
-			return fmt.Errorf("%w: redirect to an unapproved host", ErrPolicy)
+	// At most two redirects, each to the registry or one of its blob hosts.
+	redirects := addrpolicy.Redirects(2, ErrPolicy, func(u *url.URL) bool { return c.allowedURL(u, c.rule.BlobHosts) })
+	c.http = &http.Client{Transport: addrpolicy.NewTransport(dialer, n.rootCAs), Timeout: timeout, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if err := redirects(req, via); err != nil {
+			return err
 		}
 		// Registry credentials and tokens stay with the registry. Go keeps the
 		// header for a same-name host on another port or a subdomain; a CDN
