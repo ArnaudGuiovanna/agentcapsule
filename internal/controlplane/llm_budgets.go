@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"math/big"
+	"slices"
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorization"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmgateway"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -16,9 +18,10 @@ var ErrBudgetExceeded = errors.New("llm budget exceeded")
 
 // LLMRefusal is a typed refusal of a model call before any reservation or
 // provider call. Reason is budget_tokens or budget_cost (a hard budget would be
-// exceeded), unpriced (a hard cost budget applies to an alias without prices)
-// or alias_access (the alias is listed and not granted to the agent). Period
-// and Scope describe the budget, never by its identifiers.
+// exceeded), unpriced (a hard cost budget applies to an alias without prices
+// for the call's unit), alias_access (the alias is listed and not granted to
+// the agent) or unsupported (the alias does not declare the call's
+// operation). Period and Scope describe the budget, never by its identifiers.
 type LLMRefusal struct {
 	Reason string
 	Period string
@@ -28,8 +31,11 @@ type LLMRefusal struct {
 func (e *LLMRefusal) Error() string { return "llm call refused: " + e.Reason }
 
 func (e *LLMRefusal) Is(target error) bool {
-	if e.Reason == "alias_access" {
+	switch e.Reason {
+	case "alias_access":
 		return target == ErrLLMAliasDenied
+	case "unsupported":
+		return target == llmgateway.ErrUnsupported
 	}
 	return target == ErrBudgetExceeded
 }
@@ -315,16 +321,26 @@ func costMicro(input, output, inputPrice, outputPrice int64) (int64, bool) {
 	return sum.Int64(), true
 }
 
-// ReserveLLM must precede every upstream call. input and output are the
+// ReserveLLM must precede every upstream chat call. input and output are the
 // call's estimated input tokens and its output cap. It refuses an agent the
-// alias is not granted to, then serializes with the other calls that share a
-// budget by locking the applicable budget rows in a fixed order, so concurrent
-// reservations never overshoot a hard limit, in tokens or in cost. The call
-// keeps the alias's current prices. A repeated request key returns the existing
-// reservation and never counts twice.
+// alias is not granted to, and an alias that does not serve chat, then
+// serializes with the other calls that share a budget by locking the
+// applicable budget rows in a fixed order, so concurrent reservations never
+// overshoot a hard limit, in tokens or in cost. The call keeps the alias's
+// current prices. A repeated request key returns the existing reservation and
+// never counts twice.
 func (a *Accounts) ReserveLLM(ctx context.Context, tenantID, agentID, alias, requestKey string, input, output int64) (LLMReservation, error) {
+	return a.reserveLLM(ctx, tenantID, agentID, alias, requestKey, llmAmounts{Operation: LLMChat, Input: input, Output: output})
+}
+
+// reserveLLM is ReserveLLM for any operation: the alias must declare it
+// (refused with reason unsupported otherwise), token budgets count its tokens
+// (none for a transcription or OCR call) and cost budgets its cost at the
+// price of its unit. A request key that names a call of another operation is
+// refused with ErrLLMAlreadyProcessed.
+func (a *Accounts) reserveLLM(ctx context.Context, tenantID, agentID, alias, requestKey string, q llmAmounts) (LLMReservation, error) {
 	if !validOrganizationText(tenantID, 100) || !validOrganizationText(agentID, 100) || !validOrganizationText(alias, 100) ||
-		!validOrganizationText(requestKey, 200) || input < 0 || output < 0 || input+output < 1 || input > 1e12 || output > 1e12 {
+		!validOrganizationText(requestKey, 200) || !q.valid(true) {
 		return LLMReservation{}, ErrInput
 	}
 	tx, err := a.store.begin(ctx)
@@ -343,10 +359,13 @@ func (a *Accounts) ReserveLLM(ctx context.Context, tenantID, agentID, alias, req
 		return LLMReservation{}, err
 	}
 	var access string
-	var priced bool
+	var tokensPriced bool
 	var inputPrice, outputPrice int64
-	err = tx.QueryRow(ctx, `SELECT access,priced,input_micro_per_mtok,output_micro_per_mtok FROM llm_model_aliases WHERE tenant_id=$1 AND alias=$2 AND status='active'`,
-		tenantID, alias).Scan(&access, &priced, &inputPrice, &outputPrice)
+	var operations []string
+	var audioPrice, pagePrice *int64
+	err = tx.QueryRow(ctx, `SELECT access,priced,input_micro_per_mtok,output_micro_per_mtok,operations,audio_micro_per_minute,ocr_micro_per_page
+        FROM llm_model_aliases WHERE tenant_id=$1 AND alias=$2 AND status='active'`,
+		tenantID, alias).Scan(&access, &tokensPriced, &inputPrice, &outputPrice, &operations, &audioPrice, &pagePrice)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && !agentOK) {
 		return LLMReservation{}, ErrNotFound
 	}
@@ -364,6 +383,12 @@ func (a *Accounts) ReserveLLM(ctx context.Context, tenantID, agentID, alias, req
 			return LLMReservation{}, &LLMRefusal{Reason: "alias_access"}
 		}
 	}
+	// So is the operation: nothing is reserved for a route the alias does not
+	// serve.
+	if !slices.Contains(operations, q.Operation) {
+		return LLMReservation{}, &LLMRefusal{Reason: "unsupported"}
+	}
+	prices := aliasPrices(q.Operation, tokensPriced, inputPrice, outputPrice, audioPrice, pagePrice)
 	// Lock every applicable budget (fixed id order) before reading usage.
 	rows, err := tx.Query(ctx, `SELECT `+budgetColumns+` FROM llm_budgets WHERE tenant_id=$1 AND status='active'
         AND (agent_id IS NULL OR agent_id=$2) AND (alias IS NULL OR alias=$3) ORDER BY id FOR UPDATE`, tenantID, agentID, alias)
@@ -384,24 +409,31 @@ func (a *Accounts) ReserveLLM(ctx context.Context, tenantID, agentID, alias, req
 		return LLMReservation{}, err
 	}
 	var existing LLMReservation
-	err = tx.QueryRow(ctx, `SELECT id,state,reserved_tokens,reserved_cost_micro FROM llm_usage WHERE tenant_id=$1 AND agent_id=$2 AND request_key=$3`, tenantID, agentID, requestKey).
-		Scan(&existing.ID, &existing.State, &existing.ReservedTokens, &existing.ReservedCostMicro)
+	var existingOperation string
+	err = tx.QueryRow(ctx, `SELECT id,state,reserved_tokens,reserved_cost_micro,operation FROM llm_usage WHERE tenant_id=$1 AND agent_id=$2 AND request_key=$3`, tenantID, agentID, requestKey).
+		Scan(&existing.ID, &existing.State, &existing.ReservedTokens, &existing.ReservedCostMicro, &existingOperation)
 	if err == nil {
+		if existingOperation != q.Operation {
+			return LLMReservation{}, ErrLLMAlreadyProcessed
+		}
 		existing.Replayed = true
 		return existing, commit(ctx, tx)
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return LLMReservation{}, err
 	}
-	out := LLMReservation{ID: newID("use"), State: "reserved", ReservedTokens: input + output}
-	if priced {
+	out := LLMReservation{ID: newID("use"), State: "reserved", ReservedTokens: q.tokens()}
+	if prices.priced {
 		var ok bool
-		if out.ReservedCostMicro, ok = costMicro(input, output, inputPrice, outputPrice); !ok {
+		if out.ReservedCostMicro, ok = prices.cost(q); !ok {
 			return LLMReservation{}, ErrInput
 		}
 	}
 	for _, b := range budgets {
-		if b.costs() && !priced {
+		if !b.costs() && out.ReservedTokens == 0 {
+			continue // seconds and pages count only in cost budgets
+		}
+		if b.costs() && !prices.priced {
 			// No estimate exists: a hard cap could not hold, a soft one counts
 			// nothing for this call.
 			if b.Mode == "hard" {
@@ -425,8 +457,10 @@ func (a *Accounts) ReserveLLM(ctx context.Context, tenantID, agentID, alias, req
 			out.SoftBudgets = append(out.SoftBudgets, LLMBudgetHit{Unit: b.unit(), Period: b.Period, Scope: b.scope()})
 		}
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO llm_usage(id,tenant_id,agent_id,alias,request_key,reserved_tokens,reserved_cost_micro,priced,input_micro_per_mtok,output_micro_per_mtok)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, out.ID, tenantID, agentID, alias, requestKey, out.ReservedTokens, out.ReservedCostMicro, priced, inputPrice, outputPrice); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO llm_usage(id,tenant_id,agent_id,alias,request_key,reserved_tokens,reserved_cost_micro,priced,input_micro_per_mtok,output_micro_per_mtok,
+        operation,reserved_audio_seconds,reserved_pages,audio_micro_per_minute,ocr_micro_per_page)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`, out.ID, tenantID, agentID, alias, requestKey, out.ReservedTokens, out.ReservedCostMicro, prices.priced,
+		inputPrice, outputPrice, q.Operation, q.AudioSeconds, q.Pages, prices.audioPerMinute, prices.perPage); err != nil {
 		return LLMReservation{}, err
 	}
 	return out, commit(ctx, tx)
@@ -442,7 +476,13 @@ func (a *Accounts) SettleLLM(ctx context.Context, tenantID, reservationID string
 
 // settleLLM also returns the call's estimated cost, nil for an unpriced alias.
 func (a *Accounts) settleLLM(ctx context.Context, tenantID, reservationID string, input, output int64) (*int64, error) {
-	if !validOrganizationText(tenantID, 100) || !validOrganizationText(reservationID, 100) || !validUsage(input, output) {
+	return a.settleLLMCall(ctx, tenantID, reservationID, llmAmounts{Input: input, Output: output})
+}
+
+// settleLLMCall settles a call of any operation at the amounts the provider
+// reported, in the call's units.
+func (a *Accounts) settleLLMCall(ctx context.Context, tenantID, reservationID string, q llmAmounts) (*int64, error) {
+	if !validOrganizationText(tenantID, 100) || !validOrganizationText(reservationID, 100) {
 		return nil, ErrInput
 	}
 	tx, err := a.store.begin(ctx)
@@ -450,7 +490,7 @@ func (a *Accounts) settleLLM(ctx context.Context, tenantID, reservationID string
 		return nil, err
 	}
 	defer rollback(tx)
-	cost, err := settleUsage(ctx, tx, tenantID, reservationID, input, output, nil)
+	cost, err := settleCall(ctx, tx, tenantID, reservationID, q, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -461,24 +501,28 @@ func validUsage(input, output int64) bool {
 	return input >= 0 && output >= 0 && input <= 1e12 && output <= 1e12
 }
 
-// settleUsage settles one call in tx at its reservation's prices. resolver,
-// when set, is the principal who settled a call of unknown outcome.
-func settleUsage(ctx context.Context, tx pgx.Tx, tenantID, id string, input, output int64, resolver *string) (*int64, error) {
+// settleCall settles one call in tx at its reservation's prices. The amounts
+// take the call's operation; another unit's amount is refused. resolver, when
+// set, is the principal who settled a call of unknown outcome.
+func settleCall(ctx context.Context, tx pgx.Tx, tenantID, id string, q llmAmounts, resolver *string) (*int64, error) {
 	var state string
-	var in, out, cost *int64
-	var priced bool
-	var inputPrice, outputPrice int64
-	err := tx.QueryRow(ctx, `SELECT state,input_tokens,output_tokens,estimated_cost_micro,priced,input_micro_per_mtok,output_micro_per_mtok
-        FROM llm_usage WHERE tenant_id=$1 AND id=$2 FOR UPDATE`, tenantID, id).Scan(&state, &in, &out, &cost, &priced, &inputPrice, &outputPrice)
+	var in, out, seconds, pages, cost *int64
+	var p llmPrices
+	err := tx.QueryRow(ctx, `SELECT state,operation,input_tokens,output_tokens,audio_seconds,pages,estimated_cost_micro,priced,input_micro_per_mtok,output_micro_per_mtok,
+        audio_micro_per_minute,ocr_micro_per_page FROM llm_usage WHERE tenant_id=$1 AND id=$2 FOR UPDATE`, tenantID, id).
+		Scan(&state, &q.Operation, &in, &out, &seconds, &pages, &cost, &p.priced, &p.input, &p.output, &p.audioPerMinute, &p.perPage)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
+	if !q.valid(false) {
+		return nil, ErrInput
+	}
 	switch state {
 	case "settled":
-		if resolver == nil && *in == input && *out == output {
+		if resolver == nil && *in == q.Input && *out == q.Output && equalAmount(seconds, q.AudioSeconds) && equalAmount(pages, q.Pages) {
 			return cost, nil
 		}
 		if resolver == nil {
@@ -489,19 +533,35 @@ func settleUsage(ctx context.Context, tx pgx.Tx, tenantID, id string, input, out
 		return nil, ErrTransition
 	}
 	cost = nil
-	if priced {
-		c, ok := costMicro(input, output, inputPrice, outputPrice)
+	if p.priced {
+		c, ok := p.cost(q)
 		if !ok {
 			return nil, ErrInput
 		}
 		cost = &c
 	}
+	seconds, pages = nil, nil
+	switch q.Operation {
+	case LLMTranscribe:
+		seconds = &q.AudioSeconds
+	case LLMOCR:
+		pages = &q.Pages
+	}
 	if _, err = tx.Exec(ctx, `UPDATE llm_usage SET state='settled',input_tokens=$3,output_tokens=$4,estimated_cost_micro=$5,settled_at=clock_timestamp(),
-        resolved_by=$6,resolved_at=CASE WHEN $6::text IS NULL THEN NULL ELSE clock_timestamp() END WHERE tenant_id=$1 AND id=$2`,
-		tenantID, id, input, output, cost, resolver); err != nil {
+        resolved_by=$6,resolved_at=CASE WHEN $6::text IS NULL THEN NULL ELSE clock_timestamp() END,audio_seconds=$7,pages=$8 WHERE tenant_id=$1 AND id=$2`,
+		tenantID, id, q.Input, q.Output, cost, resolver, seconds, pages); err != nil {
 		return nil, err
 	}
 	return cost, nil
+}
+
+// equalAmount compares a settled amount in seconds or pages, null when the
+// call does not count that unit, with a reported one.
+func equalAmount(settled *int64, reported int64) bool {
+	if settled == nil {
+		return reported == 0
+	}
+	return *settled == reported
 }
 
 // MarkLLMUnknown records that the call may have been processed. The reserved
@@ -558,6 +618,9 @@ type LLMUsageLine struct {
 	EstimatedCostMicr int64  `json:"estimated_cost_micro"`
 	PendingCostMicro  int64  `json:"pending_cost_micro"`
 	UnknownCostMicro  int64  `json:"unknown_outcome_cost_micro"`
+	// Seconds of audio and OCR pages of settled calls (ADR 023 §12).
+	SettledAudioSeconds int64 `json:"settled_audio_seconds"`
+	SettledPages        int64 `json:"settled_pages"`
 }
 
 // LLMUsageTotals is the organization's sum of the lines.
@@ -570,6 +633,9 @@ type LLMUsageTotals struct {
 	EstimatedCostMicro int64 `json:"estimated_cost_micro"`
 	PendingCostMicro   int64 `json:"pending_cost_micro"`
 	UnknownCostMicro   int64 `json:"unknown_outcome_cost_micro"`
+	// Seconds of audio and OCR pages of settled calls.
+	SettledAudioSeconds int64 `json:"settled_audio_seconds"`
+	SettledPages        int64 `json:"settled_pages"`
 }
 
 type LLMUsageReport struct {
@@ -600,7 +666,8 @@ func (a *Accounts) LLMUsage(ctx context.Context, p Principal, period string) (LL
         coalesce(sum(input_tokens) FILTER (WHERE state='settled'),0),coalesce(sum(output_tokens) FILTER (WHERE state='settled'),0),
         coalesce(sum(reserved_tokens) FILTER (WHERE state='reserved'),0),coalesce(sum(reserved_tokens) FILTER (WHERE state='unknown'),0),
         coalesce(sum(estimated_cost_micro) FILTER (WHERE state='settled'),0),
-        coalesce(sum(reserved_cost_micro) FILTER (WHERE state='reserved'),0),coalesce(sum(reserved_cost_micro) FILTER (WHERE state='unknown'),0)
+        coalesce(sum(reserved_cost_micro) FILTER (WHERE state='reserved'),0),coalesce(sum(reserved_cost_micro) FILTER (WHERE state='unknown'),0),
+        coalesce(sum(audio_seconds) FILTER (WHERE state='settled'),0),coalesce(sum(pages) FILTER (WHERE state='settled'),0)
         FROM llm_usage WHERE tenant_id=$1 AND created_at >= $2 GROUP BY agent_id,alias ORDER BY agent_id,alias`, p.TenantID, rep.Since)
 	if err != nil {
 		return LLMUsageReport{}, err
@@ -609,7 +676,7 @@ func (a *Accounts) LLMUsage(ctx context.Context, p Principal, period string) (LL
 	for rows.Next() {
 		var l LLMUsageLine
 		if err = rows.Scan(&l.AgentID, &l.Alias, &l.Calls, &l.SettledInput, &l.SettledOutput, &l.PendingTokens, &l.UnknownTokens,
-			&l.EstimatedCostMicr, &l.PendingCostMicro, &l.UnknownCostMicro); err != nil {
+			&l.EstimatedCostMicr, &l.PendingCostMicro, &l.UnknownCostMicro, &l.SettledAudioSeconds, &l.SettledPages); err != nil {
 			return LLMUsageReport{}, err
 		}
 		rep.Lines = append(rep.Lines, l)
@@ -622,6 +689,8 @@ func (a *Accounts) LLMUsage(ctx context.Context, p Principal, period string) (LL
 		t.EstimatedCostMicro += l.EstimatedCostMicr
 		t.PendingCostMicro += l.PendingCostMicro
 		t.UnknownCostMicro += l.UnknownCostMicro
+		t.SettledAudioSeconds += l.SettledAudioSeconds
+		t.SettledPages += l.SettledPages
 	}
 	if err = rows.Err(); err != nil {
 		return LLMUsageReport{}, err

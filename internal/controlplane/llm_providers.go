@@ -48,6 +48,13 @@ type LLMAlias struct {
 	// Access is "organization" (every agent of the organization) or "listed"
 	// (only the agents the alias's grants name, directly or through a team).
 	Access string `json:"access"`
+	// Operations are what the alias's model serves, in canonical order: chat,
+	// vision, embed, transcribe, ocr (ADR 023 §12).
+	Operations []string `json:"operations"`
+	// Prices of audio per minute and of OCR per page, in micro-units; absent,
+	// that unit is unpriced.
+	AudioMicroPerMinute *int64 `json:"audio_micro_per_minute,omitempty"`
+	OCRMicroPerPage     *int64 `json:"ocr_micro_per_page,omitempty"`
 }
 
 type CreateLLMProviderInput struct {
@@ -69,6 +76,11 @@ type CreateLLMAliasInput struct {
 	OutputMicroPerMTok *int64 `json:"output_micro_per_mtok,omitempty"`
 	// Access is "organization" (default) or "listed".
 	Access string `json:"access,omitempty"`
+	// Operations default to chat only.
+	Operations []string `json:"operations,omitempty"`
+	// Optional prices of audio per minute and of OCR per page.
+	AudioMicroPerMinute *int64 `json:"audio_micro_per_minute,omitempty"`
+	OCRMicroPerPage     *int64 `json:"ocr_micro_per_page,omitempty"`
 }
 
 // ErrProviderAddress: an https provider URL names an internal address
@@ -312,8 +324,16 @@ func validAliasAccess(access string) bool { return access == "organization" || a
 
 func (a *Accounts) CreateLLMAlias(ctx context.Context, p Principal, key string, in CreateLLMAliasInput) (APIReceipt, error) {
 	if !validOrganizationText(in.Alias, 100) || !validOrganizationText(in.ProviderID, 100) || !validOrganizationText(in.UpstreamModel, 200) ||
-		!validPrice(in.InputMicroPerMTok) || !validPrice(in.OutputMicroPerMTok) || (in.Access != "" && !validAliasAccess(in.Access)) {
+		!validPrice(in.InputMicroPerMTok) || !validPrice(in.OutputMicroPerMTok) || (in.Access != "" && !validAliasAccess(in.Access)) ||
+		!validPrice(in.AudioMicroPerMinute) || !validPrice(in.OCRMicroPerPage) {
 		return APIReceipt{}, ErrInput
+	}
+	operations := []string{LLMChat}
+	if in.Operations != nil {
+		var err error
+		if operations, err = normalizeOperations(in.Operations, "openai_compatible"); err != nil {
+			return APIReceipt{}, err
+		}
 	}
 	access := in.Access
 	if access == "" {
@@ -336,14 +356,17 @@ func (a *Accounts) CreateLLMAlias(ctx context.Context, p Principal, key string, 
 		return APIReceipt{}, err
 	}
 	r, err := a.withTenantReceipt(ctx, tx, p, "llm.alias.create", key, in, func() (int, any, error) {
-		var status string
-		if err := tx.QueryRow(ctx, `SELECT status FROM llm_providers WHERE tenant_id=$1 AND id=$2 FOR SHARE`, p.TenantID, in.ProviderID).Scan(&status); errors.Is(err, pgx.ErrNoRows) {
+		var status, kind string
+		if err := tx.QueryRow(ctx, `SELECT status,kind FROM llm_providers WHERE tenant_id=$1 AND id=$2 FOR SHARE`, p.TenantID, in.ProviderID).Scan(&status, &kind); errors.Is(err, pgx.ErrNoRows) {
 			return 0, nil, ErrNotFound
 		} else if err != nil {
 			return 0, nil, err
 		}
 		if status != "active" {
 			return 0, nil, ErrTransition
+		}
+		if _, err := normalizeOperations(operations, kind); err != nil {
+			return 0, nil, err
 		}
 		var taken bool
 		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM llm_model_aliases WHERE tenant_id=$1 AND alias=$2)`, p.TenantID, in.Alias).Scan(&taken); err != nil {
@@ -352,8 +375,10 @@ func (a *Accounts) CreateLLMAlias(ctx context.Context, p Principal, key string, 
 		if taken {
 			return 0, nil, ErrConflict
 		}
-		v, err := scanAlias(tx.QueryRow(ctx, `INSERT INTO llm_model_aliases(tenant_id,alias,provider_id,upstream_model,created_by,input_micro_per_mtok,output_micro_per_mtok,priced,access)
-            VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING `+aliasColumns, p.TenantID, in.Alias, in.ProviderID, in.UpstreamModel, p.ID, inputPrice, outputPrice, priced, access))
+		v, err := scanAlias(tx.QueryRow(ctx, `INSERT INTO llm_model_aliases(tenant_id,alias,provider_id,upstream_model,created_by,input_micro_per_mtok,output_micro_per_mtok,priced,access,
+            operations,audio_micro_per_minute,ocr_micro_per_page)
+            VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING `+aliasColumns, p.TenantID, in.Alias, in.ProviderID, in.UpstreamModel, p.ID, inputPrice, outputPrice, priced, access,
+			operations, in.AudioMicroPerMinute, in.OCRMicroPerPage))
 		if err != nil {
 			return 0, nil, err
 		}
@@ -368,11 +393,12 @@ func (a *Accounts) CreateLLMAlias(ctx context.Context, p Principal, key string, 
 	return r, commit(ctx, tx)
 }
 
-const aliasColumns = `alias,provider_id,upstream_model,status,created_at,input_micro_per_mtok,output_micro_per_mtok,priced,access`
+const aliasColumns = `alias,provider_id,upstream_model,status,created_at,input_micro_per_mtok,output_micro_per_mtok,priced,access,operations,audio_micro_per_minute,ocr_micro_per_page`
 
 func scanAlias(row pgx.Row) (LLMAlias, error) {
 	var v LLMAlias
-	err := row.Scan(&v.Alias, &v.ProviderID, &v.UpstreamModel, &v.Status, &v.CreatedAt, &v.InputMicroPerMTok, &v.OutputMicroPerMTok, &v.Priced, &v.Access)
+	err := row.Scan(&v.Alias, &v.ProviderID, &v.UpstreamModel, &v.Status, &v.CreatedAt, &v.InputMicroPerMTok, &v.OutputMicroPerMTok, &v.Priced, &v.Access,
+		&v.Operations, &v.AudioMicroPerMinute, &v.OCRMicroPerPage)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = ErrNotFound
 	}

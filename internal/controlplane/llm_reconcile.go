@@ -16,34 +16,45 @@ import (
 const unresolvedSQL = `(state='unknown' OR (state='reserved' AND created_at < clock_timestamp() - interval '15 minutes'))`
 
 // LLMCall is one metered call as the organization reconciles it: no request
-// key, prompt or answer.
+// key, prompt or answer. A transcription reserves and settles seconds of
+// audio, an OCR call pages; neither counts tokens (ADR 023 §12).
 type LLMCall struct {
-	ID                 string     `json:"id"`
-	AgentID            string     `json:"agent_id"`
-	Alias              string     `json:"alias"`
-	State              string     `json:"state"`
-	ReservedTokens     int64      `json:"reserved_tokens"`
-	ReservedCostMicro  int64      `json:"reserved_cost_micro"`
-	InputTokens        *int64     `json:"input_tokens,omitempty"`
-	OutputTokens       *int64     `json:"output_tokens,omitempty"`
-	EstimatedCostMicro *int64     `json:"estimated_cost_micro,omitempty"`
-	CreatedAt          time.Time  `json:"created_at"`
-	ResolvedAt         *time.Time `json:"resolved_at,omitempty"`
+	ID                   string     `json:"id"`
+	AgentID              string     `json:"agent_id"`
+	Alias                string     `json:"alias"`
+	Operation            string     `json:"operation"`
+	State                string     `json:"state"`
+	ReservedTokens       int64      `json:"reserved_tokens"`
+	ReservedAudioSeconds int64      `json:"reserved_audio_seconds,omitempty"`
+	ReservedPages        int64      `json:"reserved_pages,omitempty"`
+	ReservedCostMicro    int64      `json:"reserved_cost_micro"`
+	InputTokens          *int64     `json:"input_tokens,omitempty"`
+	OutputTokens         *int64     `json:"output_tokens,omitempty"`
+	AudioSeconds         *int64     `json:"audio_seconds,omitempty"`
+	Pages                *int64     `json:"pages,omitempty"`
+	EstimatedCostMicro   *int64     `json:"estimated_cost_micro,omitempty"`
+	CreatedAt            time.Time  `json:"created_at"`
+	ResolvedAt           *time.Time `json:"resolved_at,omitempty"`
 }
 
 // SettleLLMOutcomeInput is the usage the organization read in its provider's
-// account for one call.
+// account for one call, in the call's units: tokens for chat and embed
+// (an embedding has no output), seconds of audio for a transcription, pages
+// for OCR.
 type SettleLLMOutcomeInput struct {
 	InputTokens  int64 `json:"input_tokens"`
 	OutputTokens int64 `json:"output_tokens"`
+	AudioSeconds int64 `json:"audio_seconds,omitempty"`
+	Pages        int64 `json:"pages,omitempty"`
 }
 
-const callColumns = `id,agent_id,alias,state,reserved_tokens,reserved_cost_micro,input_tokens,output_tokens,estimated_cost_micro,created_at,resolved_at`
+const callColumns = `id,agent_id,alias,operation,state,reserved_tokens,reserved_audio_seconds,reserved_pages,reserved_cost_micro,input_tokens,output_tokens,
+    audio_seconds,pages,estimated_cost_micro,created_at,resolved_at`
 
 func scanCall(row pgx.Row) (LLMCall, error) {
 	var c LLMCall
-	err := row.Scan(&c.ID, &c.AgentID, &c.Alias, &c.State, &c.ReservedTokens, &c.ReservedCostMicro, &c.InputTokens, &c.OutputTokens,
-		&c.EstimatedCostMicro, &c.CreatedAt, &c.ResolvedAt)
+	err := row.Scan(&c.ID, &c.AgentID, &c.Alias, &c.Operation, &c.State, &c.ReservedTokens, &c.ReservedAudioSeconds, &c.ReservedPages, &c.ReservedCostMicro,
+		&c.InputTokens, &c.OutputTokens, &c.AudioSeconds, &c.Pages, &c.EstimatedCostMicro, &c.CreatedAt, &c.ResolvedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = ErrNotFound
 	}
@@ -85,14 +96,23 @@ func (a *Accounts) ListLLMUnresolved(ctx context.Context, p Principal, after str
 // reservation (quota:manage). A call already resolved, or still possibly
 // running, is refused with ErrTransition.
 func (a *Accounts) SettleLLMOutcome(ctx context.Context, p Principal, id, key string, in SettleLLMOutcomeInput) (APIReceipt, error) {
-	if !validOrganizationText(id, 100) || !validUsage(in.InputTokens, in.OutputTokens) {
+	if !validOrganizationText(id, 100) || !validUsage(in.InputTokens, in.OutputTokens) || !validUsage(in.AudioSeconds, in.Pages) {
 		return APIReceipt{}, ErrInput
 	}
-	return a.resolveLLMOutcome(ctx, p, id, key, "llm.usage.settle", struct {
+	// A settlement in tokens keeps the request hash it had before seconds and
+	// pages existed.
+	var hashed any = struct {
 		ID            string
 		Input, Output int64
-	}{id, in.InputTokens, in.OutputTokens}, func(tx pgx.Tx) error {
-		_, err := settleUsage(ctx, tx, p.TenantID, id, in.InputTokens, in.OutputTokens, &p.ID)
+	}{id, in.InputTokens, in.OutputTokens}
+	if in.AudioSeconds != 0 || in.Pages != 0 {
+		hashed = struct {
+			ID                            string
+			Input, Output, Seconds, Pages int64
+		}{id, in.InputTokens, in.OutputTokens, in.AudioSeconds, in.Pages}
+	}
+	return a.resolveLLMOutcome(ctx, p, id, key, "llm.usage.settle", hashed, func(tx pgx.Tx) error {
+		_, err := settleCall(ctx, tx, p.TenantID, id, llmAmounts{Input: in.InputTokens, Output: in.OutputTokens, AudioSeconds: in.AudioSeconds, Pages: in.Pages}, &p.ID)
 		return err
 	}, "usage.settled")
 }

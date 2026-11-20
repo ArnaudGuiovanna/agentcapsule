@@ -35,11 +35,16 @@ type SetLLMAliasAccessInput struct {
 	Access string `json:"access"`
 }
 
-// SetLLMAliasPricesInput replaces both prices. Both are required, so that a
-// price is never left at zero by omission; zero then means a free model.
+// SetLLMAliasPricesInput replaces the alias's prices. Both token prices are
+// required, so that a price is never left at zero by omission; zero then means
+// a free model. The prices of audio per minute and of OCR per page are
+// optional: absent, that unit becomes unpriced, and a hard cost budget refuses
+// its calls (ADR 023 §12).
 type SetLLMAliasPricesInput struct {
-	InputMicroPerMTok  *int64 `json:"input_micro_per_mtok"`
-	OutputMicroPerMTok *int64 `json:"output_micro_per_mtok"`
+	InputMicroPerMTok   *int64 `json:"input_micro_per_mtok"`
+	OutputMicroPerMTok  *int64 `json:"output_micro_per_mtok"`
+	AudioMicroPerMinute *int64 `json:"audio_micro_per_minute,omitempty"`
+	OCRMicroPerPage     *int64 `json:"ocr_micro_per_page,omitempty"`
 }
 
 const grantColumns = `id,alias,agent_id,team_id,status,created_at,revoked_at`
@@ -115,7 +120,7 @@ func (a *Accounts) SetLLMAliasAccess(ctx context.Context, p Principal, alias, ke
 // reservation, so the change applies to calls reserved after it.
 func (a *Accounts) SetLLMAliasPrices(ctx context.Context, p Principal, alias, key string, in SetLLMAliasPricesInput) (APIReceipt, error) {
 	if !validOrganizationText(alias, 100) || in.InputMicroPerMTok == nil || in.OutputMicroPerMTok == nil ||
-		!validPrice(in.InputMicroPerMTok) || !validPrice(in.OutputMicroPerMTok) {
+		!validPrice(in.InputMicroPerMTok) || !validPrice(in.OutputMicroPerMTok) || !validPrice(in.AudioMicroPerMinute) || !validPrice(in.OCRMicroPerPage) {
 		return APIReceipt{}, ErrInput
 	}
 	tx, err := a.store.begin(ctx)
@@ -126,20 +131,30 @@ func (a *Accounts) SetLLMAliasPrices(ctx context.Context, p Principal, alias, ke
 	if _, err = authorizeTenantAdminMutation(ctx, tx, p, authorization.ManageProviders); err != nil {
 		return APIReceipt{}, err
 	}
-	hashed := struct {
+	// Token prices alone keep the request hash they had before unit prices.
+	var hashed any = struct {
 		Alias         string
 		Input, Output int64
 	}{alias, *in.InputMicroPerMTok, *in.OutputMicroPerMTok}
+	if in.AudioMicroPerMinute != nil || in.OCRMicroPerPage != nil {
+		hashed = struct {
+			Alias         string
+			Input, Output int64
+			Audio, Page   *int64
+		}{alias, *in.InputMicroPerMTok, *in.OutputMicroPerMTok, in.AudioMicroPerMinute, in.OCRMicroPerPage}
+	}
 	r, err := a.withTenantReceipt(ctx, tx, p, "llm.alias.prices", key, hashed, func() (int, any, error) {
 		cur, err := aliasForChange(ctx, tx, p.TenantID, alias)
 		if err != nil {
 			return 0, nil, err
 		}
-		if cur.Priced && cur.InputMicroPerMTok == *in.InputMicroPerMTok && cur.OutputMicroPerMTok == *in.OutputMicroPerMTok {
+		if cur.Priced && cur.InputMicroPerMTok == *in.InputMicroPerMTok && cur.OutputMicroPerMTok == *in.OutputMicroPerMTok &&
+			samePrice(cur.AudioMicroPerMinute, in.AudioMicroPerMinute) && samePrice(cur.OCRMicroPerPage, in.OCRMicroPerPage) {
 			return 200, cur, nil
 		}
-		v, err := scanAlias(tx.QueryRow(ctx, `UPDATE llm_model_aliases SET input_micro_per_mtok=$3,output_micro_per_mtok=$4,priced=true
-            WHERE tenant_id=$1 AND alias=$2 RETURNING `+aliasColumns, p.TenantID, alias, *in.InputMicroPerMTok, *in.OutputMicroPerMTok))
+		v, err := scanAlias(tx.QueryRow(ctx, `UPDATE llm_model_aliases SET input_micro_per_mtok=$3,output_micro_per_mtok=$4,priced=true,
+            audio_micro_per_minute=$5,ocr_micro_per_page=$6 WHERE tenant_id=$1 AND alias=$2 RETURNING `+aliasColumns,
+			p.TenantID, alias, *in.InputMicroPerMTok, *in.OutputMicroPerMTok, in.AudioMicroPerMinute, in.OCRMicroPerPage))
 		if err != nil {
 			return 0, nil, err
 		}
@@ -153,6 +168,8 @@ func (a *Accounts) SetLLMAliasPrices(ctx context.Context, p Principal, alias, ke
 	}
 	return r, commit(ctx, tx)
 }
+
+func samePrice(a, b *int64) bool { return (a == nil) == (b == nil) && (a == nil || *a == *b) }
 
 // CreateLLMAliasGrant names an agent, or a team, that may call an alias whose
 // access is "listed". A grant on an alias open to the organization is kept and

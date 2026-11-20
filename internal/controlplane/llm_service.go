@@ -35,6 +35,10 @@ type LLMCallEvent struct {
 	Reason, Period, Scope string
 	// Settled usage and its estimated cost (micro-units; 0 when unpriced).
 	InputTokens, OutputTokens, CostMicro int64
+	// Operation is embed, transcribe or ocr for those routes, empty for chat;
+	// AudioSeconds and Pages are their settled units (ADR 023 §12).
+	Operation           string
+	AudioSeconds, Pages int64
 	// SoftBudgets are the soft budgets this call went past.
 	SoftBudgets []LLMBudgetHit
 }
