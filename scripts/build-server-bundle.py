@@ -14,6 +14,7 @@ import json
 from pathlib import Path
 import os
 import re
+import runpy
 import shutil
 import subprocess
 import tarfile
@@ -101,14 +102,10 @@ def runtime_files(dist,kernel,vmm):
 
 
 def image_archive(out,work,epoch):
+    oidc_image = runpy.run_path(str(Path(__file__).with_name("release_tools.py")))["oidc_image"]
     services=json.loads((ROOT/"runtime/interop/profile.json").read_bytes())["services"]
     sources={name:("docker",ref) for name,ref in services.items()}
-    if (ROOT/"deploy/oidc").is_dir():
-        unit=(ROOT/"deploy/oidc/agentcapsule-oidc.service").read_text()
-        refs=re.findall(r"quay\.io/keycloak/keycloak@sha256:[a-f0-9]{64}",unit)
-        if len(set(refs)) != 1:
-            raise ValueError("OIDC service must declare the pinned Keycloak image")
-        sources["oidc"]=("podman",refs[0])
+    sources["oidc"]=("podman",oidc_image(ROOT))
     metadata=[]
     files={}
     for service,(engine,ref) in sources.items():

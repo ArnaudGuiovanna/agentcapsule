@@ -11,14 +11,17 @@ release-audit job runs the real tools.
 import datetime
 import hashlib
 import importlib.util
+import io
 import json
 from pathlib import Path
 import shutil
 import stat
+import subprocess
 import sys
 import tarfile
 import tempfile
 import unittest
+from unittest.mock import patch
 
 SCRIPTS = Path(__file__).resolve().parent
 sys.dont_write_bytecode = True
@@ -209,6 +212,11 @@ class AllowlistTest(Temporary):
 
 
 class ScanTest(Temporary):
+    def oidc_unit(self):
+        path = self.dir / TOOLS.OIDC_UNIT
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+
     def test_deploy_images_must_be_pinned_by_digest(self):
         deploy = self.dir / "deploy" / "interop"
         deploy.mkdir(parents=True)
@@ -216,14 +224,71 @@ class ScanTest(Temporary):
         (deploy / "compose.yml").write_text(
             f"services:\n  a:\n    image: ghcr.io/x/a:1@sha256:{digest}\n  b:\n    image: docker.io/library/b:2\n")
         (deploy / "notes.txt").write_text("image: not/yaml:1\n")
+        shutil.copyfile(SCAN.ROOT / TOOLS.OIDC_UNIT, self.oidc_unit())
         pinned, unpinned = SCAN.deploy_images(self.dir)
-        self.assertEqual(list(pinned), [f"ghcr.io/x/a:1@sha256:{digest}"])
+        self.assertEqual(set(pinned), {f"ghcr.io/x/a:1@sha256:{digest}", TOOLS.oidc_image()})
         self.assertEqual(unpinned, ["deploy/interop/compose.yml: docker.io/library/b:2"])
 
     def test_the_repository_deploy_images_are_all_pinned(self):
         pinned, unpinned = SCAN.deploy_images()
         self.assertEqual(unpinned, [])
-        self.assertGreater(len(pinned), 0)
+        profile = json.loads((SCAN.ROOT / "runtime/interop/profile.json").read_text())
+        for image in profile["services"].values():
+            self.assertEqual(pinned[image], "deploy/interop/compose.yml")
+        self.assertEqual(pinned[TOOLS.oidc_image()], str(TOOLS.OIDC_UNIT))
+
+    def test_deploy_scan_refuses_an_absent_or_unpinned_oidc_image(self):
+        discover = SCAN.deploy_images
+        unit = self.oidc_unit()
+        ref = "quay.io/keycloak/keycloak@sha256:" + "a" * 64
+        run = "ExecStart=/usr/bin/podman run "
+        with patch.object(SCAN, "deploy_images", lambda: discover(self.dir)):
+            args = ["--deploy-images", "--output", str(self.dir / "out")]
+            with self.assertRaises(FileNotFoundError):
+                SCAN.main(args)
+            for directive in (
+                "# " + run + ref,
+                run + "quay.io/keycloak/keycloak:latest start",
+                run + ref + "a start",
+                run + "--name " + ref + " another/image start",
+                run + "another/image start " + ref,
+                run + ref + "\n" + run + ref,
+            ):
+                with self.subTest(directive=directive):
+                    unit.write_text("[Unit]\nDescription=" + ref + "\n[Service]\n" + directive + "\n")
+                    with self.assertRaisesRegex(ValueError, "Podman"):
+                        SCAN.main(args)
+
+    def test_deploy_scan_invokes_grype_for_pinned_keycloak_and_compose(self):
+        registry = []
+        oidc = TOOLS.oidc_image()
+
+        def grype(args, **kwargs):
+            if args[1:3] == ["db", "status"]:
+                return subprocess.CompletedProcess(args, 0, stdout="{}")
+            self.assertEqual(args[-2:], ["--platform", "linux/amd64"])
+            source = args[1]
+            registry.append(source)
+            matches = []
+            if source == "registry:" + oidc:
+                matches.append({"vulnerability": {"id": "TEST-1", "severity": "High"},
+                                "artifact": {"name": "fixture"}})
+            report = Path(args[args.index("-o") + 1].removeprefix("json="))
+            report.write_text(json.dumps({"matches": matches}))
+            return subprocess.CompletedProcess(args, 0)
+
+        out = self.dir / "out"
+        allowlist = self.write_json("allowlist.json", {"entries": []})
+        with (patch.object(SCAN.TOOLS, "tool", return_value="grype"),
+              patch.object(SCAN.subprocess, "run", grype), patch("sys.stdout", new_callable=io.StringIO)):
+            self.assertEqual(SCAN.main(["--deploy-images", "--no-db-update", "--allowlist", str(allowlist),
+                                        "--output", str(out), "--cache", str(self.dir / "cache")]), 1)
+        profile = json.loads((SCAN.ROOT / "runtime/interop/profile.json").read_text())
+        self.assertCountEqual(registry, ["registry:" + ref for ref in [*profile["services"].values(), oidc]])
+        summary = json.loads((out / "summary.json").read_text())
+        keycloak = next(t for t in summary["targets"] if t["name"] == SCAN.target_name("image", oidc))
+        self.assertTrue(keycloak["blocking"])
+        self.assertEqual([f["id"] for f in keycloak["blocked"]], ["TEST-1"])
 
     def test_grype_matches_with_null_fields_are_normalized(self):
         report = {"matches": [{
@@ -240,8 +305,7 @@ class ScanTest(Temporary):
 
     def test_offline_inventory_uses_only_the_pinned_image_policy(self):
         profile = json.loads((SCAN.ROOT / "runtime/interop/profile.json").read_text())["services"]
-        unit = (SCAN.ROOT / "deploy/oidc/agentcapsule-oidc.service").read_text()
-        profile["oidc"] = SCAN.re.search(r"quay\.io/keycloak/keycloak@sha256:[0-9a-f]{64}", unit)[0]
+        profile["oidc"] = TOOLS.oidc_image()
         docs, records = [], []
         for service, ref in profile.items():
             sbom = self.dir / ("oci-" + service + ".spdx.json")
@@ -252,6 +316,11 @@ class ScanTest(Temporary):
         index.write_text(json.dumps({"images":records}))
         policies = SCAN.offline_image_policies(index, docs)
         self.assertEqual(policies["sbom:oci-directory"], SCAN.target_name("image", profile["directory"]))
+        self.assertEqual(policies["sbom:oci-oidc"], SCAN.target_name("image", profile["oidc"]))
+        index.write_text(json.dumps({"images": [r for r in records if r["service"] != "oidc"]}))
+        with self.assertRaisesRegex(ValueError, "missing offline"):
+            SCAN.offline_image_policies(index, docs)
+        index.write_text(json.dumps({"images": records}))
         docs[0].write_bytes(b"changed after inspection")
         with self.assertRaisesRegex(ValueError, "digest"):
             SCAN.offline_image_policies(index, docs)

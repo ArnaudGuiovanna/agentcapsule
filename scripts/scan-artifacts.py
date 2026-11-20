@@ -6,9 +6,9 @@ grype, pinned by scripts/release-tools.json, scans:
   --sbom FILE          an SPDX SBOM written by release-sbom.py: what is
                        scanned is what is published (binaries, guest image,
                        harness packages);
-  --deploy-images      every container image that a file under deploy/
-                       names, pulled from its registry by digest, without
-                       Docker; an image not pinned by digest fails the scan;
+  --deploy-images      the images in deploy/ YAML and the Keycloak image run
+                       by the OIDC systemd unit, pulled by digest from their
+                       registries without Docker;
   --image REF          another image, pinned by digest;
   --manifest FILE      the lock file of a shipped dependency set (Python
                        requirements, npm package-lock.json), cataloged by
@@ -63,6 +63,8 @@ def deploy_images(root=ROOT):
                 pinned.setdefault(image, where)
             else:
                 unpinned.append(f"{where}: {image}")
+    oidc = TOOLS.oidc_image(root)
+    pinned.setdefault(oidc, str(TOOLS.OIDC_UNIT))
     return pinned, unpinned
 
 
@@ -110,11 +112,7 @@ def offline_image_policies(index, sboms):
     """Apply the image's existing policy to its byte-checked local inventory."""
     profile = json.loads((ROOT / "runtime/interop/profile.json").read_bytes())
     approved = dict(profile["services"])
-    unit = (ROOT / "deploy/oidc/agentcapsule-oidc.service").read_text()
-    oidc = set(re.findall(r"quay\.io/keycloak/keycloak@sha256:[0-9a-f]{64}", unit))
-    if len(oidc) != 1:
-        raise ValueError("expected one pinned OIDC image")
-    approved["oidc"] = oidc.pop()
+    approved["oidc"] = TOOLS.oidc_image(ROOT)
     by_name = {path.name: path for path in sboms}
     policies = {}
     for image in json.loads(index.read_bytes())["images"]:
