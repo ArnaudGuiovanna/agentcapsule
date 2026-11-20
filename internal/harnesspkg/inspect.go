@@ -49,7 +49,7 @@ func InspectRootfs(ctx context.Context, image string, m HarnessManifest, sb sand
 		mode, _ := strconv.ParseInt(string(match[2]), 8, 64)
 		return string(match[1]), mode, nil
 	}
-	for _, mp := range MountPoints {
+	for _, mp := range MountPointsOf(m.Base) {
 		kind, _, err := stat(mp)
 		if err != nil {
 			return err
