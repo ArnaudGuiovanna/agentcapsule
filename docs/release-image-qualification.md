@@ -17,7 +17,7 @@ On 20 November 2026 the pull request scan command also ran locally in WSL agains
 
 ## Release decisions
 
-The six findings below require an updated Keycloak image that passes the release scan.
+For `v0.0.1`, the six findings below are accepted by reviewed, expiring entries in [the allowlist](../scripts/vulnerability-allowlist.json), until 20 January 2027. On 20 November 2026 Keycloak 26.8.2 was still the latest image on quay.io, so no updated image could remove them. Each entry records why the finding is not reachable in this deployment, or why the reported package already has its remedy, and what removes the entry. An updated Keycloak image that passes the release scan without these entries remains the goal.
 
 | Image | Installed package | Fix reported by Grype | Advisory |
 |---|---|---|---|
