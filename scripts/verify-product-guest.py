@@ -294,11 +294,14 @@ def main():
         run("compile", [a.go, "test", "-c", "-buildvcs=false", "-race", "-tags=kvm_integration,kvm_product_integration",
                         "-o", out / "product-runtime.test", "./internal/runtime"], 300)
         run("integration", [a.go, "tool", "test2json", "-p", "github.com/ArnaudGuiovanna/agentcapsule/internal/runtime",
-                            out / "product-runtime.test", "-test.v", "-test.run=^TestProductGuest", "-test.timeout=240s"], 270)
+                            out / "product-runtime.test", "-test.v", "-test.run=^TestProductGuest", "-test.timeout=600s"], 630)
         events = [json.loads(line) for line in (out / "integration.log").read_text().splitlines()]
         assert not any(e["Action"] in ["skip", "fail"] for e in events)
         passed = {e["Test"] for e in events if e["Action"] == "pass" and "Test" in e}
-        required = {"TestProductGuestEncryptedPersistenceAndIsolation", "TestProductGuestRejectsUnlockedVMMBeforeKeyDelivery"}
+        required = {"TestProductGuestEncryptedPersistenceAndIsolation", "TestProductGuestRejectsUnlockedVMMBeforeKeyDelivery",
+                    "TestProductGuestSharesOneCorpusImageAcrossThreeVMs", "TestProductGuestMountsCorporaReadOnlyAndNoExec",
+                    "TestProductGuestRefusesACorpusOfAnotherUUID", "TestProductGuestOrdersCorporaWithAndWithoutARegistryHarness",
+                    "TestProductGuestRunsABaseOneHarnessUnchanged"}
         assert required <= passed
         worker_passed = set()
         conformance_passed = set()
