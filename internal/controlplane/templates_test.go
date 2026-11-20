@@ -15,7 +15,7 @@ import (
 func deploymentLab(t *testing.T) (*tenantLab, *AgentCatalog, Principal, TemplateRevision) {
 	t.Helper()
 	l, c, owner := agentLab(t)
-	image := SystemImage{"ubuntu@1", ImageDigests{"sha256:" + strings.Repeat("b", 64), "sha256:" + strings.Repeat("a", 64)}}
+	image := SystemImage{ID: "ubuntu@1", ImageDigests: ImageDigests{"sha256:" + strings.Repeat("b", 64), "sha256:" + strings.Repeat("a", 64)}}
 	if err := l.s.ReportDeploymentHost(t.Context(), c.host, HostProvisioningBudget{MaxActive: 8, VCPUs: 16, UIDSlots: 10000, MemoryMiB: 16384}, []ImageDigests{image.ImageDigests}); err != nil {
 		t.Fatal(err)
 	}

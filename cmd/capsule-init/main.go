@@ -107,6 +107,11 @@ func run() error {
 	} else if !os.IsNotExist(err) {
 		return err
 	}
+	// Corpora, or the builder's drives, follow the harness drive; a drive
+	// whose UUID or size differs ends the boot here.
+	if err := mountCorpora(harnessRoot); err != nil {
+		return err
+	}
 	var platform *capsuleprotocol.PlatformClient
 	platformPath := ""
 	if !credentials.Identity.FenceOnly && credentials.Platform != nil {

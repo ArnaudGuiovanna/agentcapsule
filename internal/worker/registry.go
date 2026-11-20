@@ -241,7 +241,7 @@ func (h *HarnessImporter) ImportOne(ctx context.Context) (bool, error) {
 		return true, ferr
 	}
 	_, err = h.store.CompleteHarnessImport(ctx, job, controlplane.ImportedRelease{Name: pkg.Manifest.Name, Version: pkg.Manifest.Version,
-		RootfsDigest: pkg.RootfsDigest, RootfsBytes: pkg.RootfsSize, Signer: pkg.Signer, Capabilities: pkg.Manifest.Capabilities})
+		RootfsDigest: pkg.RootfsDigest, RootfsBytes: pkg.RootfsSize, Signer: pkg.Signer, Capabilities: pkg.Manifest.Capabilities, Base: pkg.Manifest.Base})
 	return true, err
 }
 

@@ -22,6 +22,9 @@ type ImageDigests struct {
 type SystemImage struct {
 	ID string `json:"reference"` // name@version
 	ImageDigests
+	// Features are what the image's capsule-init can do beyond the base
+	// guest, fixed at approval (SystemImageFeatures).
+	Features []string `json:"features"`
 }
 type HostProvisioningBudget struct {
 	MaxActive, VCPUs, UIDSlots int
@@ -73,13 +76,14 @@ func (c *AgentCatalog) ApproveSystemImage(ctx context.Context, p Principal, key 
 	if err = authorizePlatform(ctx, tx, p); err != nil {
 		return APIReceipt{}, err
 	}
-	if !imageID(in.ID) || !validArtifactDigest(in.Kernel) || !validArtifactDigest(in.Initrd) {
+	if !imageID(in.ID) || !validArtifactDigest(in.Kernel) || !validArtifactDigest(in.Initrd) || !validFeatures(in.Features) {
 		return APIReceipt{}, ErrInput
 	}
+	in.Features = sortedFeatures(in.Features)
 	out, err := c.accounts.withReceipt(ctx, tx, scope(p, "POST", "/v1/system-images", key), in, func() (int, any, error) {
 		var id string
-		err := tx.QueryRow(ctx, `INSERT INTO system_images(id,kernel_digest,initrd_digest,approved_by) VALUES($1,$2,$3,$4)
- ON CONFLICT(id) DO UPDATE SET id=EXCLUDED.id WHERE (system_images.kernel_digest,system_images.initrd_digest)=(EXCLUDED.kernel_digest,EXCLUDED.initrd_digest) RETURNING id`, in.ID, in.Kernel, in.Initrd, p.ID).Scan(&id)
+		err := tx.QueryRow(ctx, `INSERT INTO system_images(id,kernel_digest,initrd_digest,approved_by,features) VALUES($1,$2,$3,$4,$5)
+ ON CONFLICT(id) DO UPDATE SET id=EXCLUDED.id WHERE (system_images.kernel_digest,system_images.initrd_digest,system_images.features)=(EXCLUDED.kernel_digest,EXCLUDED.initrd_digest,EXCLUDED.features) RETURNING id`, in.ID, in.Kernel, in.Initrd, p.ID, in.Features).Scan(&id)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return 0, nil, ErrTransition
 		}
@@ -111,7 +115,7 @@ func (c *AgentCatalog) SystemImages(ctx context.Context, p Principal, after stri
 	if err != nil {
 		return nil, err
 	}
-	rows, err := tx.Query(ctx, `SELECT i.id,i.kernel_digest,i.initrd_digest FROM system_images i JOIN host_system_images h USING(kernel_digest,initrd_digest) WHERE h.host_id=$1 AND i.id>$2 ORDER BY i.id LIMIT $3`, c.host, after, limit)
+	rows, err := tx.Query(ctx, `SELECT i.id,i.kernel_digest,i.initrd_digest,i.features FROM system_images i JOIN host_system_images h USING(kernel_digest,initrd_digest) WHERE h.host_id=$1 AND i.id>$2 ORDER BY i.id LIMIT $3`, c.host, after, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -119,9 +123,10 @@ func (c *AgentCatalog) SystemImages(ctx context.Context, p Principal, after stri
 	defer rows.Close()
 	for rows.Next() {
 		var v SystemImage
-		if err := rows.Scan(&v.ID, &v.Kernel, &v.Initrd); err != nil {
+		if err := rows.Scan(&v.ID, &v.Kernel, &v.Initrd, &v.Features); err != nil {
 			return nil, err
 		}
+		v.Features = sortedFeatures(v.Features)
 		items = append(items, v)
 	}
 	return items, rows.Err()

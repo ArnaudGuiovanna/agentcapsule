@@ -56,7 +56,11 @@ filesystem of the harness; the platform never mounts it on the host.
 
 The base `agentcapsule-guest/1` requires these directories in `harness.ext4`, where the
 guest mounts its runtime: `/dev`, `/proc`, `/run`, `/tmp` and `/var/lib/agent` (the
-agent's private data). `pack` creates them when they are missing. The entrypoint must be
+agent's private data). `pack` creates them when they are missing. The base
+`agentcapsule-guest/2` adds `/corpus`, where the guest mounts the agent's corpora
+([ADR 023](adr/023-corpora.md), [guest/README.md](guest/README.md#corpora)); only
+a release of base 2 can be bound to corpora. The release records its base, and
+`GET /v1/harness-releases` shows it. The entrypoint must be
 an executable file (or a symlink) inside the image. The harness runs chrooted in its
 image, as an unprivileged user, so it must carry everything it needs (a static binary,
 or an interpreter and its libraries).

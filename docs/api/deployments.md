@@ -11,6 +11,13 @@ Content-Type: application/json
 {"reference":"ubuntu@1","kernel_digest":"sha256:<64 hex>","initrd_digest":"sha256:<64 hex>"}
 ```
 
+`features` (default none) lists what the image's `capsule-init` can do beyond
+the base guest, from a closed list: `corpus.mount`, it mounts corpora
+([ADR 023](../adr/023-corpora.md) §5.5). An approval is immutable: the same
+reference approved again with other digests or other features is
+`409 invalid_transition`. `GET /v1/system-images` shows each image's
+`features`.
+
 The worker reports its default kernel and initrd automatically. Additional pairs belong in its configuration under `system_images`, each with `kernel` and `initrd` image objects using the same path and SHA-256 fields as the default image. For an imported OCI harness, the verified root filesystem is a separate read-only drive. An image with a built-in harness must have the same initrd digest as the local harness release.
 
 With an organization owner's session, send each POST with its own Idempotency-Key.

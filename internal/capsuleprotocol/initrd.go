@@ -17,12 +17,14 @@ type HarnessLaunch struct {
 
 const (
 	HarnessConfigPath = "/etc/capsule/harness.json"
-	// HarnessDevice is the second virtio drive; the first is the data volume.
+	// HarnessDevice is the second virtio drive (HarnessDrive); the first is
+	// the data volume. Corpus and build drives come after it.
 	HarnessDevice = "/dev/vdb"
 )
 
 // HarnessMountPoints must exist as directories in every harness filesystem of
 // base agentcapsule-guest/1; capsule-init mounts the guest's runtime there.
+// Base agentcapsule-guest/2 adds CorpusMountPoint.
 var HarnessMountPoints = []string{"/dev", "/proc", "/run", "/tmp", "/var/lib/agent"}
 
 func (h HarnessLaunch) Validate() error {
@@ -41,8 +43,10 @@ func (h HarnessLaunch) Validate() error {
 // concatenated archives; the pinned base image is unchanged. This boot-specific
 // file contains only guest credentials and must never be archived or logged.
 // harness, when set, adds HarnessConfigPath for a harness on its own drive.
+// corpora, when set, adds CorporaConfigPath; its drive indexes must follow
+// the harness drive when there is one (FirstExtraDrive).
 // See https://www.kernel.org/doc/html/latest/driver-api/early-userspace/buffer-format.html.
-func AppendBootConfig(out io.WriteSeeker, guest Credentials, harness *HarnessLaunch) error {
+func AppendBootConfig(out io.WriteSeeker, guest Credentials, harness *HarnessLaunch, corpora *GuestCorpora) error {
 	if err := guest.Identity.Validate(); err != nil {
 		return err
 	}
@@ -50,12 +54,20 @@ func AppendBootConfig(out io.WriteSeeker, guest Credentials, harness *HarnessLau
 	if err != nil {
 		return err
 	}
-	var launch []byte
+	var launch, drives []byte
 	if harness != nil {
 		if err = harness.Validate(); err != nil {
 			return err
 		}
 		if launch, err = json.Marshal(harness); err != nil {
+			return err
+		}
+	}
+	if corpora != nil {
+		if err = corpora.Validate(FirstExtraDrive(harness != nil)); err != nil {
+			return err
+		}
+		if drives, err = json.Marshal(corpora); err != nil {
 			return err
 		}
 	}
@@ -95,6 +107,11 @@ func AppendBootConfig(out io.WriteSeeker, guest Credentials, harness *HarnessLau
 	}
 	if launch != nil {
 		if err := entry("etc/capsule/harness.json", 0100400, launch); err != nil {
+			return err
+		}
+	}
+	if drives != nil {
+		if err := entry("etc/capsule/corpora.json", 0100400, drives); err != nil {
 			return err
 		}
 	}

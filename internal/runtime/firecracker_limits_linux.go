@@ -26,19 +26,27 @@ type DriveRate struct {
 }
 
 // DriveLimits are the ceilings of every VM of a host: Volume for the agent's
-// encrypted volume, Harness for a registry harness image. A harness image may
-// be read whole once at full speed at each boot (a one-time burst of its size),
-// then at Harness's rate.
+// encrypted volume and a corpus build's drives, Harness for a registry
+// harness image, Corpus for each corpus image (ADR 023 §5.1). A harness image
+// may be read whole once at full speed at each boot (a one-time burst of its
+// size), then at Harness's rate; a corpus image only its first
+// CorpusBurstBytes.
 type DriveLimits struct {
 	Volume  DriveRate `json:"volume"`
 	Harness DriveRate `json:"harness"`
+	Corpus  DriveRate `json:"corpus"`
 }
 
 // DefaultDriveLimits apply when the operator sets none (ADR 012).
 var DefaultDriveLimits = DriveLimits{
 	Volume:  DriveRate{BandwidthMiBPerSecond: 64, IOPS: 2000},
 	Harness: DriveRate{BandwidthMiBPerSecond: 128, IOPS: 4000},
+	Corpus:  DriveRate{BandwidthMiBPerSecond: 128, IOPS: 4000},
 }
+
+// CorpusBurstBytes caps the one-time burst of a corpus drive: a corpus of
+// several GiB is read on demand, not whole at each boot.
+const CorpusBurstBytes = 256 << 20
 
 func (r DriveRate) valid() bool {
 	return r.BandwidthMiBPerSecond >= 1 && r.BandwidthMiBPerSecond <= 4096 && r.IOPS >= 10 && r.IOPS <= 1_000_000
@@ -47,16 +55,21 @@ func (r DriveRate) valid() bool {
 // Validate refuses a ceiling outside 1 MiB/s to 4 GiB/s or 10 to 1,000,000
 // operations per second.
 func (l DriveLimits) Validate() error {
-	if !l.Volume.valid() || !l.Harness.valid() {
+	if !l.Volume.valid() || !l.Harness.valid() || !l.Corpus.valid() {
 		return errors.New("invalid drive limits")
 	}
 	return nil
 }
 
-// orDefault: the zero value means the defaults, so no VM boots unlimited.
+// orDefault: a zero rate means its default, so no VM boots unlimited, and a
+// configuration that predates a drive kind keeps working.
 func (l DriveLimits) orDefault() DriveLimits {
-	if l == (DriveLimits{}) {
-		return DefaultDriveLimits
+	for _, r := range []struct{ got, fallback *DriveRate }{
+		{&l.Volume, &DefaultDriveLimits.Volume}, {&l.Harness, &DefaultDriveLimits.Harness}, {&l.Corpus, &DefaultDriveLimits.Corpus},
+	} {
+		if *r.got == (DriveRate{}) {
+			*r.got = *r.fallback
+		}
 	}
 	return l
 }

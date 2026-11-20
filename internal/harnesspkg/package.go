@@ -20,6 +20,7 @@ import (
 	"io"
 	"os"
 	"path"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -43,8 +44,13 @@ const (
 	Protocol     = "capsule.v1"
 	Architecture = "x86_64"
 	// GuestBase names the guest ABI (kernel, capsule-init, mount layout) a
-	// harness is built against. A platform runs only the bases it supports.
+	// harness is built against. A platform runs only the bases it supports:
+	// this one and GuestBase2.
 	GuestBase = "agentcapsule-guest/1"
+	// GuestBase2 adds the mount point /corpus, where the guest mounts the
+	// agent's corpora (ADR 023 §5.4). Only a harness of this base, or a
+	// built-in one, can be bound to corpora.
+	GuestBase2 = "agentcapsule-guest/2"
 
 	MaxManifestBytes  = 64 << 10
 	MaxChecksumsBytes = 16 << 10
@@ -55,6 +61,22 @@ const (
 // agentcapsule-guest/1: the guest mounts devices, /proc, /run, /tmp and the
 // agent's data directory there. pack creates them when missing.
 var MountPoints = []string{"/dev", "/proc", "/run", "/tmp", "/var/lib/agent"}
+
+// CorpusMountPoint is the mount point base 2 adds, the guest's
+// capsuleprotocol.CorpusMountPoint.
+const CorpusMountPoint = "/corpus"
+
+// MountPointsOf returns the mount points of a supported base: base 2 adds
+// CorpusMountPoint to MountPoints.
+func MountPointsOf(base string) []string {
+	if base == GuestBase2 {
+		return append(slices.Clone(MountPoints), CorpusMountPoint)
+	}
+	return slices.Clone(MountPoints)
+}
+
+// CorpusCapable tells whether a harness of base can have corpora mounted.
+func CorpusCapable(base string) bool { return base == GuestBase2 }
 
 // ErrInvalid: the package is malformed, tampered with or incompatible. The
 // message names the failed check, never file contents.
@@ -124,7 +146,7 @@ func (m HarnessManifest) Validate() error {
 		return invalid("protocol must be %s", Protocol)
 	case m.Architecture != Architecture:
 		return invalid("architecture must be %s", Architecture)
-	case m.Base != GuestBase:
+	case m.Base != GuestBase && m.Base != GuestBase2:
 		return invalid("unsupported base")
 	case len(m.Entrypoint) < 1 || len(m.Entrypoint) > 32:
 		return invalid("entrypoint")

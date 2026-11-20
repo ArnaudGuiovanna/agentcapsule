@@ -40,7 +40,7 @@ func BuildRootfs(ctx context.Context, m HarnessManifest, srcDir, out string, siz
 	if err != nil {
 		return err
 	}
-	if paths, err = addMountPoints(stage, paths); err != nil {
+	if paths, err = addMountPoints(stage, paths, m.Base); err != nil {
 		return err
 	}
 	seed := sha256.Sum256([]byte(m.Name + "\x00" + m.Version))
@@ -111,10 +111,11 @@ func stageTree(src, dst string) ([]string, error) {
 }
 
 // addMountPoints creates the empty directories the guest base mounts its
-// runtime on, unless the harness already provides them as directories.
-func addMountPoints(stage string, paths []string) ([]string, error) {
+// runtime on (MountPointsOf), unless the harness already provides them as
+// directories.
+func addMountPoints(stage string, paths []string, base string) ([]string, error) {
 	fixed := time.Unix(1, 0)
-	for _, mp := range MountPoints {
+	for _, mp := range MountPointsOf(base) {
 		parts := strings.Split(strings.TrimPrefix(mp, "/"), "/")
 		for i := range parts {
 			p := "/" + strings.Join(parts[:i+1], "/")

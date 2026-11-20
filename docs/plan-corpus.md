@@ -22,7 +22,7 @@ Les routes, formats et commandes ci-dessous sont des propositions de conception.
 | 1. Formats et paquet | Non démarré |
 | 2. Passerelle multimodale | Non démarré |
 | 3. Sources Git | Non démarré |
-| 4. Disques supplémentaires et montage dans l’invité | Non démarré |
+| 4. Disques supplémentaires et montage dans l’invité | Fait, KVM à exécuter (liste ordonnée de disques, `drive_limits.corpus`, refus EXDEV et contrôle `corpus_cache_filesystem`, `corpora.json`, contrôle de l’UUID dans `capsule-init`, ABI `agentcapsule-guest/2`, migration 0056 : `system_images.features` et `harness_releases.base` ; 5 tests KVM `TestProductGuest*` écrits ; noyau inchangé ; écarts C14 à C20 de l’ADR 023) |
 | 5. Agent de construction | Non démarré |
 | 6. Publication, liaison et cache | Non démarré |
 | 7. CLI et documentation | Non démarré |

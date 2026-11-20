@@ -58,11 +58,14 @@ func (h *FirecrackerHost) prepareControl(a *HostAgent) (capsuleprotocol.Credenti
 	return guest, syncDir(filepath.Dir(h.credentialPath(a.Run)))
 }
 
-func appendControlConfig(f *os.File, guest capsuleprotocol.Credentials, harness *HarnessImage) error {
+// appendControlConfig appends the boot's files to its initrd: credentials,
+// the launch of a registry harness, and corpora.json when the VM has
+// corpora or build drives.
+func appendControlConfig(f *os.File, guest capsuleprotocol.Credentials, harness *HarnessImage, corpora *capsuleprotocol.GuestCorpora) error {
 	if harness == nil {
-		return capsuleprotocol.AppendBootConfig(f, guest, nil)
+		return capsuleprotocol.AppendBootConfig(f, guest, nil, corpora)
 	}
-	return capsuleprotocol.AppendBootConfig(f, guest, &capsuleprotocol.HarnessLaunch{Entrypoint: harness.Entrypoint})
+	return capsuleprotocol.AppendBootConfig(f, guest, &capsuleprotocol.HarnessLaunch{Entrypoint: harness.Entrypoint}, corpora)
 }
 
 func (h *FirecrackerHost) controlCredentials(a *HostAgent) (capsuleprotocol.Credentials, error) {

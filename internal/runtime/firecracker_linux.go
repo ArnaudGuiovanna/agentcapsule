@@ -104,6 +104,11 @@ type HostAgent struct {
 	// cache, attached as the second drive; otherwise the platform image's
 	// built-in harness runs.
 	Harness *HarnessImage `json:"harness,omitempty"`
+	// Corpora are read-only corpus images, attached after the harness in
+	// this order and mounted under /corpus (ADR 023 §5). Build, for the
+	// builder agent only, are the drives of its current build.
+	Corpora []CorpusImage `json:"corpora,omitempty"`
+	Build   *BuildDrives  `json:"build,omitempty"`
 }
 
 // HarnessImage is a verified harness.ext4 shared read-only by every agent
@@ -1020,6 +1025,17 @@ func (h *FirecrackerHost) prepare(a *HostAgent) error {
 	if err := h.ensurePlatform(a); err != nil {
 		return err
 	}
+	// Each drive has its own I/O ceiling (CAP-03, ADR 012), enforced by the VMM.
+	limits := h.opts.DriveLimits.orDefault()
+	// The drives after the data volume, in the order corpora.json gives the
+	// guest (ADR 023 §5.1).
+	extra, corpora, err := extraDrives(a, limits)
+	if err != nil {
+		return err
+	}
+	if len(extra) != 0 && !h.opts.AuthenticatedControl {
+		return errors.New("a registry harness, corpora and build drives need the authenticated guest contract")
+	}
 	for _, name := range []string{"kernel", "initrd"} {
 		artifact := name
 		if a.SystemImage != nil {
@@ -1044,7 +1060,7 @@ func (h *FirecrackerHost) prepare(a *HostAgent) error {
 		_, err = io.Copy(f, source)
 		source.Close()
 		if err == nil && name == "initrd" && h.opts.AuthenticatedControl {
-			err = appendControlConfig(f, guest, a.Harness)
+			err = appendControlConfig(f, guest, a.Harness, corpora)
 		}
 		// The worker runs with UMask=0077. The jailer drops privileges before
 		// Firecracker reads these files inside its per-run private directory.
@@ -1062,25 +1078,16 @@ func (h *FirecrackerHost) prepare(a *HostAgent) error {
 	if err := os.Link(a.Volume, filepath.Join(root, "data.ext4")); err != nil {
 		return err
 	}
-	// Each drive has its own I/O ceiling (CAP-03, ADR 012), enforced by the VMM.
-	limits := h.opts.DriveLimits.orDefault()
 	drives := []any{map[string]any{"drive_id": "data", "path_on_host": "/data.ext4", "is_root_device": false, "is_read_only": false, "cache_type": "Writeback", "io_engine": "Sync",
 		"rate_limiter": limits.Volume.rateLimiter(0)}}
-	if a.Harness != nil {
-		if !h.opts.AuthenticatedControl {
-			return errors.New("a registry harness needs the authenticated guest contract")
-		}
-		// One inode shared by every agent of the release; the VMM only reads it.
-		image := filepath.Join(root, "harness.ext4")
-		if err := linkOrCopy(a.Harness.Path, image); err != nil {
+	for _, d := range extra {
+		// One inode shared by every VM of the image; a read-only drive's
+		// VMM holds it under LOCK_SH, a writable one under LOCK_EX.
+		if err := d.share(d.source, filepath.Join(root, d.name)); err != nil {
 			return err
 		}
-		st, err := os.Stat(image)
-		if err != nil {
-			return err
-		}
-		drives = append(drives, map[string]any{"drive_id": "harness", "path_on_host": "/harness.ext4", "is_root_device": false, "is_read_only": true, "cache_type": "Unsafe", "io_engine": "Sync",
-			"rate_limiter": limits.Harness.rateLimiter(st.Size())})
+		drives = append(drives, map[string]any{"drive_id": d.id, "path_on_host": "/" + d.name, "is_root_device": false, "is_read_only": d.readOnly, "cache_type": d.cache, "io_engine": "Sync",
+			"rate_limiter": d.rate.rateLimiter(d.burst)})
 	}
 	resources := a.resources()
 	// No "network-interfaces": the VM has no network device (ADR 012).

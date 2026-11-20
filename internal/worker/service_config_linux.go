@@ -159,6 +159,8 @@ func (c ServiceConfig) driveLimits() (runtime.DriveLimits, error) {
 		l.Volume.IOPS = cmp.Or(d.Volume.IOPS, l.Volume.IOPS)
 		l.Harness.BandwidthMiBPerSecond = cmp.Or(d.Harness.BandwidthMiBPerSecond, l.Harness.BandwidthMiBPerSecond)
 		l.Harness.IOPS = cmp.Or(d.Harness.IOPS, l.Harness.IOPS)
+		l.Corpus.BandwidthMiBPerSecond = cmp.Or(d.Corpus.BandwidthMiBPerSecond, l.Corpus.BandwidthMiBPerSecond)
+		l.Corpus.IOPS = cmp.Or(d.Corpus.IOPS, l.Corpus.IOPS)
 	}
 	return l, l.Validate()
 }
