@@ -7,5 +7,5 @@ FROM debian:bookworm-slim@sha256:734a72b3d6142a71993b4bc580ca01d8ca687f77a2c422d
 COPY node /usr/local/bin/node
 COPY libatomic.so.1 /usr/local/lib/libatomic.so.1
 COPY pi /opt/pi/release
-COPY models.json start /opt/pi/
+COPY models.json start stream.mjs /opt/pi/
 RUN ldconfig && chmod 0755 /usr/local/bin/node /opt/pi/start && chmod -R a+rX /opt/pi && /usr/local/bin/node --version

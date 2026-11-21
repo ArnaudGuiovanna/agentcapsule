@@ -1,9 +1,7 @@
 # Native streaming: provider streams, the harness's output stream and SSE events
 
-Date: November 20, 2026. **Status: accepted on November 20, 2026; not
-built.** The product owner chose the recommendations of the streaming plan
-for D-S1 to D-S6. Lots 1 to 7 of [plan-streaming.md](../plan-streaming.md)
-build it, to the contracts this record fixes.
+Accepted on November 20, 2026. The product owner chose D-S1 through D-S6.
+The streaming plan records delivery against these contracts. [Streaming plan](../plan-streaming.md).
 References: EXT-005 and LLM-009 of the [product spec](../product.md) (§4),
 LLM-02, EVT-01 and CAP-01 of the [roadmap](../../ROADMAP.md),
 [ADR 011](011-llm-access-and-cost-budgets.md) (calls of unknown outcome),
@@ -13,7 +11,7 @@ content), [ADR 003](003-restore-rpo.md) and
 under the same identifier), the model
 [invocation_completion.qnt](../../spec/invocation_completion.qnt), the
 [served API contract](../../openapi/openapi.yaml)
-and [022-streaming-platform-channel.yaml](../../openapi/drafts/022-streaming-platform-channel.yaml).
+and the [guest platform channel](../guest/capsule-control.md).
 
 ## Context
 
@@ -876,9 +874,9 @@ reachable state (462, depth 10) keeps `safety`.
 | Draft | Holds | Moves to |
 |---|---|---|
 | [openapi/openapi.yaml](../../openapi/openapi.yaml) | The public subscriptions, their events, problem codes and capability | Served by the API and exercised by the RBAC matrix |
-| [openapi/drafts/022-streaming-platform-channel.yaml](../../openapi/drafts/022-streaming-platform-channel.yaml) | the three channel routes and their frames | the channel has no OpenAPI document: lot 2 writes the model routes into [api/llm.md](../api/llm.md) (sections "VM bridge" and "Native requests from the model endpoint"), lot 3 the output stream into [api/agents-assignments.md](../api/agents-assignments.md) ("Deferred result: the `working` state", "Capabilities") and [guest/capsule-control.md](../guest/capsule-control.md) ("Capabilities on the platform channel"), as prose and examples in those pages' style; the last of them deletes the draft |
+| [Model streams](../api/llm.md#model-streams-on-the-guest-socket) and [guest platform channel](../guest/capsule-control.md) | The two model routes, the invocation output route, their frames and limits | Implemented in the worker and guest supervisor |
 
-Both drafts pass `openapi_spec_validator --schema 3.1`.
+Both drafts passed OpenAPI 3.1 validation before implementation.
 
 ## Facts checked against the code
 
