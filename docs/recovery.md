@@ -917,11 +917,14 @@ database. `agentcapsule-admin reconcile` brings the database up to the
 authorities ([ADR 006](adr/006-authority-service.md), wave 7). The API
 refuses to start until it has run for the authorities' epoch
 (`authority_not_reconciled`), and its readiness probe answers 503
-`authority_not_reconciled`. Run it as the API's account, with the API's
-database and its three authority flags:
+`authority_not_reconciled`. Run it as root, which the API socket admits,
+with the database's owner role (`agentcapsule`, in
+`/etc/agentcapsule/admin.env`: the API's role cannot write everything the
+replay writes) and the API's three authority flags:
 
 ```sh
-runuser -u <the API's account> -- env AGENTCAPSULE_DATABASE_URL=<the API's> agentcapsule-admin reconcile \
+set -a; . /etc/agentcapsule/admin.env; set +a
+agentcapsule-admin reconcile \
   -authority-socket /run/agentcapsule-authority/api.sock \
   -restore-authority-id <restoreauth_…> -key-authority-id <keyauth_…>
 ```
@@ -1113,7 +1116,8 @@ one by one (step 13).
    the API requires: the directory and the key files readable by the API's
    account only (0700 and 0600). The organizations' identity trusts are in
    PostgreSQL: the promoted database brings them.
-   Set `AGENTCAPSULE_DATABASE_URL` to the standby's own PostgreSQL.
+   Set `AGENTCAPSULE_DATABASE_URL` to the standby's own PostgreSQL, each
+   process with its own role ([install.md](install.md#postgresql)).
 7. **Reconcile the database** with the promoted authorities:
    [Reconcile the database](#reconcile-the-database). It replays the access
    revocations the database lost, the blanket revocation of bearer tokens

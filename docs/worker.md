@@ -45,8 +45,11 @@ registry rule and does not call a model provider on plain HTTP
 calls a provider at an internal address only if `allowed_internal_providers`,
 in its `llm` section, allows it ([install.md](install.md#model-providers-on-internal-addresses)).
 
-The schema must be migrated. `-migrate` explicitly applies the migration before
-starting; a normal launch does not modify the schema. The `host_id`, the
+The schema must be migrated with `agentcapsule-admin migrate`, as the role
+that owns it ([install.md](install.md#postgresql)). The worker connects as
+`agentcapsule_worker`, which owns nothing and cannot migrate; it refuses to
+start on a schema behind, ahead of or different from its binary
+(`database_schema_unavailable`). The `host_id`, the
 registry, the images and the capacity must be consistent across all workers of
 the same host. Stop older versions before migrating.
 

@@ -69,9 +69,21 @@ API defaults to 9443. Directory listens on loopback port 8443.
 }
 ```
 
+The local cluster has three roles ([install.md](install.md#postgresql)):
+`agentcapsule` owns the database and runs the migrations, as root;
+`agentcapsule_api` and `agentcapsule_worker` own nothing and write only what
+the API and the worker write. `pg_ident.conf` maps root to the owner and to
+the worker's role, and the API's account to the API's role only. Each unit's
+file in `/etc/agentcapsule` (`api.env`, `worker.env`) names its own role;
+`admin.env` (0600) names the owner, for `agentcapsule-admin`. An update of an
+installation that still connects every service as the owner creates the two
+roles, rewrites both maps and both files, then migrates.
+
 `database_url_file` selects an existing PostgreSQL role and database for
-the PaaS. Supply the DSN in a root-owned 0600 file. The API and worker apply
-their usual TLS policy. `registry_rules` sets the worker's existing registry
+the PaaS: the owner's, which migrates. `api_database_url_file` and
+`worker_database_url_file` give the API's and the worker's, and are required
+with it: create those roles before the installation migrates. Supply each DSN
+in a root-owned 0600 file. The API and worker apply their usual TLS policy. `registry_rules` sets the worker's existing registry
 rules. `interop_certs` selects a prepared Directory/SLIM PKI directory.
 `first_uid` and `last_uid` select the dedicated jailer UID range.
 

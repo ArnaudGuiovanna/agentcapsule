@@ -20,9 +20,13 @@ described in [docs/worker.md](worker.md).
   (`libcryptsetup-dev`): the worker links it, by the file name
   `libcryptsetup.so.12`. Go refuses that flag unless you allow it once:
   `go env -w CGO_LDFLAGS_ALLOW='-l:libcryptsetup\.so\.12'`.
-- Create a PostgreSQL database and a role that owns it. The admin commands and
-  the API read the connection from `AGENTCAPSULE_DATABASE_URL`, in their
-  protected environment, never from a flag.
+- Create a PostgreSQL database, the role that owns it (`agentcapsule`, for
+  the admin commands) and the API's and the worker's roles
+  (`agentcapsule_api`, `agentcapsule_worker`), before you migrate
+  ([install.md](install.md#postgresql)). The admin commands, the API and the
+  worker read their connection from `AGENTCAPSULE_DATABASE_URL`, in their
+  protected environment, never from a flag: the admin commands as the
+  owner, the API and the worker each as its own role.
 - Create a private directory, owned by the account that runs the API:
 
   ```sh
