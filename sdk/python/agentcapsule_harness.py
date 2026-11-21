@@ -37,6 +37,7 @@ import hashlib
 import http.client
 import http.server
 import json
+from pathlib import Path
 import os
 import re
 import signal
@@ -1096,3 +1097,82 @@ def _uint(v: Any) -> bool:
 
 def _clean_abs(p: Any) -> bool:
     return isinstance(p, str) and p.startswith("/") and os.path.normpath(p) == p
+
+
+class Corpora:
+    """Read immutable mounted corpora locally using the standard library."""
+
+    _name = re.compile(r"[a-z0-9][a-z0-9_-]{0,62}")
+
+    def __init__(self, root="/corpus"):
+        self.root = Path(root).absolute()
+
+    def list(self):
+        """Return mount names in lexical order."""
+        if not self.root.exists():
+            return []
+        return sorted(entry.name for entry in self.root.iterdir()
+                      if self._name.fullmatch(entry.name) and
+                      not entry.is_symlink() and entry.is_dir())
+
+    def _file(self, mount, *parts):
+        if not isinstance(mount, str) or not self._name.fullmatch(mount):
+            raise ValueError("invalid corpus mount")
+        path = self.root.joinpath(mount, *parts)
+        if path.resolve(strict=True) != path or not path.is_file():
+            raise ValueError("expected a regular corpus file")
+        return path
+
+    @staticmethod
+    def _read(path, limit):
+        with path.open("rb") as source:
+            raw = source.read(limit + 1)
+        if len(raw) > limit:
+            raise ValueError("corpus file exceeds the size limit")
+        return raw.decode("utf-8")
+
+    def index(self, mount):
+        """Return the mount's global Markdown index."""
+        return self._read(self._file(mount, "INDEX.md"), 64 << 10)
+
+    def part(self, mount, document, part):
+        """Return the Markdown part containing a cited element."""
+        if (not self._name.fullmatch(document) or
+                not re.fullmatch(r"part-[0-9]{3}\.md", part) or part == "part-000.md"):
+            raise ValueError("invalid corpus document or part")
+        return self._read(self._file(mount, "docs", document, part), 1 << 20)
+
+    def open_search(self, mount):
+        """Open a read-only immutable FTS5 connection; the caller closes it."""
+        uri = self._file(mount, "search", "fts.sqlite").as_uri()
+        conn = sqlite3.connect(uri + "?mode=ro&immutable=1", uri=True)
+        conn.execute("PRAGMA query_only=ON")
+        return conn
+
+    def search(self, mount, phrase, limit=5):
+        """Find a literal phrase and return passages with their source citations."""
+        phrase = phrase.strip()
+        if not phrase or len(phrase.encode()) > 1024 or "\0" in phrase or not 1 <= limit <= 20:
+            raise ValueError("expected a phrase and a limit between 1 and 20")
+        info = json.loads(self._read(self._file(mount, "corpus.json"), 32 << 20))
+        if info.get("schema") != "agentcapsule.corpus/v1":
+            raise ValueError("unsupported corpus format")
+        paths = {entry["id"]: entry["path"] for entry in info["documents"]}
+        conn = self.open_search(mount)
+        try:
+            rows = conn.execute(
+                "SELECT title,snippet(passages,1,'','',' … ',32),doc_id,element_id,part,locator "
+                "FROM passages WHERE passages MATCH ? ORDER BY rank,rowid LIMIT ?",
+                ('"' + phrase.replace('"', '""') + '"', limit))
+            hits = []
+            for title, text, doc, element, part, locator in rows:
+                if (doc not in paths or not self._name.fullmatch(element) or
+                        not re.fullmatch(r"part-[0-9]{3}\.md", part) or part == "part-000.md"):
+                    raise ValueError("invalid corpus passage citation")
+                source = "/".join(filter(None, [info["source_path"], paths[doc]]))
+                hits.append(dict(title=title, text=text, doc_id=doc, element_id=element,
+                                 part=part, locator=json.loads(locator), source_path=source,
+                                 commit=info["commit"]))
+            return hits
+        finally:
+            conn.close()

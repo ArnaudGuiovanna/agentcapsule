@@ -51,7 +51,7 @@ GO_VERSION = "go1.27.4"
 # internal/volumestore links "-l:libcryptsetup.so.12", which Go refuses in a
 # #cgo directive unless this pattern allows it.
 CGO_LDFLAGS_ALLOW = r"-l:libcryptsetup\.so\.12"
-STATIC_TAGS = "netgo,osusergo,sqlite_omit_load_extension"
+STATIC_TAGS = "netgo,osusergo,sqlite_omit_load_extension,sqlite_fts5"
 # (name, module directory, package, cgo, static)
 BINARIES = (
     ("agentcapsule-api", ".", "./cmd/agentcapsule-api", True, False),

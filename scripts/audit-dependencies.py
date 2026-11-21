@@ -48,7 +48,7 @@ sys.dont_write_bytecode = True
 SPEC.loader.exec_module(TOOLS)
 
 POLICY = SCRIPTS / "license-policy.json"
-STATIC_TAGS = "netgo,osusergo,sqlite_omit_load_extension"
+STATIC_TAGS = "netgo,osusergo,sqlite_omit_load_extension,sqlite_fts5"
 # internal/volumestore links "-l:libcryptsetup.so.12", which Go refuses in a
 # #cgo directive unless this pattern allows it.
 CGO_LDFLAGS_ALLOW = r"-l:libcryptsetup\.so\.12"

@@ -23,9 +23,13 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/guestinit"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/harnessstore"
+	"github.com/ArnaudGuiovanna/agentcapsule/sdk/go/corpus"
 )
 
 func run() (result error) {
+	if len(os.Args) == 2 && os.Args[1] == "corpus-mcp" {
+		return agentadapter.ServeCorpusMCP(context.Background(), corpus.Guest, os.Stdin, os.Stdout)
+	}
 	path := agentadapter.ConfigPath
 	switch len(os.Args) {
 	case 1:

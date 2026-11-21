@@ -53,7 +53,7 @@ def main() -> int:
     agent, adapter, tool = out / "a2a-agent", out / "capsule-adapter", out / "agentcapsule-harness"
     run([a.go, "build", "-buildvcs=false", "-trimpath", "-ldflags=-s -w", "-o", agent, "./examples/a2a-agent"],
         cwd=ROOT, env=dict(go_env, CGO_ENABLED="0"))
-    run([a.go, "build", "-buildvcs=false", "-trimpath", "-tags=netgo,osusergo,sqlite_omit_load_extension",
+    run([a.go, "build", "-buildvcs=false", "-trimpath", "-tags=netgo,osusergo,sqlite_omit_load_extension,sqlite_fts5",
          "-ldflags=-linkmode external -extldflags '-static'", "-o", adapter, "./cmd/capsule-adapter"],
         cwd=ROOT, env=dict(go_env, CGO_ENABLED="1"))
     run([a.go, "build", "-trimpath", "-o", tool, "./cmd/agentcapsule-harness"], cwd=ROOT, env=dict(go_env, CGO_ENABLED="0"))

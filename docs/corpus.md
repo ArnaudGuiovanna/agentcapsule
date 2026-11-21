@@ -14,12 +14,7 @@ This page specifies the two formats a corpus has:
 - the **published layout** in the image (`agentcapsule.corpus/v1`), which
   administrators review and harnesses read.
 
-> **Status.** The formats, the manifest checks, the reproducible image and
-> its host checks, and the local commands `corpus init` and `corpus lint`
-> are built (corpus lot 1). Fetching from GitHub and GitLab, the builder,
-> review, publication and mounting come with the next lots of
-> [plan-corpus.md](plan-corpus.md); [ADR 023](adr/023-corpora.md) records
-> their decisions.
+Administrators can [build, review and publish with the CLI](cli.md#build-and-publish-a-corpus). Harnesses read the published layout at their next boot.
 
 ## Prepare the repository
 
@@ -349,3 +344,24 @@ The worker then keeps the image in its cache, in
 | LFS objects of one build | 10,000 and 20 GiB by default |
 
 [Build, review and publish with the CLI](cli.md#build-and-publish-a-corpus)
+
+## Reading the same corpus from different languages
+
+Each mount under `/corpus` contains ordinary files. To read the first hits
+in a language with an SQLite FTS5 driver, open the URI
+`file:/corpus/finance/search/fts.sqlite?mode=ro&immutable=1` and bind the
+literal phrase and the result limit as parameters.
+
+```sql
+SELECT doc_id, element_id, part, locator, snippet(passages, 1, '', '', ' … ', 32)
+FROM passages WHERE passages MATCH ? ORDER BY rank, rowid LIMIT ?
+```
+
+Resolve the source path and commit with `corpus.json`. The Markdown anchor
+is in `docs/<doc_id>/<part>`. Optional bindings implement this lookup.
+
+| Language | Example |
+|---|---|
+| Go | Import `github.com/ArnaudGuiovanna/agentcapsule/sdk/go/corpus`. Call `corpus.Guest.List()`, `corpus.Guest.Index("finance")` or `corpus.Guest.Search(ctx, "finance", "net revenue", 5)`. Enable cgo and build with `-tags sqlite_fts5` for search. |
+| Python | Import `Corpora` from `agentcapsule_harness`. Call `Corpora().list()`, `Corpora().index("finance")` or `Corpora().search("finance", "net revenue", 5)`. The Python SQLite module must include FTS5. |
+| MCP | Start `/agentcapsule/capsule-adapter corpus-mcp` inside the guest and call the four [local corpus tools](adapter.md#read-mounted-corpora). |

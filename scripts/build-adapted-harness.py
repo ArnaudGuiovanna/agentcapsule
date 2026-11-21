@@ -83,7 +83,7 @@ def main() -> int:
     (out / "rootfs.tar").unlink()
     go_env = dict(os.environ, GOFLAGS="-mod=readonly")
     adapter = out / "capsule-adapter"
-    run([a.go, "build", "-buildvcs=false", "-trimpath", "-tags=netgo,osusergo,sqlite_omit_load_extension",
+    run([a.go, "build", "-buildvcs=false", "-trimpath", "-tags=netgo,osusergo,sqlite_omit_load_extension,sqlite_fts5",
          "-ldflags=-linkmode external -extldflags '-static'", "-o", adapter, "./cmd/capsule-adapter"],
         cwd=ROOT, env=dict(go_env, CGO_ENABLED="1"))
     target = rootfs / "agentcapsule"

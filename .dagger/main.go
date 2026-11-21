@@ -133,7 +133,7 @@ func (m *Agentcapsule) GoEcho() *dagger.Directory {
 func (m *Agentcapsule) Adapter() *dagger.File {
 	return m.builder().
 		WithEnvVariable("CGO_ENABLED", "1").
-		WithExec([]string{"go", "build", "-buildvcs=false", "-trimpath", "-tags=netgo,osusergo,sqlite_omit_load_extension",
+		WithExec([]string{"go", "build", "-buildvcs=false", "-trimpath", "-tags=netgo,osusergo,sqlite_omit_load_extension,sqlite_fts5",
 			"-ldflags=-linkmode external -extldflags '-static'", "-o", "/out/capsule-adapter", "./cmd/capsule-adapter"}).
 		File("/out/capsule-adapter")
 }

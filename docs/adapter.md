@@ -217,6 +217,28 @@ and model it chooses.
   the output is the reply. The agent sends requests itself through the A2A
   endpoint, while it answers an invocation.
 
+## Read mounted corpora
+
+A harness in any language can list `/corpus`, read a mount's `INDEX.md`,
+and open `search/fts.sqlite` with SQLite FTS5 in read-only immutable
+mode. Each hit identifies a document and element in its source commit,
+with a page, spreadsheet range or time interval when available. Pi can use
+its ordinary local file tools to read the cited Markdown part.
+
+Clients that support MCP can start the adapter's optional stdio server inside
+the same guest. For clients using an `mcpServers` configuration, add
+
+```json
+{"mcpServers":{"corpus":{"command":"/agentcapsule/capsule-adapter","args":["corpus-mcp"]}}}
+```
+
+The server exposes `corpus_list`, `corpus_index`, `corpus_search` and
+`corpus_part`. For example, call `corpus_search` with
+`{"mount":"finance","phrase":"net revenue","limit":5}`. A result contains
+the source path and commit, `doc_id`, `element_id`, `part` and the original
+`locator`. Use `corpus_part` to read the surrounding passage. No network
+connection is needed. [Corpus layout](corpus.md) · [MCP stdio transport](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports)
+
 ## Other agents (A2A endpoint)
 
 The adapter serves the agents of the organization as A2A agents, on

@@ -103,3 +103,5 @@ real process and drives it with the Go client that `capsule-init` uses:
 negotiation, health, replays and conflicts, fences, a deferred model answer through
 the platform channel, a clean exit on `SIGTERM`, state across restarts, the outcomes
 a restore inspects and refusal of other peers. The product KVM campaign then runs the packed image in a microVM.
+
+The optional `Corpora` class reads mounted Markdown and searches the immutable FTS5 index offline. [Corpus format and examples](../../docs/corpus.md#reading-the-same-corpus-from-different-languages)

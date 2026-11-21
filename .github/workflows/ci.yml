@@ -52,7 +52,7 @@ jobs:
 
       - name: gofmt
         run: |
-          unformatted="$(gofmt -l cmd internal)"
+          unformatted="$(gofmt -l cmd internal sdk/go)"
           if [ -n "$unformatted" ]; then echo "Run gofmt on:"; echo "$unformatted"; exit 1; fi
 
       - name: go vet (default, KVM and live-LLM build tags)
@@ -65,6 +65,9 @@ jobs:
         env:
           CGO_ENABLED: '0'
         run: go vet -tags=interop_services ./internal/directory ./cmd/agentcapsule-harness ./examples/a2a-agent
+
+      - name: Read one mounted corpus from Go, Python and MCP
+        run: go test -race -tags sqlite_fts5 -count=1 ./sdk/go/corpus
 
       - name: Authorization matrix (every route has a row, docs/api/rbac.md matches it)
         run: go test -count=1 -run '^TestRBACMatrix(IsWellFormed|CoversEveryRoute|IsDocumented)$' ./internal/api
