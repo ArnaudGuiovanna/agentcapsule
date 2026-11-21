@@ -10,7 +10,7 @@
 - Les gros contextes sont construits **en asynchrone**.
 - Le cœur reste sans logique métier ([product.md §5](product.md#5-out-of-scope-for-p0)). Un traitement propre à un harness, par exemple pédagogique, passe par un « enrichisseur » externe (lot 9).
 
-Les routes, formats et commandes ci-dessous sont des propositions de conception. Les décisions marquées **D-C** sont à acter dans l’ADR 023 avant le lot 1.
+Les sections de conception décrivent le point de départ et les choix du chantier. L’ADR 023 consigne les décisions D-C1 à D-C9. [Contrat des corpus](adr/023-corpora.md)
 
 ## Suivi du chantier
 

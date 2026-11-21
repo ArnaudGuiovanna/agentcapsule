@@ -4,7 +4,7 @@
 
 **Périmètre.** Ce chantier solde trois éléments de la feuille de route : LLM-02 (« Streaming from the provider »), EVT-01 (« `/events` stream ») et la partie « Events » de CAP-01. Il fait passer EXT-005 (SSE, aujourd’hui en P1, [product.md §5](product.md#5-out-of-scope-for-p0)) dans les exigences P0. Le temps réel audio et vidéo (EXT-006) reste hors périmètre.
 
-Les routes, trames et commandes ci-dessous sont des propositions de conception. Les décisions marquées **D-S** sont à acter dans l’ADR 022 avant le lot 1.
+Les sections de conception décrivent le point de départ et les choix du chantier. L’ADR 022 consigne les décisions D-S1 à D-S6. [Contrat de streaming](adr/022-native-streaming.md)
 
 ## Suivi du chantier
 
@@ -13,7 +13,7 @@ Les routes, trames et commandes ci-dessous sont des propositions de conception. 
 | Lot | État |
 |---|---|
 | 0. Contrats, ADR 022, modèle Quint | Contrat capsule.v1, ADR 022 et invariants de terminaison validés. |
-| 1. Passerelle : streaming fournisseur | Flux natifs OpenAI et Anthropic validés avec la passerelle et leurs clients officiels. |
+| 1. Passerelle : streaming fournisseur | Les clients officiels OpenAI et Anthropic ont consommé les deux formats de flux via la passerelle, avec Ollama comme fournisseur local. |
 | 2. Canal plateforme : flux LLM vers l’invité | Le relais a livré une première trame avant la fin d’une génération de 290 s en KVM. Le dix-septième appel simultané reçoit HTTP 503. |
 | 3. Flux de sortie harness → plateforme | La VM transmet les fragments et les étapes dans leur ordre. Les tests vérifient l’annulation et la reprise avec le dernier numéro acquitté. |
 | 4. API : abonnement SSE | Le flux SSE reprend sur curseur et applique les droits pendant la connexion. Une restauration KVM a ouvert une deuxième tentative pour le même abonné. |
