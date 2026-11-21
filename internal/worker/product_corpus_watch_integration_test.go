@@ -55,8 +55,9 @@ func configureCorpusWatch(t *testing.T, lab *productPeerLab, organization, token
 		t.Fatal(err)
 	}
 	var migration string
-	if err = lab.db.QueryRow(ctx, "SELECT name FROM schema_migrations WHERE version=63").Scan(&migration); err != nil || migration != "corpus-build-streams" {
-		t.Fatal("corpus watch migration", migration, err)
+	var applied int
+	if err = lab.db.QueryRow(ctx, "SELECT name,(SELECT max(version) FROM schema_migrations) FROM schema_migrations WHERE version=63").Scan(&migration, &applied); err != nil || migration != "corpus-build-streams" || applied < 64 {
+		t.Fatal("corpus watch migration", migration, applied, err)
 	}
 	dir := t.TempDir()
 	ca := filepath.Join(dir, "ca.pem")
@@ -81,7 +82,7 @@ func configureCorpusWatch(t *testing.T, lab *productPeerLab, organization, token
 			t.Fatal("CLI", args[0], err)
 		}
 	}
-	t.Log("PostgreSQL migration 63", migration)
+	t.Log("PostgreSQL migration 63", migration, "applied ledger version", applied)
 	return cli
 }
 
@@ -209,7 +210,7 @@ func (w *liveCorpusWatch) review(t *testing.T, lab *productPeerLab, reader, buil
 	if strings.Join(events, ",") != "state,step,end" {
 		t.Fatal("replay events", events)
 	}
-	t.Logf("CLI live file-1 started=%d:%d done=%d:%d before packaging; administrator replay after REVIEW from %s returned done", w.attempt, w.started, w.attempt, w.done, cursor)
+	t.Logf("CLI live file-1 started=%d:%d done=%d:%d before packaging, administrator replay after REVIEW from %s returned done", w.attempt, w.started, w.attempt, w.done, cursor)
 }
 
 func corpusReviewAdmin(t *testing.T, l *productPeerLab, i *tenantIdentity, owner string) func() string {
