@@ -35,11 +35,15 @@ type corpusView struct {
 	Options []string `json:"options"`
 	Write   string   `json:"write"`
 	Mounts  []struct {
-		Name    string   `json:"name"`
-		Options []string `json:"options"`
-		Marker  string   `json:"marker"`
-		Write   string   `json:"write"`
-		Exec    string   `json:"exec"`
+		Name       string   `json:"name"`
+		Options    []string `json:"options"`
+		Marker     string   `json:"marker"`
+		Extensions []struct {
+			Name, Write    string
+			Options, Files []string
+		} `json:"extensions"`
+		Write string `json:"write"`
+		Exec  string `json:"exec"`
 	} `json:"mounts"`
 }
 
@@ -56,7 +60,7 @@ type corpusLab struct {
 	agents     int
 }
 
-func newCorpusLab(t *testing.T) *corpusLab {
+func newCorpusLab(t *testing.T, configure ...func(*FirecrackerOptions)) *corpusLab {
 	t.Helper()
 	authorityRoot, err := os.MkdirTemp(kvmSettings(t).RootParent, "keys-")
 	if err != nil {
@@ -74,6 +78,9 @@ func newCorpusLab(t *testing.T) *corpusLab {
 		opts.MaxActive = 4
 		opts.BootTimeout = 60 * time.Second
 		opts.PrepareGuest = l.prepareGuest
+		for _, option := range configure {
+			option(opts)
+		}
 	})
 	if l.storage, err = volumestore.New(l.h.root); err != nil {
 		t.Fatal(err)

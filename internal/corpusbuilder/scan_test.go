@@ -22,6 +22,9 @@ func TestScanReadsTheCheckedDriveOnlyOnce(t *testing.T) {
 	var archive bytes.Buffer
 	gz := gzip.NewWriter(&archive)
 	tw := tar.NewWriter(gz)
+	if err := tw.WriteHeader(&tar.Header{Typeflag: tar.TypeXGlobalHeader, Name: "pax_global_header", PAXRecords: map[string]string{"comment": strings.Repeat("b", 40)}}); err != nil {
+		t.Fatal(err)
+	}
 	for name, data := range map[string][]byte{"forge-sha/notes/agentcapsule-corpus.yaml": manifest, "forge-sha/notes/ch1.md": []byte("Markets\n"), "forge-sha/other.md": []byte("Elsewhere\n")} {
 		if err = tw.WriteHeader(&tar.Header{Name: name, Size: int64(len(data)), Mode: 0644}); err != nil {
 			t.Fatal(err)

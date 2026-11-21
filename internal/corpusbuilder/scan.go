@@ -120,6 +120,11 @@ func extractSource(ctx context.Context, device io.ReaderAt, spec Drive, dir, sub
 		if n >= 100000 || h.Size < 0 {
 			return errors.New("source exceeds entry limit")
 		}
+		// Git forge archives may start with a POSIX global metadata record.
+		// It is not a filesystem entry and does not name the wrapper directory.
+		if h.Typeflag == tar.TypeXGlobalHeader {
+			continue
+		}
 		member := strings.TrimSuffix(h.Name, "/")
 		if !fs.ValidPath(member) || member == "." || strings.ContainsRune(member, '\\') || len(member) > 4096 {
 			return errors.New("invalid archive path")
