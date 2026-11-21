@@ -5,9 +5,14 @@ package worker
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -23,6 +28,7 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpussource"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/harnesspkg"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/ociregistry"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/ociregistry/registrytest"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/runtime"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/sandbox"
 )
@@ -87,6 +93,34 @@ func corpusBuilderRegistry(t *testing.T, pkg string) (ociregistry.Rule, string) 
 	return ociregistry.Rule{Host: host, Repositories: []string{"courses/"}, Local: true}, host + "/courses/builder@" + digest
 }
 
+func courseEnricherRegistry(t *testing.T, pkg string) (ociregistry.Rule, string) {
+	t.Helper()
+	reg := registrytest.New()
+	t.Cleanup(reg.Close)
+	rule := ociregistry.Rule{Host: reg.Host(), Repositories: []string{"courses/enricher"}, Local: true}
+	ref, err := ociregistry.Push(t.Context(), rule, "courses/enricher", "1.0.0", pkg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = ociregistry.Sign(t.Context(), rule, ref, key); err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKIXPublicKey(key.Public())
+	if err != nil {
+		t.Fatal(err)
+	}
+	trusted, err := ociregistry.ParsePublisherKey(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule.Keys = []ociregistry.PublisherKey{trusted}
+	return rule, ref.String()
+}
+
 // The fixture contains the bytes and SHA-256 captured from a private GitHub
 // repository. Replay is local, so this privileged test needs no forge token.
 func TestCorpusBuilderAndConsumerOnKVM(t *testing.T) {
@@ -138,7 +172,14 @@ func TestCorpusBuilderAndConsumerOnKVM(t *testing.T) {
 	if err = lab.store.ConfigureHostStorage(ctx, "local", 8192); err != nil {
 		t.Fatal(err)
 	}
-	fetcher, err := ociregistry.NewFetcher(ociregistry.Policy{Rules: []ociregistry.Rule{rule}}, 3<<30)
+	rules := []ociregistry.Rule{rule}
+	var signed, signer string
+	if pkg := os.Getenv("AGENTCAPSULE_KVM_COURSE_ENRICHER"); pkg != "" {
+		enricher, reference := courseEnricherRegistry(t, pkg)
+		signed, signer = reference, enricher.Keys[0].ID
+		rules = append(rules, enricher)
+	}
+	fetcher, err := ociregistry.NewFetcher(ociregistry.Policy{Rules: rules}, 3<<30)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,14 +192,21 @@ func TestCorpusBuilderAndConsumerOnKVM(t *testing.T) {
 	if err = lab.worker.EnableRegistry(importer); err != nil {
 		t.Fatal(err)
 	}
-	var imp controlplane.HarnessImport
-	lab.request(platform, "POST", "/v1/harness-imports", "import", controlplane.HarnessImportInput{Reference: ref}, 202, &imp)
-	if work, err := importer.ImportOne(ctx); err != nil || !work {
-		t.Fatal("import", work, err)
+	importPackage := func(key, reference string) {
+		t.Helper()
+		var imp controlplane.HarnessImport
+		lab.request(platform, "POST", "/v1/harness-imports", key, controlplane.HarnessImportInput{Reference: reference}, 202, &imp)
+		if work, err := importer.ImportOne(ctx); err != nil || !work {
+			t.Fatal("import", work, err)
+		}
+		lab.request(platform, "GET", "/v1/harness-imports/"+imp.ID, "", nil, 200, &imp)
+		if imp.State != "READY" {
+			t.Fatal("harness import", key, imp.State, imp.ErrorCode)
+		}
 	}
-	lab.request(platform, "GET", "/v1/harness-imports/"+imp.ID, "", nil, 200, &imp)
-	if imp.State != "READY" {
-		t.Fatal("builder import", imp.State, imp.ErrorCode)
+	importPackage("import", ref)
+	if signed != "" {
+		importPackage("import-enricher", signed)
 	}
 	image := controlplane.SystemImage{ID: "corpus@1", ImageDigests: controlplane.ImageDigests{Kernel: "sha256:" + digest(t, config(t).Kernel), Initrd: "sha256:" + digest(t, config(t).Initrd)}, Features: []string{controlplane.FeatureCorpusMount, controlplane.FeatureCorpusExtensions}}
 	lab.request(platform, "POST", "/v1/system-images", "image", image, 201, nil)
@@ -273,10 +321,52 @@ func TestCorpusBuilderAndConsumerOnKVM(t *testing.T) {
 	}
 	var published controlplane.CorpusRelease
 	lab.request(owner(), "POST", "/v1/corpus-builds/"+cold.ID+"/publish", "publish", map[string]int{"version": 1}, 201, &published)
-	validateCorpusDeployment(t, lab, owner, image, cold, warm, published)
+	var extension controlplane.CorpusExtension
+	if signed != "" {
+		extension = runCourseEnrichment(t, lab, owner, guest, warm, signer)
+	}
+	validateCorpusDeployment(t, lab, owner, image, cold, warm, published, extension)
 }
 
-func validateCorpusDeployment(t *testing.T, lab *productPeerLab, owner func() string, image controlplane.SystemImage, cold, warm controlplane.CorpusBuild, release controlplane.CorpusRelease) {
+func runCourseEnrichment(t *testing.T, lab *productPeerLab, owner func() string, guest corpusGuest, review controlplane.CorpusBuild, signer string) controlplane.CorpusExtension {
+	t.Helper()
+	var authorized controlplane.CorpusEnricher
+	lab.request(owner(), "POST", "/v1/corpus-enrichers", "authorize", controlplane.AuthorizeCorpusEnricherInput{Name: "tutor", Harness: controlplane.HarnessReference{Name: "course-enricher", Version: "1.0.0"}}, 201, &authorized)
+	if authorized.Signer != signer {
+		t.Fatal("authorized publisher differs")
+	}
+	var ext controlplane.CorpusExtension
+	lab.request(owner(), "POST", "/v1/corpus-builds/"+review.ID+"/extensions", "generate", controlplane.RequestCorpusExtensionInput{EnricherID: authorized.ID}, 202, &ext)
+	ctx := t.Context()
+	t.Cleanup(func() {
+		var agent string
+		if err := lab.db.QueryRow(context.Background(), "SELECT agent_id FROM corpus_extensions WHERE id=$1", ext.ID).Scan(&agent); err == nil {
+			ctx, stop := context.WithTimeout(context.Background(), 30*time.Second)
+			defer stop()
+			_ = lab.worker.host.Retire(ctx, agent, ^uint64(0))
+		}
+	})
+	lab.awaitFor("signed enrichment", true, 4*time.Minute, func() bool {
+		if _, err := guest.enrichOne(ctx); err != nil {
+			t.Fatal("enrich", err)
+		}
+		lab.request(owner(), "GET", "/v1/corpus-extensions/"+ext.ID, "", nil, 200, &ext)
+		switch ext.State {
+		case "FAILED", "CANCELED", "EXPIRED":
+			t.Fatal(ext.State, ext.ErrorCode)
+		case "READY":
+			return true
+		}
+		return false
+	})
+	if ext.ImageBytes < 1 || ext.Digest == review.ImageDigest || !harnesspkg.ValidDigest(ext.Digest) {
+		t.Fatal("extension image", ext)
+	}
+	t.Log("signed review enrichment ready", ext.Name, ext.Digest)
+	return ext
+}
+
+func validateCorpusDeployment(t *testing.T, lab *productPeerLab, owner func() string, image controlplane.SystemImage, cold, warm controlplane.CorpusBuild, release controlplane.CorpusRelease, extension controlplane.CorpusExtension) {
 	t.Helper()
 	ctx := t.Context()
 	spec := controlplane.TemplateSpec{Name: "classroom", SystemImage: image.ID, Harness: controlplane.HarnessReference{Name: "reference", Version: "1.0.0"}, Resources: controlplane.AgentResources{VCPUs: 1, MemoryMiB: 256, DataVolumeMiB: 128}, Corpora: []controlplane.CorpusBinding{{Name: release.Name, Version: 1, Mount: "lessons"}}}
@@ -329,6 +419,9 @@ func validateCorpusDeployment(t *testing.T, lab *productPeerLab, owner func() st
 	lab.awaitOperation(owner, probe.OperationID)
 	var released controlplane.CorpusRelease
 	lab.request(owner(), "POST", "/v1/corpus-builds/"+warm.ID+"/publish", "publish-again", map[string]int{"version": 2}, 201, &released)
+	if extension.ID != "" && (len(released.Extensions) != 1 || released.Extensions[0].Name != extension.Name || released.Extensions[0].Digest != extension.Digest) {
+		t.Fatal("release extension snapshot", released.Extensions)
+	}
 	spec.Corpora = []controlplane.CorpusBinding{{Name: released.Name, Version: 2, Mount: "orion"}}
 	var revision controlplane.TemplateRevision
 	lab.request(owner(), "POST", "/v1/templates", "next", spec, 201, &revision)
@@ -363,6 +456,16 @@ func validateCorpusDeployment(t *testing.T, lab *productPeerLab, owner func() st
 		linked, err := os.Stat(filepath.Join(jail, "corpus0.ext4"))
 		if err != nil || !os.SameFile(disk, linked) {
 			t.Fatal("shared release inode", err)
+		}
+		if extension.ID != "" {
+			expected, err := os.Stat(filepath.Join(lab.worker.corpusCache.dir(extension.Digest), corpuspkg.ImageFile))
+			if err != nil {
+				t.Fatal(err)
+			}
+			ext, err := os.Stat(filepath.Join(jail, "corpus1.ext4"))
+			if err != nil || !os.SameFile(expected, ext) {
+				t.Fatal("shared extension inode", err)
+			}
 		}
 	}
 	t.Log("3 agents bind and boot the same release after the rollout", rollout.Status)
