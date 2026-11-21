@@ -983,6 +983,34 @@ func rbacAuditRange(*testing.T, *rbacFixture) map[string]string {
 	return map[string]string{"from": now.Add(-time.Hour).Format(time.RFC3339), "to": now.Add(time.Hour).Format(time.RFC3339)}
 }
 
+func TestCorpusOfAnotherOrganizationCannotBeMounted(t *testing.T) {
+	f := newRBACFixture(t)
+	second := *f.second
+	second.server = f.server
+	agent := f.activeAgentOf(t, &second, f.token(t, "foreign"), "foreign-corpus-consumer")
+	if _, err := f.db.Exec(t.Context(), "UPDATE agent_specs SET system_image='matrix@1' WHERE agent_id=$1", agent); err != nil {
+		t.Fatal(err)
+	}
+	var release controlplane.CorpusRelease
+	f.must(t, "owner", "GET", "/v1/corpus-releases/"+f.ids["corpus_release"], "", 200, &release)
+	f.must(t, "foreign", "GET", "/v1/corpus-releases/"+release.ID, "", 404, nil)
+	f.must(t, "foreign", "POST", "/v1/corpus-builds/"+f.ids["review"]+"/try", fmt.Sprintf(`{"agent_id":%q}`, agent), 404, nil)
+
+	path := "/v1/agents/" + agent + "/corpora"
+	var problem struct {
+		Code string `json:"code"`
+	}
+	f.must(t, "foreign", "POST", path, fmt.Sprintf(`{"corpora":[{"name":%q,"version":%d}]}`, release.Name, release.Version), 422, &problem)
+	if problem.Code != "corpus_unavailable" {
+		t.Fatalf("foreign release returned %q", problem.Code)
+	}
+	var bound controlplane.AgentCorpora
+	f.must(t, "foreign", "GET", path, "", 200, &bound)
+	if bound.AgentID != agent || len(bound.Corpora) != 0 {
+		t.Fatalf("bindings after trying a foreign corpus: %+v", bound)
+	}
+}
+
 // TestRBACMatrix runs every route against every caller and checks the status.
 // A filtered answer must also name none of the route's hidden resources.
 func TestRBACMatrix(t *testing.T) {

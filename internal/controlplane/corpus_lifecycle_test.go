@@ -259,3 +259,53 @@ func TestCorpusReviewPublicationAndBindingPins(t *testing.T) {
 		t.Fatal("unbound pin", pins, err)
 	}
 }
+
+// A timed-out build releases its tenant's running slot and fences the old
+// worker. Exercise the database deadline without waiting 24 wall-clock hours.
+func TestCorpusBuildDeadlineFencesItsLease(t *testing.T) {
+	l, _, owner := agentLab(t)
+	ctx := t.Context()
+	receipt, err := l.a.CreateCorpus(ctx, owner, "corpus", CreateCorpusInput{
+		Name: "archive", Source: CorpusSource{Kind: "github", URL: "https://github.com/example/archive", Ref: "main"},
+	})
+	var corpus Corpus
+	if err != nil || json.Unmarshal(receipt.Body, &corpus) != nil {
+		t.Fatal("declare corpus", err)
+	}
+	var queue []CorpusBuild
+	for _, key := range []string{"first", "next"} {
+		receipt, err = l.a.RequestCorpusBuild(ctx, owner, corpus.ID, key, RequestCorpusBuildInput{})
+		var build CorpusBuild
+		if err != nil || json.Unmarshal(receipt.Body, &build) != nil {
+			t.Fatal("queue", err)
+		}
+		queue = append(queue, build)
+	}
+	work, err := l.s.ClaimCorpusWork(ctx, "local", "w1", "builder@1", true, time.Minute)
+	if err != nil || work.ID != queue[0].ID {
+		t.Fatal("first lease", err)
+	}
+	var scheduled bool
+	if err = l.s.pool.QueryRow(ctx, `SELECT abs(extract(epoch FROM deadline_at-created_at)-86400)<1 FROM corpus_builds WHERE id=$1`, work.ID).Scan(&scheduled); err != nil || !scheduled {
+		t.Fatal("24-hour deadline", err)
+	}
+	if _, err = l.s.pool.Exec(ctx, `UPDATE corpus_builds SET created_at=created_at-interval '25 hours', deadline_at=deadline_at-interval '25 hours' WHERE id=$1`, work.ID); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := l.s.ExpireCorpusBuilds(ctx); err != nil || n != 1 {
+		t.Fatal("expired builds", n, err)
+	}
+	first, err := l.a.CorpusBuild(ctx, owner, work.ID)
+	if err != nil || first.State != "FAILED" || first.ErrorCode != "timeout" {
+		t.Fatal("expired state", first.State, first.ErrorCode, err)
+	}
+	if err = l.s.PinCorpusCommit(ctx, work, strings.Repeat("e", 40)); !errors.Is(err, ErrLeaseLost) {
+		t.Fatal("expired worker changed build", err)
+	}
+	if n, err := l.s.ExpireCorpusBuilds(ctx); err != nil || n != 0 {
+		t.Fatal("expiry replay", n, err)
+	}
+	if next, err := l.s.ClaimCorpusWork(ctx, "local", "w2", "builder@1", true, time.Minute); err != nil || next.ID != queue[1].ID {
+		t.Fatal("next build", err)
+	}
+}
