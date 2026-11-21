@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"iter"
 	"net"
 	"net/http"
 	"os"
@@ -37,13 +38,56 @@ type gatewayForwarder struct {
 	calls int
 }
 
+func (f *gatewayForwarder) route(alias string) (llmgateway.Route, error) {
+	route := llmgateway.Route{Kind: "openai_compatible", BaseURL: f.base + "/v1", UpstreamModel: f.model, Secret: "unused", Key: "live/" + alias}
+	switch alias {
+	case "an":
+		route.Kind, route.BaseURL = "anthropic", f.base
+	case "oa":
+	default:
+		return route, &capsuleprotocol.PlatformError{Code: "not_found"}
+	}
+	return route, nil
+}
+
+func (f *gatewayForwarder) ForwardLLMStream(ctx context.Context, key string, in capsuleprotocol.LLMForward) iter.Seq2[capsuleprotocol.LLMStreamFrame, error] {
+	return func(yield func(capsuleprotocol.LLMStreamFrame, error) bool) {
+		route, err := f.route(in.Alias)
+		if err != nil {
+			yield(capsuleprotocol.LLMStreamFrame{}, err)
+			return
+		}
+		f.calls++
+		started, yielding := false, true
+		out, err := f.g.ForwardStream(ctx, route, in.Dialect, in.Body, func(e llmgateway.Event) error {
+			if !started {
+				started = true
+				if yielding = yield(capsuleprotocol.LLMStreamFrame{Type: "start"}, nil); !yielding {
+					return context.Canceled
+				}
+			}
+			if yielding = yield(capsuleprotocol.LLMStreamFrame{Type: "event", Event: &capsuleprotocol.LLMStreamEvent{Name: e.Name, Data: e.Data}}, nil); !yielding {
+				return context.Canceled
+			}
+			return nil
+		})
+		if err != nil {
+			if !yielding {
+				return
+			}
+			yield(capsuleprotocol.LLMStreamFrame{}, &capsuleprotocol.PlatformError{Code: "outcome_unknown"})
+			return
+		}
+		soft := false
+		yield(capsuleprotocol.LLMStreamFrame{Type: "end", Outcome: "completed", InputTokens: &out.Usage.InputTokens, OutputTokens: &out.Usage.OutputTokens, SoftExceeded: &soft}, nil)
+	}
+}
+
 func (f *gatewayForwarder) ForwardLLM(ctx context.Context, key string, in capsuleprotocol.LLMForward) (capsuleprotocol.LLMForwardResult, error) {
 	f.calls++
-	route := llmgateway.Route{Kind: "openai_compatible", BaseURL: f.base + "/v1", UpstreamModel: f.model, Secret: "unused", Key: "live/" + in.Alias}
-	if in.Alias == "an" {
-		route.Kind, route.BaseURL = "anthropic", f.base
-	} else if in.Alias != "oa" {
-		return capsuleprotocol.LLMForwardResult{}, &capsuleprotocol.PlatformError{Code: "not_found"}
+	route, err := f.route(in.Alias)
+	if err != nil {
+		return capsuleprotocol.LLMForwardResult{}, err
 	}
 	out, err := f.g.Forward(ctx, route, in.Dialect, in.Body)
 	switch {
@@ -93,13 +137,13 @@ ask = "Use the list_directory tool to list the directory /tmp. Do not answer in 
 out = {}
 
 oa = openai.OpenAI()  # OPENAI_BASE_URL and OPENAI_API_KEY from the environment
-r = oa.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": ask}], tools=tools_oa, max_tokens=200)
+r = oa.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": ask}], tools=tools_oa, tool_choice={"type":"function","function":{"name":"list_directory"}}, temperature=0, max_tokens=200)
 out["openai_model"] = r.model
 out["openai_tool"] = [c.function.name for c in (r.choices[0].message.tool_calls or [])]
 out["openai_args"] = [json.loads(c.function.arguments) for c in (r.choices[0].message.tool_calls or [])]
 
 names, args = {}, {}
-stream = oa.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": ask}], tools=tools_oa, max_tokens=200,
+stream = oa.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": ask}], tools=tools_oa, tool_choice={"type":"function","function":{"name":"list_directory"}}, temperature=0, max_tokens=200,
     stream=True, stream_options={"include_usage": True})
 usage = None
 for chunk in stream:
@@ -119,10 +163,10 @@ text = oa.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "co
 out["openai_stream_text"] = "".join(c.choices[0].delta.content or "" for c in text if c.choices)
 
 an = anthropic.Anthropic()  # ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY from the environment
-m = an.messages.create(model="claude-sonnet", max_tokens=200, tools=tools_an, messages=[{"role": "user", "content": ask}])
+m = an.messages.create(model="claude-sonnet", max_tokens=200, tools=tools_an, tool_choice={"type":"tool","name":"list_directory"}, temperature=0, messages=[{"role": "user", "content": ask}])
 out["anthropic_model"] = m.model
 out["anthropic_tool"] = [b.name for b in m.content if b.type == "tool_use"]
-with an.messages.stream(model="claude-sonnet", max_tokens=200, tools=tools_an, messages=[{"role": "user", "content": ask}]) as s:
+with an.messages.stream(model="claude-sonnet", max_tokens=200, tools=tools_an, tool_choice={"type":"tool","name":"list_directory"}, temperature=0, messages=[{"role": "user", "content": ask}]) as s:
     final = s.get_final_message()
 out["anthropic_stream_tool"] = [b.name for b in final.content if b.type == "tool_use"]
 out["anthropic_stream_input"] = [b.input for b in final.content if b.type == "tool_use"]

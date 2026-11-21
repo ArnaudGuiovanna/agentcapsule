@@ -286,9 +286,12 @@ task, _ := client.GetTask(ctx, &a2a.GetTaskRequest{ID: result.(*a2a.Task).ID})
 - **Retries.** The same message (same `messageId`) sent again by the same run
   is the same request; with other content it is refused. A message sent again
   by a run that starts over after a crash or a sleep is a new request.
-- **Not supported.** File parts, follow-up messages on a task
-  (`taskId`), streaming (`SendStreamingMessage`, `SubscribeToTask`; the cards
-  say `streaming: false`), push notifications, `ListTasks`, extended cards.
+- Cards advertise `streaming: true`. `SendStreamingMessage` returns the task
+  as soon as the request is submitted. `SubscribeToTask` returns its current
+  snapshot. Both then deliver status changes, a reply artifact when available,
+  and the terminal status. Closing the connection leaves the request running.
+- **Not supported.** File parts, follow-up messages on a task (`taskId`),
+  push notifications, `ListTasks`, extended cards.
   `CancelTask` answers `TaskNotCancelable`: only the sender's owner can cancel
   a request, through the platform API.
 
@@ -359,15 +362,16 @@ without Docker.
   `openai_compatible` provider, and an Anthropic request only to an `anthropic`
   provider. A mismatch answers 400. There is no translation between the two
   APIs.
-- **Streaming.** A client that asks for a stream (`"stream": true`) receives the
-  whole answer, replayed in each API's stream format:
-  - OpenAI: chunks with indexed tool calls, then the usage when
-    `stream_options.include_usage` is set, then `[DONE]`;
-  - Anthropic: `message_start`, then each content block (text, tool use,
-    thinking with its signature), then `message_delta` and `message_stop`.
-
-  The provider itself is never asked for a stream, so the answer arrives in one
-  piece, after the whole generation.
+- **Streaming.** With `"stream": true`, native provider events are flushed to
+  the caller as they arrive. OpenAI clients receive usage when they request
+  `stream_options.include_usage`. A successful end delivers `[DONE]` for
+  OpenAI or `message_stop` for Anthropic. A cut emits a stream error. A platform
+  that lacks the streaming route can serve the same key through its unary route
+  and the adapter encodes the complete response in the requested SSE dialect.
+- An invocation using `stream.output` forwards command stdout as UTF-8 deltas
+  as soon as the command writes it. In server mode, the adapter subscribes to
+  the submitted A2A task and forwards its text artifact updates. The invocation
+  result remains the command's complete output or the server's final artifacts.
 - **Refusals** carry each API's error shape and status:
 
   | Case | Status |
@@ -414,14 +418,13 @@ without Docker.
   - several jobs at once for a server agent;
   - files as results, and files in requests to other agents;
   - logs of the agent's standard error (OPS-02);
-  - streaming from the provider;
   - translation between the OpenAI and Anthropic APIs.
 
 ## Qualification
 
 | Check | What it shows |
 |---|---|
-| `go test ./internal/agentadapter` | The protocol side: acknowledgment, order, replay, files, revocation, the real command runner. The endpoint side: forwarding, alias mapping, stream replay, the error shapes of both APIs. The A2A side, driven by the official A2A Go SDK (v2.8.0): cards and discovery, a request followed from consent to its reply, a blocking message, outcomes without a reply, and every refusal. Server agents, built with the SDK's server: answers, failures and requests for input, a real server process supervised through a crash and a restart, and a server agent that asks another agent over A2A while it answers an invocation. |
+| `go test ./internal/agentadapter` | The protocol side: acknowledgment, order, replay, files, revocation, the real command runner. The endpoint side: forwarding, alias mapping, native streams and unary fallback, the error shapes of both APIs. The A2A side, driven by the official A2A Go SDK (v2.8.0): cards and discovery, a request followed from consent to its reply, a blocking message, outcomes without a reply, and every refusal. Server agents, built with the SDK's server: answers, failures and requests for input, a real server process supervised through a crash and a restart, and a server agent that asks another agent over A2A while it answers an invocation. |
 | `scripts/verify-adapter.py` | The official OpenAI and Anthropic Python SDKs (pinned in `scripts/adapter-sdk-requirements.txt`), with and without streaming, with tools, through the endpoint and the platform's gateway code to a real provider (a local Ollama serves both APIs). Then an unmodified agent answers an invocation from an attached file. With `--pi`, Pi does the same through both APIs and keeps its session across invocations. |
 | `scripts/verify-postgres.py` | The platform side of `/v1/llm/forward`: placement, reservation, settlement, budget refusal, API mismatch. The reads behind the A2A endpoint: cards follow the recipient rules, a request's state is its sender's only, and both cross capsule-init's bridge. The inbound policy an organization sets on an agent. The example A2A agent, against the official SDK's client and server. |
 | `scripts/verify-product-guest.py --adapted-harness` | The example image, adapted, imported and run in a jailed microVM: its SDK reaches a host model through the loopback endpoint, reads an attached file with a tool call, answers again after sleep and wake, and every call is metered. With `--pi-harness`, Pi does the same on a real model and keeps its session across sleep and wake. With `--a2a-harness`, two example A2A agents in their own microVMs: one asks the other over A2A, refused while the other is hidden, answered once it is discoverable under the `auto` policy, and again after it went to sleep, which the request wakes. |

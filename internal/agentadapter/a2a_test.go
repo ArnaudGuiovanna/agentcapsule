@@ -193,7 +193,7 @@ func TestTheOfficialA2AClientSendsARequestAndGetsTheReply(t *testing.T) {
 			return ""
 		}
 		if card.Name != "b" || card.Description != "Summarizes long documents." || len(card.Skills) != 1 || card.Skills[0].ID != "oasf-10302" ||
-			card.Capabilities.Streaming || card.Capabilities.PushNotifications || card.SupportedInterfaces[0].URL != l.url+"/agents/b" ||
+			!card.Capabilities.Streaming || card.Capabilities.PushNotifications || card.SupportedInterfaces[0].URL != l.url+"/agents/b" ||
 			card.SupportedInterfaces[0].ProtocolBinding != a2a.TransportProtocolJSONRPC || card.SupportedInterfaces[0].ProtocolVersion != "1.0" {
 			t.Errorf("card %+v", card)
 		}
@@ -493,18 +493,8 @@ func TestTheA2AEndpointRefusals(t *testing.T) {
 		check("cancel", err, a2a.ErrTaskNotCancelable)
 		_, err = client.ListTasks(ctx, &a2a.ListTasksRequest{})
 		check("list", err, a2a.ErrUnsupportedOperation)
-		// The official client does not stream from a card without streaming;
-		// a client that asks anyway is refused before anything is sent.
-		r, err := http.Post(l.url+"/agents/b", "application/json", strings.NewReader(
-			`{"jsonrpc":"2.0","id":7,"method":"SendStreamingMessage","params":{"message":{"messageId":"s","role":"ROLE_USER","parts":[{"text":"stream"}]}}}`))
-		if err != nil {
-			t.Error(err)
-			return ""
-		}
-		streamed, _ := io.ReadAll(r.Body)
-		r.Body.Close()
-		if !strings.Contains(string(streamed), "-32004") {
-			t.Error("stream", string(streamed))
+		for _, err := range client.SubscribeToTask(ctx, &a2a.SubscribeToTaskRequest{ID: "arq_missing"}) {
+			check("unknown stream", err, a2a.ErrTaskNotFound)
 		}
 		// Agent c is reachable too, but b's task is not c's.
 		other, _, err := l.client(ctx, "c")

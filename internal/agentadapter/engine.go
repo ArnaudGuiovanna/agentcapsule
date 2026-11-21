@@ -37,7 +37,8 @@ type Job struct {
 	// Content is the message as received, JSON parts included, for a runner
 	// that can pass them on (ServerRunner). Empty for work recorded before.
 	Content []capsuleprotocol.ContentPart
-	Files   []string // absolute paths of the received files, if any
+	Files   []string     // absolute paths of the received files, if any
+	Delta   func(string) // optional incremental invocation output
 }
 
 // Output is what a run produced. Completed is false when the program failed.
@@ -331,7 +332,7 @@ func (h *Engine) Step(ctx context.Context) (bool, error) {
 	}
 	if !completed.Valid {
 		h.running.Store(&runningJob{work: id, subjects: subjects, mandate: in.Mandate})
-		out, err := h.execute(ctx, target, in)
+		out, err := h.execute(ctx, kind, target, in)
 		h.running.Store(nil)
 		if ctx.Err() != nil {
 			// Stopping (sleep, shutdown): the interrupted run is not an
@@ -436,7 +437,7 @@ func (h *Engine) structuredOutput(ctx context.Context, id, kind string) ([]capsu
 
 // execute fetches the job's files, runs the command once and removes the files.
 // An error means the files could not be read yet.
-func (h *Engine) execute(ctx context.Context, target string, in input) (Output, error) {
+func (h *Engine) execute(ctx context.Context, kind, target string, in input) (Output, error) {
 	job := Job{ID: target, Text: in.Text, Content: in.Content}
 	if len(in.Attachments) > 0 {
 		dir := filepath.Join(h.home, ".agentcapsule", "files", safeName(target, "job"))
@@ -470,7 +471,45 @@ func (h *Engine) execute(ctx context.Context, target string, in input) (Output, 
 			job.Content = append(job.Content[:len(job.Content):len(job.Content)], capsuleprotocol.ContentPart{Type: "text", Text: files})
 		}
 	}
-	return h.run(ctx, job), nil
+	opener, ok := h.platform.(interface {
+		OpenOutputStream(context.Context, string) (*capsuleprotocol.OutputStreamWriter, error)
+	})
+	if !ok || kind != "invocation" {
+		return h.run(ctx, job), nil
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var stream *capsuleprotocol.OutputStreamWriter
+	var once sync.Once
+	job.Delta = func(text string) {
+		if text == "" {
+			return
+		}
+		once.Do(func() {
+			stream, _ = opener.OpenOutputStream(ctx, target)
+			if stream != nil {
+				go func(w *capsuleprotocol.OutputStreamWriter) {
+					select {
+					case <-w.Canceled():
+						cancel()
+					case <-ctx.Done():
+					}
+				}(stream)
+			}
+		})
+		if stream != nil && stream.Delta(text) != nil {
+			stream.Abort()
+			stream = nil
+		}
+	}
+	result := h.run(ctx, job)
+	if stream != nil {
+		closeCtx, stop := context.WithTimeout(ctx, 15*time.Second)
+		_, _ = stream.Close(closeCtx)
+		stop()
+		stream.Abort()
+	}
+	return result, nil
 }
 
 // safeName keeps a file name readable without letting it leave its directory.
