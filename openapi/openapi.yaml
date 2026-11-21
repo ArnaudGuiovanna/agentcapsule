@@ -19,32 +19,6 @@ paths:
       operationId: apiVersion
       security: []
       responses:
-    InvocationEvents:
-      description: >-
-        Server-sent events. Each event is an `event:` line naming one of the
-        x-sse-events below, an optional `id:` line (<attempt>:<seq>, for
-        delta and step, and <attempt>:0 for reset), and one `data:` line
-        holding the JSON object of that event's schema. A comment line
-        `: heartbeat` goes out every 15 seconds without another event. Order:
-        state first; reset if the client's attempt is not the current one;
-        the stored frames in seq order; truncated once the attempt is
-        truncated; end last, after which the server closes. revoked ends the
-        stream at any point.
-      headers:
-        X-Request-ID: {schema: {type: string}}
-        Cache-Control: {schema: {type: string, const: no-store}}
-        X-Accel-Buffering: {schema: {type: string, const: 'no'}}
-      content:
-        text/event-stream:
-          schema: {type: string}
-          x-sse-events:
-            state: {$ref: '#/components/schemas/StateEvent'}
-            delta: {$ref: '#/components/schemas/DeltaEvent'}
-            step: {$ref: '#/components/schemas/StepEvent'}
-            reset: {$ref: '#/components/schemas/ResetEvent'}
-            truncated: {$ref: '#/components/schemas/TruncatedEvent'}
-            end: {$ref: '#/components/schemas/EndEvent'}
-            revoked: {$ref: '#/components/schemas/RevokedEvent'}
         '200':
           description: Wire protocol compatibility, available before login
           content:
@@ -3131,6 +3105,32 @@ components:
         idempotency_receipt_unreadable, and the request does not run again.
       schema: {type: string, minLength: 1, maxLength: 200, pattern: '^[!-~]+$'}
   responses:
+    InvocationEvents:
+      description: >-
+        Server-sent events. Each event is an `event:` line naming one of the
+        x-sse-events below, an optional `id:` line (<attempt>:<seq>, for
+        delta and step, and <attempt>:0 for reset), and one `data:` line
+        holding the JSON object of that event's schema. A comment line
+        `: heartbeat` goes out every 15 seconds without another event. Order:
+        state first; reset if the client's attempt is not the current one;
+        the stored frames in seq order; truncated once the attempt is
+        truncated; end last, after which the server closes. revoked ends the
+        stream at any point.
+      headers:
+        X-Request-ID: {schema: {type: string}}
+        Cache-Control: {schema: {type: string, const: no-store}}
+        X-Accel-Buffering: {schema: {type: string, const: 'no'}}
+      content:
+        text/event-stream:
+          schema: {type: string}
+          x-sse-events:
+            state: {$ref: '#/components/schemas/StateEvent'}
+            delta: {$ref: '#/components/schemas/DeltaEvent'}
+            step: {$ref: '#/components/schemas/StepEvent'}
+            reset: {$ref: '#/components/schemas/ResetEvent'}
+            truncated: {$ref: '#/components/schemas/TruncatedEvent'}
+            end: {$ref: '#/components/schemas/EndEvent'}
+            revoked: {$ref: '#/components/schemas/RevokedEvent'}
     LlmProviderReceipt:
       description: Provider created/updated, or initial response replayed. Never a credential
       headers:
