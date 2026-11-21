@@ -105,7 +105,7 @@ func beginCorpusWatch(t *testing.T, cli func(context.Context, ...string) *exec.C
 	})
 	w := &liveCorpusWatch{cmd: cmd, next: json.NewDecoder(r)}
 	var ev corpusWatchEvent
-	if err = w.next.Decode(&ev); err != nil || ev.Version != 1 || ev.Event != "state" || ev.Data.State != "FETCHING" || ev.Data.Attempt < 1 {
+	if err = w.next.Decode(&ev); err != nil || ev.Version != 1 || ev.Event != "state" || ev.Data.State != "QUEUED" || ev.Data.Attempt < 1 {
 		t.Fatal("initial CLI subscription", ev, err)
 	}
 	w.attempt = ev.Data.Attempt

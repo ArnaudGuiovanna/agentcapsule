@@ -298,6 +298,11 @@ func TestCorpusBuilderAndConsumerOnKVM(t *testing.T) {
 				t.Log(key, job.State, job.ErrorCode)
 				last = job.State
 				if job.State == "PACKAGING" {
+					var seq int64
+					err := lab.db.QueryRow(ctx, `SELECT coalesce(max(s.last_seq),0) FROM corpus_builds b LEFT JOIN invocation_streams s ON s.operation_id=b.conversion_invocation_id WHERE b.id=$1`, job.ID).Scan(&seq)
+					if err != nil || seq < 2 {
+						t.Fatal("missing retained conversion frames before packaging", seq, err)
+					}
 					watch.conversion(t, fixture.PDF)
 				}
 			}
@@ -366,7 +371,7 @@ func TestCorpusBuilderAndConsumerOnKVM(t *testing.T) {
 	if signed != "" {
 		extension = runCourseEnrichment(t, lab, owner, guest, warm, signer)
 	}
-	validateCorpusDeployment(t, lab, owner, image, cold, warm, published, extension)
+	validateCorpusDeployment(t, lab, owner, image, cold, warm, published, extension, guest)
 }
 
 func runCourseEnrichment(t *testing.T, lab *productPeerLab, owner func() string, guest corpusGuest, review controlplane.CorpusBuild, signer string) controlplane.CorpusExtension {
@@ -407,7 +412,7 @@ func runCourseEnrichment(t *testing.T, lab *productPeerLab, owner func() string,
 	return ext
 }
 
-func validateCorpusDeployment(t *testing.T, lab *productPeerLab, owner func() string, image controlplane.SystemImage, cold, warm controlplane.CorpusBuild, release controlplane.CorpusRelease, extension controlplane.CorpusExtension) {
+func validateCorpusDeployment(t *testing.T, lab *productPeerLab, owner func() string, image controlplane.SystemImage, cold, warm controlplane.CorpusBuild, release controlplane.CorpusRelease, extension controlplane.CorpusExtension, guest corpusGuest) {
 	t.Helper()
 	ctx := t.Context()
 	spec := controlplane.TemplateSpec{Name: "classroom", SystemImage: image.ID, Harness: controlplane.HarnessReference{Name: "reference", Version: "1.0.0"}, Resources: controlplane.AgentResources{VCPUs: 1, MemoryMiB: 256, DataVolumeMiB: 128}, Corpora: []controlplane.CorpusBinding{{Name: release.Name, Version: 1, Mount: "lessons"}}}
@@ -510,4 +515,5 @@ func validateCorpusDeployment(t *testing.T, lab *productPeerLab, owner func() st
 		}
 	}
 	t.Log("3 agents bind and boot the same release after the rollout", rollout.Status)
+	verifyCorpusEviction(t, lab, guest, owner, spec, plan.ID, agents)
 }
