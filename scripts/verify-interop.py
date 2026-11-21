@@ -447,7 +447,7 @@ def main():
             # Allow no inherited credentials, Go flags, or protocol endpoint settings.
             env = {"PATH": os.defpath, "HOME": str(work), "GOENV": "off", "GOWORK": "off", "GOTOOLCHAIN": "local", "CGO_ENABLED": "1", "GOMAXPROCS": "2", "GOFLAGS": "-p=2", "GOPROXY": "https://proxy.golang.org", "GOSUMDB": "sum.golang.org"}
             # Share only module/build caches; neither stores runtime credentials.
-            env["GOTMPDIR"] = str(work)
+            env["GOTMPDIR"] = tempfile.gettempdir()
             cache = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))) / "agentcapsule-interop"
             cache.mkdir(parents=True, exist_ok=True)
             env["GOPATH"] = str(Path.home() / "go")
