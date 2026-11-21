@@ -24,6 +24,7 @@ func TestTestBehaviours(t *testing.T) {
 		{[]string{"flood-volume", "1048576"}, behaviour{floodChunk: 1 << 20}},
 		{[]string{"fill-tmp", "104857600"}, behaviour{fillTmp: 100 << 20}},
 		{[]string{"text-only"}, behaviour{textOnly: true}},
+		{[]string{"model-stream-slots"}, behaviour{modelSlots: true}},
 		{[]string{"burn-cpu"}, behaviour{hostile: "burn-cpu"}},
 		{[]string{"eat-memory"}, behaviour{hostile: "eat-memory"}},
 		{[]string{"fork-bomb"}, behaviour{hostile: "fork-bomb"}},

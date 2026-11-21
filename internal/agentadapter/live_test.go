@@ -163,10 +163,10 @@ text = oa.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "co
 out["openai_stream_text"] = "".join(c.choices[0].delta.content or "" for c in text if c.choices)
 
 an = anthropic.Anthropic()  # ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY from the environment
-m = an.messages.create(model="claude-sonnet", max_tokens=200, tools=tools_an, tool_choice={"type":"tool","name":"list_directory"}, temperature=0, messages=[{"role": "user", "content": ask}])
+m = an.messages.create(model="claude-sonnet", max_tokens=200, tools=tools_an, tool_choice={"type":"tool","name":"list_directory"}, extra_body={"temperature":0}, messages=[{"role": "user", "content": ask}])
 out["anthropic_model"] = m.model
 out["anthropic_tool"] = [b.name for b in m.content if b.type == "tool_use"]
-with an.messages.stream(model="claude-sonnet", max_tokens=200, tools=tools_an, tool_choice={"type":"tool","name":"list_directory"}, temperature=0, messages=[{"role": "user", "content": ask}]) as s:
+with an.messages.stream(model="claude-sonnet", max_tokens=200, tools=tools_an, tool_choice={"type":"tool","name":"list_directory"}, extra_body={"temperature":0}, messages=[{"role": "user", "content": ask}]) as s:
     final = s.get_final_message()
 out["anthropic_stream_tool"] = [b.name for b in final.content if b.type == "tool_use"]
 out["anthropic_stream_input"] = [b.input for b in final.content if b.type == "tool_use"]
@@ -365,6 +365,14 @@ func TestLivePiAnswersInvocations(t *testing.T) {
 				t.Fatal(err)
 			}
 			cfg.ModelAddress = serveEndpoint(t, cfg, p)
+			translator := os.Getenv("AGENTCAPSULE_ADAPTER_PI_STREAM")
+			if translator == "" {
+				translator, err = filepath.Abs("../../examples/pi-agent/stream.mjs")
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			cfg.Command = append([]string{filepath.Join(nodeDir, "node"), translator}, cfg.Command...)
 			home := t.TempDir()
 			cfg.Command[len(cfg.Command)-1] = filepath.Join(home, "pi-sessions")
 			// Pi's own configuration, as an image would ship it: a provider for
@@ -412,7 +420,7 @@ func TestLivePiAnswersInvocations(t *testing.T) {
 			}
 			ref := capsuleprotocol.AttachmentRef{ID: "att_0123456789abcdef0123456789abcdef", Name: "vault.txt", MediaType: "text/plain", Size: int64(len(p.file)),
 				SHA256: strings.Repeat("0", 64)}
-			first := ask("pi-1", "Read the attached file with the read tool, then tell me the access code of the vault.", ref)
+			first := ask("pi-1", "Use your read tool now on the exact attached vault.txt path. The file is the only source of the answer. After you receive its tool result, quote the access code from that result.", ref)
 			t.Log("Pi, first answer:", first, "model calls:", p.calls)
 			if !strings.Contains(first, "4417") || p.calls < 2 {
 				t.Fatal("Pi did not read the attached file through a tool call", first, p.calls)

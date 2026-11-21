@@ -456,3 +456,37 @@ python -m venv /tmp/sdk && /tmp/sdk/bin/pip install --require-hashes --only-bina
 python3 scripts/verify-adapter.py --model <a local model with tool calling> --python /tmp/sdk/bin/python \
   --output ./evidence/adapter-live
 ```
+
+
+### Streaming qualification on November 21, 2026
+
+The Pi example uses its JSON-mode executable and a Node.js reader that
+publishes assistant text deltas. Pi receives the provider's tool events and
+stores its session on its data volume. The manifest requests `stream.output`
+and `llm.invoke`.
+
+In `TestProductPiStreamsBeforeTheProviderFinishes`, real Pi inside
+Firecracker used local Ollama with `forteim-ministral3-text-gpu-8k:20261030`.
+The provider connection stayed open after the first text until the SSE client
+received the guest's delta. The first public delta arrived after 536 ms. All
+21 deltas, concatenated, matched both the result in the final event and the
+persisted invocation result. [KVM test](../internal/worker/product_pi_stream_integration_test.go).
+
+The long-model KVM scenario delivered the first fragment before releasing the
+provider to finish its 290-second generation and settled the exact usage once.
+Another KVM scenario kept sixteen model streams open from one boot. Its
+seventeenth call received HTTP 503 with the platform code `unavailable`.
+A separate KVM scenario restored the volume during an invocation. Its original
+SSE subscriber saw the reset, the second attempt's deltas and the final outcome.
+[Long model stream](../internal/worker/product_model_stream_integration_test.go) ·
+[Restore during streaming](../internal/worker/product_restore_stream_integration_test.go).
+
+Two local runs of `TestInvocationEventsLoad` on PostgreSQL 18.6 used seven
+authenticated boot identities, 100 concurrent model-independent output producers
+and 100 concurrent SSE readers. Each run committed 1,000 deltas in 100 sealed
+chunks and observed 100 opaque operation notifications. First-delta latency from
+the producer release barrier to SSE receipt was 364/392/398 ms and 799/869/871 ms
+(p50/p95/max). PostgreSQL wrote 330,912 and 308,200 bytes of WAL during the two
+runs. The qualification uses the 150 ms coalescing window and an isolated
+database with the product's migrations. Set `AGENTCAPSULE_STREAM_LOAD=1`
+when running this test. [Load test](../internal/api/events_load_test.go).

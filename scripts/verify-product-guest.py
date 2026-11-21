@@ -43,6 +43,8 @@ REQUIRED_WORKER = {"TestProductWorkerProvisioningAndEncryptedWake", "TestProduct
     "TestProductWorkerTenantAgentsTalkOverA2A", "TestProductWorkerNightlyVolumeArchives", "TestProductWorkerRestoresAgentFromArchive",
     "TestProductWorkerCarriesTheOutputStreamAndTheCancellation",
     "TestProductWorkerCarriesALongModelStreamToTheGuest",
+    "TestProductWorkerBoundsModelStreamsAtSixteen",
+    "TestProductRestoreResetsALiveSubscriber",
     "TestProductWorkerBoundsTheGuestTmp", "TestProductWorkerDeliversJSONContent", "TestProductWorkerEnforcesCapabilities",
     "TestProductWorkerDriveCeilingsHoldAgainstAFloodingGuest", "TestProductWorkerStopsBootingAGuestThatCrashesAtBoot",
     "TestProductWorkerCPUCeilingHoldsAgainstABurningGuest", "TestProductWorkerMemoryCeilingHoldsAgainstAGuestThatEatsMemory",
@@ -52,7 +54,7 @@ REQUIRED_WORKER = {"TestProductWorkerProvisioningAndEncryptedWake", "TestProduct
     "TestProductWorkerWakesQueuesAndKeepsAWorkingAgentAwake", "TestProductWorkerSenderWakesForTheReply",
     "TestProductWorkerRefetchesTheHarnessOfARestoredAgent", "TestProductWorkerStopsAGuestThatNeverAnswersAnInvocation",
     "TestProductWorkerDeletesAnAgentWhoseHarnessNeverAnswers"}
-PI_WORKER = {"TestProductWorkerTenantRunsPiOnARealModel"}
+PI_WORKER = {"TestProductWorkerTenantRunsPiOnARealModel", "TestProductPiStreamsBeforeTheProviderFinishes"}
 # The private services of deploy/interop (Directory, SLIM node) and the SLIM
 # bridge: run when --slim-bridge-build is given.
 SLIM_WORKER = {"TestProductWorkerTenantAgentsTalkOverSLIM", "TestProductWorkerTenantFlagshipJourney",

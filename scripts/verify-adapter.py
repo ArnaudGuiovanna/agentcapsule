@@ -26,7 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 REQUIRED = {"TestLiveOfficialSDKsThroughTheModelEndpoint", "TestLiveUnmodifiedAgentAnswersAnInvocation"}
 PI_TESTS = {"TestLivePiAnswersInvocations", "TestLivePiAnswersInvocations/capsule-anthropic", "TestLivePiAnswersInvocations/capsule-openai"}
 SOURCES = ["go.mod", "go.sum", "internal/agentadapter", "internal/llmgateway", "internal/capsuleprotocol/llm.go",
-           "scripts/verify-adapter.py", "scripts/adapter-sdk-requirements.txt"]
+           "scripts/verify-adapter.py", "scripts/adapter-sdk-requirements.txt", "examples/pi-agent/stream.mjs"]
 
 
 def sha256(path):
@@ -83,7 +83,8 @@ def main():
     env = dict(os.environ, CGO_ENABLED="1", GOFLAGS="-mod=readonly", AGENTCAPSULE_ADAPTER_PROVIDER_URL=a.provider_url,
                AGENTCAPSULE_ADAPTER_MODEL=a.model, AGENTCAPSULE_ADAPTER_PYTHON=os.path.abspath(a.python))  # a venv: never resolve its symlink
     if a.pi:
-        env.update(AGENTCAPSULE_ADAPTER_PI=os.path.abspath(a.pi), AGENTCAPSULE_ADAPTER_NODE_DIR=os.path.abspath(a.node_dir))
+        env.update(AGENTCAPSULE_ADAPTER_PI=os.path.abspath(a.pi), AGENTCAPSULE_ADAPTER_NODE_DIR=os.path.abspath(a.node_dir),
+                   AGENTCAPSULE_ADAPTER_PI_STREAM=str(ROOT / "examples/pi-agent/stream.mjs"))
     records = []
 
     def run(name, command, timeout):

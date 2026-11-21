@@ -212,6 +212,32 @@ effect: the platform API implements `CapabilityAPI`, which reads the agent's
 effective set (harness ∩ organization ∩ agent) in PostgreSQL at each call. A
 refusal is `capability_denied` (HTTP 403). The guest's own bridge has no gate.
 
+### Model streams over the Unix socket
+
+An executable written in any language can use the platform socket.
+Send an HTTP POST with the usual `capsule.v1` envelope and
+`Content-Type: application/json`. For a native provider event stream, use
+`/v1/llm/forward/stream`, the `forward` field and `stream: true` in its body.
+For a sequence of text fragments, use `/v1/llm/complete/stream` and the
+`llm` field. Both operations require `llm.invoke`.
+
+An HTTP 200 response carries `application/x-ndjson`. The first line confirms
+the protocol and identity. Read the following frames incrementally and check
+each sequence number. For example, a completion can yield
+
+```jsonl
+{"type":"start","protocol":"capsule.v1","identity":{"incarnation":1,"agent_id":"agt_example","generation":1,"vm_id":"0000000000000001"}}
+{"type":"text","seq":1,"text":"Hello"}
+{"type":"text","seq":2,"text":" world"}
+{"type":"end","seq":3,"outcome":"completed","input_tokens":7,"output_tokens":2,"soft_budget_exceeded":false,"finish_reason":"stop"}
+```
+
+On the forward route each `event` frame carries the provider's JSON in
+`event.data` and an optional SSE event name in `event.name`. A cut after
+opening ends with `outcome_unknown`, or EOF if the connection itself is
+lost. Each line, including LF, fits in 64 KiB. A call occupies one of the
+VM's 16 platform slots until it ends. [Model API and accounting](../api/llm.md#model-streams-on-the-guest-socket).
+
 ### The output stream (`POST /v1/invocations/stream`)
 
 A harness that answered `working` may stream the output of that invocation

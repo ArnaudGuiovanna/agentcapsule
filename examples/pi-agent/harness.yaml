@@ -6,4 +6,4 @@ architecture: x86_64
 base: agentcapsule-guest/1
 entrypoint: [/agentcapsule/capsule-adapter, /agentcapsule/adapter.json]
 description: Pi, the coding agent, unmodified, run through capsule-adapter
-capabilities: [llm.invoke]
+capabilities: [llm.invoke, stream.output]

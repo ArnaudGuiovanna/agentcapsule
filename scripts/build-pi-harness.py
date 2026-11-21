@@ -53,7 +53,7 @@ def main() -> int:
     out.mkdir(parents=True)
     context = out / "context"
     context.mkdir()
-    for name in ("Dockerfile", "start", "models.json"):
+    for name in ("Dockerfile", "start", "stream.mjs", "models.json"):
         shutil.copy2(EXAMPLE / name, context / name)
     shutil.copytree(release / "node_modules", context / "pi" / "node_modules", symlinks=True)
     shutil.copy2(node, context / "node")
