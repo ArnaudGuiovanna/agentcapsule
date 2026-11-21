@@ -151,3 +151,26 @@ func TestInspectImageRunsDebugfsConfined(t *testing.T) {
 		t.Fatal("a debugfs that starts a process, confined:", err)
 	}
 }
+
+func TestCorpusExtensionDataTreeIsInspectedWithoutBusinessFiles(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("reviewed material\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	image := filepath.Join(t.TempDir(), ImageFile)
+	if _, err := BuildExtensionImage(t.Context(), dir, image, testUUID, 64<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := InspectExtension(t.Context(), image, sandbox.Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := InspectImage(t.Context(), image, sandbox.Options{}); !errors.Is(err, ErrInvalid) {
+		t.Fatal("extension accepted as base", err)
+	}
+	if err := os.Symlink("notes.txt", filepath.Join(dir, "alias")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := BuildExtensionImage(t.Context(), dir, image, testUUID, 64<<20); !errors.Is(err, ErrInvalid) {
+		t.Fatal("symlink", err)
+	}
+}

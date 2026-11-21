@@ -104,7 +104,7 @@ func (t *Transit) CompleteCorpusReview(ctx context.Context, j CorpusWork, r Corp
 			return err
 		}
 		var pinned bool
-		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM corpus_releases WHERE tenant_id=$1 AND digest=$2 AND deprecated_at IS NULL UNION ALL SELECT 1 FROM corpus_builds WHERE tenant_id=$1 AND image_digest=$2 AND state='REVIEW')`, j.Tenant, r.Digest).Scan(&pinned); err != nil {
+		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM (`+tenantCorpusPins+`) pins WHERE digest=$2)`, j.Tenant, r.Digest).Scan(&pinned); err != nil {
 			return err
 		}
 		if !pinned && r.Bytes > (*q.MaxCorpusStorageMiB<<20)-used {

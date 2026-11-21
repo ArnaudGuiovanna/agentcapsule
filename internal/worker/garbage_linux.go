@@ -5,6 +5,7 @@ package worker
 import (
 	"context"
 	"errors"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpuspkg"
 	"os"
 	"path/filepath"
 	"slices"
@@ -202,7 +203,7 @@ func (g GarbageCollection) cleanCorpusStaging(ctx context.Context, dry bool, out
 		return err
 	}
 	for _, e := range entries {
-		if !e.IsDir() || !buildID.MatchString(e.Name()) {
+		if !e.IsDir() || !buildID.MatchString(e.Name()) && !corpuspkg.ValidID("cex", e.Name()) {
 			continue
 		}
 		done, err := g.Store.CorpusStagingFinished(ctx, g.HostID, e.Name())

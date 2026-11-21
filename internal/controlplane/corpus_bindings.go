@@ -30,7 +30,7 @@ type resolvedCorpus struct {
 	corpus, release, mount string
 }
 
-func resolveCorpusBindings(ctx context.Context, tx pgx.Tx, tenant, host string, entries []CorpusBinding, active bool) ([]resolvedCorpus, error) {
+func resolveCorpusBindings(ctx context.Context, tx pgx.Tx, tenant, host, image string, entries []CorpusBinding, active bool) ([]resolvedCorpus, error) {
 	if len(entries) > 4 {
 		return nil, ErrInput
 	}
@@ -47,12 +47,16 @@ func resolveCorpusBindings(ctx context.Context, tx pgx.Tx, tenant, host string, 
 		}
 		mounts[m], names[entry.Name] = true, true
 		bound := resolvedCorpus{mount: m}
-		err := tx.QueryRow(ctx, `SELECT r.corpus_id,r.id FROM corpus_releases r JOIN corpora c ON c.id=r.corpus_id WHERE r.tenant_id=$1 AND r.host_id=$2 AND c.name=$3 AND r.version=$4 AND (NOT $5 OR r.deprecated_at IS NULL) FOR SHARE OF r`, tenant, host, entry.Name, entry.Version, active).Scan(&bound.corpus, &bound.release)
+		var compatible bool
+		err := tx.QueryRow(ctx, `SELECT r.corpus_id,r.id,r.extensions='[]'::jsonb OR EXISTS(SELECT 1 FROM system_images WHERE id=$6 AND 'corpus.extensions'=ANY(features)) FROM corpus_releases r JOIN corpora c ON c.id=r.corpus_id WHERE r.tenant_id=$1 AND r.host_id=$2 AND c.name=$3 AND r.version=$4 AND (NOT $5 OR r.deprecated_at IS NULL) FOR SHARE OF r`, tenant, host, entry.Name, entry.Version, active, image).Scan(&bound.corpus, &bound.release, &compatible)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrCorpusUnavailable
 		}
 		if err != nil {
 			return nil, err
+		}
+		if !compatible {
+			return nil, ErrCorpusIncompatible
 		}
 		bindings = append(bindings, bound)
 	}
@@ -126,7 +130,11 @@ func (a *Accounts) SetAgentCorpora(ctx context.Context, p Principal, id, key str
 		if err != nil {
 			return 0, nil, err
 		}
-		resolved, err := resolveCorpusBindings(ctx, tx, p.TenantID, host, entries, true)
+		var image string
+		if err = tx.QueryRow(ctx, "SELECT coalesce(system_image,'') FROM agent_specs WHERE agent_id=$1", id).Scan(&image); err != nil {
+			return 0, nil, err
+		}
+		resolved, err := resolveCorpusBindings(ctx, tx, p.TenantID, host, image, entries, true)
 		if err != nil {
 			return 0, nil, err
 		}
@@ -168,6 +176,13 @@ func (a *Accounts) TryCorpusBuild(ctx context.Context, p Principal, build, key s
 		if err != nil {
 			return 0, nil, err
 		}
+		var compatible bool
+		if err = tx.QueryRow(ctx, `SELECT NOT EXISTS(SELECT 1 FROM corpus_extensions WHERE build_id=$1 AND state='READY') OR EXISTS(SELECT 1 FROM agent_specs sp JOIN system_images i ON i.id=sp.system_image WHERE sp.agent_id=$2 AND 'corpus.extensions'=ANY(i.features))`, build, in.AgentID).Scan(&compatible); err != nil {
+			return 0, nil, err
+		}
+		if !compatible {
+			return 0, nil, ErrCorpusIncompatible
+		}
 		if agentHost != host {
 			return 0, nil, ErrCorpusUnavailable
 		}
@@ -200,12 +215,19 @@ func (a *Accounts) TryCorpusBuild(ctx context.Context, p Principal, build, key s
 }
 
 // BootCorpus is a tenant-checked disk to resolve on the agent's host at boot.
-type BootCorpus struct{ ReleaseID, Digest, UUID, Mount string }
+type BootCorpus struct{ ReleaseID, Digest, UUID, Mount, Parent string }
 
 func (s *Store) BootCorpora(ctx context.Context, id, host string) ([]BootCorpus, error) {
-	rows, err := s.pool.Query(ctx, `SELECT coalesce(ac.release_id,ac.build_id),coalesce(r.digest,b.image_digest),coalesce(r.image_uuid,b.image_uuid)::text,ac.mount
- FROM agent_corpora ac JOIN agent_specs x ON x.agent_id=ac.agent_id LEFT JOIN corpus_releases r ON r.id=ac.release_id LEFT JOIN corpus_builds b ON b.id=ac.build_id
- WHERE ac.agent_id=$1 AND x.host_id=$2 AND (b.id IS NULL OR b.state='PUBLISHED' OR b.state='REVIEW' AND b.review_expires_at>clock_timestamp()) ORDER BY ac.position`, id, host)
+	rows, err := s.pool.Query(ctx, `WITH bindings AS (
+ SELECT coalesce(ac.release_id,ac.build_id) id,coalesce(r.digest,b.image_digest) digest,coalesce(r.image_uuid,b.image_uuid)::text uuid,ac.mount,ac.position,
+ coalesce(r.extensions,(SELECT jsonb_agg(jsonb_build_object('digest',x.image_digest,'uuid',x.image_uuid,'name',e.name) ORDER BY e.name)
+ FROM corpus_extensions x JOIN corpus_enrichers e ON e.id=x.enricher_id WHERE x.build_id=b.id AND x.state='READY'),'[]'::jsonb) extensions,
+ 'corpus.extensions'=ANY(i.features) compatible FROM agent_corpora ac JOIN agent_specs sp ON sp.agent_id=ac.agent_id LEFT JOIN system_images i ON i.id=sp.system_image LEFT JOIN corpus_releases r ON r.id=ac.release_id LEFT JOIN corpus_builds b ON b.id=ac.build_id
+ WHERE ac.agent_id=$1 AND sp.host_id=$2 AND (b.id IS NULL OR b.state='PUBLISHED' OR b.state='REVIEW' AND b.review_expires_at>clock_timestamp()))
+ SELECT id,digest,uuid,mount,parent FROM (
+ SELECT id,digest,uuid,mount,'' AS parent,position,0 AS disk FROM bindings UNION ALL
+ SELECT id,CASE WHEN compatible THEN e->>'digest' ELSE '' END,e->>'uuid',e->>'name',mount,position,1 FROM bindings CROSS JOIN LATERAL jsonb_array_elements(extensions) e
+ UNION ALL SELECT x.id,b.image_digest,b.image_uuid::text,'base','',0,0 FROM corpus_extensions x JOIN corpus_builds b ON b.id=x.build_id WHERE x.agent_id=$1 AND b.host_id=$2 AND x.state='RUNNING' AND b.state='REVIEW' AND b.review_expires_at>clock_timestamp()) mounts ORDER BY position,disk,mount`, id, host)
 	if err != nil {
 		return nil, err
 	}

@@ -150,6 +150,11 @@ only its own.
 | `GET /v1/corpus-builds` | yes | yes | yes | yes | 403 | 403 | 403 | 403 | 403 | filtered | 401 | 401 | 403 |
 | `GET /v1/corpus-builds/{id}` | yes | yes | yes | yes | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
 | `POST /v1/corpus-builds/{id}/cancel` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `GET /v1/corpus-enrichers` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | filtered | 401 | 401 | 403 |
+| `POST /v1/corpus-enrichers` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | yes | 401 | 401 | 403 |
+| `GET /v1/corpus-builds/{id}/extensions` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `POST /v1/corpus-builds/{id}/extensions` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `GET /v1/corpus-extensions/{id}` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
 | `GET /v1/corpus-builds/{id}/review` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
 | `GET /v1/corpus-builds/{id}/review-file` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
 | `POST /v1/corpus-builds/{id}/try` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |

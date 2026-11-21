@@ -13,9 +13,11 @@ import (
 // also exposes the builder's build drives (ADR 023 §5.5).
 const FeatureCorpusMount = "corpus.mount"
 
+const FeatureCorpusExtensions = "corpus.extensions"
+
 // SystemImageFeatures is the closed list of features a system image may
 // declare at its approval; migration 0058 keeps the same list.
-var SystemImageFeatures = []string{FeatureCorpusMount}
+var SystemImageFeatures = []string{FeatureCorpusMount, FeatureCorpusExtensions}
 
 // Guest bases a release may name (harness.yaml base); only GuestBase2 has
 // the /corpus mount point (internal/harnesspkg).
@@ -37,7 +39,7 @@ func validFeatures(features []string) bool {
 		}
 		seen[f] = true
 	}
-	return true
+	return !seen[FeatureCorpusExtensions] || seen[FeatureCorpusMount]
 }
 
 // sortedFeatures is features in a stable order, never nil: an approval and

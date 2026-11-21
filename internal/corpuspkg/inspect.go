@@ -52,20 +52,31 @@ func CheckImage(f io.ReaderAt, size, max int64, uuid string) error {
 // parses an image a builder VM made, and a flaw of e2fsprogs must not reach
 // the host (package sandbox).
 func InspectImage(ctx context.Context, image string, sb sandbox.Options) error {
+	return inspectImage(ctx, image, sb, true)
+}
+
+// InspectExtension verifies every entry of an enrichment image without mounting it.
+func InspectExtension(ctx context.Context, image string, sb sandbox.Options) error {
+	return inspectImage(ctx, image, sb, false)
+}
+
+func inspectImage(ctx context.Context, image string, sb sandbox.Options, base bool) error {
 	debugfs, err := ext4image.Debugfs()
 	if err != nil {
 		return err
 	}
-	for _, f := range RequiredFiles {
-		e, found, err := ext4image.Stat(ctx, sb, debugfs, image, "/"+f)
-		if err != nil {
-			return err
-		}
-		if !found || !e.IsRegular() {
-			return invalid("corpus.ext4 lacks %s", f)
-		}
-		if f == IndexFile && e.Size > MaxIndexBytes {
-			return invalid("INDEX.md is larger than %d bytes", MaxIndexBytes)
+	if base {
+		for _, f := range RequiredFiles {
+			e, found, err := ext4image.Stat(ctx, sb, debugfs, image, "/"+f)
+			if err != nil {
+				return err
+			}
+			if !found || !e.IsRegular() {
+				return invalid("corpus.ext4 lacks %s", f)
+			}
+			if f == IndexFile && e.Size > MaxIndexBytes {
+				return invalid("INDEX.md is larger than %d bytes", MaxIndexBytes)
+			}
 		}
 	}
 	queue := []string{"/"}
@@ -80,7 +91,7 @@ func InspectImage(ctx context.Context, image string, sb sandbox.Options) error {
 		if err != nil {
 			return invalid("corpus.ext4 has a directory debugfs cannot list: %v", err)
 		}
-		if dir == "/"+ExtDir && len(entries) > 0 {
+		if base && dir == "/"+ExtDir && len(entries) > 0 {
 			return invalid("ext/ is reserved for enrichers and must be empty")
 		}
 		for _, e := range entries {

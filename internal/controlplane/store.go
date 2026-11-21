@@ -161,7 +161,7 @@ var durableTables = []string{"harness_audit", "harness_imports", "attachment_seg
 	"organization_capability_policies", "agent_capability_policies", "capability_audit", "operator_audit", "audit_retention",
 	"authority_reconciliations", "tenant_refusal_audit", "trace_pseudonym_key", "organization_quotas",
 	"source_credentials", "corpus_audit", "corpora", "corpus_builds", "corpus_releases",
-	"agent_corpora", "corpus_review_files", "corpus_review_segments"}
+	"agent_corpora", "corpus_review_files", "corpus_review_segments", "corpus_extensions", "corpus_enrichers"}
 
 // Migrate is explicit; opening a store never changes an existing schema.
 func (s *Store) Migrate(ctx context.Context) error {

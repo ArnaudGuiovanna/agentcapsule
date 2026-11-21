@@ -49,6 +49,7 @@ func MountCorpora(c *capsuleprotocol.GuestCorpora, harnessRoot string, uid, gid 
 	if c != nil {
 		corpora = c.Corpora
 	}
+	extensions := map[string]bool{}
 	for _, m := range corpora {
 		device, err := capsuleprotocol.DriveDevice(m.Index)
 		if err != nil {
@@ -58,11 +59,30 @@ func MountCorpora(c *capsuleprotocol.GuestCorpora, harnessRoot string, uid, gid 
 			return err
 		}
 		target := filepath.Join(CorpusRoot, m.Mount)
+		if m.Parent != "" {
+			ext := filepath.Join(CorpusRoot, m.Parent, "ext")
+			if !extensions[ext] {
+				st, e := os.Lstat(ext)
+				if e != nil || !st.IsDir() {
+					return ErrGuest
+				}
+				if e = syscall.Mount("extensions", ext, "tmpfs", syscall.MS_NOSUID|syscall.MS_NODEV|syscall.MS_NOEXEC, "mode=0755,size=4k,nr_inodes=16"); e != nil {
+					return ErrGuest
+				}
+				extensions[ext] = true
+			}
+			target = filepath.Join(ext, m.Mount)
+		}
 		// capsule-init runs with umask 0077: set the mode explicitly.
 		if err = os.Mkdir(target, 0o755); err != nil || os.Chmod(target, 0o755) != nil {
 			return ErrGuest
 		}
 		if err = syscall.Mount(device, target, "ext4", corpusFlags, ""); err != nil {
+			return ErrGuest
+		}
+	}
+	for ext := range extensions {
+		if err := syscall.Mount("", ext, "", syscall.MS_REMOUNT|syscall.MS_RDONLY|syscall.MS_NOSUID|syscall.MS_NODEV|syscall.MS_NOEXEC, ""); err != nil {
 			return ErrGuest
 		}
 	}
@@ -103,7 +123,7 @@ func exposeBuildDrives(b capsuleprotocol.GuestBuildDrives, uid, gid int) error {
 		mode  uint32
 	}{{"source", &b.Source, 0o400}, {"lfs", b.LFS, 0o400}, {"output", &b.Output, 0o600}}
 	for _, d := range drives {
-		if d.drive == nil {
+		if d.drive == nil || (b.Enricher && d.name == "source") {
 			continue
 		}
 		device, err := capsuleprotocol.DriveDevice(d.drive.Index)

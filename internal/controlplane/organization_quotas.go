@@ -196,7 +196,7 @@ func checkCreationQuota(ctx context.Context, tx pgx.Tx, tenant string, r AgentRe
 // agent's and its placement's locks, and reserves the boot in the same
 // transaction when this passes.
 func checkBootQuota(ctx context.Context, tx pgx.Tx, a agent) error {
-	if a.Tenant == "" || a.Kind == "corpus_builder" {
+	if a.Tenant == "" || a.Kind == "corpus_builder" || a.Kind == "corpus_enricher" {
 		return nil
 	}
 	if err := lockOrganizationQuota(ctx, tx, a.Tenant); err != nil {

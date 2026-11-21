@@ -223,6 +223,9 @@ func TestCorpusReviewPublicationAndBindingPins(t *testing.T) {
 	if err != nil || r.Status != 201 || json.Unmarshal(r.Body, &rel) != nil {
 		t.Fatal(err)
 	}
+	if _, err = l.a.PublishCorpusBuild(ctx, l.owner, b, "re-publish", 1); !errors.Is(err, ErrTransition) {
+		t.Fatal("republish", err)
+	}
 	b = review("c", dig)
 	r, err = l.a.PublishCorpusBuild(ctx, l.owner, b, "same", 1)
 	if err != nil || r.Status != 200 {

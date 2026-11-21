@@ -295,7 +295,7 @@ func installRolloutTemplate(ctx context.Context, tx pgx.Tx, st RolloutStep) erro
 	if err != nil {
 		return err
 	}
-	bindings, err := resolveCorpusBindings(ctx, tx, st.Tenant, st.Host, st.Spec.Corpora, false)
+	bindings, err := resolveCorpusBindings(ctx, tx, st.Tenant, st.Host, st.Spec.SystemImage, st.Spec.Corpora, false)
 	if err != nil {
 		return err
 	}

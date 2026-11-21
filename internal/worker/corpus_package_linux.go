@@ -41,7 +41,7 @@ func catCorpusFile(ctx context.Context, sb sandbox.Options, debugfs, image, path
 	}
 	return data, nil
 }
-func (g corpusGuest) finishImage(ctx context.Context, j controlplane.CorpusWork, uuid, builderDigest, output string, size int64) (string, error) {
+func (g corpusGuest) finishImage(ctx context.Context, j controlplane.CorpusWork, uuid, builderDigest, output string, size int64, extension *controlplane.CorpusExtensionWork) (string, error) {
 	f, err := os.OpenFile(output, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return "invalid_image", err
@@ -54,9 +54,12 @@ func (g corpusGuest) finishImage(ctx context.Context, j controlplane.CorpusWork,
 	if !st.Mode().IsRegular() || size > st.Size() {
 		return "invalid_image", controlplane.ErrInput
 	}
-	execution, err := corpuspkg.ReadExecutionReport(f, st.Size(), size, j.ID, j.Commit)
-	if err != nil {
-		return "invalid_image", err
+	var execution []byte
+	if extension == nil {
+		execution, err = corpuspkg.ReadExecutionReport(f, st.Size(), size, j.ID, j.Commit)
+		if err != nil {
+			return "invalid_image", err
+		}
 	}
 	maxBytes := int64(g.source.MaxImageMiB) << 20
 	if err = corpuspkg.CheckImage(f, size, maxBytes, uuid); err != nil {
@@ -84,51 +87,15 @@ func (g corpusGuest) finishImage(ctx context.Context, j controlplane.CorpusWork,
 		return "unavailable", err
 	}
 	image := filepath.Join(tmp, corpuspkg.ImageFile)
-	if err = corpuspkg.InspectImage(ctx, image, g.inspection); err != nil {
-		return "invalid_image", err
+	var bundle map[string][]byte
+	var truncated bool
+	if extension == nil {
+		bundle, truncated, err = g.readCorpusReview(ctx, j, image, execution)
+	} else {
+		err = corpuspkg.InspectExtension(ctx, image, g.inspection)
 	}
-	debugfs, err := ext4image.Debugfs()
-	if err != nil {
-		return "unavailable", err
-	}
-	read := func(path string, max int) ([]byte, error) {
-		return catCorpusFile(ctx, g.inspection, debugfs, image, path, max)
-	}
-	metadata, err := read("corpus.json", sandbox.MaxOutput)
 	if err != nil {
 		return "invalid_image", err
-	}
-	info, err := corpuspkg.ParseInfo(metadata)
-	if err != nil || info.Name != j.Name || info.Commit != j.Commit || info.Builder != j.Builder || info.SourcePath != j.Path {
-		return "invalid_image", controlplane.ErrInput
-	}
-	bundle := map[string][]byte{}
-	if bundle["INDEX.md"], err = read("INDEX.md", 64<<10); err != nil {
-		return "invalid_image", err
-	}
-	raw, err := read("report.json", sandbox.MaxOutput)
-	if err != nil {
-		return "invalid_image", err
-	}
-	report, err := corpuspkg.ParseReport(raw)
-	if err != nil || report.Commit != j.Commit {
-		return "invalid_image", controlplane.ErrInput
-	}
-	bundle["report.json"] = execution
-	total := len(bundle["INDEX.md"]) + len(bundle["report.json"])
-	truncated := false
-	for _, doc := range info.Documents {
-		path := "docs/" + doc.ID + "/README.md"
-		data, err := read(path, sandbox.MaxOutput)
-		if err != nil {
-			return "invalid_image", err
-		}
-		if len(data) > 8<<20-total {
-			truncated = true
-			break
-		}
-		bundle[path] = data
-		total += len(data)
 	}
 	manifest := corpuspkg.PackageManifest{Schema: corpuspkg.Schema, Name: j.Name, BuildID: j.ID, Commit: j.Commit, Builder: corpuspkg.Builder{Name: name, Version: version, Digest: builderDigest}, Base: corpuspkg.GuestBase, UUID: uuid, Bytes: size}
 	digest, err := corpuspkg.WritePackage(tmp, manifest, maxBytes)
@@ -157,10 +124,63 @@ func (g corpusGuest) finishImage(ctx context.Context, j controlplane.CorpusWork,
 				return controlplane.ErrCorpusUnavailable
 			}
 		}
+		if extension != nil {
+			return g.w.store.SettleCorpusExtension(ctx, *extension, &controlplane.CorpusExtensionImage{Name: extension.Name, UUID: uuid, Digest: digest, Bytes: size}, "")
+		}
 		return g.transit.CompleteCorpusReview(ctx, j, controlplane.CorpusResult{UUID: uuid, Digest: digest, Bytes: size, Files: bundle, Truncated: truncated})
 	})
 	if err != nil {
 		return "", err
 	}
 	return "", removeTree(filepath.Dir(output))
+}
+
+func (g corpusGuest) readCorpusReview(ctx context.Context, j controlplane.CorpusWork, image string, execution []byte) (map[string][]byte, bool, error) {
+	if err := corpuspkg.InspectImage(ctx, image, g.inspection); err != nil {
+		return nil, false, err
+	}
+	debugfs, err := ext4image.Debugfs()
+	if err != nil {
+		return nil, false, err
+	}
+	read := func(path string, max int) ([]byte, error) {
+		return catCorpusFile(ctx, g.inspection, debugfs, image, path, max)
+	}
+	metadata, err := read("corpus.json", sandbox.MaxOutput)
+	if err != nil {
+		return nil, false, err
+	}
+	info, err := corpuspkg.ParseInfo(metadata)
+	if err != nil || info.Name != j.Name || info.Commit != j.Commit || info.Builder != j.Builder || info.SourcePath != j.Path {
+		return nil, false, controlplane.ErrInput
+	}
+	bundle := map[string][]byte{}
+	if bundle["INDEX.md"], err = read("INDEX.md", 64<<10); err != nil {
+		return nil, false, err
+	}
+	raw, err := read("report.json", sandbox.MaxOutput)
+	if err != nil {
+		return nil, false, err
+	}
+	report, err := corpuspkg.ParseReport(raw)
+	if err != nil || report.Commit != j.Commit {
+		return nil, false, controlplane.ErrInput
+	}
+	bundle["report.json"] = execution
+	total := len(bundle["INDEX.md"]) + len(bundle["report.json"])
+	truncated := false
+	for _, doc := range info.Documents {
+		path := "docs/" + doc.ID + "/README.md"
+		data, err := read(path, sandbox.MaxOutput)
+		if err != nil {
+			return nil, false, err
+		}
+		if len(data) > 8<<20-total {
+			truncated = true
+			break
+		}
+		bundle[path] = data
+		total += len(data)
+	}
+	return bundle, truncated, nil
 }

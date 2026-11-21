@@ -83,7 +83,11 @@ func (g *corpusGuest) Run(ctx context.Context, poll time.Duration, report func(e
 		if err != nil {
 			report(err)
 		}
-		if worked && err == nil {
+		enriched, enrichErr := g.enrichOne(ctx)
+		if enrichErr != nil {
+			report(enrichErr)
+		}
+		if (worked && err == nil) || (enriched && enrichErr == nil) {
 			continue
 		}
 		if time.Now().After(nextGC) {
@@ -225,7 +229,7 @@ func (g corpusGuest) phase(ctx context.Context, j controlplane.CorpusWork) (stri
 		if err = g.w.host.SetBuildDrives(ctx, agent, nil); err != nil {
 			return "", err
 		}
-		return g.finishImage(ctx, j, uuid, digest, output, v.ImageBytes)
+		return g.finishImage(ctx, j, uuid, digest, output, v.ImageBytes, nil)
 	}
 }
 
@@ -245,23 +249,8 @@ func (g corpusGuest) prepareDrives(ctx context.Context, j controlplane.CorpusWor
 	if err := g.stopGuest(ctx, agent); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(output, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0600)
-	if err != nil {
+	if err := prepareCorpusOutput(output, size); err != nil {
 		return err
-	}
-	st, err := f.Stat()
-	if err == nil && !st.Mode().IsRegular() {
-		err = controlplane.ErrInput
-	}
-	if err == nil && st.Size() != size {
-		err = f.Truncate(size)
-	}
-	closeErr := f.Close()
-	if err != nil {
-		return err
-	}
-	if closeErr != nil {
-		return closeErr
 	}
 	drives := runtime.BuildDrives{Source: filepath.Join(filepath.Dir(output), CorpusSourceFile), Output: output}
 	if len(j.LFSDrive) > 0 {
@@ -372,4 +361,26 @@ func (g *corpusGuest) Observe(reg *telemetry.Registry) {
 		}
 		return err
 	})
+}
+
+func prepareCorpusOutput(output string, size int64) error {
+	f, err := os.OpenFile(output, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0600)
+	if err != nil {
+		return err
+	}
+	st, err := f.Stat()
+	if err == nil && !st.Mode().IsRegular() {
+		err = controlplane.ErrInput
+	}
+	if err == nil && st.Size() != size {
+		err = f.Truncate(size)
+	}
+	closeErr := f.Close()
+	if err != nil {
+		return err
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	return nil
 }

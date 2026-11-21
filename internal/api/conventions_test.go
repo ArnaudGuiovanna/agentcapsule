@@ -49,6 +49,8 @@ var idempotencyOtherBody = map[string]string{
 	"POST /v1/llm/aliases":                                      `{"alias":"{name}-b","provider_id":"{provider}","upstream_model":"model-x"}`,
 	"POST /v1/corpora":                                          `{"name":"{name}-other","source":{"kind":"github","url":"https://github.com/matrix/school","ref":"main"}}`,
 	"POST /v1/corpora/{corpus}/builds":                          `{"ref":"another"}`,
+	"POST /v1/corpus-enrichers":                                 `{"name":"{name}-other","harness":{"name":"matrix-enricher","version":"1"}}`,
+	"POST /v1/corpus-builds/{review}/extensions":                `{"enricher_id":"different-authorized-release"}`,
 	"POST /v1/corpus-builds/{review}/try":                       `{"agent_id":"{corpus_agent}","mount":"other"}`,
 	"POST /v1/corpus-builds/{fresh}/publish":                    `{"version":2}`,
 	"POST /v1/agents/{agent}/corpora":                           `{"corpora":[{"name":"matrix","version":1}]}`,
@@ -226,20 +228,21 @@ type asyncRoute struct{ field, follow string }
 // asyncRoutes lists every route that answers 202 (CONV-4), the legacy
 // domain's aside.
 var asyncRoutes = map[string]asyncRoute{
-	"POST /v1/agents/{fresh}/resize":          {"id", "/v1/rollouts/{id}"},
-	"POST /v1/agents/{fresh}/volume-growth":   {"id", "/v1/volume-growth/{id}"},
-	"POST /v1/deployments/{fresh}/rollouts":   {"id", "/v1/rollouts/{id}"},
-	"POST /v1/rollouts/{fresh}/resume":        {"id", "/v1/rollouts/{id}"},
-	"POST /v1/deployment-plans/{fresh}/apply": {"id", "/v1/deployments/{id}"},
-	"POST /v1/corpora/{corpus}/builds":        {"id", "/v1/corpus-builds/{id}"},
-	"POST /v1/harness-imports":                {"id", "/v1/harness-imports/{id}"},
-	"POST /v1/agents":                         {"operation_id", "/v1/operations/{id}"},
-	"DELETE /v1/agents/{fresh}":               {"operation_id", "/v1/operations/{id}"},
-	"POST /v1/agents/{agent}/wake":            {"operation_id", "/v1/operations/{id}"},
-	"POST /v1/agents/{agent}/sleep":           {"operation_id", "/v1/operations/{id}"},
-	"POST /v1/agents/{agent}/messages":        {"operation_id", "/v1/operations/{id}"},
-	"POST /v1/agents/{agent}/invocations":     {"id", "/v1/invocations/{id}"},
-	"POST /v1/invocations/{fresh}/replay":     {"id", "/v1/invocations/{id}"},
+	"POST /v1/agents/{fresh}/resize":             {"id", "/v1/rollouts/{id}"},
+	"POST /v1/agents/{fresh}/volume-growth":      {"id", "/v1/volume-growth/{id}"},
+	"POST /v1/deployments/{fresh}/rollouts":      {"id", "/v1/rollouts/{id}"},
+	"POST /v1/rollouts/{fresh}/resume":           {"id", "/v1/rollouts/{id}"},
+	"POST /v1/deployment-plans/{fresh}/apply":    {"id", "/v1/deployments/{id}"},
+	"POST /v1/corpus-builds/{review}/extensions": {"id", "/v1/corpus-extensions/{id}"},
+	"POST /v1/corpora/{corpus}/builds":           {"id", "/v1/corpus-builds/{id}"},
+	"POST /v1/harness-imports":                   {"id", "/v1/harness-imports/{id}"},
+	"POST /v1/agents":                            {"operation_id", "/v1/operations/{id}"},
+	"DELETE /v1/agents/{fresh}":                  {"operation_id", "/v1/operations/{id}"},
+	"POST /v1/agents/{agent}/wake":               {"operation_id", "/v1/operations/{id}"},
+	"POST /v1/agents/{agent}/sleep":              {"operation_id", "/v1/operations/{id}"},
+	"POST /v1/agents/{agent}/messages":           {"operation_id", "/v1/operations/{id}"},
+	"POST /v1/agents/{agent}/invocations":        {"id", "/v1/invocations/{id}"},
+	"POST /v1/invocations/{fresh}/replay":        {"id", "/v1/invocations/{id}"},
 }
 
 // TestAsynchronousRoutesAreListed keeps asyncRoutes complete: every route of
@@ -324,7 +327,8 @@ func collectIDs(v any, field string, out map[string]string) {
 			collectIDs(x, field, out)
 		}
 	case string:
-		if field != "client_id" && v != "" && (field == "id" || strings.HasSuffix(field, "_id")) {
+		// host_id is the worker registration name, such as local (ADR 023).
+		if field != "client_id" && field != "host_id" && v != "" && (field == "id" || strings.HasSuffix(field, "_id")) {
 			out[v] = field
 		}
 	}

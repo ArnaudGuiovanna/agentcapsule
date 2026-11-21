@@ -190,7 +190,7 @@ func validateTemplate(ctx context.Context, tx pgx.Tx, tenant, host string, s Tem
 		if err = corporaMountable(ctx, tx, release, s.SystemImage); err != nil {
 			return "", err
 		}
-		if _, err = resolveCorpusBindings(ctx, tx, tenant, host, s.Corpora, true); err != nil {
+		if _, err = resolveCorpusBindings(ctx, tx, tenant, host, s.SystemImage, s.Corpora, true); err != nil {
 			return "", err
 		}
 	}
@@ -509,7 +509,7 @@ func (plan *reservationPlan) reserveAgents(ctx context.Context, tx pgx.Tx, p Pri
 	b.Queue(`INSERT INTO store_enrollments(agent_id,operation_id,volume_id) SELECT * FROM unnest($1::text[],$2::text[],$3::text[])`, ids, ops, vols)
 	b.Queue(`INSERT INTO tenant_agent_audit(id,tenant_id,actor_principal_id,agent_id,action) SELECT audit,$2,$3,id,'agent.created' FROM unnest($1::text[],$4::text[]) i(id,audit)`, ids, p.TenantID, p.ID, deploymentIDs("audit", len(ids)))
 	if len(plan.spec.Corpora) > 0 {
-		bindings, err := resolveCorpusBindings(ctx, tx, p.TenantID, plan.host, plan.spec.Corpora, true)
+		bindings, err := resolveCorpusBindings(ctx, tx, p.TenantID, plan.host, plan.spec.SystemImage, plan.spec.Corpora, true)
 		if err != nil {
 			return nil, err
 		}

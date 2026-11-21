@@ -66,7 +66,7 @@ func (c *corpusImageCache) image(ctx context.Context, d controlplane.BootCorpus)
 	if !reference.ValidDigest(d.Digest) {
 		return runtime.CorpusImage{}, controlplane.ErrCorpusUnavailable
 	}
-	img := runtime.CorpusImage{Digest: d.Digest, UUID: d.UUID, Mount: d.Mount, Path: filepath.Join(c.dir(d.Digest), corpuspkg.ImageFile)}
+	img := runtime.CorpusImage{Digest: d.Digest, UUID: d.UUID, Mount: d.Mount, Parent: d.Parent, Path: filepath.Join(c.dir(d.Digest), corpuspkg.ImageFile)}
 	f, err := os.OpenFile(img.Path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return img, controlplane.ErrCorpusUnavailable

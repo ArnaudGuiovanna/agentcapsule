@@ -175,7 +175,16 @@ code between `harnesspkg` and `internal/corpuspkg`.
 
 ### 2.4 Report: `agentcapsule.corpus-report/v1`
 
-`report.json` in the image, also in the review bundle:
+The image contains a reproducible `report.json` with the content build
+identifier and converted statuses. The API review preserves the execution's
+actual build ID and per-file cache hits. The builder writes the latter JSON
+immediately before a 48-byte footer at the end of the output drive, beyond
+the ext4 filesystem. The footer contains the eight ASCII bytes `ACRPT001`,
+the JSON length as an unsigned 64-bit big-endian value, and the raw SHA-256
+of the JSON. The worker checks the bounds (1 MiB maximum), digest, schema,
+commit and build ID before copying only the ext4 region into the image cache.
+
+The execution report in the review bundle:
 
 ```json
 {"schema": "agentcapsule.corpus-report/v1",

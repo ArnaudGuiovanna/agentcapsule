@@ -39,13 +39,29 @@ func (s *Store) EnsureCorpusBuilder(ctx context.Context, j CorpusWork, harness H
 	if err != nil {
 		return
 	}
+	agentID, ready, err = reserveCorpusGuest(ctx, tx, tenant, j.Host, release, image, "corpus_builder", "", r)
+	if err != nil {
+		return
+	}
+	if _, err = tx.Exec(ctx, "UPDATE corpus_builds SET builder_agent_id=$2,builder_digest=$3 WHERE id=$1", j.ID, agentID, digest); err != nil {
+		return
+	}
+	err = commit(ctx, tx)
+	return
+}
+
+func reserveCorpusGuest(ctx context.Context, tx pgx.Tx, tenant, targetHost, release, image, kind, enricher string, r AgentResources) (agentID string, ready bool, err error) {
 	var phase, host, current string
-	err = tx.QueryRow(ctx, `SELECT a.id,a.phase,x.host_id,x.release_id FROM agents a JOIN agent_specs x ON x.agent_id=a.id WHERE a.tenant_id=$1 AND a.kind='corpus_builder' FOR UPDATE OF a`, tenant).Scan(&agentID, &phase, &host, &current)
+	var capabilities = []string{}
+	if kind == "corpus_builder" {
+		capabilities = []string{"llm.invoke"}
+	}
+	err = tx.QueryRow(ctx, `SELECT a.id,a.phase,x.host_id,x.release_id FROM agents a JOIN agent_specs x ON x.agent_id=a.id WHERE a.tenant_id=$1 AND a.kind=$2 AND a.enricher_id IS NOT DISTINCT FROM nullif($3,'') FOR UPDATE OF a`, tenant, kind, enricher).Scan(&agentID, &phase, &host, &current)
 	if errors.Is(err, pgx.ErrNoRows) {
 		agentID = newID("agt")
 		requester, op := newID("svc"), newID("op")
 		var room bool
-		err = tx.QueryRow(ctx, `SELECT storage_limit_mib >= $2::bigint+(SELECT coalesce(sum(x.volume_mib+x.reserved_growth_mib),0) FROM agent_specs x JOIN agents a ON a.id=x.agent_id WHERE x.host_id=$1 AND a.phase<>'DELETED') FROM worker_hosts WHERE host_id=$1 FOR UPDATE`, j.Host, r.DataVolumeMiB).Scan(&room)
+		err = tx.QueryRow(ctx, `SELECT storage_limit_mib >= $2::bigint+(SELECT coalesce(sum(x.volume_mib+x.reserved_growth_mib),0) FROM agent_specs x JOIN agents a ON a.id=x.agent_id WHERE x.host_id=$1 AND a.phase<>'DELETED') FROM worker_hosts WHERE host_id=$1 FOR UPDATE`, targetHost, r.DataVolumeMiB).Scan(&room)
 		if err != nil {
 			return
 		}
@@ -53,17 +69,17 @@ func (s *Store) EnsureCorpusBuilder(ctx context.Context, j CorpusWork, harness H
 			err = ErrStorageCapacity
 			return
 		}
-		if err = refuseUnderDataPressure(ctx, tx, j.Host); err != nil {
+		if err = refuseUnderDataPressure(ctx, tx, targetHost); err != nil {
 			return
 		}
 		batch := &pgx.Batch{}
-		batch.Queue("INSERT INTO principals(id,tenant_id,kind,display_name) VALUES($1,$2,'service','corpus-builder')", requester, tenant)
+		batch.Queue("INSERT INTO principals(id,tenant_id,kind,display_name) VALUES($1,$2,'service',$3)", requester, tenant, kind)
 		batch.Queue("INSERT INTO memberships(tenant_id,principal_id,role) VALUES($1,$2,'agent_user')", tenant, requester)
-		batch.Queue("INSERT INTO agents(id,tenant_id,kind,builder_principal,phase) VALUES($1,$2,'corpus_builder',$3,'PROVISIONING')", agentID, tenant, requester)
-		batch.Queue(`INSERT INTO agent_specs(agent_id,name,release_id,host_id,system_image,vcpus,memory_mib,volume_mib,auto_start,idle_timeout_seconds,idle_policy_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,false,600,$9)`, agentID, "corpus-builder-"+agentID, release, j.Host, image, r.VCPUs, r.MemoryMiB, r.DataVolumeMiB, requester)
-		batch.Queue(`INSERT INTO agent_capability_policies(agent_id,allowed,updated_by) VALUES($1,ARRAY['llm.invoke'],$2)`, agentID, requester)
+		batch.Queue("INSERT INTO agents(id,tenant_id,kind,builder_principal,phase,enricher_id) VALUES($1,$2,$4,$3,'PROVISIONING',nullif($5,''))", agentID, tenant, requester, kind, enricher)
+		batch.Queue(`INSERT INTO agent_specs(agent_id,name,release_id,host_id,system_image,vcpus,memory_mib,volume_mib,auto_start,idle_timeout_seconds,idle_policy_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,false,600,$9)`, agentID, kind+"-"+agentID, release, targetHost, image, r.VCPUs, r.MemoryMiB, r.DataVolumeMiB, requester)
+		batch.Queue(`INSERT INTO agent_capability_policies(agent_id,allowed,updated_by) VALUES($1,$3,$2)`, agentID, requester, capabilities)
 		batch.Queue(`INSERT INTO agent_assignments(id,tenant_id,agent_id,principal_id,permissions,created_by) VALUES($1,$2,$3,$4,ARRAY['invoke','read_content'],$4)`, newID("asg"), tenant, agentID, requester)
-		batch.Queue(`INSERT INTO platform_operations(id,requested_by_principal_id,agent_id,host_id,seq,kind) VALUES($1,$2,$3,$4,1,'provision')`, op, requester, agentID, j.Host)
+		batch.Queue(`INSERT INTO platform_operations(id,requested_by_principal_id,agent_id,host_id,seq,kind) VALUES($1,$2,$3,$4,1,'provision')`, op, requester, agentID, targetHost)
 		batch.Queue(`INSERT INTO store_enrollments(agent_id,operation_id,volume_id) VALUES($1,$2,$3)`, agentID, op, newID("vol"))
 		err = tx.SendBatch(ctx, batch).Close()
 		if err != nil {
@@ -72,16 +88,12 @@ func (s *Store) EnsureCorpusBuilder(ctx context.Context, j CorpusWork, harness H
 	} else if err != nil {
 		return
 	} else {
-		if host != j.Host || current != release || phase != "LIVE" && phase != "PROVISIONING" {
+		if host != targetHost || current != release || phase != "LIVE" && phase != "PROVISIONING" {
 			err = ErrRelease
 			return
 		}
 		ready = phase == "LIVE"
 	}
-	if _, err = tx.Exec(ctx, "UPDATE corpus_builds SET builder_agent_id=$2,builder_digest=$3 WHERE id=$1", j.ID, agentID, digest); err != nil {
-		return
-	}
-	err = commit(ctx, tx)
 	return
 }
 
@@ -104,6 +116,13 @@ func (c *AgentCatalog) CorpusInvocation(ctx context.Context, j CorpusWork, input
 	if err != nil {
 		return nil, false, err
 	}
+	return c.corpusGuestInvocation(ctx, tx, agentID, requester, op, j.Host, micros, input, func(op string) error {
+		_, e := tx.Exec(ctx, "UPDATE corpus_builds SET invocation_id=$2 WHERE id=$1", j.ID, op)
+		return e
+	})
+}
+func (c *AgentCatalog) corpusGuestInvocation(ctx context.Context, tx pgx.Tx, agentID, requester, op, host string, micros int64, input json.RawMessage, save func(string) error) (json.RawMessage, bool, error) {
+	var err error
 	if op == "" {
 		message := OwnerInstruction{Content: []capsuleprotocol.ContentPart{{Type: "json", JSON: capsuleprotocol.JSONValue(input)}}}
 		if err = message.Validate(); err != nil {
@@ -113,7 +132,7 @@ func (c *AgentCatalog) CorpusInvocation(ctx context.Context, j CorpusWork, input
 		if err != nil {
 			return nil, false, err
 		}
-		_, response, err := c.enqueueInstruction(ctx, tx, agents[agentID], agentID, j.Host, requester, message, time.Duration(micros)*time.Microsecond, nil)
+		_, response, err := c.enqueueInstruction(ctx, tx, agents[agentID], agentID, host, requester, message, time.Duration(micros)*time.Microsecond, nil)
 		if err != nil {
 			return nil, false, err
 		}
@@ -121,7 +140,7 @@ func (c *AgentCatalog) CorpusInvocation(ctx context.Context, j CorpusWork, input
 		if _, err = tx.Exec(ctx, `UPDATE owner_instructions SET work_timeout_seconds=least(86400,greatest(60,$2::bigint/1000000)) WHERE operation_id=$1`, op, micros); err != nil {
 			return nil, false, err
 		}
-		if _, err = tx.Exec(ctx, "UPDATE corpus_builds SET invocation_id=$2 WHERE id=$1", j.ID, op); err != nil {
+		if err = save(op); err != nil {
 			return nil, false, err
 		}
 		return nil, false, commit(ctx, tx)

@@ -20,8 +20,9 @@ const (
 	CorporaSchema     = "agentcapsule.guest-corpora/v1"
 	// CorpusMountPoint is the directory base agentcapsule-guest/2 adds to
 	// HarnessMountPoints: capsule-init mounts the VM's corpora under it.
-	CorpusMountPoint = "/corpus"
-	MaxCorpora       = 4
+	CorpusMountPoint    = "/corpus"
+	MaxCorpora          = 4
+	MaxCorpusExtensions = 4
 	// HarnessDrive is the index of a registry harness's drive. Drive 0 is
 	// the agent's data volume; the extra drives follow (FirstExtraDrive).
 	HarnessDrive = 1
@@ -42,9 +43,10 @@ type GuestCorpora struct {
 // CorpusMount is one corpus drive: its index in the drive order, the
 // directory under /corpus, and the UUID its ext4 superblock must carry.
 type CorpusMount struct {
-	Index int    `json:"index"`
-	Mount string `json:"mount"`
-	UUID  string `json:"uuid"`
+	Parent string `json:"parent,omitempty"`
+	Index  int    `json:"index"`
+	Mount  string `json:"mount"`
+	UUID   string `json:"uuid"`
 }
 
 // GuestBuildDrives are the raw drives of one corpus build, in this order:
@@ -52,9 +54,10 @@ type CorpusMount struct {
 // drive the builder writes the image to. A raw drive has no UUID: the guest
 // checks its size, the builder its digest.
 type GuestBuildDrives struct {
-	Source BuildDrive  `json:"source"`
-	LFS    *BuildDrive `json:"lfs,omitempty"`
-	Output BuildDrive  `json:"output"`
+	Enricher bool        `json:"enricher,omitempty"`
+	Source   BuildDrive  `json:"source"`
+	LFS      *BuildDrive `json:"lfs,omitempty"`
+	Output   BuildDrive  `json:"output"`
 }
 
 type BuildDrive struct {
@@ -64,6 +67,9 @@ type BuildDrive struct {
 
 // Drives lists the build drives in their order.
 func (b GuestBuildDrives) Drives() []BuildDrive {
+	if b.Enricher {
+		return []BuildDrive{b.Output}
+	}
 	drives := []BuildDrive{b.Source}
 	if b.LFS != nil {
 		drives = append(drives, *b.LFS)
@@ -125,17 +131,26 @@ func ValidUUID(u string) bool {
 // (FirstExtraDrive): at most MaxCorpora corpora with distinct mounts and
 // UUIDs, or the build drives alone, each at the next index, with no gap.
 func (c GuestCorpora) Validate(first int) error {
-	if c.Schema != CorporaSchema || first < HarnessDrive || first > HarnessDrive+1 || c.Corpora == nil ||
-		len(c.Corpora) > MaxCorpora || (c.Build == nil) == (len(c.Corpora) == 0) {
+	if c.Schema != CorporaSchema || first < HarnessDrive || first > HarnessDrive+1 || c.Corpora == nil || len(c.Corpora) == 0 && c.Build == nil {
 		return ErrProtocol
 	}
-	next := first
-	mounts, uuids := map[string]bool{}, map[string]bool{}
-	for _, m := range c.Corpora {
-		if m.Index != next || !ValidCorpusMount(m.Mount) || !ValidUUID(m.UUID) || mounts[m.Mount] || uuids[m.UUID] {
+	if c.Build != nil {
+		if c.Build.Enricher {
+			if len(c.Corpora) != 1 || c.Corpora[0].Parent != "" || c.Corpora[0].Mount != "base" || c.Build.Source != (BuildDrive{}) || c.Build.LFS != nil {
+				return ErrProtocol
+			}
+		} else if len(c.Corpora) > 0 {
 			return ErrProtocol
 		}
-		mounts[m.Mount], uuids[m.UUID] = true, true
+	}
+	if err := ValidateCorpusMounts(c.Corpora); err != nil {
+		return err
+	}
+	next := first
+	for _, m := range c.Corpora {
+		if m.Index != next {
+			return ErrProtocol
+		}
 		next++
 	}
 	if c.Build != nil {
@@ -148,6 +163,34 @@ func (c GuestCorpora) Validate(first int) error {
 	}
 	if next-1 > lastDrive {
 		return ErrProtocol
+	}
+	return nil
+}
+
+// ValidateCorpusMounts requires each extension to follow its base. Limits apply
+// independently to base bindings and the extensions of each base.
+func ValidateCorpusMounts(mounts []CorpusMount) error {
+	bases := map[string]int{}
+	seen := map[string]bool{}
+	uuids := map[string]bool{}
+	for _, m := range mounts {
+		key := m.Parent + "/" + m.Mount
+		if !ValidCorpusMount(m.Mount) || !ValidUUID(m.UUID) || seen[key] || uuids[m.UUID] {
+			return ErrProtocol
+		}
+		if m.Parent == "" {
+			if len(bases) >= MaxCorpora {
+				return ErrProtocol
+			}
+			bases[m.Mount] = 0
+		} else {
+			n, ok := bases[m.Parent]
+			if !ok || n >= MaxCorpusExtensions {
+				return ErrProtocol
+			}
+			bases[m.Parent] = n + 1
+		}
+		seen[key], uuids[m.UUID] = true, true
 	}
 	return nil
 }

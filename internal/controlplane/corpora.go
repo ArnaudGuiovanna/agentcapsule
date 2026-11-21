@@ -73,6 +73,7 @@ type CorpusBuild struct {
 	CompletedAt     *time.Time      `json:"completed_at,omitempty"`
 }
 type CorpusRelease struct {
+Extensions []CorpusExtensionImage `json:"extensions"`
 	CorpusReleaseReference
 	CorpusID     string     `json:"corpus_id"`
 	Digest       string     `json:"digest"`
@@ -105,11 +106,11 @@ func scanBuild(row pgx.Row) (CorpusBuild, error) {
 	return b, corpusRowError(err)
 }
 
-const releaseSelect = `SELECT r.id,c.name,r.version,r.corpus_id,r.digest,r.image_bytes,r.build_id,r.commit_sha,r.builder,r.host_id,CASE WHEN r.deprecated_at IS NULL THEN 'active' ELSE 'deprecated' END,r.created_at,r.deprecated_at FROM corpus_releases r JOIN corpora c ON c.id=r.corpus_id`
+const releaseSelect = `SELECT r.id,c.name,r.version,r.corpus_id,r.digest,r.image_bytes,r.build_id,r.commit_sha,r.builder,r.host_id,CASE WHEN r.deprecated_at IS NULL THEN 'active' ELSE 'deprecated' END,r.created_at,r.deprecated_at,r.extensions FROM corpus_releases r JOIN corpora c ON c.id=r.corpus_id`
 
 func scanCorpusRelease(row pgx.Row) (CorpusRelease, error) {
 	var r CorpusRelease
-	err := row.Scan(&r.ID, &r.Name, &r.Version, &r.CorpusID, &r.Digest, &r.ImageBytes, &r.BuildID, &r.Commit, &r.Builder, &r.HostID, &r.State, &r.CreatedAt, &r.DeprecatedAt)
+	err := row.Scan(&r.ID, &r.Name, &r.Version, &r.CorpusID, &r.Digest, &r.ImageBytes, &r.BuildID, &r.Commit, &r.Builder, &r.HostID, &r.State, &r.CreatedAt, &r.DeprecatedAt,&r.Extensions)
 	return r, corpusRowError(err)
 }
 func corpusRowError(err error) error {

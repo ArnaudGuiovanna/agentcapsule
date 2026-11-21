@@ -162,6 +162,11 @@ var rbacRoutes = append([]rbacRoute{
 	{Method: "GET", Path: "/v1/corpus-builds", Success: 200, Want: "S S S S 403 403 403 403 403 F 401 401 403", hides: []string{"{review}"}},
 	{Method: "GET", Path: "/v1/corpus-builds/{review}", Success: 200, Want: "S S S S 403 403 403 403 403 404 401 401 403"},
 	{Method: "POST", Path: "/v1/corpus-builds/{fresh}/cancel", Success: 200, Want: rbacManage, body: `{}`, fresh: rbacFreshCorpusBuild},
+	{Method: "GET", Path: "/v1/corpus-enrichers", Success: 200, Want: "S S 403 403 403 403 403 403 403 F 401 401 403", hides: []string{"{enricher}"}},
+	{Method: "POST", Path: "/v1/corpus-enrichers", Success: 201, Want: rbacCreateAdmin, body: `{"name":"{name}","harness":{"name":"matrix-enricher","version":"1"}}`, fresh: rbacName},
+	{Method: "GET", Path: "/v1/corpus-builds/{review}/extensions", Success: 200, Want: rbacManage},
+	{Method: "POST", Path: "/v1/corpus-builds/{review}/extensions", Success: 202, Want: rbacManage, body: `{"enricher_id":"{enricher}"}`},
+	{Method: "GET", Path: "/v1/corpus-extensions/{extension}", Success: 200, Want: rbacManage},
 	{Method: "GET", Path: "/v1/corpus-builds/{review}/review", Success: 200, Want: rbacManage},
 	{Method: "GET", Path: "/v1/corpus-builds/{review}/review-file?path=report.json", Success: 200, Want: rbacManage},
 	{Method: "POST", Path: "/v1/corpus-builds/{review}/try", Success: 200, Want: rbacManage, body: `{"agent_id":"{corpus_agent}","mount":"matrix"}`},
@@ -919,6 +924,16 @@ func newRBACFixture(t *testing.T) *rbacFixture {
 	rbacSetupDeployment(t, f)
 	corpusFixture := rbacFreshCorpusReview(t, f)
 	f.ids["review"], f.ids["corpus"] = corpusFixture["fresh"], corpusFixture["corpus"]
+	if _, err := f.db.Exec(ctx, `INSERT INTO harness_releases(id,name,version,artifact_digest,source,reference,rootfs_digest,rootfs_bytes,signer,base)
+ VALUES('rel_'||repeat('7',32),'matrix-enricher','1','sha256:'||repeat('1',64),'oci','registry.example/matrix','sha256:'||repeat('2',64),4096,'sha256:'||repeat('3',64),'agentcapsule-guest/2')`); err != nil {
+		t.Fatal(err)
+	}
+	var enricher controlplane.CorpusEnricher
+	f.must(t, "owner", "POST", "/v1/corpus-enrichers", `{"name":"matrix","harness":{"name":"matrix-enricher","version":"1"}}`, 201, &enricher)
+	f.ids["enricher"] = enricher.ID
+	var extension controlplane.CorpusExtension
+	f.must(t, "owner", "POST", "/v1/corpus-builds/"+f.ids["review"]+"/extensions", fmt.Sprintf(`{"enricher_id":%q}`, enricher.ID), 202, &extension)
+	f.ids["extension"] = extension.ID
 	f.ids["corpus_release"] = rbacFreshCorpusRelease(t, f)["fresh"]
 	f.ids["corpus_agent"] = f.activeAgent(t, f.next())
 	if _, err := f.db.Exec(t.Context(), "UPDATE agent_specs SET system_image='matrix@1' WHERE agent_id=$1", f.ids["corpus_agent"]); err != nil {

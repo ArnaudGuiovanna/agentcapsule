@@ -184,3 +184,33 @@ func (s *Server) agentCorpora(w http.ResponseWriter, r *http.Request) {
 		return s.accounts.SetAgentCorpora(ctx, p, id, key, in.Corpora)
 	})
 }
+
+func (s *Server) corpusEnrichers(w http.ResponseWriter, r *http.Request) {
+	if !method(w, r, "GET", "POST") {
+		return
+	}
+	if r.Method == "POST" {
+		corpusPost(s, w, r, func(ctx context.Context, p controlplane.Principal, _, key string, in controlplane.AuthorizeCorpusEnricherInput) (controlplane.APIReceipt, error) {
+			return s.accounts.AuthorizeCorpusEnricher(ctx, p, key, in)
+		})
+		return
+	}
+	corpusPage(s, w, r, func(e controlplane.CorpusEnricher) string { return e.ID }, s.accounts.ListCorpusEnrichers)
+}
+
+func (s *Server) corpusBuildExtensions(w http.ResponseWriter, r *http.Request) {
+	if !method(w, r, "GET", "POST") {
+		return
+	}
+	if r.Method == "POST" {
+		corpusPost(s, w, r, s.accounts.RequestCorpusExtension)
+		return
+	}
+	corpusGet(s, w, r, func(ctx context.Context, p controlplane.Principal, id string) (map[string]any, error) {
+		v, err := s.accounts.BuildExtensions(ctx, p, id)
+		return map[string]any{"items": v}, err
+	})
+}
+func (s *Server) corpusExtension(w http.ResponseWriter, r *http.Request) {
+	corpusGet(s, w, r, s.accounts.CorpusExtension)
+}

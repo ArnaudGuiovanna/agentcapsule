@@ -61,10 +61,20 @@ type tree struct {
 // It runs mkfs.ext4 and debugfs -w, as the harness build does: on the
 // builder's own output, in its VM. The worker never calls it.
 func BuildImage(ctx context.Context, dir, out, uuid string, maxBytes int64) (int64, error) {
+	return buildImage(ctx, dir, out, uuid, maxBytes, true)
+}
+
+// BuildExtensionImage creates a data-only ext4 image for a reviewed corpus.
+// Its directory contents are defined by the authorized enrichment harness.
+func BuildExtensionImage(ctx context.Context, dir, out, uuid string, maxBytes int64) (int64, error) {
+	return buildImage(ctx, dir, out, uuid, maxBytes, false)
+}
+
+func buildImage(ctx context.Context, dir, out, uuid string, maxBytes int64, base bool) (int64, error) {
 	if !ValidUUID(uuid) {
 		return 0, invalid("the image UUID")
 	}
-	t, err := readTree(dir)
+	t, err := readTree(dir, base)
 	if err != nil {
 		return 0, err
 	}
@@ -95,7 +105,7 @@ func BuildImage(ctx context.Context, dir, out, uuid string, maxBytes int64) (int
 // ErrTooLarge: the layout does not fit in the bytes allowed.
 var ErrTooLarge = errors.New("corpus image too large")
 
-func readTree(dir string) (tree, error) {
+func readTree(dir string, base bool) (tree, error) {
 	t := tree{modes: map[string]uint32{}}
 	links := map[[2]uint64]bool{}
 	entries := map[string]int64{} // directory path to its entries' bytes
@@ -126,7 +136,7 @@ func readTree(dir string) (tree, error) {
 		}
 		switch {
 		case d.IsDir():
-			if ip == "/"+ExtDir {
+			if base && ip == "/"+ExtDir {
 				if list, err := os.ReadDir(p); err != nil || len(list) > 0 {
 					return invalid("ext/ is reserved for enrichers and must be empty")
 				}
@@ -159,6 +169,9 @@ func readTree(dir string) (tree, error) {
 		t.blocks += (n+24)/(BlockSize-12) + 2 // entries, '.' and '..', checksum tails, an htree index
 	}
 	t.blocks += 2 // the root
+	if !base {
+		return t, nil
+	}
 	for _, f := range RequiredFiles {
 		info, err := os.Lstat(filepath.Join(dir, filepath.FromSlash(f)))
 		if err != nil || !info.Mode().IsRegular() {

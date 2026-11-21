@@ -22,6 +22,7 @@ import (
 // guest (ADR 023 §5). UUID is the one its superblock carries, which the
 // guest checks before it mounts the drive.
 type CorpusImage struct {
+	Parent string `json:"parent,omitempty"`
 	Path   string `json:"path"`
 	Digest string `json:"digest"`
 	UUID   string `json:"uuid"`
@@ -32,9 +33,10 @@ type CorpusImage struct {
 // only: the source archive and the LFS objects, read-only, and the output
 // drive the builder writes the image to. LFS is empty without LFS objects.
 type BuildDrives struct {
-	Source string `json:"source"`
-	LFS    string `json:"lfs,omitempty"`
-	Output string `json:"output"`
+	Enricher bool   `json:"enricher,omitempty"`
+	Source   string `json:"source"`
+	LFS      string `json:"lfs,omitempty"`
+	Output   string `json:"output"`
 }
 
 // ErrCorpusFilesystem: a corpus image or a build drive is on another file
@@ -82,7 +84,7 @@ func extraDrives(a *HostAgent, limits DriveLimits) ([]drive, *capsuleprotocol.Gu
 	if err := checkCorpora(a.Corpora); err != nil {
 		return nil, nil, err
 	}
-	if a.Build != nil && len(a.Corpora) != 0 {
+	if a.Build != nil && !a.Build.Enricher && len(a.Corpora) != 0 {
 		return nil, nil, errors.New("the builder mounts no corpus")
 	}
 	first := capsuleprotocol.FirstExtraDrive(a.Harness != nil)
@@ -96,11 +98,11 @@ func extraDrives(a *HostAgent, limits DriveLimits) ([]drive, *capsuleprotocol.Gu
 		id := "corpus" + strconv.Itoa(i)
 		out = append(out, drive{id: id, source: c.Path, name: id + ".ext4", readOnly: true, cache: "Unsafe",
 			rate: limits.Corpus, burst: min(st.Size(), CorpusBurstBytes), share: linkShared})
-		config.Corpora = append(config.Corpora, capsuleprotocol.CorpusMount{Index: next, Mount: c.Mount, UUID: c.UUID})
+		config.Corpora = append(config.Corpora, capsuleprotocol.CorpusMount{Index: next, Mount: c.Mount, UUID: c.UUID, Parent: c.Parent})
 		next++
 	}
 	if b := a.Build; b != nil {
-		build := &capsuleprotocol.GuestBuildDrives{}
+		build := &capsuleprotocol.GuestBuildDrives{Enricher: b.Enricher}
 		for _, d := range []struct {
 			id, path, name string
 			readOnly       bool
@@ -195,16 +197,17 @@ func cleanAbs(p string) bool { return filepath.IsAbs(p) && filepath.Clean(p) == 
 // path, each mount, UUID and path once.
 func checkCorpora(corpora []CorpusImage) error {
 	invalid := errors.New("invalid corpus image")
-	if len(corpora) > capsuleprotocol.MaxCorpora {
-		return invalid
-	}
-	mounts, uuids, paths := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	var mounts []capsuleprotocol.CorpusMount
+	paths := map[string]bool{}
 	for _, c := range corpora {
-		if !cleanAbs(c.Path) || !validDigest(c.Digest) || !capsuleprotocol.ValidUUID(c.UUID) || !capsuleprotocol.ValidCorpusMount(c.Mount) ||
-			mounts[c.Mount] || uuids[c.UUID] || paths[c.Path] {
+		if !cleanAbs(c.Path) || !validDigest(c.Digest) || paths[c.Path] {
 			return invalid
 		}
-		mounts[c.Mount], uuids[c.UUID], paths[c.Path] = true, true, true
+		paths[c.Path] = true
+		mounts = append(mounts, capsuleprotocol.CorpusMount{Parent: c.Parent, Mount: c.Mount, UUID: c.UUID})
+	}
+	if err := capsuleprotocol.ValidateCorpusMounts(mounts); err != nil {
+		return invalid
 	}
 	return nil
 }
@@ -304,12 +307,38 @@ func (h *FirecrackerHost) ReplaceCorpora(ctx context.Context, id string, corpora
 // objects readable only (0400), the output writable (0600). Refused while a
 // VM run exists, and for an agent with corpora.
 func (h *FirecrackerHost) SetBuildDrives(ctx context.Context, id string, b *BuildDrives) error {
+	if b != nil && b.Enricher {
+		return errors.New("use SetEnrichmentDrives for a reviewed base")
+	}
+	return h.setWorkDrives(ctx, id, b, nil)
+}
+
+// SetEnrichmentDrives installs one reviewed base and one private output
+// together. Passing an empty output clears the stopped enricher's disks.
+func (h *FirecrackerHost) SetEnrichmentDrives(ctx context.Context, id string, base CorpusImage, output string) error {
+	if output == "" {
+		return h.setWorkDrives(ctx, id, nil, []CorpusImage{})
+	}
+	if base.Parent != "" || base.Mount != "base" {
+		return errors.New("invalid enrichment base")
+	}
+	bases := []CorpusImage{base}
+	if err := h.verifyCorpora(bases); err != nil {
+		return err
+	}
+	return h.setWorkDrives(ctx, id, &BuildDrives{Enricher: true, Output: output}, bases)
+}
+
+func (h *FirecrackerHost) setWorkDrives(ctx context.Context, id string, b *BuildDrives, bases []CorpusImage) error {
 	var paths []string
 	if b != nil {
-		if b.Source == "" || b.Output == "" {
+		if !b.Enricher && b.Source == "" || b.Output == "" {
 			return errors.New("invalid build drives")
 		}
-		paths = []string{b.Source, b.Output}
+		paths = []string{b.Output}
+		if b.Source != "" {
+			paths = append(paths, b.Source)
+		}
 		if b.LFS != "" {
 			paths = append(paths, b.LFS)
 		}
@@ -340,7 +369,7 @@ func (h *FirecrackerHost) SetBuildDrives(ctx context.Context, id string, b *Buil
 			return ErrHostFenced
 		case a.Run != nil:
 			return ErrDrivesInUse
-		case len(a.Corpora) != 0 && b != nil:
+		case bases == nil && len(a.Corpora) != 0 && b != nil:
 			return errors.New("the builder mounts no corpus")
 		}
 		if b != nil {
@@ -358,6 +387,9 @@ func (h *FirecrackerHost) SetBuildDrives(ctx context.Context, id string, b *Buil
 			}
 			c := *b
 			b = &c
+		}
+		if bases != nil {
+			a.Corpora = slices.Clone(bases)
 		}
 		a.Build = b
 		return h.save(r)

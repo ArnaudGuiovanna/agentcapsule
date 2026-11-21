@@ -2,17 +2,22 @@ package controlplane
 
 import (
 	"context"
+	"encoding/json"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorization"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpussource/repository"
 	"github.com/jackc/pgx/v5"
 )
 
+const tenantCorpusPins = `SELECT digest,image_bytes AS size FROM corpus_releases WHERE tenant_id=$1 AND deprecated_at IS NULL
+ UNION ALL SELECT ext->>'digest',(ext->>'bytes')::bigint FROM corpus_releases CROSS JOIN LATERAL jsonb_array_elements(extensions) ext WHERE tenant_id=$1 AND deprecated_at IS NULL
+ UNION ALL SELECT image_digest,image_bytes FROM corpus_builds WHERE tenant_id=$1 AND state='REVIEW'
+ UNION ALL SELECT x.image_digest,x.image_bytes FROM corpus_extensions x JOIN corpus_builds b ON b.id=x.build_id WHERE b.tenant_id=$1 AND b.state='REVIEW' AND x.state='READY'`
+
 // corpusOccupation counts identical active images once, including their reviews.
 func corpusOccupation(ctx context.Context, tx pgx.Tx, tenant string) (bytes int64, builds int, err error) {
 	err = tx.QueryRow(ctx, `SELECT coalesce(sum(bytes),0),(SELECT count(*) FROM corpus_builds WHERE tenant_id=$1 AND state IN ('QUEUED','FETCHING','SCANNING','FETCHING_LFS','CONVERTING','PACKAGING'))
  FROM (SELECT digest,max(size) AS bytes FROM (
- SELECT digest,image_bytes AS size FROM corpus_releases WHERE tenant_id=$1 AND deprecated_at IS NULL
- UNION ALL SELECT image_digest,image_bytes FROM corpus_builds WHERE tenant_id=$1 AND state='REVIEW'
+ `+tenantCorpusPins+`
  ) pins GROUP BY digest) held`, tenant).Scan(&bytes, &builds)
 	return
 }
@@ -92,17 +97,35 @@ func cancelCorpusInvocation(ctx context.Context, tx pgx.Tx, build string) error 
 	if err != nil || op == "" {
 		return err
 	}
-	if _, err = tx.Exec(ctx, "UPDATE agent_mailboxes SET delivery_state='CANCELED',lease_token='',lease_until=NULL WHERE instruction_id=$1 AND delivery_state='PENDING'", op); err != nil {
+	return cancelGuestInvocation(ctx, tx, op)
+}
+func cancelGuestInvocation(ctx context.Context, tx pgx.Tx, op string) error {
+	if _, err := tx.Exec(ctx, "UPDATE agent_mailboxes SET delivery_state='CANCELED',lease_token='',lease_until=NULL WHERE instruction_id=$1 AND delivery_state='PENDING'", op); err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, "UPDATE platform_operations SET status='CANCELED',error_code='canceled',completed_at=clock_timestamp() WHERE id=$1 AND status IN ('PENDING','RUNNING')", op)
+	_, err := tx.Exec(ctx, "UPDATE platform_operations SET status='CANCELED',error_code='canceled',completed_at=clock_timestamp() WHERE id=$1 AND status IN ('PENDING','RUNNING')", op)
 	return err
 }
 func purgeCorpusReview(ctx context.Context, tx pgx.Tx, id string) error {
+	rows, err := tx.Query(ctx, `UPDATE corpus_extensions SET state='CANCELED',lease_token=NULL,lease_until=NULL WHERE build_id=$1 AND state IN ('QUEUED','RUNNING') RETURNING coalesce(invocation_id,'')`, id)
+	if err != nil {
+		return err
+	}
+	ops, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return err
+	}
+	for _, op := range ops {
+		if op != "" {
+			if err = cancelGuestInvocation(ctx, tx, op); err != nil {
+				return err
+			}
+		}
+	}
 	if _, err := tx.Exec(ctx, "DELETE FROM agent_corpora WHERE build_id=$1", id); err != nil {
 		return err
 	}
-	_, err := tx.Exec(ctx, "DELETE FROM corpus_review_files WHERE build_id=$1", id)
+	_, err = tx.Exec(ctx, "DELETE FROM corpus_review_files WHERE build_id=$1", id)
 	return err
 }
 func (a *Accounts) PublishCorpusBuild(ctx context.Context, p Principal, id, key string, version int) (APIReceipt, error) {
@@ -124,8 +147,17 @@ func (a *Accounts) PublishCorpusBuild(ctx context.Context, p Principal, id, key 
 		if !active {
 			return 0, nil, ErrTransition
 		}
-		tag, err := tx.Exec(ctx, `INSERT INTO corpus_releases(id,tenant_id,corpus_id,build_id,version,digest,image_bytes,image_uuid,host_id,commit_sha,builder,created_by)
- SELECT $2,tenant_id,corpus_id,id,$3,image_digest,image_bytes,image_uuid,host_id,commit_sha,builder,$4 FROM corpus_builds WHERE id=$1 ON CONFLICT(corpus_id,version) DO NOTHING`, id, newID("crl"), version, p.ID)
+		var snapshot json.RawMessage
+		var ready bool
+		err = tx.QueryRow(ctx, `SELECT coalesce(bool_and(x.state='READY'),true),coalesce(jsonb_agg(jsonb_build_object('name',e.name,'digest',x.image_digest,'uuid',x.image_uuid,'bytes',x.image_bytes) ORDER BY e.name),'[]'::jsonb) FROM corpus_extensions x JOIN corpus_enrichers e ON e.id=x.enricher_id WHERE x.build_id=$1`, id).Scan(&ready, &snapshot)
+		if err != nil {
+			return 0, nil, err
+		}
+		if !ready {
+			return 0, nil, ErrTransition
+		}
+		tag, err := tx.Exec(ctx, `INSERT INTO corpus_releases(id,tenant_id,corpus_id,build_id,version,digest,image_bytes,image_uuid,host_id,commit_sha,builder,created_by,extensions)
+ SELECT $2,tenant_id,corpus_id,id,$3,image_digest,image_bytes,image_uuid,host_id,commit_sha,builder,$4,$5 FROM corpus_builds WHERE id=$1 ON CONFLICT(corpus_id,version) DO NOTHING`, id, newID("crl"), version, p.ID, snapshot)
 		if err != nil {
 			return 0, nil, err
 		}
@@ -133,7 +165,11 @@ func (a *Accounts) PublishCorpusBuild(ctx context.Context, p Principal, id, key 
 		if err != nil {
 			return 0, nil, err
 		}
-		if r.Digest != b.ImageDigest {
+		var same bool
+		if err = tx.QueryRow(ctx, "SELECT extensions=$2::jsonb FROM corpus_releases WHERE id=$1", r.ID, snapshot).Scan(&same); err != nil {
+			return 0, nil, err
+		}
+		if !same || r.Digest != b.ImageDigest {
 			return 0, nil, ErrCorpusVersionConflict
 		}
 		if _, err = tx.Exec(ctx, `UPDATE corpus_builds SET state='PUBLISHED',release_id=$2,completed_at=clock_timestamp() WHERE id=$1`, id, r.ID); err != nil {
@@ -191,21 +227,36 @@ func (s *Store) ExpireCorpusBuilds(ctx context.Context) (int, error) {
 			return 0, err
 		}
 	}
+	timed, err := tx.Query(ctx, `UPDATE corpus_extensions SET state='FAILED',error_code='timeout',lease_token=NULL,lease_until=NULL WHERE state IN ('QUEUED','RUNNING') AND deadline_at<=clock_timestamp() RETURNING coalesce(invocation_id,'')`)
+	if err != nil {
+		return 0, err
+	}
+	ops, err := pgx.CollectRows(timed, pgx.RowTo[string])
+	if err != nil {
+		return 0, err
+	}
+	for _, op := range ops {
+		if op != "" {
+			if err = cancelGuestInvocation(ctx, tx, op); err != nil {
+				return 0, err
+			}
+		}
+	}
 	return len(ids), commit(ctx, tx)
 }
 
 // CorpusImagesInUse returns a host's database pins. Runtime pins are added
 // while the runtime registry is locked during collection.
 func (s *Store) CorpusImagesInUse(ctx context.Context, host string) ([]string, error) {
-	rows, err := s.pool.Query(ctx, `SELECT digest FROM corpus_releases WHERE host_id=$1 AND deprecated_at IS NULL
- UNION SELECT image_digest FROM corpus_builds WHERE host_id=$1 AND state='REVIEW'
- UNION SELECT coalesce(r.digest,b.image_digest) FROM agent_corpora ac JOIN agents a ON a.id=ac.agent_id
- LEFT JOIN corpus_releases r ON r.id=ac.release_id LEFT JOIN corpus_builds b ON b.id=ac.build_id
- WHERE a.phase<>'DELETED' AND coalesce(r.host_id,b.host_id)=$1
- UNION SELECT cr.digest FROM agent_rollouts u JOIN agent_template_revisions tr ON (tr.tenant_id,tr.name,tr.revision)=(u.tenant_id,u.template_name,u.revision)
+	rows, err := s.pool.Query(ctx, `WITH rel AS (
+ SELECT id FROM corpus_releases WHERE host_id=$1 AND deprecated_at IS NULL
+ UNION SELECT r.id FROM agent_corpora ac JOIN agents a ON a.id=ac.agent_id JOIN corpus_releases r ON ac.release_id=r.id WHERE a.phase<>'DELETED' AND r.host_id=$1
+ UNION SELECT cr.id FROM agent_rollouts u JOIN agent_template_revisions tr ON (tr.tenant_id,tr.name,tr.revision)=(u.tenant_id,u.template_name,u.revision)
  CROSS JOIN LATERAL jsonb_array_elements(coalesce(tr.spec->'corpora','[]')) ref JOIN corpora c ON c.name=ref->>'name'
- JOIN corpus_releases cr ON cr.corpus_id=c.id AND cr.version=(ref->>'version')::int
- WHERE c.tenant_id=u.tenant_id AND cr.host_id=$1 AND u.status<>'completed'`, host)
+ JOIN corpus_releases cr ON cr.corpus_id=c.id AND cr.version=(ref->>'version')::int WHERE c.tenant_id=u.tenant_id AND cr.host_id=$1 AND u.status<>'completed'),
+ rev AS (SELECT id FROM corpus_builds WHERE host_id=$1 AND state='REVIEW' UNION SELECT b.id FROM agent_corpora ac JOIN agents a ON a.id=ac.agent_id JOIN corpus_builds b ON ac.build_id=b.id WHERE a.phase<>'DELETED' AND b.host_id=$1)
+ SELECT digest FROM corpus_releases JOIN rel USING(id) UNION SELECT ext->>'digest' FROM corpus_releases JOIN rel USING(id) CROSS JOIN LATERAL jsonb_array_elements(extensions) ext
+ UNION SELECT image_digest FROM corpus_builds JOIN rev USING(id) UNION SELECT x.image_digest FROM corpus_extensions x JOIN rev ON rev.id=x.build_id WHERE x.state='READY' `, host)
 	if err != nil {
 		return nil, err
 	}
@@ -216,7 +267,7 @@ func (s *Store) CorpusImagesInUse(ctx context.Context, host string) ([]string, e
 // and from directories not owned by this host.
 func (s *Store) CorpusStagingFinished(ctx context.Context, host, build string) (bool, error) {
 	var done bool
-	err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM corpus_builds WHERE host_id=$1 AND id=$2 AND state IN ('REVIEW','PUBLISHED','FAILED','CANCELED','EXPIRED'))`, host, build).Scan(&done)
+	err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM corpus_builds WHERE host_id=$1 AND id=$2 AND state IN ('REVIEW','PUBLISHED','FAILED','CANCELED','EXPIRED') UNION ALL SELECT 1 FROM corpus_extensions x JOIN corpus_builds b ON b.id=x.build_id WHERE b.host_id=$1 AND x.id=$2 AND x.state IN ('READY','FAILED','CANCELED'))`, host, build).Scan(&done)
 	return done, err
 }
 

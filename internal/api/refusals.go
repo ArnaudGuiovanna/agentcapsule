@@ -90,6 +90,8 @@ var auditedRoutes = map[string]auditedRoute{
 	"POST /v1/llm/calls/{id}/release":                           {"llm.usage.released", "", "id"},
 	"POST /v1/corpora":                                          {"corpus.created", "", ""},
 	"POST /v1/corpora/{id}/builds":                              {"corpus_build.requested", "id", ""},
+	"POST /v1/corpus-enrichers":                                 {"corpus_enricher.authorized", "", ""},
+	"POST /v1/corpus-builds/{id}/extensions":                    {"corpus_extension.requested", "id", ""},
 	"POST /v1/corpus-builds/{id}/cancel":                        {"corpus_build.canceled", "id", ""},
 	"POST /v1/corpus-builds/{id}/try":                           {"corpus_build.tried", "id", ""},
 	"POST /v1/corpus-builds/{id}/publish":                       {"corpus_build.published", "id", ""},

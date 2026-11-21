@@ -1319,6 +1319,83 @@ paths:
         '409': {$ref: '#/components/responses/Problem'}  # organization_quota_exceeded
         '503': {$ref: '#/components/responses/Problem'}  # storage_pressure
         default: {$ref: '#/components/responses/Problem'}
+  /v1/corpus-enrichers:
+    get:
+      operationId: listCorpusEnrichers
+      summary: List harnesses authorized for enrichment
+      description: Requires corpus:manage.
+      responses:
+        '200':
+          description: List harnesses authorized for enrichment
+          content:
+            application/json:
+              schema: {type: object, required: [items], properties: {next: {type: string}, items: {type: array, items: {$ref: '#/components/schemas/CorpusEnricher'}}}}
+        default: {$ref: '#/components/responses/Problem'}
+    post:
+      operationId: authorizeCorpusEnricher
+      summary: Authorize a signed OCI harness in this organization
+      description: Requires corpus:manage.
+      parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, additionalProperties: false, required: [name, harness], properties: {name: {$ref: '#/components/schemas/Mount'}, harness: {$ref: '#/components/schemas/HarnessReference'}}}
+      responses:
+        '201':
+          description: Authorize a signed OCI harness in this organization
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CorpusEnricher'}
+        '200':
+          description: Authorize a signed OCI harness in this organization
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CorpusEnricher'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/corpus-builds/{id}/extensions:
+    get:
+      operationId: listBuildExtensions
+      summary: List the extensions of this build
+      description: Requires corpus:manage.
+      parameters: [{$ref: '#/components/parameters/ResourceID'}]
+      responses:
+        '200':
+          description: List the extensions of this build
+          content:
+            application/json:
+              schema: {type: object, required: [items], properties: {items: {type: array, items: {$ref: '#/components/schemas/CorpusExtension'}}}}
+        default: {$ref: '#/components/responses/Problem'}
+    post:
+      operationId: requestCorpusExtension
+      summary: Run an authorized harness on a build in REVIEW
+      description: Requires corpus:manage.
+      parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, additionalProperties: false, required: [enricher_id], properties: {enricher_id: {type: string}}}
+      responses:
+        '202':
+          description: Run an authorized harness on a build in REVIEW
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CorpusExtension'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/corpus-extensions/{id}:
+    get:
+      operationId: getCorpusExtension
+      summary: Read the status of one enrichment
+      description: Requires corpus:manage.
+      parameters: [{$ref: '#/components/parameters/ResourceID'}]
+      responses:
+        '200':
+          description: Read the status of one enrichment
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/CorpusExtension'}
+        default: {$ref: '#/components/responses/Problem'}
   /v1/corpus-builds:
     get:
       operationId: listCorpusBuilds
@@ -3762,6 +3839,35 @@ components:
         id: {type: string}
         name: {$ref: '#/components/schemas/Name'}
         version: {$ref: '#/components/schemas/Version'}
+    CorpusEnricher:
+      type: object
+      required: [id, name, harness, digest, signer]
+      properties:
+        id: {type: string}
+        name: {$ref: '#/components/schemas/Mount'}
+        harness: {$ref: '#/components/schemas/HarnessReference'}
+        digest: {$ref: '#/components/schemas/Digest'}
+        signer: {$ref: '#/components/schemas/Digest'}
+    CorpusExtension:
+      type: object
+      required: [id, build_id, enricher_id, name, state]
+      properties:
+        id: {type: string}
+        build_id: {type: string}
+        enricher_id: {type: string}
+        name: {$ref: '#/components/schemas/Mount'}
+        state: {type: string, enum: [QUEUED, RUNNING, READY, FAILED, CANCELED]}
+        digest: {$ref: '#/components/schemas/Digest'}
+        image_bytes: {type: integer}
+        error_code: {type: string}
+    CorpusExtensionImage:
+      type: object
+      required: [name, uuid, digest, bytes]
+      properties:
+        name: {$ref: '#/components/schemas/Mount'}
+        uuid: {type: string, format: uuid}
+        digest: {$ref: '#/components/schemas/Digest'}
+        bytes: {type: integer}
     CorpusRelease:
       type: object
       required: [id, corpus_id, name, version, digest, image_bytes, build_id, commit, state, created_at]
@@ -3771,6 +3877,7 @@ components:
         name: {$ref: '#/components/schemas/Name'}
         version: {$ref: '#/components/schemas/Version'}
         digest: {$ref: '#/components/schemas/Digest'}
+        extensions: {type: array, items: {$ref: '#/components/schemas/CorpusExtensionImage'}}
         image_bytes: {type: integer, minimum: 0}
         build_id: {type: string}
         commit: {type: string, pattern: '^[0-9a-f]{40}$'}
@@ -4580,7 +4687,7 @@ components:
         features:
           type: array
           uniqueItems: true
-          items: {type: string, enum: [corpus.mount]}
+          items: {type: string, enum: [corpus.mount, corpus.extensions]}
           description: "What the image's capsule-init can do beyond the base guest, fixed at approval; default none. corpus.mount: it mounts corpora (ADR 023). Always present in answers."
     AvailableSystemImages:
       type: object

@@ -208,3 +208,25 @@ func TestBootArchiveCarriesCorporaOnlyWhenGiven(t *testing.T) {
 		t.Fatal("an invalid corpora.json was archived")
 	}
 }
+
+func TestCorpusExtensionDrivesFollowTheirParent(t *testing.T) {
+	base := CorpusMount{Index: 2, Mount: "base", UUID: "11111111-1111-1111-1111-111111111111"}
+	ext := CorpusMount{Index: 3, Mount: "notes", Parent: "base", UUID: "22222222-2222-2222-2222-222222222222"}
+	c := GuestCorpora{Schema: CorporaSchema, Corpora: []CorpusMount{base, ext}}
+	if err := c.Validate(2); err != nil {
+		t.Fatal(err)
+	}
+	c.Corpora = []CorpusMount{ext, base}
+	if err := c.Validate(2); err == nil {
+		t.Fatal("extension precedes base")
+	}
+	c.Corpora = []CorpusMount{base}
+	c.Build = &GuestBuildDrives{Enricher: true, Output: BuildDrive{Index: 3, Bytes: 8192}}
+	if err := c.Validate(2); err != nil {
+		t.Fatal(err)
+	}
+	c.Build.Source = BuildDrive{Index: 2, Bytes: 4096}
+	if err := c.Validate(2); err == nil {
+		t.Fatal("enricher received source drive")
+	}
+}

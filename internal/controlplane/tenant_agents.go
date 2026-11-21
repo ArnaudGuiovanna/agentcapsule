@@ -614,7 +614,7 @@ func tenantAgentForUpdate(ctx context.Context, tx pgx.Tx, p Principal, id string
 		return agent{}, "", err
 	}
 	a, ok := agents[id]
-	if !ok || a.Tenant != p.TenantID || a.Kind == "corpus_builder" {
+	if !ok || a.Tenant != p.TenantID || a.Kind == "corpus_builder" || a.Kind == "corpus_enricher" {
 		return agent{}, "", ErrNotFound
 	}
 	var host string
