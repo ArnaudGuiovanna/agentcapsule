@@ -36,10 +36,13 @@ type tenantIdentity struct {
 }
 
 func (i *tenantIdentity) token(t *testing.T, subject string) string {
+	return i.tokenFor(t, subject, tenantKVMScopes)
+}
+func (i *tenantIdentity) tokenFor(t *testing.T, subject, scopes string) string {
 	t.Helper()
 	now := time.Now()
 	claims := jwt.MapClaims{"iss": i.trust.Issuer, "aud": i.trust.Audience, "sub": subject, "jti": fmt.Sprintf("%s-%d", subject, i.n.Add(1)),
-		"iat": now.Unix(), "exp": now.Add(4 * time.Minute).Unix(), "scope": tenantKVMScopes, "role": "platform", "trust_generation": int64(1)}
+		"iat": now.Unix(), "exp": now.Add(4 * time.Minute).Unix(), "scope": scopes, "role": "platform", "trust_generation": int64(1)}
 	token := jwt.NewWithClaims(jwt.SigningMethodEdDSA, claims)
 	token.Header["kid"] = "primary"
 	raw, err := token.SignedString(i.key)
@@ -81,7 +84,7 @@ func (l *productPeerLab) installOrganizations(t *testing.T, n int) ([]*tenantIde
 			t.Fatal(err)
 		}
 		id := &tenantIdentity{key: key, trust: delegatedidentity.Trust{TenantID: org.ID, Issuer: issuer, Audience: "capsule",
-			Keys: map[string]ed25519.PublicKey{"primary": pub}, AllowedScopes: strings.Fields(tenantKVMScopes), MaxTTL: 5 * time.Minute}}
+			Keys: map[string]ed25519.PublicKey{"primary": pub}, AllowedScopes: strings.Fields(tenantKVMScopes + " corpus:manage corpus:read"), MaxTTL: 5 * time.Minute}}
 		ids, orgs, trusts = append(ids, id), append(orgs, org), append(trusts, id.trust)
 	}
 	verifier, err := delegatedidentity.NewVerifier(delegatedidentity.Config{Trusts: trusts})

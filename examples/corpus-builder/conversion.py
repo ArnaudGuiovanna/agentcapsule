@@ -93,6 +93,47 @@ def lfs_objects(device, drive, expected, temp):
         return paths
 
 
+def document_id(path):
+    source = b"agentcapsule.corpus-document.v1\0" + path.encode()
+    return "d" + hashlib.sha256(source).hexdigest()[:16]
+
+
+def write_readme(doc, summary, dest):
+    outline = ["- [%s](%s#%s)" % (e["text"][:120],e["part"],e["id"])
+               for e in doc["elements"] if e["type"] == "heading"]
+    text = "# "+doc["title"]+"\n\n"+summary+"\n\nSource: "+doc["path"]+"\n\n"+"\n".join(outline[:120])
+    (dest/"README.md").write_text(text+"\n", encoding="utf-8")
+
+
+def migrate_cached_document(old, dest, path):
+    # In-flight builds can still package their earlier cache entry. Publish an
+    # independent corrected entry and retain all existing conversion results.
+    shutil.copytree(old, dest)
+    doc = read_json(dest/"doc.json")
+    result = read_json(dest/"conversion.json")
+    if doc["path"] != path or result["id"] != doc["id"]:
+        raise ValueError("invalid conversion cache")
+    doc["id"] = document_id(path)
+    old_elements = [e.pop("id") for e in doc["elements"]]
+    for element in doc["elements"]:
+        element.pop("part")
+    write_document(doc, dest)
+    write_readme(doc, result["summary"], dest)
+    vectors = dest/"embeddings.jsonl"
+    if vectors.exists():
+        anchors = dict(zip(old_elements, (e["id"] for e in doc["elements"]), strict=True))
+        replacement = dest/"migrated-vectors"
+        with vectors.open("rb") as src, replacement.open("wb") as out:
+            for line in src:
+                vector = json.loads(line)
+                vector["doc_id"] = doc["id"]
+                vector["element_id"] = anchors[vector["element_id"]]
+                out.write(encode(vector))
+        replacement.replace(vectors)
+    result["id"] = doc["id"]
+    write_json(dest/"conversion.json", result)
+
+
 def write_document(doc, out):
     part, parts, used, ids = 0, [], 0, {}
     for element in doc["elements"]:
@@ -115,7 +156,7 @@ def write_document(doc, out):
 
 def make_document(platform, src, f, manifest, meta, correction, key, scratch, dest):
     path = f["path"]
-    doc = {"schema":"agentcapsule.corpus-document/v1","id":"d-"+hashlib.sha256(path.encode()).hexdigest()[:20],
+    doc = {"schema":"agentcapsule.corpus-document/v1","id":document_id(path),
            "path":path,"kind":f["kind"],"title":meta.get("Title") or Path(path).name[:200],
            "language":manifest["Language"],"tags":meta.get("Tags") or [],"elements":[]}
     proc = manifest["Processing"]
@@ -144,9 +185,7 @@ def make_document(platform, src, f, manifest, meta, correction, key, scratch, de
                     [(doc["title"]+"\n"+e["text"])[:7200] for e in batch])
                 for e,v in zip(batch,result["embeddings"],strict=True):
                     vectors.write(encode({"doc_id":doc["id"],"element_id":e["id"],"embedding":v}))
-    outline = ["- [%s](%s#%s)" % (e["text"][:120],e["part"],e["id"]) for e in doc["elements"] if e["type"] == "heading"]
-    readme = "# "+doc["title"]+"\n\n"+summary+"\n\nSource: "+path+"\n\n"+"\n".join(outline[:120])
-    (dest/"README.md").write_text(readme+"\n",encoding="utf-8")
+    write_readme(doc, summary, dest)
     return {"id":doc["id"],"tokens":tokens,"warnings":warnings,"summary":summary}
 
 
@@ -191,6 +230,8 @@ def convert(request, data, devices, platform, step=None):
             correction = corrections.get(path)
             key = hashlib.sha256(encode([digest(src),source["builder"],path,manifest["Language"],
                                          manifest["Processing"],meta,digest(correction) if correction else ""])).hexdigest()
+            old = cache/key
+            key = hashlib.sha256(encode(["agentcapsule.corpus-document.v1", key])).hexdigest()
             cached = cache/key
             entry = {"path":path,"kind":f["kind"],"bytes":f["bytes"],"status":"failed",
                      "doc_id":"","tokens":0,"warnings":[],"error":"malformed"}
@@ -202,9 +243,12 @@ def convert(request, data, devices, platform, step=None):
                 if not cached.is_dir():
                     with tempfile.TemporaryDirectory(dir=cache) as temp:
                         staged = Path(temp)/"document"
-                        staged.mkdir()
-                        details = make_document(platform,src,f,manifest,meta,correction,key,scratch,staged)
-                        write_json(staged/"conversion.json",dict(details,built_by=build_id))
+                        if old.is_dir():
+                            migrate_cached_document(old, staged, path)
+                        else:
+                            staged.mkdir()
+                            details = make_document(platform,src,f,manifest,meta,correction,old.name,scratch,staged)
+                            write_json(staged/"conversion.json",dict(details,built_by=build_id))
                         os.rename(staged,cached)
                 result = read_json(cached/"conversion.json")
                 entry.update(doc_id=result["id"],tokens=result["tokens"],warnings=result["warnings"],error="",

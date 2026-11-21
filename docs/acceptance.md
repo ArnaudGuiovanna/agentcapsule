@@ -617,3 +617,7 @@ unless said.
   - it did not say what the first agent needs after step 6;
   - install.md's operator steps had no migration, platform credential or
     authority service before the preflight.
+
+### Corpus builder on PostgreSQL and KVM
+
+The product guest campaign accepts `--corpus-builder DIR --github-corpus-fixture FILE` with its PostgreSQL options. Export the builder package with `dagger call corpus-builder export --path=DIR`. The fixture JSON names the captured private GitHub archive in `archive` (absolute path), its exact unpadded `bytes`, lowercase hexadecimal `sha256`, full `commit`, `repository` as `OWNER/REPO`, and one text-native document under `pdf`. The campaign replays these bytes over an authenticated local endpoint. It checks cold and warm conversion, review, provider meters, trial boot, publication, and the deployment of one shared image to three guests.
