@@ -317,7 +317,7 @@ Les routes de la passerelle s’étendent au-delà de la conversation. Elles ser
 - **Première démonstration, sans le lot 2** : un dépôt de Markdown et de PDF texte devient un corpus, monté dans 3 agents Pi, qui répondent en citant.
 - **Deuxième démonstration (lot 2)** : vidéos et PDF scannés.
 
-Le suivi en direct des constructions utilise le concentrateur SSE du [plan streaming](plan-streaming.md) dès qu’il est disponible. En attendant, on interroge avec `operation wait`.
+Le suivi en direct des constructions utilise le concentrateur SSE. `corpus-build watch` affiche les événements et `operation wait` attend que la construction atteigne un état final. [Plan streaming](plan-streaming.md)
 
 ## 7. Expérience CLI
 

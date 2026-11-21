@@ -231,7 +231,7 @@ event: revoked    data: {}
 - **Première démonstration, sans LLM (lots 3, 4 et 6)** : le harness `capsule-echo` émet des deltas fictifs et `invocation watch` les affiche. Elle valide la moitié plateforme → client sans dépendre d’un fournisseur.
 - **Deuxième démonstration (lots 1, 2 et 5)** : Pi relié à Ollama, avec une sortie progressive de bout en bout.
 
-Le chantier « contextes externes » ([plan-corpus.md](plan-corpus.md)) réutilisera le concentrateur du lot 4 pour suivre ses constructions en direct.
+Le suivi des constructions de corpus utilise le même concentrateur et permet à un administrateur de reprendre la lecture après une déconnexion. [Plan corpus](plan-corpus.md)
 
 ## 6. Limites proposées
 
