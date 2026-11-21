@@ -27,6 +27,7 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/directory"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/operatorconfig"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/pgnotify"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/preflight"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/restoreauthority"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/slimlink"
@@ -243,6 +244,9 @@ func run() int {
 	if err = w.EnableDeletionTelemetry(registry); err != nil {
 		return fail("telemetry_unavailable")
 	}
+	if err = w.EnableStreamTelemetry(registry); err != nil {
+		return fail("telemetry_unavailable")
+	}
 	if err = w.EnableJobEvents(events, problems); err != nil {
 		return fail("telemetry_unavailable")
 	}
@@ -291,6 +295,22 @@ func run() int {
 	}
 	if transit != nil {
 		if err = w.EnableTransit(startup, transit); err != nil {
+			return fail("transit_keys_unavailable")
+		}
+		// The harnesses' output streams (ADR 022) learn of a cancellation or
+		// an outcome through one dedicated listening connection.
+		bounds, err := c.OutputStreamBounds()
+		if err != nil {
+			return fail("configuration_invalid")
+		}
+		hub, err := pgnotify.New(s.Connect, "agentcapsule_invocation_stream")
+		if err != nil {
+			return fail("database_initialization_failed")
+		}
+		if !archiveRequested {
+			go func() { _ = hub.Run(ctx) }()
+		}
+		if err = w.EnableOutputStreams(bounds, hub); err != nil {
 			return fail("transit_keys_unavailable")
 		}
 	}

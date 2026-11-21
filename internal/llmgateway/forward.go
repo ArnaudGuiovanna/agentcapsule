@@ -37,7 +37,7 @@ type ForwardResponse struct {
 // it declares none), after the checks Forward applies. Accounting reserves
 // budget from it before anything reaches the provider.
 func ForwardOutputCap(dialect string, body []byte) (int, error) {
-	_, max, err := forwardFields(dialect, body)
+	_, max, err := forwardFields(dialect, body, false)
 	return max, err
 }
 
@@ -49,7 +49,7 @@ func (g *Gateway) Forward(ctx context.Context, route Route, dialect string, body
 	if !route.validAuth() || route.UpstreamModel == "" {
 		return ForwardResponse{}, ErrInvalid
 	}
-	fields, _, err := forwardFields(dialect, body)
+	fields, _, err := forwardFields(dialect, body, false)
 	if err != nil {
 		return ForwardResponse{}, err
 	}
@@ -91,10 +91,11 @@ func (g *Gateway) Forward(ctx context.Context, route Route, dialect string, body
 }
 
 // forwardFields parses and checks a forwarded request. The agent chooses its
-// messages, tools and options; it cannot ask for a stream (the answer must be
-// accounted as a whole), for several choices (billed several times), or exceed
-// the output bound. Its model name is replaced by the alias's upstream model.
-func forwardFields(dialect string, body []byte) (map[string]json.RawMessage, int, error) {
+// messages, tools and options; it asks for a stream exactly when stream is
+// set (ForwardStream), and cannot ask for several choices (billed several
+// times) or exceed the output bound. Its model name is replaced by the
+// alias's upstream model; stream and stream_options are removed.
+func forwardFields(dialect string, body []byte, stream bool) (map[string]json.RawMessage, int, error) {
 	if (dialect != DialectOpenAI && dialect != DialectAnthropic) || len(body) == 0 || len(body) > MaxForwardBytes {
 		return nil, 0, ErrInvalid
 	}
@@ -106,7 +107,8 @@ func forwardFields(dialect string, body []byte) (map[string]json.RawMessage, int
 	if err := json.Unmarshal(fields["messages"], &messages); err != nil || len(messages) == 0 {
 		return nil, 0, ErrInvalid
 	}
-	if s, ok := fields["stream"]; ok && !bytes.Equal(bytes.TrimSpace(s), []byte("false")) && !bytes.Equal(bytes.TrimSpace(s), []byte("null")) {
+	if s, ok := fields["stream"]; stream && !bytes.Equal(bytes.TrimSpace(s), []byte("true")) ||
+		!stream && ok && !bytes.Equal(bytes.TrimSpace(s), []byte("false")) && !bytes.Equal(bytes.TrimSpace(s), []byte("null")) {
 		return nil, 0, ErrInvalid
 	}
 	delete(fields, "stream")

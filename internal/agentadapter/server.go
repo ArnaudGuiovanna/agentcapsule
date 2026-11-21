@@ -8,6 +8,7 @@ import (
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2aclient"
+	"github.com/a2aproject/a2a-go/v2/a2aevent"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
 )
@@ -61,6 +62,30 @@ func ServerRunner(cfg Config, server Readiness) Runner {
 			task = r
 		default:
 			return Output{}
+		}
+		// Subscribe to the submitted task where the server supports it. If a
+		// stream disconnects, resume polling that same task without resubmission.
+		if job.Delta != nil && !task.Status.State.Terminal() {
+			for event, err := range client.SubscribeToTask(ctx, &a2a.SubscribeToTaskRequest{ID: task.ID}) {
+				if err != nil {
+					break
+				}
+				updated, err := a2aevent.ApplyShallowUpdate(task, event)
+				if err != nil {
+					break
+				}
+				task = updated
+				if a, ok := event.(*a2a.TaskArtifactUpdateEvent); ok && a.Artifact != nil {
+					for _, part := range a.Artifact.Parts {
+						if v, ok := part.Content.(a2a.Text); ok {
+							job.Delta(string(v))
+						}
+					}
+				}
+				if task.Status.State.Terminal() || task.Status.State == a2a.TaskStateInputRequired || task.Status.State == a2a.TaskStateAuthRequired {
+					break
+				}
+			}
 		}
 		poll := time.NewTicker(500 * time.Millisecond)
 		defer poll.Stop()

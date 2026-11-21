@@ -51,6 +51,7 @@ func run(args []string) int {
 	cert := f.String("tls-cert", "", "TLS certificate chain (PEM), reloaded on SIGHUP")
 	tlsKey := f.String("tls-key", "", "TLS private key (PEM, mode 0600), reloaded on SIGHUP")
 	tlsName := f.String("tls-server-name", "", "name clients use to reach the API; the certificate must cover it")
+	maxStreams := f.Int("max-event-streams", api.DefaultMaxEventStreams, "Maximum simultaneous invocation event subscriptions (1 to 100000)")
 	metricsListen := f.String("metrics-listen", "", "loopback address serving Prometheus metrics at /metrics (none when empty)")
 	traceFile := f.String("trace-file", "", "absolute path of a file receiving the spans as OTLP/JSON lines (none when empty)")
 	preflightOnly := f.Bool("preflight", false, "check this configuration (TLS files, ports, PostgreSQL, the authority service), print what to fix, then exit")
@@ -62,6 +63,9 @@ func run(args []string) int {
 		return 2
 	}
 	fail := func(code string) int { fmt.Fprintln(os.Stderr, code); return 1 }
+	if *maxStreams < 1 || *maxStreams > 100000 {
+		return fail("invalid_event_stream_limit")
+	}
 	if f.NArg() != 0 || *keyPath == "" || *hostID == "" || (*cert == "") != (*tlsKey == "") || (*tlsName != "" && *cert == "") || !authority.complete() {
 		return fail("configuration_required")
 	}
@@ -229,6 +233,9 @@ func run(args []string) int {
 	// pattern, status and duration, never an ID from the path or a body.
 	registry := telemetry.NewRegistry()
 	handler.EnableTelemetry(registry, os.Stdout)
+	if handler.StartEventStreams(ctx, *maxStreams) != nil {
+		return fail("api_initialization_failed")
+	}
 	if *traceFile != "" {
 		// Spans (OPR-3), every identifier pseudonymized with the
 		// installation's key, which the worker reads too.

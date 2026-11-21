@@ -227,6 +227,8 @@ var rbacRoutes = append([]rbacRoute{
 	{Method: "GET", Path: "/v1/agents/{agent}/invocations", Success: 200, Want: "S S S S S F 404 404 S 404 401 401 400", hides: []string{"{inv}"}, Note: "a requester sees only its own"},
 	{Method: "GET", Path: "/v1/invocations/{inv}", Success: 200, Want: rbacRequester, Note: "the caller's own, else the user's"},
 	{Method: "GET", Path: "/v1/operations/{inv}", Success: 200, Want: "S S S S S 404 404 404 S 404 401 401 403", Note: "the caller's own, else the user's"},
+	{Method: "GET", Path: "/v1/invocations/{inv}/events", Success: 200, Want: rbacContent, Note: "the caller's own, else the user's"},
+	{Method: "GET", Path: "/v1/operations/{inv}/events", Success: 200, Want: rbacContent, Note: "the caller's own, else the user's"},
 	{Method: "GET", Path: "/v1/invocations/{inv}/result", Success: 200, Want: rbacContent, Note: "the caller's own, else the user's"},
 	{Method: "GET", Path: "/v1/operations/{inv}/result", Success: 200, Want: rbacContent, Note: "the caller's own, else the user's"},
 	{Method: "POST", Path: "/v1/invocations/{fresh}/cancel", Success: 200, Want: rbacSender, fresh: rbacFreshScheduled, Note: "a disposable invocation of the user"},

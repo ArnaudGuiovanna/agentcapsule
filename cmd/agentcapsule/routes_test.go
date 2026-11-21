@@ -27,6 +27,7 @@ func TestDeploymentAndConfigurationSyntax(t *testing.T) {
 		{[]string{"deployment", "apply", "--plan", "plan_3"}, "", "/v1/deployment-plans/plan_3/apply", nil},
 		{[]string{"app", "register", "monapp", "--config", "-"}, "issuer: https://id.example.org", "/v1/applications", map[string]any{"name": "monapp", "issuer": "https://id.example.org"}},
 		{[]string{"access", "explain", "--member", "alice", "--agent", "support"}, "", "/v1/access/explain?agent=support&member=alice", nil},
+		{[]string{"invocation", "watch", "op_3"}, "", "/v1/invocations/op_3/events", nil},
 		{[]string{"operation", "show", "--type", "revocation", "arv_1"}, "", "/v1/access-revocations/arv_1", nil},
 		{[]string{"operation", "wait", "--type", "revocation", "arv_1"}, "", "/v1/access-revocations/arv_1", nil},
 	} {

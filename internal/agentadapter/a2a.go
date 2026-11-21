@@ -198,7 +198,7 @@ func (e *A2AEndpoint) agentCard(d capsuleprotocol.DirectoryAgent) *a2a.AgentCard
 		Description:         description,
 		Version:             "1",
 		SupportedInterfaces: []*a2a.AgentInterface{a2a.NewAgentInterface(e.base+"/agents/"+d.AgentID, a2a.TransportProtocolJSONRPC)},
-		Capabilities:        a2a.AgentCapabilities{},
+		Capabilities:        a2a.AgentCapabilities{Streaming: true},
 		DefaultInputModes:   []string{"text/plain", "application/json"},
 		DefaultOutputModes:  []string{"text/plain", "application/json"},
 		Skills:              skills,
@@ -591,16 +591,84 @@ func (peerHandler) ListTasks(context.Context, *a2a.ListTasksRequest) (*a2a.ListT
 	return nil, a2a.ErrUnsupportedOperation
 }
 
-func unsupportedStream(err error) iter.Seq2[a2a.Event, error] {
-	return func(yield func(a2a.Event, error) bool) { yield(nil, err) }
+func (h peerHandler) SubscribeToTask(ctx context.Context, req *a2a.SubscribeToTaskRequest) iter.Seq2[a2a.Event, error] {
+	return func(yield func(a2a.Event, error) bool) {
+		if req == nil {
+			yield(nil, a2a.ErrTaskNotFound)
+			return
+		}
+		task, err := h.GetTask(ctx, &a2a.GetTaskRequest{ID: req.ID})
+		if err != nil {
+			yield(nil, err)
+			return
+		}
+		h.watchTask(ctx, task, yield)
+	}
 }
 
-func (peerHandler) SubscribeToTask(context.Context, *a2a.SubscribeToTaskRequest) iter.Seq2[a2a.Event, error] {
-	return unsupportedStream(a2a.ErrUnsupportedOperation)
+func (h peerHandler) SendStreamingMessage(ctx context.Context, req *a2a.SendMessageRequest) iter.Seq2[a2a.Event, error] {
+	return func(yield func(a2a.Event, error) bool) {
+		if req == nil {
+			yield(nil, a2a.ErrInvalidParams)
+			return
+		}
+		copy := *req
+		var cfg a2a.SendMessageConfig
+		if req.Config != nil {
+			cfg = *req.Config
+		}
+		cfg.ReturnImmediately = true
+		copy.Config = &cfg
+		result, err := h.SendMessage(ctx, &copy)
+		if err != nil {
+			yield(nil, err)
+			return
+		}
+		task, ok := result.(*a2a.Task)
+		if !ok {
+			yield(nil, a2a.ErrInternalError)
+			return
+		}
+		h.watchTask(ctx, task, yield)
+	}
 }
 
-func (peerHandler) SendStreamingMessage(context.Context, *a2a.SendMessageRequest) iter.Seq2[a2a.Event, error] {
-	return unsupportedStream(a2a.ErrUnsupportedOperation)
+func (h peerHandler) watchTask(ctx context.Context, task *a2a.Task, yield func(a2a.Event, error) bool) {
+	if !yield(task, nil) || task.Status.State.Terminal() {
+		return
+	}
+	ticker := time.NewTicker(h.e.poll)
+	defer ticker.Stop()
+	refresh := time.Now().Add(h.e.live)
+	for {
+		select {
+		case <-ctx.Done():
+			yield(nil, ctx.Err())
+			return
+		case <-ticker.C:
+		}
+		live := !time.Now().Before(refresh)
+		if live {
+			refresh = time.Now().Add(h.e.live)
+		}
+		next, err := h.e.task(ctx, peerFrom(ctx), string(task.ID), live)
+		if err != nil {
+			yield(nil, err)
+			return
+		}
+		if next.Status.State == task.Status.State && next.Status.Timestamp.Equal(*task.Status.Timestamp) {
+			continue
+		}
+		task = next
+		for _, artifact := range task.Artifacts {
+			if !yield(&a2a.TaskArtifactUpdateEvent{TaskID: task.ID, ContextID: task.ContextID, Artifact: artifact, LastChunk: true}, nil) {
+				return
+			}
+		}
+		if !yield(&a2a.TaskStatusUpdateEvent{TaskID: task.ID, ContextID: task.ContextID, Status: task.Status, Metadata: task.Metadata}, nil) || task.Status.State.Terminal() {
+			return
+		}
+	}
 }
 
 func (peerHandler) GetTaskPushConfig(context.Context, *a2a.GetTaskPushConfigRequest) (*a2a.PushConfig, error) {

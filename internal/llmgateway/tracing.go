@@ -8,20 +8,22 @@ import (
 )
 
 // callSpan is one logical model call (OPR-3): the provider's kind, the
-// gateway's entry (complete, forward, embed, transcribe, ocr), the outcome, the upstream attempts
-// and the tokens the provider reported. Never a prompt, a model name, an
-// address or a credential.
+// gateway's entry (complete, forward), its mode (unary, stream), the outcome,
+// the upstream attempts and the tokens the provider reported. Never a prompt,
+// an event, a model name, an address or a credential.
 var callSpan = telemetry.NewSpanType("llm.call", telemetry.SpanClient, telemetry.SpanAttributes{
 	Codes: []telemetry.Label{{Name: "agentcapsule.llm.provider", Values: []string{"openai_compatible", "anthropic"}},
 		{Name: "agentcapsule.llm.entry", Values: []string{"complete", "forward", "embed", "transcribe", "ocr"}},
+		{Name: "agentcapsule.llm.mode", Values: []string{"unary", "stream"}},
 		{Name: "agentcapsule.outcome", Values: []string{"ok", "invalid", "unavailable", "rate_limited", "rejected", "address_refused",
-			"outcome_unknown", "dialect", "unsupported", "canceled"}}},
+			"outcome_unknown", "dialect", "canceled", "unsupported", "stream_cut"}}},
 	Ints: []string{"agentcapsule.llm.attempts", "agentcapsule.llm.input_tokens", "agentcapsule.llm.output_tokens"}})
 
 func startCall(ctx context.Context, entry string, route Route) (context.Context, *telemetry.Span) {
 	ctx, span := callSpan.Start(ctx)
 	span.Code("agentcapsule.llm.entry", entry)
 	span.Code("agentcapsule.llm.provider", route.Kind)
+	span.Code("agentcapsule.llm.mode", "unary")
 	return ctx, span
 }
 
@@ -40,6 +42,8 @@ func endCall(span *telemetry.Span, usage Usage, err error) {
 		outcome = "rejected"
 	case errors.Is(err, ErrRateLimited):
 		outcome = "rate_limited"
+	case errors.Is(err, errStreamCut):
+		outcome = "stream_cut"
 	case errors.Is(err, ErrUnavailable):
 		outcome = "unavailable"
 	case errors.Is(err, ErrOutcomeUnknown):

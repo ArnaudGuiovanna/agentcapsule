@@ -218,6 +218,9 @@ func queueRerun(ctx context.Context, tx pgx.Tx, restoreID, outcome, op, mailbox,
         completion_hash=NULL,close_reason='' WHERE operation_id=$1`, op); err != nil {
 		return err
 	}
+	if err := newAttempt(ctx, tx, op); err != nil {
+		return err
+	}
 	if err := holdInput(ctx, tx, input); err != nil {
 		return err
 	}

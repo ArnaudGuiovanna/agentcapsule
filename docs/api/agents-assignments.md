@@ -517,9 +517,12 @@ answering the work delivered to it, is a set of capabilities
 | `llm.invoke` | `/v1/llm/complete`, `/v1/llm/forward` |
 | `agents.delegate` | `/v1/agent-requests`, `/v1/agent-requests/{id}/status` |
 | `agents.discover` | `/v1/directory/find`, `/v1/directory/search`, `/v1/directory/agent` |
+| `stream.output` | `/v1/invocations/stream`: the output stream of a working invocation ([ADR 022](../adr/022-native-streaming.md)) |
 
 Replies to delivered requests, invocation completions, owner messages and the
-invocation's own files need none.
+invocation's own files need none. `stream.output` answers delivered work too,
+but the catalog shows it, so that a client knows whether the agent's harness
+streams; an organization may refuse the PostgreSQL writes it costs.
 
 - **Effective set = harness ∩ organization ∩ agent.** The harness requests
   capabilities in `harness.yaml` (`capabilities:`, see
@@ -528,7 +531,9 @@ invocation's own files need none.
   default pending the product owner). The organization
   (`PUT /v1/organizations/current/capabilities`) and the agent
   (`PUT /v1/agents/{id}/capabilities`) each allow a set, `{"allowed":[...]}`;
-  without one, everything.
+  without one, everything. A policy set before `stream.output` existed does
+  not list it: streaming stays off there until it is added (ADR 022,
+  question 1).
 - **Catalog.** `GET /v1/agents/{id}/capabilities` shows the pinned release's
   request (`requested`, `declared`), the organization's and the agent's
   policies, and the effective set.
@@ -573,14 +578,67 @@ Each outcome is taken under the agent's lock and then those of the instruction
 and operation rows: only one wins (model
 [invocation_completion.qnt](../../spec/invocation_completion.qnt) and a race test
 on PostgreSQL). A `working` agent is not put to sleep by its idle policy.
-Canceling does not stop the computation in progress in the VM: the agent learns
-of it when it files its result.
+Canceling does not stop the computation in progress in the VM by itself: a
+harness with an open output stream receives `cancel` on it at once (next
+section); any other learns of it when it files its result.
 
 The reference harness answers `working` for an invocation that carries files or
 begins with `/llm <alias> <text>`. It reads the files, calls the model and files
 a response that gives, for each file, its size and digest, followed by the
 model's text. The computation is kept before the filing: a replayed filing does
-not call the model again.
+not call the model again. It also answers `working` for `/stream <n>` (1 to
+2,000): it streams `n` deltas, `word1`, ` word2`, …, one every 100 ms, between
+two steps `echo.stream`, then files their text. A cancellation stops it, and
+`/stream canceled` answers the invocations whose stream it saw canceled.
+
+### Output stream of a working invocation
+
+While an invocation is `working`, its agent's harness may stream its output
+over the platform channel ([ADR 022](../adr/022-native-streaming.md) §5):
+text deltas and steps, with `POST /v1/invocations/stream`, one long full-duplex
+call per stream. The frames, the reasons a stream closes and the limits are in
+[capsule-control.md](../guest/capsule-control.md#the-output-stream-post-v1invocationsstream).
+
+- **Only while working, only from the current boot, only into its attempt.**
+  The opening and each stored chunk check, under the locks of a completion,
+  that the caller is the agent's current boot and that the invocation works
+  before its due time. The stream binds to the invocation's current attempt:
+  a restore's rerun and a dead letter's replay start a new attempt and delete
+  the old one's chunks.
+- **Never an outcome.** The result still comes from the delivery's answer or
+  `POST /v1/invocations/complete`, unchanged; a client that never follows the
+  stream sees what it saw before. No chunk is stored after the outcome.
+- **Stored as results are.** The worker coalesces frames into chunks (150 ms
+  or 4 KiB) and seals each one with the transit key, bound to the operation,
+  the attempt, the agent and the requester. Only the requester reads them,
+  while holding `read_content` on the agent. Chunks are deleted 10 minutes
+  after the outcome (`output_streams.retention`), at once with their agent's
+  deletion.
+- **Bounded.** 2 MiB and 4,096 frames per attempt, then the attempt is
+  truncated: nothing more is stored, and the outcome is untouched.
+- **Cancellation.** Canceling the invocation, or deleting its agent, sends
+  `cancel` then `closed` to the harness's open stream.
+
+
+### Following an invocation
+
+Open `GET /v1/invocations/{id}/events` with an organization credential and
+`Accept: text/event-stream`. Delegated and service bearers may also use
+`GET /v1/operations/{id}/events`. The requester needs the
+`agent:content:read` scope and a current assignment granting `read_content`.
+The stream sends `state` first, then stored `delta` and `step` events in
+sequence. A harness that sends no output still produces `state` and `end`.
+
+On reconnect, send the last received event ID in `Last-Event-ID`
+(`<attempt>:<seq>`). A `reset` invalidates the old attempt's output.
+`truncated` marks the end of stored frames for that attempt. A final
+`end` includes the state and, for a completed invocation, the result up to
+32 KiB. If `result_available` is true, fetch `/result` separately. Reading
+an inline result starts its retention clock.
+
+The server rechecks access on policy changes and every ten seconds. A
+`revoked` event ends the subscription. Idle streams receive a heartbeat
+every 15 seconds. Reconnect after the server's 15-minute deadline.
 
 ## Directory publication (INT-02)
 

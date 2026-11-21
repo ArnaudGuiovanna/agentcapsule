@@ -8,14 +8,14 @@ Les routes, trames et commandes ci-dessous sont des propositions de conception. 
 
 ## Suivi du chantier
 
-**20 novembre 2026 · Non démarré.** Le plan s’appuie sur l’état du dépôt à `321143b` (release `v0.0.1`).
+**20 novembre 2026 · Lots 1 et 3 intégrés.** Le plan s’appuie sur l’état du dépôt à `321143b` (release `v0.0.1`).
 
 | Lot | État |
 |---|---|
-| 0. Contrats, ADR 022, modèle Quint | Non démarré |
-| 1. Passerelle : streaming fournisseur | Non démarré |
+| 0. Contrats, ADR 022, modèle Quint | Fait ([ADR 022](adr/022-native-streaming.md)) |
+| 1. Passerelle : streaming fournisseur | Fait (branche `streaming-lot1` ; [ADR 022](adr/022-native-streaming.md), changements 17 à 22) |
 | 2. Canal plateforme : flux LLM vers l’invité | Non démarré |
-| 3. Flux de sortie harness → plateforme | Non démarré |
+| 3. Flux de sortie harness → plateforme | Validé sur KVM le 20 novembre 2026. `TestProductWorkerCarriesTheOutputStreamAndTheCancellation` vérifie les 20 deltas, l’annulation reçue par le harness et l’absence de nouveau fragment après l’annulation. |
 | 4. API : abonnement SSE | Non démarré |
 | 5. SDK Python et capsule-adapter | Non démarré |
 | 6. CLI | Non démarré |

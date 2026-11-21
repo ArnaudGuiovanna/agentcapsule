@@ -3434,6 +3434,55 @@ paths:
               schema: {type: string, format: binary}
         '404': {$ref: '#/components/responses/Problem'}
         default: {$ref: '#/components/responses/Problem'}
+  /v1/invocations/{id}/events:
+    get:
+      operationId: invocationEvents
+      description: >-
+        Server-sent events of an invocation (EXT-005, ADR 022): its state,
+        the deltas and steps its harness streams, then its end. Same rights
+        as /v1/invocations/{id}/result, without the condition that a result
+        exists: the scope agent:content:read, the invocation's requester,
+        with read_content on the agent through a current assignment. Any
+        other caller gets 404, whether the invocation exists or not. The
+        rights are checked again every 10 seconds and when the organization's
+        policy_version changes; on failure, the event revoked, then the end
+        of the stream. The answer is text/event-stream from the first byte;
+        a heartbeat comment goes out every 15 seconds; the server closes
+        after 15 minutes, and the client reconnects with Last-Event-ID. An
+        agent whose harness lacks stream.output sends no delta or step:
+        state and end only. Reading the result through the end event starts
+        its retention, as reading /result does.
+      security: [{memberOIDC: []}, {delegatedBearer: []}, {serviceBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/ResourceID'}
+        - {$ref: '#/components/parameters/LastEventID'}
+      responses:
+        '200': {$ref: '#/components/responses/InvocationEvents'}
+        '400': {$ref: '#/components/responses/Problem'}  # invalid_request: a malformed Last-Event-ID
+        '403': {$ref: '#/components/responses/Problem'}  # forbidden: the credential lacks agent:content:read
+        '404': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}  # too_many_streams: 4 subscriptions of this principal to this invocation
+        '503': {$ref: '#/components/responses/Problem'}  # stream_capacity: the process's -max-event-streams reached
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/operations/{id}/events:
+    get:
+      operationId: operationEvents
+      description: >-
+        Alias of /v1/invocations/{id}/events for an invocation's operation
+        identifier, with the same rights and answers. Any other operation
+        returns 404. Tenant domain only: the legacy bearer is refused.
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/ResourceID'}
+        - {$ref: '#/components/parameters/LastEventID'}
+      responses:
+        '200': {$ref: '#/components/responses/InvocationEvents'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
   /v1/invocations/{id}/result:
     get:
       description: >-
@@ -3607,6 +3656,17 @@ components:
         database, and the scope must match exactly. The issuer cannot freely
         choose a tenant or a role.
   parameters:
+    LastEventID:
+      name: Last-Event-ID
+      in: header
+      required: false
+      description: >-
+        The id of the last event the client received, <attempt>:<seq>. The
+        same attempt as the current one: the frames after seq. Another
+        attempt: reset, then every frame of the current attempt. Chunks past
+        their retention: state, then end. Absent: every frame of the current
+        attempt.
+      schema: {type: string, pattern: '^[0-9]{1,9}:[0-9]{1,18}$'}
     ResourceID:
       name: id
       in: path
@@ -3625,6 +3685,32 @@ components:
         idempotency_receipt_unreadable, and the request does not run again.
       schema: {type: string, minLength: 1, maxLength: 200, pattern: '^[!-~]+$'}
   responses:
+    InvocationEvents:
+      description: >-
+        Server-sent events. Each event is an `event:` line naming one of the
+        x-sse-events below, an optional `id:` line (<attempt>:<seq>, for
+        delta and step, and <attempt>:0 for reset), and one `data:` line
+        holding the JSON object of that event's schema. A comment line
+        `: heartbeat` goes out every 15 seconds without another event. Order:
+        state first; reset if the client's attempt is not the current one;
+        the stored frames in seq order; truncated once the attempt is
+        truncated; end last, after which the server closes. revoked ends the
+        stream at any point.
+      headers:
+        X-Request-ID: {schema: {type: string}}
+        Cache-Control: {schema: {type: string, const: no-store}}
+        X-Accel-Buffering: {schema: {type: string, const: 'no'}}
+      content:
+        text/event-stream:
+          schema: {type: string}
+          x-sse-events:
+            state: {$ref: '#/components/schemas/StateEvent'}
+            delta: {$ref: '#/components/schemas/DeltaEvent'}
+            step: {$ref: '#/components/schemas/StepEvent'}
+            reset: {$ref: '#/components/schemas/ResetEvent'}
+            truncated: {$ref: '#/components/schemas/TruncatedEvent'}
+            end: {$ref: '#/components/schemas/EndEvent'}
+            revoked: {$ref: '#/components/schemas/RevokedEvent'}
     LlmProviderReceipt:
       description: Provider created/updated, or initial response replayed. Never a credential
       headers:
@@ -3910,6 +3996,75 @@ components:
         agent_id: {type: string}
         corpora: {type: array, maxItems: 4, items: {$ref: '#/components/schemas/AgentCorpusEntry'}}
         applies: {type: string, enum: [next_boot]}
+    InvocationState:
+      type: string
+      enum: [scheduled, accepted, working, completed, failed, expired, canceled, lost, unknown]
+      description: The vocabulary of Invocation.state in openapi/openapi.yaml.
+    StateEvent:
+      type: object
+      additionalProperties: false
+      required: [state, attempt]
+      description: First, then at each change of the invocation's state.
+      properties:
+        state: {$ref: '#/components/schemas/InvocationState'}
+        attempt: {type: integer, minimum: 1, description: "1 at the first delivery; plus one at each rerun after a restore and each replay of a dead letter."}
+    DeltaEvent:
+      type: object
+      additionalProperties: false
+      required: [seq, text]
+      description: A fragment of the text the harness streams. id is <attempt>:<seq>.
+      properties:
+        seq: {type: integer, minimum: 1}
+        text: {type: string, minLength: 1}
+    StepEvent:
+      type: object
+      additionalProperties: false
+      required: [seq, step, state]
+      description: A step the harness announces. id is <attempt>:<seq>.
+      properties:
+        seq: {type: integer, minimum: 1}
+        step: {type: string, pattern: '^[a-z][a-z0-9_.-]{0,63}$'}
+        state: {type: string, enum: [started, done, failed]}
+        label: {type: string, minLength: 1, maxLength: 256}
+    ResetEvent:
+      type: object
+      additionalProperties: false
+      required: [attempt]
+      description: >-
+        The client's attempt is no longer the current one: the deltas and
+        steps it received are void; the current attempt's follow. id is
+        <attempt>:0.
+      properties:
+        attempt: {type: integer, minimum: 1}
+    TruncatedEvent:
+      type: object
+      additionalProperties: false
+      required: [attempt]
+      description: >-
+        The attempt reached its stream limits (2 MiB or 4,096 frames by
+        default): nothing more of it is streamed. The outcome is not changed.
+      properties:
+        attempt: {type: integer, minimum: 1}
+    EndEvent:
+      type: object
+      additionalProperties: false
+      required: [state, attempt]
+      description: >-
+        The invocation's final state; the server then closes. A completed
+        end carries the result, as /v1/invocations/{id}/result answers it,
+        when its encoded size is at most 32 KiB; otherwise
+        result_available is true and the client reads /result. Carrying the
+        result starts its retention, as /result does.
+      properties:
+        state: {type: string, enum: [completed, failed, expired, canceled, lost]}
+        attempt: {type: integer, minimum: 1}
+        error_code: {type: string, description: "As Invocation.error_code. A lost end always has one: its rerun will not run."}
+        result: {description: "The JSON result from the harness, {\"content\": [...]}."}
+        result_available: {type: boolean}
+    RevokedEvent:
+      type: object
+      additionalProperties: false
+      description: The caller's rights failed during the subscription; the server then closes.
     PlatformSession:
       type: object
       required: [id, kind, account, expires_at, status]
@@ -4573,8 +4728,8 @@ components:
             json: {description: "Any JSON value but null, nested at most 32 levels."}
     Capability:
       type: string
-      enum: [llm.invoke, agents.delegate, agents.discover]
-      description: "llm.invoke: call the organization's models. agents.delegate: send requests to other agents and follow them. agents.discover: search and describe the organization's agents."
+      enum: [llm.invoke, agents.delegate, agents.discover, stream.output]
+      description: "llm.invoke: call the organization's models. agents.delegate: send requests to other agents and follow them. agents.discover: search and describe the organization's agents. stream.output: stream the output of a working invocation (ADR 022); a client may follow it."
     CapabilityPolicy:
       type: object
       additionalProperties: false
@@ -4704,7 +4859,7 @@ components:
         harness: {$ref: '#/components/schemas/HarnessReference'}
         resources: {$ref: '#/components/schemas/Resources'}
         llm_profile: {type: string, description: Existing model alias granted to each instance}
-        capabilities: {type: [array, 'null'], items: {type: string, enum: [llm.invoke, agents.delegate, agents.discover]}}
+        capabilities: {type: [array, 'null'], items: {type: string, enum: [llm.invoke, agents.delegate, agents.discover, stream.output]}}
     TemplateRevision:
       allOf:
         - {$ref: '#/components/schemas/TemplateSpec'}

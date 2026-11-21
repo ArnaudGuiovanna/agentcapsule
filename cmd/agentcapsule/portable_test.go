@@ -5,6 +5,7 @@ import (
 	"debug/buildinfo"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // PRs exercise a native build. On tags, verify and execute the uploaded
@@ -122,7 +124,7 @@ func TestPortableCLI(t *testing.T) {
 	const buildID = "cbd_00000000000000000000000000000013"
 	var submitted, polled atomic.Int32
 	var compatible atomic.Bool
-	var authenticated atomic.Int32
+	var authenticated, submissions, connections atomic.Int32
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method + " " + r.URL.Path {
 		case "GET /v1/version":
@@ -182,6 +184,57 @@ func TestPortableCLI(t *testing.T) {
 				t.Error("unexpected release filter", r.URL.RawQuery)
 			}
 			fmt.Fprint(w, `{"items":[]}`)
+		case "POST /v1/agents/support/invocations":
+			submissions.Add(1)
+			if r.Header.Get("Idempotency-Key") == "" {
+				t.Error("missing idempotency key")
+			}
+			fmt.Fprint(w, `{"id":"streamed"}`)
+		case "GET /v1/invocations/streamed/events":
+			if r.Header.Get("Authorization") != "Bearer "+token || r.Header.Get("Accept") != "text/event-stream" {
+				t.Error("unexpected stream headers")
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			if connections.Add(1) == 1 {
+				fmt.Fprint(w, "event: delta\nid: 1:1\ndata: {\"text\":\"hello\"}\n\nevent: delta\nid: 1:2\ndata: {\"text\":\"discard")
+				return
+			}
+			if r.Header.Get("Last-Event-ID") != "1:1" {
+				t.Error("lost replay cursor")
+			}
+			fmt.Fprint(w, ": heartbeat\n\nevent: delta\nid: 1:2\ndata: {\"text\":\" world\"}\n\nevent: end\ndata: {\"state\":\"completed\"}\n\n")
+		case "GET /v1/invocations/long/events":
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, "event: state\ndata: {\"state\":\"working\",\"attempt\":1}\n\n")
+			w.(http.Flusher).Flush()
+			heartbeat := time.NewTicker(15 * time.Second)
+			defer heartbeat.Stop()
+			duration := time.NewTimer(5 * time.Minute)
+			defer duration.Stop()
+			for {
+				select {
+				case <-r.Context().Done():
+					return
+				case <-heartbeat.C:
+					fmt.Fprint(w, ": heartbeat\n\n")
+					w.(http.Flusher).Flush()
+				case <-duration.C:
+					fmt.Fprint(w, "event: end\ndata: {\"state\":\"completed\"}\n\n")
+					return
+				}
+			}
+		case "GET /v1/invocations/denied/events":
+			http.Error(w, "denied", 403)
+		case "GET /v1/invocations/missing/events":
+			http.NotFound(w, r)
+		case "GET /v1/invocations/failed/events", "GET /v1/invocations/expired/events", "GET /v1/invocations/canceled/events", "GET /v1/invocations/lost/events", "GET /v1/invocations/revoked/events":
+			state := strings.Split(r.URL.Path, "/")[3]
+			w.Header().Set("Content-Type", "text/event-stream")
+			if state == "revoked" {
+				fmt.Fprint(w, "event: revoked\ndata: {}\n\n")
+			} else {
+				fmt.Fprintf(w, "event: end\ndata: {\"state\":%q,\"error_code\":\"terminated\"}\n\n", state)
+			}
 		default:
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 			http.NotFound(w, r)
@@ -227,5 +280,28 @@ func TestPortableCLI(t *testing.T) {
 	call("", true, "corpus-build", "publish", buildID, "--version", "3")
 	call("", true, "corpus", "versions", "finance")
 	call("", true, "corpus-release", "deprecate", "rel")
+	cmd := exec.CommandContext(t.Context(), path, "agent", "invoke", "support", "--file", "-", "--watch", "--text")
+	cmd.Stdin = strings.NewReader(`{"content":[{"type":"text","text":"hello"}]}`)
+	if out, err := cmd.Output(); err != nil || string(out) != "hello world" || submissions.Load() != 1 || connections.Load() != 2 {
+		t.Fatal("submitting once and resuming the output", string(out), err, submissions.Load(), connections.Load())
+	}
+	for state, code := range map[string]int{"failed": 5, "expired": 5, "canceled": 5, "lost": 5, "revoked": 5, "denied": 3, "missing": 4} {
+		cmd := exec.CommandContext(t.Context(), path, "invocation", "watch", state)
+		out, err := cmd.Output()
+		var exited *exec.ExitError
+		if !errors.As(err, &exited) || exited.ExitCode() != code {
+			t.Fatal(state, string(out), err)
+		}
+		if code == 5 && !strings.Contains(string(out), `"version":1,"event":`) {
+			t.Fatal("missing JSON event", state, string(out))
+		}
+	}
+	if os.Getenv("AGENTCAPSULE_TEST_LONG_STREAM") == "1" {
+		start := time.Now()
+		out := call("", true, "invocation", "watch", "long")
+		if time.Since(start) < 5*time.Minute || strings.Count(out, `"event":`) != 2 || !strings.Contains(out, `"state":"completed"`) {
+			t.Fatal("five-minute stream", out)
+		}
+	}
 
 }

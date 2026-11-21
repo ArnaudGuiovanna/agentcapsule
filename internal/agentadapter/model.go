@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"net/http"
 	"sort"
 	"time"
@@ -22,9 +23,7 @@ type Forwarder interface {
 }
 
 // ModelEndpoint answers the agent's own SDK as if it were the OpenAI Chat
-// Completions or Anthropic Messages API. Each request is forwarded once, under
-// a fresh key, to the platform; a stream is requested by the agent but never
-// from the provider, so the endpoint replays the complete answer as one stream.
+// Completions or Anthropic Messages API, including native incremental events.
 type ModelEndpoint struct {
 	Config   Config
 	Platform Forwarder
@@ -77,6 +76,14 @@ func (m *ModelEndpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		IncludeUsage bool `json:"include_usage"`
 	}
 	_ = json.Unmarshal(fields["stream_options"], &options)
+	key := newKey()
+	if stream {
+		if platform, ok := m.Platform.(streamForwarder); ok {
+			if relayModelEvents(w, r.Context(), platform, key, capsuleprotocol.LLMForward{Alias: alias, Dialect: dialect, Body: body}, model, options.IncludeUsage) {
+				return
+			}
+		}
+	}
 	delete(fields, "stream")
 	delete(fields, "stream_options")
 	forwarded, err := json.Marshal(fields)
@@ -84,7 +91,7 @@ func (m *ModelEndpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		modelError(w, dialect, http.StatusBadRequest, "invalid_request_error", "The body could not be read.")
 		return
 	}
-	res, err := m.Platform.ForwardLLM(r.Context(), newKey(), capsuleprotocol.LLMForward{Alias: alias, Dialect: dialect, Body: forwarded})
+	res, err := m.Platform.ForwardLLM(r.Context(), key, capsuleprotocol.LLMForward{Alias: alias, Dialect: dialect, Body: forwarded})
 	if err != nil {
 		status, kind, message := explain(err, alias)
 		modelError(w, dialect, status, kind, message)
@@ -110,6 +117,124 @@ func (m *ModelEndpoint) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	} else {
 		_ = anthropicStream(w, answer)
 	}
+}
+
+type streamForwarder interface {
+	ForwardLLMStream(context.Context, string, capsuleprotocol.LLMForward) iter.Seq2[capsuleprotocol.LLMStreamFrame, error]
+}
+
+// Return false only for a pre-stream refusal on which the unary endpoint can
+// safely be tried with the same idempotency key. In particular, never replay a
+// cut, an uncertain platform call, or a quota or permission refusal.
+func relayModelEvents(w http.ResponseWriter, ctx context.Context, platform streamForwarder, key string, in capsuleprotocol.LLMForward, model string, usage bool) bool {
+	started := false
+	var stop *capsuleprotocol.LLMStreamEvent
+	for frame, err := range platform.ForwardLLMStream(ctx, key, in) {
+		if err != nil {
+			if started {
+				writeStreamFailure(w, in.Dialect)
+				return true
+			}
+			var pe *capsuleprotocol.PlatformError
+			if errors.As(err, &pe) && (pe.Code == "not_found" || pe.Code == "unavailable") {
+				return false
+			}
+			status, kind, message := explain(err, in.Alias)
+			modelError(w, in.Dialect, status, kind, message)
+			return true
+		}
+		switch frame.Type {
+		case "start":
+			started = true
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			if http.NewResponseController(w).Flush() != nil {
+				return true
+			}
+		case "event":
+			event := frame.Event
+			if event == nil {
+				writeStreamFailure(w, in.Dialect)
+				return true
+			}
+			// Delay the terminal marker until the platform has settled usage.
+			if in.Dialect == "anthropic" && event.Name == "message_stop" {
+				stop = event
+				continue
+			}
+			data, err := eventForClient(in.Dialect, model, usage, event)
+			if err != nil {
+				writeStreamFailure(w, in.Dialect)
+				return true
+			}
+			if data != nil && sse(w, event.Name, data) != nil {
+				return true
+			}
+		case "end":
+			if frame.Outcome != "completed" {
+				writeStreamFailure(w, in.Dialect)
+				return true
+			}
+			if in.Dialect == "openai" {
+				_, _ = io.WriteString(w, "data: [DONE]\n\n")
+				_ = http.NewResponseController(w).Flush()
+			} else if stop != nil {
+				_ = sse(w, stop.Name, stop.Data)
+			} else {
+				writeStreamFailure(w, in.Dialect)
+			}
+			return true
+		}
+	}
+	if started {
+		writeStreamFailure(w, in.Dialect)
+	} else {
+		modelError(w, in.Dialect, http.StatusBadGateway, "api_error", "The model stream ended before opening.")
+	}
+	return true
+}
+
+func writeStreamFailure(w http.ResponseWriter, dialect string) {
+	issue := map[string]string{"type": "api_error", "message": "The model stream ended with an unknown outcome."}
+	if dialect == "anthropic" {
+		_ = sse(w, "error", map[string]any{"type": "error", "error": issue})
+		return
+	}
+	_ = sse(w, "", map[string]any{"error": issue})
+}
+
+// Preserve native content and tool events. The guest sees its requested model
+// name. Gateway-mandated OpenAI usage is exposed only when the SDK requested it.
+func eventForClient(dialect, model string, includeUsage bool, event *capsuleprotocol.LLMStreamEvent) (json.RawMessage, error) {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(event.Data, &obj); err != nil {
+		return nil, err
+	}
+	name, _ := json.Marshal(model)
+	if dialect == "openai" {
+		if _, ok := obj["model"]; ok {
+			obj["model"] = name
+		}
+		if !includeUsage {
+			if raw, ok := obj["usage"]; ok {
+				var choices []json.RawMessage
+				if string(raw) != "null" && json.Unmarshal(obj["choices"], &choices) == nil && len(choices) == 0 {
+					return nil, nil
+				}
+				delete(obj, "usage")
+			}
+		}
+	} else if event.Name == "message_start" {
+		var msg map[string]json.RawMessage
+		if err := json.Unmarshal(obj["message"], &msg); err != nil || msg == nil {
+			return nil, capsuleprotocol.ErrProtocol
+		}
+		msg["model"] = name
+		obj["message"], _ = json.Marshal(msg)
+	} else {
+		return event.Data, nil
+	}
+	return json.Marshal(obj)
 }
 
 func (m *ModelEndpoint) models(w http.ResponseWriter) {

@@ -231,7 +231,7 @@ type TransitReference struct {
 }
 
 func transitKind(kind string) bool {
-	return kind == "instruction" || kind == "instruction_result" || kind == "request" || kind == "reply" || kind == "owner_message"
+	return kind == "instruction" || kind == "instruction_result" || kind == "request" || kind == "reply" || kind == "owner_message" || kind == "stream_chunk"
 }
 
 // put is only used inside the domain transaction that creates its immutable
@@ -419,6 +419,10 @@ func (t *Transit) read(ctx context.Context, tx pgx.Tx, id string, parties []tran
 	if err != nil {
 		return nil, err
 	}
+	return openTransitPayload(k, binding, encrypted)
+}
+
+func openTransitPayload(k transitKey, binding transitBinding, encrypted []byte) ([]byte, error) {
 	if len(encrypted) < k.cipher.NonceSize()+k.cipher.Overhead() {
 		return nil, ErrTransitPayload
 	}

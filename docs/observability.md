@@ -39,7 +39,8 @@ volume archives and, on the standby host, its replay.
 | Metric | Type | Labels | Meaning |
 | --- | --- | --- | --- |
 | `agentcapsule_api_requests_total` | counter | `route`, `method`, `status_class` | API requests, by route pattern (`/v1/agents/{id}`), never by the IDs in the path |
-| `agentcapsule_api_request_duration_seconds` | histogram | `route` | API latency |
+| `agentcapsule_api_request_duration_seconds` | histogram | `route` | API latency, excluding invocation event subscriptions |
+| `agentcapsule_api_streams_active` | gauge | — | Open invocation event subscriptions. Both events routes count once in `agentcapsule_api_requests_total` and the request log when the subscription closes |
 | `agentcapsule_api_access_revocations_pending` | gauge | — | Access revocations recorded with the authority service but not confirmed: the standby does not hold their record yet ([ADR 006](adr/006-authority-service.md) wave 5). Above 0 in degraded mode; it falls once the standby catches up and the API confirms them (every 5 seconds) |
 | `agentcapsule_api_access_revocation_oldest_pending_seconds` | gauge | — | How long the oldest pending revocation has waited; 0 when none. Long after degraded mode ended, the standby refuses the records: a standby of an older release ([recovery.md](recovery.md#pending-revocations)) |
 | `agentcapsule_worker_jobs_total` | counter | `kind`, `outcome` | Durable jobs processed: `done` or `retried` |
@@ -68,12 +69,16 @@ volume archives and, on the standby host, its replay.
 | `agentcapsule_worker_volume_archive_oldest_seconds` | gauge | — | Age of the oldest among the agents' newest archives. An agent never archived counts from its initialization |
 | `agentcapsule_worker_deletions_unfinished` | gauge | — | Agents of the host whose deletion is requested and not finished: their volume key still exists, so their archives still open ([ADR 018](adr/018-key-lifecycle-and-archive-deletion.md)). On a host without a key authority, a deletion finishes at its seal. Read from PostgreSQL at each scrape |
 | `agentcapsule_worker_deletion_oldest_seconds` | gauge | — | Age of the oldest of these deletions, from its request; 0 when none |
+| `agentcapsule_worker_streams_open` | gauge | `kind` (`output`, `llm`) | Streams open on the platform channels of the host's VMs: output streams of working invocations ([ADR 022](adr/022-native-streaming.md), [worker.md](worker.md#output-streams)), and model streams. Every series is served from zero |
+| `agentcapsule_worker_stream_frames_total` | counter | `outcome` (`stored`, `refused`, `truncated`) | Frames of output streams: stored in a chunk; refused (invalid, after the invocation's outcome, of an old attempt or boot, or still buffered when the stream closed); past the attempt's limits. Every series is served from zero |
+| `agentcapsule_worker_stream_first_delta_seconds` | histogram | — | From an invocation's `working` answer to the first stored delta of its attempt, buckets 0.1 to 300 s |
 | `agentcapsule_llm_calls_total` | counter | `provider` (`openai_compatible`, `anthropic`), `outcome` (`settled`, `released`, `unknown`) | Model calls through the worker's bridge ([llm.md](api/llm.md#budgets-and-consumption-llm-03)), once their outcome is recorded. Only with the model bridge on |
 | `agentcapsule_llm_tokens_total` | counter | `provider`, `direction` (`input`, `output`) | Tokens of settled calls, as the provider reported them |
 | `agentcapsule_llm_estimated_cost_micro_total` | counter | `provider` | Estimated cost of settled calls, in micro-units of each organization's own currency: a sum across organizations that price in different currencies has no meaning |
 | `agentcapsule_llm_refusals_total` | counter | `reason` (`budget_tokens`, `budget_cost`, `unpriced`, `alias_access`) | Calls refused before any reservation. Every series is served from zero |
 | `agentcapsule_llm_budget_soft_exceeded_total` | counter | `unit` (`tokens`, `cost`) | Calls that went past a soft budget; a call past two counts twice. Every series is served from zero |
 | `agentcapsule_llm_unresolved_calls` | gauge | — | Calls of unknown outcome, across the installation, that wait for their organization to settle or release them |
+| `agentcapsule_llm_stream_first_event_seconds` | histogram | — | Time from a model stream's provider request to its first event ([ADR 022](adr/022-native-streaming.md) §3), buckets 0.1 to 60 s. A stream is a call for `agentcapsule_llm_calls_total` |
 | `agentcapsule_authority_service_holds` | gauge | `kind` | Holds the authority service grants now: `binding`, `key`, `fences`, `revocation`, `activation` ([ADR 006](adr/006-authority-service.md#the-hold)) |
 | `agentcapsule_authority_service_hold_expired_total` | counter | `kind` | Holds the service ended at their cap (30 seconds for a publish, `max_key_hold` for a key), closing their connection |
 | `agentcapsule_authority_service_refused_peers_total` | counter | `socket` | Connections the service closed at accept because of their peer's account: `worker`, `api` |
@@ -254,8 +259,8 @@ a trace starts at the API.
 | `worker.wake` | worker, internal | `worker.job` | `agentcapsule.outcome` (`running`, `booted`, `capacity`, `organization_quota`, `failed`), `agentcapsule.wake.evicted`; pseudonym `agentcapsule.agent` |
 | `worker.boot` | worker, internal | `worker.wake`, or the job | `agentcapsule.boot.purpose` (`work`, `fence`), `agentcapsule.outcome` (`started`, `failed`, `guest_failed`, `capacity`, `organization_quota`); pseudonym `agentcapsule.agent` |
 | `worker.deliver` | worker, internal | `worker.job` | `agentcapsule.delivery.kind` (`invocation`, `agent_message`), `agentcapsule.delivery.transport` (`vsock`, `slim`), `agentcapsule.outcome`, `agentcapsule.retry_reason`; pseudonym `agentcapsule.agent` |
-| `platform.call` | worker, server | see below | `agentcapsule.platform.call`, `agentcapsule.outcome` (`ok`, or the code the guest receives), `agentcapsule.trace.origin` (`delivery`, `work`, `none`); pseudonym `agentcapsule.agent` |
-| `llm.call` | worker, client | `platform.call` | `agentcapsule.llm.provider`, `agentcapsule.llm.entry` (`complete`, `forward`), `agentcapsule.outcome`, `agentcapsule.llm.attempts`, `agentcapsule.llm.input_tokens`, `agentcapsule.llm.output_tokens` |
+| `platform.call` | worker, server | see below | `agentcapsule.platform.call`, `agentcapsule.outcome` (`ok`, or the code the guest receives; for an output stream, `output_stream`, its `closed` reason), `agentcapsule.trace.origin` (`delivery`, `work`, `none`); pseudonym `agentcapsule.agent`. An output stream's span lasts the stream's life |
+| `llm.call` | worker, client | `platform.call` | `agentcapsule.llm.provider`, `agentcapsule.llm.entry` (`complete`, `forward`), `agentcapsule.llm.mode` (`unary`, `stream`), `agentcapsule.outcome` (`stream_cut`: a stream cut after the provider's first byte, of unknown outcome), `agentcapsule.llm.attempts`, `agentcapsule.llm.input_tokens`, `agentcapsule.llm.output_tokens` |
 | `authority.call` | API and worker, client | the span it runs under | `agentcapsule.authority.op`, `agentcapsule.outcome` (`ok`, `outage`, or the service's error code), `agentcapsule.authority.held` for a hold; the work done under a hold is its child |
 
 A guest's platform call is a child of the delivery to its agent in progress

@@ -170,6 +170,14 @@ func run(ctx context.Context, args []string, in io.Reader, out, errout io.Writer
 		}
 		return cli.sessionCommand(ctx, dir, name, api, strings.Join(pos, " "), o)
 	}
+	watch := len(pos) >= 2 && (pos[0] == "invocation" && pos[1] == "watch" || pos[0] == "agent" && pos[1] == "invoke" && o.take("watch") != "")
+	textOnly := false
+	if watch {
+		textOnly = o.take("text") != ""
+		if cli.outputFile != "" {
+			return usageError{errors.New("invocation watch writes to stdout")}
+		}
+	}
 	key := o.take("idempotency-key")
 	var issuerCA string
 	if len(pos) >= 2 && pos[0] == "app" && pos[1] == "verify" {
@@ -208,6 +216,9 @@ func run(ctx context.Context, args []string, in io.Reader, out, errout io.Writer
 	if err = api.resolveCorpusAction(ctx, &a, c.Token); err != nil {
 		return err
 	}
+	if a.name == "invocation watch" {
+		return cli.watchInvocation(ctx, api, a.path, textOnly)
+	}
 	if a.method != "GET" {
 		for _, r := range key {
 			if r < 33 || r > 126 {
@@ -243,6 +254,15 @@ func run(ctx context.Context, args []string, in io.Reader, out, errout io.Writer
 		}
 		if a.name == "app connection" || a.name == "app verify" {
 			return cli.applicationCommand(ctx, a, c, r, issuerCA)
+		}
+		if watch {
+			var invocation struct {
+				ID string `json:"id"`
+			}
+			if json.Unmarshal(r.Data, &invocation) != nil || !codePattern.MatchString(invocation.ID) {
+				return errors.New("invalid invocation identifier")
+			}
+			return cli.watchInvocation(ctx, api, "/v1/invocations/"+invocation.ID+"/events", textOnly)
 		}
 		if a.name != "operation wait" {
 			return cli.print(r.Data, r.RequestID)

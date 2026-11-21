@@ -149,8 +149,12 @@ func (p *platformHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		write(http.StatusServiceUnavailable, "unavailable")
 		return
 	}
+	if r.URL.Path == OutputStreamPath {
+		p.serveOutputStream(w, r)
+		return
+	}
 	timeout := 15 * time.Second
-	if r.URL.Path == "/v1/llm/complete" || r.URL.Path == "/v1/llm/forward" || llmMediaRoute(r.URL.Path) {
+	if r.URL.Path == "/v1/llm/complete" || r.URL.Path == "/v1/llm/forward" || llmMediaRoute(r.URL.Path) || isModelStream(r.URL.Path) {
 		// Only this route may outlive the server's short write deadline; the
 		// listener's other bounds still apply.
 		timeout = LLMCallTimeout
@@ -197,7 +201,7 @@ func (p *platformHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if in.Query != nil && r.URL.Path != "/v1/directory/find" || in.Forward != nil && r.URL.Path != "/v1/llm/forward" ||
+	if in.Query != nil && r.URL.Path != "/v1/directory/find" || in.Forward != nil && r.URL.Path != "/v1/llm/forward" && r.URL.Path != ForwardLLMStreamPath ||
 		in.AgentID != "" && r.URL.Path != "/v1/directory/agent" || in.Embed != nil && r.URL.Path != "/v1/llm/embed" ||
 		in.Transcribe != nil && r.URL.Path != "/v1/llm/transcribe" || in.OCR != nil && r.URL.Path != "/v1/llm/ocr" {
 		write(http.StatusBadRequest, "invalid")
@@ -275,6 +279,11 @@ func (p *platformHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		result, err = api.PostOwner(ctx, in.Key, *in.OwnerMessage)
 		if err == nil {
 			out.OwnerReceipt = &result
+		}
+	case isModelStream(r.URL.Path):
+		err = p.serveModelStream(ctx, w, r.URL.Path, in)
+		if err == nil {
+			return
 		}
 	case r.URL.Path == "/v1/llm/complete":
 		if in.LLM == nil || in.Attachment != nil || in.Completion != nil || in.OwnerMessage != nil || in.Submission != nil || in.Reply != nil || in.RequestID != "" || in.Candidates != nil || in.Key == "" || len(in.Key) > 200 || in.LLM.Validate() != nil {

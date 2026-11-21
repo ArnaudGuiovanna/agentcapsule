@@ -5,6 +5,7 @@ package worker
 import (
 	"context"
 	"slices"
+	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/telemetry"
@@ -27,6 +28,7 @@ var (
 // GET /v1/llm/usage.
 type LLMTelemetry struct {
 	calls, tokens, cost, refusals, soft *telemetry.Counter
+	firstEvent                          *telemetry.Histogram
 	problems                            *telemetry.Logger
 	// Seconds of audio and OCR pages of settled calls (ADR 023 §12).
 	audioSeconds, pages *telemetry.Counter
@@ -47,6 +49,8 @@ func NewLLMTelemetry(registry *telemetry.Registry, problems *telemetry.Logger, u
 			telemetry.Label{Name: "reason", Values: llmRefusals}),
 		soft: registry.Counter("agentcapsule_llm_budget_soft_exceeded_total", "Model calls that went past a soft budget, by its unit (tokens, cost); a call past two counts twice.",
 			telemetry.Label{Name: "unit", Values: llmUnits}),
+		firstEvent: registry.Histogram("agentcapsule_llm_stream_first_event_seconds", "Time from a model stream's provider request to its first event.",
+			[]float64{0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60}),
 		problems: problems,
 		audioSeconds: registry.Counter("agentcapsule_llm_audio_seconds_total", "Seconds of audio of settled transcriptions, as the provider reported them, by provider kind.",
 			provider),
@@ -97,7 +101,10 @@ func (m *LLMTelemetry) ObserveLLM(e controlplane.LLMCallEvent) {
 	}
 }
 
-var _ controlplane.LLMObserver = (*LLMTelemetry)(nil)
+// ObserveFirstEvent times a stream's first provider event.
+func (m *LLMTelemetry) ObserveFirstEvent(d time.Duration) { m.firstEvent.Observe(d.Seconds()) }
+
+var _ controlplane.LLMStreamObserver = (*LLMTelemetry)(nil)
 
 // LLMEvents and LLMEventCodes are the vocabulary of the model gateway's
 // events, for the worker's loggers.

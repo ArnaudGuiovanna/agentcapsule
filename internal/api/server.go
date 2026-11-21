@@ -27,6 +27,7 @@ type Server struct {
 	accounts    *controlplane.Accounts
 	catalog     *controlplane.AgentCatalog
 	mux         *http.ServeMux
+	events      eventStreams
 	delegations atomic.Pointer[delegatedidentity.Verifier]
 	// routes are the registered patterns, the vocabulary of telemetry.
 	routes    []string
@@ -94,6 +95,8 @@ func NewForHost(store *controlplane.Store, accounts *controlplane.Accounts, host
 	s.handle("/v1/queue", s.queue)
 	s.handle("/v1/queue/limits", s.queueLimits)
 	s.handle("/v1/invocations/{id}/result", s.instructionResult)
+	s.handle(invocationEventsPath, s.invocationEvents)
+	s.handle(operationEventsPath, s.invocationEvents)
 	s.handle("/v1/invocations/{id}/cancel", s.cancelInvocation)
 	s.handle("/v1/invocations/{id}/replay", s.replayInvocation)
 	s.handle("/v1/agents/{id}/idle-policy", s.idlePolicy)
@@ -133,7 +136,7 @@ func New(store *controlplane.Store, accounts *controlplane.Accounts) (*Server, e
 	if store == nil || accounts == nil {
 		return nil, controlplane.ErrInput
 	}
-	s := &Server{store: store, accounts: accounts, mux: http.NewServeMux()}
+	s := &Server{store: store, accounts: accounts, mux: http.NewServeMux(), events: eventStreams{limit: DefaultMaxEventStreams, counts: make(map[subscriptionKey]int)}}
 	s.handle("/v1/version", s.version)
 	s.handle("/v1/platform/diagnostics", s.platformDiagnostics)
 	s.handle("/v1/platform/session", s.platformSession)
@@ -225,7 +228,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 	w = recorder
 	route := invalidRoute
-	if (s.telemetry != nil || s.tracing != nil) && path.Clean(r.URL.Path) == r.URL.Path {
+	if path.Clean(r.URL.Path) == r.URL.Path {
 		_, route = s.mux.Handler(r)
 	}
 	if s.telemetry != nil {
@@ -241,7 +244,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx, attempt := withAttempt(telemetry.WithRequestID(traced, requestID))
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	timeout := 10 * time.Second
+	if r.Method == "GET" && isEventRoute(route) {
+		timeout = eventLifetime
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	served = r.WithContext(ctx)
 	s.mux.ServeHTTP(w, served)

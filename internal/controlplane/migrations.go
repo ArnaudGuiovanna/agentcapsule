@@ -200,22 +200,25 @@ var personalVolumeHoldsSQL string
 //go:embed migrations/0055_agent_resize.sql
 var agentResizeSQL string
 
-//go:embed migrations/0056_llm_operations.sql
+//go:embed migrations/0056_invocation_streams.sql
+var invocationStreamsSQL string
+
+//go:embed migrations/0057_llm_operations.sql
 var llmOperationsSQL string
 
-//go:embed migrations/0057_source_credentials.sql
+//go:embed migrations/0058_source_credentials.sql
 var sourceCredentialsSQL string
 
-//go:embed migrations/0058_corpus_mounts.sql
+//go:embed migrations/0059_corpus_mounts.sql
 var corpusMountsSQL string
 
-//go:embed migrations/0059_corpus_builds.sql
+//go:embed migrations/0060_corpus_builds.sql
 var corpusBuildsSQL string
 
-//go:embed migrations/0060_corpus_builder.sql
+//go:embed migrations/0061_corpus_builder.sql
 var corpusBuilderSQL string
 
-//go:embed migrations/0061_corpus_extensions.sql
+//go:embed migrations/0062_corpus_extensions.sql
 var corpusExtensionsSQL string
 
 // Append migrations; never edit an installed migration. The original schema
@@ -277,12 +280,13 @@ var controlPlaneMigrations = []schemaMigration{
 	{version: 53, name: "volume-growth", sql: volumeGrowthSQL},
 	{version: 54, name: "personal-volume-holds", sql: personalVolumeHoldsSQL},
 	{version: 55, name: "agent-resize", sql: agentResizeSQL},
-	{version: 56, name: "llm-operations", sql: llmOperationsSQL},
-	{version: 57, name: "source-credentials", sql: sourceCredentialsSQL},
-	{version: 58, name: "corpus-mounts", sql: corpusMountsSQL},
-	{version: 59, name: "corpus-builds", sql: corpusBuildsSQL},
-	{version: 60, name: "corpus-builder", sql: corpusBuilderSQL},
-	{version: 61, name: "corpus-extensions", sql: corpusExtensionsSQL},
+	{version: 56, name: "invocation-streams", sql: invocationStreamsSQL},
+	{version: 57, name: "llm-operations", sql: llmOperationsSQL},
+	{version: 58, name: "source-credentials", sql: sourceCredentialsSQL},
+	{version: 59, name: "corpus-mounts", sql: corpusMountsSQL},
+	{version: 60, name: "corpus-builds", sql: corpusBuildsSQL},
+	{version: 61, name: "corpus-builder", sql: corpusBuilderSQL},
+	{version: 62, name: "corpus-extensions", sql: corpusExtensionsSQL},
 }
 
 func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error {

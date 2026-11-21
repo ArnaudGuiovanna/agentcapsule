@@ -88,6 +88,9 @@ type ServiceConfig struct {
 	Registry            *ServiceRegistry    `json:"registry,omitempty"`
 	Directory           *ServiceDirectory   `json:"directory,omitempty"`
 	SLIM                *ServiceSLIM        `json:"slim,omitempty"`
+	// OutputStreams bounds the harnesses' output streams (ADR 022); every
+	// key takes its default when absent (DefaultOutputStreams).
+	OutputStreams *ServiceOutputStreams `json:"output_streams,omitempty"`
 	// MetricsListen serves Prometheus metrics at /metrics on a loopback
 	// address (OPS-02); none when empty.
 	MetricsListen string `json:"metrics_listen,omitempty"`
@@ -326,6 +329,9 @@ func (c ServiceConfig) Settings() (runtime.FirecrackerOptions, time.Duration, Ma
 		return r, 0, m, invalid
 	}
 	if _, err := c.Restarts(); err != nil {
+		return r, 0, m, invalid
+	}
+	if _, err := c.OutputStreamBounds(); err != nil {
 		return r, 0, m, invalid
 	}
 	drives, err := c.driveLimits()

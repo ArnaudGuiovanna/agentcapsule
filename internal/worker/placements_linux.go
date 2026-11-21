@@ -54,6 +54,10 @@ type Placements struct {
 	tracing atomic.Pointer[workerTracing]
 	// pressure watches the host's file systems; nil without (OPS-03).
 	pressure atomic.Pointer[StoragePressure]
+	// streams serves the harnesses' output streams; nil without the
+	// transit. streamTelemetry counts them; nil without telemetry.
+	streams         atomic.Pointer[outputStreams]
+	streamTelemetry atomic.Pointer[streamTelemetry]
 	// auditPurgedAt is when the audit trail was last purged (Unix ns).
 	auditPurgedAt atomic.Int64
 	// deliveries stands for the VMs in the load test: it receives the
@@ -175,7 +179,8 @@ func (w *Placements) runtimeOptions(opts runtime.FirecrackerOptions, keys keyaut
 func (w *Placements) platformHandler(host applicationHost, id string, run runtime.VMRun) (http.Handler, error) {
 	identity := capsuleprotocol.Identity{Incarnation: run.Incarnation, AgentID: id, Generation: run.Generation, VMID: run.ID, FenceOnly: run.FenceOnly}
 	api := platformAPI{store: w.store, host: host, caller: controlplane.VMCaller{AgentID: id, HostID: w.hostID, Generation: run.Generation, VMID: run.ID},
-		transit: w.transit.Load, llm: w.llm.Load, directory: w.directory.Load, authority: w.authority, incarnation: run.Incarnation, traces: w.tracing.Load}
+		transit: w.transit.Load, llm: w.llm.Load, directory: w.directory.Load, authority: w.authority, incarnation: run.Incarnation, traces: w.tracing.Load,
+		output: w.streams.Load, streamTelemetry: w.streamTelemetry.Load}
 	return capsuleprotocol.NewPlatformHandler(identity, api)
 }
 

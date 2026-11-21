@@ -94,7 +94,7 @@ func resolveTenant(ctx context.Context, tx pgx.Tx, v delegatedidentity.VerifiedI
 			return current, ErrAuthentication
 		}
 	}
-	o, err := scanOrganization(tx.QueryRow(ctx, `SELECT id,name,status,policy_version,created_at FROM organizations WHERE id=$1 FOR SHARE`, v.TenantID))
+	o, err := scanOrganization(tx.QueryRow(ctx, `SELECT id,name,status,policy_version,created_at FROM organizations WHERE id=$1`+authorityLock(tx, " FOR SHARE"), v.TenantID))
 	if errors.Is(err, ErrNotFound) || (err == nil && o.Status != "active") {
 		return current, ErrAuthentication
 	}
@@ -104,14 +104,14 @@ func resolveTenant(ctx context.Context, tx pgx.Tx, v delegatedidentity.VerifiedI
 	current.Organization = o
 	var status string
 	err = tx.QueryRow(ctx, `SELECT id,display_name,status FROM principals
-        WHERE tenant_id=$1 AND kind='user' AND issuer=$2 AND subject=$3 FOR SHARE`, v.TenantID, v.Issuer, v.Subject).Scan(&current.PrincipalID, &current.DisplayName, &status)
+        WHERE tenant_id=$1 AND kind='user' AND issuer=$2 AND subject=$3`+authorityLock(tx, " FOR SHARE"), v.TenantID, v.Issuer, v.Subject).Scan(&current.PrincipalID, &current.DisplayName, &status)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && status != "active") {
 		return CurrentOrganization{}, ErrAuthentication
 	}
 	if err != nil {
 		return CurrentOrganization{}, err
 	}
-	err = tx.QueryRow(ctx, `SELECT role,status FROM memberships WHERE tenant_id=$1 AND principal_id=$2 FOR SHARE`, v.TenantID, current.PrincipalID).Scan(&current.Role, &status)
+	err = tx.QueryRow(ctx, `SELECT role,status FROM memberships WHERE tenant_id=$1 AND principal_id=$2`+authorityLock(tx, " FOR SHARE"), v.TenantID, current.PrincipalID).Scan(&current.Role, &status)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && status != "active") {
 		return CurrentOrganization{}, ErrAuthentication
 	}
@@ -119,7 +119,7 @@ func resolveTenant(ctx context.Context, tx pgx.Tx, v delegatedidentity.VerifiedI
 		return CurrentOrganization{}, err
 	}
 	var issuer string
-	err = tx.QueryRow(ctx, `SELECT issuer FROM delegation_issuers WHERE tenant_id=$1 AND issuer=$2 FOR SHARE`, v.TenantID, v.Issuer).Scan(&issuer)
+	err = tx.QueryRow(ctx, `SELECT issuer FROM delegation_issuers WHERE tenant_id=$1 AND issuer=$2`+authorityLock(tx, " FOR SHARE"), v.TenantID, v.Issuer).Scan(&issuer)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return CurrentOrganization{}, ErrAuthentication
 	}
@@ -131,7 +131,7 @@ func resolveTenant(ctx context.Context, tx pgx.Tx, v delegatedidentity.VerifiedI
 	var generation int64
 	var held bool
 	err = tx.QueryRow(ctx, `SELECT fingerprint,status,minimum_iat,generation,max_ttl_nanoseconds IS NOT NULL FROM delegation_trusts
-		WHERE tenant_id=$1 AND issuer=$2 AND audience=$3 FOR SHARE`, v.TenantID, v.Issuer, v.Audience).Scan(&fingerprint, &status, &minimum, &generation, &held)
+		WHERE tenant_id=$1 AND issuer=$2 AND audience=$3`+authorityLock(tx, " FOR SHARE"), v.TenantID, v.Issuer, v.Audience).Scan(&fingerprint, &status, &minimum, &generation, &held)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return CurrentOrganization{}, ErrAuthentication
 	}
@@ -148,7 +148,7 @@ func resolveTenant(ctx context.Context, tx pgx.Tx, v delegatedidentity.VerifiedI
 		var keyFingerprint []byte
 		var keyValid bool
 		err = tx.QueryRow(ctx, `SELECT fingerprint,retired_at IS NULL AND (expires_at IS NULL OR expires_at>clock_timestamp()) FROM delegation_keys
-			WHERE tenant_id=$1 AND issuer=$2 AND audience=$3 AND key_id=$4 FOR SHARE`, v.TenantID, v.Issuer, v.Audience, v.KeyID).Scan(&keyFingerprint, &keyValid)
+			WHERE tenant_id=$1 AND issuer=$2 AND audience=$3 AND key_id=$4`+authorityLock(tx, " FOR SHARE"), v.TenantID, v.Issuer, v.Audience, v.KeyID).Scan(&keyFingerprint, &keyValid)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return CurrentOrganization{}, ErrAuthentication
 		}

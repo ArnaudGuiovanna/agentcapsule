@@ -226,6 +226,7 @@ request body.
 | LLM-006 | Sound timeouts, limits and retries | Quota errors explicit; no reboot loop |
 | LLM-007 | Rotate or disable keys without rebuilds | Effective on the next request |
 | LLM-008 | No secret in API, logs, metrics or A2A messages | Redaction tests pass |
+| LLM-009 | Streaming from the provider | First event reaches the harness before generation ends; a cut stays reconcilable, never billed twice |
 
 ### Discovery and inter-agent communication
 
@@ -251,6 +252,7 @@ request body.
 | EXT-001 | Text and structured JSON messages | Invocation works |
 | EXT-002 | Attachments by reference with MIME, size, hash, ACL | Right agent only; cross-tenant refused |
 | EXT-003 | Catalog of capabilities declared by each harness | Matches manifest and policy |
+| EXT-005 | SSE streaming of an invocation's progress | Requester only; deltas in order before the outcome; same outcome as polling |
 | EXT-008 | Admin CLI and HTTP examples | Every MVP feature usable without a UI |
 
 ### Corpora
@@ -282,7 +284,7 @@ forwards a raw Firecracker or shell command to the host.
 
 ## 5. Out of scope for P0
 
-- **P1:** advanced OIDC/SSO; installable signed skills (EXT-004); SSE streaming (EXT-005); outbound webhooks and notifications (EXT-007); priority within an agent's queue ([ADR 007](adr/007-delivery-closure-and-priority.md)); calendar connectors; consistent memory snapshots and warm restore; automatic harness migration and canary rollout; LLM routing and fallback; web console and more SDKs.
+- **P1:** advanced OIDC/SSO; installable signed skills (EXT-004); outbound webhooks and notifications (EXT-007); priority within an agent's queue ([ADR 007](adr/007-delivery-closure-and-priority.md)); calendar connectors; consistent memory snapshots and warm restore; automatic harness migration and canary rollout; LLM routing and fallback; web console and more SDKs.
 - **P1/P2:** large or real-time audio and video (EXT-006).
 - **P2:** multi-node pools and migration; public cross-organization federation; harness marketplace; multi-source event orchestration; advanced cost optimization.
 - **Never in the core:** tutoring or other business logic; a managed SaaS offer; a mandatory graphical client.

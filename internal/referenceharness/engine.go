@@ -41,7 +41,10 @@ type invocationWork struct {
 	Attachments []capsuleprotocol.AttachmentRef `json:"attachments,omitempty"`
 	Alias       string                          `json:"alias,omitempty"`
 	Prompt      string                          `json:"prompt,omitempty"`
-	Result      []capsuleprotocol.TextContent   `json:"result,omitempty"`
+	ModelStream bool                            `json:"model_stream,omitempty"`
+	// Stream is the number of deltas of "/stream <n>" (stream.go).
+	Stream int                           `json:"stream,omitempty"`
+	Result []capsuleprotocol.TextContent `json:"result,omitempty"`
 }
 
 type Engine struct {
@@ -49,13 +52,27 @@ type Engine struct {
 	store    *harnessstore.Store
 	platform Platform
 	mu       sync.Mutex
+	// openStream opens an invocation's output stream; nil when the platform
+	// has none (stream.go). streamPace is the time between two deltas.
+	openStream func(context.Context, string) (outputStream, error)
+	streamPace time.Duration
 }
 
 func New(agent string, store *harnessstore.Store, platform Platform) (*Engine, error) {
 	if agent == "" || store == nil {
 		return nil, capsuleprotocol.ErrProtocol
 	}
-	return &Engine{agent: agent, store: store, platform: platform}, nil
+	e := &Engine{agent: agent, store: store, platform: platform, streamPace: streamPace}
+	if o, ok := platform.(streamOpener); ok {
+		e.openStream = func(ctx context.Context, op string) (outputStream, error) {
+			w, err := o.OpenOutputStream(ctx, op)
+			if err != nil {
+				return nil, err
+			}
+			return w, nil
+		}
+	}
+	return e, nil
 }
 
 const schema = `
@@ -118,18 +135,45 @@ func (h *Engine) Handle(ctx context.Context, e harnessstore.Event, tx harnesssto
 		if err != nil {
 			return nil, err
 		}
-		llm := len(in.Content) == 1 && strings.HasPrefix(in.Content[0].Text, "/llm ")
+		if n, canceled, ok := streamCommand(in); ok {
+			_, working := h.platform.(WorkPlatform)
+			switch {
+			case canceled:
+				ops, err := canceledStreams(ctx, tx)
+				if err != nil {
+					return nil, err
+				}
+				if len(ops) == 0 {
+					return ownerText("No stream was canceled.")
+				}
+				return ownerText("Canceled streams: " + strings.Join(ops, ", ") + ".")
+			case n == 0:
+				return ownerText(fmt.Sprintf("Usage: /stream <1 to %d>, or /stream canceled.", maxStreamDeltas))
+			case h.openStream == nil || !working:
+				return ownerText("The platform channel is unavailable; nothing can be streamed.")
+			}
+			if err = enqueue(ctx, tx, e, work{Kind: "invocation", Invocation: &invocationWork{OperationID: in.OperationID, Stream: n}}); err != nil {
+				return nil, err
+			}
+			// Delivery ends here; the stream and the answer follow from Step.
+			return capsuleprotocol.WorkingResult(), nil
+		}
+		var command, args string
+		if len(in.Content) == 1 {
+			command, args, _ = strings.Cut(in.Content[0].Text, " ")
+		}
+		llm := command == "/llm" || command == "/llm-stream"
 		if llm || len(in.Attachments) > 0 {
 			if _, ok := h.platform.(WorkPlatform); !ok {
 				return ownerText("The platform channel is unavailable; files and model cannot be reached.")
 			}
 			iw := invocationWork{OperationID: in.OperationID, Attachments: in.Attachments}
 			if llm {
-				alias, prompt, _ := strings.Cut(strings.TrimSpace(strings.TrimPrefix(in.Content[0].Text, "/llm ")), " ")
+				alias, prompt, _ := strings.Cut(strings.TrimSpace(args), " ")
 				if alias == "" || strings.TrimSpace(prompt) == "" {
-					return ownerText("Usage: /llm <alias> <text>.")
+					return ownerText("Usage: " + command + " <alias> <text>.")
 				}
-				iw.Alias, iw.Prompt = alias, strings.TrimSpace(prompt)
+				iw.Alias, iw.Prompt, iw.ModelStream = alias, strings.TrimSpace(prompt), command == "/llm-stream"
 			}
 			if err = enqueue(ctx, tx, e, work{Kind: "invocation", Invocation: &iw}); err != nil {
 				return nil, err
@@ -279,6 +323,9 @@ func (h *Engine) Step(ctx context.Context) (bool, error) {
 	timeout := 15 * time.Second
 	if w.Kind == "invocation" {
 		timeout = 4 * time.Minute // attachments and a model call
+		if w.Invocation != nil && w.Invocation.ModelStream {
+			timeout = capsuleprotocol.LLMCallTimeout + 30*time.Second
+		}
 	}
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -308,6 +355,9 @@ func (h *Engine) Step(ctx context.Context) (bool, error) {
 	if err != nil {
 		if ctx.Err() != nil {
 			return true, ctx.Err()
+		}
+		if errors.Is(err, errStreamCanceled) {
+			return true, h.finish(ctx, id, nil, "canceled")
 		}
 		var remote *capsuleprotocol.PlatformError
 		if errors.As(err, &remote) {
@@ -359,7 +409,7 @@ func (h *Engine) completeInvocation(ctx context.Context, id string, subjects []s
 			clear(data)
 		}
 		if iw.Alias != "" {
-			r, err := wp.CompleteLLM(ctx, id+"/llm", capsuleprotocol.LLMRequest{Alias: iw.Alias,
+			r, err := h.modelAnswer(ctx, wp, iw, id+"/llm", capsuleprotocol.LLMRequest{Alias: iw.Alias,
 				Messages: []capsuleprotocol.LLMMessage{{Role: "user", Content: iw.Prompt}}, MaxTokens: 256})
 			switch {
 			case err != nil && transient(err):
@@ -372,6 +422,11 @@ func (h *Engine) completeInvocation(ctx context.Context, id string, subjects []s
 				iw.Result = append(iw.Result, text(r.Text))
 			}
 		}
+		var deltas []string
+		if iw.Stream > 0 {
+			deltas = streamDeltas(iw.Stream)
+			iw.Result = append(iw.Result, text(strings.Join(deltas, "")))
+		}
 		w.Invocation = &iw
 		body, err := json.Marshal(w)
 		if err != nil {
@@ -382,6 +437,13 @@ func (h *Engine) completeInvocation(ctx context.Context, id string, subjects []s
 			return err
 		}); err != nil {
 			return capsuleprotocol.CompletionReceipt{}, err
+		}
+		// Streamed once, before the answer: a retried filing does not stream
+		// again.
+		if len(deltas) > 0 {
+			if err = h.streamOutput(ctx, iw.OperationID, deltas); err != nil {
+				return capsuleprotocol.CompletionReceipt{}, err
+			}
 		}
 	}
 	return wp.CompleteInvocation(ctx, id, capsuleprotocol.InvocationCompletion{OperationID: iw.OperationID, Outcome: "completed", Content: iw.Result})

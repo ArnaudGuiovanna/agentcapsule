@@ -424,6 +424,52 @@ remaining space. A file system that cannot be read counts as past the
 threshold. The disk alerts fire earlier, at 70 % and 80 %
 ([observability.md](observability.md)).
 
+## Output streams
+
+A harness that answered `working` may stream the output of that invocation
+over its platform channel ([ADR 022](adr/022-native-streaming.md),
+[capsule-control.md](guest/capsule-control.md#the-output-stream-post-v1invocationsstream)).
+The worker serves these streams once the transit is configured:
+
+- it coalesces each stream's frames into chunks, and commits each chunk in
+  its own transaction, which checks again the boot, the working state, the
+  due time and the attempt; it acknowledges each stored chunk to the harness;
+- it learns of a cancellation or an outcome through one dedicated PostgreSQL
+  connection per worker process, outside its pool, which listens on the
+  channel `agentcapsule_invocation_stream`; without that connection, each
+  open stream reads its invocation's state every second until the worker has
+  connected again (backoff from 1 to 30 seconds). The harness then receives
+  `cancel` and `closed`;
+- each maintenance pass deletes the chunks whose invocation ended more than
+  `retention` ago, and those of agents being deleted, at most four times
+  `dispatch_batch` (1,000 at most) per pass. A rerun or a replay deletes the
+  old attempt's chunks at once.
+
+Every key is optional; to change one, add to the configuration (every worker
+of a host the same):
+
+```json
+"output_streams": {"coalesce_window": "150ms", "coalesce_bytes": 4096, "max_bytes": 2097152,
+                   "max_frames": 4096, "retention": "10m", "idle_timeout": "60s"}
+```
+
+| Key | Default | Bounds | Meaning |
+|---|---|---|---|
+| `coalesce_window` | `150ms` | 10 ms to 1 s | A chunk is committed this long after its oldest frame at the latest |
+| `coalesce_bytes` | 4096 | 512 to 65,536 | ... or once its frames reach this size; a larger frame is a chunk alone |
+| `max_bytes` | 2097152 (2 MiB) | 64 KiB to 16 MiB | Frames stored per attempt, in their encoded size; then the attempt is truncated |
+| `max_frames` | 4096 | 64 to 65,536 | Frames stored per attempt; then the attempt is truncated |
+| `retention` | `10m` | 1 min to 24 h | How long chunks are kept after the invocation's outcome |
+| `idle_timeout` | `60s` | 10 s to 300 s | A stream with no frame from the harness this long closes `idle` |
+
+A value out of its bounds, or an unknown key, refuses the configuration at
+start (`configuration_invalid`). Each output stream holds one of its VM's 16
+platform channel slots while it is open. PostgreSQL gains about seven commits
+a second per active stream. The metrics are
+`agentcapsule_worker_streams_open`, `agentcapsule_worker_stream_frames_total`
+and `agentcapsule_worker_stream_first_delta_seconds`
+([observability.md](observability.md)).
+
 ## Load test
 
 `scripts/load-test.py` drives the API and the worker against PostgreSQL

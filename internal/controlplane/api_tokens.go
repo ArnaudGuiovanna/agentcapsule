@@ -39,6 +39,9 @@ type Principal struct {
 	app     *appBinding
 }
 
+// IsApplicationMember reports a member authenticated through an application OIDC token.
+func (p Principal) IsApplicationMember() bool { return p.app != nil }
+
 func tokenSecret() string {
 	b := make([]byte, 32)
 	_, _ = rand.Read(b)

@@ -102,7 +102,11 @@ func (s *Store) begin(ctx context.Context) (pgx.Tx, error) {
 // it exclusively, so its current catalogue check cannot race a revocation's
 // intent/census commit. Never upgrade a shared transaction or hold it over RPC.
 func (s *Store) beginCensus(ctx context.Context, exclusive bool) (pgx.Tx, error) {
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	return s.beginWithOptions(ctx, exclusive, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+}
+
+func (s *Store) beginWithOptions(ctx context.Context, exclusive bool, options pgx.TxOptions) (pgx.Tx, error) {
+	tx, err := s.pool.BeginTx(ctx, options)
 	if err != nil {
 		return nil, err
 	}
@@ -161,7 +165,8 @@ var durableTables = []string{"harness_audit", "harness_imports", "attachment_seg
 	"organization_capability_policies", "agent_capability_policies", "capability_audit", "operator_audit", "audit_retention",
 	"authority_reconciliations", "tenant_refusal_audit", "trace_pseudonym_key", "organization_quotas",
 	"source_credentials", "corpus_audit", "corpora", "corpus_builds", "corpus_releases",
-	"agent_corpora", "corpus_review_files", "corpus_review_segments", "corpus_extensions", "corpus_enrichers"}
+	"agent_corpora", "corpus_review_files", "corpus_review_segments", "corpus_extensions", "corpus_enrichers",
+	"invocation_streams", "invocation_stream_chunks"}
 
 // Migrate is explicit; opening a store never changes an existing schema.
 func (s *Store) Migrate(ctx context.Context) error {

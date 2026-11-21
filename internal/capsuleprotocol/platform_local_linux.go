@@ -4,6 +4,7 @@ package capsuleprotocol
 
 import (
 	"context"
+	"io"
 	"net"
 	"net/http"
 )
@@ -50,6 +51,12 @@ func (r remotePlatform) RequestStatus(ctx context.Context, id string) (RequestSt
 	return r.client.RequestStatus(ctx, id)
 }
 
+// openStream relays a stream route to the host (ADR 022): the guest's
+// handler checks and copies its frames one by one.
+func (r remotePlatform) openStream(ctx context.Context, path string, body io.Reader) (*http.Response, error) {
+	return r.client.openStream(ctx, path, body)
+}
+
 // The guest's A2A endpoint reads cards and request states through this bridge.
 var _ PeerAPI = remotePlatform{}
 
@@ -88,4 +95,11 @@ func NewLocalPlatformClient(id Identity, path string) (*PlatformClient, error) {
 		return nil, err
 	}
 	return &PlatformClient{client: c}, nil
+}
+
+func (r remotePlatform) ForwardLLMStream(ctx context.Context, key string, in LLMForward, send func(LLMStreamFrame) error) error {
+	return relayModelStream(r.client.ForwardLLMStream(ctx, key, in), send)
+}
+func (r remotePlatform) CompleteLLMStream(ctx context.Context, key string, in LLMRequest, send func(LLMStreamFrame) error) error {
+	return relayModelStream(r.client.CompleteLLMStream(ctx, key, in), send)
 }
