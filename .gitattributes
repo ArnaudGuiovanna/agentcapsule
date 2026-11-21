@@ -4,3 +4,6 @@ internal/controlplane/migrations/*.sql text eol=lf
 
 # Published evidence is byte-addressed by its manifests; never normalize it.
 quint/evidence/** -text
+
+# Unified-diff context and the Alpine recipe checksums depend on the original bytes.
+deploy/images/openssl/*.patch -text whitespace=-blank-at-eol,-space-before-tab

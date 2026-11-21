@@ -1,0 +1,55 @@
+diff --git a/include/internal/quic_channel.h b/include/internal/quic_channel.h
+--- a/include/internal/quic_channel.h
++++ b/include/internal/quic_channel.h
+@@ -548,6 +548,14 @@ void ossl_quic_channel_set_tcause(QUIC_CHANNEL *ch, uint64_t app_error_code,
+ void ossl_ch_reset_rx_state(QUIC_CHANNEL *ch);
+ uint64_t ossl_quic_channel_get_path_challenge_count(const QUIC_CHANNEL *ch);
+ uint64_t ossl_quic_channel_get_path_response_count(const QUIC_CHANNEL *ch);
++/**
++ * ossl_quic_channel_get_on_new_conn_id_handled() is just for testing purposes
++ * @param ch pointer to channel
++ * @returns number of NEW_CONNECTION_ID frames handled. Handling means
++ * how many RETIRE_CONN_ID frames we dispatched on behalf of reception
++ * of NEW_CONNECTION_ID.
++ */
++uint64_t ossl_quic_channel_get_on_new_conn_id_handled(const QUIC_CHANNEL *ch);
+ #endif
+ 
+ #endif
+diff --git a/ssl/quic/quic_channel.c b/ssl/quic/quic_channel.c
+--- a/ssl/quic/quic_channel.c
++++ b/ssl/quic/quic_channel.c
+@@ -3461,6 +3461,13 @@ void ossl_quic_channel_on_new_conn_id(QUIC_CHANNEL *ch,
+         return;
+     }
+ 
++    /*
++     * do nothing if dealing with older NEW_CONN_ID frame or retransmission.
++     */
++    if (new_remote_seq_num == ch->cur_remote_seq_num)
++        return;
++    ch->on_new_conn_id_handled++;
++
+     if (new_remote_seq_num > ch->cur_remote_seq_num) {
+         /* Add new stateless reset token */
+         if (!ossl_quic_srtm_add(ch->srtm, ch, new_remote_seq_num,
+@@ -4414,3 +4421,8 @@ uint64_t ossl_quic_channel_get_path_response_count(const QUIC_CHANNEL *ch)
+ {
+     return ch->path_response_tx;
+ }
++
++uint64_t ossl_quic_channel_get_on_new_conn_id_handled(const QUIC_CHANNEL *ch)
++{
++    return ch->on_new_conn_id_handled;
++}
+diff --git a/ssl/quic/quic_channel_local.h b/ssl/quic/quic_channel_local.h
+--- a/ssl/quic/quic_channel_local.h
++++ b/ssl/quic/quic_channel_local.h
+@@ -540,6 +540,7 @@ struct quic_channel_st {
+     unsigned int path_challenge_rx;
+     /* number of path response frames sent */
+     unsigned int path_response_tx;
++    uint64_t on_new_conn_id_handled;
+ };
+ 
+ #endif

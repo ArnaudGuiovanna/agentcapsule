@@ -1,0 +1,42 @@
+--- a/APKBUILD
++++ b/APKBUILD
+@@ -4,7 +4,7 @@
+ pkgname=openssl
+ pkgver=3.5.9
+ _abiver=${pkgver%.*.*}
+-pkgrel=1
++pkgrel=20261121
+ pkgdesc="Toolkit for Transport Layer Security (TLS)"
+ url="https://www.openssl.org/"
+ arch="all"
+@@ -24,7 +24,7 @@
+ 	libcrypto$_abiver:_libcrypto
+ 	libssl$_abiver:_libssl
+ 	"
+-source="https://github.com/openssl/openssl/releases/download/openssl-$pkgver/openssl-$pkgver.tar.gz
++source="openssl-$pkgver.tar.gz
+ 	auxv.patch
+ 
+ 	CVE-2026-88822.patch
+@@ -32,6 +32,11 @@
+ 	CVE-2026-95691.patch
+ 	CVE-2026-95692.patch
+ 	CVE-2026-107496.patch
++	107493.patch
++	124709.patch
++	121482.patch
++	107494.patch
++	84786.patch
+ 	"
+ builddir="$srcdir/openssl-$pkgver"
+ 
+@@ -328,4 +333,9 @@
+ 2c9c869d0427b08c1480307583c1803971fb6223e5876dd20f61fd64102f095373fb32f5cc7bbbd2bf62aca82c229d740a95c39d5556ec72fd41f371e4a311b6  CVE-2026-95691.patch
+ f23fa46c18fca5e475286f4a5fe57834ccca8603a34f54ab0032af16d296f82eee6a9614f70aec4632fc9024f6af9ded9f2698693f02b3ade889c9d58d2cbe59  CVE-2026-95692.patch
+ 0bbd1f64e7bc62c8bbba9c85131a51cbfb6f7715156457d575df1e557d649340b8074195860f83be18fe3ed6852111f10053702d72658012f9c3a4c3fd504cea  CVE-2026-107496.patch
++3689514ffa447455bdade7ae712ebabd6858b1a17a959f096940ddf17508a574f94619d925f6036b3e75d581a9ed0187d1cffb2e6e067d81accccdf150c44f3a  107493.patch
++9ee5fbc0598beff58a5e2fde6aeba9eb1409465a991f358e85b8270b3df7cc54f2d3a400d318bb6050e7c438c039d357a6af814f5ee452c4a87aefff62beb732  124709.patch
++d96dc578b066c3d4614d05f7270ef03bc798c32ffc5176f7f7bc12590d158d9eb527989aa5d37147b2ed41412336e35957e8808fd614ff92c141d08cf21b1694  121482.patch
++b7281aa70e4bd4cb66088761f452d11a2e141e94778161727a8720f59e6a302f5c86ececaf53142952a609d5051e0387e7708f8056a4c123775804438d41c268  107494.patch
++a1aefc1b01ffb64ee8c51bc048f11d783c1bd3dade73c261a7f4d460b5a55843541fa6603e988c78e9ab7678068e712cb16ffe8e0ff773e7ab8a1e068244af2d  84786.patch
+ "
