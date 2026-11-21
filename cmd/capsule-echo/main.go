@@ -64,9 +64,13 @@ func run() (result error) {
 	defer func() { result = errors.Join(result, store.Close()) }()
 	var platform referenceharness.Platform
 	if b.PlatformSocket != "" {
-		platform, err = capsuleprotocol.NewLocalPlatformClient(b.Identity, b.PlatformSocket)
+		client, err := capsuleprotocol.NewLocalPlatformClient(b.Identity, b.PlatformSocket)
 		if err != nil {
 			return err
+		}
+		platform = client
+		if mode.modelSlots {
+			platform = slotProbe{PlatformClient: client, id: b.Identity, socket: b.PlatformSocket}
 		}
 	}
 	h, err := referenceharness.New(b.Identity.AgentID, store, platform)

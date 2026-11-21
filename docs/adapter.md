@@ -452,7 +452,9 @@ persisted invocation result. [KVM test](../internal/worker/product_pi_stream_int
 
 The long-model KVM scenario delivered the first fragment before releasing the
 provider to finish its 290-second generation and settled the exact usage once.
-A second KVM scenario restored the volume during an invocation. Its original
+Another KVM scenario kept sixteen model streams open from one boot. Its
+seventeenth call received HTTP 503 with the platform code `unavailable`.
+A separate KVM scenario restored the volume during an invocation. Its original
 SSE subscriber saw the reset, the second attempt's deltas and the final outcome.
 [Long model stream](../internal/worker/product_model_stream_integration_test.go) ·
 [Restore during streaming](../internal/worker/product_restore_stream_integration_test.go).

@@ -43,6 +43,7 @@ REQUIRED_WORKER = {"TestProductWorkerProvisioningAndEncryptedWake", "TestProduct
     "TestProductWorkerTenantAgentsTalkOverA2A", "TestProductWorkerNightlyVolumeArchives", "TestProductWorkerRestoresAgentFromArchive",
     "TestProductWorkerCarriesTheOutputStreamAndTheCancellation",
     "TestProductWorkerCarriesALongModelStreamToTheGuest",
+    "TestProductWorkerBoundsModelStreamsAtSixteen",
     "TestProductRestoreResetsALiveSubscriber",
     "TestProductWorkerBoundsTheGuestTmp", "TestProductWorkerDeliversJSONContent", "TestProductWorkerEnforcesCapabilities",
     "TestProductWorkerDriveCeilingsHoldAgainstAFloodingGuest", "TestProductWorkerStopsBootingAGuestThatCrashesAtBoot",

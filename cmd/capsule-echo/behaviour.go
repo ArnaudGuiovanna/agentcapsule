@@ -49,6 +49,7 @@ type behaviour struct {
 	floodChunk  int
 	fillTmp     int64
 	textOnly    bool
+	modelSlots  bool
 	// hostile names an entry of hostile, started after the first answer.
 	hostile      string
 	neverFiles   bool
@@ -91,6 +92,8 @@ func parseBehaviour(args []string) (behaviour, error) {
 	switch {
 	case len(args) == 0:
 		return behaviour{}, nil
+	case len(args) == 1 && args[0] == "model-stream-slots":
+		return behaviour{modelSlots: true}, nil
 	case len(args) == 1 && args[0] == "crash-at-boot":
 		return behaviour{crashAtBoot: true}, nil
 	case len(args) == 2 && args[0] == "flood-volume":

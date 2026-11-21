@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/capability"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmgateway"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/pgnotify"
@@ -107,5 +108,34 @@ func TestProductWorkerCarriesALongModelStreamToTheGuest(t *testing.T) {
 	var settled int
 	if err := l.db.QueryRow(t.Context(), "SELECT count(*) FROM llm_usage WHERE agent_id=$1 AND state='settled' AND input_tokens=7 AND output_tokens=37", agent).Scan(&settled); err != nil || settled != 1 {
 		t.Fatal("model call settlement", settled, err)
+	}
+}
+
+func TestProductWorkerBoundsModelStreamsAtSixteen(t *testing.T) {
+	l := newRegistryLab(t)
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"held\"}}]}\n\n")
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer func() { upstream.CloseClientConnections(); upstream.Close() }()
+	svc, err := controlplane.NewLLMService(l.accounts, llmgateway.NewForTests(llmgateway.Config{MaxAttempts: 1}, llmgateway.TestOptions{Loopback: true}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = l.worker.EnableLLM(svc); err != nil {
+		t.Fatal(err)
+	}
+	var p controlplane.LLMProvider
+	l.request(l.owner(), "POST", "/v1/llm/providers", "provider", controlplane.CreateLLMProviderInput{Name: "held-streams", Kind: "openai_compatible", BaseURL: upstream.URL, AuthMode: "none"}, 201, &p)
+	l.request(l.owner(), "POST", "/v1/llm/aliases", "alias", controlplane.CreateLLMAliasInput{Alias: "slots", ProviderID: p.ID, UpstreamModel: "held"}, 201, nil)
+	l.publishManifest("1.0.0", "opt/model-slots", &[]string{capability.LLMInvoke}, "model-stream-slots")
+	agent := l.create("slot-probe", "1.0.0").AgentID
+	answer := l.askContent(agent, "slots", []capsuleprotocol.ContentPart{{Type: "text", Text: "/llm slots check"}})
+	if len(answer) != 1 || answer[0].Text != "503 unavailable" || calls.Load() != 16 {
+		t.Fatal("guest observation", answer, "provider calls", calls.Load())
 	}
 }
