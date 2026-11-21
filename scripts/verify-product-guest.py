@@ -135,6 +135,8 @@ def main():
                    help="adapted-agent package directory written by scripts/build-adapted-harness.py (<output>/package)")
     p.add_argument("--a2a-harness", type=Path, required=True,
                    help="a2a-agent package directory written by scripts/build-a2a-harness.py (<output>/package)")
+    p.add_argument("--corpus-builder", type=Path, help="package exported by dagger call corpus-builder for the PostgreSQL/KVM scenario")
+    p.add_argument("--github-corpus-fixture", type=Path, help="JSON metadata of a captured GitHub archive for --corpus-builder")
     p.add_argument("--course-enricher", type=Path, help="package exported by dagger call course-enricher; exercises both microVMs")
     p.add_argument("--pi-harness", type=Path,
                    help="optional pi-agent package written by scripts/build-pi-harness.py (<output>/adapted/package): Pi in a VM on a real model")
@@ -184,6 +186,8 @@ def main():
         if not 8 <= len(pi_api_key.encode()) <= 4096 or any(c.isspace() or ord(c) < 0x20 or ord(c) == 0x7f for c in pi_api_key):
             p.error(f"--pi-api-key-file must hold the key alone, on one line: 8 to 4096 bytes without spaces or control characters "
                     f"(a terminal paste may add ESC[200~ and ESC[201~ around it); it holds {len(pi_api_key.encode())} bytes")
+    if bool(a.corpus_builder) != bool(a.github_corpus_fixture) or a.corpus_builder and not a.pg_bin:
+        p.error("--corpus-builder and --github-corpus-fixture require each other and PostgreSQL")
     if bool(a.pg_bin) != bool(a.pg_user):
         p.error("--pg-bin and --pg-user must be supplied together")
     capacity = None
@@ -378,6 +382,10 @@ def main():
             assert not unlisted, "product worker scenarios this script does not require: " + ", ".join(unlisted)
             required_worker = (REQUIRED_WORKER | (PI_WORKER if a.pi_harness else set()) | (SLIM_WORKER if slim_build else set())
                                | (RCLONE_WORKER if a.rclone else set()))
+            if a.corpus_builder:
+                env["AGENTCAPSULE_KVM_CORPUS_BUILDER"] = str(a.corpus_builder.resolve())
+                env["AGENTCAPSULE_KVM_GITHUB_CORPUS"] = str(a.github_corpus_fixture.resolve())
+                required_worker |= {"TestCorpusBuilderAndConsumerOnKVM"}
             selection = "^(" + "|".join(sorted(required_worker)) + ")$"
             run("worker-integration", [a.go, "tool", "test2json", "-p", "github.com/ArnaudGuiovanna/agentcapsule/internal/worker",
                 out / "product-worker.test", "-test.v", "-test.run=" + selection, "-test.timeout=3600s"], 3660)
