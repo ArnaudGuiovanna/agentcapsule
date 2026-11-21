@@ -236,14 +236,16 @@ func (g corpusGuest) phase(ctx context.Context, j controlplane.CorpusWork) (stri
 // The guest is the sole writer until stopped. The host only reads the output
 // after that point, including on a retry following a worker interruption.
 func (g corpusGuest) stopGuest(ctx context.Context, agent string) error {
-	runs, err := g.w.reconcileAgent(ctx, agent)
-	if err != nil {
-		return err
-	}
-	if run, ok := runs[agent]; ok {
-		return g.w.stop(ctx, agent, run.Generation, false)
-	}
-	return nil
+	return g.w.host.WithBarrier(ctx, agent, func(ctx context.Context) error {
+		runs, err := g.w.reconcileAgent(ctx, agent)
+		if err != nil {
+			return err
+		}
+		if run, ok := runs[agent]; ok {
+			return g.w.quiesceStop(ctx, agent, run.Generation)
+		}
+		return nil
+	})
 }
 func (g corpusGuest) prepareDrives(ctx context.Context, j controlplane.CorpusWork, agent, output string, size int64) error {
 	if err := g.stopGuest(ctx, agent); err != nil {

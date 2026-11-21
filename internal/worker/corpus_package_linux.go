@@ -4,7 +4,6 @@ package worker
 
 import (
 	"context"
-
 	"errors"
 	"io"
 	"os"
@@ -80,6 +79,11 @@ func (g corpusGuest) finishImage(ctx context.Context, j controlplane.CorpusWork,
 		return "unavailable", err
 	}
 	_, err = io.Copy(destination, readerWithContext{ctx, io.NewSectionReader(f, 0, size)})
+	// The confined inspector reopens the inherited descriptor after dropping
+	// to its dedicated UID. The staging directory remains private to the worker.
+	if err == nil {
+		err = destination.Chmod(0o444)
+	}
 	if closeErr := destination.Close(); err == nil {
 		err = closeErr
 	}
