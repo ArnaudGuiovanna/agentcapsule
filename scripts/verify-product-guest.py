@@ -64,9 +64,9 @@ RCLONE_WORKER = {"TestProductWorkerRestoresAgentFromShippedArchiveOnAnotherHost"
 
 
 def declared_worker_tests(worker_dir):
-    """Discover worker product scenarios, including TestProduct…KVM."""
+    """Discover Go tests named TestProduct followed by a capitalized scenario."""
     return {name for path in sorted(worker_dir.glob("*_test.go"))
-            for name in re.findall(r"^func (TestProduct(?:Worker\w+|[A-Z]\w*KVM))\(", path.read_text(), re.M)}
+            for name in re.findall(r"^func (TestProduct[A-Z]\w*)\(", path.read_text(), re.M)}
 
 
 def sha(path):

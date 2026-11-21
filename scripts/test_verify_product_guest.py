@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Unit tests of scripts/verify-product-guest.py's list of worker scenarios.
 
-Every TestProductWorker* test under internal/worker must be required by the
+Every TestProduct* scenario under internal/worker must be required by the
 KVM run, or required when its optional input is given, so that a scenario
 that stops running fails the run instead of going unnoticed.
 """
@@ -30,7 +30,7 @@ class WorkerScenarios(unittest.TestCase):
     def test_conditional_scenarios_stay_conditional(self):
         self.assertFalse(GUEST.REQUIRED_WORKER & (GUEST.PI_WORKER | GUEST.SLIM_WORKER | GUEST.RCLONE_WORKER))
         self.assertEqual(GUEST.RCLONE_WORKER, {"TestProductWorkerRestoresAgentFromShippedArchiveOnAnotherHost"})
-        self.assertEqual(GUEST.PI_WORKER, {"TestProductWorkerTenantRunsPiOnARealModel"})
+        self.assertEqual(GUEST.PI_WORKER, {"TestProductWorkerTenantRunsPiOnARealModel", "TestProductPiStreamsBeforeTheProviderFinishes"})
         self.assertEqual(GUEST.SLIM_WORKER, {"TestProductWorkerTenantAgentsTalkOverSLIM", "TestProductWorkerTenantFlagshipJourney",
                                              "TestProductWorkerDeletionRemovesTheVolumeTheKeyAndTheDirectoryRecord"})
         # The stuck harness's tests need no optional input: every run requires them.
@@ -43,10 +43,11 @@ class WorkerScenarios(unittest.TestCase):
             Path(tmp, "x_integration_test.go").write_text(
                 "package worker\n\nfunc TestProductWorkerSomethingNew(t *testing.T) {}\nfunc TestOther(t *testing.T) {}\n"
                 "func TestProductResourceChangeKVM(t *testing.T) {}\n"
+                "func TestProductLiveStream(t *testing.T) {}\n"
                 "func TestProductionConfiguration(t *testing.T) {}\n"
                 "// func TestProductWorkerCommentedOut(t *testing.T) {}\n")
             Path(tmp, "x.go").write_text("package worker\n\nfunc TestProductWorkerNotATestFile() {}\n")
-            self.assertEqual(GUEST.declared_worker_tests(Path(tmp)), {"TestProductWorkerSomethingNew", "TestProductResourceChangeKVM"})
+            self.assertEqual(GUEST.declared_worker_tests(Path(tmp)), {"TestProductWorkerSomethingNew", "TestProductResourceChangeKVM", "TestProductLiveStream"})
 
 
 def measured(n):
