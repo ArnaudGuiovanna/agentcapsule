@@ -11,7 +11,9 @@ Visible agents are published to a private AGNTCY Directory and searchable by ski
 and an adapted agent reaches the other agents of its organization as A2A agents,
 across a SLIM node through the platform's bridge: an agent finds another by
 its skill, wakes it and gets its answer, also with the Directory or SLIM down
-(gate G2). The 65 functional MVP acceptance criteria are met as of 2026-11-19.
+(gate G2). The 65 functional MVP acceptance criteria passed on 2026-11-19.
+The streaming and corpus work added 11 criteria. All 76 passed local
+qualification on 2026-11-21. [Acceptance matrix](docs/acceptance.md)
 Qualification on real servers, recovery between two physical hosts and
 release validation remain unfinished.
 
@@ -108,7 +110,7 @@ The [acceptance matrix](docs/acceptance.md#corpora) records the evidence for COR
 | COR-03 | Git sources: sealed read-only source credentials, host rules, forge archives pinned by commit, LFS objects by digest, the host never decoding a source (lot 3) | Done | The live forge campaign used private GitHub. GitLab remains outside this campaign. |
 | COR-04 | Extra drives: corpus drives shared by hard link, `corpora.json` and the UUID check in `capsule-init`, guest ABI `agentcapsule-guest/2`, system image features (lot 4) | Done | Five product guest tests passed on KVM on 2026-11-20 |
 | COR-05 | Builder agent: one hidden agent per organization, harness `agentcapsule-corpus-builder`, phases `scan`, `convert`, `package`, conversion cache, the worker's image checks and review bundle (lot 5) | Done | Cold and cached builds passed in a Firecracker guest. |
-| COR-06 | Publication, binding and cache: API, try, publish, deprecate, templates and rollouts, eviction of unpinned images, corpus quotas, RBAC and audit (lot 6) | In progress | The publication and three-VM rollout passed. Final cache eviction is in qualification. |
+| COR-06 | Publication, binding and cache: API, try, publish, deprecate, templates and rollouts, eviction of unpinned images, corpus quotas, RBAC and audit (lot 6) | Done | Three running guests kept deprecated v3 in cache after all database bindings moved to v4. The next collection after the rollout evicted v3. |
 | COR-07 | CLI and documentation, offline Go and Python readers, optional MCP tools and signed enrichers. [Corpus API](docs/api/corpora.md) | Done | — |
 
 ## Interoperability

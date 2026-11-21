@@ -113,7 +113,11 @@ agentcapsule self update
 - **Invocations**: idempotent admission, per-agent FIFO delivery, TTLs, queue limits,
   dead letters, scheduled invocations, idle closure, and private results that only
   the requester can read. Agents that need to call the platform answer `working` and
-  post their result later.
+  post their result later. A requester can follow text and progress over SSE and
+  resume from the last event after a disconnect.
+- **Corpora.** Build documents from a pinned Git commit, review and publish the
+  version, then mount it read-only in multiple agents. Harnesses in any language
+  can read the Markdown files or query the SQLite index. [Corpus format](docs/corpus.md)
 - **Attachments**: files up to 8 MiB, encrypted per segment, usable once by their
   uploader, readable from the guest while the invocation runs, purged afterwards.
 - **Limits**:

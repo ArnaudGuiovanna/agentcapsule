@@ -21,14 +21,14 @@ Les sections de conception décrivent le point de départ et les choix du chanti
 | 0. Contrats, ADR 023, modèle Quint | ADR 023, contrats et modèle de cycle de vie validés. |
 | 1. Formats et paquet | Le lint du dépôt et la fabrication reproductible de l’image ext4 sont validés. |
 | 2. Passerelle multimodale | Les services locaux ont lu le scan Orion avec Tesseract, transcrit la phrase française avec Whisper et renvoyé deux vecteurs de 384 dimensions avec Ollama. |
-| 3. Sources Git | Le worker a téléchargé et vérifié l’archive d’un dépôt privé GitHub épinglé par SHA. Les objets LFS ont été contrôlés dans la recette mixte. La recette des forges du 21 novembre porte sur GitHub. |
+| 3. Sources Git | Le worker a résolu `main` sur le dépôt privé GitHub Orion, téléchargé l’archive et vérifié le SHA et les octets. Le second build a demandé ce même commit. Les objets LFS ont été contrôlés dans la recette mixte. |
 | 4. Disques supplémentaires et montage dans l’invité | Les tests KVM vérifient les montages en lecture seule, le partage d’inode, l’ordre des disques, le contrôle de l’UUID et la compatibilité de la base 1. |
-| 5. Agent de construction | La release Dagger a converti le PDF Orion dans une VM de construction privée. Le second build réutilise son cache et produit la même image. |
-| 6. Publication, liaison et cache | L’API a permis l’essai avant publication. Trois VM ont lu la même image après publication, liaison au template et rollout. |
-| 7. CLI et documentation | Le CLI déclare un dépôt, lance la construction, suit son état, exporte l’index, lit le rapport, essaie et publie la version. |
+| 5. Agent de construction | Le builder privé a converti le PDF Orion et produit la même image au second passage. Sur le corpus multimédia, une page d’OCR et cinq secondes de transcription ont totalisé 3 500 micro-unités dans la construction et le relevé de l’organisation. Le second passage a utilisé le cache sans nouvel appel. |
+| 6. Publication, liaison et cache | L’API a permis l’essai avant publication. Trois VM ont maintenu la v3 dépréciée dans le cache après le passage des liaisons en base à la v4. La collecte a retiré la v3 après le redémarrage du dernier lecteur sur la v4. |
+| 7. CLI et documentation | Le CLI a suivi le début et la fin du traitement du PDF avant l’empaquetage. Après le passage en revue, un deuxième administrateur a repris le flux depuis le premier événement et reçu la fin du traitement. |
 | 8. SDK et adaptateur | Les lecteurs Go, Python et MCP retrouvent le même passage et le même localisateur dans le fichier SQLite en lecture seule. |
 | 9. Enrichisseurs | L’enrichisseur Go signé a produit une extension autorisée par l’API. Trois VM ont partagé la base et l’extension après le rollout. |
-| 10. Recette | Le corpus mixte couvre huit fichiers. Modifier le CSV a réutilisé les sept autres conversions. Trois agents Pi ont chacun cité le code Orion en page 1 et la température en page 2. |
+| 10. Recette | Modifier le CSV a réutilisé les sept autres conversions du corpus mixte. Trois agents Pi ont chacun cité le code Orion en page 1 et la température en page 2. Dans l’essai de charge, trois VM ont chacune lu et vérifié 2 818 829 514 octets d’une image ext4 partagée de 3 Gio, en 49 secondes au total. |
 
 ## 1. Parcours à livrer
 
