@@ -450,7 +450,9 @@ by Python) **does not change**: a harness discovers its corpora by listing
 - Its volume (`corpus.builder.volume_mib`) is the **conversion cache**, keyed
   by `sha256(file) + builder version + options`, so a rebuild converts only
   the files that changed. It is archived and restored as any agent's volume.
-- Its capabilities: `llm.invoke` only. Its invocations come from an internal
+- The builder requests `llm.invoke` for conversions that use a model and
+  `stream.output` for per-file progress. The organization's capability
+  policy applies to both. Its invocations come from an internal
   technical account of the organization, `corpus-builder`, created with it,
   never listed, with no token, assigned `invoke` and `read_content` on the
   builder only.
