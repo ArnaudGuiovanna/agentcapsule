@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpusmeta"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/ext4image"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/sandbox"
 )
@@ -23,23 +24,23 @@ const MaxDirectories = 100000
 // the image read-only.
 func CheckImage(f io.ReaderAt, size, max int64, uuid string) error {
 	if size < MinImageBytes || size > max || size%BlockSize != 0 {
-		return invalid("corpus.ext4 size")
+		return corpusmeta.Invalid("corpus.ext4 size")
 	}
 	s, err := ext4image.ReadSuperblock(f, size)
 	if err != nil {
-		return invalid("corpus.ext4 %s", err.(*ext4image.SuperblockError).Reason)
+		return corpusmeta.Invalid("corpus.ext4 %s", err.(*ext4image.SuperblockError).Reason)
 	}
 	switch {
 	case s.BlockSize != BlockSize || s.Blocks*s.BlockSize != size:
-		return invalid("corpus.ext4 does not fill its file with 4 KiB blocks")
+		return corpusmeta.Invalid("corpus.ext4 does not fill its file with 4 KiB blocks")
 	case s.UUID != uuid:
-		return invalid("corpus.ext4 UUID is not the build's")
+		return corpusmeta.Invalid("corpus.ext4 UUID is not the build's")
 	case s.Label != Label:
-		return invalid("corpus.ext4 label")
+		return corpusmeta.Invalid("corpus.ext4 label")
 	case s.State != 1:
-		return invalid("corpus.ext4 was not cleanly made")
+		return corpusmeta.Invalid("corpus.ext4 was not cleanly made")
 	case s.Compat&^allowedCompat != 0 || s.Incompat&^allowedIncompat != 0 || s.ROCompat&^allowedROCompat != 0:
-		return invalid("corpus.ext4 has features a corpus image does not use")
+		return corpusmeta.Invalid("corpus.ext4 has features a corpus image does not use")
 	}
 	return nil
 }
@@ -66,16 +67,16 @@ func inspectImage(ctx context.Context, image string, sb sandbox.Options, base bo
 		return err
 	}
 	if base {
-		for _, f := range RequiredFiles {
+		for _, f := range corpusmeta.RequiredFiles {
 			e, found, err := ext4image.Stat(ctx, sb, debugfs, image, "/"+f)
 			if err != nil {
 				return err
 			}
 			if !found || !e.IsRegular() {
-				return invalid("corpus.ext4 lacks %s", f)
+				return corpusmeta.Invalid("corpus.ext4 lacks %s", f)
 			}
-			if f == IndexFile && e.Size > MaxIndexBytes {
-				return invalid("INDEX.md is larger than %d bytes", MaxIndexBytes)
+			if f == corpusmeta.IndexFile && e.Size > corpusmeta.MaxIndexBytes {
+				return corpusmeta.Invalid("INDEX.md is larger than %d bytes", corpusmeta.MaxIndexBytes)
 			}
 		}
 	}
@@ -83,31 +84,31 @@ func inspectImage(ctx context.Context, image string, sb sandbox.Options, base bo
 	seen := map[uint64]bool{2: true} // the root directory's inode
 	for listed := 0; len(queue) > 0; listed++ {
 		if listed == MaxDirectories {
-			return invalid("corpus.ext4 has more than %d directories", MaxDirectories)
+			return corpusmeta.Invalid("corpus.ext4 has more than %d directories", MaxDirectories)
 		}
 		dir := queue[0]
 		queue = queue[1:]
 		entries, err := ext4image.List(ctx, sb, debugfs, image, dir)
 		if err != nil {
-			return invalid("corpus.ext4 has a directory debugfs cannot list: %v", err)
+			return corpusmeta.Invalid("corpus.ext4 has a directory debugfs cannot list: %v", err)
 		}
-		if base && dir == "/"+ExtDir && len(entries) > 0 {
-			return invalid("ext/ is reserved for enrichers and must be empty")
+		if base && dir == "/"+corpusmeta.ExtDir && len(entries) > 0 {
+			return corpusmeta.Invalid("ext/ is reserved for enrichers and must be empty")
 		}
 		for _, e := range entries {
 			switch {
 			case len(e.Name) > MaxNameBytes:
-				return invalid("corpus.ext4 has a name longer than %d bytes", MaxNameBytes)
+				return corpusmeta.Invalid("corpus.ext4 has a name longer than %d bytes", MaxNameBytes)
 			case e.Mode&ext4image.SetID != 0:
-				return invalid("corpus.ext4 has a setuid or setgid file")
+				return corpusmeta.Invalid("corpus.ext4 has a setuid or setgid file")
 			case e.IsDir():
 				if seen[e.Inode] {
-					return invalid("corpus.ext4 reaches a directory twice")
+					return corpusmeta.Invalid("corpus.ext4 reaches a directory twice")
 				}
 				seen[e.Inode] = true
 				queue = append(queue, path.Join(dir, e.Name))
 			case !e.IsRegular():
-				return invalid("corpus.ext4 holds a symbolic link or a special file")
+				return corpusmeta.Invalid("corpus.ext4 holds a symbolic link or a special file")
 			}
 		}
 	}

@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpusmeta"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/ext4image"
 )
 
@@ -49,7 +50,7 @@ type tree struct {
 // layout, and returns the image's size. dir must hold only directories and
 // regular files, each path once (no hard link between two of its paths),
 // with printable names of at most 255 bytes, the required files
-// (RequiredFiles, INDEX.md at most 64 KiB) and an empty or absent ext/. The
+// (corpusmeta.RequiredFiles, INDEX.md at most 64 KiB) and an empty or absent ext/. The
 // image is reproducible: every directory gets mode 0755, every file 0644,
 // owner root and the times 1; its UUID and directory hash seed are uuid
 // (ImageUUID); its size, block size, inode count and features are functions
@@ -71,8 +72,8 @@ func BuildExtensionImage(ctx context.Context, dir, out, uuid string, maxBytes in
 }
 
 func buildImage(ctx context.Context, dir, out, uuid string, maxBytes int64, base bool) (int64, error) {
-	if !ValidUUID(uuid) {
-		return 0, invalid("the image UUID")
+	if !corpusmeta.ValidUUID(uuid) {
+		return 0, corpusmeta.Invalid("the image UUID")
 	}
 	t, err := readTree(dir, base)
 	if err != nil {
@@ -119,13 +120,13 @@ func readTree(dir string, base bool) (tree, error) {
 		}
 		if rel == "." {
 			if !d.IsDir() {
-				return invalid("the layout must be a directory")
+				return corpusmeta.Invalid("the layout must be a directory")
 			}
 			return nil
 		}
 		name := d.Name()
 		if !ext4image.Printable(name) || len(name) > MaxNameBytes {
-			return invalid("a file name of the layout is not printable UTF-8 of at most 255 bytes")
+			return corpusmeta.Invalid("a file name of the layout is not printable UTF-8 of at most 255 bytes")
 		}
 		ip := "/" + filepath.ToSlash(rel)
 		parent := filepath.ToSlash(filepath.Dir(ip))
@@ -136,16 +137,16 @@ func readTree(dir string, base bool) (tree, error) {
 		}
 		switch {
 		case d.IsDir():
-			if base && ip == "/"+ExtDir {
+			if base && ip == "/"+corpusmeta.ExtDir {
 				if list, err := os.ReadDir(p); err != nil || len(list) > 0 {
-					return invalid("ext/ is reserved for enrichers and must be empty")
+					return corpusmeta.Invalid("ext/ is reserved for enrichers and must be empty")
 				}
 			}
 			t.modes[ip] = ext4image.TypeDir | 0o755
 		case d.Type().IsRegular():
 			if key, linked := inodeKey(info); linked {
 				if links[key] {
-					return invalid("two paths of the layout are the same file (a hard link)")
+					return corpusmeta.Invalid("two paths of the layout are the same file (a hard link)")
 				}
 				links[key] = true
 			}
@@ -157,7 +158,7 @@ func readTree(dir string, base bool) (tree, error) {
 				t.blocks += 1 + blocks/(32768*340)
 			}
 		default:
-			return invalid("the layout holds a symbolic link or a special file; it may hold only directories and regular files")
+			return corpusmeta.Invalid("the layout holds a symbolic link or a special file; it may hold only directories and regular files")
 		}
 		t.paths = append(t.paths, ip)
 		return nil
@@ -172,13 +173,13 @@ func readTree(dir string, base bool) (tree, error) {
 	if !base {
 		return t, nil
 	}
-	for _, f := range RequiredFiles {
+	for _, f := range corpusmeta.RequiredFiles {
 		info, err := os.Lstat(filepath.Join(dir, filepath.FromSlash(f)))
 		if err != nil || !info.Mode().IsRegular() {
-			return tree{}, invalid("the layout lacks %s", f)
+			return tree{}, corpusmeta.Invalid("the layout lacks %s", f)
 		}
-		if f == IndexFile && info.Size() > MaxIndexBytes {
-			return tree{}, invalid("INDEX.md is larger than %d bytes", MaxIndexBytes)
+		if f == corpusmeta.IndexFile && info.Size() > corpusmeta.MaxIndexBytes {
+			return tree{}, corpusmeta.Invalid("INDEX.md is larger than %d bytes", corpusmeta.MaxIndexBytes)
 		}
 	}
 	return t, nil

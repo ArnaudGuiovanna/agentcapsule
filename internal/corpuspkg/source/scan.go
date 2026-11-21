@@ -9,6 +9,8 @@ import (
 	"path"
 	"slices"
 	"strings"
+
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpusmeta"
 )
 
 // Reasons a file is not kept.
@@ -172,7 +174,7 @@ func Scan(fsys fs.FS, o Options) (Result, error) {
 			ignore(p, ReasonSymlink, "")
 		case !d.Type().IsRegular():
 			ignore(p, ReasonSpecial, "")
-		case !ValidPath(p):
+		case !corpusmeta.ValidPath(p):
 			ignore(p, ReasonInvalidName, "")
 		default:
 			info, err := d.Info()
@@ -245,15 +247,15 @@ func Scan(fsys fs.FS, o Options) (Result, error) {
 		}
 	}
 	for i, d := range m.Documents {
-		if ValidPath(d.Path) && !kept[d.Path] {
+		if corpusmeta.ValidPath(d.Path) && !kept[d.Path] {
 			r.Errors = append(r.Errors, &Error{CodeDocumentMissing, fmt.Sprintf("documents[%d].path", i), d.Path + " is not a file this build keeps"})
 		}
 	}
 	for i, c := range m.Corrections {
-		if ValidPath(c.Path) && !kept[c.Path] {
+		if corpusmeta.ValidPath(c.Path) && !kept[c.Path] {
 			r.Errors = append(r.Errors, &Error{CodeDocumentMissing, fmt.Sprintf("corrections[%d].path", i), c.Path + " is not a file this build keeps"})
 		}
-		if found, listed := corrections[c.Markdown]; listed && !found && ValidPath(c.Markdown) {
+		if found, listed := corrections[c.Markdown]; listed && !found && corpusmeta.ValidPath(c.Markdown) {
 			r.Errors = append(r.Errors, &Error{CodeCorrectionMissing, fmt.Sprintf("corrections[%d].markdown", i), c.Markdown + " is not a regular file of the corpus"})
 		}
 	}

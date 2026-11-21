@@ -12,15 +12,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpuspkg"
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpuspkg/source"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpusmeta"
 )
 
 func TestDemoGeneratesNotionsAndExercisesFromTheReviewedCourse(t *testing.T) {
 	dir := t.TempDir()
 	q := request{Schema: schema, Name: "tutor", Mount: "/corpus/base", BuildID: "cbd_" + strings.Repeat("a", 32), UUID: "11111111-1111-1111-1111-111111111111"}
 	q.Output.Bytes = 16 << 20
-	info := corpuspkg.Info{Schema: corpuspkg.Schema, Name: "maths", Title: "Mathématiques", BuildID: q.BuildID, Commit: strings.Repeat("a", 40), Builder: "builder@1", Languages: []string{"fr"}, Modalities: []string{"text"}, Tokens: 3, Documents: []corpuspkg.InfoEntry{{ID: "d1", Path: "fractions.md", Title: "Les fractions", Kind: source.KindText, Tokens: 3}}}
+	info := corpusmeta.Info{Schema: corpusmeta.Schema, Name: "maths", Title: "Mathématiques", BuildID: q.BuildID, Commit: strings.Repeat("a", 40), Builder: "builder@1", Languages: []string{"fr"}, Modalities: []string{"text"}, Tokens: 3, Documents: []corpusmeta.InfoEntry{{ID: "d1", Path: "fractions.md", Title: "Les fractions", Kind: corpusmeta.KindText, Tokens: 3}}}
 	raw, err := json.Marshal(info)
 	if err != nil {
 		t.Fatal(err)

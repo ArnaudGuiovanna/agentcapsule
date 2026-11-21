@@ -1,6 +1,5 @@
-// Package corpuspkg defines the published side of a corpus (ADR 023 §2): the
-// layout agentcapsule.corpus/v1 an image holds, the build report, the
-// reproducible image a builder makes from that layout, the checks the host
+// Package corpuspkg handles corpus images (ADR 023 §2): the reproducible
+// image a builder makes from a corpusmeta layout, the checks the host
 // makes on an image without mounting it, and the host package the worker
 // keeps in its cache.
 //
@@ -19,7 +18,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -27,12 +25,11 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpusmeta"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/harnesspkg"
 )
 
 const (
-	// Schema names the published layout and the host package's manifest.
-	Schema = "agentcapsule.corpus/v1"
 	// GuestBase is the guest ABI that mounts corpora under /corpus.
 	GuestBase = "agentcapsule-guest/2"
 
@@ -43,15 +40,6 @@ const (
 	MaxManifestBytes  = 16 << 10
 	MaxChecksumsBytes = 16 << 10
 )
-
-// ErrInvalid: an image, a package or a document of the layout is malformed
-// or tampered with. The message names the failed check, never a file's
-// contents or a path the image chose.
-var ErrInvalid = errors.New("invalid corpus")
-
-func invalid(format string, args ...any) error {
-	return fmt.Errorf("%w: %s", ErrInvalid, fmt.Sprintf(format, args...))
-}
 
 // Builder names the builder release that made an image.
 type Builder struct {
@@ -76,22 +64,22 @@ type PackageManifest struct {
 
 func (m PackageManifest) Validate() error {
 	switch {
-	case m.Schema != Schema:
-		return invalid("corpus.yaml schema must be %s", Schema)
-	case !ValidName(m.Name):
-		return invalid("corpus.yaml name")
-	case !ValidID("cbd", m.BuildID):
-		return invalid("corpus.yaml build_id")
-	case !ValidCommit(m.Commit):
-		return invalid("corpus.yaml commit")
+	case m.Schema != corpusmeta.Schema:
+		return corpusmeta.Invalid("corpus.yaml schema must be %s", corpusmeta.Schema)
+	case !corpusmeta.ValidName(m.Name):
+		return corpusmeta.Invalid("corpus.yaml name")
+	case !corpusmeta.ValidID("cbd", m.BuildID):
+		return corpusmeta.Invalid("corpus.yaml build_id")
+	case !corpusmeta.ValidCommit(m.Commit):
+		return corpusmeta.Invalid("corpus.yaml commit")
 	case !harnesspkg.CatalogName(m.Builder.Name) || !harnesspkg.CatalogName(m.Builder.Version) || !harnesspkg.ValidDigest(m.Builder.Digest):
-		return invalid("corpus.yaml builder")
+		return corpusmeta.Invalid("corpus.yaml builder")
 	case m.Base != GuestBase:
-		return invalid("corpus.yaml base must be %s", GuestBase)
-	case !ValidUUID(m.UUID):
-		return invalid("corpus.yaml uuid")
+		return corpusmeta.Invalid("corpus.yaml base must be %s", GuestBase)
+	case !corpusmeta.ValidUUID(m.UUID):
+		return corpusmeta.Invalid("corpus.yaml uuid")
 	case m.Bytes < MinImageBytes || m.Bytes%4096 != 0:
-		return invalid("corpus.yaml bytes")
+		return corpusmeta.Invalid("corpus.yaml bytes")
 	}
 	return nil
 }
@@ -101,16 +89,16 @@ func (m PackageManifest) Validate() error {
 func ParsePackageManifest(b []byte) (PackageManifest, error) {
 	var m PackageManifest
 	if len(b) == 0 || len(b) > MaxManifestBytes || !utf8.Valid(b) {
-		return m, invalid("corpus.yaml size or encoding")
+		return m, corpusmeta.Invalid("corpus.yaml size or encoding")
 	}
 	d := yaml.NewDecoder(bytes.NewReader(b))
 	d.KnownFields(true)
 	if err := d.Decode(&m); err != nil {
-		return PackageManifest{}, invalid("corpus.yaml does not parse")
+		return PackageManifest{}, corpusmeta.Invalid("corpus.yaml does not parse")
 	}
 	var extra any
 	if err := d.Decode(&extra); !errors.Is(err, io.EOF) {
-		return PackageManifest{}, invalid("corpus.yaml has more than one document")
+		return PackageManifest{}, corpusmeta.Invalid("corpus.yaml has more than one document")
 	}
 	return m, m.Validate()
 }
@@ -123,18 +111,18 @@ type Checksums struct {
 func ParseChecksums(b []byte) (Checksums, error) {
 	var c Checksums
 	if len(b) == 0 || len(b) > MaxChecksumsBytes {
-		return c, invalid("checksums.json size")
+		return c, corpusmeta.Invalid("checksums.json size")
 	}
 	d := json.NewDecoder(bytes.NewReader(b))
 	d.DisallowUnknownFields()
 	if err := d.Decode(&c); err != nil {
-		return Checksums{}, invalid("checksums.json does not parse")
+		return Checksums{}, corpusmeta.Invalid("checksums.json does not parse")
 	}
 	if d.More() {
-		return Checksums{}, invalid("checksums.json has trailing data")
+		return Checksums{}, corpusmeta.Invalid("checksums.json has trailing data")
 	}
 	if len(c.Files) != 2 || !harnesspkg.ValidDigest(c.Files[ManifestFile]) || !harnesspkg.ValidDigest(c.Files[ImageFile]) {
-		return Checksums{}, invalid("checksums.json must list corpus.yaml and corpus.ext4")
+		return Checksums{}, corpusmeta.Invalid("checksums.json must list corpus.yaml and corpus.ext4")
 	}
 	return c, nil
 }
@@ -158,7 +146,7 @@ func WritePackage(dir string, m PackageManifest, maxBytes int64) (string, error)
 		return "", err
 	}
 	if st.Size() != m.Bytes {
-		return "", invalid("corpus.yaml bytes differ from corpus.ext4")
+		return "", corpusmeta.Invalid("corpus.yaml bytes differ from corpus.ext4")
 	}
 	if err = CheckImage(f, st.Size(), maxBytes, m.UUID); err != nil {
 		return "", err
@@ -197,7 +185,7 @@ func ReadPackage(dir string, maxBytes int64) (PackageManifest, string, error) {
 		defer f.Close()
 		b, err := io.ReadAll(io.LimitReader(f, max+1))
 		if err == nil && int64(len(b)) > max {
-			err = invalid("%s size", name)
+			err = corpusmeta.Invalid("%s size", name)
 		}
 		return b, err
 	}
@@ -218,7 +206,7 @@ func ReadPackage(dir string, maxBytes int64) (PackageManifest, string, error) {
 		return PackageManifest{}, "", err
 	}
 	if sums.Files[ManifestFile] != harnesspkg.Digest(raw) {
-		return PackageManifest{}, "", invalid("corpus.yaml does not match checksums.json")
+		return PackageManifest{}, "", corpusmeta.Invalid("corpus.yaml does not match checksums.json")
 	}
 	f, err := os.Open(filepath.Join(dir, ImageFile))
 	if err != nil {
@@ -230,7 +218,7 @@ func ReadPackage(dir string, maxBytes int64) (PackageManifest, string, error) {
 		return PackageManifest{}, "", err
 	}
 	if !st.Mode().IsRegular() || st.Size() != m.Bytes {
-		return PackageManifest{}, "", invalid("corpus.ext4 is not the size corpus.yaml gives")
+		return PackageManifest{}, "", corpusmeta.Invalid("corpus.ext4 is not the size corpus.yaml gives")
 	}
 	if err = CheckImage(f, st.Size(), maxBytes, m.UUID); err != nil {
 		return PackageManifest{}, "", err
@@ -240,7 +228,7 @@ func ReadPackage(dir string, maxBytes int64) (PackageManifest, string, error) {
 		return PackageManifest{}, "", err
 	}
 	if digest != sums.Files[ImageFile] {
-		return PackageManifest{}, "", invalid("corpus.ext4 does not match checksums.json")
+		return PackageManifest{}, "", corpusmeta.Invalid("corpus.ext4 does not match checksums.json")
 	}
 	return m, digest, nil
 }

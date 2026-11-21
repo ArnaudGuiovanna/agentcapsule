@@ -5,13 +5,13 @@ package worker
 import (
 	"context"
 	"errors"
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpuspkg"
 	"os"
 	"path/filepath"
 	"slices"
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpusmeta"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/runtime"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/volumearchive"
 )
@@ -203,7 +203,7 @@ func (g GarbageCollection) cleanCorpusStaging(ctx context.Context, dry bool, out
 		return err
 	}
 	for _, e := range entries {
-		if !e.IsDir() || !buildID.MatchString(e.Name()) && !corpuspkg.ValidID("cex", e.Name()) {
+		if !e.IsDir() || !buildID.MatchString(e.Name()) && !corpusmeta.ValidID("cex", e.Name()) {
 			continue
 		}
 		done, err := g.Store.CorpusStagingFinished(ctx, g.HostID, e.Name())

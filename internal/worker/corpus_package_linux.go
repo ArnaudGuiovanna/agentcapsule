@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpusmeta"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpuspkg"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/ext4image"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/sandbox"
@@ -101,7 +102,7 @@ func (g corpusGuest) finishImage(ctx context.Context, j controlplane.CorpusWork,
 	if err != nil {
 		return "invalid_image", err
 	}
-	manifest := corpuspkg.PackageManifest{Schema: corpuspkg.Schema, Name: j.Name, BuildID: j.ID, Commit: j.Commit, Builder: corpuspkg.Builder{Name: name, Version: version, Digest: builderDigest}, Base: corpuspkg.GuestBase, UUID: uuid, Bytes: size}
+	manifest := corpuspkg.PackageManifest{Schema: corpusmeta.Schema, Name: j.Name, BuildID: j.ID, Commit: j.Commit, Builder: corpuspkg.Builder{Name: name, Version: version, Digest: builderDigest}, Base: corpuspkg.GuestBase, UUID: uuid, Bytes: size}
 	digest, err := corpuspkg.WritePackage(tmp, manifest, maxBytes)
 	if err != nil {
 		return "invalid_image", err
@@ -154,7 +155,7 @@ func (g corpusGuest) readCorpusReview(ctx context.Context, j controlplane.Corpus
 	if err != nil {
 		return nil, false, err
 	}
-	info, err := corpuspkg.ParseInfo(metadata)
+	info, err := corpusmeta.ParseInfo(metadata)
 	if err != nil || info.Name != j.Name || info.Commit != j.Commit || info.Builder != j.Builder || info.SourcePath != j.Path {
 		return nil, false, controlplane.ErrInput
 	}
@@ -166,7 +167,7 @@ func (g corpusGuest) readCorpusReview(ctx context.Context, j controlplane.Corpus
 	if err != nil {
 		return nil, false, err
 	}
-	report, err := corpuspkg.ParseReport(raw)
+	report, err := corpusmeta.ParseReport(raw)
 	if err != nil || report.Commit != j.Commit {
 		return nil, false, controlplane.ErrInput
 	}

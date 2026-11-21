@@ -15,6 +15,7 @@ import (
 	"syscall"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpusbuilder"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpusmeta"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpuspkg"
 )
 
@@ -61,7 +62,7 @@ func run(ctx context.Context, args []string, input io.Reader) (any, error) {
 		if err = decode(raw, &req); err != nil {
 			return nil, err
 		}
-		if req.Schema != corpusbuilder.Schema || req.Phase != "package" || !corpuspkg.ValidID("cbd", req.BuildID) || !corpuspkg.ValidUUID(req.UUID) || req.Output.Bytes <= 0 {
+		if req.Schema != corpusbuilder.Schema || req.Phase != "package" || !corpusmeta.ValidID("cbd", req.BuildID) || !corpusmeta.ValidUUID(req.UUID) || req.Output.Bytes <= 0 {
 			return nil, errors.New("invalid package request")
 		}
 		dir := filepath.Join(g.DataDir, "builds", req.BuildID)
@@ -70,19 +71,19 @@ func run(ctx context.Context, args []string, input io.Reader) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		report, err := corpuspkg.ParseReport(raw)
+		report, err := corpusmeta.ParseReport(raw)
 		if err != nil || report.BuildID != req.BuildID {
 			return nil, errors.New("invalid execution report")
 		}
-		encoded, err := os.ReadFile(filepath.Join(layout, corpuspkg.InfoFile))
+		encoded, err := os.ReadFile(filepath.Join(layout, corpusmeta.InfoFile))
 		if err != nil {
 			return nil, err
 		}
-		info, err := corpuspkg.ParseInfo(encoded)
+		info, err := corpusmeta.ParseInfo(encoded)
 		if err != nil || info.Commit != report.Commit || info.Tokens != report.Totals.Tokens {
 			return nil, errors.New("invalid corpus info")
 		}
-		index, err := os.ReadFile(filepath.Join(layout, corpuspkg.IndexFile))
+		index, err := os.ReadFile(filepath.Join(layout, corpusmeta.IndexFile))
 		if err != nil {
 			return nil, err
 		}

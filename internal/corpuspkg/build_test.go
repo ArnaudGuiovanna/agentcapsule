@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpusmeta"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/harnesspkg"
 )
 
@@ -21,11 +22,11 @@ const testUUID = "1b4e28ba-2fa1-4d3b-a3f5-ef19b5a7633b"
 // layout returns the files of a small published layout, by path.
 func layout() map[string]string {
 	files := map[string]string{
-		InfoFile:                   `{"schema":"agentcapsule.corpus/v1"}`,
-		IndexFile:                  "# Finance\n\n- [Chapter 1](docs/d1/README.md)\n",
-		SearchFile:                 strings.Repeat("SQLite format 3\x00", 300),
-		ReportFile:                 `{"schema":"agentcapsule.corpus-report/v1"}`,
-		GlossaryFile:               "# Glossary\n",
+		corpusmeta.InfoFile:        `{"schema":"agentcapsule.corpus/v1"}`,
+		corpusmeta.IndexFile:       "# Finance\n\n- [Chapter 1](docs/d1/README.md)\n",
+		corpusmeta.SearchFile:      strings.Repeat("SQLite format 3\x00", 300),
+		corpusmeta.ReportFile:      `{"schema":"agentcapsule.corpus-report/v1"}`,
+		corpusmeta.GlossaryFile:    "# Glossary\n",
 		"topics/discounting.md":    "# Discounting\n",
 		"docs/d1/doc.json":         "{}",
 		"docs/d1/README.md":        "# Chapter 1\n",
@@ -59,7 +60,7 @@ func write(t *testing.T, files map[string]string, order []string, mode os.FileMo
 			t.Fatal(err)
 		}
 	}
-	if err := os.MkdirAll(filepath.Join(dir, ExtDir), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, corpusmeta.ExtDir), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	return dir
@@ -107,7 +108,7 @@ func TestTwoBuildsOfTheSameTreeGiveTheSameDigest(t *testing.T) {
 	reversed := slices.Clone(order)
 	slices.Reverse(reversed)
 	dir := write(t, files, reversed, 0o600)
-	if err := os.Link(filepath.Join(dir, IndexFile), filepath.Join(t.TempDir(), "cache-entry")); err != nil {
+	if err := os.Link(filepath.Join(dir, corpusmeta.IndexFile), filepath.Join(t.TempDir(), "cache-entry")); err != nil {
 		t.Fatal(err)
 	}
 	if second, _ := build(t, dir, testUUID); second != first {
@@ -161,25 +162,25 @@ func TestBuildImageSizeFitsTheTree(t *testing.T) {
 func TestBuildImageRefusesWhatTheLayoutCannotHold(t *testing.T) {
 	for name, change := range map[string]func(t *testing.T, dir string){
 		"symbolic link": func(t *testing.T, dir string) {
-			mustDo(t, os.Symlink(IndexFile, filepath.Join(dir, "docs/d1/link.md")))
+			mustDo(t, os.Symlink(corpusmeta.IndexFile, filepath.Join(dir, "docs/d1/link.md")))
 		},
 		"hard link inside": func(t *testing.T, dir string) {
-			mustDo(t, os.Link(filepath.Join(dir, IndexFile), filepath.Join(dir, "docs/d1/same.md")))
+			mustDo(t, os.Link(filepath.Join(dir, corpusmeta.IndexFile), filepath.Join(dir, "docs/d1/same.md")))
 		},
 		"FIFO": func(t *testing.T, dir string) {
 			mustDo(t, syscall.Mkfifo(filepath.Join(dir, "docs/d1/fifo"), 0o644))
 		},
-		"no corpus.json":  func(t *testing.T, dir string) { mustDo(t, os.Remove(filepath.Join(dir, InfoFile))) },
-		"no search index": func(t *testing.T, dir string) { mustDo(t, os.Remove(filepath.Join(dir, SearchFile))) },
+		"no corpus.json":  func(t *testing.T, dir string) { mustDo(t, os.Remove(filepath.Join(dir, corpusmeta.InfoFile))) },
+		"no search index": func(t *testing.T, dir string) { mustDo(t, os.Remove(filepath.Join(dir, corpusmeta.SearchFile))) },
 		"INDEX.md too large": func(t *testing.T, dir string) {
-			mustDo(t, os.WriteFile(filepath.Join(dir, IndexFile), make([]byte, MaxIndexBytes+1), 0o644))
+			mustDo(t, os.WriteFile(filepath.Join(dir, corpusmeta.IndexFile), make([]byte, corpusmeta.MaxIndexBytes+1), 0o644))
 		},
 		"INDEX.md a directory": func(t *testing.T, dir string) {
-			mustDo(t, os.Remove(filepath.Join(dir, IndexFile)))
-			mustDo(t, os.Mkdir(filepath.Join(dir, IndexFile), 0o755))
+			mustDo(t, os.Remove(filepath.Join(dir, corpusmeta.IndexFile)))
+			mustDo(t, os.Mkdir(filepath.Join(dir, corpusmeta.IndexFile), 0o755))
 		},
 		"ext not empty": func(t *testing.T, dir string) {
-			mustDo(t, os.WriteFile(filepath.Join(dir, ExtDir, "x.md"), nil, 0o644))
+			mustDo(t, os.WriteFile(filepath.Join(dir, corpusmeta.ExtDir, "x.md"), nil, 0o644))
 		},
 		"a quote in a name": func(t *testing.T, dir string) {
 			mustDo(t, os.WriteFile(filepath.Join(dir, `docs/d1/a"b.md`), nil, 0o644))
@@ -190,11 +191,11 @@ func TestBuildImageRefusesWhatTheLayoutCannotHold(t *testing.T) {
 	} {
 		dir := write(t, layout(), keys(layout()), 0o644)
 		change(t, dir)
-		if _, err := BuildImage(t.Context(), dir, filepath.Join(t.TempDir(), ImageFile), testUUID, 64<<20); !errors.Is(err, ErrInvalid) {
+		if _, err := BuildImage(t.Context(), dir, filepath.Join(t.TempDir(), ImageFile), testUUID, 64<<20); !errors.Is(err, corpusmeta.ErrInvalid) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
-	if _, err := BuildImage(t.Context(), t.TempDir(), filepath.Join(t.TempDir(), ImageFile), "not-a-uuid", 64<<20); !errors.Is(err, ErrInvalid) {
+	if _, err := BuildImage(t.Context(), t.TempDir(), filepath.Join(t.TempDir(), ImageFile), "not-a-uuid", 64<<20); !errors.Is(err, corpusmeta.ErrInvalid) {
 		t.Error("a bad UUID:", err)
 	}
 }
@@ -215,7 +216,7 @@ func TestImageUUIDIsTheADRFormula(t *testing.T) {
 	}
 	sum := sha256.Sum256([]byte("agentcapsule.corpus-uuid.v1\x00" + corpus + "\x00" + commit + "\x00" + builder))
 	h := fmt.Sprintf("%x", sum[:16])
-	if want := h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]; got != want || !ValidUUID(got) {
+	if want := h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]; got != want || !corpusmeta.ValidUUID(got) {
 		t.Fatal(got, want)
 	}
 	if again, _ := ImageUUID(corpus, commit, builder); again != got {
@@ -228,33 +229,8 @@ func TestImageUUIDIsTheADRFormula(t *testing.T) {
 		{corpus, commit, "sha256:" + strings.Repeat("CD", 32)},
 		{"cbd_" + strings.Repeat("0a", 16), commit, builder},
 	} {
-		if _, err := ImageUUID(bad[0], bad[1], bad[2]); !errors.Is(err, ErrInvalid) {
+		if _, err := ImageUUID(bad[0], bad[1], bad[2]); !errors.Is(err, corpusmeta.ErrInvalid) {
 			t.Error("accepted", bad)
 		}
-	}
-}
-
-func TestNames(t *testing.T) {
-	for name, want := range map[string]bool{"finance-l3": true, "a": true, "3d.models_v2": true, "-x": false, "X": false,
-		"a b": false, "": false, strings.Repeat("a", 100): true, strings.Repeat("a", 101): false, "é": false} {
-		if ValidName(name) != want {
-			t.Error("name", name)
-		}
-	}
-	for mount, want := range map[string]bool{"finance": true, "finance_l3": true, "a.b": false, "": false,
-		strings.Repeat("m", 63): true, strings.Repeat("m", 64): false} {
-		if ValidMount(mount) != want {
-			t.Error("mount", mount)
-		}
-	}
-	if DefaultMount("finance-l3") != "finance-l3" || DefaultMount("finance.l3") != "" {
-		t.Error("default mount")
-	}
-	if !ValidVersion(1) || !ValidVersion(1<<31-1) || ValidVersion(0) || ValidVersion(1<<31) {
-		t.Error("versions")
-	}
-	id := DocumentID("courses/chap1.pdf")
-	if !ValidMount(id) || len(id) != 17 || id[0] != 'd' || DocumentID("courses/chap1.pdf") != id || DocumentID("courses/chap2.pdf") == id {
-		t.Error("document ID", id)
 	}
 }

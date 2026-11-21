@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpusmeta"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpuspkg"
 )
 
@@ -48,19 +49,19 @@ func enrich(ctx context.Context, raw []byte, base, output, work string) (respons
 	if err := d.Decode(&q); err != nil {
 		return response{}, err
 	}
-	if d.Decode(&struct{}{}) != io.EOF || q.Schema != schema || q.Mount != "/corpus/base" || !capsuleprotocol.ValidCorpusMount(q.Name) || !corpuspkg.ValidID("cbd", q.BuildID) || !capsuleprotocol.ValidUUID(q.UUID) || q.Output.Bytes < corpuspkg.MinImageBytes || q.Output.Bytes > capsuleprotocol.MaxBuildDriveBytes {
+	if d.Decode(&struct{}{}) != io.EOF || q.Schema != schema || q.Mount != "/corpus/base" || !capsuleprotocol.ValidCorpusMount(q.Name) || !corpusmeta.ValidID("cbd", q.BuildID) || !capsuleprotocol.ValidUUID(q.UUID) || q.Output.Bytes < corpuspkg.MinImageBytes || q.Output.Bytes > capsuleprotocol.MaxBuildDriveBytes {
 		return response{}, errors.New("invalid enrichment instruction")
 	}
-	f, err := os.Open(filepath.Join(base, corpuspkg.InfoFile))
+	f, err := os.Open(filepath.Join(base, corpusmeta.InfoFile))
 	if err != nil {
 		return response{}, err
 	}
-	metadata, err := io.ReadAll(io.LimitReader(f, corpuspkg.MaxInfoBytes+1))
+	metadata, err := io.ReadAll(io.LimitReader(f, corpusmeta.MaxInfoBytes+1))
 	f.Close()
 	if err != nil {
 		return response{}, err
 	}
-	info, err := corpuspkg.ParseInfo(metadata)
+	info, err := corpusmeta.ParseInfo(metadata)
 	if err != nil {
 		return response{}, err
 	}

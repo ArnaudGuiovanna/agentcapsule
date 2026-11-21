@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpusmeta"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpuspkg"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpussource"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/harnesspkg"
@@ -128,7 +129,7 @@ func TestCorpusBuilderAndConsumerOnKVM(t *testing.T) {
 	source := os.Getenv("AGENTCAPSULE_KVM_GITHUB_CORPUS")
 	var fixture gitHubCorpusFixture
 	b, err := os.ReadFile(source)
-	if err != nil || json.Unmarshal(b, &fixture) != nil || fixture.Bytes < 1 || !corpuspkg.ValidCommit(fixture.Commit) {
+	if err != nil || json.Unmarshal(b, &fixture) != nil || fixture.Bytes < 1 || !corpusmeta.ValidCommit(fixture.Commit) {
 		t.Fatal("missing or invalid GitHub corpus fixture")
 	}
 	rule, ref := corpusBuilderRegistry(t, pkg)
@@ -272,7 +273,7 @@ func TestCorpusBuilderAndConsumerOnKVM(t *testing.T) {
 			return false
 		})
 		raw := lab.request(owner(), "GET", "/v1/corpus-builds/"+job.ID+"/review-file?path=report.json", "", nil, 200, nil)
-		report, err := corpuspkg.ParseReport(raw)
+		report, err := corpusmeta.ParseReport(raw)
 		if err != nil || report.BuildID != job.ID || report.Commit != fixture.Commit || job.ArchiveBytes != fixture.Bytes || report.Totals.Failed != 0 {
 			t.Fatal("review report", err, report.Totals)
 		}
@@ -280,7 +281,7 @@ func TestCorpusBuilderAndConsumerOnKVM(t *testing.T) {
 		if warm {
 			expected = "cached"
 		}
-		i := slices.IndexFunc(report.Files, func(f corpuspkg.ReportEntry) bool { return f.Path == fixture.PDF && f.Status == expected })
+		i := slices.IndexFunc(report.Files, func(f corpusmeta.ReportEntry) bool { return f.Path == fixture.PDF && f.Status == expected })
 		if i < 0 {
 			t.Fatal("PDF conversion", report.Totals, expected)
 		}

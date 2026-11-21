@@ -14,14 +14,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"path"
 	"regexp"
 	"slices"
 	"strings"
-	"unicode"
 	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpusmeta"
 )
 
 const (
@@ -197,7 +197,7 @@ func (m Manifest) Validate() error {
 	if m.Schema != Schema {
 		add(CodeSchema, "schema", "must be %s", Schema)
 	}
-	if !Text(m.Title, 200) {
+	if !corpusmeta.Text(m.Title, 200) {
 		add(CodeTitle, "title", "1 to 200 characters, without control characters")
 	}
 	if len(m.Language) > 35 || !language.MatchString(m.Language) {
@@ -218,7 +218,7 @@ func (m Manifest) Validate() error {
 	}
 	p := m.Processing
 	for step, alias := range p.Steps() {
-		if !ValidAlias(alias) {
+		if !corpusmeta.ValidAlias(alias) {
 			add(CodeProcessing, "processing."+step+".alias", "an LLM alias of the organization: 1 to 100 bytes, without spaces")
 		}
 	}
@@ -229,20 +229,20 @@ func (m Manifest) Validate() error {
 	for i, d := range m.Documents {
 		field := fmt.Sprintf("documents[%d]", i)
 		switch {
-		case !ValidPath(d.Path):
+		case !corpusmeta.ValidPath(d.Path):
 			add(CodeDocument, field+".path", "a clean relative path inside the corpus")
 		case paths[d.Path]:
 			add(CodeDocument, field+".path", "%s is listed twice", d.Path)
 		}
 		paths[d.Path] = true
-		if d.Title != "" && !Text(d.Title, 200) {
+		if d.Title != "" && !corpusmeta.Text(d.Title, 200) {
 			add(CodeDocument, field+".title", "1 to 200 characters, without control characters")
 		}
 		if len(d.Tags) > maxTags {
 			add(CodeDocument, field+".tags", "at most %d tags", maxTags)
 		}
 		for j, tag := range d.Tags {
-			if !Text(tag, 50) || slices.Index(d.Tags, tag) != j {
+			if !corpusmeta.Text(tag, 50) || slices.Index(d.Tags, tag) != j {
 				add(CodeDocument, fmt.Sprintf("%s.tags[%d]", field, j), "1 to 50 characters, each tag once")
 			}
 		}
@@ -251,14 +251,14 @@ func (m Manifest) Validate() error {
 	for i, c := range m.Corrections {
 		field := fmt.Sprintf("corrections[%d]", i)
 		switch {
-		case !ValidPath(c.Path):
+		case !corpusmeta.ValidPath(c.Path):
 			add(CodeCorrection, field+".path", "a clean relative path inside the corpus")
 		case corrected[c.Path]:
 			add(CodeCorrection, field+".path", "%s is corrected twice", c.Path)
 		}
 		corrected[c.Path] = true
 		switch {
-		case !ValidPath(c.Markdown) || !strings.HasSuffix(strings.ToLower(c.Markdown), ".md"):
+		case !corpusmeta.ValidPath(c.Markdown) || !strings.HasSuffix(strings.ToLower(c.Markdown), ".md"):
 			add(CodeCorrection, field+".markdown", "a clean relative path to a .md file inside the corpus")
 		case markdown[c.Markdown]:
 			add(CodeCorrection, field+".markdown", "%s corrects two documents", c.Markdown)
@@ -322,33 +322,4 @@ func (m Manifest) Aliases() []string {
 	}
 	slices.Sort(out)
 	return out
-}
-
-// Text reports whether s is 1 to max characters of valid UTF-8, not only
-// spaces, without control characters.
-func Text(s string, max int) bool {
-	return utf8.ValidString(s) && strings.TrimSpace(s) != "" && utf8.RuneCountInString(s) <= max &&
-		strings.IndexFunc(s, unicode.IsControl) < 0
-}
-
-// ValidAlias is the platform channel's rule for an LLM alias: 1 to 100
-// bytes of UTF-8, without spaces, tabs, line breaks or NUL.
-func ValidAlias(a string) bool {
-	return a != "" && len(a) <= 100 && utf8.ValidString(a) && !strings.ContainsAny(a, " \t\r\n\x00")
-}
-
-// ValidPath reports whether p is a clean relative path inside the corpus:
-// no leading '/', no '.' or '..' element, no empty element, no backslash,
-// printable UTF-8, at most 1,024 bytes.
-func ValidPath(p string) bool {
-	if p == "" || len(p) > 1024 || !utf8.ValidString(p) || strings.IndexFunc(p, unicode.IsControl) >= 0 ||
-		strings.HasPrefix(p, "/") || strings.ContainsRune(p, '\\') || path.Clean(p) != p {
-		return false
-	}
-	for _, part := range strings.Split(p, "/") {
-		if part == "." || part == ".." {
-			return false
-		}
-	}
-	return true
 }

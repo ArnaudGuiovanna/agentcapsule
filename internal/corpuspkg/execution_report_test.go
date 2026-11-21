@@ -6,6 +6,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpusmeta"
 )
 
 func TestExecutionReportBindsItsBuildOutsideTheFilesystem(t *testing.T) {
@@ -20,7 +22,7 @@ func TestExecutionReportBindsItsBuildOutsideTheFilesystem(t *testing.T) {
 	}
 	build := "cbd_" + strings.Repeat("a", 32)
 	commit := strings.Repeat("b", 40)
-	report, err := json.Marshal(Report{Schema: ReportSchema, BuildID: build, Commit: commit, Files: []ReportEntry{}})
+	report, err := json.Marshal(corpusmeta.Report{Schema: corpusmeta.ReportSchema, BuildID: build, Commit: commit, Files: []corpusmeta.ReportEntry{}})
 	if err != nil {
 		t.Fatal(err)
 	}

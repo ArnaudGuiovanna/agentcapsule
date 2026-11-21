@@ -11,8 +11,6 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/ociregistry"
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/ociregistry/registrytest"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -22,9 +20,12 @@ import (
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpusmeta"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpuspkg"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/harnesspkg"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/harnessstore"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/ociregistry"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/ociregistry/registrytest"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/sandbox"
 )
 
@@ -109,12 +110,12 @@ func TestProductCourseEnrichmentKVM(t *testing.T) {
 		}
 	}
 	build := "cbd_" + strings.Repeat("a", 32)
-	info := corpuspkg.Info{Schema: corpuspkg.Schema, Name: "maths", Title: "Maths", BuildID: build, Commit: strings.Repeat("a", 40), Builder: "builder@1", Languages: []string{"fr"}, Modalities: []string{"text"}, Tokens: 3, Documents: []corpuspkg.InfoEntry{{ID: "d1", Path: "fractions.md", Title: "Les fractions", Kind: "text", Tokens: 3}}}
+	info := corpusmeta.Info{Schema: corpusmeta.Schema, Name: "maths", Title: "Maths", BuildID: build, Commit: strings.Repeat("a", 40), Builder: "builder@1", Languages: []string{"fr"}, Modalities: []string{"text"}, Tokens: 3, Documents: []corpusmeta.InfoEntry{{ID: "d1", Path: "fractions.md", Title: "Les fractions", Kind: "text", Tokens: 3}}}
 	metadata, err := json.Marshal(info)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for p, b := range map[string][]byte{corpuspkg.InfoFile: metadata, corpuspkg.IndexFile: []byte("Cours de maths\n"), corpuspkg.SearchFile: []byte("fractions"), "docs/d1/README.md": []byte("Fractions\n")} {
+	for p, b := range map[string][]byte{corpusmeta.InfoFile: metadata, corpusmeta.IndexFile: []byte("Cours de maths\n"), corpusmeta.SearchFile: []byte("fractions"), "docs/d1/README.md": []byte("Fractions\n")} {
 		if err = os.WriteFile(filepath.Join(baseDir, p), b, 0644); err != nil {
 			t.Fatal(err)
 		}

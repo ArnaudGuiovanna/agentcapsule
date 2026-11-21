@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpuspkg"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpusmeta"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpussource/repository"
 )
 
@@ -96,7 +96,7 @@ func buildCorpusOptions(a *action, o options, body map[string]any, set func(stri
 // Names on the CLI resolve in the authenticated organization; the API
 // receives immutable IDs. Source credentials expose metadata only.
 func (c *client) resolveCorpusAction(ctx context.Context, a *action, token string) error {
-	if a.corpusRef != "" && !corpuspkg.ValidID("cor", a.corpusRef) {
+	if a.corpusRef != "" && !corpusmeta.ValidID("cor", a.corpusRef) {
 		r, err := c.request(ctx, "GET", "/v1/corpora?name="+url.QueryEscape(a.corpusRef), "", token, nil)
 		if err != nil {
 			return err
@@ -109,7 +109,7 @@ func (c *client) resolveCorpusAction(ctx context.Context, a *action, token strin
 			return &apiError{Status: 404, Code: "not_found", RequestID: r.RequestID}
 		}
 		id := page.Items[0].ID
-		if !corpuspkg.ValidID("cor", id) {
+		if !corpusmeta.ValidID("cor", id) {
 			return errors.New("invalid corpus identifier")
 		}
 		u, _ := url.ParseRequestURI(a.path)
@@ -130,7 +130,7 @@ func (c *client) resolveCorpusAction(ctx context.Context, a *action, token strin
 	if json.Unmarshal(a.body, &body) != nil || json.Unmarshal(body["source"], &src) != nil {
 		return errors.New("invalid repository source")
 	}
-	if corpuspkg.ValidID("scr", a.credentialRef) && src["kind"] != "" {
+	if corpusmeta.ValidID("scr", a.credentialRef) && src["kind"] != "" {
 		src["credential_id"] = a.credentialRef
 	} else {
 		after := ""
@@ -148,7 +148,7 @@ func (c *client) resolveCorpusAction(ctx context.Context, a *action, token strin
 			}
 			for _, m := range page.Items {
 				if m.Name == a.credentialRef || m.ID == a.credentialRef {
-					if !corpuspkg.ValidID("scr", m.ID) {
+					if !corpusmeta.ValidID("scr", m.ID) {
 						return errors.New("invalid source credential identifier")
 					}
 					src["credential_id"] = m.ID
@@ -191,11 +191,11 @@ func (cli console) corpusReview(a action, r reply) error {
 		_, err = f.Write(r.Data)
 		return finishCredentialOutput(f, err)
 	}
-	report, err := corpuspkg.ParseReport(r.Data)
+	report, err := corpusmeta.ParseReport(r.Data)
 	if err != nil {
 		return err
 	}
-	files := make([]corpuspkg.ReportEntry, 0, len(report.Files))
+	files := make([]corpusmeta.ReportEntry, 0, len(report.Files))
 	for _, f := range report.Files {
 		if a.fileStatus == "" || a.fileStatus == f.Status {
 			files = append(files, f)

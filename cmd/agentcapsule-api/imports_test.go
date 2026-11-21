@@ -19,10 +19,10 @@ var guestPrograms = []string{"cmd/capsule-init", "cmd/capsule-echo", "cmd/capsul
 	"internal/verification/guest", "internal/verification/controlguest"}
 
 // guestShared are linked by the guests and by the host on purpose: the
-// protocol between them, the capability names, and the guest's event store,
-// whose envelopes and outcome fingerprints the host checks. They start no VM
-// and run no harness.
-var guestShared = []string{"internal/capsuleprotocol", "internal/capability", "internal/harnessstore"}
+// protocol between them, the capability names, the guest's event store,
+// whose envelopes and outcome fingerprints the host checks, and the published
+// corpus metadata, which guests read and the worker validates.
+var guestShared = []string{"internal/capsuleprotocol", "internal/capability", "internal/harnessstore", "internal/corpusmeta"}
 
 // hostRuntime starts and stops VMs, and opens, mounts or archives their
 // volumes: the worker's code, which runs as root.
@@ -83,14 +83,8 @@ func guestCode(t *testing.T, module string) []string {
 // (internal/ext4image, internal/corpuspkg) and fetching their sources (internal/corpussource).
 var hostImporter = []string{"internal/ociregistry", "internal/harnesspkg", "internal/sandbox", "internal/ext4image", "internal/corpuspkg", "internal/corpussource"}
 
-// corpusSourceReaders parse a corpus's manifest and measure its source
-// files: the builder calls them in its VM, the CLI on the author's machine.
-// No code of the host does (ADR 023, REG-007): the API does not link them,
-// and the worker, which links the package for its vocabulary, never calls
-// them.
-var corpusSourceReaders = map[string][]string{
-	"internal/corpuspkg/source": {"ParseManifest", "Scan", "Measure", "ParsePointer", "Template"},
-}
+// Only the authoring CLI and the builder guest may read source documents.
+var corpusSourceReaders = []string{"internal/corpuspkg/source", "internal/corpusbuilder"}
 
 // apiStoreRoutes are the only packages through which the API may still link
 // the guest's event store (internal/harnessstore) and the SQLite driver,
@@ -141,8 +135,8 @@ func importers(t *testing.T, module string, packages ...string) map[string][]str
 // the guest's event store and SQLite only through apiStoreRoutes.
 func TestAPILinksNoRuntimeWorkerOrGuestCode(t *testing.T) {
 	module := goModule(t)
-	denied := append(append(append(guestCode(t, module), hostRuntime...), hostImporter...), "internal/corpuspkg/source")
-	deps(t, module, append(hostRuntime, append(hostImporter, "internal/corpuspkg/source")...)...) // fails when one is renamed or gone
+	denied := slices.Concat(guestCode(t, module), hostRuntime, hostImporter, corpusSourceReaders)
+	deps(t, module, slices.Concat(hostRuntime, hostImporter, corpusSourceReaders)...) // fails when one is renamed or gone
 	linked := deps(t, module, "cmd/agentcapsule-api")
 	if !slices.Contains(linked, "internal/api") {
 		t.Fatal("go list does not see the API's own packages", linked)
@@ -173,7 +167,7 @@ func TestAPILinksNoRuntimeWorkerOrGuestCode(t *testing.T) {
 // VM.
 func TestWorkerLinksNoHarnessCode(t *testing.T) {
 	module := goModule(t)
-	denied := guestCode(t, module)
+	denied := append(guestCode(t, module), corpusSourceReaders...)
 	linked := deps(t, module, "cmd/agentcapsule-worker")
 	if !slices.Contains(linked, "internal/worker") || !slices.Contains(linked, "internal/capsuleprotocol") {
 		t.Fatal("go list does not see the worker's own packages", linked)
@@ -181,6 +175,20 @@ func TestWorkerLinksNoHarnessCode(t *testing.T) {
 	for _, p := range linked {
 		if slices.Contains(denied, p) {
 			t.Error("agentcapsule-worker links", p)
+		}
+	}
+}
+
+// Harnesses which only read a mounted corpus need its published metadata.
+func TestCorpusReaderLinksNoSourceOrImageTooling(t *testing.T) {
+	module := goModule(t)
+	linked := deps(t, module, "sdk/go/corpus")
+	if !slices.Contains(linked, "internal/corpusmeta") {
+		t.Fatal("the SDK does not link the corpus metadata validator", linked)
+	}
+	for _, pkg := range slices.Concat(hostImporter, corpusSourceReaders) {
+		if slices.Contains(linked, pkg) {
+			t.Error("the mounted corpus reader links", pkg)
 		}
 	}
 }
@@ -349,8 +357,6 @@ func TestWorkerStartsOnlyTheProgramsItNames(t *testing.T) {
 					found[site]++
 				case slices.Contains(imageBuilders[strings.TrimPrefix(p, module+"/")], sel.Sel.Name) && imageBuilders[pkg] == nil:
 					building = append(building, site+": "+sel.Sel.Name)
-				case slices.Contains(corpusSourceReaders[strings.TrimPrefix(p, module+"/")], sel.Sel.Name):
-					building = append(building, site+": "+sel.Sel.Name+" reads a corpus source")
 				}
 				return true
 			})
@@ -370,6 +376,6 @@ func TestWorkerStartsOnlyTheProgramsItNames(t *testing.T) {
 		}
 	}
 	if len(building) != 0 {
-		t.Error("the worker's code builds packages or reads corpus sources:", building)
+		t.Error("the worker's code builds packages:", building)
 	}
 }

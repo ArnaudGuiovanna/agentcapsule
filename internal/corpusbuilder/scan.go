@@ -8,7 +8,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-
 	"io"
 	"io/fs"
 	"os"
@@ -16,7 +15,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpuspkg"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpusmeta"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpuspkg/source"
 )
 
@@ -74,9 +73,9 @@ func (d Drive) valid() bool {
 }
 
 func (r ScanRequest) validate() error {
-	if r.Schema != Schema || r.Phase != "scan" || !corpuspkg.ValidID("cbd", r.BuildID) ||
-		!corpuspkg.ValidCommit(r.Commit) || !corpuspkg.ValidName(r.Name) || !source.Text(r.Builder, 201) ||
-		(r.Path != "" && !source.ValidPath(r.Path)) || !r.Source.valid() {
+	if r.Schema != Schema || r.Phase != "scan" || !corpusmeta.ValidID("cbd", r.BuildID) ||
+		!corpusmeta.ValidCommit(r.Commit) || !corpusmeta.ValidName(r.Name) || !corpusmeta.Text(r.Builder, 201) ||
+		(r.Path != "" && !corpusmeta.ValidPath(r.Path)) || !r.Source.valid() {
 		return errors.New("invalid builder scan request")
 	}
 	return nil
@@ -86,7 +85,7 @@ func (r ScanRequest) validate() error {
 // repository members share one forge-provided top directory. Only regular
 // files and directories are materialized in the guest's private workspace.
 func extractSource(ctx context.Context, device io.ReaderAt, spec Drive, dir, subdir string, maxExpanded int64) error {
-	if !spec.valid() || maxExpanded <= 0 || (subdir != "" && !source.ValidPath(subdir)) {
+	if !spec.valid() || maxExpanded <= 0 || (subdir != "" && !corpusmeta.ValidPath(subdir)) {
 		return errors.New("invalid source drive")
 	}
 	region := io.NewSectionReader(device, 0, spec.Bytes)

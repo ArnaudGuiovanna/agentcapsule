@@ -1,12 +1,10 @@
-package corpuspkg
+package corpusmeta
 
 import (
 	"bytes"
 	"encoding/json"
 	"fmt"
 	"slices"
-
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpuspkg/source"
 )
 
 // Paths of the published layout agentcapsule.corpus/v1, at the image's root
@@ -76,18 +74,18 @@ type Embeddings struct {
 
 // InfoEntry is one document of corpus.json.
 type InfoEntry struct {
-	ID     string      `json:"id"`
-	Path   string      `json:"path"`
-	Kind   source.Kind `json:"kind"`
-	Title  string      `json:"title"`
-	Tokens int64       `json:"tokens"`
+	ID     string `json:"id"`
+	Path   string `json:"path"`
+	Kind   Kind   `json:"kind"`
+	Title  string `json:"title"`
+	Tokens int64  `json:"tokens"`
 }
 
 // ParseInfo decodes corpus.json strictly and validates it.
 func ParseInfo(b []byte) (Info, error) {
 	var i Info
 	if err := strictJSON(b, MaxInfoBytes, &i); err != nil {
-		return Info{}, invalid("corpus.json: %v", err)
+		return Info{}, Invalid("corpus.json: %v", err)
 	}
 	return i, i.Validate()
 }
@@ -95,36 +93,36 @@ func ParseInfo(b []byte) (Info, error) {
 func (i Info) Validate() error {
 	switch {
 	case i.Schema != Schema:
-		return invalid("corpus.json schema must be %s", Schema)
-	case !ValidName(i.Name) || !source.Text(i.Title, 200):
-		return invalid("corpus.json name or title")
-	case !ValidID("cbd", i.BuildID) || !ValidCommit(i.Commit) || i.SourcePath != "" && !source.ValidPath(i.SourcePath):
-		return invalid("corpus.json build_id, commit or source_path")
-	case !source.Text(i.Builder, 201):
-		return invalid("corpus.json builder")
+		return Invalid("corpus.json schema must be %s", Schema)
+	case !ValidName(i.Name) || !Text(i.Title, 200):
+		return Invalid("corpus.json name or title")
+	case !ValidID("cbd", i.BuildID) || !ValidCommit(i.Commit) || i.SourcePath != "" && !ValidPath(i.SourcePath):
+		return Invalid("corpus.json build_id, commit or source_path")
+	case !Text(i.Builder, 201):
+		return Invalid("corpus.json builder")
 	case len(i.Languages) < 1 || i.Tokens < 0:
-		return invalid("corpus.json languages or tokens")
+		return Invalid("corpus.json languages or tokens")
 	}
 	for _, m := range i.Modalities {
 		if !slices.Contains([]string{ModalityText, ModalityImage, ModalityAudio, ModalityVideo}, m) {
-			return invalid("corpus.json modality")
+			return Invalid("corpus.json modality")
 		}
 	}
-	if e := i.Embeddings; e != nil && (!source.ValidAlias(e.Alias) || e.Dimensions < 1 || e.Model != "" && !source.Text(e.Model, 200)) {
-		return invalid("corpus.json embeddings")
+	if e := i.Embeddings; e != nil && (!ValidAlias(e.Alias) || e.Dimensions < 1 || e.Model != "" && !Text(e.Model, 200)) {
+		return Invalid("corpus.json embeddings")
 	}
 	ids, paths := map[string]bool{}, map[string]bool{}
 	var total int64
 	for _, d := range i.Documents {
-		if !ValidMount(d.ID) || ids[d.ID] || !source.ValidPath(d.Path) || paths[d.Path] || !slices.Contains(source.Kinds, d.Kind) ||
-			d.Kind == source.KindOther || !source.Text(d.Title, 200) || d.Tokens < 0 {
-			return invalid("corpus.json document")
+		if !ValidMount(d.ID) || ids[d.ID] || !ValidPath(d.Path) || paths[d.Path] || !slices.Contains(Kinds, d.Kind) ||
+			d.Kind == KindOther || !Text(d.Title, 200) || d.Tokens < 0 {
+			return Invalid("corpus.json document")
 		}
 		ids[d.ID], paths[d.Path] = true, true
 		total += d.Tokens
 	}
 	if total != i.Tokens {
-		return invalid("corpus.json tokens are not the documents' sum")
+		return Invalid("corpus.json tokens are not the documents' sum")
 	}
 	return nil
 }
@@ -133,17 +131,17 @@ func (i Info) Validate() error {
 // elements in reading order. Its Markdown view, part-001.md and following,
 // holds the same elements, each after an anchor <a id="ELEMENT_ID"></a>.
 type DocumentRecord struct {
-	Schema    string      `json:"schema"`
-	ID        string      `json:"id"`
-	Path      string      `json:"path"`
-	Kind      source.Kind `json:"kind"`
-	Title     string      `json:"title"`
-	Language  string      `json:"language,omitempty"`
-	Tags      []string    `json:"tags,omitempty"`
-	Pages     int         `json:"pages,omitempty"`
-	Seconds   float64     `json:"seconds,omitempty"`
-	Corrected bool        `json:"corrected,omitempty"`
-	Elements  []Element   `json:"elements"`
+	Schema    string    `json:"schema"`
+	ID        string    `json:"id"`
+	Path      string    `json:"path"`
+	Kind      Kind      `json:"kind"`
+	Title     string    `json:"title"`
+	Language  string    `json:"language,omitempty"`
+	Tags      []string  `json:"tags,omitempty"`
+	Pages     int       `json:"pages,omitempty"`
+	Seconds   float64   `json:"seconds,omitempty"`
+	Corrected bool      `json:"corrected,omitempty"`
+	Elements  []Element `json:"elements"`
 }
 
 // DocumentSchema is doc.json's schema.
@@ -182,9 +180,9 @@ type Element struct {
 }
 
 func (d DocumentRecord) Validate() error {
-	if d.Schema != DocumentSchema || !ValidMount(d.ID) || !source.ValidPath(d.Path) || !slices.Contains(source.Kinds, d.Kind) ||
-		!source.Text(d.Title, 200) || d.Pages < 0 || d.Seconds < 0 {
-		return invalid("doc.json header")
+	if d.Schema != DocumentSchema || !ValidMount(d.ID) || !ValidPath(d.Path) || !slices.Contains(Kinds, d.Kind) ||
+		!Text(d.Title, 200) || d.Pages < 0 || d.Seconds < 0 {
+		return Invalid("doc.json header")
 	}
 	ids := map[string]bool{}
 	for _, e := range d.Elements {
@@ -197,7 +195,7 @@ func (d DocumentRecord) Validate() error {
 			ok = ok && e.Page > 0 && 0 <= b[0] && b[0] <= b[2] && b[2] <= 1 && 0 <= b[1] && b[1] <= b[3] && b[3] <= 1
 		}
 		if !ok {
-			return invalid("doc.json element")
+			return Invalid("doc.json element")
 		}
 		ids[e.ID] = true
 	}

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpusmeta"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpuspkg"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/ext4image"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/sandbox"
@@ -18,7 +19,7 @@ import (
 func TestCorpusReviewReadsCompleteFilesWithConfinedDebugfs(t *testing.T) {
 	layout := t.TempDir()
 	want := []byte("Document index\nCafé\n")
-	for _, p := range corpuspkg.RequiredFiles {
+	for _, p := range corpusmeta.RequiredFiles {
 		path := filepath.Join(layout, p)
 		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 			t.Fatal(err)

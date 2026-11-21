@@ -16,8 +16,9 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpuspkg"
 	_ "github.com/mattn/go-sqlite3"
+
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpusmeta"
 )
 
 // Mounts is the root holding an agent's read-only corpus mounts.
@@ -46,7 +47,7 @@ func (m Mounts) List() ([]string, error) {
 	}
 	mounts := []string{}
 	for _, entry := range entries {
-		if entry.IsDir() && corpuspkg.ValidMount(entry.Name()) {
+		if entry.IsDir() && corpusmeta.ValidMount(entry.Name()) {
 			mounts = append(mounts, entry.Name())
 		}
 	}
@@ -56,7 +57,7 @@ func (m Mounts) List() ([]string, error) {
 // file accepts only regular files in the immutable published layout. Reject
 // symlinks, including those in a mount's parent components.
 func (m Mounts) file(mount, name string) (string, error) {
-	if !corpuspkg.ValidMount(mount) || !filepath.IsLocal(name) {
+	if !corpusmeta.ValidMount(mount) || !filepath.IsLocal(name) {
 		return "", errors.New("invalid corpus mount or path")
 	}
 	root, err := filepath.Abs(string(m))
@@ -101,7 +102,7 @@ func (m Mounts) read(mount, name string, limit int64) ([]byte, error) {
 	return b, nil
 }
 func (m Mounts) Index(mount string) (string, error) {
-	b, err := m.read(mount, corpuspkg.IndexFile, corpuspkg.MaxIndexBytes)
+	b, err := m.read(mount, corpusmeta.IndexFile, corpusmeta.MaxIndexBytes)
 	return string(b), err
 }
 
@@ -109,10 +110,10 @@ var partName = regexp.MustCompile(`^part-[0-9]{3}\.md$`)
 
 func validPart(part string) bool { return partName.MatchString(part) && part != "part-000.md" }
 func (m Mounts) Part(mount, document, part string) (string, error) {
-	if !corpuspkg.ValidMount(document) || !validPart(part) {
+	if !corpusmeta.ValidMount(document) || !validPart(part) {
 		return "", errors.New("invalid corpus document or part")
 	}
-	b, err := m.read(mount, filepath.Join(corpuspkg.DocsDir, document, part), 1<<20)
+	b, err := m.read(mount, filepath.Join(corpusmeta.DocsDir, document, part), 1<<20)
 	return string(b), err
 }
 
@@ -123,11 +124,11 @@ func (m Mounts) Search(ctx context.Context, mount, phrase string, limit int) ([]
 	if phrase == "" || len(phrase) > 1024 || strings.ContainsRune(phrase, 0) || limit < 1 || limit > 20 {
 		return nil, errors.New("expected a phrase and a limit between 1 and 20")
 	}
-	b, err := m.read(mount, corpuspkg.InfoFile, corpuspkg.MaxInfoBytes)
+	b, err := m.read(mount, corpusmeta.InfoFile, corpusmeta.MaxInfoBytes)
 	if err != nil {
 		return nil, err
 	}
-	info, err := corpuspkg.ParseInfo(b)
+	info, err := corpusmeta.ParseInfo(b)
 	if err != nil {
 		return nil, err
 	}
@@ -135,7 +136,7 @@ func (m Mounts) Search(ctx context.Context, mount, phrase string, limit int) ([]
 	for _, d := range info.Documents {
 		paths[d.ID] = d.Path
 	}
-	path, err := m.file(mount, corpuspkg.SearchFile)
+	path, err := m.file(mount, corpusmeta.SearchFile)
 	if err != nil {
 		return nil, err
 	}
@@ -162,7 +163,7 @@ func (m Mounts) Search(ctx context.Context, mount, phrase string, limit int) ([]
 		if info.SourcePath != "" && p.Path != "" {
 			p.Path = info.SourcePath + "/" + p.Path
 		}
-		if p.Path == "" || !corpuspkg.ValidMount(p.Element) || !validPart(p.Part) || !json.Valid([]byte(locator)) {
+		if p.Path == "" || !corpusmeta.ValidMount(p.Element) || !validPart(p.Part) || !json.Valid([]byte(locator)) {
 			return nil, fmt.Errorf("invalid corpus passage citation")
 		}
 		p.Locator = json.RawMessage(locator)

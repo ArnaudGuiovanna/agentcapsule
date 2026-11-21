@@ -1,9 +1,7 @@
-package corpuspkg
+package corpusmeta
 
 import (
 	"slices"
-
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpuspkg/source"
 )
 
 // ReportSchema is report.json's schema.
@@ -51,14 +49,14 @@ type Report struct {
 // cached file, and "" otherwise; Error is "" for those, and a closed code
 // for a skipped or failed one.
 type ReportEntry struct {
-	Path     string      `json:"path"`
-	Kind     source.Kind `json:"kind"`
-	Status   string      `json:"status"`
-	DocID    string      `json:"doc_id"`
-	Bytes    int64       `json:"bytes"`
-	Tokens   int64       `json:"tokens"`
-	Warnings []string    `json:"warnings"`
-	Error    string      `json:"error"`
+	Path     string   `json:"path"`
+	Kind     Kind     `json:"kind"`
+	Status   string   `json:"status"`
+	DocID    string   `json:"doc_id"`
+	Bytes    int64    `json:"bytes"`
+	Tokens   int64    `json:"tokens"`
+	Warnings []string `json:"warnings"`
+	Error    string   `json:"error"`
 }
 
 type ReportTotals struct {
@@ -75,14 +73,14 @@ type ReportTotals struct {
 func ParseReport(b []byte) (Report, error) {
 	var r Report
 	if err := strictJSON(b, MaxReportBytes, &r); err != nil {
-		return Report{}, invalid("report.json: %v", err)
+		return Report{}, Invalid("report.json: %v", err)
 	}
 	return r, r.Validate()
 }
 
 func (r Report) Validate() error {
 	if r.Schema != ReportSchema || !ValidID("cbd", r.BuildID) || !ValidCommit(r.Commit) || r.Files == nil {
-		return invalid("report.json schema, build_id or commit")
+		return Invalid("report.json schema, build_id or commit")
 	}
 	var t ReportTotals
 	paths := map[string]bool{}
@@ -90,19 +88,19 @@ func (r Report) Validate() error {
 		var ok bool
 		switch f.Status {
 		case StatusConverted, StatusCached:
-			ok = ValidMount(f.DocID) && f.Error == "" && f.Kind != source.KindOther
+			ok = ValidMount(f.DocID) && f.Error == "" && f.Kind != KindOther
 		case StatusSkipped:
 			ok = f.DocID == "" && (f.Error == FileUnsupportedType || f.Error == FileStepDisabled)
 		case StatusFailed:
 			ok = f.DocID == "" && slices.Contains([]string{FileUnsupportedType, FileTooLarge, FileMalformed, FileInferenceFailed, FileTimeout}, f.Error)
 		}
-		ok = ok && source.ValidPath(f.Path) && !paths[f.Path] && slices.Contains(source.Kinds, f.Kind) && f.Bytes >= 0 && f.Tokens >= 0 &&
+		ok = ok && ValidPath(f.Path) && !paths[f.Path] && slices.Contains(Kinds, f.Kind) && f.Bytes >= 0 && f.Tokens >= 0 &&
 			f.Warnings != nil && len(f.Warnings) <= len(FileWarnings)
 		for i, w := range f.Warnings {
 			ok = ok && slices.Contains(FileWarnings, w) && slices.Index(f.Warnings, w) == i
 		}
 		if !ok {
-			return invalid("report.json file entry")
+			return Invalid("report.json file entry")
 		}
 		paths[f.Path] = true
 		t.Files++
@@ -119,7 +117,7 @@ func (r Report) Validate() error {
 		}
 	}
 	if t != r.Totals {
-		return invalid("report.json totals are not the files' sums")
+		return Invalid("report.json totals are not the files' sums")
 	}
 	return nil
 }

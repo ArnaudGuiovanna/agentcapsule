@@ -4,30 +4,27 @@ import (
 	"bytes"
 	"path"
 	"strings"
+
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpusmeta"
 )
 
-// Kind is a source file's type, from its extension (the report's kind, ADR
-// 023 §2.4).
-type Kind string
+// Kind is the file kind used in published corpus metadata.
+type Kind = corpusmeta.Kind
 
 const (
-	KindMarkdown Kind = "markdown"
-	KindText     Kind = "text"
-	KindPDF      Kind = "pdf"
-	KindDOCX     Kind = "docx"
-	KindPPTX     Kind = "pptx"
-	KindODT      Kind = "odt"
-	KindXLSX     Kind = "xlsx"
-	KindCSV      Kind = "csv"
-	KindImage    Kind = "image"
-	KindAudio    Kind = "audio"
-	KindVideo    Kind = "video"
-	KindOther    Kind = "other"
+	KindMarkdown = corpusmeta.KindMarkdown
+	KindText     = corpusmeta.KindText
+	KindPDF      = corpusmeta.KindPDF
+	KindDOCX     = corpusmeta.KindDOCX
+	KindPPTX     = corpusmeta.KindPPTX
+	KindODT      = corpusmeta.KindODT
+	KindXLSX     = corpusmeta.KindXLSX
+	KindCSV      = corpusmeta.KindCSV
+	KindImage    = corpusmeta.KindImage
+	KindAudio    = corpusmeta.KindAudio
+	KindVideo    = corpusmeta.KindVideo
+	KindOther    = corpusmeta.KindOther
 )
-
-// Kinds lists every kind, other last.
-var Kinds = []Kind{KindMarkdown, KindText, KindPDF, KindDOCX, KindPPTX, KindODT, KindXLSX, KindCSV, KindImage,
-	KindAudio, KindVideo, KindOther}
 
 // Extensions maps each recognized extension, in lower case, to its kind.
 // Any other extension is KindOther, which no build converts.

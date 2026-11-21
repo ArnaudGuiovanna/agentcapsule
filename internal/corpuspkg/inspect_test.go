@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpusmeta"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/sandbox"
 )
 
@@ -65,14 +66,14 @@ func TestCheckImageReadsTheSuperblock(t *testing.T) {
 	if err := checkFile(t, image, size, testUUID); err != nil {
 		t.Fatal(err)
 	}
-	if err := checkFile(t, image, size, "6fa459ea-ee8a-4ca4-894e-db77e160355e"); !errors.Is(err, ErrInvalid) {
+	if err := checkFile(t, image, size, "6fa459ea-ee8a-4ca4-894e-db77e160355e"); !errors.Is(err, corpusmeta.ErrInvalid) {
 		t.Error("another UUID:", err)
 	}
-	if err := checkFile(t, image, size-4096, testUUID); !errors.Is(err, ErrInvalid) {
+	if err := checkFile(t, image, size-4096, testUUID); !errors.Is(err, corpusmeta.ErrInvalid) {
 		t.Error("past the maximum:", err)
 	}
 	errorState := derive(t, image, "ssv state 2\n")
-	if err := checkFile(t, errorState, size, testUUID); !errors.Is(err, ErrInvalid) {
+	if err := checkFile(t, errorState, size, testUUID); !errors.Is(err, corpusmeta.ErrInvalid) {
 		t.Error("errors recorded:", err)
 	}
 	longer := derive(t, image, "")
@@ -85,7 +86,7 @@ func TestCheckImageReadsTheSuperblock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := checkFile(t, longer, size*2, testUUID); !errors.Is(err, ErrInvalid) {
+	if err := checkFile(t, longer, size*2, testUUID); !errors.Is(err, corpusmeta.ErrInvalid) {
 		t.Error("bytes after the filesystem:", err)
 	}
 	// An ext4 image of the default features, with a journal, and one
@@ -100,7 +101,7 @@ func TestCheckImageReadsTheSuperblock(t *testing.T) {
 		if b, err := cmd.CombinedOutput(); err != nil {
 			t.Fatal(err, string(b))
 		}
-		if err := checkFile(t, out, 8<<20, testUUID); !errors.Is(err, ErrInvalid) {
+		if err := checkFile(t, out, 8<<20, testUUID); !errors.Is(err, corpusmeta.ErrInvalid) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
@@ -131,7 +132,7 @@ func TestInspectImageChecksTheLayout(t *testing.T) {
 		"file in ext":        "cd /ext\nwrite " + host + " x.md\n",
 		"directory twice":    "link /docs /docs/d1/loop\n",
 	} {
-		if err := InspectImage(t.Context(), derive(t, image, script), sandbox.Options{}); !errors.Is(err, ErrInvalid) {
+		if err := InspectImage(t.Context(), derive(t, image, script), sandbox.Options{}); !errors.Is(err, corpusmeta.ErrInvalid) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
@@ -164,13 +165,13 @@ func TestCorpusExtensionDataTreeIsInspectedWithoutBusinessFiles(t *testing.T) {
 	if err := InspectExtension(t.Context(), image, sandbox.Options{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := InspectImage(t.Context(), image, sandbox.Options{}); !errors.Is(err, ErrInvalid) {
+	if err := InspectImage(t.Context(), image, sandbox.Options{}); !errors.Is(err, corpusmeta.ErrInvalid) {
 		t.Fatal("extension accepted as base", err)
 	}
 	if err := os.Symlink("notes.txt", filepath.Join(dir, "alias")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := BuildExtensionImage(t.Context(), dir, image, testUUID, 64<<20); !errors.Is(err, ErrInvalid) {
+	if _, err := BuildExtensionImage(t.Context(), dir, image, testUUID, 64<<20); !errors.Is(err, corpusmeta.ErrInvalid) {
 		t.Fatal("symlink", err)
 	}
 }

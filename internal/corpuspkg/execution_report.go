@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"io"
+
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpusmeta"
 )
 
 const (
@@ -17,9 +19,9 @@ const (
 // filesystem. Writing the footer last makes incomplete writes detectable.
 func WriteExecutionReport(w io.WriterAt, capacity, imageBytes int64, raw []byte) error {
 	if len(raw) == 0 || len(raw) > MaxExecutionReportBytes || imageBytes <= 0 || capacity-imageBytes < int64(len(raw))+executionFooterBytes || capacity < imageBytes {
-		return invalid("output drive has no room for the execution report")
+		return corpusmeta.Invalid("output drive has no room for the execution report")
 	}
-	if _, err := ParseReport(raw); err != nil {
+	if _, err := corpusmeta.ParseReport(raw); err != nil {
 		return err
 	}
 	var footer [executionFooterBytes]byte
@@ -38,7 +40,7 @@ func WriteExecutionReport(w io.WriterAt, capacity, imageBytes int64, raw []byte)
 // describe this build and its commit before trusting any per-file status.
 func ReadExecutionReport(r io.ReaderAt, capacity, imageBytes int64, build, commit string) ([]byte, error) {
 	if imageBytes <= 0 || capacity < imageBytes || capacity-imageBytes <= executionFooterBytes {
-		return nil, invalid("execution report overlaps the image")
+		return nil, corpusmeta.Invalid("execution report overlaps the image")
 	}
 	var footer [executionFooterBytes]byte
 	if _, err := r.ReadAt(footer[:], capacity-executionFooterBytes); err != nil {
@@ -46,7 +48,7 @@ func ReadExecutionReport(r io.ReaderAt, capacity, imageBytes int64, build, commi
 	}
 	n := binary.BigEndian.Uint64(footer[8:16])
 	if string(footer[:8]) != executionReportMagic || n == 0 || n > MaxExecutionReportBytes || n > uint64(capacity-imageBytes-executionFooterBytes) {
-		return nil, invalid("execution report footer")
+		return nil, corpusmeta.Invalid("execution report footer")
 	}
 	raw := make([]byte, int(n))
 	if _, err := r.ReadAt(raw, capacity-executionFooterBytes-int64(n)); err != nil {
@@ -54,14 +56,14 @@ func ReadExecutionReport(r io.ReaderAt, capacity, imageBytes int64, build, commi
 	}
 	sum := sha256.Sum256(raw)
 	if !bytes.Equal(sum[:], footer[16:]) {
-		return nil, invalid("execution report digest")
+		return nil, corpusmeta.Invalid("execution report digest")
 	}
-	report, err := ParseReport(raw)
+	report, err := corpusmeta.ParseReport(raw)
 	if err != nil {
 		return nil, err
 	}
 	if report.BuildID != build || report.Commit != commit {
-		return nil, invalid("execution report build or commit")
+		return nil, corpusmeta.Invalid("execution report build or commit")
 	}
 	return raw, nil
 }
