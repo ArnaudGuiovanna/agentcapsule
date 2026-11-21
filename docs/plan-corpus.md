@@ -14,21 +14,21 @@ Les routes, formats et commandes ci-dessous sont des propositions de conception.
 
 ## Suivi du chantier
 
-**20 novembre 2026 · Lots 1 à 4 intégrés.** Le plan s’appuie sur l’état du dépôt à `321143b` (release `v0.0.1`).
+**21 novembre 2026.** Résultats de la campagne locale sur PostgreSQL 18.6 et KVM.
 
 | Lot | État |
 |---|---|
-| 0. Contrats, ADR 023, modèle Quint | Fait (ADR 023, brouillon OpenAPI `openapi/drafts/corpora.yaml`, exigences COR-001 à COR-009, `spec/corpus_lifecycle.qnt`) |
-| 1. Formats et paquet | Validé. Le lint local et la reproductibilité de l’image ext4 passent. |
-| 2. Passerelle multimodale | Intégrée. Comptage et règlement validés sur PostgreSQL. La recette sur fournisseurs réels reste ouverte. |
-| 3. Sources Git | Intégré. La récupération par SHA, les objets LFS et les identifiants de source passent les tests locaux. La recette GitHub et GitLab reste ouverte. |
-| 4. Disques supplémentaires et montage dans l’invité | Validé sur KVM le 20 novembre 2026. Les cinq tests du lot couvrent le partage entre trois VM, les montages en lecture seule, le refus d’un mauvais UUID, l’ordre des disques et la compatibilité de la base 1. La migration `0058_corpus_mounts` enregistre les fonctionnalités de l’image et la base du harness. |
-| 5. Agent de construction | Non démarré |
-| 6. Publication, liaison et cache | Non démarré |
-| 7. CLI et documentation | Non démarré |
-| 8. SDK et adaptateur | Non démarré |
-| 9. Enrichisseurs | Non démarré |
-| 10. Recette | Non démarré |
+| 0. Contrats, ADR 023, modèle Quint | ADR 023, contrats et modèle de cycle de vie validés. |
+| 1. Formats et paquet | Le lint du dépôt et la fabrication reproductible de l’image ext4 sont validés. |
+| 2. Passerelle multimodale | Les services locaux ont lu le scan Orion avec Tesseract, transcrit la phrase française avec Whisper et renvoyé deux vecteurs de 384 dimensions avec Ollama. |
+| 3. Sources Git | Le worker a téléchargé et vérifié l’archive d’un dépôt privé GitHub épinglé par SHA. Les objets LFS ont été contrôlés dans la recette mixte. La recette des forges du 21 novembre porte sur GitHub. |
+| 4. Disques supplémentaires et montage dans l’invité | Les tests KVM vérifient les montages en lecture seule, le partage d’inode, l’ordre des disques, le contrôle de l’UUID et la compatibilité de la base 1. |
+| 5. Agent de construction | La release Dagger a converti le PDF Orion dans une VM de construction privée. Le second build réutilise son cache et produit la même image. |
+| 6. Publication, liaison et cache | L’API a permis l’essai avant publication. Trois VM ont lu la même image après publication, liaison au template et rollout. |
+| 7. CLI et documentation | Le CLI déclare un dépôt, lance la construction, suit son état, exporte l’index, lit le rapport, essaie et publie la version. |
+| 8. SDK et adaptateur | Les lecteurs Go, Python et MCP retrouvent le même passage et le même localisateur dans le fichier SQLite en lecture seule. |
+| 9. Enrichisseurs | L’enrichisseur Go signé a produit une extension autorisée par l’API. Trois VM ont partagé la base et l’extension après le rollout. |
+| 10. Recette | Le corpus mixte couvre huit fichiers. Modifier le CSV a réutilisé les sept autres conversions. Trois agents Pi ont chacun cité le code Orion en page 1 et la température en page 2. |
 
 ## 1. Parcours à livrer
 
@@ -371,7 +371,7 @@ agentcapsule corpus-release deprecate "$RELEASE_V2"
 
 | Exercice | Condition de réussite |
 |---|---|
-| Construction d’un dépôt GitLab privé mixte (texte, PDF scanné, PPTX, XLSX, audio, vidéo LFS) | `REVIEW` atteint. Rapport sans fichier oublié. Chaque document a sa vue `.md` et son `doc.json` ; les vidéos ont leurs timecodes et leurs images clés. Coûts imputés au bon budget. |
+| Construction depuis un dépôt Git privé et recette complémentaire d’un corpus mixte (texte, PDF scanné, PPTX, XLSX, audio, vidéo LFS) | `REVIEW` atteint. Rapport sans fichier oublié. Chaque document a sa vue `.md` et son `doc.json` ; les vidéos ont leurs timecodes et leurs images clés. Coûts imputés au bon budget. |
 | Même construction relancée sur le même SHA | Même empreinte d’image, aucune nouvelle inférence (cache de conversion) |
 | Modification d’un seul fichier et reconstruction | Seul ce fichier est retraité |
 | Publication de `finance-l3:3` puis tentative de republier la version 3 avec un autre contenu | `version_conflict` |
