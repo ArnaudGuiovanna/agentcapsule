@@ -20,6 +20,7 @@ import (
 
 const (
 	invocationEventsPath   = "/v1/invocations/{id}/events"
+	buildEventsPath        = "/v1/corpus-builds/{id}/events"
 	operationEventsPath    = "/v1/operations/{id}/events"
 	streamChannel          = "agentcapsule_invocation_stream"
 	policyChannel          = "agentcapsule_organization_policy"
@@ -31,7 +32,7 @@ const (
 )
 
 func isEventRoute(route string) bool {
-	return route == invocationEventsPath || route == operationEventsPath
+	return route == invocationEventsPath || route == operationEventsPath || route == buildEventsPath
 }
 
 type subscriptionKey struct{ tenant, principal, invocation string }
@@ -49,7 +50,7 @@ func (s *Server) StartEventStreams(ctx context.Context, limit int) error {
 	if limit < 1 || limit > 100000 {
 		return controlplane.ErrInput
 	}
-	hub, err := pgnotify.New(s.store.Connect, streamChannel, policyChannel)
+	hub, err := pgnotify.New(s.store.Connect, streamChannel, policyChannel, "agentcapsule_corpus_build")
 	if err != nil {
 		return err
 	}
@@ -142,6 +143,7 @@ func (e *eventWriter) write(name, id string, data any) error {
 }
 
 type subscriber struct {
+	build                bool
 	catalog              *controlplane.AgentCatalog
 	principal            controlplane.Principal
 	op                   string
@@ -158,6 +160,9 @@ func (s *subscriber) read(ctx context.Context) (controlplane.OutputStreamView, e
 	after := s.pos.seq
 	if s.pos.attempt == 0 {
 		after = 0
+	}
+	if s.build {
+		return s.catalog.ReadCorpusBuildStream(ctx, s.principal, s.op, s.pos.attempt, after, 64)
 	}
 	return s.catalog.ReadOutputStreamPage(ctx, s.principal, s.op, s.pos.attempt, after, 64)
 }
@@ -217,6 +222,8 @@ func (s *subscriber) page(ctx context.Context, v controlplane.OutputStreamView, 
 			}
 			s.pos.seq = frame.Seq
 		}
+		// A build page may have filtered private frames from this chunk.
+		s.pos.seq = max(s.pos.seq, chunk.LastSeq)
 	}
 	if len(v.Chunks) == 64 && s.pos.seq < v.LastSeq {
 		return true, false, nil
@@ -228,7 +235,7 @@ func (s *subscriber) page(ctx context.Context, v controlplane.OutputStreamView, 
 		s.truncated = true
 	}
 	switch v.State {
-	case "completed", "failed", "expired", "canceled":
+	case "completed", "failed", "expired", "canceled", "REVIEW", "PUBLISHED", "FAILED", "CANCELED", "EXPIRED":
 	case "lost":
 		if v.ErrorCode == "" {
 			return false, false, nil
@@ -284,13 +291,17 @@ func (s *Server) invocationEvents(w http.ResponseWriter, r *http.Request) {
 		failure(w, err)
 		return
 	}
-	sub := subscriber{catalog: s.catalog, principal: p, op: r.PathValue("id"), pos: pos, writer: eventWriter{w: w, controller: http.NewResponseController(w)}}
+	sub := subscriber{build: r.Pattern == buildEventsPath, catalog: s.catalog, principal: p, op: r.PathValue("id"), pos: pos, writer: eventWriter{w: w, controller: http.NewResponseController(w)}}
 	ctx := r.Context()
 	var wake, policy <-chan struct{}
 	var pollC <-chan time.Time
 	if s.events.hub != nil {
 		var stopOp, stopPolicy func()
-		wake, stopOp = s.events.hub.Subscribe(streamChannel, sub.op)
+		channel := streamChannel
+		if sub.build {
+			channel = "agentcapsule_corpus_build"
+		}
+		wake, stopOp = s.events.hub.Subscribe(channel, sub.op)
 		defer stopOp()
 		policy, stopPolicy = s.events.hub.Subscribe(policyChannel, p.TenantID)
 		defer stopPolicy()

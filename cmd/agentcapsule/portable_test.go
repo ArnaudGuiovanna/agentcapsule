@@ -170,6 +170,9 @@ func TestPortableCLI(t *testing.T) {
 			} else {
 				fmt.Fprint(w, `{"state":"REVIEW"}`)
 			}
+		case "GET /v1/corpus-builds/" + buildID + "/events":
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, "event: step\nid: 1:3\ndata: {\"step\":\"file-2\",\"state\":\"done\",\"label\":\"course/part.pdf\"}\n\nevent: end\ndata: {\"state\":\"REVIEW\"}\n\n")
 		case "GET /v1/corpus-builds/" + buildID + "/review-file":
 			if r.URL.Query().Get("path") == "INDEX.md" {
 				w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
@@ -276,6 +279,9 @@ func TestPortableCLI(t *testing.T) {
 		t.Fatal("exported review index", err, string(data))
 	}
 	call("", false, "corpus-build", "index", buildID, "--output-file", index)
+	if stream := call("", true, "corpus-build", "watch", buildID); strings.Count(stream, `"version":1,"event":`) != 2 || !strings.Contains(stream, "course/part.pdf") {
+		t.Fatal("build watch", stream)
+	}
 	call("", true, "corpus-build", "try", buildID, "--agent", "agent")
 	call("", true, "corpus-build", "publish", buildID, "--version", "3")
 	call("", true, "corpus", "versions", "finance")

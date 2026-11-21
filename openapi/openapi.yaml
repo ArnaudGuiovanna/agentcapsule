@@ -1451,6 +1451,39 @@ paths:
               schema: {$ref: '#/components/schemas/CorpusBuild'}
         '409': {$ref: '#/components/responses/Problem'}
         default: {$ref: '#/components/responses/Problem'}
+  /v1/corpus-builds/{id}/events:
+    get:
+      operationId: corpusBuildEvents
+      description: >-
+        Follow the build's phases and per-file conversion progress. Requires
+        corpus:manage and the same organization role as reading review files.
+        Emits state, reset, step, truncated, end or revoked. The state is a
+        CorpusBuildState; REVIEW, PUBLISHED, FAILED, CANCELED and EXPIRED end
+        the subscription. A step's name is file-<ordinal>; its label is the
+        source-relative path. Resume after a cut with the last complete step's
+        ID. Subscribe again for the current state after a review is published.
+      parameters:
+        - {$ref: '#/components/parameters/ResourceID'}
+        - {$ref: '#/components/parameters/LastEventID'}
+      responses:
+        '200':
+          description: Build progress, with a heartbeat after 15 seconds of silence.
+          content:
+            text/event-stream:
+              schema: {type: string}
+              x-sse-events:
+                state: {$ref: '#/components/schemas/CorpusBuildProgressEvent'}
+                reset: {$ref: '#/components/schemas/ResetEvent'}
+                step: {$ref: '#/components/schemas/StepEvent'}
+                truncated: {$ref: '#/components/schemas/TruncatedEvent'}
+                end: {$ref: '#/components/schemas/CorpusBuildProgressEvent'}
+                revoked: {$ref: '#/components/schemas/RevokedEvent'}
+        '400': {$ref: '#/components/responses/Problem'}
+        '403': {$ref: '#/components/responses/Problem'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '429': {$ref: '#/components/responses/Problem'}
+        '503': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
   /v1/corpus-builds/{id}/review:
     get:
       operationId: listCorpusBuildReview
@@ -3864,6 +3897,14 @@ components:
         latest_build_id: {type: string}
         latest_release: {$ref: '#/components/schemas/CorpusReleaseReference'}
         created_at: {type: string, format: date-time}
+    CorpusBuildProgressEvent:
+      type: object
+      additionalProperties: false
+      required: [state, attempt]
+      properties:
+        state: {$ref: '#/components/schemas/CorpusBuildState'}
+        attempt: {type: integer, minimum: 1}
+        error_code: {type: string}
     CorpusBuildState:
       type: string
       enum: [QUEUED, FETCHING, SCANNING, FETCHING_LFS, CONVERTING, PACKAGING, REVIEW, PUBLISHED, FAILED, CANCELED, EXPIRED]

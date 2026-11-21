@@ -508,28 +508,38 @@ func (c *AgentCatalog) ReadOutputStreamPage(ctx context.Context, p Principal, op
 	if attempt != 0 && attempt != out.Attempt {
 		after = 0
 	}
+	out.Chunks, err = c.readStreamChunks(ctx, tx, op, agentID, p.ID, out.Attempt, after, limit)
+	if err != nil {
+		return OutputStreamView{}, err
+	}
+	return out, commit(ctx, tx)
+}
+
+// readStreamChunks authenticates each sealed chunk's writer and requester.
+// Its caller establishes the reader's authority in the same snapshot.
+func (c *AgentCatalog) readStreamChunks(ctx context.Context, tx pgx.Tx, op, agentID, requester string, attempt int, after int64, limit int) ([]StreamChunk, error) {
 	rows, err := tx.Query(ctx, `SELECT c.first_seq,c.last_seq,p.id,p.kind,p.ref_id,p.key_id,p.content_hash,p.ciphertext,k.key_hash,
             (SELECT array_agg(tp.agent_id ORDER BY tp.agent_id) FROM transit_parties tp WHERE tp.payload_id=p.id),
             (SELECT array_agg(tp.owner_user_id ORDER BY tp.agent_id) FROM transit_parties tp WHERE tp.payload_id=p.id)
         FROM invocation_stream_chunks c JOIN transit_payloads p ON c.payload_id=p.id JOIN transit_keys k ON k.id=p.key_id
         WHERE c.operation_id=$1 AND c.attempt=$2 AND c.last_seq>$3 AND p.purged_at IS NULL
-          AND (p.purge_after IS NULL OR p.purge_after>clock_timestamp()) ORDER BY c.first_seq LIMIT $4`, op, out.Attempt, after, limit)
+          AND (p.purge_after IS NULL OR p.purge_after>clock_timestamp()) ORDER BY c.first_seq LIMIT $4`, op, attempt, after, limit)
 	if err != nil {
-		return OutputStreamView{}, err
+		return nil, err
 	}
 	defer rows.Close()
-	out.Chunks, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (StreamChunk, error) {
-		ch := StreamChunk{Attempt: out.Attempt}
-		b := transitBinding{Version: 1, Parties: []transitParty{{agentID, p.ID}}}
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (StreamChunk, error) {
+		ch := StreamChunk{Attempt: attempt}
+		b := transitBinding{Version: 1, Parties: []transitParty{{agentID, requester}}}
 		var ciphertext, keyHash []byte
 		var agents, owners []string
 		if err := row.Scan(&ch.FirstSeq, &ch.LastSeq, &b.ID, &b.Kind, &b.Reference, &b.KeyID, &b.Hash, &ciphertext, &keyHash, &agents, &owners); err != nil {
 			return ch, err
 		}
-		if !slices.Equal(agents, []string{agentID}) || !slices.Equal(owners, []string{p.ID}) {
+		if !slices.Equal(agents, []string{agentID}) || !slices.Equal(owners, []string{requester}) {
 			return ch, ErrNotFound
 		}
-		if b.Kind != "stream_chunk" || b.Reference != fmt.Sprintf("%s/%d/%d", op, out.Attempt, ch.FirstSeq) {
+		if b.Kind != "stream_chunk" || b.Reference != fmt.Sprintf("%s/%d/%d", op, attempt, ch.FirstSeq) {
 			return ch, ErrTransitPayload
 		}
 		key, ok := c.transit.keys[b.KeyID]
@@ -540,8 +550,4 @@ func (c *AgentCatalog) ReadOutputStreamPage(ctx context.Context, p Principal, op
 		ch.Frames = body
 		return ch, err
 	})
-	if err != nil {
-		return OutputStreamView{}, err
-	}
-	return out, commit(ctx, tx)
 }

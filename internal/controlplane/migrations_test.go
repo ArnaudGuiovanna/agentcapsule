@@ -377,6 +377,8 @@ func revertTenantAgents(t *testing.T, s *Store) {
 	t.Helper()
 	if _, err := s.pool.Exec(t.Context(), `
         ALTER TABLE agents DROP COLUMN IF EXISTS enricher_id CASCADE;
+        DROP FUNCTION IF EXISTS corpus_remember_conversion(), corpus_notify_build(), corpus_notify_file_progress() CASCADE;
+        ALTER TABLE IF EXISTS corpus_builds DROP COLUMN IF EXISTS conversion_invocation_id;
         DROP TABLE IF EXISTS corpus_audit, corpus_extensions, corpus_enrichers, corpus_review_segments, corpus_review_files, agent_corpora, corpus_releases, corpus_builds, corpora, source_credentials;
         DROP FUNCTION IF EXISTS protect_corpus_release();
         ALTER TABLE agents DROP COLUMN IF EXISTS kind CASCADE, DROP COLUMN IF EXISTS builder_principal CASCADE;

@@ -168,6 +168,7 @@ var rbacRoutes = append([]rbacRoute{
 	{Method: "POST", Path: "/v1/corpus-builds/{review}/extensions", Success: 202, Want: rbacManage, body: `{"enricher_id":"{enricher}"}`},
 	{Method: "GET", Path: "/v1/corpus-extensions/{extension}", Success: 200, Want: rbacManage},
 	{Method: "GET", Path: "/v1/corpus-builds/{review}/review", Success: 200, Want: rbacManage},
+	{Method: "GET", Path: "/v1/corpus-builds/{review}/events", Success: 200, Want: rbacManage},
 	{Method: "GET", Path: "/v1/corpus-builds/{review}/review-file?path=report.json", Success: 200, Want: rbacManage},
 	{Method: "POST", Path: "/v1/corpus-builds/{review}/try", Success: 200, Want: rbacManage, body: `{"agent_id":"{corpus_agent}","mount":"matrix"}`},
 	{Method: "POST", Path: "/v1/corpus-builds/{fresh}/publish", Success: 201, Want: rbacManage, body: `{"version":1}`, fresh: rbacFreshCorpusReview},

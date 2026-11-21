@@ -54,7 +54,7 @@ func reserveCorpusGuest(ctx context.Context, tx pgx.Tx, tenant, targetHost, rele
 	var phase, host, current string
 	var capabilities = []string{}
 	if kind == "corpus_builder" {
-		capabilities = []string{"llm.invoke"}
+		capabilities = []string{"llm.invoke", "stream.output"}
 	}
 	err = tx.QueryRow(ctx, `SELECT a.id,a.phase,x.host_id,x.release_id FROM agents a JOIN agent_specs x ON x.agent_id=a.id WHERE a.tenant_id=$1 AND a.kind=$2 AND a.enricher_id IS NOT DISTINCT FROM nullif($3,'') FOR UPDATE OF a`, tenant, kind, enricher).Scan(&agentID, &phase, &host, &current)
 	if errors.Is(err, pgx.ErrNoRows) {

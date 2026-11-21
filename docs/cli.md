@@ -239,3 +239,18 @@ EXPIRED, and 130 on interrupt. Bind a published release in the template's
 The guest applies the binding at its next boot. Use `agent corpora AGENT`
 to inspect it and `corpus-release deprecate RELEASE_ID` to close a
 release to new bindings. [Corpora](corpus.md) · [HTTP API](api/corpora.md)
+
+### Follow a corpus build as it converts files
+
+```sh
+agentcapsule corpus-build watch "$build"
+```
+
+The command writes JSON lines for phase changes and the start or end of
+each conversion. The step `file-12`, for example, identifies the same
+file at both points. Its label carries the source-relative path. The
+client resumes after the last step it printed if a connection breaks.
+REVIEW and PUBLISHED exit with 0. FAILED, CANCELED, EXPIRED or a revoked
+subscription exit with 5. An interrupt exits with 130. The caller needs
+the same authorization as a review reader. Use
+`operation wait --type corpus-build` when phase-level metadata is sufficient.

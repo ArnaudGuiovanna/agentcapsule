@@ -27,6 +27,7 @@ var commands = map[string]string{
 	"corpus build":              "POST /corpora/{corpus}/builds",
 	"corpus versions":           "GET /corpus-releases",
 	"corpus-build list":         "GET /corpus-builds",
+	"corpus-build watch":        "GET /corpus-builds/{id}/events",
 	"corpus-build show":         "GET /corpus-builds/{id}",
 	"corpus-build cancel":       "POST /corpus-builds/{id}/cancel",
 	"corpus-build review":       "GET /corpus-builds/{id}/review",

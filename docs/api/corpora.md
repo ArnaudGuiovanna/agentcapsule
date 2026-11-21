@@ -47,3 +47,23 @@ by enrichment and by consumers of enriched releases must declare both
 `corpus.mount` and `corpus.extensions`. At boot the guest checks disk order
 and UUIDs, then mounts each extension read-only at
 `/corpus/<mount>/ext/<name>/`.
+
+### Live file progress
+
+`GET /v1/corpus-builds/{id}/events` uses SSE and requires review access
+(`corpus:manage` for an owner or organization administrator). State events
+name the build phase. Conversion steps carry a file ordinal, its source
+path and the started/done/failed state. `Last-Event-ID` replays retained
+steps from the conversion attempt after a reconnect. Conversions already finished when the progress migration runs expose their
+phase and outcome. The server checks
+access on policy changes and every ten seconds. A terminal build sends
+`end`, including at REVIEW while its files await approval.
+
+Enable `stream.output` alongside `llm.invoke` in the signed corpus builder's
+release manifest. The worker's managed builder policy includes both
+capabilities. The organization policy must allow `stream.output` when
+one is configured. The tenant's private technical principal owns the
+builder invocation; its output is projected only as file progress through
+the build route. Builds using a release or policy without `stream.output`
+still report phases and a final outcome. No bearer token is issued to the
+private principal for readers to use.

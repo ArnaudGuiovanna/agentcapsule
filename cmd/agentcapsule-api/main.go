@@ -51,7 +51,7 @@ func run(args []string) int {
 	cert := f.String("tls-cert", "", "TLS certificate chain (PEM), reloaded on SIGHUP")
 	tlsKey := f.String("tls-key", "", "TLS private key (PEM, mode 0600), reloaded on SIGHUP")
 	tlsName := f.String("tls-server-name", "", "name clients use to reach the API; the certificate must cover it")
-	maxStreams := f.Int("max-event-streams", api.DefaultMaxEventStreams, "Maximum simultaneous invocation event subscriptions (1 to 100000)")
+	maxStreams := f.Int("max-event-streams", api.DefaultMaxEventStreams, "Maximum simultaneous invocation and corpus build event subscriptions (1 to 100000)")
 	metricsListen := f.String("metrics-listen", "", "loopback address serving Prometheus metrics at /metrics (none when empty)")
 	traceFile := f.String("trace-file", "", "absolute path of a file receiving the spans as OTLP/JSON lines (none when empty)")
 	preflightOnly := f.Bool("preflight", false, "check this configuration (TLS files, ports, PostgreSQL, the authority service), print what to fix, then exit")

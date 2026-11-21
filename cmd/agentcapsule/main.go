@@ -216,7 +216,10 @@ func run(ctx context.Context, args []string, in io.Reader, out, errout io.Writer
 	if err = api.resolveCorpusAction(ctx, &a, c.Token); err != nil {
 		return err
 	}
-	if a.name == "invocation watch" {
+	if a.name == "corpus-build watch" && cli.outputFile != "" {
+		return usageError{errors.New("corpus-build watch writes to stdout")}
+	}
+	if a.name == "invocation watch" || a.name == "corpus-build watch" {
 		return cli.watchInvocation(ctx, api, a.path, textOnly)
 	}
 	if a.method != "GET" {

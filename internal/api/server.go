@@ -96,6 +96,7 @@ func NewForHost(store *controlplane.Store, accounts *controlplane.Accounts, host
 	s.handle("/v1/queue/limits", s.queueLimits)
 	s.handle("/v1/invocations/{id}/result", s.instructionResult)
 	s.handle(invocationEventsPath, s.invocationEvents)
+	s.handle(buildEventsPath, s.invocationEvents)
 	s.handle(operationEventsPath, s.invocationEvents)
 	s.handle("/v1/invocations/{id}/cancel", s.cancelInvocation)
 	s.handle("/v1/invocations/{id}/replay", s.replayInvocation)

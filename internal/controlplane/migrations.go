@@ -221,6 +221,9 @@ var corpusBuilderSQL string
 //go:embed migrations/0062_corpus_extensions.sql
 var corpusExtensionsSQL string
 
+//go:embed migrations/0063_corpus_build_streams.sql
+var corpusBuildStreamsSQL string
+
 // Append migrations; never edit an installed migration. The original schema
 // also upgrades pre-ledger installations, preserving its historical backfills.
 // Later calls validate its checksum without replaying DDL or those backfills.
@@ -287,6 +290,7 @@ var controlPlaneMigrations = []schemaMigration{
 	{version: 60, name: "corpus-builds", sql: corpusBuildsSQL},
 	{version: 61, name: "corpus-builder", sql: corpusBuilderSQL},
 	{version: 62, name: "corpus-extensions", sql: corpusExtensionsSQL},
+	{version: 63, name: "corpus-build-streams", sql: corpusBuildStreamsSQL},
 }
 
 func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error {

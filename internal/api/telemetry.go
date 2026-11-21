@@ -48,7 +48,7 @@ func (s *Server) EnableTelemetry(registry *telemetry.Registry, events io.Writer)
 		log: telemetry.NewLogger(events, map[string][]string{"event": {"http_request", "audit_refusal_unrecorded"}, "route": routes, "method": httpMethods,
 			"problem": problemCodes}),
 	}
-	s.events.gauge = registry.Gauge("agentcapsule_api_streams_active", "Open invocation event subscriptions.")
+	s.events.gauge = registry.Gauge("agentcapsule_api_streams_active", "Open invocation and corpus build event subscriptions.")
 	s.events.gauge.Set(0)
 	s.observeRevocations(registry)
 }
