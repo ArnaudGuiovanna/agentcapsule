@@ -15,8 +15,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptrace"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/telemetry"
@@ -107,7 +109,14 @@ type Config struct {
 	// line included (60 s); in total, retries included (300 s, the platform
 	// channel's capsuleprotocol.LLMCallTimeout).
 	StreamFirstByte, StreamIdle, StreamTotal time.Duration
+	// MaxIdleConnsPerHost is how many idle connections the gateway keeps to
+	// each provider address, so that concurrent calls reuse them instead of
+	// a new TCP and TLS handshake each (DefaultMaxIdleConnsPerHost).
+	MaxIdleConnsPerHost int
 }
+
+// DefaultMaxIdleConnsPerHost replaces net/http's default of 2.
+const DefaultMaxIdleConnsPerHost = 32
 
 type Gateway struct {
 	cfg      Config
@@ -146,6 +155,7 @@ func newGateway(c Config, t TestOptions) *Gateway {
 	c.StreamFirstByte = cmp.Or(max(c.StreamFirstByte, 0), 60*time.Second)
 	c.StreamIdle = cmp.Or(max(c.StreamIdle, 0), 60*time.Second)
 	c.StreamTotal = cmp.Or(max(c.StreamTotal, 0), 300*time.Second)
+	c.MaxIdleConnsPerHost = cmp.Or(max(c.MaxIdleConnsPerHost, 0), DefaultMaxIdleConnsPerHost)
 	if c.Now == nil {
 		c.Now = time.Now
 	}
@@ -161,7 +171,7 @@ func newGateway(c Config, t TestOptions) *Gateway {
 			}
 		}
 	}
-	return &Gateway{cfg: c, http: newClient(c.AllowInternal, t), breakers: map[string]*breaker{}}
+	return &Gateway{cfg: c, http: newClient(c.AllowInternal, c.MaxIdleConnsPerHost, t), breakers: map[string]*breaker{}}
 }
 
 func (g *Gateway) admit(key string) error {
@@ -213,9 +223,10 @@ func (r Request) valid() bool {
 }
 
 // Complete performs one logical call: at most MaxAttempts upstream requests,
-// retrying only before the provider has accepted work (connection failure, 429,
-// 5xx). A timeout after the request was sent is reported as ErrOutcomeUnknown
-// and is not retried, since a retry could be billed twice.
+// retrying only when the provider cannot have accepted work (a failure before
+// any connection, 429, 5xx). A transport error once connected, a timeout
+// included, is reported as ErrOutcomeUnknown and is not retried, since the
+// request may have been written and a retry could be billed twice.
 func (g *Gateway) Complete(ctx context.Context, route Route, req Request) (out Response, err error) {
 	ctx, span := startCall(ctx, "complete", route)
 	defer func() { endCall(span, out.Usage, err) }()
@@ -287,6 +298,7 @@ func (g *Gateway) exchange(ctx context.Context, breakerKey, target string, body 
 func (g *Gateway) once(ctx context.Context, target string, body []byte, headers map[string]string, parse func([]byte) error) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, g.cfg.Timeout)
 	defer cancel()
+	ctx, conn := traceConnection(ctx)
 	hr, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(body))
 	if err != nil {
 		return false, ErrInvalid
@@ -297,14 +309,7 @@ func (g *Gateway) once(ctx context.Context, target string, body []byte, headers 
 	}
 	resp, err := g.http.Do(hr)
 	if err != nil {
-		if errors.Is(err, ErrAddressRefused) {
-			return false, ErrAddressRefused // nothing was sent
-		}
-		if ctx.Err() != nil || isTimeout(err) {
-			// Sent, answer never seen: do not retry, do not claim zero cost.
-			return false, ErrOutcomeUnknown
-		}
-		return true, ErrUnavailable // could not connect; nothing was accepted
+		return sendFailure(err, conn.got.Load())
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, g.cfg.MaxResponse+1))
@@ -327,9 +332,36 @@ func (g *Gateway) once(ctx context.Context, target string, body []byte, headers 
 	return false, nil
 }
 
-func isTimeout(err error) bool {
-	var t interface{ Timeout() bool }
-	return errors.As(err, &t) && t.Timeout()
+// connectionTrace records whether an attempt was given a connection. Until
+// then nothing of the request can have reached the provider.
+type connectionTrace struct{ got atomic.Bool }
+
+func traceConnection(ctx context.Context) (context.Context, *connectionTrace) {
+	c := &connectionTrace{}
+	return httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+		// net/http asks for another connection within one attempt only when
+		// the previous one wrote nothing of the request (a reused connection
+		// the server had closed): the attempt starts again from nothing.
+		GetConn: func(string) { c.got.Store(false) },
+		GotConn: func(httptrace.GotConnInfo) { c.got.Store(true) },
+	}), c
+}
+
+// sendFailure classifies a transport error of one attempt: whether it may be
+// retried, and the error. Only an error before any connection is proven to
+// have sent nothing (a name that does not resolve, a refused connection, a
+// failed TLS handshake, an address the policy refuses): it may be retried, and
+// the accounting releases the call. Once connected, the request may have been
+// written: whatever follows (a reset, a close, a timeout, the caller leaving)
+// is an unknown outcome, never retried, never read as zero cost.
+func sendFailure(err error, connected bool) (bool, error) {
+	switch {
+	case errors.Is(err, ErrAddressRefused):
+		return false, ErrAddressRefused // nothing was sent
+	case connected:
+		return false, ErrOutcomeUnknown
+	}
+	return true, ErrUnavailable
 }
 
 func join(base, path string) string { return strings.TrimRight(base, "/") + path }

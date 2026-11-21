@@ -48,6 +48,19 @@ func TestLLMConfigAllowsOnlyTheOperatorsInternalProviders(t *testing.T) {
 	if err != nil || !c.RequireHTTPS {
 		t.Fatal("production must require HTTPS", err)
 	}
+	// Idle connections per provider (P-12): 32 by default, the operator's
+	// number otherwise, within its bounds.
+	if c.MaxIdleConnsPerHost != llmgateway.DefaultMaxIdleConnsPerHost {
+		t.Fatal("idle connections per host by default:", c.MaxIdleConnsPerHost)
+	}
+	if c, err = (&ServiceLLM{MaxIdleConnsPerHost: 100}).gatewayConfig(true); err != nil || c.MaxIdleConnsPerHost != 100 {
+		t.Fatal("idle connections per host:", c.MaxIdleConnsPerHost, err)
+	}
+	for _, bad := range []int{-1, 1, 513} {
+		if _, err := (&ServiceLLM{MaxIdleConnsPerHost: bad}).gatewayConfig(true); err == nil {
+			t.Fatal(bad, "idle connections per host accepted")
+		}
+	}
 	// An invalid entry stops the worker before it opens anything.
 	for _, bad := range [][]string{{"8.8.8.8:443"}, {"0.0.0.0/0"}, {"169.254.169.254:80"}, {"models.internal"}} {
 		cfg := ServiceConfig{LLM: &ServiceLLM{ReceiptKey: "/nonexistent/receipt.key", AllowedInternalProviders: bad}}

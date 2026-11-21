@@ -63,10 +63,15 @@ to all. The defaults are those of
 - Adapters: `openai_compatible` (`/chat/completions`, `Authorization: Bearer`)
   and `anthropic` (`/v1/messages`, `x-api-key`, `system` role folded into
   `system`).
-- Bounded retry (2 attempts by default) only before the provider has accepted
-  the work: connection failure, 429, 5xx. A timeout after sending gives
+- Bounded retry (2 attempts by default) only when the provider cannot have
+  accepted the work: a failure before any connection exists (a name that does
+  not resolve, a refused connection, a failed TLS handshake), 429, 5xx. Once a
+  connection exists the request may have been written: any transport error
+  after that point (a reset, a close without an answer, a timeout) gives
   `ErrOutcomeUnknown` and is never replayed; the cost must then be treated as
   uncertain (LLM-03). A 4xx other than 429 is a permanent refusal.
+- The gateway keeps up to 32 idle connections per provider address
+  (`llm.max_idle_conns_per_host`), so that concurrent calls reuse them.
 - Per-provider circuit breaker: opens after N consecutive failures, a single
   probe in half-open state.
 - Redirects are not followed: a 3xx answer is a permanent refusal, so the
@@ -268,8 +273,10 @@ ledger's request key.
   `stream_first_byte_timeout` and `stream_idle_timeout` bound a provider
   stream ([ADR 022](../adr/022-native-streaming.md) §3): up to the provider's
   first byte, per attempt, and between two of its events, `"60s"` each by
-  default, from `"5s"` to `"290s"`; a value out of bounds stops the worker
-  with `llm_configuration_invalid`.
+  default, from `"5s"` to `"290s"`. `max_idle_conns_per_host` is how many
+  idle connections the gateway keeps to each provider address (32 by
+  default, 2 to 512). A value out of bounds stops the worker with
+  `llm_configuration_invalid`.
 
 ## Native requests from the model endpoint
 

@@ -3,6 +3,7 @@
 package worker
 
 import (
+	"cmp"
 	"errors"
 	"path/filepath"
 	"time"
@@ -21,12 +22,15 @@ import (
 // default, so the gateway calls public addresses only (ADR 010).
 // StreamFirstByteTimeout and StreamIdleTimeout bound a provider stream (ADR
 // 022): up to the provider's first byte, per attempt, and between two of its
-// events; "60s" each by default, 5s to 290s.
+// events; "60s" each by default, 5s to 290s. MaxIdleConnsPerHost is how many
+// idle connections the gateway keeps to each provider address, 32 by
+// default, 2 to 512.
 type ServiceLLM struct {
 	ReceiptKey               string   `json:"receipt_key"`
 	AllowedInternalProviders []string `json:"allowed_internal_providers,omitempty"`
 	StreamFirstByteTimeout   string   `json:"stream_first_byte_timeout,omitempty"`
 	StreamIdleTimeout        string   `json:"stream_idle_timeout,omitempty"`
+	MaxIdleConnsPerHost      int      `json:"max_idle_conns_per_host,omitempty"`
 }
 
 // gatewayConfig is the model gateway's configuration. With requireHTTPS
@@ -46,11 +50,15 @@ func (l *ServiceLLM) gatewayConfig(requireHTTPS bool) (llmgateway.Config, error)
 			return llmgateway.Config{}, errors.New("invalid llm stream timeout")
 		}
 	}
+	if l.MaxIdleConnsPerHost != 0 && (l.MaxIdleConnsPerHost < 2 || l.MaxIdleConnsPerHost > 512) {
+		return llmgateway.Config{}, errors.New("invalid llm max_idle_conns_per_host")
+	}
 	// Two attempts of 140 s fit inside the bridge's 300 s call budget; one
 	// attempt leaves room for a long answer from an adapted agent. A stream
 	// has its own bounds, and the channel's in total.
 	return llmgateway.Config{Timeout: 140 * time.Second, RequireHTTPS: requireHTTPS, AllowInternal: allow,
-		StreamFirstByte: bounds[0], StreamIdle: bounds[1], StreamTotal: capsuleprotocol.LLMCallTimeout}, nil
+		StreamFirstByte: bounds[0], StreamIdle: bounds[1], StreamTotal: capsuleprotocol.LLMCallTimeout,
+		MaxIdleConnsPerHost: cmp.Or(l.MaxIdleConnsPerHost, llmgateway.DefaultMaxIdleConnsPerHost)}, nil
 }
 
 // OpenLLM never creates a key. Without the matching key the worker simply cannot
