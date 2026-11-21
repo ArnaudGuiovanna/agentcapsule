@@ -67,3 +67,9 @@ builder invocation; its output is projected only as file progress through
 the build route. Builds using a release or policy without `stream.output`
 still report phases and a final outcome. No bearer token is issued to the
 private principal for readers to use.
+
+## Model access and costs
+
+The builder calls the organization's LLM gateway using the aliases in the source manifest. The owner can configure an OCR alias with the `ocr` operation and a price per page, and a transcription alias with `transcribe` and a price per minute. An alias with `access: organization` is available to the organization's builder. To grant a listed alias after the builder's first metered call, read `GET /v1/llm/usage?period=day` with `usage:read`. Find the line for the alias used by the build and its `agent_id`. An administrator with `provider:manage` can send that ID as `{"agent_id":"agt_…"}` to `POST /v1/llm/aliases/{alias}/grants`. Choose a dedicated alias for the first metered build to identify its usage line unambiguously. The gateway checks grants and budgets at each new reservation. [LLM access and pricing](llm.md)
+
+Read `costs` on the build to see settled calls, pages, audio seconds and estimated cost in micro-units. A fully cached conversion makes zero model calls. An uncached file whose alias or hard budget denies inference is marked `failed` with `inference_failed` in its build report.

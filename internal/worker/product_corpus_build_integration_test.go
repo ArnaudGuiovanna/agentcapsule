@@ -125,8 +125,9 @@ func signCorpusTestRelease(t *testing.T, rule ociregistry.Rule, ref ociregistry.
 	return rule, ref.String()
 }
 
-func gitHubCorpusSource(t *testing.T, fixture gitHubCorpusFixture, tokenPath string) (corpussource.Policy, string) {
+func gitHubCorpusSource(t *testing.T, fixtures []gitHubCorpusFixture, tokenPath string) (corpussource.Policy, string) {
 	t.Helper()
+	fixture := fixtures[0]
 	rule := corpussource.Rule{Kind: corpussource.GitHub, Host: "github.com", Repositories: []string{fixture.Repository}}
 	if tokenPath != "" {
 		raw, err := operatorconfig.ReadPrivateUpTo(tokenPath, 4096)
@@ -138,15 +139,22 @@ func gitHubCorpusSource(t *testing.T, fixture gitHubCorpusFixture, tokenPath str
 		t.Log("source mode: live private GitHub, authenticated API and archive hosts", rule.Host, "api.github.com", rule.ArchiveHosts[0])
 		return corpussource.Policy{Rules: []corpussource.Rule{rule}}, string(bytes.TrimSpace(raw))
 	}
-	file, err := os.Open(fixture.Archive)
-	if err != nil {
-		t.Fatal(err)
-	}
-	h := sha256.New()
-	n, err := io.CopyN(h, file, fixture.Bytes)
-	file.Close()
-	if err != nil || n != fixture.Bytes || hex.EncodeToString(h.Sum(nil)) != fixture.SHA256 {
-		t.Fatal("GitHub archive checksum", err)
+	archives := make(map[string]gitHubCorpusFixture)
+	for _, f := range fixtures {
+		if f.Repository != fixture.Repository || !corpusmeta.ValidCommit(f.Commit) {
+			t.Fatal("invalid fixture origin")
+		}
+		archives["/repos/"+f.Repository+"/tarball/"+f.Commit] = f
+		file, err := os.Open(f.Archive)
+		if err != nil {
+			t.Fatal(err)
+		}
+		h := sha256.New()
+		n, err := io.CopyN(h, file, f.Bytes)
+		file.Close()
+		if err != nil || n != f.Bytes || hex.EncodeToString(h.Sum(nil)) != f.SHA256 {
+			t.Fatal("GitHub archive checksum", err)
+		}
 	}
 	// The scoped replay credential is unrelated to the token used for capture.
 	const token = "fixture-read-only-token"
@@ -155,7 +163,8 @@ func gitHubCorpusSource(t *testing.T, fixture gitHubCorpusFixture, tokenPath str
 			http.Error(w, "scope", 403)
 			return
 		}
-		if r.URL.Path != "/repos/"+fixture.Repository+"/tarball/"+fixture.Commit {
+		fixture, ok := archives[r.URL.Path]
+		if !ok {
 			http.NotFound(w, r)
 			return
 		}
@@ -178,25 +187,106 @@ func gitHubCorpusSource(t *testing.T, fixture gitHubCorpusFixture, tokenPath str
 // The fixture contains the bytes and SHA-256 captured from a private GitHub
 // repository. A private token file selects live GitHub; otherwise the test replays the capture locally.
 func TestCorpusBuilderAndConsumerOnKVM(t *testing.T) {
-	pkg := os.Getenv("AGENTCAPSULE_KVM_CORPUS_BUILDER")
 	source := os.Getenv("AGENTCAPSULE_KVM_GITHUB_CORPUS")
 	var fixture gitHubCorpusFixture
 	b, err := os.ReadFile(source)
-	if err != nil || json.Unmarshal(b, &fixture) != nil || fixture.Bytes < 1 || !corpusmeta.ValidCommit(fixture.Commit) {
+	if err != nil || json.Unmarshal(b, &fixture) != nil || fixture.Bytes < 1 || fixture.PDF == "" || !corpusmeta.ValidCommit(fixture.Commit) {
 		t.Fatal("missing or invalid GitHub corpus fixture")
 	}
-	rule, ref := corpusBuilderRegistry(t, pkg)
 	tokenPath := os.Getenv("AGENTCAPSULE_KVM_GITHUB_CORPUS_TOKEN_FILE")
-	policy, token := gitHubCorpusSource(t, fixture, tokenPath)
+	setup := setupCorpusBuilder(t, []gitHubCorpusFixture{fixture}, tokenPath)
+	lab, owner := setup.lab, setup.owner
+	ctx := t.Context()
+	build := func(key string, warm bool) controlplane.CorpusBuild {
+		t.Helper()
+		input := controlplane.RequestCorpusBuildInput{Commit: fixture.Commit}
+		if tokenPath != "" && !warm {
+			input = controlplane.RequestCorpusBuildInput{Ref: "main"}
+		}
+		job, report := setup.build(t, key, fixture, input)
+		expected := "converted"
+		if warm {
+			expected = "cached"
+		}
+		i := slices.IndexFunc(report.Files, func(f corpusmeta.ReportEntry) bool { return f.Path == fixture.PDF && f.Status == expected })
+		if i < 0 || report.Totals.Failed != 0 {
+			t.Fatal("PDF conversion", report.Totals, expected)
+		}
+		doc := report.Files[i]
+		preview := lab.request(owner(), "GET", "/v1/corpus-builds/"+job.ID+"/review-file?path=docs/"+doc.DocID+"/README.md", "", nil, 200, nil)
+		if doc.Tokens < 1 || len(bytes.TrimSpace(preview)) == 0 {
+			t.Fatal("missing native PDF review")
+		}
+		var cost map[string]*int64
+		if err := json.Unmarshal(job.Costs, &cost); err != nil {
+			t.Fatal(err)
+		}
+		for _, key := range []string{"llm_calls", "input_tokens", "output_tokens", "audio_seconds", "pages", "cost_micros"} {
+			if n := cost[key]; n == nil || *n != 0 {
+				t.Fatal("unexpected provider meter", key)
+			}
+		}
+		var sourceOK bool
+		err := lab.db.QueryRow(ctx, `SELECT source_drive->>'sha256'=$2 AND lfs_drive IS NULL AND pointers='[]'::jsonb FROM corpus_builds WHERE id=$1`, job.ID, fixture.SHA256).Scan(&sourceOK)
+		if err != nil || !sourceOK {
+			t.Fatal("source descriptor or unexpected LFS", err)
+		}
+		var calls int
+		err = lab.db.QueryRow(ctx, `SELECT count(*) FROM llm_usage WHERE agent_id=(SELECT builder_agent_id FROM corpus_builds WHERE id=$1)`, job.ID).Scan(&calls)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if calls != 0 {
+			t.Fatal("text-native PDF invoked a provider", calls)
+		}
+		t.Logf("%s digest=%s converted=%d cached=%d calls=%d costs=%s", key, job.ImageDigest, report.Totals.Converted, report.Totals.Cached, calls, job.Costs)
+		return job
+	}
+	cold := build("cold", false)
+	warm := build("warm", true)
+	if cold.ImageDigest != warm.ImageDigest {
+		t.Fatal("cold and warm images differ")
+	}
+	var published controlplane.CorpusRelease
+	lab.request(owner(), "POST", "/v1/corpus-builds/"+cold.ID+"/publish", "publish", map[string]int{"version": 1}, 201, &published)
+	var extension controlplane.CorpusExtension
+	if setup.signer != "" {
+		extension = runCourseEnrichment(t, lab, owner, setup.guest, warm, setup.signer)
+	}
+	validateCorpusDeployment(t, lab, owner, setup.image, cold, warm, published, extension, setup.guest)
+}
+
+type corpusBuilderLab struct {
+	lab      *productPeerLab
+	owner    func() string
+	download *CorpusFetcher
+	guest    corpusGuest
+	corpus   controlplane.Corpus
+	image    controlplane.SystemImage
+	signer   string
+	watch    func(string) *liveCorpusWatch
+	reviewer func() string
+}
+
+func setupCorpusBuilder(t *testing.T, fixtures []gitHubCorpusFixture, tokenPath string) *corpusBuilderLab {
+	t.Helper()
+	fixture := fixtures[0]
+	rule, ref := corpusBuilderRegistry(t, os.Getenv("AGENTCAPSULE_KVM_CORPUS_BUILDER"))
+	policy, token := gitHubCorpusSource(t, fixtures, tokenPath)
 	labRuntimeOptions = func(o *runtime.FirecrackerOptions) { o.MaxActive = 4 }
-	defer func() { labRuntimeOptions = nil }()
+	t.Cleanup(func() { labRuntimeOptions = nil })
 	lab := newProductPeerLab(t)
 	ctx := t.Context()
 	identity, org, platform := lab.installTenant(t)
 	owner := func() string { return identity.tokenFor(t, "alice", tenantKVMScopes+" corpus:manage corpus:read") }
-	cli := configureCorpusWatch(t, lab, org.ID, owner())
-	reviewer := corpusReviewAdmin(t, lab, identity, owner())
-	if err = lab.store.ConfigureHostStorage(ctx, "local", 8192); err != nil {
+	var watch func(string) *liveCorpusWatch
+	var reviewer func() string
+	if fixture.PDF != "" {
+		cli := configureCorpusWatch(t, lab, org.ID, owner())
+		watch = func(id string) *liveCorpusWatch { return beginCorpusWatch(t, cli, id) }
+		reviewer = corpusReviewAdmin(t, lab, identity, owner())
+	}
+	if err := lab.store.ConfigureHostStorage(ctx, "local", 8192); err != nil {
 		t.Fatal(err)
 	}
 	rules := []ociregistry.Rule{rule}
@@ -276,102 +366,59 @@ func TestCorpusBuilderAndConsumerOnKVM(t *testing.T) {
 			_ = lab.worker.host.Retire(ctx, id, ^uint64(0))
 		}
 	})
-	build := func(key string, warm bool) controlplane.CorpusBuild {
-		t.Helper()
-		var job controlplane.CorpusBuild
-		input := controlplane.RequestCorpusBuildInput{Commit: fixture.Commit}
-		if tokenPath != "" && !warm {
-			input = controlplane.RequestCorpusBuildInput{Ref: "main"}
+	return &corpusBuilderLab{lab: lab, owner: owner, download: download, guest: guest, corpus: corpus, image: image, signer: signer, watch: watch, reviewer: reviewer}
+}
+
+func (s *corpusBuilderLab) build(t *testing.T, key string, fixture gitHubCorpusFixture, input controlplane.RequestCorpusBuildInput) (controlplane.CorpusBuild, corpusmeta.Report) {
+	t.Helper()
+	var job controlplane.CorpusBuild
+	ctx := t.Context()
+	lab, owner, corpus, download, guest := s.lab, s.owner, s.corpus, s.download, s.guest
+	lab.request(owner(), "POST", "/v1/corpora/"+corpus.ID+"/builds", key, input, 202, &job)
+	var watch *liveCorpusWatch
+	if s.watch != nil {
+		watch = s.watch(job.ID)
+	}
+	if worked, err := download.FetchOne(ctx); err != nil || !worked {
+		t.Fatal("download", worked, err)
+	}
+	last := ""
+	lab.awaitFor("corpus guest", true, 8*time.Minute, func() bool {
+		if _, e := guest.one(ctx); e != nil {
+			t.Fatal("guest phase", e)
 		}
-		lab.request(owner(), "POST", "/v1/corpora/"+corpus.ID+"/builds", key, input, 202, &job)
-		watch := beginCorpusWatch(t, cli, job.ID)
-		if worked, err := download.FetchOne(ctx); err != nil || !worked {
-			t.Fatal("download", worked, err)
-		}
-		last := ""
-		lab.awaitFor("corpus guest", true, 8*time.Minute, func() bool {
-			if _, e := guest.one(ctx); e != nil {
-				t.Fatal("guest phase", e)
-			}
-			lab.request(owner(), "GET", "/v1/corpus-builds/"+job.ID, "", nil, 200, &job)
-			if job.State != last {
-				t.Log(key, job.State, job.ErrorCode)
-				last = job.State
-				if job.State == "PACKAGING" {
-					var seq int64
-					err := lab.db.QueryRow(ctx, `SELECT coalesce(max(s.last_seq),0) FROM corpus_builds b LEFT JOIN invocation_streams s ON s.operation_id=b.conversion_invocation_id WHERE b.id=$1`, job.ID).Scan(&seq)
-					if err != nil || seq < 2 {
-						t.Fatal("missing retained conversion frames before packaging", seq, err)
-					}
-					watch.conversion(t, fixture.PDF)
+		lab.request(owner(), "GET", "/v1/corpus-builds/"+job.ID, "", nil, 200, &job)
+		if job.State != last {
+			t.Log(key, job.State, job.ErrorCode)
+			last = job.State
+			if watch != nil && job.State == "PACKAGING" {
+				var seq int64
+				err := lab.db.QueryRow(ctx, `SELECT coalesce(max(s.last_seq),0) FROM corpus_builds b LEFT JOIN invocation_streams s ON s.operation_id=b.conversion_invocation_id WHERE b.id=$1`, job.ID).Scan(&seq)
+				if err != nil || seq < 2 {
+					t.Fatal("missing retained conversion frames before packaging", seq, err)
 				}
-			}
-			switch job.State {
-			case "REVIEW":
-				return true
-			case "FAILED", "CANCELED", "EXPIRED":
-				var opStatus, opCode string
-				e := lab.db.QueryRow(ctx, `SELECT coalesce(o.status,''),coalesce(o.error_code,'') FROM corpus_builds b LEFT JOIN platform_operations o ON o.id=b.invocation_id WHERE b.id=$1`, job.ID).Scan(&opStatus, &opCode)
-				t.Fatalf("failed corpus %s, phase operation %s %s (lookup %v)", job.ErrorCode, opStatus, opCode, e)
-			}
-			return false
-		})
-		watch.review(t, lab, reviewer(), job.ID, fixture.PDF)
-		raw := lab.request(owner(), "GET", "/v1/corpus-builds/"+job.ID+"/review-file?path=report.json", "", nil, 200, nil)
-		report, err := corpusmeta.ParseReport(raw)
-		if err != nil || report.BuildID != job.ID || report.Commit != fixture.Commit || job.ArchiveBytes != fixture.Bytes || report.Totals.Failed != 0 {
-			t.Fatal("review report", err, report.Totals)
-		}
-		expected := "converted"
-		if warm {
-			expected = "cached"
-		}
-		i := slices.IndexFunc(report.Files, func(f corpusmeta.ReportEntry) bool { return f.Path == fixture.PDF && f.Status == expected })
-		if i < 0 {
-			t.Fatal("PDF conversion", report.Totals, expected)
-		}
-		doc := report.Files[i]
-		preview := lab.request(owner(), "GET", "/v1/corpus-builds/"+job.ID+"/review-file?path=docs/"+doc.DocID+"/README.md", "", nil, 200, nil)
-		if doc.Tokens < 1 || len(bytes.TrimSpace(preview)) == 0 {
-			t.Fatal("missing native PDF review")
-		}
-		var cost map[string]*int64
-		if err := json.Unmarshal(job.Costs, &cost); err != nil {
-			t.Fatal(err)
-		}
-		for _, key := range []string{"llm_calls", "input_tokens", "output_tokens", "audio_seconds", "pages", "cost_micros"} {
-			if n := cost[key]; n == nil || *n != 0 {
-				t.Fatal("unexpected provider meter", key)
+				watch.conversion(t, fixture.PDF)
 			}
 		}
-		var sourceOK bool
-		err = lab.db.QueryRow(ctx, `SELECT source_drive->>'sha256'=$2 AND lfs_drive IS NULL AND pointers='[]'::jsonb FROM corpus_builds WHERE id=$1`, job.ID, fixture.SHA256).Scan(&sourceOK)
-		if err != nil || !sourceOK {
-			t.Fatal("source descriptor or unexpected LFS", err)
+		switch job.State {
+		case "REVIEW":
+			return true
+		case "FAILED", "CANCELED", "EXPIRED":
+			var opStatus, opCode string
+			e := lab.db.QueryRow(ctx, `SELECT coalesce(o.status,''),coalesce(o.error_code,'') FROM corpus_builds b LEFT JOIN platform_operations o ON o.id=b.invocation_id WHERE b.id=$1`, job.ID).Scan(&opStatus, &opCode)
+			t.Fatalf("failed corpus %s, phase operation %s %s (lookup %v)", job.ErrorCode, opStatus, opCode, e)
 		}
-		var calls int
-		err = lab.db.QueryRow(ctx, `SELECT count(*) FROM llm_usage WHERE agent_id=(SELECT builder_agent_id FROM corpus_builds WHERE id=$1)`, job.ID).Scan(&calls)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if calls != 0 {
-			t.Fatal("text-native PDF invoked a provider", calls)
-		}
-		t.Logf("%s digest=%s converted=%d cached=%d calls=%d costs=%s", key, job.ImageDigest, report.Totals.Converted, report.Totals.Cached, calls, job.Costs)
-		return job
+		return false
+	})
+	if watch != nil {
+		watch.review(t, lab, s.reviewer(), job.ID, fixture.PDF)
 	}
-	cold := build("cold", false)
-	warm := build("warm", true)
-	if cold.ImageDigest != warm.ImageDigest {
-		t.Fatal("cold and warm images differ")
+	raw := lab.request(owner(), "GET", "/v1/corpus-builds/"+job.ID+"/review-file?path=report.json", "", nil, 200, nil)
+	report, err := corpusmeta.ParseReport(raw)
+	if err != nil || report.BuildID != job.ID || report.Commit != fixture.Commit || job.ArchiveBytes != fixture.Bytes {
+		t.Fatal("review report", err, report.Totals)
 	}
-	var published controlplane.CorpusRelease
-	lab.request(owner(), "POST", "/v1/corpus-builds/"+cold.ID+"/publish", "publish", map[string]int{"version": 1}, 201, &published)
-	var extension controlplane.CorpusExtension
-	if signed != "" {
-		extension = runCourseEnrichment(t, lab, owner, guest, warm, signer)
-	}
-	validateCorpusDeployment(t, lab, owner, image, cold, warm, published, extension, guest)
+	return job, report
 }
 
 func runCourseEnrichment(t *testing.T, lab *productPeerLab, owner func() string, guest corpusGuest, review controlplane.CorpusBuild, signer string) controlplane.CorpusExtension {

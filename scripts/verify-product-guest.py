@@ -141,6 +141,8 @@ def main():
                    help="a2a-agent package directory written by scripts/build-a2a-harness.py (<output>/package)")
     p.add_argument("--corpus-builder", type=Path, help="package exported by dagger call corpus-builder for the PostgreSQL/KVM scenario")
     p.add_argument("--github-corpus-fixture", type=Path, help="JSON metadata of a captured GitHub archive for --corpus-builder")
+    p.add_argument("--corpus-metering-fixture", type=Path, help="JSON descriptors of the two synthetic media corpus archives")
+    p.add_argument("--corpus-media-url", help="loopback origin serving OCR and audio transcription for the corpus metering test")
     p.add_argument("--github-corpus-token-file", type=Path, help="read-only GitHub token in a private file to fetch the live fixture repository")
     p.add_argument("--course-enricher", type=Path, help="package exported by dagger call course-enricher; exercises both microVMs")
     p.add_argument("--pi-harness", type=Path,
@@ -193,6 +195,8 @@ def main():
                     f"(a terminal paste may add ESC[200~ and ESC[201~ around it); it holds {len(pi_api_key.encode())} bytes")
     if a.github_corpus_token_file and not a.corpus_builder:
         p.error("--github-corpus-token-file requires --corpus-builder and --github-corpus-fixture")
+    if bool(a.corpus_metering_fixture) != bool(a.corpus_media_url) or a.corpus_metering_fixture and not a.corpus_builder:
+        p.error("--corpus-metering-fixture and --corpus-media-url require each other and --corpus-builder")
     if bool(a.corpus_builder) != bool(a.github_corpus_fixture) or a.corpus_builder and not a.pg_bin:
         p.error("--corpus-builder and --github-corpus-fixture require each other and PostgreSQL")
     if bool(a.pg_bin) != bool(a.pg_user):
@@ -397,6 +401,10 @@ def main():
                 if a.github_corpus_token_file:
                     env["AGENTCAPSULE_KVM_GITHUB_CORPUS_TOKEN_FILE"] = str(a.github_corpus_token_file)
                 required_worker |= {"TestCorpusBuilderAndConsumerOnKVM"}
+            if a.corpus_metering_fixture:
+                env["AGENTCAPSULE_KVM_CORPUS_METERING"] = str(a.corpus_metering_fixture.resolve())
+                env["AGENTCAPSULE_KVM_CORPUS_MEDIA_URL"] = a.corpus_media_url
+                required_worker.add("TestCorpusBuilderPaidInferenceOnKVM")
             selection = "^(" + "|".join(sorted(required_worker)) + ")$"
             run("worker-integration", [a.go, "tool", "test2json", "-p", "github.com/ArnaudGuiovanna/agentcapsule/internal/worker",
                 out / "product-worker.test", "-test.v", "-test.run=" + selection, "-test.timeout=3600s"], 3660)
