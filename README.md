@@ -1,52 +1,46 @@
 # Agent Capsule
 
-**Hébergez les agents IA de votre équipe sur votre infrastructure.** Chaque agent dispose de sa propre microVM Firecracker et d’un disque chiffré. Vous choisissez qui peut l’appeler, quels documents il peut lire et combien il peut dépenser auprès des fournisseurs de modèles.
+Agent Capsule is a self-hosted platform as a service (PaaS) for running persistent AI agents on a Linux server. An organization deploys an agent program, assigns it to users or teams, and controls its model access, spending limits and document collections. The platform runs each active agent in a dedicated Firecracker microVM. Its encrypted data volume survives shutdown and is reattached when the agent wakes.
 
-[Guide de prise en main](docs/guide-sysadmin.md) · [Télécharger la dernière release](https://github.com/ArnaudGuiovanna/agentcapsule/releases/latest) · [Licence MIT](LICENSE)
+[Releases](https://github.com/ArnaudGuiovanna/agentcapsule/releases) · [HTTP API](docs/api/README.md) · [Operator CLI](docs/cli.md) · [MIT license](LICENSE)
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/hero-dark.png">
-  <img src="docs/assets/readme/hero-light.png" alt="" width="100%">
-</picture>
+## Platform capabilities
 
-## Ce que vous pouvez déployer
-
-Imaginez un assistant chargé de répondre aux questions d’astreinte. Vous publiez les procédures de votre équipe depuis un dépôt Git privé, puis vous montez la version relue dans les agents du support. Chacun consulte les mêmes documents en lecture seule. Lorsqu’un membre pose une question, il voit la réponse se construire dans son terminal et peut la retrouver après une coupure.
-
-| Votre besoin | Ce que fournit Agent Capsule |
+| Function | What the platform provides |
 |---|---|
-| Isoler plusieurs équipes | Organisations, rôles, affectations par agent et résultats privés pour le demandeur. |
-| Garder le contrôle des coûts | Une passerelle garde les clés des fournisseurs hors des VM et comptabilise les appels, avec des budgets par organisation ou agent. |
-| Mettre à jour les connaissances | Un corpus versionné transforme des documents en Markdown et en index interrogeable. Plusieurs VM partagent la même image sur l’hôte. |
-| Exploiter les agents au quotidien | Un CLI pour suivre les opérations, consulter les diagnostics, réaliser une mise à jour et vérifier une restauration. |
-| Réutiliser un agent existant | Un adaptateur pour les programmes en ligne de commande. Go, JavaScript, Python et d’autres langages peuvent utiliser le protocole du projet. [Intégration des agents](docs/adapter.md) |
+| Agent deployment | Import a signed harness package from an OCI registry and pin each agent to its digest. A harness is the program that handles requests inside the VM. An existing command-line program can use the adapter. The protocol supports implementations in any language. |
+| Compute and storage | Start a microVM on demand, set its CPU and memory, and stop it between requests. Each agent has its own encrypted writable volume. Harness images and published document collections can be shared read-only. |
+| Identity and access | Keep agents, credentials and budgets within an organization. Assign invocation rights to members, teams or service accounts. The API checks access again when a caller reads a result. |
+| Requests and streaming | Submit an invocation over HTTPS, follow its output through Server-Sent Events and resume from the last event ID after a disconnect. The caller can retrieve the stored result by invocation ID. |
+| Model access and budgets | Route model requests through the platform gateway. The organization configures provider credentials, model aliases and budgets. The gateway meters usage and keeps provider credentials outside the guest. |
+| Document collections | Build a versioned corpus from a Git commit, review the conversion report, then publish it. Agents mount the selected version with Markdown and a searchable SQLite index. OCR and transcription use separately configured services. |
+| Agent-to-agent tasks | Discover authorized peers in a private directory and delegate work under an acceptance policy. The platform can wake the receiving agent, deliver the task and retain its result. |
 
-## Premier essai
+## Deployment profile
 
-Il vous faut un **serveur de test Ubuntu 24.04 x86-64** avec KVM et systemd. Le CLI s’installe sur votre poste Linux, macOS ou Windows. Le premier essai vérifie qu’une microVM répond à un message avec l’agent de démonstration fourni. Aucune clé de modèle n’est nécessaire.
+| Component | Requirements and interfaces |
+|---|---|
+| Server | One Ubuntu 24.04 x86-64 host with KVM, systemd, cgroups v2 and persistent local storage. The reference configuration is 8 vCPU, 24 GB RAM and 200 GB NVMe. |
+| Control plane | HTTPS API, PostgreSQL and a worker that manages Firecracker. Operators install and maintain the host over SSH. Applications use the API to provision and invoke agents. |
+| Administration | CLI for Linux, macOS and Windows on amd64 and arm64. It supports installation plans, diagnostics, updates, backup checks and restore tests. |
+| Recovery | Configure off-host backups for the database and agent volumes. The reference deployment has one host. Production-host qualification and recovery between two physical hosts remain open. |
 
-Sur votre poste, avec un shell POSIX, `curl` et `cosign` 2.4 ou ultérieur installés depuis une source de confiance, téléchargez le CLI signé. Sous Windows, utilisez Git Bash ou suivez la procédure manuelle. [Installation par système](docs/release.md#verify-a-release)
+## Installation
+
+The following commands install the CLI on an administration workstation and request an installation plan for a test server. Use a POSIX shell, `curl` and a trusted installation of `cosign` 2.4 or later. Replace `admin@host.example.org` with an SSH account that can run `sudo -n` on the server. The plan reports host compatibility before installation. [Manual installation and signature verification](docs/release.md#verify-a-release)
 
 ```sh
 curl -fsSLo install-agentcapsule.sh https://github.com/ArnaudGuiovanna/agentcapsule/releases/latest/download/install.sh
 sh install-agentcapsule.sh --require-signature --dir "$HOME/.local/bin"
 export PATH="$HOME/.local/bin:$PATH"
 agentcapsule version
+agentcapsule install --ssh admin@host.example.org --plan-only
 ```
 
-Remplacez l’adresse ci-dessous par votre compte SSH et le nom du serveur. Ce compte doit pouvoir utiliser `sudo -n`. Cette commande prépare le plan et retourne son identifiant.
+The host installation checks the deployment by starting the bundled demonstration agent and verifying an invocation. It requires no model-provider key. [Host installation and first invocation](docs/cli-host.md) · [Step-by-step operator guide in French](docs/guide-sysadmin.md)
 
-```sh
-agentcapsule install --ssh admin@serveur.example.org --plan-only
-```
+## Technical documentation
 
-**[Installer le serveur et vérifier la première réponse →](docs/guide-sysadmin.md#installer)**
-
-## Pour aller plus loin
-
-- **Administrer** une organisation, attribuer des droits et suivre les invocations. [Guide du CLI](docs/cli.md)
-- **Publier des connaissances** et les monter dans des agents. [Guide des corpus](docs/corpus.md)
-- **Brancher une application** ou un agent dans le langage de votre choix. [API HTTP](docs/api/README.md) · [Exemples de harness](examples/)
-- **Contribuer** au code, exécuter les tests ou signaler un problème de sécurité. [Contribution](CONTRIBUTING.md) · [Sécurité](SECURITY.md)
-
-**Maturité.** Les parcours de streaming, de conversion et de partage des corpus ont été qualifiés sous PostgreSQL 18.6 et KVM sur une machine de développement. La qualification sur serveur de production et la restauration entre deux machines physiques restent à réaliser. Commencez par un hôte de test. [Matrice de validation](docs/acceptance.md) · [Feuille de route](ROADMAP.md)
+- **Integration** — [HTTP API and examples](docs/api/README.md), [harness adapter](docs/adapter.md), [example harnesses](examples/).
+- **Data and operations** — [corpus format and publication](docs/corpus.md), [metrics and alerts](docs/observability.md), [backup and recovery](docs/recovery.md).
+- **Project** — [acceptance test matrix](docs/acceptance.md), [roadmap](ROADMAP.md), [contribution guide](CONTRIBUTING.md), [security reporting](SECURITY.md).
