@@ -149,16 +149,21 @@ def spreadsheet(path, record, out):
 
 def media_document(path, record, processing, platform, key, out, temp):
     probe = temp / "probe.json"
-    tool(["ffprobe", "-v", "error", "-protocol_whitelist", "file,pipe", "-show_format",
+    tool(["ffprobe", "-v", "error", "-protocol_whitelist", "file,pipe", "-show_entries", "stream=codec_type:format=duration",
           "-of", "json", "-o", probe, path], temp)
-    seconds = float(json.loads(read_bounded(probe, 65536))["format"]["duration"])
+    metadata = json.loads(read_bounded(probe, 65536))
+    streams = {track["codec_type"] for track in metadata["streams"]}
+    if record["kind"] not in streams:
+        raise ConversionError("malformed")
+    seconds = float(metadata["format"]["duration"])
     if not math.isfinite(seconds) or not 0 < seconds <= 86400:
         raise ConversionError("too_large")
     record["seconds"] = seconds
     end_seen = 0.
     alias = processing["Transcription"]["Alias"]
     language = record["language"].split("-")[0].lower()
-    for start in range(0, math.ceil(seconds), 118):
+    # Silent videos still contribute their timestamped key frames.
+    for start in range(0, math.ceil(seconds) if "audio" in streams else 0, 118):
         length = min(120, seconds-start)
         audio = temp / "clip.mp3"
         tool(["ffmpeg","-nostdin","-v","error","-y","-protocol_whitelist","file,pipe","-ss",str(start),
