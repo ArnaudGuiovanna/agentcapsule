@@ -30,6 +30,7 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/harnesspkg"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/ociregistry"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/ociregistry/registrytest"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/operatorconfig"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/runtime"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/sandbox"
 )
@@ -75,23 +76,20 @@ func corpusBuilderRegistry(t *testing.T, pkg string) (ociregistry.Rule, string) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	digest := harnesspkg.Digest(raw)
-	const prefix = "/v2/courses/builder/"
+	const repo = "courses/builder"
+	backing := registrytest.New()
+	t.Cleanup(backing.Close)
+	digest := backing.PutManifest(repo, raw)
 	registry := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == prefix+"manifests/"+digest {
-			w.Header().Set("Content-Type", media)
-			w.Write(raw)
-			return
-		}
-		if d, ok := strings.CutPrefix(r.URL.Path, prefix+"blobs/"); ok && paths[d] != "" {
+		if d, ok := strings.CutPrefix(r.URL.Path, "/v2/"+repo+"/blobs/"); ok && paths[d] != "" {
 			http.ServeFile(w, r, paths[d])
 			return
 		}
-		http.NotFound(w, r)
+		backing.Server.Config.Handler.ServeHTTP(w, r)
 	}))
 	t.Cleanup(registry.Close)
-	host := strings.TrimPrefix(registry.URL, "http://")
-	return ociregistry.Rule{Host: host, Repositories: []string{"courses/"}, Local: true}, host + "/courses/builder@" + digest
+	rule := ociregistry.Rule{Host: strings.TrimPrefix(registry.URL, "http://"), Repositories: []string{repo}, Local: true}
+	return signCorpusTestRelease(t, rule, ociregistry.Reference{Registry: rule.Host, Repository: repo, Digest: digest})
 }
 
 func courseEnricherRegistry(t *testing.T, pkg string) (ociregistry.Rule, string) {
@@ -103,6 +101,11 @@ func courseEnricherRegistry(t *testing.T, pkg string) (ociregistry.Rule, string)
 	if err != nil {
 		t.Fatal(err)
 	}
+	return signCorpusTestRelease(t, rule, ref)
+}
+
+func signCorpusTestRelease(t *testing.T, rule ociregistry.Rule, ref ociregistry.Reference) (ociregistry.Rule, string) {
+	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -122,17 +125,19 @@ func courseEnricherRegistry(t *testing.T, pkg string) (ociregistry.Rule, string)
 	return rule, ref.String()
 }
 
-// The fixture contains the bytes and SHA-256 captured from a private GitHub
-// repository. Replay is local, so this privileged test needs no forge token.
-func TestCorpusBuilderAndConsumerOnKVM(t *testing.T) {
-	pkg := os.Getenv("AGENTCAPSULE_KVM_CORPUS_BUILDER")
-	source := os.Getenv("AGENTCAPSULE_KVM_GITHUB_CORPUS")
-	var fixture gitHubCorpusFixture
-	b, err := os.ReadFile(source)
-	if err != nil || json.Unmarshal(b, &fixture) != nil || fixture.Bytes < 1 || !corpusmeta.ValidCommit(fixture.Commit) {
-		t.Fatal("missing or invalid GitHub corpus fixture")
+func gitHubCorpusSource(t *testing.T, fixture gitHubCorpusFixture, tokenPath string) (corpussource.Policy, string) {
+	t.Helper()
+	rule := corpussource.Rule{Kind: corpussource.GitHub, Host: "github.com", Repositories: []string{fixture.Repository}}
+	if tokenPath != "" {
+		raw, err := operatorconfig.ReadPrivateUpTo(tokenPath, 4096)
+		if err != nil {
+			t.Fatal("cannot read private GitHub credential file")
+		}
+		defer clear(raw)
+		rule.ArchiveHosts = []string{"codeload.github.com"}
+		t.Log("source mode: live private GitHub, authenticated API and archive hosts", rule.Host, "api.github.com", rule.ArchiveHosts[0])
+		return corpussource.Policy{Rules: []corpussource.Rule{rule}}, string(bytes.TrimSpace(raw))
 	}
-	rule, ref := corpusBuilderRegistry(t, pkg)
 	file, err := os.Open(fixture.Archive)
 	if err != nil {
 		t.Fatal(err)
@@ -164,12 +169,33 @@ func TestCorpusBuilderAndConsumerOnKVM(t *testing.T) {
 		io.CopyN(w, f, fixture.Bytes)
 	}))
 	t.Cleanup(forge.Close)
+	rule.APIHost = strings.TrimPrefix(forge.URL, "http://")
+	rule.Local = true
+	t.Log("source mode: authenticated local replay of captured GitHub archive")
+	return corpussource.Policy{Rules: []corpussource.Rule{rule}, AllowedInternalHosts: []string{rule.APIHost}}, token
+}
+
+// The fixture contains the bytes and SHA-256 captured from a private GitHub
+// repository. A private token file selects live GitHub; otherwise the test replays the capture locally.
+func TestCorpusBuilderAndConsumerOnKVM(t *testing.T) {
+	pkg := os.Getenv("AGENTCAPSULE_KVM_CORPUS_BUILDER")
+	source := os.Getenv("AGENTCAPSULE_KVM_GITHUB_CORPUS")
+	var fixture gitHubCorpusFixture
+	b, err := os.ReadFile(source)
+	if err != nil || json.Unmarshal(b, &fixture) != nil || fixture.Bytes < 1 || !corpusmeta.ValidCommit(fixture.Commit) {
+		t.Fatal("missing or invalid GitHub corpus fixture")
+	}
+	rule, ref := corpusBuilderRegistry(t, pkg)
+	tokenPath := os.Getenv("AGENTCAPSULE_KVM_GITHUB_CORPUS_TOKEN_FILE")
+	policy, token := gitHubCorpusSource(t, fixture, tokenPath)
 	labRuntimeOptions = func(o *runtime.FirecrackerOptions) { o.MaxActive = 4 }
 	defer func() { labRuntimeOptions = nil }()
 	lab := newProductPeerLab(t)
 	ctx := t.Context()
-	identity, _, platform := lab.installTenant(t)
+	identity, org, platform := lab.installTenant(t)
 	owner := func() string { return identity.tokenFor(t, "alice", tenantKVMScopes+" corpus:manage corpus:read") }
+	cli := configureCorpusWatch(t, lab, org.ID, owner())
+	reviewer := corpusReviewAdmin(t, lab, identity, owner())
 	if err = lab.store.ConfigureHostStorage(ctx, "local", 8192); err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +206,7 @@ func TestCorpusBuilderAndConsumerOnKVM(t *testing.T) {
 		signed, signer = reference, enricher.Keys[0].ID
 		rules = append(rules, enricher)
 	}
-	fetcher, err := ociregistry.NewFetcher(ociregistry.Policy{Rules: rules}, 3<<30)
+	fetcher, err := ociregistry.NewFetcher(ociregistry.Policy{Rules: rules, RequireSignatures: true}, 3<<30)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +219,7 @@ func TestCorpusBuilderAndConsumerOnKVM(t *testing.T) {
 	if err = lab.worker.EnableRegistry(importer); err != nil {
 		t.Fatal(err)
 	}
-	importPackage := func(key, reference string) {
+	importPackage := func(key, reference, expectedSigner string) {
 		t.Helper()
 		var imp controlplane.HarnessImport
 		lab.request(platform, "POST", "/v1/harness-imports", key, controlplane.HarnessImportInput{Reference: reference}, 202, &imp)
@@ -204,10 +230,16 @@ func TestCorpusBuilderAndConsumerOnKVM(t *testing.T) {
 		if imp.State != "READY" {
 			t.Fatal("harness import", key, imp.State, imp.ErrorCode)
 		}
+		var publisher string
+		if err := lab.db.QueryRow(ctx, "SELECT signer FROM harness_releases WHERE id=$1", imp.ReleaseID).Scan(&publisher); err != nil || publisher != expectedSigner {
+			t.Fatal("imported harness publisher", key, err)
+		}
+		t.Log("imported signed OCI release", key, imp.Digest, publisher)
+
 	}
-	importPackage("import", ref)
+	importPackage("import", ref, rule.Keys[0].ID)
 	if signed != "" {
-		importPackage("import-enricher", signed)
+		importPackage("import-enricher", signed, signer)
 	}
 	image := controlplane.SystemImage{ID: "corpus@1", ImageDigests: controlplane.ImageDigests{Kernel: "sha256:" + digest(t, config(t).Kernel), Initrd: "sha256:" + digest(t, config(t).Initrd)}, Features: []string{controlplane.FeatureCorpusMount, controlplane.FeatureCorpusExtensions}}
 	lab.request(platform, "POST", "/v1/system-images", "image", image, 201, nil)
@@ -217,9 +249,8 @@ func TestCorpusBuilderAndConsumerOnKVM(t *testing.T) {
 	if err = lab.worker.EnableCorpusCache(cache); err != nil {
 		t.Fatal(err)
 	}
-	host := strings.TrimPrefix(forge.URL, "http://")
 	lim := corpussource.Limits{ArchiveBytes: 64 << 20, LFSBytes: 64 << 20, LFSObjects: 8}
-	gitHub, err := corpussource.New(corpussource.Policy{Rules: []corpussource.Rule{{Kind: "github", Host: "github.com", APIHost: host, Repositories: []string{fixture.Repository}, Local: true}}, AllowedInternalHosts: []string{host}}, lim)
+	gitHub, err := corpussource.New(policy, lim)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +279,12 @@ func TestCorpusBuilderAndConsumerOnKVM(t *testing.T) {
 	build := func(key string, warm bool) controlplane.CorpusBuild {
 		t.Helper()
 		var job controlplane.CorpusBuild
-		lab.request(owner(), "POST", "/v1/corpora/"+corpus.ID+"/builds", key, controlplane.RequestCorpusBuildInput{Commit: fixture.Commit}, 202, &job)
+		input := controlplane.RequestCorpusBuildInput{Commit: fixture.Commit}
+		if tokenPath != "" && !warm {
+			input = controlplane.RequestCorpusBuildInput{Ref: "main"}
+		}
+		lab.request(owner(), "POST", "/v1/corpora/"+corpus.ID+"/builds", key, input, 202, &job)
+		watch := beginCorpusWatch(t, cli, job.ID)
 		if worked, err := download.FetchOne(ctx); err != nil || !worked {
 			t.Fatal("download", worked, err)
 		}
@@ -261,6 +297,9 @@ func TestCorpusBuilderAndConsumerOnKVM(t *testing.T) {
 			if job.State != last {
 				t.Log(key, job.State, job.ErrorCode)
 				last = job.State
+				if job.State == "PACKAGING" {
+					watch.conversion(t, fixture.PDF)
+				}
 			}
 			switch job.State {
 			case "REVIEW":
@@ -272,6 +311,7 @@ func TestCorpusBuilderAndConsumerOnKVM(t *testing.T) {
 			}
 			return false
 		})
+		watch.review(t, lab, reviewer(), job.ID, fixture.PDF)
 		raw := lab.request(owner(), "GET", "/v1/corpus-builds/"+job.ID+"/review-file?path=report.json", "", nil, 200, nil)
 		report, err := corpusmeta.ParseReport(raw)
 		if err != nil || report.BuildID != job.ID || report.Commit != fixture.Commit || job.ArchiveBytes != fixture.Bytes || report.Totals.Failed != 0 {

@@ -141,6 +141,7 @@ def main():
                    help="a2a-agent package directory written by scripts/build-a2a-harness.py (<output>/package)")
     p.add_argument("--corpus-builder", type=Path, help="package exported by dagger call corpus-builder for the PostgreSQL/KVM scenario")
     p.add_argument("--github-corpus-fixture", type=Path, help="JSON metadata of a captured GitHub archive for --corpus-builder")
+    p.add_argument("--github-corpus-token-file", type=Path, help="read-only GitHub token in a private file to fetch the live fixture repository")
     p.add_argument("--course-enricher", type=Path, help="package exported by dagger call course-enricher; exercises both microVMs")
     p.add_argument("--pi-harness", type=Path,
                    help="optional pi-agent package written by scripts/build-pi-harness.py (<output>/adapted/package): Pi in a VM on a real model")
@@ -190,6 +191,8 @@ def main():
         if not 8 <= len(pi_api_key.encode()) <= 4096 or any(c.isspace() or ord(c) < 0x20 or ord(c) == 0x7f for c in pi_api_key):
             p.error(f"--pi-api-key-file must hold the key alone, on one line: 8 to 4096 bytes without spaces or control characters "
                     f"(a terminal paste may add ESC[200~ and ESC[201~ around it); it holds {len(pi_api_key.encode())} bytes")
+    if a.github_corpus_token_file and not a.corpus_builder:
+        p.error("--github-corpus-token-file requires --corpus-builder and --github-corpus-fixture")
     if bool(a.corpus_builder) != bool(a.github_corpus_fixture) or a.corpus_builder and not a.pg_bin:
         p.error("--corpus-builder and --github-corpus-fixture require each other and PostgreSQL")
     if bool(a.pg_bin) != bool(a.pg_user):
@@ -387,8 +390,12 @@ def main():
             required_worker = (REQUIRED_WORKER | (PI_WORKER if a.pi_harness else set()) | (SLIM_WORKER if slim_build else set())
                                | (RCLONE_WORKER if a.rclone else set()))
             if a.corpus_builder:
+                run("compile-corpus-cli", [a.go, "build", "-buildvcs=false", "-o", out / "agentcapsule", "./cmd/agentcapsule"], 300)
+                env["AGENTCAPSULE_KVM_CLI"] = str(out / "agentcapsule")
                 env["AGENTCAPSULE_KVM_CORPUS_BUILDER"] = str(a.corpus_builder.resolve())
                 env["AGENTCAPSULE_KVM_GITHUB_CORPUS"] = str(a.github_corpus_fixture.resolve())
+                if a.github_corpus_token_file:
+                    env["AGENTCAPSULE_KVM_GITHUB_CORPUS_TOKEN_FILE"] = str(a.github_corpus_token_file)
                 required_worker |= {"TestCorpusBuilderAndConsumerOnKVM"}
             selection = "^(" + "|".join(sorted(required_worker)) + ")$"
             run("worker-integration", [a.go, "tool", "test2json", "-p", "github.com/ArnaudGuiovanna/agentcapsule/internal/worker",
