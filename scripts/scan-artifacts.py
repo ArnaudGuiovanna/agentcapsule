@@ -83,6 +83,7 @@ def findings(report, target):
             "package": artifact["name"],
             "version": artifact.get("version", ""),
             "type": artifact.get("type", ""),
+            "purl": artifact.get("purl", ""),
             "severity": vulnerability.get("severity") or "Unknown",
             "fix_state": fix.get("state") or "",
             "fixed_in": fix.get("versions") or [],
@@ -135,6 +136,47 @@ def slug(name):
     return re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("_")
 
 
+def verify_backport_inventory(document, packages):
+    """Require the qualified APK, its ownership of the file and its SHA-256."""
+    owners = {(r["spdxElementId"], r["relatedSpdxElement"])
+              for r in document.get("relationships", []) if r["relationshipType"] == "CONTAINS"}
+    for name, expected in packages.items():
+        artifacts = [p for p in document["packages"] if p["name"] == name]
+        files = [f for f in document["files"] if f["fileName"].removeprefix("./") == expected["path"]]
+        if len(artifacts) != 1 or len(files) != 1:
+            raise ValueError("missing or ambiguous backport inventory for " + name)
+        artifact, file = artifacts[0], files[0]
+        purls = [ref["referenceLocator"] for ref in artifact.get("externalRefs", []) if ref["referenceType"] == "purl"]
+        hashes = [v["checksumValue"] for v in file["checksums"] if v["algorithm"] == "SHA256"]
+        if (purls != [expected["purl"]] or hashes != [expected["sha256"]]
+                or (artifact["SPDXID"], file["SPDXID"]) not in owners):
+            raise ValueError("OpenSSL backport verification failed for " + name)
+
+
+def verified_backports(found, source, profile, qualification, out, env, cache):
+    if profile is None:
+        return [], found
+    packages = qualification["profiles"][profile]
+    fixed, remaining = [], []
+    for finding in found:
+        package = packages.get(finding["package"])
+        if (finding["id"] in qualification["advisories"] and finding["type"] == "apk"
+                and finding["version"] == qualification["version"] and package and finding["purl"] == package["purl"]):
+            fixed.append({**finding, "file": package["path"], "sha256": package["sha256"],
+                          "patch_commit": qualification["advisories"][finding["id"]]})
+        else:
+            remaining.append(finding)
+    if fixed:
+        if source.startswith("registry:"):
+            inventory = out / (slug(source) + ".spdx.json")
+            subprocess.run([str(TOOLS.tool("syft", cache)), "scan", source, "--platform", "linux/amd64",
+                            "-q", "-o", "spdx-json=" + str(inventory)], env=env, check=True, timeout=1800)
+        else:
+            inventory = Path(source.removeprefix("sbom:"))
+        verify_backport_inventory(json.loads(inventory.read_bytes()), packages)
+    return fixed, remaining
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--sbom", action="append", default=[], type=Path)
@@ -150,6 +192,15 @@ def main(argv=None):
     a = p.parse_args(argv)
 
     policies = offline_image_policies(a.offline_image_index, a.sbom) if a.offline_image_index else {}
+    qualification = json.loads((ROOT / "deploy/images/openssl/qualification.json").read_bytes())
+    profiles = {"sbom:" + str(p.resolve()): qualification["harness_sboms"].get(p.name) for p in a.sbom}
+    for ref, profile in qualification["registry_images"].items():
+        profiles["registry:" + ref] = profile
+    if a.offline_image_index:
+        offline_refs = {r["sbom"]: r["ref"] for r in json.loads(a.offline_image_index.read_bytes())["images"]}
+        for p in a.sbom:
+            if p.name in offline_refs:
+                profiles["sbom:" + str(p.resolve())] = qualification["registry_images"].get(offline_refs[p.name])
     targets = []  # (name, grype source, blocking)
     for sbom in a.sbom:
         targets.append((target_name("sbom", sbom), f"sbom:{sbom.resolve()}", True))
@@ -209,12 +260,14 @@ def main(argv=None):
             print(f"ERROR {name}: grype failed", file=sys.stderr)
             continue
         found = findings(json.loads(report_path.read_text()), policies.get(name, name))
+        fixed, remaining = verified_backports(found, source, profiles.get(source), qualification, out, env, a.cache)
         blocked, allowed, other = TOOLS.apply_allowlist(
-            found, entries, lambda f: blocking and f["severity"] in BLOCKING)
+            remaining, entries, lambda f: blocking and f["severity"] in BLOCKING)
         counts = {s: sum(1 for f in found if f["severity"] == s) for s in SEVERITIES}
         summary["targets"].append({"name": name, "blocking": blocking, "packages": catalog_size(source),
                                    "counts": counts,
                                    "blocked": blocked, "allowlisted": allowed,
+                                   "verified_backports": fixed,
                                    "report": report_path.name})
         failed |= bool(blocked)
         print(f"{'FAIL' if blocked else 'ok  '} {name}: " +

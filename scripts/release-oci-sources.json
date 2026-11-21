@@ -1780,33 +1780,46 @@
       "url": "https://raw.githubusercontent.com/alpinelinux/aports/2cee8a7328d061418336ad327b512d96bcd7bc5e/main/ncurses/cleanup-pkgconfig-ldflags.patch"
     }
   ],
-  "apk:openssl:v3.23@adcf4978067013c3c0917e54542f3b762d7bfc48": [
+  "apk:openssl:agentcapsule@d6e1784e314014682a2108c319dfb6b4c0753bfa": [
     {
       "name": "APKBUILD",
-      "sha256": "ea459c051ee8d846c06f1d47d09d0f737778502c01de88c9696e96a208de5943",
-      "url": "https://raw.githubusercontent.com/alpinelinux/aports/adcf4978067013c3c0917e54542f3b762d7bfc48/main/openssl/APKBUILD"
-    },
-    {
-      "name": "openssl-3.5.9.tar.gz",
-      "sha256": "603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a",
-      "url": "https://distfiles.alpinelinux.org/distfiles/v3.23/openssl-3.5.9.tar.gz"
+      "sha256": "3db5f8f76df5014cc263e59f21c3399766b35c2e4d3cdbf1cbaab5c6138a0c2d",
+      "url": "https://raw.githubusercontent.com/alpinelinux/aports/0f4c7e8d0f5f7cebbdc2156eca4391080b732bf2/main/openssl/APKBUILD"
     },
     {
       "name": "auxv.patch",
       "sha256": "0b3a36c0f1b3d8e0adcf02c251374ce4d2578b0c9f4b88207bf85c5c1b58c7d8",
-      "url": "https://raw.githubusercontent.com/alpinelinux/aports/adcf4978067013c3c0917e54542f3b762d7bfc48/main/openssl/auxv.patch"
+      "url": "https://raw.githubusercontent.com/alpinelinux/aports/0f4c7e8d0f5f7cebbdc2156eca4391080b732bf2/main/openssl/auxv.patch"
     },
     {
       "name": "openssl-fips.post-install",
-      "sha256": "c0a577c5bc04764084adc337135e05bdfc29a641983def7c6514e9dd2affc586",
-      "url": "https://raw.githubusercontent.com/alpinelinux/aports/adcf4978067013c3c0917e54542f3b762d7bfc48/main/openssl/openssl-fips.post-install"
-    }
-  ],
-  "apk:openssl:v3.24@29b9ec24b1b5b39aeef51fa2a044210e2ec5258e": [
+      "sha256": "441311401af66e9f1b4b38730827ade609669196f91c56b82351a7226b903755",
+      "url": "https://raw.githubusercontent.com/alpinelinux/aports/0f4c7e8d0f5f7cebbdc2156eca4391080b732bf2/main/openssl/openssl-fips.post-install"
+    },
     {
-      "name": "APKBUILD",
-      "sha256": "ea459c051ee8d846c06f1d47d09d0f737778502c01de88c9696e96a208de5943",
-      "url": "https://raw.githubusercontent.com/alpinelinux/aports/29b9ec24b1b5b39aeef51fa2a044210e2ec5258e/main/openssl/APKBUILD"
+      "name": "CVE-2026-88822.patch",
+      "sha256": "50f7cc52fb146703379ca043d17e204c4fda99c684efe3db6d6f3ae1d175bd2a",
+      "url": "https://raw.githubusercontent.com/alpinelinux/aports/0f4c7e8d0f5f7cebbdc2156eca4391080b732bf2/main/openssl/CVE-2026-88822.patch"
+    },
+    {
+      "name": "CVE-2026-88823.patch",
+      "sha256": "a945077c0a978dbfe5af5e4f7174a2151466547f8fb94562f395baa7b6b7c147",
+      "url": "https://raw.githubusercontent.com/alpinelinux/aports/0f4c7e8d0f5f7cebbdc2156eca4391080b732bf2/main/openssl/CVE-2026-88823.patch"
+    },
+    {
+      "name": "CVE-2026-95691.patch",
+      "sha256": "93d8e82fdc995172a6d5cc6952491658106191bd5ac221d34596adbddfcd1afe",
+      "url": "https://raw.githubusercontent.com/alpinelinux/aports/0f4c7e8d0f5f7cebbdc2156eca4391080b732bf2/main/openssl/CVE-2026-95691.patch"
+    },
+    {
+      "name": "CVE-2026-95692.patch",
+      "sha256": "0e328604c0038de6629a29322ae5f02d2f5f5128c2625b57ca64262efab99e05",
+      "url": "https://raw.githubusercontent.com/alpinelinux/aports/0f4c7e8d0f5f7cebbdc2156eca4391080b732bf2/main/openssl/CVE-2026-95692.patch"
+    },
+    {
+      "name": "CVE-2026-107496.patch",
+      "sha256": "77d3759d279c71af59629c4a0fa82d8272a099762f2fa9e3f66d7ca5ed544157",
+      "url": "https://raw.githubusercontent.com/alpinelinux/aports/0f4c7e8d0f5f7cebbdc2156eca4391080b732bf2/main/openssl/CVE-2026-107496.patch"
     },
     {
       "name": "openssl-3.5.9.tar.gz",
@@ -1814,14 +1827,39 @@
       "url": "https://distfiles.alpinelinux.org/distfiles/v3.24/openssl-3.5.9.tar.gz"
     },
     {
-      "name": "auxv.patch",
-      "sha256": "0b3a36c0f1b3d8e0adcf02c251374ce4d2578b0c9f4b88207bf85c5c1b58c7d8",
-      "url": "https://raw.githubusercontent.com/alpinelinux/aports/29b9ec24b1b5b39aeef51fa2a044210e2ec5258e/main/openssl/auxv.patch"
+      "name": "Dockerfile",
+      "sha256": "672e7c4c88acbb70d2d5bc1cef87a3c4263ee4cb98e663770fdb9b28c7a83bd4",
+      "url": "https://raw.githubusercontent.com/ArnaudGuiovanna/agentcapsule/d6e1784e314014682a2108c319dfb6b4c0753bfa/deploy/images/openssl/Dockerfile"
     },
     {
-      "name": "openssl-fips.post-install",
-      "sha256": "441311401af66e9f1b4b38730827ade609669196f91c56b82351a7226b903755",
-      "url": "https://raw.githubusercontent.com/alpinelinux/aports/29b9ec24b1b5b39aeef51fa2a044210e2ec5258e/main/openssl/openssl-fips.post-install"
+      "name": "107493.patch",
+      "sha256": "35b5992eba0727eec1bd4fdb4dfdb8249db416e499b1158cf4daca256ee9a701",
+      "url": "https://raw.githubusercontent.com/ArnaudGuiovanna/agentcapsule/d6e1784e314014682a2108c319dfb6b4c0753bfa/deploy/images/openssl/107493.patch"
+    },
+    {
+      "name": "107494.patch",
+      "sha256": "8b48076df4b26e0dc73f3411823bc8ffcb6831a2a3f116f80426ba84fa38ea30",
+      "url": "https://raw.githubusercontent.com/ArnaudGuiovanna/agentcapsule/d6e1784e314014682a2108c319dfb6b4c0753bfa/deploy/images/openssl/107494.patch"
+    },
+    {
+      "name": "121482.patch",
+      "sha256": "e10b5e946d553f7b54bee2533c946fcc63e3702fa562eb4c4ffefd0a86809e2f",
+      "url": "https://raw.githubusercontent.com/ArnaudGuiovanna/agentcapsule/d6e1784e314014682a2108c319dfb6b4c0753bfa/deploy/images/openssl/121482.patch"
+    },
+    {
+      "name": "124709.patch",
+      "sha256": "e7750c46c9b9740e414b1d52c7b5d0b318c4675531735f492992ccac76aae32a",
+      "url": "https://raw.githubusercontent.com/ArnaudGuiovanna/agentcapsule/d6e1784e314014682a2108c319dfb6b4c0753bfa/deploy/images/openssl/124709.patch"
+    },
+    {
+      "name": "84786.patch",
+      "sha256": "4003f1536e6285c77cf28927ce0ce34a2b9b11640cdb8e00c52c278149fcf60c",
+      "url": "https://raw.githubusercontent.com/ArnaudGuiovanna/agentcapsule/d6e1784e314014682a2108c319dfb6b4c0753bfa/deploy/images/openssl/84786.patch"
+    },
+    {
+      "name": "alpine-recipe.patch",
+      "sha256": "d2048ac77b832d580d39ffb72a0c36e684cd48a130a750527b52b92a19df127c",
+      "url": "https://raw.githubusercontent.com/ArnaudGuiovanna/agentcapsule/d6e1784e314014682a2108c319dfb6b4c0753bfa/deploy/images/openssl/alpine-recipe.patch"
     }
   ],
   "apk:pax-utils:v3.23@3912b4fa83437852312ad3c37a00229ff59fab1c": [

@@ -44,7 +44,7 @@ services:
       - directory-data:/directory-data
 
   oasf:
-    image: ghcr.io/agntcy/oasf-server:v2.0.0@sha256:4ef8f82f1c2a5b9dc703e208ef8764a558ec0301f7459a7073d2d8758d3d5f9f
+    image: ghcr.io/arnaudguiovanna/agentcapsule/runtime:oasf-2.0.0-20261121@sha256:64de4f2a1718b712fec851dc423109c059bfd78fbd594caecf1ee1e4122ff50e
     <<: *hardening
     environment:
       SCHEMA_EXTENSION: ""
@@ -81,7 +81,7 @@ services:
       start_interval: 2s
 
   directory-edge:
-    image: docker.io/library/haproxy:3.2-alpine@sha256:96ec3c75a9264ba94e733eeacb44051ed6e7b79bb77a73c2c36f236b6423f1f0
+    image: ghcr.io/arnaudguiovanna/agentcapsule/runtime:haproxy-3.2-20261121@sha256:09a5a5c054b4c9cb0ca09877c5546de0217067700d7264975f109ca36eab6ba0
     <<: *hardening
     volumes:
       - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro

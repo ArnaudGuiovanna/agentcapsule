@@ -19,11 +19,11 @@ USER builder
 ENV JOBS=6 MAKEFLAGS=-j6 REPODEST=/out
 RUN patch -p1 < alpine-recipe.patch && abuild-keygen -n -a
 USER root
-RUN cp /home/builder/.abuild/*.rsa.pub /etc/apk/keys/
+RUN cp ~builder/.abuild/*.rsa.pub /etc/apk/keys/
 USER builder
 RUN if ! abuild -r > /tmp/openssl-build.log 2>&1; then tail -70 /tmp/openssl-build.log; exit 1; fi \
     && grep -E "All tests successful|Result: PASS|Build complete|Updating .*repository index" /tmp/openssl-build.log \
-    && cp /home/builder/.abuild/*.rsa.pub /out/
+    && cp "$HOME"/.abuild/*.rsa.pub /out/
 
 FROM ${RUNTIME_BASE} AS runtime
 USER root

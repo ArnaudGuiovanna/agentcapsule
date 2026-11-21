@@ -528,6 +528,13 @@ def main(argv=None):
                 raise SystemExit(f"debugfs could not unpack {directory}: {' '.join(errors)[:500]}")
             subprocess.run(["chmod", "-R", "u+rwX", str(tree)], check=True)
             name = f"harness-{meta['name']}-{meta['version']}"
+            qualification = json.loads((ROOT / "deploy/images/openssl/qualification.json").read_bytes())
+            profile = qualification["harness_sboms"].get(name + ".spdx.json")
+            if profile:
+                for package in qualification["profiles"][profile].values():
+                    file = tree / package["path"]
+                    if not file.resolve().is_relative_to(tree.resolve()) or file.is_symlink() or sha256(file) != package["sha256"]:
+                        raise ValueError("unexpected OpenSSL binary in " + name + ": " + package["path"])
             document = syft_spdx(syft, f"dir:{tree}", name, meta["version"], env)
             write(name, meta["version"], sha256(directory / "harness.ext4"), document)
             shutil.rmtree(tree)

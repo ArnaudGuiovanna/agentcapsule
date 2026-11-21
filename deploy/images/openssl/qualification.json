@@ -1,0 +1,56 @@
+{
+  "version": "3.5.9-r20261121",
+  "source_commit": "d6e1784e314014682a2108c319dfb6b4c0753bfa",
+  "advisories": {
+    "CVE-2026-107493": "c8f6d04f8e6d40b1bf83334e4a2ec9daf5943a3d",
+    "CVE-2026-124709": "f3acb0a3328046741479482c51cec815839e1b05",
+    "CVE-2026-121482": "468c287cf451a834b370b69ab321b8ffdfac23aa",
+    "CVE-2026-107494": "cc6ddac0e961798d351f86919d488d53be16960e",
+    "CVE-2026-84786": "d54155a80a4fa8d2ebc2a5a850e7ea8270818217"
+  },
+  "profiles": {
+    "alpine-3.23": {
+      "openssl": {
+        "path": "usr/bin/openssl",
+        "sha256": "8300c4cbc3d355d25fb0687497239cff8105139dacfa848be1f3e40958e282ec",
+        "purl": "pkg:apk/alpine/openssl@3.5.9-r20261121?arch=x86_64&distro=alpine-3.23.7",
+        "apk_sha256": "e3e0924c8fd5864a6c8afc484bfad4b1203fd3f6c888b8fba65175f46c2c3c30"
+      },
+      "libcrypto3": {
+        "path": "usr/lib/libcrypto.so.3",
+        "sha256": "8c6335fe8953e00c63c8384333f0478061f06e04b5c4a15b9d38af8c189fb2c8",
+        "purl": "pkg:apk/alpine/libcrypto3@3.5.9-r20261121?arch=x86_64&distro=alpine-3.23.7&upstream=openssl",
+        "apk_sha256": "c04da8b7628f09490c95e99a315d2e3919c55af68329f698ea545b5599955201"
+      },
+      "libssl3": {
+        "path": "usr/lib/libssl.so.3",
+        "sha256": "c32b2669f2c0875158f327714f0654fa5a4e9c01a3dd887620c73a40053ff9bb",
+        "purl": "pkg:apk/alpine/libssl3@3.5.9-r20261121?arch=x86_64&distro=alpine-3.23.7&upstream=openssl",
+        "apk_sha256": "e1d6bee3519c18fef65abd0006694faca61542f35f671c30793049fc43940309"
+      }
+    },
+    "alpine-3.24": {
+      "libcrypto3": {
+        "path": "usr/lib/libcrypto.so.3",
+        "sha256": "dbbea4e73744d982b5b791288a0db9932113f6ac1c85e32c50bd1c00ea0671c5",
+        "purl": "pkg:apk/alpine/libcrypto3@3.5.9-r20261121?arch=x86_64&distro=alpine-3.24.4&upstream=openssl",
+        "apk_sha256": "21ff00eb1b6cb03601db7b2d342963075110d9fe4bf81d40b13f735ae925c082"
+      },
+      "libssl3": {
+        "path": "usr/lib/libssl.so.3",
+        "sha256": "77ebabad3612913575dd144982df4750fc9142f12b989bfba91daee97a8694f4",
+        "purl": "pkg:apk/alpine/libssl3@3.5.9-r20261121?arch=x86_64&distro=alpine-3.24.4&upstream=openssl",
+        "apk_sha256": "dcbe353b712d7696ff86f30e718f468dfc62afa957ada7b23da2f34793173e19"
+      }
+    }
+  },
+  "registry_images": {
+    "ghcr.io/arnaudguiovanna/agentcapsule/runtime:python-3.13-20261121@sha256:7ab5ef55aca5b0ff15aa71935f3fa577f2b047781923929278c690e55e880fc5": "alpine-3.24",
+    "ghcr.io/arnaudguiovanna/agentcapsule/runtime:haproxy-3.2-20261121@sha256:09a5a5c054b4c9cb0ca09877c5546de0217067700d7264975f109ca36eab6ba0": "alpine-3.24",
+    "ghcr.io/arnaudguiovanna/agentcapsule/runtime:oasf-2.0.0-20261121@sha256:64de4f2a1718b712fec851dc423109c059bfd78fbd594caecf1ee1e4122ff50e": "alpine-3.23"
+  },
+  "harness_sboms": {
+    "harness-python-echo-1.0.0.spdx.json": "alpine-3.24",
+    "harness-adapted-agent-1.0.0.spdx.json": "alpine-3.24"
+  }
+}

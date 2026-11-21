@@ -70,9 +70,9 @@
   },
   "services": {
     "init": "ghcr.io/agntcy/oasf-schema:1.1.0@sha256:01df69976950fc321ebab2b6af069466f9524d88cfa9d5d16edac5bfc43f6294",
-    "oasf": "ghcr.io/agntcy/oasf-server:v2.0.0@sha256:4ef8f82f1c2a5b9dc703e208ef8764a558ec0301f7459a7073d2d8758d3d5f9f",
+    "oasf": "ghcr.io/arnaudguiovanna/agentcapsule/runtime:oasf-2.0.0-20261121@sha256:64de4f2a1718b712fec851dc423109c059bfd78fbd594caecf1ee1e4122ff50e",
     "directory": "ghcr.io/agntcy/dir-apiserver:v1.9.1@sha256:b42c7e47692e8ce5d154660e1b153e834033371740bbed95504a6498198ab386",
-    "directory-edge": "docker.io/library/haproxy:3.2-alpine@sha256:96ec3c75a9264ba94e733eeacb44051ed6e7b79bb77a73c2c36f236b6423f1f0",
+    "directory-edge": "ghcr.io/arnaudguiovanna/agentcapsule/runtime:haproxy-3.2-20261121@sha256:09a5a5c054b4c9cb0ca09877c5546de0217067700d7264975f109ca36eab6ba0",
     "slim": "ghcr.io/agntcy/slim:3.4.6@sha256:54fde7ce0ef8efa6a61fee47996e941e87acb4e62284e5d9c00eb761295619b7"
   },
   "int01_complete": true,

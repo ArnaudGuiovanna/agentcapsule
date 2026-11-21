@@ -143,8 +143,13 @@ jobs:
             binaries+=(--binary "$dist/$name")
           done
           for cli in "$dist"/agentcapsule-{linux,darwin,windows}-*; do binaries+=(--binary "$cli"); done
+          for harness in python adapted; do
+            python3 "scripts/build-$harness-harness.py" --output "$RUNNER_TEMP/release/harness-$harness"
+          done
           python3 scripts/release-sbom.py --go "$(command -v go)" --version "$TAG" \
             --output "$RUNNER_TEMP/release/sbom" "${binaries[@]}" --guest-build "$dist" \
+            --harness-package "$RUNNER_TEMP/release/harness-python/package" \
+            --harness-package "$RUNNER_TEMP/release/harness-adapted/package" \
             --host-assets "$RUNNER_TEMP/release/assets"
 
       - name: Vulnerability scan (SBOMs and deploy images)
@@ -179,6 +184,8 @@ jobs:
           cp "$release/audit/third-party-licenses.txt" "$release/audit/licenses.json" "$assets"/
           cp "$release/audit/summary.json" "$assets/dependency-audit.json"
           cp "$release/scan/summary.json" "$assets/vulnerability-scan.json"
+          cp deploy/images/openssl/qualification.json "$assets/openssl-qualification.json"
+          tar -C "$release/scan" -czf "$assets/vulnerability-reports.tar.gz" .
           cd "$assets"
           # GitHub accepts at most 1000 files, each strictly below 2 GiB.
           # Reserve three entries for SHA256SUMS and the two Sigstore bundles.

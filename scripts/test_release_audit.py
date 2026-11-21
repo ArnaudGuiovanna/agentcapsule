@@ -212,6 +212,28 @@ class AllowlistTest(Temporary):
 
 
 class ScanTest(Temporary):
+    def test_backport_requires_owned_file_hash_and_exact_package(self):
+        packages = {"libssl3": {"path": "usr/lib/libssl.so.3", "sha256": "a" * 64, "purl": "pkg:apk/test"}}
+        artifact = {"name": "libssl3", "SPDXID": "pkg", "externalRefs": [
+            {"referenceType": "purl", "referenceLocator": "pkg:apk/test"}]}
+        file = {"fileName": "usr/lib/libssl.so.3", "SPDXID": "file",
+                "checksums": [{"algorithm": "SHA256", "checksumValue": "a" * 64}]}
+        owner = {"spdxElementId": "pkg", "relatedSpdxElement": "file", "relationshipType": "CONTAINS"}
+        doc = {"packages": [artifact], "files": [file], "relationships": [owner]}
+        SCAN.verify_backport_inventory(doc, packages)
+        for invalid in [dict(doc, relationships=[]), dict(doc, packages=[dict(artifact, externalRefs=[])]),
+                        dict(doc, files=[dict(file, checksums=[])]), dict(doc, files=[file, file])]:
+            with self.assertRaises(ValueError):
+                SCAN.verify_backport_inventory(invalid, packages)
+        qualification = {"advisories": {"CVE-A": "commit"}, "profiles": {"test": packages}, "version": "fixed"}
+        finding = {"package": "libssl3", "type": "apk", "purl": "pkg:apk/test", "version": "fixed", "id": "CVE-A"}
+        others = [dict(finding, id="CVE-B"), dict(finding, purl="other"), dict(finding, version="old")]
+        args = ("sbom:" + str(self.write_json("harness.spdx.json", doc)), "test", qualification, self.dir, {}, None)
+        fixed, remaining = SCAN.verified_backports([finding, *others], *args)
+        self.assertEqual([f["patch_commit"] for f in fixed], ["commit"])
+        self.assertEqual(remaining, others)
+        self.assertEqual(SCAN.verified_backports([finding], args[0], None, *args[2:]), ([], [finding]))
+
     def oidc_unit(self):
         path = self.dir / TOOLS.OIDC_UNIT
         path.parent.mkdir(parents=True, exist_ok=True)

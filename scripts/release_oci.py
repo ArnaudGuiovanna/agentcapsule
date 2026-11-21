@@ -23,6 +23,8 @@ BUNDLE = runpy.run_path(str(ROOT / "scripts/build-server-bundle.py"))
 KEYCLOAK_SOURCE = ("26.8.2", "e514445f9dcdabc5bdcf67cab56c1e49655de067")
 GITHUB_IMAGES = {"slim": "agntcy/slim", "directory": "agntcy/dir", "init": "agntcy/oasf",
                  "oasf": "agntcy/oasf-server"}
+OPENSSL = json.loads((ROOT / "deploy/images/openssl/qualification.json").read_bytes())
+BACKPORT_PURLS = {p["purl"] for profile in OPENSSL["profiles"].values() for p in profile.values()}
 
 
 def write_json(path, value):
@@ -116,6 +118,8 @@ def project_source(service, config, work):
 def distro_key(package):
     meta = package.get("metadata") or {}
     kind = package["type"]
+    if kind == "apk" and package.get("purl") in BACKPORT_PURLS:
+        return "apk:openssl:agentcapsule@" + OPENSSL["source_commit"]
     if kind == "rpm":
         return "rpm:" + meta["sourceRpm"] + ":"
     if kind == "deb":
@@ -169,6 +173,8 @@ def source_record(package):
     elif kind == "rpm" and meta.get("sourceRpm"):
         record["source_package"] = meta["sourceRpm"]
         record["source_repository"] = "https://cdn-ubi.redhat.com/content/public/ubi/dist/ubi9/9/x86_64/"
+    elif kind == "apk" and package.get("purl") in BACKPORT_PURLS:
+        record["source_recipe"] = f"https://github.com/ArnaudGuiovanna/agentcapsule/tree/{OPENSSL['source_commit']}/deploy/images/openssl"
     elif kind == "apk" and meta.get("gitCommitOfApkPort"):
         port = quote(meta.get("originPackage") or name, safe="")
         revision = meta["gitCommitOfApkPort"]

@@ -30,3 +30,9 @@ docker build --platform linux/amd64 \
 ```
 
 After an upstream update, compare its fixes to all five source revisions, rebuild the two harnesses and run the interoperability and release checks before updating deployment digests. [Release qualification](../../../docs/release.md)
+
+## Release verification
+
+The release includes `openssl-qualification.json`, the original Grype reports in `vulnerability-reports.tar.gz`, and the decisions in `vulnerability-scan.json`. Their checksums are signed with the release. The qualification records the Git revision of each fix, the digest of each runtime image, and the SHA-256 of the installed binaries and their Alpine packages.
+
+Grype can report the five advisories against the upstream version number after these changes. The release scanner records a match under `verified_backports` only when the target, advisory, Alpine package identity, file ownership and file checksum match the qualification. Both reference harnesses also undergo a direct checksum comparison on files extracted from their guest filesystem. The scanner preserves the original severity and every other finding. [Qualification manifest](qualification.json)

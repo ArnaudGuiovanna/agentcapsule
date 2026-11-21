@@ -29,7 +29,7 @@ const (
 	// and packs images with e2fsprogs.
 	goImage = "golang:1.27-alpine@sha256:70bd7ddea8b6cbe5d6943cde279d6b67feb10cc924fb9100d1d8757c1575b280"
 	// Same base as examples/python-echo/Dockerfile.
-	pythonImage = "python:3.13-alpine@sha256:1e1f6334529d1fb26a2ef619d7cffb30a7c7d7cc1cc7338ebee283a58d1aeaca"
+	pythonImage = "ghcr.io/arnaudguiovanna/agentcapsule/runtime:python-3.13-20261121@sha256:7ab5ef55aca5b0ff15aa71935f3fa577f2b047781923929278c690e55e880fc5"
 	// OCI distribution registry for the end-to-end check.
 	registryImage = "registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373"
 	platform      = dagger.Platform("linux/amd64")
