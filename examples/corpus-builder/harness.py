@@ -6,12 +6,13 @@ import re
 import shutil
 import subprocess
 import sys
+import traceback
 from pathlib import Path
 
 # Isolated Python mode ignores PYTHONPATH. Modules come from the signed release.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from agentcapsule_harness import Harness, PlatformError, WORKING, json_part
-from conversion import SCHEMA, convert, encode
+from agentcapsule_harness import Harness, PlatformError, ProtocolError, WORKING, json_part
+from conversion import SCHEMA, convert, encode, write_json
 from layout import build_layout
 
 TOOL = "/opt/corpus-builder/corpus-guest-tool"
@@ -51,7 +52,7 @@ def progress(h, op, enabled):
         try:
             stream = h.output_stream(op)
             stream.__enter__()
-        except (OSError,PlatformError):
+        except (OSError,PlatformError,ProtocolError):
             stream = None
     else:
         stream = None
@@ -59,13 +60,13 @@ def progress(h, op, enabled):
         if stream is not None:
             try:
                 stream.step(name,state,label)
-            except (PlatformError,OSError):
+            except (PlatformError,ProtocolError,OSError):
                 pass
     try:
         yield step
     finally:
         if stream is not None:
-            with contextlib.suppress(PlatformError,OSError):
+            with contextlib.suppress(PlatformError,ProtocolError,OSError):
                 stream.__exit__(None,None,None)
 
 
@@ -108,7 +109,20 @@ def serve():
                 with progress(h,op,req["phase"]=="convert") as step:
                     reply = phase(req,data,DEVICES,TOOL,h.platform,step)
                 result,outcome = encode(reply).decode(),"completed"
-            except (OSError,ValueError,KeyError,TypeError,subprocess.SubprocessError):
+            except (OSError, ValueError, KeyError, TypeError, ProtocolError, subprocess.SubprocessError) as error:
+                # Guest stderr is discarded in production. Keep a bounded diagnostic
+                # on the encrypted volume. Never record exception arguments, document
+                # names, converter output, model prompts or parameter values.
+                modules = {"harness.py", "conversion.py", "layout.py", "formats.py"}
+                stack = [{"module": Path(frame.filename).name, "function": frame.name, "line": frame.lineno}
+                         for frame in traceback.extract_tb(error.__traceback__)
+                         if Path(frame.filename).name in modules][-8:]
+                diagnostic = {"phase": req["phase"], "exception": type(error).__name__, "stack": stack}
+                if isinstance(error, OSError):
+                    diagnostic["errno"] = error.errno
+                with contextlib.suppress(OSError):
+                    write_json(data/"last-error.json", diagnostic)
+                print(encode(diagnostic).decode().strip(), file=sys.stderr, flush=True)
                 result,outcome = None,"failed"
             h.store.local(subjects,lambda tx:tx.execute("UPDATE phases SET result=?,outcome=? WHERE op=?",(result,outcome,op)))
         try:

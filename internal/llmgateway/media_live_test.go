@@ -156,15 +156,32 @@ func TestTranscribeLiveProviderReturnsATranscriptAndItsDuration(t *testing.T) {
 	if out.DurationSeconds <= 0 || out.DurationSeconds > int64(q.DurationSeconds)+1 {
 		t.Fatal("the provider's duration", out.DurationSeconds, "declared", q.DurationSeconds)
 	}
+	if want := os.Getenv("AGENTCAPSULE_TEST_TRANSCRIBE_EXPECT"); want != "" && !strings.Contains(strings.ToLower(out.Text), strings.ToLower(want)) {
+		t.Fatal("transcript did not contain the supplied reference phrase")
+	}
 	t.Logf("transcript of %d bytes, %d segments, %d s", len(out.Text), len(out.Segments), out.DurationSeconds)
 }
 
 func TestOCRLiveProviderReadsTheDeclaredPage(t *testing.T) {
-	out, err := live(Config{Timeout: 2 * time.Minute, MaxAttempts: 1}).OCR(t.Context(), liveOCRRoute(t), OCRRequest{Document: livePDF(), MediaType: "application/pdf", Pages: 1})
+	q := OCRRequest{Document: livePDF(), MediaType: "application/pdf", Pages: 1}
+	want := "4217"
+	if file := os.Getenv("AGENTCAPSULE_TEST_OCR_PNG"); file != "" {
+		var err error
+		q.Document, err = os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		q.MediaType = "image/png"
+		want = os.Getenv("AGENTCAPSULE_TEST_OCR_EXPECT")
+		if want == "" {
+			t.Fatal("supply the text expected from the scan")
+		}
+	}
+	out, err := live(Config{Timeout: 2 * time.Minute, MaxAttempts: 1}).OCR(t.Context(), liveOCRRoute(t), q)
 	if err != nil {
 		t.Fatal("live OCR failed", err)
 	}
-	if out.PagesProcessed != 1 || len(out.Pages) != 1 || !strings.Contains(out.Pages[0].Markdown, "4217") {
+	if out.PagesProcessed != 1 || len(out.Pages) != 1 || !strings.Contains(out.Pages[0].Markdown, want) {
 		t.Fatalf("pages processed %d, %d pages", out.PagesProcessed, len(out.Pages))
 	}
 	t.Logf("%d page, %d bytes of Markdown", out.PagesProcessed, len(out.Pages[0].Markdown))
