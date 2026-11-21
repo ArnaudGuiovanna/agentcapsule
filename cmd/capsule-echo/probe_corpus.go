@@ -36,7 +36,8 @@ type corpusView struct {
 }
 
 type corpusMountView struct {
-	Name string `json:"name"`
+	Name       string                `json:"name"`
+	Extensions []corpusExtensionView `json:"extensions,omitempty"`
 	// Options are the mount's own options, from /proc/self/mountinfo.
 	Options []string `json:"options"`
 	// Marker is the start of the corpus's marker file.
@@ -45,6 +46,13 @@ type corpusMountView struct {
 	// bin/tool: ok, or the errno that refused it (EROFS, EACCES), or other.
 	Write string `json:"write"`
 	Exec  string `json:"exec"`
+}
+
+type corpusExtensionView struct {
+	Name    string   `json:"name"`
+	Options []string `json:"options"`
+	Write   string   `json:"write"`
+	Files   []string `json:"files"`
 }
 
 func probeCorpusOf(handle mutation, root, mountinfo string) mutation {
@@ -74,6 +82,22 @@ func probeCorpus(ctx context.Context, root, mountinfo string) corpusView {
 			m.Marker = string(b)
 		}
 		m.Exec = outcome(exec.CommandContext(ctx, filepath.Join(dir, "bin", "tool")).Run())
+		ext := filepath.Join(dir, "ext")
+		children, _ := os.ReadDir(ext)
+		for _, child := range children {
+			if !child.IsDir() {
+				continue
+			}
+			mount := filepath.Join(ext, child.Name())
+			view := corpusExtensionView{Name: child.Name(), Options: options[mount], Write: tryWrite(mount)}
+			entries, _ := os.ReadDir(mount)
+			for _, entry := range entries {
+				if entry.Type().IsRegular() {
+					view.Files = append(view.Files, entry.Name())
+				}
+			}
+			m.Extensions = append(m.Extensions, view)
+		}
 		v.Mounts = append(v.Mounts, m)
 	}
 	return v

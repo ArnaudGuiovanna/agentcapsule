@@ -135,6 +135,7 @@ def main():
                    help="adapted-agent package directory written by scripts/build-adapted-harness.py (<output>/package)")
     p.add_argument("--a2a-harness", type=Path, required=True,
                    help="a2a-agent package directory written by scripts/build-a2a-harness.py (<output>/package)")
+    p.add_argument("--course-enricher", type=Path, help="package exported by dagger call course-enricher; exercises both microVMs")
     p.add_argument("--pi-harness", type=Path,
                    help="optional pi-agent package written by scripts/build-pi-harness.py (<output>/adapted/package): Pi in a VM on a real model")
     p.add_argument("--pi-model-url", "--ollama-url", dest="pi_model_url",
@@ -293,8 +294,12 @@ def main():
     try:
         run("compile", [a.go, "test", "-c", "-buildvcs=false", "-race", "-tags=kvm_integration,kvm_product_integration",
                         "-o", out / "product-runtime.test", "./internal/runtime"], 300)
+        runtime_tests = "^TestProductGuest"
+        if a.course_enricher:
+            env["AGENTCAPSULE_KVM_COURSE_ENRICHER"] = str(a.course_enricher.resolve())
+            runtime_tests += "|^TestProductCourseEnrichmentKVM$"
         run("integration", [a.go, "tool", "test2json", "-p", "github.com/ArnaudGuiovanna/agentcapsule/internal/runtime",
-                            out / "product-runtime.test", "-test.v", "-test.run=^TestProductGuest", "-test.timeout=600s"], 630)
+                            out / "product-runtime.test", "-test.v", "-test.run="+runtime_tests, "-test.timeout=600s"], 630)
         events = [json.loads(line) for line in (out / "integration.log").read_text().splitlines()]
         assert not any(e["Action"] in ["skip", "fail"] for e in events)
         passed = {e["Test"] for e in events if e["Action"] == "pass" and "Test" in e}
@@ -302,6 +307,8 @@ def main():
                     "TestProductGuestSharesOneCorpusImageAcrossThreeVMs", "TestProductGuestMountsCorporaReadOnlyAndNoExec",
                     "TestProductGuestRefusesACorpusOfAnotherUUID", "TestProductGuestOrdersCorporaWithAndWithoutARegistryHarness",
                     "TestProductGuestRunsABaseOneHarnessUnchanged"}
+        if a.course_enricher:
+            required.add("TestProductCourseEnrichmentKVM")
         assert required <= passed
         worker_passed = set()
         conformance_passed = set()
