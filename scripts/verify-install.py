@@ -4,7 +4,7 @@
 Starting from a new, empty output directory, the run follows
 docs/bootstrap.md and docs/install.md step by step, without root:
 
-1. copies the tracked sources (go.mod, go.sum, cmd/, internal/) into it and
+1. copies the tracked Go sources and their embedded host assets into it and
    builds every binary as bootstrap.md says (`go build -trimpath -o bin/
    ./cmd/...`), then installs them into a throwaway prefix that stands for
    /, with /opt/agentcapsule, /etc/agentcapsule, /var/lib and /run;
@@ -484,8 +484,8 @@ def main():
         # ---- 1. Build and install (bootstrap.md, Before you start).
         run.step("build", "docs/bootstrap.md#before-you-start", "build every binary from the tracked sources, install them into the prefix")
         src = work / "src"
-        # deploy/oidc is the Go package that embeds the OIDC container helper for internal/hostops.
-        listed = subprocess.run(["git", "ls-files", "-z", "--", "go.mod", "go.sum", "cmd", "internal", "deploy/oidc"], cwd=ROOT,
+        # The adapter reads corpora through sdk/go, and hostops embeds deploy/oidc.
+        listed = subprocess.run(["git", "ls-files", "-z", "--", "go.mod", "go.sum", "cmd", "internal", "sdk/go", "deploy/oidc"], cwd=ROOT,
                                 capture_output=True, check=True).stdout.decode().split("\0")
         for name in filter(None, listed):
             target = src / name

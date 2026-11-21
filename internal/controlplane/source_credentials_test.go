@@ -43,10 +43,20 @@ func TestSourceCredentialsAreSealedAndWriteOnly(t *testing.T) {
 		t.Fatal("a second credential of the same name", err)
 	}
 	items, err := l.a.ListSourceCredentials(ctx, owner, "", 50)
-	if err != nil || len(items) != 1 || items[0] != v {
+	if err != nil || len(items) != 1 {
 		t.Fatal("list", err, items)
 	}
-	if encoded, _ := json.Marshal(items); bytes.Contains(encoded, []byte(sourceSecret)) {
+	// Compare the public representation across the JSON and database round trips.
+	// time.Time's internal location can differ for the same timestamp.
+	listed, err := json.Marshal(items[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := json.Marshal(v)
+	if err != nil || !bytes.Equal(listed, created) {
+		t.Fatal("listed metadata differs from the creation receipt", err)
+	}
+	if bytes.Contains(listed, []byte(sourceSecret)) {
 		t.Fatal("the list carries the secret")
 	}
 	var sealed []byte
