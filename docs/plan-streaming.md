@@ -8,18 +8,18 @@ Les routes, trames et commandes ci-dessous sont des propositions de conception. 
 
 ## Suivi du chantier
 
-**20 novembre 2026 · Lots 1 et 3 intégrés.** Le plan s’appuie sur l’état du dépôt à `321143b` (release `v0.0.1`).
+**21 novembre 2026.** Résultats de la campagne locale sur PostgreSQL 18.6 et KVM.
 
 | Lot | État |
 |---|---|
-| 0. Contrats, ADR 022, modèle Quint | Fait ([ADR 022](adr/022-native-streaming.md)) |
-| 1. Passerelle : streaming fournisseur | Fait (branche `streaming-lot1` ; [ADR 022](adr/022-native-streaming.md), changements 17 à 22) |
-| 2. Canal plateforme : flux LLM vers l’invité | Non démarré |
-| 3. Flux de sortie harness → plateforme | Validé sur KVM le 20 novembre 2026. `TestProductWorkerCarriesTheOutputStreamAndTheCancellation` vérifie les 20 deltas, l’annulation reçue par le harness et l’absence de nouveau fragment après l’annulation. |
-| 4. API : abonnement SSE | Non démarré |
-| 5. SDK Python et capsule-adapter | Non démarré |
-| 6. CLI | Non démarré |
-| 7. Recette, charge et documentation | Non démarré |
+| 0. Contrats, ADR 022, modèle Quint | Contrat capsule.v1, ADR 022 et invariants de terminaison validés. |
+| 1. Passerelle : streaming fournisseur | Flux natifs OpenAI et Anthropic validés avec la passerelle et leurs clients officiels. |
+| 2. Canal plateforme : flux LLM vers l’invité | Le relais a livré une première trame avant la fin d’une génération de 290 s en KVM. Le dix-septième appel simultané reçoit HTTP 503. |
+| 3. Flux de sortie harness → plateforme | La VM transmet les fragments et les étapes dans leur ordre. Les tests vérifient l’annulation et la reprise avec le dernier numéro acquitté. |
+| 4. API : abonnement SSE | Le flux SSE reprend sur curseur et applique les droits pendant la connexion. Une restauration KVM a ouvert une deuxième tentative pour le même abonné. |
+| 5. SDK Python et capsule-adapter | Les clients Go et Python et l’adaptateur fonctionnent sur le protocole public. Pi a émis 21 fragments depuis sa VM. |
+| 6. CLI | Le binaire portable a suivi un flux de cinq minutes et repris après une coupure HTTPS. |
+| 7. Recette, charge et documentation | Deux essais sur PostgreSQL 18.6 ont servi 100 producteurs et 100 lecteurs. Les 1 000 trames ont formé 100 lots chiffrés. Le premier fragment le plus lent est arrivé en 871 ms. |
 
 ## 1. Parcours à livrer
 
