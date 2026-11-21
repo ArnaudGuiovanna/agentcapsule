@@ -1,3 +1,11 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/hero-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/readme/hero-light.png">
+    <img alt="Agent Capsule. Agents need capsules. Fleets need control. The open source platform for fleets of AI agents." src="docs/assets/readme/hero-light.png" width="100%">
+  </picture>
+</p>
+
 # Agent Capsule
 
 Agent Capsule is a self-hosted platform as a service (PaaS) for running persistent AI agents on a Linux server. An organization deploys an agent program, assigns it to users or teams, and controls its model access, spending limits and document collections. The platform runs each active agent in a dedicated Firecracker microVM. Its encrypted data volume survives shutdown and is reattached when the agent wakes.
