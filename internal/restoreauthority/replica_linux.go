@@ -62,11 +62,11 @@ PRAGMA user_version=3;
 const replicaWindow = 4096
 
 // catalogueTables are copied, in this order, by a snapshot and a promotion.
-var catalogueTables = []string{"stores", "reservations", "revocations", "outcomes", "losses", "reruns", "access_revocations", "outcome_events"}
+var catalogueTables = []string{"stores", "reservations", "revocations", "revocation_scopes", "outcomes", "losses", "reruns", "access_revocations", "outcome_events"}
 
 // fullReplicaSchema is a new replica's: the catalogue's tables, then the
-// replica's own, then those of schema version 4.
-const fullReplicaSchema = schema + lossSchema + replicaSchema + accessSchema
+// replica's own, then those of schema versions 4 and 5.
+const fullReplicaSchema = schema + lossSchema + replicaSchema + accessSchema + scopeSchema
 
 func sqliteDSN(path string) string {
 	u := url.URL{Scheme: "file", Path: path}
@@ -374,7 +374,8 @@ func openReplica(ctx context.Context, root string) (*Replica, replicaState, erro
 
 // upgradeReplica brings a replica of schema version 3 to version 4: it adds
 // the empty tables of the access revocation records and of the outcomes'
-// event IDs, and changes nothing recorded. The standby is upgraded first
+// event IDs, and changes nothing recorded; then version 4 to 5, the empty
+// table of the subjects' scopes. The standby is upgraded first
 // (docs/adr/006-authority-service.md §4): its replica then takes the new
 // statements before the upgraded primary sends any. Only the processes that
 // hold the replica's owner lock open it: serve, promote, and the status of
@@ -392,11 +393,16 @@ func upgradeReplica(ctx context.Context, db *sql.DB) error {
 	switch v {
 	case schemaVersion:
 		return nil
-	case 3:
+	case 3, accessVersion:
 	default:
 		return ErrUnavailable
 	}
-	if _, err = tx.ExecContext(ctx, accessSchema); err != nil {
+	if v == 3 {
+		if _, err = tx.ExecContext(ctx, accessSchema); err != nil {
+			return errors.Join(ErrUnavailable, err)
+		}
+	}
+	if _, err = tx.ExecContext(ctx, scopeSchema); err != nil {
 		return errors.Join(ErrUnavailable, err)
 	}
 	return tx.Commit()
