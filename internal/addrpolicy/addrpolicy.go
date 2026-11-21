@@ -39,6 +39,11 @@ var (
 	}
 	// nat64 embeds an IPv4 address that a NAT64 gateway connects to.
 	nat64 = netip.MustParsePrefix("64:ff9b::/96")
+	// sixToFour (RFC 3056) embeds, in bits 16 to 47, the IPv4 address a
+	// relay tunnels to; teredo (RFC 4380) embeds its server's IPv4 address in
+	// bits 32 to 63 and its client's, inverted, in bits 96 to 127.
+	sixToFour = netip.MustParsePrefix("2002::/16")
+	teredo    = netip.MustParsePrefix("2001::/32")
 )
 
 // internalRanges are the addresses that are not public: loopback, private
@@ -61,6 +66,7 @@ var internalRanges = []netip.Prefix{
 	netip.MustParsePrefix("100::/64"),
 	netip.MustParsePrefix("2001:db8::/32"),
 	netip.MustParsePrefix("fc00::/7"),
+	netip.MustParsePrefix("fec0::/10"), // site-local, deprecated (RFC 3879) but still routed on some networks
 }
 
 // Effective is the address a connection reaches: an IPv4-mapped IPv6 address
@@ -75,6 +81,8 @@ func Effective(a netip.Addr) netip.Addr {
 }
 
 // Classify returns the class of the address a connection to a reaches.
+// A 6to4 or Teredo address that carries an IPv4 address which is not public
+// takes that address's class: a relay would deliver the connection there.
 func Classify(a netip.Addr) Class {
 	a = Effective(a)
 	switch {
@@ -86,7 +94,27 @@ func Classify(a netip.Addr) Class {
 			return Internal
 		}
 	}
-	return Public
+	class := Public
+	for _, v4 := range embedded(a) {
+		class = max(class, Classify(v4))
+	}
+	return class
+}
+
+// embedded returns the IPv4 addresses a 6to4 or a Teredo address carries.
+func embedded(a netip.Addr) []netip.Addr {
+	b := a.As16()
+	switch {
+	case sixToFour.Contains(a):
+		return []netip.Addr{netip.AddrFrom4([4]byte(b[2:6]))}
+	case teredo.Contains(a):
+		client := [4]byte(b[12:16])
+		for i := range client {
+			client[i] ^= 0xff
+		}
+		return []netip.Addr{netip.AddrFrom4([4]byte(b[4:8])), netip.AddrFrom4(client)}
+	}
+	return nil
 }
 
 // InsideInternal reports whether the prefix lies within one internal range,

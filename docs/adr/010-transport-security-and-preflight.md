@@ -91,7 +91,8 @@ client's approach:
 - Refused unless the operator allows them: loopback, private (RFC 1918,
   RFC 4193), shared (carrier-grade NAT, RFC 6598) and the other reserved
   ranges. IPv4-mapped and NAT64 (`64:ff9b::/96`) addresses count as the IPv4
-  address they carry.
+  address they carry; so do 6to4 and Teredo addresses (amended after the
+  v0.1.0 audit, below).
 - Always refused, even inside an allowed range: unspecified, multicast and
   link-local addresses (`169.254.0.0/16` and `fe80::/10`, where most clouds
   serve instance metadata), `0.0.0.0/8`, and the metadata addresses outside
@@ -273,3 +274,16 @@ Each default below is in the code; the product owner can change it.
    worker, decides which addresses are reachable. **Default and
    recommendation: (a) until a customer needs (b).** Through a proxy, the
    worker's address check sees only the proxy.
+
+## Changes after the v0.1.0 audit
+
+**Lot SEC-2 (finding L-09).** Three IPv6 forms passed as public addresses:
+the site-local range `fec0::/10`, and 6to4 (`2002::/16`) and Teredo
+(`2001::/32`) addresses that carry an internal IPv4 address, which a relay
+would reach. `fec0::/10` is now internal, as `fc00::/7` is. A 6to4 address
+takes the class of the IPv4 address it carries, and a Teredo address the
+stricter class of its server's and its client's: `2002:a00:1::1` (10.0.0.1)
+is internal, `2002:a9fe:a9fe::1` (169.254.169.254) is always refused. No
+prefix over these forms counts as internal, so an operator allows one only by
+its exact address. The model gateway, the registry client and the corpus
+source client share the change (`internal/addrpolicy`).

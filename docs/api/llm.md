@@ -81,9 +81,13 @@ operator allows an internal one. It checks each address when it connects,
 after DNS resolution: a public name that resolves to `127.0.0.1` is refused
 like `127.0.0.1`.
 - Refused unless the operator allows them: loopback, private (RFC 1918,
-  RFC 4193), carrier-grade NAT and the other reserved ranges.
+  RFC 4193), site-local (`fec0::/10`), carrier-grade NAT and the other
+  reserved ranges.
 - Always refused: unspecified, multicast and link-local addresses, and the
   cloud metadata addresses.
+- An IPv6 address that carries an IPv4 address takes its class:
+  IPv4-mapped, NAT64 (`64:ff9b::/96`), 6to4 (`2002::/16`) and Teredo
+  (`2001::/32`, the stricter of its server and its client).
 - A refused call is a permanent refusal (`rejected` on the VM channel):
   nothing is sent, the reservation is released, the breaker stays closed.
 

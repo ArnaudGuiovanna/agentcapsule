@@ -121,7 +121,9 @@ connects, after DNS resolution, so a public name that resolves to an
 internal address is refused too. A refused call is `rejected`, and nothing is
 sent. This holds in both modes.
 - Refused unless you allow them: loopback, private (RFC 1918, RFC 4193),
-  carrier-grade NAT (`100.64.0.0/10`) and the other reserved ranges.
+  site-local (`fec0::/10`), carrier-grade NAT (`100.64.0.0/10`) and the
+  other reserved ranges. A 6to4 (`2002::/16`) or Teredo (`2001::/32`)
+  address counts as the IPv4 address it carries.
 - Always refused: unspecified, multicast and link-local addresses,
   `0.0.0.0/8`, and the cloud metadata addresses (`169.254.169.254` and the
   rest of `169.254.0.0/16`, `100.100.100.200`, `168.63.129.16`,
