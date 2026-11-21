@@ -288,6 +288,8 @@ and an A2A agent (`a2a-agent`).
 | HTTP API | [openapi/openapi.yaml](openapi/openapi.yaml), [docs/api/](docs/api/) |
 | Agents, assignments, invocations, attachments, deferred results | [docs/api/agents-assignments.md](docs/api/agents-assignments.md) |
 | LLM gateway | [docs/api/llm.md](docs/api/llm.md) |
+| Streaming model responses and invocation output | [Guest protocol](docs/guest/capsule-control.md), [streaming plan](docs/plan-streaming.md) |
+| Building, publishing and reading a corpus from any harness | [Corpus format and guest examples](docs/corpus.md), [corpus API](docs/api/corpora.md) |
 | Harness packages, publishing and imports | [docs/registry.md](docs/registry.md) |
 | Running an existing agent unchanged | [docs/adapter.md](docs/adapter.md) |
 | Guest runtime and the `capsule.v1` contract | [docs/guest/](docs/guest/) |
@@ -312,6 +314,7 @@ runtime/      Firecracker patch, guest kernel config, example configs, interop q
 deploy/       private interoperability services, backup, standby, monitoring and systemd units
 scripts/      builds, CI checks and KVM/PostgreSQL verification campaigns
 sdk/python/   Python harness SDK (capsule.v1, standard library only)
+sdk/go/       Go helpers for reading a mounted corpus
 examples/     example harnesses and adapted agents
 install.sh    the CLI installer (curl | sh), published with each release
 .dagger/      reference Dagger module: builds, publishes, signs and verifies harnesses

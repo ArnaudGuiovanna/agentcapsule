@@ -234,7 +234,7 @@ Ce lot sert à la fois à l’agent de construction (disques sources et sortie) 
   2. `convert` : conversion fichier par fichier, avec reprise sur cache ;
   3. `package` : assemblage, index, `mkfs.ext4 -d` sur le disque de sortie avec l’UUID imposé.
 
-  La progression remonte à la fin de chaque phase. Une fois le [plan streaming](plan-streaming.md) livré (lot 3), elle remontera en continu sous forme d’événements `step` par fichier.
+  La progression remonte à chaque changement de phase. Pendant la conversion, le builder émet aussi un événement `step` au début et à la fin du traitement de chaque fichier. [Protocole de streaming](plan-streaming.md)
 - **Contrôles du worker au retour.**
   - Il tronque le disque de sortie à la taille déclarée (bornée par l’allocation).
   - Il passe `CheckRootfs`, puis l’inspection debugfs confinée : présence de `corpus.json`, `INDEX.md` et `search/fts.sqlite`, absence de fichiers spéciaux.
@@ -365,7 +365,7 @@ agentcapsule corpus versions finance-l3
 agentcapsule corpus-release deprecate "$RELEASE_V2"
 ```
 
-**Codes de sortie de `operation wait --type corpus-build`.** 0 pour `REVIEW` ou `PUBLISHED` ; 5 pour `FAILED`, `CANCELED` ou `EXPIRED` ; 130 en cas d’interruption. Une fois le plan streaming livré, la commande `corpus-build watch` affichera la progression fichier par fichier.
+**Codes de sortie de `operation wait --type corpus-build`.** La commande renvoie 0 pour `REVIEW` ou `PUBLISHED`, 5 pour `FAILED`, `CANCELED` ou `EXPIRED` et 130 en cas d’interruption. La commande `corpus-build watch` affiche la progression fichier par fichier.
 
 ## 8. Recette de sortie
 

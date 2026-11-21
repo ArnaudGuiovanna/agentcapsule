@@ -74,6 +74,22 @@ harness.run()
 - **Peer check.** Only the supervisor's UID may call the harness; the SDK checks it
   with `SO_PEERCRED` on every connection.
 
+## Streaming from a background handler
+
+Declare `stream.output` in the harness manifest to publish progress or text from
+a working invocation. In `on_background`, open the output stream for the saved
+operation ID. For example, after reading one input file, call
+`output.step("read-file", "done", "chapter.pdf")` inside
+`with harness.output_stream(operation_id) as output:`. The context manager
+waits for the host to acknowledge the close. Then file the final result with
+`complete_invocation` as usual.
+
+To consume a model stream, iterate over `harness.platform.complete_llm_stream`.
+Each `text` frame carries a fragment in `frame["text"]`. A forwarded model
+request can use `forward_llm_stream` to receive native provider events.
+Go and other harness languages can use the same HTTP and NDJSON messages over
+the platform socket. [Guest protocol](../../docs/guest/capsule-control.md)
+
 ## Packaging
 
 A harness image must contain the interpreter and everything it imports, plus the
