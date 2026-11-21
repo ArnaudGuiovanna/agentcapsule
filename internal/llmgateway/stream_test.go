@@ -17,17 +17,17 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/telemetry"
 )
 
-// provider is a fake model server that answers with an event stream, written
+// streamTestProvider is a fake model server that answers with an event stream, written
 // and flushed block by block.
-type provider struct {
+type streamTestProvider struct {
 	*httptest.Server
 	calls atomic.Int32
 	body  atomic.Value // the last request's body
 }
 
-func streamProvider(t *testing.T, serve func(n int32, w http.ResponseWriter, r *http.Request, send func(...string))) *provider {
+func streamProvider(t *testing.T, serve func(n int32, w http.ResponseWriter, r *http.Request, send func(...string))) *streamTestProvider {
 	t.Helper()
-	p := &provider{}
+	p := &streamTestProvider{}
 	p.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := p.calls.Add(1)
 		b, _ := io.ReadAll(r.Body)
@@ -45,7 +45,7 @@ func streamProvider(t *testing.T, serve func(n int32, w http.ResponseWriter, r *
 }
 
 // sent decodes the last request the provider received.
-func (p *provider) sent(t *testing.T) map[string]json.RawMessage {
+func (p *streamTestProvider) sent(t *testing.T) map[string]json.RawMessage {
 	t.Helper()
 	var v map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(p.body.Load().(string)), &v); err != nil {

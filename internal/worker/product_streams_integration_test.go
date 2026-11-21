@@ -40,7 +40,9 @@ func TestProductWorkerCarriesTheOutputStreamAndTheCancellation(t *testing.T) {
 	if !catalog.Declared || !slices.Contains(catalog.Effective, capability.StreamOutput) {
 		t.Fatal("catalog", catalog)
 	}
-	text := func(s string) []capsuleprotocol.ContentPart { return []capsuleprotocol.ContentPart{{Type: "text", Text: s}} }
+	text := func(s string) []capsuleprotocol.ContentPart {
+		return []capsuleprotocol.ContentPart{{Type: "text", Text: s}}
+	}
 
 	// A stream's deltas reach the chunk table; the answer is their text.
 	got := l.askContent(agent, "stream-20", text("/stream 20"))

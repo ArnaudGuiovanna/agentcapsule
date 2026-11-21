@@ -187,7 +187,11 @@ def main():
             # host (533 s to 600 s in November 2026, 865 s for the whole phase on
             # the integrated tree under load), so it gets twenty.
             command = ["go", "test", "-race", "-json", "-count=1", "-timeout=1200s"]
-            run("integration", [*command, "./..."], timeout=1800, go_json=True)
+            # The 100-stream latency target is measured without competing package tests.
+            stream_load = "^TestInvocationEventsLoad$"
+            run("integration", [*command, "-skip", stream_load, "./..."], timeout=1800, go_json=True)
+            run("stream-load", ["go", "test", "-json", "-count=1", "-timeout=180s", "-run", stream_load, "./internal/api"],
+                timeout=300, go_json=True, extra_env={"AGENTCAPSULE_STREAM_LOAD": "1"})
             if args.llm_base_url:
                 run("llm-live", [*command, "-tags=llmlive", "-run=^TestLive", "./internal/llmgateway", "./internal/controlplane"], timeout=300, go_json=True,
                     extra_env={"AGENTCAPSULE_TEST_LLM_BASE_URL": args.llm_base_url, "AGENTCAPSULE_TEST_LLM_MODEL": args.llm_model})

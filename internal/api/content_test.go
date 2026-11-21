@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/capability"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/harnessstore"
@@ -65,7 +67,7 @@ func TestHTTPCapabilityCatalogAndPolicies(t *testing.T) {
 	path := "/v1/agents/" + agent + "/capabilities"
 	var v controlplane.AgentCapabilities
 	r := call(t, l.server, "GET", path, owner, "", "")
-	if r.Code != 200 || json.Unmarshal(r.Body.Bytes(), &v) != nil || v.Declared || len(v.Effective) != 3 || v.Release.Name != "reference" {
+	if r.Code != 200 || json.Unmarshal(r.Body.Bytes(), &v) != nil || v.Declared || !slices.Equal(v.Effective, capability.Known()) || v.Release.Name != "reference" {
 		t.Fatal("catalog", r.Code, r.Body.String())
 	}
 	if r = call(t, l.server, "PUT", "/v1/organizations/current/capabilities", bob, "o-bob", `{"allowed":[]}`); r.Code != 403 {
@@ -101,7 +103,7 @@ func TestHTTPCapabilityCatalogAndPolicies(t *testing.T) {
 		Items []controlplane.HarnessRelease `json:"items"`
 	}
 	if r = call(t, l.server, "GET", "/v1/harness-releases", owner, "", ""); r.Code != 200 || json.Unmarshal(r.Body.Bytes(), &releases) != nil ||
-		len(releases.Items) != 1 || len(releases.Items[0].Capabilities) != 3 || releases.Items[0].CapabilitiesDeclared {
+		len(releases.Items) != 1 || !slices.Equal(releases.Items[0].Capabilities, capability.Known()) || releases.Items[0].CapabilitiesDeclared {
 		t.Fatal("releases", r.Code, r.Body.String())
 	}
 }

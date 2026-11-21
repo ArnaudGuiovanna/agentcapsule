@@ -343,7 +343,8 @@ func TestIdentifiersAndCursorsAreOpaque(t *testing.T) {
 	f := newRBACFixture(t)
 	ids := map[string]string{}
 	for _, route := range rbacRoutes {
-		if route.Method != "GET" || route.Want == rbacLegacyOnly || strings.Contains(route.Path, "/downloads/") {
+		// Downloads and SSE event streams have their own wire formats.
+		if route.Method != "GET" || route.Want == rbacLegacyOnly || strings.Contains(route.Path, "/downloads/") || strings.HasSuffix(route.Path, "/events") {
 			continue
 		}
 		actor, _ := conventionActor(route)

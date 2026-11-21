@@ -269,12 +269,14 @@ HTTP/1.1 200 OK
   "requested": [
     "agents.delegate",
     "agents.discover",
-    "llm.invoke"
+    "llm.invoke",
+    "stream.output"
   ],
   "effective": [
     "agents.delegate",
     "agents.discover",
-    "llm.invoke"
+    "llm.invoke",
+    "stream.output"
   ]
 }
 ```

@@ -488,5 +488,7 @@ chunks and observed 100 opaque operation notifications. First-delta latency from
 the producer release barrier to SSE receipt was 364/392/398 ms and 799/869/871 ms
 (p50/p95/max). PostgreSQL wrote 330,912 and 308,200 bytes of WAL during the two
 runs. The qualification uses the 150 ms coalescing window and an isolated
-database with the product's migrations. Set `AGENTCAPSULE_STREAM_LOAD=1`
-when running this test. [Load test](../internal/api/events_load_test.go).
+database with the product's migrations. The PostgreSQL verifier runs the load
+qualification separately from the race-detector suite. To reproduce it, run
+`AGENTCAPSULE_STREAM_LOAD=1 go test -count=1 -run=^TestInvocationEventsLoad$ ./internal/api`
+against a dedicated PostgreSQL test database. [Load test](../internal/api/events_load_test.go).

@@ -73,7 +73,7 @@ type CorpusBuild struct {
 	CompletedAt     *time.Time      `json:"completed_at,omitempty"`
 }
 type CorpusRelease struct {
-Extensions []CorpusExtensionImage `json:"extensions"`
+	Extensions []CorpusExtensionImage `json:"extensions"`
 	CorpusReleaseReference
 	CorpusID     string     `json:"corpus_id"`
 	Digest       string     `json:"digest"`
@@ -110,7 +110,7 @@ const releaseSelect = `SELECT r.id,c.name,r.version,r.corpus_id,r.digest,r.image
 
 func scanCorpusRelease(row pgx.Row) (CorpusRelease, error) {
 	var r CorpusRelease
-	err := row.Scan(&r.ID, &r.Name, &r.Version, &r.CorpusID, &r.Digest, &r.ImageBytes, &r.BuildID, &r.Commit, &r.Builder, &r.HostID, &r.State, &r.CreatedAt, &r.DeprecatedAt,&r.Extensions)
+	err := row.Scan(&r.ID, &r.Name, &r.Version, &r.CorpusID, &r.Digest, &r.ImageBytes, &r.BuildID, &r.Commit, &r.Builder, &r.HostID, &r.State, &r.CreatedAt, &r.DeprecatedAt, &r.Extensions)
 	return r, corpusRowError(err)
 }
 func corpusRowError(err error) error {
