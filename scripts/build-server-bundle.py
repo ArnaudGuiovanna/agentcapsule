@@ -98,6 +98,9 @@ def runtime_files(dist,kernel,vmm):
     files["openapi/openapi.yaml"]=ROOT/"openapi/openapi.yaml"
     if (ROOT/"deploy/oidc").is_dir():
         files.update(tree(ROOT/"deploy/oidc","oidc"))
+        # The OIDC unit's container helper, for manual installations; the
+        # installer embeds the same file (internal/oidclifecycle).
+        files["oidc/container.py"]=ROOT/"internal/oidclifecycle/container.py"
     return files
 
 

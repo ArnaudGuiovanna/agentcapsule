@@ -16,7 +16,7 @@ import (
 	"regexp"
 	"runtime"
 
-	"github.com/ArnaudGuiovanna/agentcapsule/deploy/oidc"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/oidclifecycle"
 )
 
 //go:embed host.py
@@ -73,7 +73,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		cmd = exec.CommandContext(ctx, "python3", "-I", "-", encoded)
 	}
 	root := []byte("import base64\nTRUSTED_ROOT=base64.b64decode('" + base64.StdEncoding.EncodeToString(trustedRoot) + "')")
-	lifecycle := []byte("OIDC_LIFECYCLE=base64.b64decode('" + base64.StdEncoding.EncodeToString(oidc.ContainerLifecycle) + "')")
+	lifecycle := []byte("OIDC_LIFECYCLE=base64.b64decode('" + base64.StdEncoding.EncodeToString(oidclifecycle.ContainerLifecycle) + "')")
 	source := bytes.Join([][]byte{root, lifecycle, setup, diagnostics, controller}, []byte("\n"))
 	program := "import base64\nHELPER_SOURCE=base64.b64decode('" + base64.StdEncoding.EncodeToString(source) + "')\nexec(compile(HELPER_SOURCE, 'agentcapsule-host', 'exec'))\n"
 	cmd.Stdin = bytes.NewBufferString(program)

@@ -42,8 +42,10 @@ Do not run `go test ./...` at the repository root with sources outside
 | `check-go.py` | Go tests with race detector, no PostgreSQL or KVM |
 | `test_check_go.py` | Unit tests of `check-go.py` |
 | `check-repo-hygiene.py` | Rejects new tracked files with a personal absolute path or Go sources committed under `_evidence/` (baseline: `hygiene-baseline.json`); runs `check-model-projections.py` and `check-acceptance.py` |
-| `check-model-projections.py` | Fails when a run or witness of `spec/*.qnt` is missing from [spec/projections.md](../spec/projections.md), or when the table names a Go test that does not exist |
+| `check-model-projections.py` | Fails when a run or witness of `spec/*.qnt` is missing from [spec/projections.md](../spec/projections.md), when the table names a Go test that does not exist, when an ITF case it names is not replayed from the pinned trace and model copy, or when a copy of a model is stale ([spec/pinned-models.json](../spec/pinned-models.json)) |
 | `test_check_model_projections.py` | Unit tests of `check-model-projections.py` |
+| `check-model-runs.py` | Needs Quint (`npm ci --prefix spec`): `quint test` of every run of the models, and every fixed schedule of the ITF fixtures replayed on the current model with the pinned states and refusals; run by CI |
+| `test_check_model_runs.py` | Unit tests of `check-model-runs.py`, with a fake Quint |
 | `check-models.py` | The bounded and exhaustive checks of the formal models, one at a time: Apalache and TLC through `quint verify`, each against the result the repository expects (a witness schedule and a broken configuration must fail); refuses to pass on a timeout or a missing tool; see [spec/README.md](../spec/README.md#bounded-and-exhaustive-checks) |
 | `test_check_models.py` | Unit tests of `check-models.py`: every witness schedule and every module of the checkers' files has a check, the reading of Quint's output, the refusal of a missing or changed tool |
 | `check-acceptance.py` | Fails when an MVP requirement of [docs/product.md](../docs/product.md) has no row in [docs/acceptance.md](../docs/acceptance.md), when a met row cites no test, or when a cited test or file does not exist |
@@ -72,6 +74,7 @@ Do not run `go test ./...` at the repository root with sources outside
 | `build-firecracker.py` | Builds the pinned Firecracker variant with VMM-owned file locks |
 | `build-guest-kernel.py` | Builds the pinned guest kernel with device-mapper/dm-crypt, without root |
 | `test_build_inputs.py` | Unit tests of the input checks of `build-firecracker.py` and `build-guest-kernel.py`, also under `python -O`, and that no script checks with `assert` (which `python -O` drops) |
+| `test_build_firecracker.py`, `test_build_guest_kernel.py` | Unit tests of the two builds, run from a copy with their own pins and a recorder in place of Cargo, patch and make: the commands and environment of each phase, the pins checked before any use, what each records, and the stop on a wrong input or a failed phase |
 | `build-product-guest.py` | Builds capsule-init and the echo harness into a pinned initramfs |
 | `build-control-guest.py` | Builds the disposable authenticated SQL harness fixture |
 | `build-python-harness.py` | Builds the python-echo harness package with plain Docker (pinned base image, then `pack`); the reference build is the Dagger module (`dagger call python-echo`). Its `package/` directory is required by `verify-product-guest.py --python-harness` |
@@ -86,6 +89,8 @@ Do not run `go test ./...` at the repository root with sources outside
 | `release_tools.py`, `release-tools.json`, `tools/` | The audit's tools, pinned by SHA-256 (syft, grype, cosign, actionlint) or `go.sum` (govulncheck), fetched into `~/.cache/agentcapsule-release-tools`; `--check-allowlist` warns 21 days before an allowlist entry expires and fails once it has |
 | `vulnerability-allowlist.json`, `license-policy.json` | Reviewed exceptions of the vulnerability gates (each expires within 90 days), and the allowed licenses |
 | `test_release_audit.py` | Unit tests of the release audit's rules, without network or tools |
+| `test_build_server_bundle.py` | Unit tests of `build-server-bundle.py`, without network, root, APT or skopeo: reproducible archives, the digests checked before a build is trusted, the pinned images and packages, the skopeo, apt-get and dpkg commands, the split of the source archives, and a bundle without Go source |
+| `test_release_sources.py` | Unit tests of `release_sources.py`, without network: the Git references and Cargo sources it accepts, its commands, its retries, and nothing kept without its digest |
 | `openapi-requirements.txt` | Python requirements for validating the OpenAPI specification |
 | `adapter-sdk-requirements.txt` | Model SDKs for `verify-adapter.py`, pinned by hash |
 

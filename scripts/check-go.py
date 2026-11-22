@@ -35,11 +35,10 @@ PG_PACKAGES = ("internal/api", "internal/controlplane", "internal/worker")
 def source_files(root):
     files = [root / "go.mod", root / "go.sum"]
     # sdk/ and examples/ hold the Python harness SDK and its example, which the
-    # Go conformance tests run; they hold no Go package. deploy/oidc is the Go
-    # package that embeds the OIDC container helper for internal/hostops.
-    for name in ("cmd", "internal", "sdk", "examples", "deploy/oidc"):
+    # Go conformance tests run; they hold no Go package.
+    for name in ("cmd", "internal", "sdk", "examples"):
         directory = root / name
-        if name in ("sdk", "examples", "deploy/oidc") and not directory.exists() and not directory.is_symlink():
+        if name in ("sdk", "examples") and not directory.exists() and not directory.is_symlink():
             continue
         if not directory.is_dir() or directory.is_symlink():
             raise ValueError(f"missing or linked source directory: {name}")

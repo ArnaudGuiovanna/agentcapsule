@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-SOURCE=Path(__file__).resolve().parents[1]/"deploy/oidc/container.py"
+SOURCE=Path(__file__).resolve().parents[1]/"internal/oidclifecycle/container.py"
 spec=importlib.util.spec_from_file_location("oidc_lifecycle",SOURCE)
 oidc=importlib.util.module_from_spec(spec)
 spec.loader.exec_module(oidc)

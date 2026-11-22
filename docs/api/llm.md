@@ -281,7 +281,9 @@ A running capsule calls its model through the authenticated platform channel,
 
 and receives `{"text","finish_reason","input_tokens","output_tokens","soft_budget_exceeded"}`.
 The idempotency header (`idempotency_key`, at most 200 characters) is the
-ledger's request key.
+ledger's request key. Embeddings, transcription and OCR have their own routes
+on the same channel, under the same rules:
+[guest/llm-multimodal.md](../guest/llm-multimodal.md).
 
 - **Identity**: organization and agent come from the channel (generation and VM
   of the current boot), never from the payload. A `tenant_id`, `provider_secret`

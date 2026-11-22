@@ -490,8 +490,8 @@ def main():
         # ---- 1. Build and install (bootstrap.md, Before you start).
         run.step("build", "docs/bootstrap.md#before-you-start", "build every binary from the tracked sources, install them into the prefix")
         src = work / "src"
-        # The adapter reads corpora through sdk/go, and hostops embeds deploy/oidc.
-        listed = subprocess.run(["git", "ls-files", "-z", "--", "go.mod", "go.sum", "cmd", "internal", "sdk/go", "deploy/oidc"], cwd=ROOT,
+        # The adapter reads corpora through sdk/go.
+        listed = subprocess.run(["git", "ls-files", "-z", "--", "go.mod", "go.sum", "cmd", "internal", "sdk/go"], cwd=ROOT,
                                 capture_output=True, check=True).stdout.decode().split("\0")
         for name in filter(None, listed):
             target = src / name

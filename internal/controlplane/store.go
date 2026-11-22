@@ -1,7 +1,10 @@
-// Package controlplane implements transactional request admission and consent.
-// Authentication adapters must supply the caller identity from the trusted
-// user/vsock channel, never from a caller-controlled request field. This package
-// does not yet implement the complete lifecycle, delivery scheduler or HTTP API.
+// Package controlplane holds the platform's durable state in PostgreSQL and the
+// transactions that change it: organizations, identities and authorization,
+// agents and their lifecycle, requests and their delivery, schedules, LLM
+// accounting, corpora, audit and the schema migrations. internal/api serves it
+// over HTTP, and internal/worker drives the hosts from it. Authentication
+// adapters must supply the caller identity from the trusted user/vsock channel,
+// never from a caller-controlled request field.
 package controlplane
 
 import (

@@ -1,0 +1,92 @@
+{
+  "about": "Every copy of a model of spec/ kept with traces under internal/**/testdata (audit finding A-10). current: byte for byte the model of spec/; a change to the model makes the copy stale, and scripts/check-model-projections.py fails until the copy and its traces are regenerated or the copy is declared frozen. frozen: an older revision kept with its traces, for the reason given; scripts/check-model-runs.py (CI) replays every fixed schedule of a fixture on the current model and requires the same states.",
+  "copies": [
+    {
+      "copy": "internal/controlplane/testdata/delivery-itf/delivery.qnt",
+      "model": "spec/delivery.qnt",
+      "status": "current"
+    },
+    {
+      "copy": "internal/controlplane/testdata/messaging-itf/messaging.qnt",
+      "model": "spec/messaging.qnt",
+      "status": "current"
+    },
+    {
+      "copy": "internal/controlplane/testdata/protocol-itf/protocol_composition.qnt",
+      "model": "spec/protocol_composition.qnt",
+      "status": "current"
+    },
+    {
+      "copy": "internal/controlplane/testdata/preimplementation-concurrency/sources/concurrent_protocol.qnt",
+      "model": "spec/concurrent_protocol.qnt",
+      "status": "frozen",
+      "reason": "The P1 schedules of 2026-11-06, kept unmodified with their observations (the fixture's README). The model has since gained the closure scope of ADR 007 §7 (a closure waits for its two parties' fences), the deadline and death of an unsent event, and a restore's lost outcome and redelivery (ADR 008), with three more safety invariants; a retirement also needs the agents its delivery reaches active. Each schedule replays on the current model with the same states and refusals, and TestPreimplementationP1ITF compares a closure's receipts on the request's two parties."
+    },
+    {
+      "copy": "internal/controlplane/testdata/preimplementation-progress/sources/service_progress.qnt",
+      "model": "spec/service_progress.qnt",
+      "status": "frozen",
+      "reason": "The P3 schedules of 2026-11-07, kept unmodified with their observations. The model has since gained a notification's deadline and a restore's redeliveries (ADR 007, ADR 008), actions these schedules do not take. Each schedule replays on the current model with the same states and refusals."
+    },
+    {
+      "copy": "internal/controlplane/testdata/messaging-itf/certificates/messagingNoMandateOwner-mandateOwned/sources/messaging.qnt",
+      "model": "spec/messaging.qnt",
+      "status": "frozen",
+      "reason": "An Apalache counterexample certificate of a broken configuration (2026-11-06), with the model it ran on; result.json pins its digest. The model has since gained only stepCompact, a TLC form of step with the same transition relation. scripts/check-models.py checks the broken configurations on the current model."
+    },
+    {
+      "copy": "internal/controlplane/testdata/messaging-itf/certificates/messagingNoMandateOwner-mandateOwned/shorter/sources/messaging.qnt",
+      "model": "spec/messaging.qnt",
+      "status": "frozen",
+      "reason": "The one-step-shorter check of the certificate above (no counterexample), on the same revision."
+    },
+    {
+      "copy": "internal/controlplane/testdata/messaging-itf/certificates/messagingNoPostcheck-searchNoLeak/sources/messaging.qnt",
+      "model": "spec/messaging.qnt",
+      "status": "frozen",
+      "reason": "An Apalache counterexample certificate of a broken configuration (2026-11-06), with the model it ran on; result.json pins its digest. The model has since gained only stepCompact, a TLC form of step with the same transition relation. scripts/check-models.py checks the broken configurations on the current model."
+    },
+    {
+      "copy": "internal/controlplane/testdata/messaging-itf/certificates/messagingNoPostcheck-searchNoLeak/shorter/sources/messaging.qnt",
+      "model": "spec/messaging.qnt",
+      "status": "frozen",
+      "reason": "The one-step-shorter check of the certificate above (no counterexample), on the same revision."
+    },
+    {
+      "copy": "internal/controlplane/testdata/messaging-itf/certificates/messagingRacyAccept-noLiveRequestForDeleted/sources/messaging.qnt",
+      "model": "spec/messaging.qnt",
+      "status": "frozen",
+      "reason": "An Apalache counterexample certificate of a broken configuration (2026-11-06), with the model it ran on; result.json pins its digest. The model has since gained only stepCompact, a TLC form of step with the same transition relation. scripts/check-models.py checks the broken configurations on the current model."
+    },
+    {
+      "copy": "internal/controlplane/testdata/messaging-itf/certificates/messagingRacyAccept-noLiveRequestForDeleted/shorter/sources/messaging.qnt",
+      "model": "spec/messaging.qnt",
+      "status": "frozen",
+      "reason": "The one-step-shorter check of the certificate above (no counterexample), on the same revision."
+    },
+    {
+      "copy": "internal/controlplane/testdata/messaging-itf/certificates/messagingRacyAccept-terminalStable/sources/messaging.qnt",
+      "model": "spec/messaging.qnt",
+      "status": "frozen",
+      "reason": "An Apalache counterexample certificate of a broken configuration (2026-11-06), with the model it ran on; result.json pins its digest. The model has since gained only stepCompact, a TLC form of step with the same transition relation. scripts/check-models.py checks the broken configurations on the current model."
+    },
+    {
+      "copy": "internal/controlplane/testdata/messaging-itf/certificates/messagingRacyAccept-terminalStable/shorter/sources/messaging.qnt",
+      "model": "spec/messaging.qnt",
+      "status": "frozen",
+      "reason": "The one-step-shorter check of the certificate above (no counterexample), on the same revision."
+    },
+    {
+      "copy": "internal/controlplane/testdata/messaging-itf/certificates/messagingSendChecksAds-noRequestToHidden/sources/messaging.qnt",
+      "model": "spec/messaging.qnt",
+      "status": "frozen",
+      "reason": "An Apalache counterexample certificate of a broken configuration (2026-11-06), with the model it ran on; result.json pins its digest. The model has since gained only stepCompact, a TLC form of step with the same transition relation. scripts/check-models.py checks the broken configurations on the current model."
+    },
+    {
+      "copy": "internal/controlplane/testdata/messaging-itf/certificates/messagingSendChecksAds-noRequestToHidden/shorter/sources/messaging.qnt",
+      "model": "spec/messaging.qnt",
+      "status": "frozen",
+      "reason": "The one-step-shorter check of the certificate above (no counterexample), on the same revision."
+    }
+  ]
+}

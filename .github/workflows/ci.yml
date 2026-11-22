@@ -72,7 +72,7 @@ jobs:
       - name: Authorization matrix (every route has a row, docs/api/rbac.md matches it)
         run: go test -count=1 -run '^TestRBACMatrix(IsWellFormed|CoversEveryRoute|IsDocumented)$' ./internal/api
 
-      - name: Script unit tests (the check runner, the textfile scripts, the archive shipper, the backup tools' fetch)
+      - name: Script unit tests (the check runner, the textfile scripts, the archive shipper, the backup tools' fetch, the release build scripts)
         run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
 
       - name: Repository hygiene (no personal paths, no committed evidence sources)
@@ -100,6 +100,23 @@ jobs:
         run: |
           npm ci --no-audit --no-fund
           npm run typecheck
+
+  models:
+    name: Model runs and the fixtures' schedules on the current models
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned Quint
+        working-directory: spec
+        run: npm ci --no-audit --no-fund
+
+      - name: Run every run of the models, replay every ITF schedule on its current model (TypeScript evaluator, no download)
+        run: python3 scripts/check-model-runs.py --jobs 4
 
   secrets:
     name: Secret scan (full history)
