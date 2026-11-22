@@ -22,7 +22,7 @@ it again (lines of `321143b`):
 | Hop | Code | What blocks a stream |
 |---|---|---|
 | Gateway → provider | `Gateway.once` reads the whole body (`internal/llmgateway/gateway.go:301`); `forwardFields` refuses `stream` and deletes `stream` and `stream_options` (`forward.go:109-113`) | No stream is ever asked of a provider; usage is read on the whole body (`forwardUsage`, `forward.go:148-177`) |
-| Accounting | `LLMService.Call` → `admit` → `execute` → `settle` (`internal/controlplane/llm_service.go:89-174`) | Settlement assumes a whole answer |
+| Accounting | `llmservice.Service.Call` → `admit` → `execute` → `settle` (`internal/llmservice/service.go`) | Settlement assumes a whole answer |
 | Host → guest | `platformHandler.ServeHTTP` writes one JSON object (`internal/capsuleprotocol/platform.go:121-380`); the server's write deadline is 35 s (`control.go:147`), pushed to 305 s for the two model routes only (`platform.go:145-151`) | No framed answer |
 | Relay in the guest | `remotePlatform` calls `PlatformClient`, which reads the whole answer (`platform_local_linux.go:16-51`, `platform.go:430`); local server write deadline 20 s (`local_linux.go:67-97`) | The relay re-frames messages |
 | Cost of a call | a new vsock and TLS connection per call (`DisableKeepAlives`, `control.go:308`; HTTP/1.1 only, `credentials.go:239`), a flock per accept (`internal/runtime/firecracker_platform_linux.go:55-94`), `Control` and a hold per call (`internal/worker/platform_linux.go:45-58`), the capability's SQL read (`RequireCapabilityFromVM`, `internal/controlplane/capabilities.go:79-95`) | One call per delta is too dear |
@@ -128,7 +128,7 @@ them to the existing signatures, not the behaviour below.
 - **After the first byte, no retry.** A cut connection, an idle or total
   timeout, a stream past its size bound, a provider `error` event (Anthropic)
   or a stream without final usage is `ErrOutcomeUnknown` (package
-  `llmgateway`, `gateway.go:85`). `LLMService` then calls `MarkLLMUnknown`
+  `llmgateway`, `gateway.go:85`). `llmservice.Service` then calls `MarkLLMUnknown`
   (`internal/controlplane/llm_budgets.go:510`): the reservation keeps
   counting and the organization reconciles it (`llm_reconcile.go`,
   `GET /v1/llm/calls/unresolved`). The settlement path is unchanged:
@@ -145,7 +145,7 @@ them to the existing signatures, not the behaviour below.
   is recorded at the end of a stream with its usage; a cut, a timeout or a
   stream without usage is a failure; `ErrRejected` before the first byte
   counts as today (a success for the breaker, `gateway.go:266`). The breaker's
-  key stays the route's (`tenant/alias` in practice, `llm_service.go:149`).
+  key stays the route's (`tenant/alias` in practice, `internal/llmservice/service.go`).
 - **Trace.** The span `llm.call` gains the closed attribute
   `agentcapsule.llm.mode` (`unary`, `stream`), and `agentcapsule.outcome` the
   value `stream_cut` (a cut after the first byte, whose call's outcome is
@@ -154,12 +154,12 @@ them to the existing signatures, not the behaviour below.
   label, buckets 0.1 to 60 s): from the provider request to its first event.
   `agentcapsule_llm_calls_total` counts streams as calls.
 
-**Accounting.** `LLMService` gains `ForwardStreamFromVM` and
+**Accounting.** `llmservice.Service` gains `ForwardStreamFromVM` and
 `CompleteStreamFromVM` beside `ForwardFromVM` and `CallFromVM`: the same
 `admitFromVM` (identity, alias access, budgets, reservation, idempotency key),
 then the gateway's stream function, then the same `settle` with
 `context.WithoutCancel`. A replay of the request key behaves as today
-(`admit`, `llm_service.go:123-127`): a reservation still `reserved` becomes
+(`admit`, `internal/llmservice/service.go`): a reservation still `reserved` becomes
 unknown and answers `outcome_unknown`; any other answers `conflict`
 (`ErrLLMAlreadyProcessed`). A key is never sent to the provider twice.
 
@@ -823,7 +823,7 @@ change of this record.
 | Span attributes | `agentcapsule.llm.mode` (`unary`, `stream`); outcome `stream_cut` |
 | Worker settings | `llm.stream_first_byte_timeout`, `llm.stream_idle_timeout`, `output_streams.{coalesce_window, coalesce_bytes, max_bytes, max_frames, retention, idle_timeout}` |
 | API flag | `-max-event-streams` |
-| Go | `llmgateway.Gateway.ForwardStream`, `CompleteStream`; `capsuleprotocol.LLMStreamAPI`, `OutputStreamAPI`, `MaxStreamFrameBytes`, `StreamIdleTimeout`; `PlatformClient.ForwardLLMStream`, `CompleteLLMStream`, `OpenOutputStream`; `LLMService.ForwardStreamFromVM`, `CompleteStreamFromVM`; `Store.PurgeStreamChunks`; `pgnotify.Hub` |
+| Go | `llmgateway.Gateway.ForwardStream`, `CompleteStream`; `capsuleprotocol.LLMStreamAPI`, `OutputStreamAPI`, `MaxStreamFrameBytes`, `StreamIdleTimeout`; `PlatformClient.ForwardLLMStream`, `CompleteLLMStream`, `OpenOutputStream`; `llmservice.Service.ForwardStreamFromVM`, `CompleteStreamFromVM`; `Store.PurgeStreamChunks`; `pgnotify.Hub` |
 | Python | `Platform.forward_llm_stream`, `Platform.complete_llm_stream`, `Harness.output_stream` |
 | CLI | `invocation watch`, `agent invoke --watch`, `--text` |
 
@@ -888,7 +888,7 @@ The plan's references hold at `321143b`, with these differences:
    the library's default is 60 s (`gateway.go:122-124`).
 3. On the forward path the answer's real bound is `MaxForwardBytes`, 960 KiB
    (`forward.go:21`); `MaxResponse`, 4 MiB, is the read bound.
-4. The breaker's key is `tenant/alias` (`llm_service.go:149`), not
+4. The breaker's key is `tenant/alias` (`internal/llmservice/service.go`), not
    `tenant/provider` as `Route.Key`'s comment says (`gateway.go:50`). A
    provider refusal counts as a breaker success (`gateway.go:266`).
 5. `authorizeVM` (`vm_authorization.go:20-36`) checks the boot's placement,
@@ -1001,7 +1001,7 @@ Lot 1 (the gateway) adds:
     stream still runs. Marking the reservation unknown then let the
     organization release it at once (`resolveLLMOutcome` accepts any
     `unknown` call), before the stream settled: the call's cost was lost.
-    `LLMService` now holds each request key in its process from the
+    `llmservice.Service` now holds each request key in its process from the
     admission to the recorded outcome. A replay meanwhile answers
     `outcome_unknown`, never reaches the provider, and leaves the
     reservation to the running call. A `reserved` key that no call of the

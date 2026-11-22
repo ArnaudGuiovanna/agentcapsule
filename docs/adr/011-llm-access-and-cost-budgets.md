@@ -156,7 +156,7 @@ For accounting:
 | Access and grants, prices | `internal/controlplane/llm_access.go` |
 | Cost reservation, settlement at the reservation's prices, exact cost, usage and budget consumption | `internal/controlplane/llm_budgets.go` |
 | Reconciliation | `internal/controlplane/llm_reconcile.go` |
-| Observer of each call's outcome | `internal/controlplane/llm_service.go` |
+| Observer of each call's outcome | `internal/llmservice/service.go` |
 | Operator metrics and events, refusal codes | `internal/worker/llm_telemetry_linux.go`, `internal/worker/platform_linux.go` |
 | Routes | `internal/api/llm.go`, `openapi/openapi.yaml` |
 
@@ -224,6 +224,11 @@ Each is a default the code applies until the product owner answers.
    - Recommendation: (a). (c) would read uncertainty as zero spend.
 
 ## Changes after the v0.1.0 audit
+
+The worker calls model providers through `internal/llmservice`. Its ledger
+interface separates each PostgreSQL transaction from the provider exchange.
+Only the worker inserts call reservations. The API can update existing rows
+when an organization reconciles an unknown outcome.
 
 **Lot SEC-2 (findings S-11, S-12, S-13, L-06, L-07, L-08, and the gateway
 part of P-12).** What a reservation counts and what a hard budget promises
