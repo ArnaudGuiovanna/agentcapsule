@@ -307,6 +307,13 @@ func (s *Store) Prepare(ctx context.Context, spec Spec, key []byte) (Container, 
 		return result, err
 	}
 	s.boundary("allocated")
+	// A committed container was checked before its publication; since then
+	// its guest may have rewritten its header, or a restore installed an
+	// archive's. libcryptsetup never reads that header in this process
+	// (S-21): the journal, the inode and the key's identifier adopt it.
+	if final && j.Stage == "READY" {
+		return Container{Spec: spec, Path: path, UUID: spec.uuid(), Device: j.Device, Inode: j.Inode}, nil
+	}
 	if err = luks(activePath, spec.uuid(), key, false, nil); err != nil {
 		if final {
 			return result, err
@@ -364,27 +371,6 @@ func (s *Store) Prepare(ctx context.Context, spec Spec, key []byte) (Container, 
 	}
 	s.boundary("committed")
 	return Container{Spec: spec, Path: path, UUID: spec.uuid(), Device: j.Device, Inode: j.Inode}, nil
-}
-
-// CheckContainer checks that the file at path is the LUKS2 container of
-// volumeID and that key opens one of its key slots: the header's UUID,
-// cipher, key size and sector size, then the key (a restore test, OPR-5). It
-// maps nothing and never unlocks the payload: the volume opens only in its
-// guest (product.md). libcryptsetup may repair a damaged copy of the header
-// while it loads it, so path must be a scratch copy, never an archive or a
-// volume in use.
-func CheckContainer(path, volumeID string, key []byte) error {
-	if !identifier(volumeID, "vol_") || len(key) != 32 {
-		return ErrInput
-	}
-	st, err := os.Lstat(path)
-	if err != nil {
-		return err
-	}
-	if !st.Mode().IsRegular() {
-		return ErrState
-	}
-	return luks(path, Spec{VolumeID: volumeID}.uuid(), key, false, nil)
 }
 
 // Grow verifies the published inode and extends its reservation without changing

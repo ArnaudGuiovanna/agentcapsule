@@ -1091,7 +1091,13 @@ authorities, with room for one volume. What it checks, in order:
 2. the archive is of the agent's current volume, and of its size;
 3. a copy in a new private directory under `-scratch` has the same digest;
 4. the key the key authority lends for the agent opens the copy's key slot.
-   The payload is never unlocked: a volume opens only in its guest.
+   The payload is never unlocked: a volume opens only in its guest. The
+   copy's header may be the guest's, so libcryptsetup reads it confined, as
+   `registry.inspection_uid` when the worker is root, and refuses a header
+   that is not of the platform's shape before any key derivation
+   ([registry.md](registry.md#the-key-check-of-a-restore-test)). A worker run
+   as root without `inspection_uid` refuses the test
+   (`inspection_uid_required`).
 
 It prints what it checked, then removes its directory:
 
@@ -1102,7 +1108,8 @@ It prints what it checked, then removes its directory:
 On failure, it prints `restore_test_failed_<reason>` and exits 1:
 `no_archive` (PostgreSQL records none), `archive_unavailable` (not in the
 archive root, and not fetched), `archive` (incomplete, altered, unsigned or of
-another volume), `key` (the agent's key does not open it), `authority` (a
+another volume), `key` (the agent's key does not open it, or its header is
+not of the platform's shape), `authority` (a
 refusal: a deleted agent's store is sealed), `state` (the agent has no volume
 on this host), `error`.
 
@@ -1115,7 +1122,7 @@ authorities' records; it asks the authorities to validate the manifest and to
 lend the key, which reserves nothing and records nothing. It takes no barrier
 and starts no VM, so the agent keeps running and its deliveries go on. While
 it holds the key, a restore or a deletion of that agent waits for it, for the
-time of one key check (about 0.1 s). It skips the mandatory preflight: it
+time of one key check (about 0.5 s, at most 30 s). It skips the mandatory preflight: it
 runs on a host without KVM, or with a full runtime disk. What it does not
 prove: that the guest's file system inside is sound, or that the harness
 boots; a restore proves those

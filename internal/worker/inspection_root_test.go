@@ -48,3 +48,23 @@ func TestAsRootTheImporterNeedsAnInspectionUID(t *testing.T) {
 		t.Error("the preflight with inspection_uid:", r)
 	}
 }
+
+// S-21: as root, the restore test's key check is confined as the reserved
+// inspection_uid, as debugfs is: without it, the restore test does not run.
+func TestAsRootTheRestoreTestNeedsAnInspectionUID(t *testing.T) {
+	if !sandbox.AsRoot() {
+		t.Fatal("run as root in the initial user namespace (sudo go test -tags root_integration)")
+	}
+	c := ServiceConfig{Root: t.TempDir(), Provisioning: &ProvisioningConfig{FirstUID: 62000, LastUID: 62999}}
+	if _, err := c.Inspection(); !errors.Is(err, ErrInspectionUID) {
+		t.Fatal("as root without a registry section:", err)
+	}
+	c.Registry = &ServiceRegistry{InspectionUID: 62500}
+	if _, err := c.Inspection(); !errors.Is(err, ErrInspectionUID) {
+		t.Fatal("as root with an agent's UID:", err)
+	}
+	c.Registry.InspectionUID = 61999
+	if sb, err := c.Inspection(); err != nil || sb.UID != 61999 || sb.GID != 61999 {
+		t.Fatal("as root with inspection_uid:", sb, err)
+	}
+}

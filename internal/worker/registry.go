@@ -47,6 +47,12 @@ var (
 	ErrInspection = errors.New("image inspection cannot run confined on this host")
 )
 
+// Inspection returns the sandbox of this host's inspections (inspection):
+// the restore test's key check runs there too (RestoreTest.Sandbox).
+func (c ServiceConfig) Inspection() (sandbox.Options, error) {
+	return c.inspection(sandbox.AsRoot())
+}
+
 // inspection returns the sandbox of image inspections: as root, the
 // configured inspection UID and GID, checked against the values setresuid
 // may take as "unchanged" (sandbox.Reservable), the agents' range, the SLIM
