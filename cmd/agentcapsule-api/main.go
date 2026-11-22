@@ -328,6 +328,9 @@ func run(args []string) int {
 		}()
 	}
 	fmt.Fprintln(os.Stdout, "api_started")
+	// The refused attempts that open windows counted join their trails
+	// before the process exits (L-04).
+	defer handler.FlushRefusals()
 	select {
 	case err = <-stopped:
 		if errors.Is(err, http.ErrServerClosed) {

@@ -136,7 +136,8 @@ func noteAttempt(r *http.Request, p controlplane.Principal) {
 // recordRefusal adds a refused attempt at an audited route to the trail of
 // the organization of the principal that made it. It runs once the answer is
 // written, in its own transaction: the refused change rolled back, and the
-// answer does not wait for, nor depend on, the record.
+// answer does not wait for, nor depend on, the record. A repeated attempt is
+// counted instead (refusal_coalescing.go).
 func (s *Server) recordRefusal(r *http.Request, w *statusRecorder, a *attempt) {
 	if a.principal == nil || a.principal.TenantID == "" || !refusedStatuses[w.status] || w.problem == "" {
 		return
@@ -151,10 +152,14 @@ func (s *Server) recordRefusal(r *http.Request, w *statusRecorder, a *attempt) {
 		}
 		return r.PathValue(name)
 	}
+	refused := controlplane.RefusedAttempt{Action: route.action, Target: value(route.target), Reference: value(route.reference), Reason: w.problem}
+	if !s.admitRefusal(*a.principal, refused) {
+		// Counted in its window, recorded at the window's end (L-04).
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
 	defer cancel()
-	err := s.accounts.RecordRefusal(ctx, *a.principal, controlplane.RefusedAttempt{Action: route.action, Target: value(route.target),
-		Reference: value(route.reference), Reason: w.problem})
+	err := s.accounts.RecordRefusal(ctx, *a.principal, refused)
 	if err != nil && s.telemetry != nil {
 		s.telemetry.refusalUnrecorded()
 	}

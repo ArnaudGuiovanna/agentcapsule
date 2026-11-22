@@ -1062,6 +1062,9 @@ paths:
         secret, prompt or content. An administrative attempt the organization's
         member or technical account was refused (403, 404, 400, 409, 413, 415,
         422) is an event with outcome refused and the problem code as reason.
+        In each minute, an actor's first refused attempt at each target of an
+        action, for one reason, is an event in full (up to ten targets); the
+        others are counted in one event at the minute's end (attempts).
       security: [{delegatedBearer: []}, {serviceBearer: []}]
       parameters:
         - {name: after, in: query, schema: {type: string, maxLength: 200}, description: "`next` cursor of the previous page."}
@@ -4492,6 +4495,7 @@ components:
         reference: {type: string}
         outcome: {type: string, enum: [done, refused], description: "refused: an attempt an audited route refused; nothing changed."}
         reason: {type: string, description: "The refusal's problem code (forbidden, not_found, invalid_json, ...); present only when refused."}
+        attempts: {type: integer, minimum: 1, description: "Present only when refused: how many refused attempts the event stands for. 1 for an attempt recorded in full; more for the attempts of one actor at one action, for one reason, that a minute counted after its first ones; that event's target is the organization."}
     LlmProvider:
       type: object
       required: [id, name, kind, base_url, status, secret_generation, created_at]

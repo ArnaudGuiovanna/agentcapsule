@@ -37,7 +37,7 @@ type Server struct {
 	// authority reports the authority service to the readiness probe; nil
 	// without the service (development mode only).
 	authority AuthorityStatus
-	// guards holds the request and upload limits (limits.go).
+	// guards holds the request, upload and refusal limits (limits.go).
 	guards guards
 }
 

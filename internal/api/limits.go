@@ -63,12 +63,13 @@ var limitKinds = []string{"principal_rate", "organization_rate", "authentication
 	"principal_streams", "organization_streams", "process_streams", "principal_uploads", "process_uploads"}
 
 // guards holds the limits of the v0.1.0 audit: requests (S-07), uploads
-// (S-09) and the key of the sources' pseudonyms (L-19). Its zero value is
-// ready: no request limit, the default upload slots, a key drawn at first
-// use.
+// (S-09), refusals in the trail (L-04) and the key of the sources'
+// pseudonyms (L-19). Its zero value is ready: no request limit, the default
+// upload slots and refusal windows, a key drawn at first use.
 type guards struct {
 	requests  *requestLimiter
 	uploads   uploadSlots
+	refusals  refusalWindows
 	keyOnce   sync.Once
 	sourceKey []byte
 }
