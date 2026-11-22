@@ -52,7 +52,28 @@ def normalize_profile(raw):
         raise ValueError("provide both OIDC TLS certificate and key")
     if bool(p["tls_key"]) != bool(p["tls_certificate"]):
         raise ValueError("provide both TLS certificate and private key")
+    # A production worker imports through a rule that trusts publisher keys,
+    # or that opts out explicitly (L-16, docs/registry.md).
+    if p["registry_rules"] is not None and (not isinstance(p["registry_rules"],list) or not all(
+            isinstance(r,dict) and (bool(r.get("publisher_keys")) or r.get("allow_unsigned") is True) for r in p["registry_rules"])):
+        raise ValueError("each registry rule needs publisher_keys or allow_unsigned")
     return p
+
+
+def opt_out_unsigned_registry_rules(path):
+    """Write "allow_unsigned": true in each registry rule of the worker
+    configuration at path that trusts no publisher key and says nothing: a
+    worker before L-16 imported unsigned packages through it, and a
+    production worker now refuses it. Return the rules' hosts."""
+    cfg=read(path)
+    opted=[]
+    for rule in (cfg.get("registry") or {}).get("rules") or []:
+        if not rule.get("publisher_keys") and "allow_unsigned" not in rule:
+            rule["allow_unsigned"]=True
+            opted.append(rule.get("host"))
+    if opted:
+        write_file(path,(json.dumps(cfg,sort_keys=True,indent=2)+"\n").encode(),path.stat().st_mode&0o777)
+    return opted
 
 
 def user_id(name):
@@ -303,7 +324,8 @@ def configure(p,version,initial):
         setup_oidc_unit()
         setup_interop_images()
         run("systemctl","daemon-reload")
-        return
+        opted=opt_out_unsigned_registry_rules(ETC/"worker.json")
+        return {"registry_rules_allowing_unsigned":opted} if opted else None
     database()  # Dedicated local cluster also owns the bundled OIDC realm.
     api_tls(p)
     setup_interop(p)

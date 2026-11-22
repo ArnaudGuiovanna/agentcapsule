@@ -36,6 +36,10 @@ var (
 	// ErrIntegrity: the registry served content that does not match its digest,
 	// size or declared media type.
 	ErrIntegrity = errors.New("registry content failed verification")
+	// ErrUnsigned: production requires signatures, and a rule trusts no
+	// publisher key without saying allow_unsigned (L-16). It wraps in a
+	// policy error.
+	ErrUnsigned = errors.New("signatures are required: the rule trusts no publisher key and does not say allow_unsigned")
 )
 
 // Rule approves one registry and the repositories that may be used on it.
@@ -65,6 +69,11 @@ type Rule struct {
 	// Keys, when set, are the publishers trusted for this registry: every
 	// package imported through the rule must carry a signature by one of them.
 	Keys []PublisherKey `json:"-"`
+	// AllowUnsigned is the explicit opt-out of a rule that trusts no key:
+	// in production (Policy.SignaturesByDefault) only such a rule imports
+	// unsigned packages. Strict mode refuses it, and so does a rule that
+	// also trusts keys.
+	AllowUnsigned bool `json:"allow_unsigned,omitempty"`
 }
 
 // Policy is the installation's registry trust policy.
@@ -73,6 +82,10 @@ type Policy struct {
 	// RequireSignatures is strict mode: every rule must trust publisher keys,
 	// so no unsigned package can be imported.
 	RequireSignatures bool
+	// SignaturesByDefault is production's default (L-16): a rule must trust
+	// publisher keys, or say AllowUnsigned. Without it (development), a rule
+	// without keys imports unsigned packages.
+	SignaturesByDefault bool
 }
 
 // The syntax of references and their names is package reference's.
@@ -105,6 +118,12 @@ func (p Policy) Validate() error {
 		}
 		if p.RequireSignatures && len(r.Keys) == 0 {
 			return fmt.Errorf("%w: signatures are required but %q trusts no publisher key", ErrPolicy, r.Host)
+		}
+		if r.AllowUnsigned && (len(r.Keys) > 0 || p.RequireSignatures) {
+			return fmt.Errorf("%w: %q says allow_unsigned, but trusts publisher keys or strict mode is on", ErrPolicy, r.Host)
+		}
+		if p.SignaturesByDefault && len(r.Keys) == 0 && !r.AllowUnsigned {
+			return fmt.Errorf("%w: %w: %q", ErrPolicy, ErrUnsigned, r.Host)
 		}
 		if (r.Username == "") != (r.Password == "") || !validCredential(r.Username, 256) || !validCredential(r.Password, 4096) ||
 			strings.Contains(r.Username, ":") {

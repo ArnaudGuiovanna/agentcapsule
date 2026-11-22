@@ -343,11 +343,15 @@ In the worker configuration ([example](../runtime/worker/config.example.json)):
   "inspection_uid": 61999,
   "rules": [
     {"host": "ghcr.io", "repositories": ["acme/"],
-     "blob_hosts": ["pkg-containers.githubusercontent.com"]}
+     "blob_hosts": ["pkg-containers.githubusercontent.com"],
+     "allow_unsigned": true}
   ]
 }
 ```
 
+- `allow_unsigned`: this rule imports packages that no trusted publisher signed; in
+  production, a rule without `publisher_keys` must say so
+  ([below](#publisher-signatures)).
 - `inspection_uid`: the UID, and the GID of the same number, that `debugfs` runs as
   when it inspects a downloaded image ([below](#image-inspection-sandbox)). Reserve it
   for this use, as the provisioning range is reserved: no account or group uses it, it
@@ -400,8 +404,27 @@ otherwise the import is rejected as `signature`.
 }
 ```
 
+- In production (the default mode, [ADR 010](adr/010-transport-security-and-preflight.md)),
+  signatures are required by default: a rule that lists no publisher key must say
+  `"allow_unsigned": true`, an explicit opt-out for that rule, or the worker refuses to
+  start (`registry_signatures_required_in_production`). A rule that says
+  `allow_unsigned` beside publisher keys is refused. In development
+  (`AGENTCAPSULE_MODE=development`), a rule without keys imports unsigned packages, as
+  before.
+- Every rule that imports unsigned packages is reported: the worker logs
+  `registry_unsigned_rules` with their number at each start, the preflight's
+  `registry_signatures` check warns and names them, and each release imported through
+  one records no `signer`.
+- The shipped example (`runtime/worker/config.example.json`), which the installer
+  writes for a new host, says `allow_unsigned` for its GHCR rule: the project's
+  packages are not signed yet. An update of a host installed before writes
+  `"allow_unsigned": true` in each rule that lists no key and says nothing, so that its
+  imports keep working, and names those rules in the operation's status
+  (`registry_rules_allowing_unsigned`). To require signatures, list the publishers'
+  keys and drop `allow_unsigned`.
 - `require_signatures` is strict mode: the worker refuses to start if a rule lists no
-  publisher key, so no unsigned package can be imported. Recommended in production.
+  publisher key, or says `allow_unsigned`, so no unsigned package can be imported.
+  Recommended in production.
 - Key files must be regular files (not symlinks) owned by root or the worker's user and
   writable only by their owner. The worker reads them at startup.
 - The release records the key that signed it: `signer` is `sha256:` and the SHA-256 of

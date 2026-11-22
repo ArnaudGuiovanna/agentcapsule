@@ -180,6 +180,7 @@ Each process writes one JSON object per line, with `time` and `event` first:
 | Worker | `maintenance_started`, `maintenance_complete` | — |
 | Worker | `maintenance_retry` | `reason` (as above) |
 | Worker | `wake_budget_exhausted`, `harness_import_retry`, `directory_publish_retry`, `slim_callback_stopped` | — |
+| Worker | `registry_unsigned_rules` (standard error, at start) | `rules`: the number of registry rules that import unsigned packages, as their configuration allows ([registry.md](registry.md#publisher-signatures)); the preflight names them |
 | Worker | `job_done` (standard output), `job_retried` (standard error) | `kind`, `request_id` of the API request that started the work, if any, and `reason` for a retry |
 | Worker | `agent_failed` (standard error) | `reason` (`boot_failed`, `crashed`, `unresponsive`): an agent spent its restart budget; the event never names it |
 | Worker | `delivery_dead` (standard error) | `kind` (`reply`, `status`, `instruction`), `request_id` of the API request that started the work, if any, `reason` (`attempts_exhausted`, `expired`). The job that retired the delivery still ends with `job_done` |

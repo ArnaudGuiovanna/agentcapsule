@@ -23,7 +23,7 @@ func TestAsRootTheImporterNeedsAnInspectionUID(t *testing.T) {
 	}
 	c := ServiceConfig{Root: t.TempDir(), Registry: &ServiceRegistry{Rules: []RegistryRule{{Rule: ociregistry.Rule{Host: "ghcr.io", Repositories: []string{"acme/"}}}}},
 		Provisioning: &ProvisioningConfig{FirstUID: 62000, LastUID: 62999}}
-	if _, err := c.OpenRegistry(nil, "w"); !errors.Is(err, ErrInspectionUID) {
+	if _, err := c.OpenRegistry(nil, "w", false); !errors.Is(err, ErrInspectionUID) {
 		t.Fatal("as root without inspection_uid:", err)
 	}
 	if r := c.inspectionCheck(t.Context(), true); r.Status != preflight.Fail {
@@ -32,7 +32,7 @@ func TestAsRootTheImporterNeedsAnInspectionUID(t *testing.T) {
 	// nobody's UID, and -1, which setresuid takes as "unchanged".
 	for _, uid := range []uint32{65534, 4294967295} {
 		c.Registry.InspectionUID = uid
-		if _, err := c.OpenRegistry(nil, "w"); !errors.Is(err, ErrInspectionUID) {
+		if _, err := c.OpenRegistry(nil, "w", false); !errors.Is(err, ErrInspectionUID) {
 			t.Error("as root with inspection_uid", uid, err)
 		}
 		if r := c.inspectionCheck(t.Context(), true); r.Status != preflight.Fail {
@@ -41,7 +41,7 @@ func TestAsRootTheImporterNeedsAnInspectionUID(t *testing.T) {
 	}
 	c.Registry.InspectionUID = 61999
 	// Past the inspection's checks, a missing store is the next refusal.
-	if _, err := c.OpenRegistry(nil, "w"); !errors.Is(err, controlplane.ErrInput) {
+	if _, err := c.OpenRegistry(nil, "w", false); !errors.Is(err, controlplane.ErrInput) {
 		t.Fatal("as root with inspection_uid:", err)
 	}
 	if r := c.inspectionCheck(t.Context(), true); r.Status != preflight.OK || !strings.Contains(r.Detail, "61999") {

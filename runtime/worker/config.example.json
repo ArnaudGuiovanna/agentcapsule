@@ -56,7 +56,8 @@
         ],
         "blob_hosts": [
           "pkg-containers.githubusercontent.com"
-        ]
+        ],
+        "allow_unsigned": true
       }
     ]
   }

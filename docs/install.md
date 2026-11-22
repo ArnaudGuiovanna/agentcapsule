@@ -189,6 +189,7 @@ AGENTCAPSULE_DATABASE_URL=... /opt/agentcapsule/agentcapsule-worker -config /etc
 | `metrics_listen` | The address is not loopback, or is in use. |
 | `directory_certificate`, `directory_ca`, `directory_edge` | The client certificate is unusable, expired, not for `clientAuth`, or not named `agentcapsule-control-plane`; the CA file holds no certificate; the edge refuses the client or presents another CA's or another name's certificate. An edge that does not answer is a warning. |
 | `registry` | A rule is `local` (production). |
+| `registry_signatures` | With the `registry` section: a rule lists no publisher key and does not say `allow_unsigned` (production, or `require_signatures`), or says `allow_unsigned` beside publisher keys. A rule that imports unsigned packages is a warning ([registry.md](registry.md#publisher-signatures)). |
 | `registry_inspection` | With the `registry` section: `debugfs` cannot run in its sandbox (no e2fsprogs, a kernel without `mount_setattr`, no user namespaces for a worker that is not root, a worker that is root of a user namespace other than the host's, as in a container), or, as root, `inspection_uid` is not reserved: missing, 0, 65535, from 2147483647 up, in the provisioning range, the SLIM bridge's, or an account's or a group's ([registry.md](registry.md#image-inspection-sandbox)). |
 | `postgresql` | The connection string may use clear text (production), or the server cannot be reached. The check confirms TLS with the server (`pg_stat_ssl`). |
 
