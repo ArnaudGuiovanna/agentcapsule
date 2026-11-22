@@ -118,6 +118,10 @@ func TestADeletionStopsOnlyTheGuestOfTheAgentItDeletes(t *testing.T) {
 	ctx := t.Context()
 	a, b := confirmedCaller(t, s, "a"), confirmedCaller(t, s, "b")
 	rt := &refusingGuests{peerRuntime: peerRuntimeLab(t), s: s, host: "host", running: map[string]uint64{"a": a.Generation, "b": b.Generation}}
+	// a asks b: b's store is in the deletion's scope, and fenced.
+	if _, err := s.Submit(ctx, "a", "shared", submission()); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.RequestDeletion(ctx, "user-a", "a"); err != nil {
 		t.Fatal(err)
 	}
