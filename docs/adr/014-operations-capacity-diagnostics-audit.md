@@ -347,7 +347,7 @@ target is an event in full, up to ten targets; every other attempt is
 counted, and at the window's end one event records their number
 (`attempts`), with the actor, the action, the reason and the organization as
 target. Each refusal carries `attempts`, 1 for an event in full (migration
-0069). The refinement keeps §10's isolation: an attempt at another
+0074). The refinement keeps §10's isolation: an attempt at another
 organization's agent stays recorded exactly as one at an unknown agent (each
 is the first at its target), and whether an attempt is recorded in full or
 counted depends only on the actor's own earlier attempts. Per actor, action

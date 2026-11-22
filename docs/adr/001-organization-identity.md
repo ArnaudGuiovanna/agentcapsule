@@ -277,7 +277,9 @@ only. That removes eight grants nothing used: the API's `UPDATE` on
 `corpora`, `transit_parties` and `volume_restore_losses`. Without that rule,
 the retention's `FOR UPDATE OF` locks would have given the worker `UPDATE`
 on `instruction_replays`, `owner_messages`, `peer_redeliveries` and
-`tenant_agent_audit`.
+`tenant_agent_audit`. Migration 0075 (`application-clients`, SEC-1B, below)
+replaces the function again: 0073's list, with `application_clients`
+written by the API only.
 
 ### Row-level security: considered, not adopted
 

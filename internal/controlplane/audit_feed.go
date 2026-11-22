@@ -226,7 +226,7 @@ type RefusedAttempt struct {
 }
 
 // maxRefusalAttempts bounds the attempts one refusal event stands for
-// (migration 0069).
+// (migration 0074).
 const maxRefusalAttempts = 1000000000
 
 var (
