@@ -167,6 +167,14 @@ closed before delivery, a reply that died before ADR 007) on its first pass
 after the closure or the death, and purges on the same pass once a deadline
 has passed.
 
+**Finished records.** Once its content is gone, a finished invocation, wake,
+sleep or request between agents is deleted 90 days after its end
+(`finished_retention` of the worker, 45 days to 10 years), with its mailbox
+entries, idempotency key, inbox items and closure; it then reads as `404
+not_found`. One that something still needs stays: an unread result, a delivery
+still queued, an audit event that names it, a restore's record
+([worker.md](../worker.md#maintenance-and-delivery-worker)).
+
 **Credential rotation and revocation.** `agentcapsule-admin list-credentials`
 prints, without secrets or fingerprints, the platform credentials (and the
 legacy service credentials of a test database): type, identifier, account,

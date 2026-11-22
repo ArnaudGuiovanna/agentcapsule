@@ -245,7 +245,24 @@ func (t *Transit) put(ctx context.Context, tx pgx.Tx, kind, reference string, pa
 // supplies the requesting principal: private content belongs to whoever asked,
 // not to whoever administers the agent (D-02).
 func (t *Transit) putOwned(ctx context.Context, tx pgx.Tx, kind, reference string, parties []string, owners map[string]string, body []byte) (TransitReference, error) {
-	binding, encrypted, err := t.seal(ctx, tx, newID("pay"), kind, reference, parties, owners, body)
+	return t.putSealed(ctx, tx, kind, reference, func(id string) (transitBinding, []byte, error) {
+		return t.seal(ctx, tx, id, kind, reference, parties, owners, body)
+	})
+}
+
+// putChunk is putOwned for a stream's chunk, whose agent the caller read
+// without its lock (AppendOutputStreamFromVM): the chunk's transaction holds
+// its invocation's rows, which the agent's deletion takes before it purges.
+func (t *Transit) putChunk(ctx context.Context, tx pgx.Tx, reference string, a agent, requester string, body []byte) (TransitReference, error) {
+	owners := map[string]string{a.ID: requester}
+	return t.putSealed(ctx, tx, "stream_chunk", reference, func(id string) (transitBinding, []byte, error) {
+		return t.sealFor(ctx, tx, id, "stream_chunk", reference, map[string]agent{a.ID: a}, []string{a.ID}, owners, body)
+	})
+}
+
+// putSealed stores the payload that seal binds to a new ID, and its parties.
+func (t *Transit) putSealed(ctx context.Context, tx pgx.Tx, kind, reference string, seal func(id string) (transitBinding, []byte, error)) (TransitReference, error) {
+	binding, encrypted, err := seal(newID("pay"))
 	if err != nil {
 		return TransitReference{}, err
 	}
@@ -274,6 +291,16 @@ func (t *Transit) seal(ctx context.Context, tx pgx.Tx, id, kind, reference strin
 	agents, err := lockAgents(ctx, tx, ids...)
 	if err != nil {
 		return binding, nil, err
+	}
+	return t.sealFor(ctx, tx, id, kind, reference, agents, ids, owners, body)
+}
+
+// sealFor is seal with the parties' agents read by the caller; ids are the
+// sorted parties.
+func (t *Transit) sealFor(ctx context.Context, tx pgx.Tx, id, kind, reference string, agents map[string]agent, ids []string, owners map[string]string, body []byte) (transitBinding, []byte, error) {
+	binding := transitBinding{Version: 1, ID: id, Kind: kind, Reference: reference, KeyID: t.active}
+	if !transitKind(kind) || reference == "" || len(reference) > 100 || len(body) < 1 || len(body) > MaxTransitBytes || len(ids) < 1 || len(ids) > 2 {
+		return binding, nil, ErrInput
 	}
 	for _, id := range ids {
 		a, ok := agents[id]
@@ -489,6 +516,28 @@ func (t *Transit) delivered(ctx context.Context, tx pgx.Tx, id string) error {
 	return err
 }
 
+// transitRetentionStart starts, for at most $1 payloads, the retention ($2
+// microseconds) of request content that ended without one (PurgeExpired).
+// Its two cases are two branches, each a join the planner runs from the
+// payloads not yet delivered (transit_payloads_purge_due), never a scan of
+// every reply's mailbox entry.
+const transitRetentionStart = `UPDATE transit_payloads SET delivered_at=clock_timestamp(),
+        purge_after=clock_timestamp()+$2::bigint*interval '1 microsecond' WHERE id IN
+        (SELECT t.id FROM transit_payloads t WHERE t.purged_at IS NULL AND t.purge_after IS NULL AND t.id IN (
+            SELECT p.id FROM transit_payloads p JOIN agent_requests r ON r.id=p.ref_id AND r.reply_ref=p.id
+              WHERE p.purged_at IS NULL AND p.purge_after IS NULL AND p.kind='reply'
+                AND EXISTS(SELECT 1 FROM agent_mailboxes m WHERE m.ref_id=r.id AND m.kind='reply' AND m.delivery_state='DEAD')
+            UNION ALL
+            SELECT p.id FROM transit_payloads p JOIN agent_requests r ON r.id=p.ref_id AND r.payload_ref=p.id
+              WHERE p.purged_at IS NULL AND p.purge_after IS NULL AND p.kind='request'
+                AND r.state IN ('DECLINED','EXPIRED','CANCELED','FAILED'))
+          ORDER BY t.id LIMIT $1 FOR UPDATE SKIP LOCKED)`
+
+// transitPurgeDue clears the ciphertext of at most $1 payloads past their
+// purge date, the oldest first (PurgeExpired).
+const transitPurgeDue = `UPDATE transit_payloads SET ciphertext=NULL,purged_at=clock_timestamp() WHERE id IN
+        (SELECT id FROM transit_payloads WHERE purged_at IS NULL AND purge_after<=clock_timestamp() ORDER BY purge_after,id LIMIT $1 FOR UPDATE SKIP LOCKED)`
+
 // PurgeExpired clears current SQL ciphertext only. Metadata tombstones remain;
 // retaining an old backup/key is outside this operation's erasure guarantees.
 //
@@ -508,18 +557,10 @@ func (t *Transit) PurgeExpired(ctx context.Context, limit int) (int64, error) {
 		return 0, err
 	}
 	defer rollback(tx)
-	if _, err = tx.Exec(ctx, `UPDATE transit_payloads SET delivered_at=clock_timestamp(),
-        purge_after=clock_timestamp()+$2::bigint*interval '1 microsecond' WHERE id IN
-        (SELECT p.id FROM transit_payloads p JOIN agent_requests r ON r.id=p.ref_id
-          WHERE p.purged_at IS NULL AND p.purge_after IS NULL
-            AND (p.kind='reply' AND r.reply_ref=p.id AND EXISTS(SELECT 1 FROM agent_mailboxes m
-                  WHERE m.ref_id=r.id AND m.kind='reply' AND m.delivery_state='DEAD')
-              OR p.kind='request' AND r.payload_ref=p.id AND r.state IN ('DECLINED','EXPIRED','CANCELED','FAILED'))
-          ORDER BY p.id LIMIT $1 FOR UPDATE OF p SKIP LOCKED)`, limit, t.retention.Microseconds()); err != nil {
+	if _, err = tx.Exec(ctx, transitRetentionStart, limit, t.retention.Microseconds()); err != nil {
 		return 0, err
 	}
-	tag, err := tx.Exec(ctx, `UPDATE transit_payloads SET ciphertext=NULL,purged_at=clock_timestamp() WHERE id IN
-        (SELECT id FROM transit_payloads WHERE purged_at IS NULL AND purge_after<=clock_timestamp() ORDER BY purge_after,id LIMIT $1 FOR UPDATE SKIP LOCKED)`, limit)
+	tag, err := tx.Exec(ctx, transitPurgeDue, limit)
 	if err != nil {
 		return 0, err
 	}

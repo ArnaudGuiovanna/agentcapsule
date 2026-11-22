@@ -283,3 +283,18 @@ VM. The figures of §5 predate this and were not measured again; the load test
 still runs one job at a time per loop. The VMM's log is bounded and removed
 with its run, and the guest has no serial console in production (S-20).
 Details: [worker.md](../worker.md), [ADR 017](017-capacity-queue-and-dead-letter-replay.md#changes-after-the-v010-audit).
+
+**PERF-3A (P-01, P-04).** §5 also found that one loop waited its interval
+after every pass. The loop now passes again at once after a full batch, and
+PostgreSQL wakes it when new work arrives for its host (`agentcapsule_work`,
+the host's ID as the only payload); the shipped `poll_interval` is 5 s, a
+fallback that bounds what a lost notification costs. The queries that find
+work read partial indexes of the open rows and `agent_activity`, each agent's
+last activity kept by triggers, instead of the tables' history (migration
+0067); on a seeded schema of 100,000 finished invocations their slowest
+statement went from up to 1.2 s to under 5 ms (evidence
+`quint/results/audit/audit-perf-3a/explain-*`). Finished invocations, wakes,
+sleeps and requests are deleted `finished_retention` after their end (90 days
+by default) when nothing needs them; an event of the audit trail that names
+one keeps it until §8's retention removes the event, so the audit's retention
+still decides alone how long the trail lasts.

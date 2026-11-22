@@ -1145,3 +1145,26 @@ Each lot's exit criteria are the plan's (§5). They add, by lot:
    its retention, 7 days, as a read of `/result` (the default). (b) `end`
    never carries the result; the client reads `/result`. Recommendation:
    (a): one round trip less, with the same right and the same retention.
+
+## Changes after the v0.1.0 audit
+
+**PERF-3A (P-11).** §5.6 step 1 is now the placement's `FOR SHARE` without
+`lockAgents`: a chunk reads its agent's row without a lock. Every end of a
+stream already takes a row the chunk takes: a boot that ends updates the
+placement; an outcome, a cancellation, an expiry and a rerun update the
+invocation's rows, which the chunk takes `FOR UPDATE` (step 2). The agent's
+deletion cancels its working invocations before it purges its content, so a
+chunk under way either commits first and is purged with the rest, or sees the
+cancellation. A chunk thus no longer waits for every other transaction of
+its agent (a submit, a delivery, a completion), nor they for it. The model's
+`appendDelta` is unchanged: its atomic step is these row locks
+([projections](../../spec/projections.md)).
+
+§6.3 is kept with fewer reads: a subscriber checks its rights at its first
+read, at each tick of the 10 s interval and at each `policy_version`
+notification, and in between reads only the new chunks of its invocation in
+one statement, without a transaction (`ReadOutputStreamNews`). That statement
+still reads only the requester's own invocation of a live agent of the
+organization, and checks each chunk's binding. A revocation thus cuts a
+subscriber off within 10 s, at once when it changes the policy, as before.
+Corpus build streams keep the full read.

@@ -60,6 +60,8 @@ type Placements struct {
 	streamTelemetry atomic.Pointer[streamTelemetry]
 	// auditPurgedAt is when the audit trail was last purged (Unix ns).
 	auditPurgedAt atomic.Int64
+	// finishedPurgedAt is when the finished records were last purged.
+	finishedPurgedAt atomic.Int64
 	// deliveries stands for the VMs in the load test: it receives the
 	// deliveries the worker dispatches. Nil in production.
 	deliveries controlplane.InstructionRuntime

@@ -378,3 +378,12 @@ no `safety` violation (20,000 samples of 30 steps), and TLC ends as expected
 for all 11 checks of the two models (evidence
 `quint/results/audit/audit-perf-1/check-models-*`). Go projections:
 [spec/projections.md](../../spec/projections.md).
+
+**PERF-3A (P-01, P-04).** A slot freed by a stop is offered at once: the
+stop's transaction notifies the host's worker, whose next pass promotes the
+oldest waiter, as each pass did. The eviction order's "least recently active"
+reads `agent_activity`, each agent's last operation, request or model call,
+kept in the transaction of that activity (migration 0067); the order is
+unchanged. A replay needs its dead letter's record: the retention of finished
+records keeps an invocation whose input is still held, and one an
+`instruction_replays` event names until the audit's retention removes it.

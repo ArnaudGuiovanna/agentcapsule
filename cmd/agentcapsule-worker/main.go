@@ -292,6 +292,19 @@ func run() int {
 		go func() { _ = metrics.Serve(metricsListener) }()
 		defer metrics.Close()
 	}
+	// One dedicated listening connection: new work for this host wakes the
+	// dispatch (P-01), and the harnesses' output streams (ADR 022) learn of a
+	// cancellation or an outcome.
+	hub, err := pgnotify.New(s.Connect, "agentcapsule_work", "agentcapsule_invocation_stream")
+	if err != nil {
+		return fail("database_initialization_failed")
+	}
+	if !archiveRequested {
+		go func() { _ = hub.Run(ctx) }()
+		wake, stopWake := hub.Subscribe("agentcapsule_work", c.HostID)
+		defer stopWake()
+		maintenance.Wake = wake
+	}
 	transit, err := c.OpenTransit(s)
 	if err != nil {
 		return fail("transit_configuration_invalid")
@@ -300,18 +313,9 @@ func run() int {
 		if err = w.EnableTransit(startup, transit); err != nil {
 			return fail("transit_keys_unavailable")
 		}
-		// The harnesses' output streams (ADR 022) learn of a cancellation or
-		// an outcome through one dedicated listening connection.
 		bounds, err := c.OutputStreamBounds()
 		if err != nil {
 			return fail("configuration_invalid")
-		}
-		hub, err := pgnotify.New(s.Connect, "agentcapsule_invocation_stream")
-		if err != nil {
-			return fail("database_initialization_failed")
-		}
-		if !archiveRequested {
-			go func() { _ = hub.Run(ctx) }()
 		}
 		if err = w.EnableOutputStreams(bounds, hub); err != nil {
 			return fail("transit_keys_unavailable")

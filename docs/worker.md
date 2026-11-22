@@ -151,8 +151,20 @@ recovery after a crash may conservatively classify the stop as unclean. The
 forced recovery paths remain available. This wiring is tested in SQL/mTLS and in
 the product path on KVM.
 
-The loop performs one pass immediately, then waits `poll_interval` after each
-pass. Each attempt has its own `attempt_timeout`; a failure keeps the SQL job
+The loop performs one pass immediately, then one every `poll_interval` (5 s
+in the shipped configuration, 1 min at most). In between, the work queue gets
+passes of its own (since the v0.1.0 audit, P-01): at once after a pass that
+claimed a full batch, and when PostgreSQL notifies new work for this host. A
+transaction that queues a delivery, ends a mailbox head (its successor becomes
+the head), records a platform operation, ends a wake or a sleep, records a
+request's closure or an agent's deletion, or stops a VM, notifies
+`agentcapsule_work` with the host's ID, and nothing else. The worker listens on
+its one dedicated connection (`pgnotify`), which its output streams share. A
+lost notification, or a connection down, only delays the work until the next
+pass; while the connection is down the hub wakes the loop every second. An
+update keeps a host's `/etc/agentcapsule/worker.json`: a host installed with
+`"poll_interval": "30s"` keeps it until its operator sets `"5s"`. Each
+attempt has its own `attempt_timeout`; a failure keeps the SQL job
 and the other jobs in the list are still attempted. The logs are JSON events
 from a closed vocabulary (`maintenance_started`, `maintenance_complete`,
 `maintenance_retry` with its reason, …), with no DSN, raw SQL error,
@@ -178,7 +190,9 @@ an availability bound: outages, contention, clock drift and the number of jobs
 influence the effective time.
 
 After the renewals, a pass discovers business intents and processes at most
-`dispatch_batch` jobs. `worker_hosts` assigns tickets in the same transaction as
+`dispatch_batch` jobs; a pass that claimed `dispatch_batch` jobs is followed by
+another at once. The queries that find work read indexes of the open rows only
+(migration 0067), never a table's history. `worker_hosts` assigns tickets in the same transaction as
 the mutations of `worker_jobs`. A claim moves the job to the end of the queue
 before its execution; a crash or an error therefore does not reserve the first
 place indefinitely. The `work_lease` lease and the exponential backoff
@@ -343,6 +357,34 @@ refuses an unknown or replaced key or a stale active identifier; its startup
 activates no key. During a rotation, also provide all the keys needed for the
 contents still retained. Each pass purges at most
 `min(dispatch_batch * 4, 1000)` expired contents.
+
+**Finished records** (since the v0.1.0 audit, P-04). Once its content is gone,
+a finished invocation, wake, sleep or request between agents, and what hangs on
+it (its mailbox entries, idempotency key, inbox items, closure, mandate and
+content tombstones), is deleted `finished_retention` after its end: 90 days by
+default, 45 days to 10 years (`"finished_retention": "2160h"`). The worker of
+the agent's host deletes them every ten minutes, at most
+`min(dispatch_batch * 4, 1000)` of each kind at a time, and at once again after
+a full batch. A record stays while something needs it:
+- content still held: an unread result is never purged, so neither is its
+  invocation; nor is one whose input is still held;
+- a delivery still queued, or a closure still fencing;
+- an audit event that names it (an invocation's replay, a request's
+  decision): it goes once the audit's retention removed the event;
+- a restore's record of a loss, a rerun or a redelivery, or an owner's message
+  bound to a request: these are permanent;
+- a corpus build or extension that ran it; for an invocation, a request it
+  sent that is still kept.
+
+The retention must exceed the life of every archive a restore could start
+from, so that a restore still finds every event it lost: the worker refuses a
+`finished_retention` shorter than `archives.keep` times `archives.every` plus
+two weeks, and the 45-day floor covers the 30 days the archive stores keep.
+An idempotency key of a request goes with its request: a retry or a rerun
+after a restore within that time gets the first receipt back. An invocation
+deleted this way answers `404 not_found`, like one that never existed. Each
+agent's last activity, which the idle policy and the eviction order compare,
+is kept apart (`agent_activity`) and survives the deletion.
 
 The instruction shares the events FIFO. Boot preparation precedes the
 consumption of an attempt; the first authorized send creates a stable mandate.

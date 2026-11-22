@@ -194,7 +194,7 @@ in the ordinary unit tests.
 
 ### `invocation_completion.qnt`
 
-The runs of the output stream ([ADR 022](../docs/adr/022-native-streaming.md)) are projected on PostgreSQL by lot 3 of the streaming plan (`invocation_streams_test.go`): the model's `openStream` is `OpenOutputStreamFromVM`, `appendDelta` one chunk's transaction (`AppendOutputStreamFromVM`), `resetAttempt` a rerun's `newAttempt`, and `closeStream` the end of the stream in the worker's memory, which stores nothing.
+The runs of the output stream ([ADR 022](../docs/adr/022-native-streaming.md)) are projected on PostgreSQL by lot 3 of the streaming plan (`invocation_streams_test.go`): the model's `openStream` is `OpenOutputStreamFromVM`, `appendDelta` one chunk's transaction (`AppendOutputStreamFromVM`), `resetAttempt` a rerun's `newAttempt`, and `closeStream` the end of the stream in the worker's memory, which stores nothing. Since the v0.1.0 audit (P-11), `appendDelta`'s atomic step rests on the locks every end of a stream takes, the placement's and the invocation's rows, not on the agent's row: `TestAStreamChunkDoesNotWaitForItsAgentsLock` and `TestADeletionPurgesAChunkCommittedDuringIt` (`invocation_stream_locks_test.go`) check that a chunk commits while its agent is locked and that a deletion under way still purges it; the model is unchanged.
 
 | Run or witness | Status | Go projection | Notes |
 |---|---|---|---|

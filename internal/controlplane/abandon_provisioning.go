@@ -103,6 +103,7 @@ func abandonProvisioning(ctx context.Context, tx pgx.Tx, agentID string) error {
 		"DELETE FROM store_enrollments WHERE agent_id=$1",
 		"DELETE FROM platform_operations WHERE agent_id=$1",
 		"DELETE FROM agent_specs WHERE agent_id=$1",
+		"DELETE FROM agent_activity WHERE agent_id=$1",
 		"DELETE FROM agents WHERE id=$1",
 	} {
 		if _, err = tx.Exec(ctx, statement, agentID); err != nil {
