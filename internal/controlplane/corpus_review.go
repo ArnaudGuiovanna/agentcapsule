@@ -11,7 +11,7 @@ import (
 	"strings"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorization"
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol/wire"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/ociregistry/reference"
 	"github.com/jackc/pgx/v5"
 )
@@ -37,7 +37,7 @@ func reviewPath(path string) bool {
 		return true
 	}
 	parts := strings.Split(path, "/")
-	return len(parts) == 3 && parts[0] == "docs" && capsuleprotocol.ValidCorpusMount(parts[1]) && parts[2] == "README.md"
+	return len(parts) == 3 && parts[0] == "docs" && wire.ValidCorpusMount(parts[1]) && parts[2] == "README.md"
 }
 
 // A review segment authenticates its position, contents and tenant even if a
@@ -53,10 +53,10 @@ func (t *Transit) writeReviewFile(ctx context.Context, tx pgx.Tx, j CorpusWork, 
 	if err != nil {
 		return err
 	}
-	for offset, index := 0, 0; offset < len(body); offset, index = offset+capsuleprotocol.AttachmentSegmentBytes, index+1 {
+	for offset, index := 0, 0; offset < len(body); offset, index = offset+wire.AttachmentSegmentBytes, index+1 {
 		nonce := make([]byte, key.cipher.NonceSize())
 		rand.Read(nonce)
-		end := min(offset+capsuleprotocol.AttachmentSegmentBytes, len(body))
+		end := min(offset+wire.AttachmentSegmentBytes, len(body))
 		data := key.cipher.Seal(nonce, nonce, body[offset:end], reviewAAD(j, t.active, f, index))
 		if _, err = tx.Exec(ctx, `INSERT INTO corpus_review_segments(build_id,path,idx,ciphertext) VALUES($1,$2,$3,$4)`, j.ID, path, index, data); err != nil {
 			return err
@@ -69,7 +69,7 @@ func (t *Transit) CompleteCorpusReview(ctx context.Context, j CorpusWork, r Corp
 	if t == nil {
 		return ErrTransitKey
 	}
-	if j.Phase != "PACKAGING" || !reference.ValidDigest(r.Digest) || r.Bytes <= 0 || !capsuleprotocol.ValidUUID(r.UUID) || len(r.Files["INDEX.md"]) == 0 || len(r.Files["report.json"]) == 0 {
+	if j.Phase != "PACKAGING" || !reference.ValidDigest(r.Digest) || r.Bytes <= 0 || !wire.ValidUUID(r.UUID) || len(r.Files["INDEX.md"]) == 0 || len(r.Files["report.json"]) == 0 {
 		return ErrInput
 	}
 	var total int
@@ -186,7 +186,7 @@ func (c *AgentCatalog) ReadCorpusReviewFile(ctx context.Context, p Principal, id
 				return nil, ErrTransitPayload
 			}
 			data, err := k.cipher.Open(nil, sealed[:n], sealed[n:], reviewAAD(CorpusWork{ID: id, Tenant: p.TenantID}, keyID, f, idx))
-			if err != nil || len(data) != min(capsuleprotocol.AttachmentSegmentBytes, f.Bytes-len(body)) {
+			if err != nil || len(data) != min(wire.AttachmentSegmentBytes, f.Bytes-len(body)) {
 				return nil, ErrTransitPayload
 			}
 			body = append(body, data...)

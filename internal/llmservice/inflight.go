@@ -1,4 +1,4 @@
-package controlplane
+package llmservice
 
 import "sync"
 
@@ -8,7 +8,7 @@ import "sync"
 // touch the reservation: the running call settles it, marks it unknown or
 // releases it. A model stream runs up to 300 s, so its key is likely to be
 // replayed while it runs (ADR 022). An agent's calls in flight are bounded
-// (LLMService.LimitCallsPerAgent): each may cost more than its reservation
+// (Service.LimitCallsPerAgent): each may cost more than its reservation
 // says, and the bound limits how many at once.
 type inflightKeys struct {
 	mu     sync.Mutex

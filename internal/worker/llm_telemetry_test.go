@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmservice"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/telemetry"
 )
 
@@ -27,11 +28,11 @@ func TestModelCallMetricsAndEventsCarryNoTenant(t *testing.T) {
 	}
 	m := NewLLMTelemetry(registry, telemetry.NewLogger(&logs, vocabulary), func(context.Context) (int64, error) { return 4, nil })
 	soft := []controlplane.LLMBudgetHit{{Unit: "cost", Period: "day", Scope: "organization"}}
-	m.ObserveLLM(controlplane.LLMCallEvent{Provider: "anthropic", Outcome: "settled", InputTokens: 120, OutputTokens: 30, CostMicro: 210, SoftBudgets: soft})
-	m.ObserveLLM(controlplane.LLMCallEvent{Provider: "openai_compatible", Outcome: "unknown"})
-	m.ObserveLLM(controlplane.LLMCallEvent{Provider: "openai_compatible", Outcome: "refused", Reason: "budget_cost", Period: "month", Scope: "agent"})
-	m.ObserveLLM(controlplane.LLMCallEvent{Provider: "openai_compatible", Outcome: "refused", Reason: "alias_access"})
-	m.ObserveLLM(controlplane.LLMCallEvent{Provider: "org_acme/fast", Outcome: "settled", InputTokens: 1})
+	m.ObserveLLM(llmservice.CallEvent{Provider: "anthropic", Outcome: "settled", InputTokens: 120, OutputTokens: 30, CostMicro: 210, SoftBudgets: soft})
+	m.ObserveLLM(llmservice.CallEvent{Provider: "openai_compatible", Outcome: "unknown"})
+	m.ObserveLLM(llmservice.CallEvent{Provider: "openai_compatible", Outcome: "refused", Reason: "budget_cost", Period: "month", Scope: "agent"})
+	m.ObserveLLM(llmservice.CallEvent{Provider: "openai_compatible", Outcome: "refused", Reason: "alias_access"})
+	m.ObserveLLM(llmservice.CallEvent{Provider: "org_acme/fast", Outcome: "settled", InputTokens: 1})
 	rec := httptest.NewRecorder()
 	registry.Handler(5*time.Second).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	body := rec.Body.String()

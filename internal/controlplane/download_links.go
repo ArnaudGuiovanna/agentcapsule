@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorization"
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol/wire"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/delegatedidentity"
 	"github.com/jackc/pgx/v5"
 )
@@ -190,7 +190,7 @@ func (c *AgentCatalog) AttachmentLink(ctx context.Context, p Principal, id strin
 	if err != nil {
 		return DownloadLink{}, err
 	}
-	if p.Kind != "tenant" || !capsuleprotocol.ValidAttachmentID(id) {
+	if p.Kind != "tenant" || !wire.ValidAttachmentID(id) {
 		return DownloadLink{}, ErrNotFound
 	}
 	tx, err := c.accounts.store.begin(ctx)

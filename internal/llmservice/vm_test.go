@@ -1,4 +1,4 @@
-package controlplane
+package llmservice
 
 import (
 	"context"
@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	. "github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmgateway"
 )
 
@@ -29,10 +30,10 @@ func TestModelCallFromAVMIsBoundToItsTenantAndPlacement(t *testing.T) {
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"from the model"}}],"usage":{"prompt_tokens":7,"completion_tokens":3}}`))
 	}))
 	defer srv.Close()
-	if _, err := l.s.pool.Exec(t.Context(), `UPDATE llm_providers SET base_url=$1`, srv.URL); err != nil {
+	if _, err := l.db.Exec(t.Context(), `UPDATE llm_providers SET base_url=$1`, srv.URL); err != nil {
 		t.Fatal(err)
 	}
-	svc, err := NewLLMService(l.a, llmgateway.NewForTests(llmgateway.Config{Timeout: time.Second, MaxAttempts: 1}, llmgateway.TestOptions{Loopback: true}))
+	svc, err := New(l.a, llmgateway.NewForTests(llmgateway.Config{Timeout: time.Second, MaxAttempts: 1}, llmgateway.TestOptions{Loopback: true}))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -17,6 +17,7 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/harnesspkg"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmgateway"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmservice"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/ociregistry"
 )
 
@@ -107,7 +108,7 @@ func TestProductWorkerEnforcesCapabilities(t *testing.T) {
 	t.Cleanup(provider.Close)
 	// The provider listens on loopback, which the production gateway refuses
 	// (ADR 010): the lab's gateway allows it, as in every other KVM lab.
-	svc, err := controlplane.NewLLMService(l.accounts, llmgateway.NewForTests(llmgateway.Config{Timeout: 10 * time.Second, MaxAttempts: 1},
+	svc, err := llmservice.New(l.accounts, llmgateway.NewForTests(llmgateway.Config{Timeout: 10 * time.Second, MaxAttempts: 1},
 		llmgateway.TestOptions{Loopback: true}))
 	if err != nil {
 		t.Fatal(err)

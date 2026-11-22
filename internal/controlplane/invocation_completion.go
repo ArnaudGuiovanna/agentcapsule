@@ -8,7 +8,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol/wire"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -31,8 +31,8 @@ const workingFilter = `i.working_since IS NOT NULL AND i.completion_key IS NULL 
 // CompleteInvocationFromVM records the later outcome of a "working" invocation.
 // Only the destination agent's current boot may post it, once, before its due
 // time. The same key and body replay the receipt; anything else is refused.
-func (t *Transit) CompleteInvocationFromVM(ctx context.Context, caller VMCaller, key string, in capsuleprotocol.InvocationCompletion) (capsuleprotocol.CompletionReceipt, error) {
-	var out capsuleprotocol.CompletionReceipt
+func (t *Transit) CompleteInvocationFromVM(ctx context.Context, caller VMCaller, key string, in wire.InvocationCompletion) (wire.CompletionReceipt, error) {
+	var out wire.CompletionReceipt
 	if requireIdentity(caller.AgentID, key) != nil || len(key) > 256 || in.Validate() != nil {
 		return out, ErrInput
 	}
@@ -72,43 +72,43 @@ func (t *Transit) CompleteInvocationFromVM(ctx context.Context, caller VMCaller,
 	out.OperationID = in.OperationID
 	if oldKey != nil {
 		if *oldKey != key || !bytes.Equal(oldHash, hash[:]) {
-			return capsuleprotocol.CompletionReceipt{}, ErrConflict
+			return wire.CompletionReceipt{}, ErrConflict
 		}
 		out.State, out.Replayed = in.Outcome, true
 		return out, commit(ctx, tx)
 	}
 	switch {
 	case !working:
-		return capsuleprotocol.CompletionReceipt{}, ErrTransition // answered at delivery, or not delivered
+		return wire.CompletionReceipt{}, ErrTransition // answered at delivery, or not delivered
 	case status == "FAILED":
-		return capsuleprotocol.CompletionReceipt{}, ErrExpired
+		return wire.CompletionReceipt{}, ErrExpired
 	case status != "RUNNING":
-		return capsuleprotocol.CompletionReceipt{}, ErrTransition // canceled
+		return wire.CompletionReceipt{}, ErrTransition // canceled
 	case due:
-		return capsuleprotocol.CompletionReceipt{}, ErrExpired
+		return wire.CompletionReceipt{}, ErrExpired
 	}
 	if in.Outcome == "completed" {
-		result, err := json.Marshal(capsuleprotocol.OwnerMessage{Content: in.Content})
+		result, err := json.Marshal(wire.OwnerMessage{Content: in.Content})
 		if err != nil {
-			return capsuleprotocol.CompletionReceipt{}, err
+			return wire.CompletionReceipt{}, err
 		}
 		payload, err := t.putResult(ctx, tx, in.OperationID, caller.AgentID, requester, result)
 		clear(result)
 		if err != nil {
-			return capsuleprotocol.CompletionReceipt{}, err
+			return wire.CompletionReceipt{}, err
 		}
 		if _, err = tx.Exec(ctx, "UPDATE owner_instructions SET result_payload_id=$2 WHERE operation_id=$1", in.OperationID, payload.ID); err != nil {
-			return capsuleprotocol.CompletionReceipt{}, err
+			return wire.CompletionReceipt{}, err
 		}
 		_, err = tx.Exec(ctx, "UPDATE platform_operations SET status='SUCCEEDED',completed_at=clock_timestamp() WHERE id=$1", in.OperationID)
 		if err != nil {
-			return capsuleprotocol.CompletionReceipt{}, err
+			return wire.CompletionReceipt{}, err
 		}
 	} else if _, err = tx.Exec(ctx, "UPDATE platform_operations SET status='FAILED',error_code='agent_failed',completed_at=clock_timestamp() WHERE id=$1", in.OperationID); err != nil {
-		return capsuleprotocol.CompletionReceipt{}, err
+		return wire.CompletionReceipt{}, err
 	}
 	if _, err = tx.Exec(ctx, "UPDATE owner_instructions SET completion_key=$2,completion_hash=$3 WHERE operation_id=$1", in.OperationID, key, hash[:]); err != nil {
-		return capsuleprotocol.CompletionReceipt{}, err
+		return wire.CompletionReceipt{}, err
 	}
 	out.State = in.Outcome
 	return out, commit(ctx, tx)

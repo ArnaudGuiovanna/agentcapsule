@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorization"
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol/wire"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -102,14 +102,14 @@ func (c *AgentCatalog) UploadAttachment(ctx context.Context, p Principal, agentI
 	if p.Kind != "tenant" || !validOrganizationText(agentID, 100) {
 		return APIReceipt{}, ErrNotFound
 	}
-	if len(body) > capsuleprotocol.MaxAttachmentBytes {
+	if len(body) > wire.MaxAttachmentBytes {
 		return APIReceipt{}, ErrTooLarge
 	}
 	ttl, err := attachmentTTL(in.TTLSeconds)
 	if err != nil {
 		return APIReceipt{}, err
 	}
-	if len(body) == 0 || !capsuleprotocol.ValidAttachmentName(in.Name) || !capsuleprotocol.ValidAttachmentType(in.MediaType) {
+	if len(body) == 0 || !wire.ValidAttachmentName(in.Name) || !wire.ValidAttachmentType(in.MediaType) {
 		return APIReceipt{}, ErrInput
 	}
 	sum := sha256.Sum256(body)
@@ -155,7 +155,7 @@ func (c *AgentCatalog) UploadAttachment(ctx context.Context, p Principal, agentI
 			return 0, nil, err
 		}
 		id := newAttachmentID()
-		segments := (len(body) + capsuleprotocol.AttachmentSegmentBytes - 1) / capsuleprotocol.AttachmentSegmentBytes
+		segments := (len(body) + wire.AttachmentSegmentBytes - 1) / wire.AttachmentSegmentBytes
 		v, err := scanAttachment(tx.QueryRow(ctx, `INSERT INTO attachments(id,tenant_id,agent_id,uploader_principal_id,name,media_type,size_bytes,sha256,key_id,segments,expires_at)
             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,clock_timestamp()+$11::bigint*interval '1 microsecond') RETURNING `+attachmentColumns,
 			id, p.TenantID, agentID, p.ID, in.Name, in.MediaType, len(body), sum[:], c.transit.active, segments, ttl.Microseconds()))
@@ -164,11 +164,11 @@ func (c *AgentCatalog) UploadAttachment(ctx context.Context, p Principal, agentI
 		}
 		binding := segmentBinding{ID: id, Tenant: p.TenantID, Agent: agentID, Uploader: p.ID, KeyID: c.transit.active, Segments: segments, Size: int64(len(body)), Hash: digest}
 		for i := 0; i < segments; i++ {
-			end := min((i+1)*capsuleprotocol.AttachmentSegmentBytes, len(body))
+			end := min((i+1)*wire.AttachmentSegmentBytes, len(body))
 			binding.Index = i
 			nonce := make([]byte, k.cipher.NonceSize())
 			_, _ = rand.Read(nonce)
-			sealed := k.cipher.Seal(nonce, nonce, body[i*capsuleprotocol.AttachmentSegmentBytes:end], binding.aad())
+			sealed := k.cipher.Seal(nonce, nonce, body[i*wire.AttachmentSegmentBytes:end], binding.aad())
 			if _, err = tx.Exec(ctx, "INSERT INTO attachment_segments(attachment_id,idx,ciphertext) VALUES($1,$2,$3)", id, i, sealed); err != nil {
 				return 0, nil, err
 			}
@@ -215,7 +215,7 @@ func (c *AgentCatalog) mayInvoke(ctx context.Context, tx pgx.Tx, p Principal, ag
 // GetAttachment shows metadata to the uploader while it still sees the agent,
 // or to a role allowed to read agent metadata. Never content.
 func (c *AgentCatalog) GetAttachment(ctx context.Context, p Principal, id string) (Attachment, error) {
-	if p.Kind != "tenant" || !capsuleprotocol.ValidAttachmentID(id) {
+	if p.Kind != "tenant" || !wire.ValidAttachmentID(id) {
 		return Attachment{}, ErrNotFound
 	}
 	tx, err := c.accounts.store.begin(ctx)
@@ -244,7 +244,7 @@ func (c *AgentCatalog) GetAttachment(ctx context.Context, p Principal, id string
 // DeleteAttachment lets the uploader free an attachment not yet bound to an
 // invocation. Its segments are deleted in the same transaction.
 func (c *AgentCatalog) DeleteAttachment(ctx context.Context, p Principal, id, key string) (APIReceipt, error) {
-	if p.Kind != "tenant" || !capsuleprotocol.ValidAttachmentID(id) {
+	if p.Kind != "tenant" || !wire.ValidAttachmentID(id) {
 		return APIReceipt{}, ErrNotFound
 	}
 	tx, err := c.accounts.store.begin(ctx)
@@ -304,7 +304,7 @@ func bindAttachments(ctx context.Context, tx pgx.Tx, p Principal, agentID, op st
 }
 
 func validAttachmentList(ids []string) bool {
-	if len(ids) > capsuleprotocol.MaxInvocationAttachments {
+	if len(ids) > wire.MaxInvocationAttachments {
 		return false
 	}
 	seen := slices.Clone(ids)
@@ -313,7 +313,7 @@ func validAttachmentList(ids []string) bool {
 		return false
 	}
 	for _, id := range ids {
-		if !capsuleprotocol.ValidAttachmentID(id) {
+		if !wire.ValidAttachmentID(id) {
 			return false
 		}
 	}
@@ -323,16 +323,16 @@ func validAttachmentList(ids []string) bool {
 // attachmentRefs is what the guest is told, in the requester's order. A purged
 // attachment of a running invocation means the content is gone: refuse rather
 // than deliver an envelope pointing at nothing.
-func attachmentRefs(ctx context.Context, tx pgx.Tx, op string) ([]capsuleprotocol.AttachmentRef, error) {
+func attachmentRefs(ctx context.Context, tx pgx.Tx, op string) ([]wire.AttachmentRef, error) {
 	rows, err := tx.Query(ctx, `SELECT id,name,media_type,size_bytes,encode(sha256,'hex'),status FROM attachments
         WHERE operation_id=$1 ORDER BY position,id`, op)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var refs []capsuleprotocol.AttachmentRef
+	var refs []wire.AttachmentRef
 	for rows.Next() {
-		var r capsuleprotocol.AttachmentRef
+		var r wire.AttachmentRef
 		var status string
 		if err = rows.Scan(&r.ID, &r.Name, &r.MediaType, &r.Size, &r.SHA256, &status); err != nil {
 			return nil, err
@@ -350,9 +350,9 @@ func attachmentRefs(ctx context.Context, tx pgx.Tx, op string) ([]capsuleprotoco
 // delivered, or acknowledged "working" and not yet due. In practice the guest
 // reads after acknowledging "working", since its platform calls wait for the
 // exclusive delivery turn to end. Identity comes from the authenticated channel.
-func (t *Transit) ReadAttachmentFromVM(ctx context.Context, caller VMCaller, id string, index int) (capsuleprotocol.AttachmentSegment, error) {
-	var out capsuleprotocol.AttachmentSegment
-	if !capsuleprotocol.ValidAttachmentID(id) || index < 0 {
+func (t *Transit) ReadAttachmentFromVM(ctx context.Context, caller VMCaller, id string, index int) (wire.AttachmentSegment, error) {
+	var out wire.AttachmentSegment
+	if !wire.ValidAttachmentID(id) || index < 0 {
 		return out, ErrInput
 	}
 	tx, err := t.store.begin(ctx)
@@ -409,7 +409,7 @@ func (t *Transit) ReadAttachmentFromVM(ctx context.Context, caller VMCaller, id 
 		clear(data)
 		return out, err
 	}
-	return capsuleprotocol.AttachmentSegment{Index: index, Total: b.Segments, Data: data}, nil
+	return wire.AttachmentSegment{Index: index, Total: b.Segments, Data: data}, nil
 }
 
 func purgeAttachments(ctx context.Context, tx pgx.Tx, ids []string) error {

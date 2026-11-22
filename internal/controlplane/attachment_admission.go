@@ -4,7 +4,7 @@ import (
 	"context"
 	"regexp"
 
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol/wire"
 )
 
 var declaredDigest = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -22,13 +22,13 @@ func (c *AgentCatalog) CheckAttachmentUpload(ctx context.Context, p Principal, a
 	if p.Kind != "tenant" || !validOrganizationText(agentID, 100) {
 		return ErrNotFound
 	}
-	if size > capsuleprotocol.MaxAttachmentBytes {
+	if size > wire.MaxAttachmentBytes {
 		return ErrTooLarge
 	}
 	if _, err := attachmentTTL(in.TTLSeconds); err != nil {
 		return err
 	}
-	if size == 0 || !capsuleprotocol.ValidAttachmentName(in.Name) || !capsuleprotocol.ValidAttachmentType(in.MediaType) ||
+	if size == 0 || !wire.ValidAttachmentName(in.Name) || !wire.ValidAttachmentType(in.MediaType) ||
 		in.DeclaredSHA256 != "" && !declaredDigest.MatchString(in.DeclaredSHA256) {
 		return ErrInput
 	}

@@ -7,7 +7,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/harnessstore"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/harnessstore/envelope"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -25,7 +25,7 @@ var (
 // The caller derives subjects from PostgreSQL, not from untrusted event input.
 type DeliveryRuntime interface {
 	RevocationRuntime
-	Send(context.Context, string, harnessstore.Event) (harnessstore.Receipt, error)
+	Send(context.Context, string, envelope.Event) (envelope.Receipt, error)
 }
 
 // Admission-aware runtimes can pause ordinary work BEFORE ClaimDelivery consumes
@@ -62,7 +62,7 @@ func reportDeath(ctx context.Context, runtime RevocationRuntime, d *DeadDelivery
 type DeliveryAttempt struct {
 	ID, RequestID, Destination, Token string
 	Sequence                          int64
-	Envelope                          harnessstore.Event
+	Envelope                          envelope.Event
 }
 
 type mailboxRow struct {
@@ -221,7 +221,7 @@ func (s *Store) ClaimDelivery(ctx context.Context, mailboxID string, lease time.
 		return attempt, err
 	}
 	attempt = DeliveryAttempt{ID: m.ID, RequestID: r.ID, Destination: m.Destination, Token: token, Sequence: m.Sequence,
-		Envelope: harnessstore.Event{ID: m.ID, Subjects: subjects, Body: body}}
+		Envelope: envelope.Event{ID: m.ID, Subjects: subjects, Body: body}}
 	return attempt, commit(ctx, tx)
 }
 

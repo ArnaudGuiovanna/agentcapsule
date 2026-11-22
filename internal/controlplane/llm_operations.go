@@ -116,10 +116,10 @@ func (a *Accounts) SetLLMAliasOperations(ctx context.Context, p Principal, alias
 	return r, commit(ctx, tx)
 }
 
-// llmAmounts is what one call reserves or settles, in its operation's units:
+// LLMAmounts is what one call reserves or settles, in its operation's units:
 // tokens for chat and embed (an embedding has no output), seconds of audio
 // for a transcription, pages for OCR.
-type llmAmounts struct {
+type LLMAmounts struct {
 	Operation           string
 	Input, Output       int64
 	AudioSeconds, Pages int64
@@ -130,7 +130,7 @@ const maxLLMUnits = 1e12
 
 // valid says whether the amounts fit their operation. A reservation must
 // count something; a settlement may be zero.
-func (q llmAmounts) valid(reservation bool) bool {
+func (q LLMAmounts) valid(reservation bool) bool {
 	for _, v := range []int64{q.Input, q.Output, q.AudioSeconds, q.Pages} {
 		if v < 0 || v > maxLLMUnits {
 			return false
@@ -151,7 +151,7 @@ func (q llmAmounts) valid(reservation bool) bool {
 
 // tokens is what a token budget counts of the amounts: transcription and OCR
 // count none.
-func (q llmAmounts) tokens() int64 { return q.Input + q.Output }
+func (q LLMAmounts) tokens() int64 { return q.Input + q.Output }
 
 // llmPrices are an alias's prices as a call keeps them from its reservation.
 // priced says whether the call's own unit was priced.
@@ -164,7 +164,7 @@ type llmPrices struct {
 // cost is the estimated cost of the amounts in micro-units, rounded up once so
 // that an estimate never under-reports; ok is false if it does not fit in an
 // int64.
-func (p llmPrices) cost(q llmAmounts) (int64, bool) {
+func (p llmPrices) cost(q LLMAmounts) (int64, bool) {
 	switch q.Operation {
 	case LLMTranscribe:
 		return ceilProduct(q.AudioSeconds, p.audioPerMinute, 60)

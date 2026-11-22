@@ -19,6 +19,7 @@ import (
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmgateway"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmservice"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/pgnotify"
 )
 
@@ -111,7 +112,7 @@ func TestProductPiStreamsBeforeTheProviderFinishes(t *testing.T) {
 		}
 	}))
 	defer func() { unblock(); upstream.CloseClientConnections(); upstream.Close() }()
-	svc, err := controlplane.NewLLMService(l.accounts, llmgateway.NewForTests(llmgateway.Config{MaxAttempts: 1}, llmgateway.TestOptions{Loopback: true}))
+	svc, err := llmservice.New(l.accounts, llmgateway.NewForTests(llmgateway.Config{MaxAttempts: 1}, llmgateway.TestOptions{Loopback: true}))
 	if err != nil {
 		t.Fatal(err)
 	}

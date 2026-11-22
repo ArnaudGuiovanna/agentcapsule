@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol/wire"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -62,7 +62,7 @@ type RequestState struct {
 	// once the deletion of its author purged it. Offboarding the person it is
 	// bound to revokes nothing: the request is work accepted before, which
 	// may complete for the organization (ADR 002).
-	Reply  *capsuleprotocol.PeerPayload
+	Reply  *wire.PeerPayload
 	Reason string
 }
 
@@ -151,7 +151,7 @@ func (t *Transit) RequestStateFromVM(ctx context.Context, caller VMCaller, reque
 // content in the transaction that ends its LIVE phase: content found unpurged
 // under the lock has two live parties, and the recipient's agent is read
 // without its lock.
-func (t *Transit) senderReply(ctx context.Context, tx pgx.Tx, r requestRow, sender agent) (*capsuleprotocol.PeerPayload, string, error) {
+func (t *Transit) senderReply(ctx context.Context, tx pgx.Tx, r requestRow, sender agent) (*wire.PeerPayload, string, error) {
 	var gone, ended bool
 	err := tx.QueryRow(ctx, `SELECT purged_at IS NOT NULL OR coalesce(purge_after<=clock_timestamp(),false),
         coalesce(purge_after<=coalesce(purged_at,clock_timestamp()),false)

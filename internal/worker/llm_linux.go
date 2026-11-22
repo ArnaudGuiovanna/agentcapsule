@@ -11,6 +11,7 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmgateway"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmservice"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/operatorconfig"
 )
 
@@ -40,7 +41,7 @@ func (l *ServiceLLM) callsPerAgent() (int, error) {
 	if l.MaxCallsPerAgent < 0 || l.MaxCallsPerAgent > 64 {
 		return 0, errors.New("invalid llm max_calls_per_agent")
 	}
-	return cmp.Or(l.MaxCallsPerAgent, controlplane.DefaultLLMCallsPerAgent), nil
+	return cmp.Or(l.MaxCallsPerAgent, llmservice.DefaultCallsPerAgent), nil
 }
 
 // gatewayConfig is the model gateway's configuration. With requireHTTPS
@@ -73,7 +74,7 @@ func (l *ServiceLLM) gatewayConfig(requireHTTPS bool) (llmgateway.Config, error)
 
 // OpenLLM never creates a key. Without the matching key the worker simply cannot
 // open provider credentials, and the bridge answers unavailable.
-func (c ServiceConfig) OpenLLM(s *controlplane.Store, requireHTTPS bool) (*controlplane.LLMService, error) {
+func (c ServiceConfig) OpenLLM(s *controlplane.Store, requireHTTPS bool) (*llmservice.Service, error) {
 	if c.LLM == nil {
 		return nil, nil
 	}
@@ -89,7 +90,7 @@ func (c ServiceConfig) OpenLLM(s *controlplane.Store, requireHTTPS bool) (*contr
 	if err != nil {
 		return nil, err
 	}
-	svc, err := controlplane.NewLLMService(accounts, llmgateway.New(gateway))
+	svc, err := llmservice.New(accounts, llmgateway.New(gateway))
 	if err != nil {
 		return nil, err
 	}
@@ -110,7 +111,7 @@ func (c ServiceConfig) openBridgeAccounts(s *controlplane.Store) (*controlplane.
 }
 
 // EnableLLM attaches the model gateway once, like EnableTransit.
-func (w *Placements) EnableLLM(s *controlplane.LLMService) error {
+func (w *Placements) EnableLLM(s *llmservice.Service) error {
 	if s == nil || !w.llm.CompareAndSwap(nil, s) {
 		return controlplane.ErrConflict
 	}

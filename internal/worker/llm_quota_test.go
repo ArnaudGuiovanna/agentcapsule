@@ -28,6 +28,7 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/delegatedidentity"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/harnessstore"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmgateway"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmservice"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/runtime"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/telemetry"
 	"github.com/golang-jwt/jwt/v5"
@@ -416,7 +417,7 @@ func TestModelErrorsReachTheGuestAndLeaveItsVMRunning(t *testing.T) {
 		vocabulary[k] = v
 	}
 	var events bytes.Buffer
-	svc, err := controlplane.NewLLMService(l.accounts, llmgateway.NewForTests(llmgateway.Config{Timeout: 5 * time.Second, MaxAttempts: 1,
+	svc, err := llmservice.New(l.accounts, llmgateway.NewForTests(llmgateway.Config{Timeout: 5 * time.Second, MaxAttempts: 1,
 		FailureLimit: 3, OpenFor: 2 * time.Second}, llmgateway.TestOptions{Loopback: true}))
 	if err != nil {
 		t.Fatal(err)

@@ -1,26 +1,14 @@
 package capsuleprotocol
 
-import "context"
+import (
+	"context"
 
-// OwnerPost has no owner/caller field. The destination is derived exclusively
-// from the authenticated boot. A linked summary refers to a completed outgoing
-// request; it does not confer the right to issue another peer request.
-type OwnerPost struct {
-	RequestID string        `json:"request_id,omitempty"`
-	Content   []ContentPart `json:"content"`
-}
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol/wire"
+)
 
-func (p OwnerPost) Validate() error {
-	if len(p.RequestID) > 100 {
-		return ErrProtocol
-	}
-	return (OwnerMessage{Content: p.Content}).Validate()
-}
+type OwnerPost = wire.OwnerPost
+type OwnerPostReceipt = wire.OwnerPostReceipt
 
-type OwnerPostReceipt struct {
-	MessageID string `json:"message_id"`
-	Replayed  bool   `json:"replayed"`
-}
 type OwnerMessageAPI interface {
 	PostOwner(context.Context, string, OwnerPost) (OwnerPostReceipt, error)
 }

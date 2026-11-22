@@ -20,6 +20,7 @@ import (
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmgateway"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmservice"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/telemetry"
 )
 
@@ -78,7 +79,7 @@ func TestProductWorkerTenantRunsAnAdaptedAgent(t *testing.T) {
 		}
 	}))
 	t.Cleanup(provider.Close)
-	svc, err := controlplane.NewLLMService(l.accounts, llmgateway.NewForTests(llmgateway.Config{Timeout: 30 * time.Second, MaxAttempts: 1}, llmgateway.TestOptions{Loopback: true}))
+	svc, err := llmservice.New(l.accounts, llmgateway.NewForTests(llmgateway.Config{Timeout: 30 * time.Second, MaxAttempts: 1}, llmgateway.TestOptions{Loopback: true}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +156,7 @@ func TestProductWorkerTenantRunsPiOnARealModel(t *testing.T) {
 		authMode = "none"
 	}
 	l := newRegistryLab(t)
-	svc, err := controlplane.NewLLMService(l.accounts, llmgateway.NewForTests(llmgateway.Config{Timeout: 3 * time.Minute, MaxAttempts: 1}, llmgateway.TestOptions{Loopback: true}))
+	svc, err := llmservice.New(l.accounts, llmgateway.NewForTests(llmgateway.Config{Timeout: 3 * time.Minute, MaxAttempts: 1}, llmgateway.TestOptions{Loopback: true}))
 	if err != nil {
 		t.Fatal(err)
 	}

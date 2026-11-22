@@ -400,12 +400,12 @@ func costMicro(input, output, inputPrice, outputPrice int64) (int64, bool) {
 // current prices. A repeated request key returns the existing reservation and
 // never counts twice. The alias's provider must still be active.
 func (a *Accounts) ReserveLLM(ctx context.Context, tenantID, agentID, alias, requestKey string, input, output int64) (LLMReservation, error) {
-	return a.reserveLLM(ctx, tenantID, agentID, alias, requestKey, llmAmounts{Operation: LLMChat, Input: input, Output: output}, nil)
+	return a.reserveLLM(ctx, tenantID, agentID, alias, requestKey, LLMAmounts{Operation: LLMChat, Input: input, Output: output}, nil)
 }
 
-// errLLMRouteChanged: the provider's credential changed between the route's
+// ErrLLMRouteChanged: the provider's credential changed between the route's
 // resolution and its reservation. Nothing was reserved; resolve again.
-var errLLMRouteChanged = errors.New("llm route changed before its reservation")
+var ErrLLMRouteChanged = errors.New("llm route changed before its reservation")
 
 // reserveLLM is ReserveLLM for any operation: the alias must declare it
 // (refused with reason unsupported otherwise), token budgets count its tokens
@@ -414,9 +414,9 @@ var errLLMRouteChanged = errors.New("llm route changed before its reservation")
 // refused with ErrLLMAlreadyProcessed. The alias's provider is read again in
 // the reservation's transaction (audit finding L-08): a provider disabled
 // since via was resolved refuses the call (ErrNotFound), and a credential
-// rotated since then gives errLLMRouteChanged, so that a route resolved
+// rotated since then gives ErrLLMRouteChanged, so that a route resolved
 // before either change is never used.
-func (a *Accounts) reserveLLM(ctx context.Context, tenantID, agentID, alias, requestKey string, q llmAmounts, via *LLMRoute) (LLMReservation, error) {
+func (a *Accounts) reserveLLM(ctx context.Context, tenantID, agentID, alias, requestKey string, q LLMAmounts, via *LLMRoute) (LLMReservation, error) {
 	if !validOrganizationText(tenantID, 100) || !validOrganizationText(agentID, 100) || !validOrganizationText(alias, 100) ||
 		!validOrganizationText(requestKey, 200) || !q.valid(true) {
 		return LLMReservation{}, ErrInput
@@ -459,7 +459,7 @@ func (a *Accounts) reserveLLM(ctx context.Context, tenantID, agentID, alias, req
 		return LLMReservation{}, err
 	}
 	if via != nil && via.Generation != generation {
-		return LLMReservation{}, errLLMRouteChanged
+		return LLMReservation{}, ErrLLMRouteChanged
 	}
 	// Access is checked before the request key: a revoked grant also refuses
 	// the replay of a key, and nothing is reserved.
@@ -572,12 +572,12 @@ func (a *Accounts) SettleLLM(ctx context.Context, tenantID, reservationID string
 
 // settleLLM also returns the call's estimated cost, nil for an unpriced alias.
 func (a *Accounts) settleLLM(ctx context.Context, tenantID, reservationID string, input, output int64) (*int64, error) {
-	return a.settleLLMCall(ctx, tenantID, reservationID, llmAmounts{Input: input, Output: output})
+	return a.settleLLMCall(ctx, tenantID, reservationID, LLMAmounts{Input: input, Output: output})
 }
 
 // settleLLMCall settles a call of any operation at the amounts the provider
 // reported, in the call's units.
-func (a *Accounts) settleLLMCall(ctx context.Context, tenantID, reservationID string, q llmAmounts) (*int64, error) {
+func (a *Accounts) settleLLMCall(ctx context.Context, tenantID, reservationID string, q LLMAmounts) (*int64, error) {
 	if !validOrganizationText(tenantID, 100) || !validOrganizationText(reservationID, 100) {
 		return nil, ErrInput
 	}
@@ -600,7 +600,7 @@ func validUsage(input, output int64) bool {
 // settleCall settles one call in tx at its reservation's prices. The amounts
 // take the call's operation; another unit's amount is refused. resolver, when
 // set, is the principal who settled a call of unknown outcome.
-func settleCall(ctx context.Context, tx pgx.Tx, tenantID, id string, q llmAmounts, resolver *string) (*int64, error) {
+func settleCall(ctx context.Context, tx pgx.Tx, tenantID, id string, q LLMAmounts, resolver *string) (*int64, error) {
 	var state, agent, alias string
 	var in, out, seconds, pages, cost *int64
 	var reservedTokens, reservedCost int64

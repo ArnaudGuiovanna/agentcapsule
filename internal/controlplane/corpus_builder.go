@@ -6,7 +6,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol/wire"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -124,7 +124,7 @@ func (c *AgentCatalog) CorpusInvocation(ctx context.Context, j CorpusWork, input
 func (c *AgentCatalog) corpusGuestInvocation(ctx context.Context, tx pgx.Tx, agentID, requester, op, host string, micros int64, input json.RawMessage, save func(string) error) (json.RawMessage, bool, error) {
 	var err error
 	if op == "" {
-		message := OwnerInstruction{Content: []capsuleprotocol.ContentPart{{Type: "json", JSON: capsuleprotocol.JSONValue(input)}}}
+		message := OwnerInstruction{Content: []wire.ContentPart{{Type: "json", JSON: wire.JSONValue(input)}}}
 		if err = message.Validate(); err != nil {
 			return nil, false, ErrInput
 		}

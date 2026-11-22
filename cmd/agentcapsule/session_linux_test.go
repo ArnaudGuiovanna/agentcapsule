@@ -23,6 +23,7 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/api"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmgateway"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmservice"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -222,7 +223,7 @@ func verifyCLIProviderRotation(t *testing.T, accounts *controlplane.Accounts, te
 	}
 	id := register("dedicated", dedicated)
 	register("shared", shared)
-	service, err := controlplane.NewLLMService(accounts, llmgateway.NewForTests(llmgateway.Config{}, llmgateway.TestOptions{Loopback: true}))
+	service, err := llmservice.New(accounts, llmgateway.NewForTests(llmgateway.Config{}, llmgateway.TestOptions{Loopback: true}))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmgateway"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmservice"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/telemetry"
 )
 
@@ -50,7 +50,7 @@ func TestLLMConfigBoundsAProviderStream(t *testing.T) {
 func TestTheFirstEventOfAStreamIsTimed(t *testing.T) {
 	registry := telemetry.NewRegistry()
 	m := NewLLMTelemetry(registry, telemetry.NewLogger(&strings.Builder{}, nil), func(context.Context) (int64, error) { return 0, nil })
-	var _ controlplane.LLMStreamObserver = m
+	var _ llmservice.StreamObserver = m
 	m.ObserveFirstEvent(300 * time.Millisecond)
 	m.ObserveFirstEvent(90 * time.Second)
 	rec := httptest.NewRecorder()

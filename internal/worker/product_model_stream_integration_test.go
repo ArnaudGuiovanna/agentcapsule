@@ -16,6 +16,7 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmgateway"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmservice"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/pgnotify"
 )
 
@@ -68,7 +69,7 @@ func TestProductWorkerCarriesALongModelStreamToTheGuest(t *testing.T) {
 		}
 	}))
 	t.Cleanup(func() { provider.CloseClientConnections(); provider.Close() })
-	svc, err := controlplane.NewLLMService(l.accounts, llmgateway.NewForTests(llmgateway.Config{MaxAttempts: 1}, llmgateway.TestOptions{Loopback: true}))
+	svc, err := llmservice.New(l.accounts, llmgateway.NewForTests(llmgateway.Config{MaxAttempts: 1}, llmgateway.TestOptions{Loopback: true}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +123,7 @@ func TestProductWorkerBoundsModelStreamsAtSixteen(t *testing.T) {
 		<-r.Context().Done()
 	}))
 	defer func() { upstream.CloseClientConnections(); upstream.Close() }()
-	svc, err := controlplane.NewLLMService(l.accounts, llmgateway.NewForTests(llmgateway.Config{MaxAttempts: 1}, llmgateway.TestOptions{Loopback: true}))
+	svc, err := llmservice.New(l.accounts, llmgateway.NewForTests(llmgateway.Config{MaxAttempts: 1}, llmgateway.TestOptions{Loopback: true}))
 	if err != nil {
 		t.Fatal(err)
 	}
