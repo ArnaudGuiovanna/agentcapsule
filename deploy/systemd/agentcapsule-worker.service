@@ -23,21 +23,27 @@ LimitCORE=0
 # jailer unshares a mount namespace, pivots into the chroot, creates /dev/kvm,
 # /dev/net/tun, /dev/urandom and /dev/userfaultfd there, chowns them and drops
 # to the VM's UID. Every directive below also binds the jailer, Firecracker and
-# the sandboxed debugfs and mke2fs, which inherit it.
+# the sandboxed debugfs and mke2fs, which inherit it. The restore test's
+# confined LUKS header check (S-21) runs with -test-restore, from a root shell
+# or a host operation, outside this unit.
 NoNewPrivileges=yes
 # CAP_SYS_ADMIN: namespaces, mounts and pivot_root (jailer, image sandbox).
 # CAP_MKNOD: the jail's device nodes. CAP_CHOWN, CAP_FOWNER, CAP_DAC_OVERRIDE:
-# files of the VMs' UIDs (jails, platform sockets). CAP_SETUID, CAP_SETGID:
+# files of the VMs' UIDs (jails: the kernel hard-linked into them, the platform
+# sockets bound, given away and chmodded through O_PATH descriptors and
+# /proc/self/fd, never by a path the VMM could swap). CAP_SETUID, CAP_SETGID:
 # the jailer and the sandbox drop to their UIDs. CAP_SETPCAP: the sandbox
 # empties its bounding set. CAP_KILL: a sandboxed program that overruns its
 # time runs under another UID. CAP_SYS_PTRACE: adoption reads /proc/<pid>/root,
 # exe, fd and fdinfo of VMMs that run under other UIDs.
 CapabilityBoundingSet=CAP_SYS_ADMIN CAP_MKNOD CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE CAP_SETUID CAP_SETGID CAP_SETPCAP CAP_KILL CAP_SYS_PTRACE
 AmbientCapabilities=
-# Writes: the runtime root (/var/lib/agentcapsule/host, with the registry's
-# and the corpora's caches), the archives, and the SLIM socket's directory.
-# A root, an archive root, a cache or a trace_file elsewhere needs a drop-in
-# with ReadWritePaths=.
+# Writes: the runtime root (/var/lib/agentcapsule/host: the registry and
+# host.lock, the per-agent locks/, the admission/ queue, the jails, the
+# cached kernels and initrds of bin/ that the jails hard-link, the VMM logs of
+# logs/, and the registry's and the corpora's caches), the archives, and the
+# SLIM socket's directory. A root, an archive root, a cache or a trace_file
+# elsewhere needs a drop-in with ReadWritePaths=.
 ProtectSystem=strict
 StateDirectory=agentcapsule agentcapsule-archives
 StateDirectoryMode=0700
