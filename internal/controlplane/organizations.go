@@ -2,7 +2,6 @@ package controlplane
 
 import (
 	"context"
-	"crypto/ed25519"
 	"errors"
 	"strings"
 	"unicode"
@@ -93,20 +92,7 @@ func (a *Accounts) CreateOrganization(ctx context.Context, p Principal, key stri
 		// public key. Existing organizations and enterprise issuers retain
 		// their separately installed authority.
 		if strings.HasPrefix(in.InitialOwner.Issuer, individualidentity.Prefix) {
-			pub, ok := individualidentity.Key(in.InitialOwner.Issuer)
-			if !ok || in.InitialOwner.Subject != individualidentity.Subject(pub) {
-				return 0, nil, ErrInput
-			}
-			policy := trustPolicy{tenant: o.ID, issuer: in.InitialOwner.Issuer, audience: o.ID, scopes: individualidentity.Scopes(), ttl: individualidentity.Lifetime}
-			trust := policy.trust(map[string]ed25519.PublicKey{individualidentity.KeyID: pub})
-			fingerprint, err := policy.fingerprint(trust.Keys)
-			if err != nil {
-				return 0, nil, err
-			}
-			if _, err = tx.Exec(ctx, "INSERT INTO delegation_issuers(tenant_id,issuer) VALUES($1,$2)", o.ID, policy.issuer); err != nil {
-				return 0, nil, err
-			}
-			if _, _, err = installTrust(ctx, tx, &trust, fingerprint); err != nil {
+			if err := identity.InstallOwnerTrust(ctx, tx, o.ID, in.InitialOwner.Issuer, in.InitialOwner.Subject); err != nil {
 				return 0, nil, err
 			}
 		}

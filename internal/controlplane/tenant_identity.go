@@ -2,10 +2,7 @@ package controlplane
 
 import (
 	"context"
-	"crypto/ed25519"
-	"errors"
 	"slices"
-	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane/identity"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/delegatedidentity"
@@ -33,7 +30,7 @@ func (s *Store) AuthenticateDelegation(ctx context.Context, verifier *delegatedi
 	}
 	defer rollback(tx)
 	if verifier == nil {
-		if verifier, err = registeredVerifier(ctx, tx, issuer, audience, kid); err != nil {
+		if verifier, err = identity.RegisteredVerifier(ctx, tx, issuer, audience, kid); err != nil {
 			return Principal{}, err
 		}
 	}
@@ -49,31 +46,6 @@ func (s *Store) AuthenticateDelegation(ctx context.Context, verifier *delegatedi
 		return Principal{}, err
 	}
 	return Principal{Kind: "tenant", ID: current.PrincipalID, TenantID: v.TenantID, TokenID: v.TokenID, Scopes: slices.Clone(v.Scopes), delegation: &v}, nil
-}
-
-// registeredVerifier builds the verifier of one registered key: the trust that
-// the token names, restricted to the key it names. Its fingerprint is that
-// key's, so that adding or retiring another key leaves it valid.
-func registeredVerifier(ctx context.Context, tx pgx.Tx, issuer, audience, kid string) (*delegatedidentity.Verifier, error) {
-	var p trustPolicy
-	var key []byte
-	var ttl int64
-	err := tx.QueryRow(ctx, `SELECT t.tenant_id,coalesce(t.allowed_scopes,'{}'),t.max_ttl_nanoseconds,k.public_key
-        FROM delegation_trusts t JOIN delegation_keys k USING (tenant_id,issuer,audience)
-        WHERE t.issuer=$1 AND t.audience=$2 AND k.key_id=$3 AND k.retired_at IS NULL AND t.max_ttl_nanoseconds IS NOT NULL`,
-		issuer, audience, kid).Scan(&p.tenant, &p.scopes, &ttl, &key)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, ErrAuthentication
-	}
-	if err != nil {
-		return nil, err
-	}
-	p.issuer, p.audience, p.ttl = issuer, audience, time.Duration(ttl)
-	v, err := delegatedidentity.NewVerifier(delegatedidentity.Config{Trusts: []delegatedidentity.Trust{p.trust(map[string]ed25519.PublicKey{kid: key})}})
-	if err != nil {
-		return nil, ErrAuthentication
-	}
-	return v, nil
 }
 
 func authorizeTenant(ctx context.Context, tx pgx.Tx, p Principal, scope string) (CurrentOrganization, error) {

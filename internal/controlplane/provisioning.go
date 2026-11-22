@@ -150,27 +150,6 @@ func publishRevocation(ctx context.Context, tx pgx.Tx, subject string, stores ..
 	return err
 }
 
-// RevocationSubjects returns durable, already-authorized intents. No SQL lock
-// crosses the worker's subsequent independent-authority or guest RPC operation.
-// It reads the platform's whole history: the reconciliation uses it; a boot
-// no longer does (RevocationScopes).
-func (s *Store) RevocationSubjects(ctx context.Context) ([]string, error) {
-	rows, err := s.pool.Query(ctx, "SELECT subject FROM revocation_catalogue ORDER BY subject")
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var subjects []string
-	for rows.Next() {
-		var subject string
-		if err = rows.Scan(&subject); err != nil {
-			return nil, err
-		}
-		subjects = append(subjects, subject)
-	}
-	return subjects, rows.Err()
-}
-
 const enrollmentColumns = `e.agent_id,e.operation_id,e.volume_id,x.host_id,e.stage,r.artifact_digest,r.source,coalesce(r.rootfs_digest,''),e.incarnation,
     x.vcpus,x.memory_mib,x.volume_mib,x.auto_start,
     EXISTS(SELECT 1 FROM store_initializations i WHERE i.agent_id=e.agent_id AND i.volume_id=e.volume_id AND i.incarnation=e.incarnation),

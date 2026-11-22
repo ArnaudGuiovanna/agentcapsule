@@ -2,6 +2,8 @@ package controlplane
 
 import (
 	"go/token"
+	"io/fs"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -33,7 +35,7 @@ var admissionWrite = regexp.MustCompile(`(?is)\b(?:UPDATE\s+(?:ONLY\s+)?(?:` + s
 // is reviewed and listed here.
 var reviewedWriters = map[string]string{
 	"ChangeApplication":         "appAdmin: authorizeTenantAdminMutation",
-	"ChangeDelegationAuthority": "SELECT status FROM organizations ... FOR UPDATE, before the issuer's anchor",
+	"ApplyTrustChange":          "its caller: ChangeDelegationAuthority locks the organization FOR UPDATE before the issuer",
 	"DisableLLMAlias":           "authorizeTenantAdminMutation",
 	"DisableLLMProvider":        "authorizeTenantAdminMutation",
 	"DisableOrganization":       "SELECT ... FROM organizations ... FOR UPDATE",
@@ -61,18 +63,37 @@ var reviewedWriters = map[string]string{
 	"auditTenantAgent":          "its callers: authorizeTenantAdminMutation; a file's upload or deletion changes no row of the organization",
 	"capabilityChanged":         "its callers: authorizeTenantAdminMutation",
 	"changeMember":              "authorizeMemberMutation",
-	"refreshTrustFingerprint":   "its callers: ChangeDelegationAuthority, settleKeys",
+	"refreshTrustFingerprint":   "its callers: ChangeDelegationAuthority, SettleKeys",
 	"replaceKeys":               "its caller: ChangeDelegationAuthority",
 	"replayBlanket":             "its caller: replayEffect",
 	"replayEffect":              "SELECT 1 FROM organizations ... FOR UPDATE, every organization for a blanket",
 	"replayTrust":               "its caller: replayEffect",
 	"retireKey":                 "its caller: ChangeDelegationAuthority",
 	"revokeIssuedServiceTokens": "its caller: changeMember",
-	"settleKeys":                "its callers: ChangeDelegationAuthority, replayTrust",
+	"SettleKeys":                "its callers: ChangeDelegationAuthority, replayTrust",
 }
 
 func TestEveryRevocationHoldsItsOrganizationsRow(t *testing.T) {
-	nodes := packageNodes(parsePackage(t, token.NewFileSet(), "."))
+	fset := token.NewFileSet()
+	nodes := map[string][]*sqlNode{}
+	err := filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		if d.Name() == "testdata" || d.Name() == "migrations" {
+			return filepath.SkipDir
+		}
+		for name, list := range packageNodes(parsePackage(t, fset, path)) {
+			nodes[name] = append(nodes[name], list...)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	var writers []string
 	for name, list := range nodes {
 		for _, n := range list {
