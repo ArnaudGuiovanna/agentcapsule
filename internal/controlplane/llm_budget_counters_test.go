@@ -227,7 +227,7 @@ func TestReservationReadsTheWindowsNotTheCalls(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	a, err := NewAccounts(&Store{pool: pool}, bytes.Repeat([]byte{0x42}, 32))
+	a, err := NewAccounts(newStore(pool), bytes.Repeat([]byte{0x42}, 32))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -11,14 +11,16 @@ import (
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authoritylog"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane/identity"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane/internal/persistence"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/delegatedidentity"
 	"github.com/jackc/pgx/v5"
 )
 
 var (
-	ErrAuthentication = errors.New("authentication required")
+	ErrAuthentication = identity.ErrAuthentication
 	ErrForbidden      = errors.New("operation is not permitted for this identity")
-	ErrInput          = errors.New("invalid input")
+	ErrInput          = persistence.ErrInput
 	ErrInProgress     = errors.New("idempotent operation is in progress")
 )
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane/workqueue"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -30,7 +31,7 @@ func (s *Store) TraceOrigin(ctx context.Context, kind, id string) (string, error
 	case "invocation":
 		query = "SELECT request_id FROM platform_operations WHERE id=$1"
 	case "request":
-		query = originOfRequest
+		query = workqueue.RequestOriginSQL
 	case "mandate":
 		query = `SELECT o.request_id FROM owner_instructions i JOIN platform_operations o ON o.id=i.operation_id WHERE i.mandate_id=$1`
 	default:

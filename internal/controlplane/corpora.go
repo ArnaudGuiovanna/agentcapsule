@@ -2,13 +2,12 @@ package controlplane
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io/fs"
 	"strings"
-	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorization"
+	corpusdb "github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane/corpus"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpussource/repository"
 	"github.com/jackc/pgx/v5"
 )
@@ -20,99 +19,18 @@ var (
 	ErrCorpusVersionConflict       = errors.New("corpus version already names another digest")
 )
 
-type CorpusSource struct {
-	Kind         string `json:"kind"`
-	URL          string `json:"url"`
-	Ref          string `json:"ref"`
-	Path         string `json:"path,omitempty"`
-	CredentialID string `json:"credential_id,omitempty"`
-}
-type CreateCorpusInput struct {
-	Name   string       `json:"name"`
-	Title  string       `json:"title,omitempty"`
-	Source CorpusSource `json:"source"`
-}
+type CorpusSource = corpusdb.CorpusSource
+type CreateCorpusInput = corpusdb.CreateCorpusInput
+type CorpusReleaseReference = corpusdb.CorpusReleaseReference
+type Corpus = corpusdb.Corpus
+type CorpusBuild = corpusdb.CorpusBuild
+type CorpusRelease = corpusdb.CorpusRelease
+
 type RequestCorpusBuildInput struct {
 	Ref    string `json:"ref,omitempty"`
 	Commit string `json:"commit,omitempty"`
 }
-type CorpusReleaseReference struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	Version int    `json:"version"`
-}
-type Corpus struct {
-	ID string `json:"id"`
-	CreateCorpusInput
-	LatestBuildID string                  `json:"latest_build_id,omitempty"`
-	LatestRelease *CorpusReleaseReference `json:"latest_release,omitempty"`
-	CreatedAt     time.Time               `json:"created_at"`
-}
-type CorpusBuild struct {
-	ID              string          `json:"id"`
-	CorpusID        string          `json:"corpus_id"`
-	State           string          `json:"state"`
-	RequestedRef    string          `json:"requested_ref,omitempty"`
-	Commit          string          `json:"commit,omitempty"`
-	Builder         string          `json:"builder,omitempty"`
-	ArchiveBytes    int64           `json:"archive_bytes,omitempty"`
-	LFSObjects      int             `json:"lfs_objects,omitempty"`
-	LFSBytes        int64           `json:"lfs_bytes,omitempty"`
-	Files           json.RawMessage `json:"files"`
-	Costs           json.RawMessage `json:"costs"`
-	Estimate        json.RawMessage `json:"estimate,omitempty"`
-	ImageBytes      int64           `json:"image_bytes,omitempty"`
-	ImageDigest     string          `json:"image_digest,omitempty"`
-	ErrorCode       string          `json:"error_code,omitempty"`
-	ReleaseID       string          `json:"release_id,omitempty"`
-	Attempts        int             `json:"attempts"`
-	CreatedAt       time.Time       `json:"created_at"`
-	DeadlineAt      time.Time       `json:"deadline_at"`
-	ReviewAt        *time.Time      `json:"review_at,omitempty"`
-	ReviewExpiresAt *time.Time      `json:"review_expires_at,omitempty"`
-	CompletedAt     *time.Time      `json:"completed_at,omitempty"`
-}
-type CorpusRelease struct {
-	Extensions []CorpusExtensionImage `json:"extensions"`
-	CorpusReleaseReference
-	CorpusID     string     `json:"corpus_id"`
-	Digest       string     `json:"digest"`
-	ImageBytes   int64      `json:"image_bytes"`
-	BuildID      string     `json:"build_id"`
-	Commit       string     `json:"commit"`
-	Builder      string     `json:"builder"`
-	HostID       string     `json:"host_id"`
-	State        string     `json:"state"`
-	CreatedAt    time.Time  `json:"created_at"`
-	DeprecatedAt *time.Time `json:"deprecated_at,omitempty"`
-}
 
-const corpusSelect = `SELECT c.id,c.name,c.title,c.source_kind,c.source_url,c.source_ref,c.source_path,coalesce(c.source_credential_id,''),c.created_at,
- coalesce((SELECT b.id FROM corpus_builds b WHERE b.corpus_id=c.id ORDER BY b.created_at DESC,b.id DESC LIMIT 1),''),
- (SELECT jsonb_build_object('id',r.id,'name',c.name,'version',r.version) FROM corpus_releases r WHERE r.corpus_id=c.id AND r.deprecated_at IS NULL ORDER BY r.version DESC LIMIT 1)
- FROM corpora c`
-
-func scanCorpus(row pgx.Row) (Corpus, error) {
-	var v Corpus
-	err := row.Scan(&v.ID, &v.Name, &v.Title, &v.Source.Kind, &v.Source.URL, &v.Source.Ref, &v.Source.Path, &v.Source.CredentialID, &v.CreatedAt, &v.LatestBuildID, &v.LatestRelease)
-	return v, corpusRowError(err)
-}
-
-const buildSelect = `SELECT b.id,b.corpus_id,b.state,b.requested_ref,coalesce(b.commit_sha,''),coalesce(b.builder,''),coalesce((b.source_drive->>'bytes')::bigint,0),coalesce((b.lfs_drive->>'objects')::int,0),coalesce((b.lfs_drive->>'object_bytes')::bigint,0),b.files,b.costs,b.estimate,coalesce(b.image_bytes,0),coalesce(b.image_digest,''),coalesce(b.error_code,''),coalesce(b.release_id,''),b.attempts,b.created_at,b.deadline_at,b.review_at,b.review_expires_at,b.completed_at FROM corpus_builds b`
-
-func scanBuild(row pgx.Row) (CorpusBuild, error) {
-	var b CorpusBuild
-	err := row.Scan(&b.ID, &b.CorpusID, &b.State, &b.RequestedRef, &b.Commit, &b.Builder, &b.ArchiveBytes, &b.LFSObjects, &b.LFSBytes, &b.Files, &b.Costs, &b.Estimate, &b.ImageBytes, &b.ImageDigest, &b.ErrorCode, &b.ReleaseID, &b.Attempts, &b.CreatedAt, &b.DeadlineAt, &b.ReviewAt, &b.ReviewExpiresAt, &b.CompletedAt)
-	return b, corpusRowError(err)
-}
-
-const releaseSelect = `SELECT r.id,c.name,r.version,r.corpus_id,r.digest,r.image_bytes,r.build_id,r.commit_sha,r.builder,r.host_id,CASE WHEN r.deprecated_at IS NULL THEN 'active' ELSE 'deprecated' END,r.created_at,r.deprecated_at,r.extensions FROM corpus_releases r JOIN corpora c ON c.id=r.corpus_id`
-
-func scanCorpusRelease(row pgx.Row) (CorpusRelease, error) {
-	var r CorpusRelease
-	err := row.Scan(&r.ID, &r.Name, &r.Version, &r.CorpusID, &r.Digest, &r.ImageBytes, &r.BuildID, &r.Commit, &r.Builder, &r.HostID, &r.State, &r.CreatedAt, &r.DeprecatedAt, &r.Extensions)
-	return r, corpusRowError(err)
-}
 func corpusRowError(err error) error {
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrNotFound
@@ -195,59 +113,45 @@ func (a *Accounts) CreateCorpus(ctx context.Context, p Principal, key string, in
 		if tag.RowsAffected() != 1 {
 			return 0, nil, ErrCorpusNameTaken
 		}
-		v, err := scanCorpus(tx.QueryRow(ctx, corpusSelect+" WHERE c.id=$1", id))
+		v, err := corpusdb.Get(ctx, tx, p.TenantID, id)
 		if err != nil {
 			return 0, nil, err
 		}
 		return 201, v, auditCorpus(ctx, tx, p, "corpus.created", id, "", "", "")
 	})
 }
-func corpusPage[T any](ctx context.Context, tx pgx.Tx, limit int, scan func(pgx.Row) (T, error), sql string, args ...any) ([]T, error) {
-	if limit < 1 || limit > 201 {
-		return nil, ErrInput
-	}
-	rows, err := tx.Query(ctx, sql, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []T{}
-	for rows.Next() {
-		v, err := scan(rows)
-		if err != nil {
-			return nil, err
-		}
-		items = append(items, v)
-	}
-	return items, rows.Err()
-}
 func (a *Accounts) Corpus(ctx context.Context, p Principal, id string) (Corpus, error) {
 	return corpusRead(ctx, a, p, authorization.ReadCorpus, func(tx pgx.Tx) (Corpus, error) {
-		return scanCorpus(tx.QueryRow(ctx, corpusSelect+" WHERE c.tenant_id=$1 AND c.id=$2", p.TenantID, id))
+		return corpusdb.Get(ctx, tx, p.TenantID, id)
 	})
 }
+
 func (a *Accounts) ListCorpora(ctx context.Context, p Principal, name, after string, limit int) ([]Corpus, error) {
 	return corpusRead(ctx, a, p, authorization.ReadCorpus, func(tx pgx.Tx) ([]Corpus, error) {
-		return corpusPage(ctx, tx, limit, scanCorpus, corpusSelect+" WHERE c.tenant_id=$1 AND ($2='' OR c.name=$2) AND c.id>$3 ORDER BY c.id LIMIT $4", p.TenantID, name, after, limit)
+		return corpusdb.List(ctx, tx, p.TenantID, name, after, limit)
 	})
 }
+
 func (a *Accounts) CorpusBuild(ctx context.Context, p Principal, id string) (CorpusBuild, error) {
 	return corpusRead(ctx, a, p, authorization.ReadCorpus, func(tx pgx.Tx) (CorpusBuild, error) {
-		return scanBuild(tx.QueryRow(ctx, buildSelect+" WHERE b.tenant_id=$1 AND b.id=$2", p.TenantID, id))
+		return corpusdb.GetBuild(ctx, tx, p.TenantID, id)
 	})
 }
+
 func (a *Accounts) ListCorpusBuilds(ctx context.Context, p Principal, corpus, state, after string, limit int) ([]CorpusBuild, error) {
 	return corpusRead(ctx, a, p, authorization.ReadCorpus, func(tx pgx.Tx) ([]CorpusBuild, error) {
-		return corpusPage(ctx, tx, limit, scanBuild, buildSelect+` WHERE b.tenant_id=$1 AND ($2='' OR b.corpus_id=$2) AND ($3='' OR b.state=$3) AND ($4='' OR (b.created_at,b.id)<(SELECT created_at,id FROM corpus_builds WHERE tenant_id=$1 AND id=$4)) ORDER BY b.created_at DESC,b.id DESC LIMIT $5`, p.TenantID, corpus, state, after, limit)
+		return corpusdb.ListBuilds(ctx, tx, p.TenantID, corpus, state, after, limit)
 	})
 }
+
 func (a *Accounts) CorpusRelease(ctx context.Context, p Principal, id string) (CorpusRelease, error) {
 	return corpusRead(ctx, a, p, authorization.ReadCorpus, func(tx pgx.Tx) (CorpusRelease, error) {
-		return scanCorpusRelease(tx.QueryRow(ctx, releaseSelect+" WHERE r.tenant_id=$1 AND r.id=$2", p.TenantID, id))
+		return corpusdb.GetRelease(ctx, tx, p.TenantID, id)
 	})
 }
+
 func (a *Accounts) ListCorpusReleases(ctx context.Context, p Principal, corpus, after string, deprecated bool, limit int) ([]CorpusRelease, error) {
 	return corpusRead(ctx, a, p, authorization.ReadCorpus, func(tx pgx.Tx) ([]CorpusRelease, error) {
-		return corpusPage(ctx, tx, limit, scanCorpusRelease, releaseSelect+` WHERE r.tenant_id=$1 AND ($2='' OR r.corpus_id=$2) AND r.id>$3 AND ($4 OR r.deprecated_at IS NULL) ORDER BY r.id LIMIT $5`, p.TenantID, corpus, after, deprecated, limit)
+		return corpusdb.ListReleases(ctx, tx, p.TenantID, corpus, after, deprecated, limit)
 	})
 }

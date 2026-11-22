@@ -25,7 +25,7 @@ func (c *AgentCatalog) ReadCorpusBuildStream(ctx context.Context, p Principal, i
 	if err != nil {
 		return out, err
 	}
-	tx := snapshotTx{base}
+	tx := snapshotTx{Tx: base}
 	defer rollback(tx)
 	if err = corpusPermission(ctx, tx, p, authorization.ManageCorpus); err != nil {
 		return out, err

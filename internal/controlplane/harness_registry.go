@@ -7,6 +7,7 @@ import (
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorization"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/capability"
+	corpusdb "github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane/corpus"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/ociregistry/reference"
 	"github.com/jackc/pgx/v5"
 )
@@ -299,7 +300,7 @@ func (s *Store) CompleteHarnessImport(ctx context.Context, job ImportJob, r Impo
 		(r.Signer != "" && len(r.Signer) != 71) || (r.Capabilities != nil && capability.ValidSet(*r.Capabilities) != nil) {
 		return HarnessImport{}, ErrInput
 	}
-	base, ok := releaseBase(r.Base)
+	base, ok := corpusdb.ReleaseBase(r.Base)
 	if !ok {
 		return HarnessImport{}, ErrInput
 	}

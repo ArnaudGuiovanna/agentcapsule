@@ -5,18 +5,17 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/rand"
 	"crypto/sha256"
-	"encoding/json"
 	"errors"
 	"slices"
 	"time"
 
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane/transitcrypto"
 	"github.com/jackc/pgx/v5"
 )
 
 var ErrTransitKey = errors.New("transit key configuration unavailable or mismatched")
-var ErrTransitPayload = errors.New("transit payload authentication failed")
+var ErrTransitPayload = transitcrypto.ErrPayload
 
 const MaxTransitBytes = 512 << 10
 
@@ -218,13 +217,9 @@ func (s *Store) TransitKeyUsage(ctx context.Context) ([]TransitKeyUse, error) {
 	return keys, rows.Err()
 }
 
-type transitParty struct{ Agent, Owner string }
-type transitBinding struct {
-	Version                    int
-	ID, Kind, Reference, KeyID string
-	Hash                       []byte
-	Parties                    []transitParty
-}
+type transitParty = transitcrypto.Party
+type transitBinding = transitcrypto.Binding
+
 type TransitReference struct {
 	ID   string
 	Hash []byte
@@ -322,15 +317,7 @@ func (t *Transit) sealFor(ctx context.Context, tx pgx.Tx, id, kind, reference st
 	if err != nil {
 		return binding, nil, err
 	}
-	hash := sha256.Sum256(body)
-	binding.Hash = hash[:]
-	aad, err := json.Marshal(binding)
-	if err != nil {
-		return binding, nil, err
-	}
-	nonce := make([]byte, k.cipher.NonceSize())
-	_, _ = rand.Read(nonce)
-	return binding, k.cipher.Seal(nonce, nonce, body, aad), nil
+	return binding.Seal(k.cipher, body)
 }
 
 // putResult stores the result of an instruction. The rerun of an invocation
@@ -446,27 +433,7 @@ func (t *Transit) read(ctx context.Context, tx pgx.Tx, id string, parties []tran
 	if err != nil {
 		return nil, err
 	}
-	return openTransitPayload(k, binding, encrypted)
-}
-
-func openTransitPayload(k transitKey, binding transitBinding, encrypted []byte) ([]byte, error) {
-	if len(encrypted) < k.cipher.NonceSize()+k.cipher.Overhead() {
-		return nil, ErrTransitPayload
-	}
-	aad, err := json.Marshal(binding)
-	if err != nil {
-		return nil, err
-	}
-	body, err := k.cipher.Open(nil, encrypted[:k.cipher.NonceSize()], encrypted[k.cipher.NonceSize():], aad)
-	if err != nil {
-		return nil, ErrTransitPayload
-	}
-	hash := sha256.Sum256(body)
-	if !bytes.Equal(hash[:], binding.Hash) {
-		clear(body)
-		return nil, ErrTransitPayload
-	}
-	return body, nil
+	return binding.Open(k.cipher, encrypted)
 }
 
 // ReadForOwner is a data-plane read, never an administrative privilege. It

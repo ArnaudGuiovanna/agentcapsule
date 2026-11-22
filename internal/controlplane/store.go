@@ -10,22 +10,22 @@ package controlplane
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	_ "embed"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"sync/atomic"
 	"time"
 
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane/internal/persistence"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane/workqueue"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 var (
-	ErrNotFound     = errors.New("resource not found")
+	ErrNotFound     = persistence.ErrNotFound
 	ErrUnavailable  = errors.New("agent is not accepting new work")
 	ErrMandate      = errors.New("mandate unavailable, expired or exhausted")
 	ErrTransition   = errors.New("request transition is not permitted")
@@ -55,12 +55,32 @@ type Receipt struct {
 }
 
 type Store struct {
+	workqueue.Queue
 	pool *pgxpool.Pool
 	// legacyClosed refuses the legacy owner domain's acp_ tokens (D-01).
 	legacyClosed atomic.Bool
 	// access appends the access revocation records (access_revocations.go);
 	// nil without the authority service, in development.
 	access atomic.Pointer[accessRecorder]
+}
+
+// newStore attaches domain services to the same pool and transaction discipline.
+func newStore(pool *pgxpool.Pool) *Store {
+	s := &Store{pool: pool}
+	s.Queue = workqueue.New(pool, s.transact)
+	return s
+}
+
+func (s *Store) transact(ctx context.Context, run func(pgx.Tx) error) error {
+	tx, err := s.begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer rollback(tx)
+	if err := run(tx); err != nil {
+		return err
+	}
+	return commit(ctx, tx)
 }
 
 //go:embed schema.sql
@@ -160,11 +180,7 @@ func lockAgents(ctx context.Context, tx pgx.Tx, ids ...string) (map[string]agent
 	return agents, rows.Err()
 }
 
-func newID(prefix string) string {
-	var id [16]byte
-	_, _ = rand.Read(id[:]) // crypto/rand.Read is guaranteed to fill or terminate on Go 1.25+.
-	return prefix + "_" + hex.EncodeToString(id[:])
-}
+func newID(prefix string) string { return persistence.ID(prefix) }
 
 func requestHash(v any) ([32]byte, error) {
 	b, err := json.Marshal(v)

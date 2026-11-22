@@ -2,10 +2,10 @@ package controlplane
 
 import (
 	"context"
-	"math/big"
 	"slices"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorization"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane/accounting"
 )
 
 // The operations an alias's model may serve (ADR 023 §12). A platform channel
@@ -167,22 +167,11 @@ type llmPrices struct {
 func (p llmPrices) cost(q llmAmounts) (int64, bool) {
 	switch q.Operation {
 	case LLMTranscribe:
-		return ceilProduct(q.AudioSeconds, p.audioPerMinute, 60)
+		return accounting.UnitCost(q.AudioSeconds, p.audioPerMinute, 60)
 	case LLMOCR:
-		return ceilProduct(q.Pages, p.perPage, 1)
+		return accounting.UnitCost(q.Pages, p.perPage, 1)
 	}
-	return costMicro(q.Input, q.Output, p.input, p.output)
-}
-
-// ceilProduct is ceil(a*b/d), exact.
-func ceilProduct(a, b, d int64) (int64, bool) {
-	v := new(big.Int).Mul(big.NewInt(a), big.NewInt(b))
-	v.Add(v, big.NewInt(d-1))
-	v.Quo(v, big.NewInt(d))
-	if !v.IsInt64() {
-		return 0, false
-	}
-	return v.Int64(), true
+	return accounting.TokenCost(q.Input, q.Output, p.input, p.output)
 }
 
 // aliasPrices reads the prices an operation's call keeps from its alias.

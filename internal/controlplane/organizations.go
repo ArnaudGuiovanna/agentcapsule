@@ -5,11 +5,11 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"strings"
-	"time"
 	"unicode"
 	"unicode/utf8"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authoritylog"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane/identity"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/individualidentity"
 	"github.com/jackc/pgx/v5"
 )
@@ -19,13 +19,7 @@ import (
 // another idempotency key, fails (ADR 001, D-01).
 var ErrOrganizationNameTaken = errors.New("an active organization already has this name")
 
-type Organization struct {
-	ID            string    `json:"id"`
-	Name          string    `json:"name"`
-	Status        string    `json:"status"`
-	PolicyVersion int64     `json:"policy_version"`
-	CreatedAt     time.Time `json:"created_at"`
-}
+type Organization = identity.Organization
 
 // InitialOrganizationOwner registers an intended identity. It is not an
 // authentication assertion and grants no token or access to legacy resources.
@@ -52,8 +46,7 @@ func validRegisteredIdentity(s string) bool {
 }
 
 func scanOrganization(row pgx.Row) (Organization, error) {
-	var o Organization
-	err := row.Scan(&o.ID, &o.Name, &o.Status, &o.PolicyVersion, &o.CreatedAt)
+	o, err := identity.ScanOrganization(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return o, ErrNotFound
 	}

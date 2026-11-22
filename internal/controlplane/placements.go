@@ -7,11 +7,12 @@ import (
 	"math"
 	"time"
 
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane/workqueue"
 	"github.com/jackc/pgx/v5"
 )
 
 var (
-	ErrPlacement     = errors.New("obsolete or foreign VM placement")
+	ErrPlacement     = workqueue.ErrPlacement
 	ErrPlacementBusy = errors.New("VM placement operation already in progress")
 )
 

@@ -137,7 +137,7 @@ func TestStreamNewsCostOneStatement(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	traced := &Store{pool: pool}
+	traced := newStore(pool)
 	accounts, err := NewAccounts(traced, []byte("a receipt key nothing here reads"))
 	if err != nil {
 		t.Fatal(err)

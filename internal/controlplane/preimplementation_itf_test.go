@@ -135,7 +135,7 @@ func (a *p1Replay) startCall(t *testing.T, slot int) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.store = &Store{pool: pool}
+	c.store = newStore(pool)
 	if err = pool.QueryRow(ctx, "SELECT pg_backend_pid()").Scan(&c.pid); err != nil {
 		t.Fatal(err)
 	}

@@ -3,7 +3,6 @@ package controlplane
 import (
 	"context"
 	"errors"
-	"math/big"
 	"slices"
 	"time"
 
@@ -373,22 +372,6 @@ func countCall(ctx context.Context, tx pgx.Tx, tenant, agent, alias string, crea
         UPDATE llm_budget_windows v SET used=v.used+w.change FROM w WHERE (v.budget_id,v.window_start)=(w.budget_id,w.window_start)`,
 		tenant, agent, alias, created, tokens, cost)
 	return err
-}
-
-// costMicro is the estimated cost, in micro-units, of input and output tokens
-// at prices in micro-units per million tokens, rounded up once so that an
-// estimate never under-reports. It is exact: the products do not fit in 64
-// bits at the accepted bounds (10^12 tokens, 10^12 per million), so they are
-// computed on big integers. ok is false if the cost does not fit in an int64.
-func costMicro(input, output, inputPrice, outputPrice int64) (int64, bool) {
-	sum := new(big.Int).Mul(big.NewInt(input), big.NewInt(inputPrice))
-	sum.Add(sum, new(big.Int).Mul(big.NewInt(output), big.NewInt(outputPrice)))
-	sum.Add(sum, big.NewInt(999_999))
-	sum.Quo(sum, big.NewInt(1_000_000))
-	if !sum.IsInt64() {
-		return 0, false
-	}
-	return sum.Int64(), true
 }
 
 // ReserveLLM must precede every upstream chat call. input and output are the

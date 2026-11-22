@@ -6,6 +6,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane/workqueue"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -48,21 +49,6 @@ type SlotDecision struct {
 	Quota string
 }
 
-// workInProgress holds while agent a holds work that its harness resumes
-// after a restart: an invocation it acknowledged "working", before its result
-// is due, or a request it was processing, before its deadline and not
-// closing; and no sleep was requested for the agent since that work began.
-const workInProgress = `(EXISTS(SELECT 1 FROM platform_operations wo JOIN owner_instructions wi ON wi.operation_id=wo.id
-        WHERE wo.agent_id=a.id AND wo.kind='instruction' AND wo.status='RUNNING' AND wi.working_since IS NOT NULL
-          AND wi.result_due_at>clock_timestamp()
-          AND NOT EXISTS(SELECT 1 FROM platform_operations ws WHERE ws.agent_id=a.id AND ws.kind='sleep' AND ws.created_at>=wi.working_since))
-    OR EXISTS(SELECT 1 FROM agent_requests wr WHERE wr.recipient_agent_id=a.id AND wr.state='PROCESSING' AND wr.expires_at>clock_timestamp()
-          AND NOT EXISTS(SELECT 1 FROM request_closures wc WHERE wc.request_id=wr.id)
-          AND NOT EXISTS(SELECT 1 FROM platform_operations ws WHERE ws.agent_id=a.id AND ws.kind='sleep' AND ws.created_at>=wr.created_at)))`
-
-// resumeDue holds while live agent a, not FAILED, holds work in progress.
-const resumeDue = `a.phase='LIVE' AND NOT EXISTS(SELECT 1 FROM failed_agents f WHERE f.agent_id=a.id) AND ` + workInProgress
-
 // slotDue holds while agent a still needs a VM slot for work: it is live, not
 // FAILED, not running, and has a pending delivery, an open wake, or work in
 // progress to resume. A waiter for which it fails leaves the queue. A delivery
@@ -74,7 +60,7 @@ const slotDue = `a.phase='LIVE' AND NOT EXISTS(SELECT 1 FROM failed_agents f WHE
     AND (EXISTS(SELECT 1 FROM agent_mailboxes sm WHERE sm.dest_agent_id=a.id AND sm.delivery_state='PENDING' AND NOT sm.closing
            AND (sm.expires_at>clock_timestamp() OR NOT sm.may_have_reached))
       OR EXISTS(SELECT 1 FROM platform_operations so WHERE so.agent_id=a.id AND so.kind='wake' AND so.status IN ('PENDING','RUNNING'))
-      OR ` + workInProgress + `)`
+      OR ` + workqueue.WorkInProgress + `)`
 
 // computing holds while agent a works on something only its running VM can
 // carry on: work in progress, unless it waits for another agent's answer, or
@@ -82,7 +68,7 @@ const slotDue = `a.phase='LIVE' AND NOT EXISTS(SELECT 1 FROM failed_agents f WHE
 // another agent may be stopped: the answer's delivery boots it again, and its
 // harness resumes. Holding its slot could instead keep the other agent from
 // booting until a deadline.
-const computing = `((` + workInProgress + `
+const computing = `((` + workqueue.WorkInProgress + `
         AND NOT EXISTS(SELECT 1 FROM agent_requests pr WHERE pr.sender_agent_id=a.id
           AND pr.state IN ('PENDING_APPROVAL','DELIVERING','PROCESSING') AND pr.expires_at>clock_timestamp()))
     OR EXISTS(SELECT 1 FROM llm_usage cu WHERE cu.agent_id=a.id AND cu.state='reserved'))`
@@ -172,7 +158,7 @@ func (s *Store) AdmitToSlot(ctx context.Context, host, agent string, running []s
 			reason = "organization_quota"
 		}
 		if ticket == nil {
-			n, err := nextWorkTicket(ctx, tx, host)
+			n, err := workqueue.NextTicket(ctx, tx, host)
 			if err != nil {
 				return SlotDecision{}, err
 			}
@@ -388,7 +374,7 @@ func (s *Store) QuotaWaits(ctx context.Context, host string) (int, error) {
 // progress that its harness resumes once it boots again (the resume job).
 func (s *Store) ResumeDue(ctx context.Context, agent string) (bool, error) {
 	var due bool
-	err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM agents a WHERE a.id=$1 AND `+resumeDue+`
+	err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM agents a WHERE a.id=$1 AND `+workqueue.ResumeDuePredicate+`
         AND NOT EXISTS(SELECT 1 FROM agent_placements sp WHERE sp.agent_id=a.id AND sp.state='RUNNING' AND NOT sp.fence_only)
         AND NOT EXISTS(SELECT 1 FROM organizations o WHERE o.id=a.tenant_id AND o.status='disabled'))`, agent).Scan(&due)
 	return due, err

@@ -6,6 +6,7 @@ import (
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorization"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
+	corpusdb "github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane/corpus"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -110,7 +111,7 @@ func lockBindingAgent(ctx context.Context, tx pgx.Tx, p Principal, id string, mo
 		if err = tx.QueryRow(ctx, "SELECT release_id,coalesce(system_image,'') FROM agent_specs WHERE agent_id=$1", id).Scan(&release, &image); err != nil {
 			return "", err
 		}
-		if err = corporaMountable(ctx, tx, release, image); err != nil {
+		if err = corpusdb.CheckMount(ctx, tx, release, image); err != nil {
 			return "", err
 		}
 	}
