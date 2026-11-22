@@ -303,3 +303,19 @@ unless it is in flight or of unknown outcome, an audit event names it, or a
 corpus build in progress counts it ([worker.md](../worker.md)), with the
 windows that started before the retention (migration
 `model-call-retention`).
+
+**Lot FIX-2.** Each model call resolved its route (`ResolveLLMRoute`) with
+`FOR SHARE` on the alias and the provider: every call wrote two row locks,
+and a provider's disabling or rotation, plain `UPDATE`s, waited for the
+resolutions in flight, which waited for it in turn. The resolution now takes
+no row lock. The guarantees above hold at the reservation, as SEC-2 stated
+them: the reservation holds the organization's row `FOR KEY SHARE`, which
+the change's `FOR UPDATE` on that row excludes, and reads the alias's and
+the provider's status and the credential's generation again. A route
+resolved while a change was in flight is never used: the disabled provider
+refuses the call, the rotated credential is resolved again
+(`TestAModelCallResolvesItsRouteWithoutWaitingForAProviderChange`). The
+`FOR SHARE` ended with the resolution's transaction, before the reservation,
+so it never covered more than that. A rollout's template install, which
+revokes the agent's previous template grant, now holds the organization's
+row as the other revocations do ([ADR 001](001-organization-identity.md)).

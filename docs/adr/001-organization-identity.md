@@ -367,7 +367,11 @@ the agent's previous template grant, took no lock on it: a model call could
 read the grant while its revocation committed. The install now takes its
 organization's row `FOR UPDATE` before the placement's lock, as the
 administrators do; the test lists the three tables and their writers
-(`TestARolloutRevokesItsTemplateGrantUnderTheOrganizationsRow`).
+(`TestARolloutRevokesItsTemplateGrantUnderTheOrganizationsRow`). A model
+call's route resolution (`ResolveLLMRoute`), which took `FOR SHARE` on the
+alias and the provider at every call, now takes no lock: the reservation,
+under the organization's row, orders the call with a disabling or a
+rotation ([ADR 011](011-llm-access-and-cost-budgets.md)).
 
 ### Row-level security: considered, not adopted
 
