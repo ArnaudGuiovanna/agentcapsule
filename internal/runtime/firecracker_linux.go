@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -77,6 +78,10 @@ type FirecrackerOptions struct {
 	// It is separate from the physical census and must never infer VMM absence.
 	// Failure blocks application admission; callers may still retire the boot.
 	ObserveControl func(context.Context, string, VMRun, bool) error
+	// SerialConsole gives each guest a serial console (console=ttyS0), whose
+	// output joins the VMM's bounded log: for debugging only (S-20). Without
+	// it the guest kernel has no serial port at all.
+	SerialConsole bool
 }
 
 type BootImage struct {
@@ -132,10 +137,13 @@ type VMRun struct {
 }
 
 type hostRegistry struct {
-	Version        int                   `json:"version"`
-	Agents         map[string]*HostAgent `json:"agents"`
-	Admissions     []admissionWaiter     `json:"admissions,omitempty"`
-	LegacyBarriers []admissionWaiter     `json:"barriers,omitempty"`
+	Version int                   `json:"version"`
+	Agents  map[string]*HostAgent `json:"agents"`
+	// Reservations hold, per agent, the slot its eviction frees for its boot
+	// (ReserveSlot), while the evicting turn lasts.
+	Reservations   map[string]slotReservation `json:"reservations,omitempty"`
+	Admissions     []admissionWaiter          `json:"admissions,omitempty"`
+	LegacyBarriers []admissionWaiter          `json:"barriers,omitempty"`
 }
 
 type FirecrackerHost struct {
@@ -146,10 +154,27 @@ type FirecrackerHost struct {
 	admissionHook func(string, string)
 	// census, when set, stands in for the physical census of a confirmed
 	// VMM (confirmedVMM): tests without KVM.
-	census         func(*HostAgent) (bool, error)
+	census func(*HostAgent) (bool, error)
+	// peer, when set, stands in for the process identity check of a
+	// platform connection's peer (platformPeer): tests without KVM.
+	peer           func(*HostAgent, *syscall.Ucred) error
 	platformMu     sync.Mutex
 	platform       map[string]*platformService
 	platformClosed bool
+	// clients holds each boot's control client, whose connections stay
+	// open between calls (P-09); platformMu guards it.
+	clients map[string]*capsuleprotocol.Client
+	monitor *hostMonitor
+	// registryMu, then host.lock, guard registry.json; cacheMu guards the
+	// cached version (firecracker_registry_linux.go).
+	registryMu, cacheMu sync.Mutex
+	registry            *registryCache
+	// queueMu, then admission/queue.lock, guard the admission queues.
+	queueMu sync.Mutex
+	queue   *queueCache
+	// lockMu guards agentLocks (firecracker_locks_linux.go).
+	lockMu     sync.Mutex
+	agentLocks map[string]*agentLock
 }
 
 // NewFirecrackerHost requires a private root-owned state directory. The parent
@@ -202,7 +227,7 @@ func NewFirecrackerHost(opts FirecrackerOptions) (*FirecrackerHost, error) {
 	}
 	hash := sha256.Sum256([]byte(root))
 	h := &FirecrackerHost{opts: opts, root: root, cgroup: filepath.Join("/sys/fs/cgroup", "acp-runtime-"+hex.EncodeToString(hash[:8]))}
-	for _, d := range []string{"bin", "volumes", "jails", "logs", "credentials", "platform", "admission"} {
+	for _, d := range []string{"bin", "volumes", "jails", "logs", "credentials", "platform", "admission", "locks"} {
 		if err = os.MkdirAll(filepath.Join(root, d), 0700); err != nil {
 			return nil, err
 		}
@@ -212,6 +237,11 @@ func NewFirecrackerHost(opts FirecrackerOptions) (*FirecrackerHost, error) {
 		for _, a := range []struct{ name, path, hash string }{{"firecracker", opts.Firecracker, opts.FirecrackerSHA256}, {"jailer", opts.Jailer, opts.JailerSHA256}, {"kernel", opts.Kernel, opts.KernelSHA256}, {"initrd", opts.Initrd, opts.InitrdSHA256}} {
 			if err := pinFile(a.path, filepath.Join(root, "bin", a.name), a.hash); err != nil {
 				return err
+			}
+			if a.name == "kernel" || a.name == "initrd" {
+				if err := shareBootFile(filepath.Join(root, "bin", a.name)); err != nil {
+					return err
+				}
 			}
 		}
 		// Versioned artifacts are installed under their verified content digests.
@@ -241,6 +271,9 @@ func cacheSystemImage(root string, img BootImage) error {
 			return errors.New("invalid system image digest")
 		}
 		if err := pinFile(a.path, filepath.Join(root, "bin", a.name+"-"+a.digest), a.digest); err != nil {
+			return err
+		}
+		if err := shareBootFile(filepath.Join(root, "bin", a.name+"-"+a.digest)); err != nil {
 			return err
 		}
 	}
@@ -306,126 +339,31 @@ func syncDir(path string) error {
 
 // The caller holds the registry lock and has reconciled exited runs. Include
 // a VM whose startup is in progress and the same 256 MiB of VMM headroom per
-// guest used by the cgroup limit and the deployment planner.
-func (h *FirecrackerHost) hasBootCapacity(r *hostRegistry, requested VMResources) bool {
+// guest used by the cgroup limit and the deployment planner. A slot another
+// agent's eviction reserved counts too, once its victim is stopped
+// (ReserveSlot); booting's own reservation does not.
+func (h *FirecrackerHost) hasBootCapacity(r *hostRegistry, requested VMResources, booting string) bool {
 	slots, cpus, memory := 1, requested.VCPUs, int64(requested.MemoryMiB+256)
-	for _, other := range r.Agents {
-		if other.Run != nil {
-			v := other.resources()
-			slots++
-			cpus += v.VCPUs
-			memory += int64(v.MemoryMiB + 256)
+	count := func(a *HostAgent) {
+		v := a.resources()
+		slots++
+		cpus += v.VCPUs
+		memory += int64(v.MemoryMiB + 256)
+	}
+	for id, other := range r.Agents {
+		if other.Run != nil && id != booting {
+			count(other)
 		}
+	}
+	for id, res := range r.Reservations {
+		a, victim := r.Agents[id], r.Agents[res.Victim]
+		if id == booting || a == nil || a.Run != nil || victim != nil && victim.Run != nil || !h.reservationLive(res) {
+			continue
+		}
+		count(a)
 	}
 	return slots <= h.opts.MaxActive && (h.opts.HostVCPUs == 0 || cpus <= h.opts.HostVCPUs) &&
 		(h.opts.HostMemoryMiB == 0 || memory <= h.opts.HostMemoryMiB)
-}
-
-func (h *FirecrackerHost) locked(ctx context.Context, fn func(*hostRegistry) error) error {
-	f, err := os.OpenFile(filepath.Join(h.root, "host.lock"), os.O_CREATE|os.O_RDWR, 0600)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	for {
-		err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
-		if err == nil {
-			break
-		}
-		if err != syscall.EWOULDBLOCK {
-			return err
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(10 * time.Millisecond):
-		}
-	}
-	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-	r := &hostRegistry{Version: 2, Agents: map[string]*HostAgent{}}
-	b, err := os.ReadFile(filepath.Join(h.root, "registry.json"))
-	if err == nil {
-		if err = json.Unmarshal(b, r); err != nil {
-			return err
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	migrated := false
-	if r.Version == 1 && len(r.Admissions) == 0 {
-		r.Admissions, r.LegacyBarriers, r.Version = r.LegacyBarriers, nil, 2
-		migrated = true
-	}
-	if r.Version != 2 || r.Agents == nil || len(r.LegacyBarriers) != 0 {
-		return errors.New("invalid runtime registry")
-	}
-	seen := map[string]bool{}
-	for _, w := range r.Admissions {
-		b, err := hex.DecodeString(w.ID)
-		if err != nil || len(b) != 16 || strings.ToLower(w.ID) != w.ID || seen[w.ID] || (w.Shared && w.Target != "") || (!w.Shared && r.Agents[w.Target] == nil) {
-			return errors.New("invalid host admission queue")
-		}
-		seen[w.ID] = true
-	}
-	for id, a := range r.Agents {
-		if a == nil || a.ID != id || id == "" || a.UID < 10000 || filepath.Dir(a.Volume) != filepath.Join(h.root, "volumes") {
-			return errors.New("invalid agent in runtime registry")
-		}
-		if a.Resources != (VMResources{}) && !a.Resources.valid() {
-			return errors.New("invalid agent resources in runtime registry")
-		}
-		if a.SealID != "" {
-			b, err := hex.DecodeString(a.SealID)
-			if err != nil || len(b) != 16 || strings.ToLower(a.SealID) != a.SealID || !a.Fenced || a.Run != nil {
-				return errors.New("invalid permanent store seal")
-			}
-		}
-		if a.VolumeRemoved && a.SealID == "" {
-			return errors.New("volume removal without permanent store seal")
-		}
-		if run := a.Run; run != nil {
-			decoded, err := hex.DecodeString(run.ID)
-			if err != nil || len(decoded) != 8 || run.ID != strings.ToLower(run.ID) || run.Generation == 0 || run.Generation != a.Generation ||
-				(run.Phase != "STARTING" && run.Phase != "RUNNING") || run.Socket != filepath.Join(h.jail(run), "vsock") {
-				return errors.New("invalid attempt in runtime registry")
-			}
-			if run.Phase == "RUNNING" && (run.PID <= 0 || run.StartTicks == "") {
-				return errors.New("confirmed attempt lacks process identity")
-			}
-		}
-	}
-	if migrated {
-		if err := h.save(r); err != nil {
-			return err
-		}
-	}
-	return fn(r)
-}
-
-func (h *FirecrackerHost) save(r *hostRegistry) error {
-	b, err := json.MarshalIndent(r, "", "  ")
-	if err != nil {
-		return err
-	}
-	f, err := os.CreateTemp(h.root, "registry-*.tmp")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(f.Name())
-	defer f.Close()
-	if _, err = f.Write(append(b, '\n')); err != nil {
-		return err
-	}
-	if err = f.Sync(); err != nil {
-		return err
-	}
-	if err = f.Close(); err != nil {
-		return err
-	}
-	if err = os.Rename(f.Name(), filepath.Join(h.root, "registry.json")); err != nil {
-		return err
-	}
-	return syncDir(h.root)
 }
 
 // Register enrolls an already provisioned regular file below Root/volumes. It
@@ -497,10 +435,14 @@ func populated(path string) (bool, error) {
 	return false, errors.New("missing populated cgroup field")
 }
 
-// cleanup is only called under host.lock. clone3 places every launcher in its
-// attempt cgroup AT FORK, so no late launcher can escape an interrupted attempt.
+// cleanup runs under the agent's lock, never under host.lock: the attempt's
+// cgroup may take up to ten seconds to empty. clone3 places every launcher in
+// its attempt cgroup AT FORK, so no late launcher can escape an interrupted
+// attempt. The run stays in the registry, holding its slot, until cleanup
+// returns.
 func (h *FirecrackerHost) cleanup(run *VMRun) error {
 	h.closePlatform(run.ID)
+	h.dropClient(run.ID)
 	group := h.group(run)
 	busy, err := populated(group)
 	if err != nil {
@@ -534,35 +476,21 @@ func (h *FirecrackerHost) cleanup(run *VMRun) error {
 	if err := os.Remove(h.platformLockPath(run.ID)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+	// The VMM's log goes with its run (S-20). While debugging, it stays for
+	// inspection; the census keeps the newest few (removeStaleLogs).
+	if !h.opts.SerialConsole {
+		if err := os.Remove(h.logPath(run.ID)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
 	return syncDir(filepath.Join(h.root, "credentials"))
-}
-
-func procIdentity(pid int) (string, error) {
-	b, e := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
-	if e != nil {
-		return "", e
-	}
-	i := strings.LastIndex(string(b), ")")
-	if i < 0 {
-		return "", errors.New("invalid proc stat")
-	}
-	f := strings.Fields(string(b[i+1:]))
-	if len(f) < 20 {
-		return "", errors.New("short proc stat")
-	}
-	if f[0] == "Z" {
-		return "", errors.New("process exited")
-	}
-	return f[19], nil
 }
 
 func (h *FirecrackerHost) identify(a *HostAgent) (int, string, error) {
 	run := a.Run
-	b, err := os.ReadFile(filepath.Join(h.jail(run), "firecracker.pid"))
-	if err != nil {
-		return 0, "", err
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	// The jail belongs to the VMM's user: its PID file is read without
+	// following a link, at most a few bytes, never blocking (L-15).
+	pid, err := readPIDFile(h.jail(run), "firecracker.pid")
 	if err != nil {
 		return 0, "", err
 	}
@@ -577,11 +505,11 @@ func (h *FirecrackerHost) identify(a *HostAgent) (int, string, error) {
 	if err != nil {
 		return 0, "", err
 	}
-	want, err := os.Stat(h.jail(run))
+	want, err := os.Lstat(h.jail(run))
 	if err != nil {
 		return 0, "", err
 	}
-	if !os.SameFile(root, want) {
+	if !want.IsDir() || !os.SameFile(root, want) {
 		return 0, "", errors.New("unexpected VMM root")
 	}
 	status, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
@@ -603,61 +531,14 @@ func (h *FirecrackerHost) identify(a *HostAgent) (int, string, error) {
 	if err != nil {
 		return 0, "", err
 	}
-	expected, err := os.Stat(filepath.Join(h.jail(run), "firecracker"))
+	expected, err := os.Lstat(filepath.Join(h.jail(run), "firecracker"))
 	if err != nil {
 		return 0, "", err
 	}
-	if !os.SameFile(exe, expected) {
+	if !expected.Mode().IsRegular() || !os.SameFile(exe, expected) {
 		return 0, "", errors.New("unexpected VMM executable")
 	}
 	return pid, ticks, nil
-}
-
-// Check the lock on the VMM's actual backing descriptor before exposing RUNNING.
-// A vanilla or incorrectly built Firecracker must not be accepted by this driver.
-func ownedVolumeLock(pid int, volume string) error {
-	_, locked, err := volumeLock(pid, volume)
-	if err == nil && !locked {
-		err = errVolumeLock
-	}
-	return err
-}
-
-var errVolumeLock = errors.New("VMM does not own the required writable-volume flock")
-
-// volumeLock tells whether pid has volume open, and whether it holds the
-// volume's exclusive lock through one of those descriptors.
-func volumeLock(pid int, volume string) (open, locked bool, err error) {
-	want, err := os.Stat(volume)
-	if err != nil {
-		return false, false, err
-	}
-	entries, err := os.ReadDir(fmt.Sprintf("/proc/%d/fd", pid))
-	if err != nil {
-		return false, false, err
-	}
-	for _, entry := range entries {
-		path := fmt.Sprintf("/proc/%d/fd/%s", pid, entry.Name())
-		got, err := os.Stat(path)
-		if err != nil || !os.SameFile(want, got) {
-			continue
-		}
-		info, err := os.ReadFile(fmt.Sprintf("/proc/%d/fdinfo/%s", pid, entry.Name()))
-		if errors.Is(err, fs.ErrNotExist) {
-			continue // closed since, as by a VMM that exits
-		}
-		if err != nil {
-			return true, false, err
-		}
-		open = true
-		for _, line := range strings.Split(string(info), "\n") {
-			f := strings.Fields(line)
-			if len(f) >= 6 && f[0] == "lock:" && f[2] == "FLOCK" && f[3] == "ADVISORY" && f[4] == "WRITE" {
-				return true, true, nil
-			}
-		}
-	}
-	return open, false, nil
 }
 
 // recover observes only a fully identified, previously confirmed VMM. Its
@@ -667,136 +548,130 @@ func volumeLock(pid int, volume string) (open, locked bool, err error) {
 // An interrupted STARTING attempt is killed before its volume can be reused.
 //
 // Every agent is examined even when another one fails, so that one broken agent
-// cannot leave the others unrecovered. Map order is random, so stopping at the
-// first error would also make which agents were recovered arbitrary. The
-// registry is saved after the pass, including the cleanups that did succeed, and
-// the failures are returned together. A failing agent keeps its Run untouched:
-// it is neither adopted nor cleaned until the cause is resolved.
+// cannot leave the others unrecovered. The registry is written for each run
+// retired, and only then; the failures are returned together. A failing
+// agent keeps its Run untouched: it is neither adopted nor cleaned until the
+// cause is resolved.
+//
+// An agent in use is left to its user: one whose turn another caller holds,
+// or whose lock another operation holds (a boot, a stop, a volume copy). Its
+// run stays in the registry and keeps its slot. The census never waits for
+// it, and holds no lock while it adopts a VM (S-03).
 //
 // recover is the census of the host: Reconcile, CredentialRotations and a
 // boot's count of the running VMs. An operation on one agent's VM uses
 // recoverOne instead.
-func (h *FirecrackerHost) recover(ctx context.Context, r *hostRegistry) error {
-	var failures []error
-	for _, a := range r.Agents {
-		if err := h.recoverAgent(ctx, a); err != nil {
-			failures = append(failures, fmt.Errorf("agent %s: %w", a.ID, err))
-		}
-	}
-	if err := h.save(r); err != nil {
-		failures = append(failures, err)
-	}
-	return errors.Join(failures...)
-}
-
-// recoverOne is recover for one agent: the reuse of its VM and its control
-// sessions (each delivery, each platform call) adopt that VM again before
-// using it, so a stale or sealed binding retires it there. The host's other
-// VMs wait for its next census: adopting them at every use made each
-// delivery's cost grow with the number of running VMs.
-func (h *FirecrackerHost) recoverOne(ctx context.Context, r *hostRegistry, id string) error {
-	var err error
-	if a := r.Agents[id]; a != nil {
-		if err = h.recoverAgent(ctx, a); err != nil {
-			err = fmt.Errorf("agent %s: %w", id, err)
-		}
-	}
-	return errors.Join(err, h.save(r))
-}
-
-func (h *FirecrackerHost) recoverAgent(ctx context.Context, a *HostAgent) error {
-	if a.Run == nil {
-		return nil
-	}
-	if a.Run.Phase == "RUNNING" && !a.Fenced {
-		if alive, err := h.confirmedVMM(a); err != nil {
-			return err
-		} else if alive {
-			if err := h.opts.Adopt(ctx, a.ID, *a.Run); err == nil {
-				return h.ensurePlatform(a)
-			} else if !errors.Is(err, ErrGeneration) {
-				return err
-			}
-		}
-	}
-	if err := h.cleanup(a.Run); err != nil {
+func (h *FirecrackerHost) recover(ctx context.Context) error {
+	logs, logsErr := h.listLogs()
+	r, err := h.view()
+	if err != nil {
 		return err
 	}
-	a.Run = nil
+	ids := make([]string, 0, len(r.Agents))
+	for id, a := range r.Agents {
+		if a.Run != nil {
+			ids = append(ids, id)
+		}
+	}
+	slices.Sort(ids)
+	var failures []error
+	for _, id := range ids {
+		err := h.TryBarrier(ctx, id, func(ctx context.Context) error {
+			unlock, err := h.tryLockAgent(id)
+			if err != nil {
+				return err
+			}
+			defer unlock()
+			return h.recoverOne(ctx, id)
+		})
+		if err != nil && !errors.Is(err, ErrAgentBusy) {
+			failures = append(failures, err)
+		}
+	}
+	// The logs of runs that are gone (a worker died before their cleanup)
+	// go at the census (S-20).
+	if logsErr == nil {
+		logsErr = h.removeStaleLogs(ctx, logs)
+	}
+	return errors.Join(append(failures, logsErr)...)
+}
+
+// recoverOne is recover for one agent, whose lock the caller holds: the reuse
+// of its VM and its control sessions (each delivery, each platform call)
+// adopt that VM again before using it, so a stale or sealed binding retires
+// it there. The host's other VMs wait for its next census: adopting them at
+// every use made each delivery's cost grow with the number of running VMs.
+// The registry is written only when the run is retired (P-09).
+func (h *FirecrackerHost) recoverOne(ctx context.Context, id string) error {
+	a, err := h.agent(ctx, id)
+	if err != nil || a == nil || a.Run == nil {
+		return err
+	}
+	retire, err := h.recoverAgent(ctx, a)
+	if err != nil {
+		return fmt.Errorf("agent %s: %w", id, err)
+	}
+	if retire {
+		if err = h.retireRun(ctx, id, a.Run); err != nil {
+			return fmt.Errorf("agent %s: %w", id, err)
+		}
+	}
 	return nil
 }
 
-// confirmedVMM tells whether a's confirmed VMM still runs. A live VMM that
-// has its volume open without its lock is an error, not an absence.
-func (h *FirecrackerHost) confirmedVMM(a *HostAgent) (bool, error) {
-	if h.census != nil {
-		return h.census(a)
+// recoverAgent adopts a's confirmed VMM, or tells that its run must be
+// retired: the VMM is gone, obsolete or interrupted while starting.
+func (h *FirecrackerHost) recoverAgent(ctx context.Context, a *HostAgent) (bool, error) {
+	if a.Run.Phase == "RUNNING" && !a.Fenced {
+		if alive, err := h.confirmedVMM(a); err != nil {
+			return false, err
+		} else if alive {
+			if err := h.opts.Adopt(ctx, a.ID, *a.Run); err == nil {
+				return false, h.ensurePlatform(a)
+			} else if !errors.Is(err, ErrGeneration) {
+				return false, err
+			}
+		}
 	}
-	if _, _, err := h.identify(a); err != nil {
-		return false, nil
-	}
-	return vmmWithVolume(a.Run.PID, a.Volume, func() bool { _, _, err := h.identify(a); return err == nil })
+	return true, nil
 }
 
-// vmmWithVolume tells whether a confirmed VMM, found alive, still runs with
-// its volume; alive identifies it again.
-//
-// A VMM releases its volume as it exits: Firecracker closes its drive, which
-// releases the lock, before its process ends (59 to 110 ms from "Vmm is
-// stopping" to its last line, for guests of 256 MiB; longer for larger
-// guests, whose memory it also unmaps). A guest that restarts ends its VMM
-// so (ADR 012, question 6). A VMM with no descriptor of its volume left can
-// no longer write it: it is gone, and the census's cleanup kills what is left
-// of it and waits until its cgroup is empty before the volume is used again.
-// So is a VMM that ended while it was examined. A VMM that has its volume
-// open without the lock is an error: an unpatched VMM, or another writer.
-func vmmWithVolume(pid int, volume string, alive func() bool) (bool, error) {
-	open, locked, err := volumeLock(pid, volume)
-	switch {
-	case locked:
-		return true, nil
-	case !alive():
-		return false, nil
-	case err != nil:
-		return true, err
-	case !open:
-		return false, nil
+// runs returns the VM runs of the registry.
+func (h *FirecrackerHost) runs(only string) (map[string]VMRun, error) {
+	result := map[string]VMRun{}
+	r, err := h.view()
+	if err != nil {
+		return nil, err
 	}
-	return true, errVolumeLock
+	for id, a := range r.Agents {
+		if a.Run != nil && (only == "" || id == only) {
+			result[id] = *a.Run
+		}
+	}
+	return result, nil
 }
 
 // Reconcile adopts every confirmed VM of the host, retires the others and
-// returns the runs that remain.
+// returns the runs that remain, those of agents in use among them.
 func (h *FirecrackerHost) Reconcile(ctx context.Context) (map[string]VMRun, error) {
-	result := map[string]VMRun{}
-	err := h.locked(ctx, func(r *hostRegistry) error {
-		if err := h.recover(ctx, r); err != nil {
-			return err
-		}
-		for id, a := range r.Agents {
-			if a.Run != nil {
-				result[id] = *a.Run
-			}
-		}
-		return nil
-	})
-	return result, err
+	if err := h.recover(ctx); err != nil {
+		return map[string]VMRun{}, err
+	}
+	return h.runs("")
 }
 
 // ReconcileAgent is Reconcile for one agent: it adopts or retires that
 // agent's VM alone, and returns its run only, if it has one.
 func (h *FirecrackerHost) ReconcileAgent(ctx context.Context, id string) (map[string]VMRun, error) {
-	result := map[string]VMRun{}
-	err := h.locked(ctx, func(r *hostRegistry) error {
-		if err := h.recoverOne(ctx, r, id); err != nil {
-			return err
-		}
-		if a := r.Agents[id]; a != nil && a.Run != nil {
-			result[id] = *a.Run
-		}
-		return nil
-	})
-	return result, err
+	unlock, err := h.lockAgent(ctx, id)
+	if err != nil {
+		return map[string]VMRun{}, err
+	}
+	defer unlock()
+	if err = h.recoverOne(ctx, id); err != nil {
+		return map[string]VMRun{}, err
+	}
+	return h.runs(id)
 }
 
 func (h *FirecrackerHost) Start(ctx context.Context, id string, generation uint64) (VMRun, error) {
@@ -815,20 +690,34 @@ func (h *FirecrackerHost) StartForFence(ctx context.Context, id string, generati
 	return h.start(ctx, id, generation, true)
 }
 
+// start reuses or boots agent id's VM under the agent's turn and its lock.
+// host.lock is taken only to read the agent, to count the host's capacity
+// and record the boot's intent (STARTING), and to publish RUNNING; the boot
+// itself, from the jailer to the SQL confirmation, runs outside it (S-03).
+// The STARTING record holds the boot's slot from its intent on: capacity
+// stays host-wide, counted under host.lock.
 func (h *FirecrackerHost) start(ctx context.Context, id string, generation uint64, fenceOnly bool) (VMRun, error) {
 	var result VMRun
-	err := h.WithApplication(ctx, func(ctx context.Context) error {
+	err := h.WithApplication(ctx, id, func(ctx context.Context) error {
 		var reusedClient *capsuleprotocol.Client
-		registryErr := h.locked(ctx, func(r *hostRegistry) error {
-			if err := h.checkStartAdmission(ctx, r, id); err != nil {
+		bootErr := func() error {
+			unlock, err := h.lockAgent(ctx, id)
+			if err != nil {
+				return err
+			}
+			defer unlock()
+			if err := h.checkAdmission(ctx, id); err != nil {
 				return err
 			}
 			// Reusing the agent's VM concerns that VM alone. A boot counts
 			// the host's VMs below, once it has checked every one of them.
-			if err := h.recoverOne(ctx, r, id); err != nil {
+			if err := h.recoverOne(ctx, id); err != nil {
 				return err
 			}
-			a := r.Agents[id]
+			a, err := h.agent(ctx, id)
+			if err != nil {
+				return err
+			}
 			if a == nil {
 				return errors.New("unregistered agent")
 			}
@@ -852,36 +741,16 @@ func (h *FirecrackerHost) start(ctx context.Context, id string, generation uint6
 			if generation <= a.Generation {
 				return ErrGeneration
 			}
-			if err := h.recover(ctx, r); err != nil {
+			if err := h.recover(ctx); err != nil {
 				return err
 			}
-			if !h.hasBootCapacity(r, a.resources()) {
-				return ErrCapacity
-			}
-			st, err := os.Stat(a.Volume)
-			if err != nil {
-				return err
-			}
-			s := st.Sys().(*syscall.Stat_t)
-			if !st.Mode().IsRegular() || uint64(s.Dev) != a.Device || s.Ino != a.Inode {
-				return errors.New("registered volume identity changed")
-			}
-			// Fast rejection only. The VMM itself must acquire/retain the same inode
-			// lock after this descriptor closes; this check is not the safety barrier.
-			probe, err := os.OpenFile(a.Volume, os.O_RDWR, 0)
-			if err != nil {
-				return err
-			}
-			err = syscall.Flock(int(probe.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
-			probe.Close()
-			if err == syscall.EWOULDBLOCK {
-				return ErrVolumeBusy
-			}
-			if err != nil {
-				return err
-			}
-			nonce := make([]byte, 8)
-			if _, err = rand.Read(nonce); err != nil {
+			// A boot that has no room asks the authority nothing.
+			if err := h.locked(ctx, func(r *hostRegistry) error {
+				if current := r.Agents[id]; current != nil && !h.hasBootCapacity(r, current.resources(), id) {
+					return ErrCapacity
+				}
+				return nil
+			}); err != nil {
 				return err
 			}
 			incarnation := uint64(1)
@@ -894,22 +763,65 @@ func (h *FirecrackerHost) start(ctx context.Context, id string, generation uint6
 			if incarnation == 0 || incarnation > 1<<63-1 {
 				return ErrGeneration
 			}
-			run := &VMRun{Rollout: a.Rollout, Incarnation: incarnation, ID: hex.EncodeToString(nonce), Generation: generation, Phase: "STARTING", FenceOnly: fenceOnly}
+			nonce := make([]byte, 8)
+			if _, err = rand.Read(nonce); err != nil {
+				return err
+			}
+			run := &VMRun{Incarnation: incarnation, ID: hex.EncodeToString(nonce), Generation: generation, Phase: "STARTING", FenceOnly: fenceOnly}
 			run.Socket = filepath.Join(h.jail(run), "vsock")
-			a.Generation = generation
-			a.Run = run
-			if err = h.save(r); err != nil {
+			if err = h.locked(ctx, func(r *hostRegistry) error {
+				current := r.Agents[id]
+				switch {
+				case current == nil:
+					return errors.New("unregistered agent")
+				case current.Fenced:
+					return ErrHostFenced
+				case current.Run != nil:
+					return ErrVolumeBusy
+				case generation <= current.Generation:
+					return ErrGeneration
+				case !h.hasBootCapacity(r, current.resources(), id):
+					return ErrCapacity
+				}
+				st, err := os.Stat(current.Volume)
+				if err != nil {
+					return err
+				}
+				s := st.Sys().(*syscall.Stat_t)
+				if !st.Mode().IsRegular() || uint64(s.Dev) != current.Device || s.Ino != current.Inode {
+					return errors.New("registered volume identity changed")
+				}
+				// Fast rejection only. The VMM itself must acquire/retain the same inode
+				// lock after this descriptor closes; this check is not the safety barrier.
+				probe, err := os.OpenFile(current.Volume, os.O_RDWR, 0)
+				if err != nil {
+					return err
+				}
+				err = syscall.Flock(int(probe.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+				probe.Close()
+				if err == syscall.EWOULDBLOCK {
+					return ErrVolumeBusy
+				}
+				if err != nil {
+					return err
+				}
+				run.Rollout = current.Rollout
+				current.Generation = generation
+				current.Run = run
+				a = current.clone()
+				// The run holds the slot now; reservations whose turn ended go.
+				delete(r.Reservations, id)
+				h.pruneReservations(r)
+				return h.save(r)
+			}); err != nil {
 				return err
 			}
 			if h.hook != nil {
 				h.hook("intent", *run)
 			}
+			run = a.Run
 			fail := func(e error) error {
-				if clean := h.cleanup(run); clean != nil {
-					return errors.Join(e, clean)
-				}
-				a.Run = nil
-				return errors.Join(e, h.save(r))
+				return errors.Join(e, h.retireRun(ctx, id, run))
 			}
 			if err = h.prepare(a); err != nil {
 				return fail(err)
@@ -919,7 +831,7 @@ func (h *FirecrackerHost) start(ctx context.Context, id string, generation uint6
 				return fail(err)
 			}
 			defer group.Close()
-			log, err := os.OpenFile(filepath.Join(h.root, "logs", run.ID+".log"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+			log, err := h.openLog(run.ID)
 			if err != nil {
 				return fail(err)
 			}
@@ -931,6 +843,7 @@ func (h *FirecrackerHost) start(ctx context.Context, id string, generation uint6
 				return fail(err)
 			}
 			go func() { _ = cmd.Wait() }()
+			h.watch()
 			if h.hook != nil {
 				h.hook("spawned", *run)
 			}
@@ -981,10 +894,17 @@ func (h *FirecrackerHost) start(ctx context.Context, id string, generation uint6
 			if err = h.opts.Confirm(boot, id, *run); err != nil {
 				return failBoot(err)
 			}
-			run.Phase = "RUNNING"
-			if err = h.save(r); err != nil {
+			if err = h.locked(boot, func(r *hostRegistry) error {
+				current := r.Agents[id]
+				if current == nil || current.Run == nil || current.Run.ID != run.ID {
+					return ErrGeneration
+				}
+				current.Run.Phase, current.Run.PID, current.Run.StartTicks = "RUNNING", run.PID, run.StartTicks
+				return h.save(r)
+			}); err != nil {
 				return failBoot(err)
 			}
+			run.Phase = "RUNNING"
 			if h.opts.AuthenticatedControl && h.opts.ObserveControl != nil {
 				if err = h.opts.ObserveControl(boot, id, *run, true); err != nil {
 					return failBoot(err)
@@ -995,16 +915,17 @@ func (h *FirecrackerHost) start(ctx context.Context, id string, generation uint6
 			}
 			result = *run
 			return nil
-		})
-		if registryErr != nil {
+		}()
+		if bootErr != nil {
 			if result.ID != "" && h.opts.AuthenticatedControl {
-				return h.observeControlResult(ctx, id, result, registryErr)
+				return h.observeControlResult(ctx, id, result, bootErr)
 			}
-			return registryErr
+			return bootErr
 		}
 		if reusedClient != nil {
-			// Retain the observed VMM on failure. This RPC runs outside host.lock
-			// while the caller still owns host admission for the exact boot.
+			// Retain the observed VMM on failure. This RPC runs outside the
+			// agent's lock while the caller still owns the agent's admission
+			// for the exact boot.
 			return h.observeControlResult(ctx, id, result, checkControlContract(ctx, reusedClient))
 		}
 		return nil
@@ -1036,44 +957,14 @@ func (h *FirecrackerHost) prepare(a *HostAgent) error {
 	if len(extra) != 0 && !h.opts.AuthenticatedControl {
 		return errors.New("a registry harness, corpora and build drives need the authenticated guest contract")
 	}
-	for _, name := range []string{"kernel", "initrd"} {
-		artifact := name
-		if a.SystemImage != nil {
-			digest := a.SystemImage.Kernel
-			if name == "initrd" {
-				digest = a.SystemImage.Initrd
-			}
-			if raw, err := hex.DecodeString(digest); err != nil || len(raw) != sha256.Size {
-				return errors.New("invalid system image digest")
-			}
-			artifact += "-" + digest
-		}
-		source, err := os.Open(filepath.Join(h.root, "bin", artifact))
-		if err != nil {
-			return err
-		}
-		f, err := os.OpenFile(filepath.Join(root, name), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0444)
-		if err != nil {
-			source.Close()
-			return err
-		}
-		_, err = io.Copy(f, source)
-		source.Close()
-		if err == nil && name == "initrd" && h.opts.AuthenticatedControl {
-			err = appendControlConfig(f, guest, a.Harness, corpora)
-		}
-		// The worker runs with UMask=0077. The jailer drops privileges before
-		// Firecracker reads these files inside its per-run private directory.
-		if err == nil {
-			err = f.Chmod(0444)
-		}
-		if err == nil {
-			err = f.Sync()
-		}
-		err = errors.Join(err, f.Close())
-		if err != nil {
-			return err
-		}
+	// The kernel is linked into the jail, the initrd cloned or copied with the
+	// boot's configuration appended; neither is synced (P-12).
+	var appendix func(*os.File) error
+	if h.opts.AuthenticatedControl {
+		appendix = func(f *os.File) error { return appendControlConfig(f, guest, a.Harness, corpora) }
+	}
+	if err = h.placeBootImages(a, root, appendix); err != nil {
+		return err
 	}
 	if err := os.Link(a.Volume, filepath.Join(root, "data.ext4")); err != nil {
 		return err
@@ -1091,10 +982,7 @@ func (h *FirecrackerHost) prepare(a *HostAgent) error {
 	}
 	resources := a.resources()
 	// No "network-interfaces": the VM has no network device (ADR 012).
-	// reboot=k: a guest that restarts resets its CPU through the keyboard
-	// controller, and Firecracker exits on that reset, so a guest ends its
-	// VMM (guestinit.EndCommand); panic=1 restarts a guest whose kernel panics.
-	config := map[string]any{"boot-source": map[string]any{"kernel_image_path": "/kernel", "initrd_path": "/initrd", "boot_args": "console=ttyS0 reboot=k panic=1 pci=off"}, "machine-config": map[string]any{"vcpu_count": resources.VCPUs, "mem_size_mib": resources.MemoryMiB}, "drives": drives, "vsock": map[string]any{"guest_cid": 3, "uds_path": "/vsock"}}
+	config := map[string]any{"boot-source": map[string]any{"kernel_image_path": "/kernel", "initrd_path": "/initrd", "boot_args": bootArgs(h.opts.SerialConsole)}, "machine-config": map[string]any{"vcpu_count": resources.VCPUs, "mem_size_mib": resources.MemoryMiB}, "drives": drives, "vsock": map[string]any{"guest_cid": 3, "uds_path": "/vsock"}}
 	b, err := json.Marshal(config)
 	if err != nil {
 		return err
@@ -1121,24 +1009,40 @@ func (h *FirecrackerHost) prepare(a *HostAgent) error {
 	return nil
 }
 
+// bootArgs is the guest kernel's command line. reboot=k: a guest that
+// restarts resets its CPU through the keyboard controller, and Firecracker
+// exits on that reset, so a guest ends its VMM (guestinit.EndCommand);
+// panic=1 restarts a guest whose kernel panics. Without serial, the kernel
+// registers no serial port (8250.nr_uarts=0) and its console is not on one:
+// nothing the guest prints reaches the host (S-20).
+func bootArgs(serial bool) string {
+	if serial {
+		return "console=ttyS0 reboot=k panic=1 pci=off"
+	}
+	return "reboot=k panic=1 pci=off 8250.nr_uarts=0"
+}
+
+// Stop removes the VM of generation, if any.
 func (h *FirecrackerHost) Stop(ctx context.Context, id string, generation uint64) error {
-	return h.locked(ctx, func(r *hostRegistry) error {
-		a := r.Agents[id]
-		if a == nil {
-			return errors.New("unregistered agent")
-		}
-		if a.Generation != generation {
-			return ErrGeneration
-		}
-		if a.Run == nil {
-			return nil
-		}
-		if err := h.cleanup(a.Run); err != nil {
-			return err
-		}
-		a.Run = nil
-		return h.save(r)
-	})
+	unlock, err := h.lockAgent(ctx, id)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	a, err := h.agent(ctx, id)
+	if err != nil {
+		return err
+	}
+	if a == nil {
+		return errors.New("unregistered agent")
+	}
+	if a.Generation != generation {
+		return ErrGeneration
+	}
+	if a.Run == nil {
+		return nil
+	}
+	return h.retireRun(ctx, id, a.Run)
 }
 
 // Retire neutralizes all local attempts up to generation and durably advances
@@ -1162,58 +1066,182 @@ func (h *FirecrackerHost) RetireMissing(ctx context.Context, id string, generati
 }
 
 func (h *FirecrackerHost) retire(ctx context.Context, id string, generation uint64, preserveVM string) (bool, error) {
-	retired := false
-	err := h.locked(ctx, func(r *hostRegistry) error {
-		a := r.Agents[id]
-		if a == nil {
+	unlock, err := h.lockAgent(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
+	a, err := h.agent(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	if a == nil {
+		return false, errors.New("unregistered agent")
+	}
+	if a.SealID != "" {
+		// A permanent seal forbids every generation. Keep its attested
+		// generation stable even when routine cleanup requests a larger one.
+		return true, nil
+	}
+	if a.Generation > generation {
+		return false, ErrGeneration
+	}
+	if a.Run != nil && a.Run.Generation == generation && a.Run.Phase == "RUNNING" && a.Run.ID == preserveVM {
+		return false, nil
+	}
+	if a.Run != nil {
+		if err := h.cleanup(a.Run); err != nil {
+			return false, err
+		}
+	}
+	record, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	err = h.locked(record, func(r *hostRegistry) error {
+		current := r.Agents[id]
+		if current == nil {
 			return errors.New("unregistered agent")
 		}
-		if a.SealID != "" {
-			// A permanent seal forbids every generation. Keep its attested
-			// generation stable even when routine cleanup requests a larger one.
-			retired = true
-			return nil
-		}
-		if a.Generation > generation {
+		if current.Generation > generation {
 			return ErrGeneration
 		}
-		if a.Run != nil && a.Run.Generation == generation && a.Run.Phase == "RUNNING" && a.Run.ID == preserveVM {
-			return nil
-		}
-		if a.Run != nil {
-			if err := h.cleanup(a.Run); err != nil {
-				return err
+		if current.Run != nil {
+			if a.Run == nil || current.Run.ID != a.Run.ID {
+				return ErrVolumeBusy
 			}
-			a.Run = nil
+			current.Run = nil
 		}
-		a.Generation = generation
-		if err := h.save(r); err != nil {
-			return err
-		}
-		retired = true
-		return nil
+		current.Generation = generation
+		return h.save(r)
 	})
-	return retired, err
+	return err == nil, err
 }
 
 // FenceAgent durably blocks future starts before neutralizing the current VMM.
 // This is a host lifecycle fence, NOT a harness data barrier or key destruction.
 func (h *FirecrackerHost) FenceAgent(ctx context.Context, id string) error {
-	return h.locked(ctx, func(r *hostRegistry) error {
+	unlock, err := h.lockAgent(ctx, id)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	var run *VMRun
+	if err = h.locked(ctx, func(r *hostRegistry) error {
 		a := r.Agents[id]
 		if a == nil {
 			return errors.New("unregistered agent")
 		}
 		a.Fenced = true
-		if err := h.save(r); err != nil {
-			return err
-		}
 		if a.Run != nil {
-			if err := h.cleanup(a.Run); err != nil {
-				return err
-			}
-			a.Run = nil
+			run = a.Run
 		}
 		return h.save(r)
-	})
+	}); err != nil || run == nil {
+		return err
+	}
+	return h.retireRun(ctx, id, run)
+}
+
+func procIdentity(pid int) (string, error) {
+	b, e := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if e != nil {
+		return "", e
+	}
+	i := strings.LastIndex(string(b), ")")
+	if i < 0 {
+		return "", errors.New("invalid proc stat")
+	}
+	f := strings.Fields(string(b[i+1:]))
+	if len(f) < 20 {
+		return "", errors.New("short proc stat")
+	}
+	if f[0] == "Z" {
+		return "", errors.New("process exited")
+	}
+	return f[19], nil
+}
+
+// Check the lock on the VMM's actual backing descriptor before exposing RUNNING.
+// A vanilla or incorrectly built Firecracker must not be accepted by this driver.
+func ownedVolumeLock(pid int, volume string) error {
+	_, locked, err := volumeLock(pid, volume)
+	if err == nil && !locked {
+		err = errVolumeLock
+	}
+	return err
+}
+
+var errVolumeLock = errors.New("VMM does not own the required writable-volume flock")
+
+// volumeLock tells whether pid has volume open, and whether it holds the
+// volume's exclusive lock through one of those descriptors.
+func volumeLock(pid int, volume string) (open, locked bool, err error) {
+	want, err := os.Stat(volume)
+	if err != nil {
+		return false, false, err
+	}
+	entries, err := os.ReadDir(fmt.Sprintf("/proc/%d/fd", pid))
+	if err != nil {
+		return false, false, err
+	}
+	for _, entry := range entries {
+		path := fmt.Sprintf("/proc/%d/fd/%s", pid, entry.Name())
+		got, err := os.Stat(path)
+		if err != nil || !os.SameFile(want, got) {
+			continue
+		}
+		info, err := os.ReadFile(fmt.Sprintf("/proc/%d/fdinfo/%s", pid, entry.Name()))
+		if errors.Is(err, fs.ErrNotExist) {
+			continue // closed since, as by a VMM that exits
+		}
+		if err != nil {
+			return true, false, err
+		}
+		open = true
+		for _, line := range strings.Split(string(info), "\n") {
+			f := strings.Fields(line)
+			if len(f) >= 6 && f[0] == "lock:" && f[2] == "FLOCK" && f[3] == "ADVISORY" && f[4] == "WRITE" {
+				return true, true, nil
+			}
+		}
+	}
+	return open, false, nil
+}
+
+// confirmedVMM tells whether a's confirmed VMM still runs. A live VMM that
+// has its volume open without its lock is an error, not an absence.
+func (h *FirecrackerHost) confirmedVMM(a *HostAgent) (bool, error) {
+	if h.census != nil {
+		return h.census(a)
+	}
+	if _, _, err := h.identify(a); err != nil {
+		return false, nil
+	}
+	return vmmWithVolume(a.Run.PID, a.Volume, func() bool { _, _, err := h.identify(a); return err == nil })
+}
+
+// vmmWithVolume tells whether a confirmed VMM, found alive, still runs with
+// its volume; alive identifies it again.
+//
+// A VMM releases its volume as it exits: Firecracker closes its drive, which
+// releases the lock, before its process ends (59 to 110 ms from "Vmm is
+// stopping" to its last line, for guests of 256 MiB; longer for larger
+// guests, whose memory it also unmaps). A guest that restarts ends its VMM
+// so (ADR 012, question 6). A VMM with no descriptor of its volume left can
+// no longer write it: it is gone, and the census's cleanup kills what is left
+// of it and waits until its cgroup is empty before the volume is used again.
+// So is a VMM that ended while it was examined. A VMM that has its volume
+// open without the lock is an error: an unpatched VMM, or another writer.
+func vmmWithVolume(pid int, volume string, alive func() bool) (bool, error) {
+	open, locked, err := volumeLock(pid, volume)
+	switch {
+	case locked:
+		return true, nil
+	case !alive():
+		return false, nil
+	case err != nil:
+		return true, err
+	case !open:
+		return false, nil
+	}
+	return true, errVolumeLock
 }

@@ -36,6 +36,7 @@ here: `full` or `partial` with its Go tests, or another status with a reason.
 
 Several tests need more than PostgreSQL: the KVM build tags
 (`TestBarrierCapacityOneSlotThreeStoresAndReplay`,
+`TestKVMSlowDeliveryDoesNotDelayAnotherAgent`,
 `TestLostGuestFenceACKDoesNotBecomeIndependentReceipt`,
 `TestMaintenanceServiceRecoversRenewalCrashesWithoutIncomingWork`,
 `TestPreimplementationP1HostSealITF`, `TestStoreSealWorkerCrashBeforeDatabaseReceipt`).
@@ -47,8 +48,11 @@ in the ordinary unit tests.
 
 | Run or witness | Status | Go projection | Notes |
 |---|---|---|---|
-| `barrierCapacityOk.priorityTest` | full | `TestBarrierAdmissionFIFOAndOrdinaryBackpressure` | New ordinary work waits behind queued barriers; the barriers run in queue order. |
-| `barrierCapacityOk.threeStoresOneSlotTest` | partial | `TestBarrierCapacityOneSlotThreeStoresAndReplay` | KVM campaign: one VM slot, barriers on the stopped agents boot temporary fence-only guests and give the slot back. |
+| `barrierCapacityOk.priorityTest` | full | `TestBarrierAdmissionFIFOAndOrdinaryBackpressure` | New ordinary work on an agent waits behind the barriers queued on that agent; the barriers run in queue order. Since the v0.1.0 audit each agent has its own queue (S-02). |
+| `barrierCapacityOk.threeStoresOneSlotTest` | partial | `TestBarrierCapacityOneSlotThreeStoresAndReplay` | KVM campaign: one VM slot, barriers on the stopped agents boot temporary fence-only guests and give the slot back. Each eviction takes its victim's turn (`WithEviction`) and reserves its slot (`ReserveSlot`). |
+| `barrierCapacityOk.concurrentBarriersTest` | full | `TestAnAgentsExclusiveTurnDoesNotBlockAnotherAgent`, `TestKVMSlowDeliveryDoesNotDelayAnotherAgent` | An exclusive turn of one agent leaves another agent's turn free. The KVM test runs on real VMs (KVM build tags). |
+| `barrierCapacityOk.evictionWaitsForAdmittedCallsTest` | full | `TestAnEvictionWaitsInItsVictimsQueue` | The eviction waits for the call admitted on its victim; a later call on the victim waits behind it; another agent never waits. |
+| `barrierCapacityOk.evictedSlotStaysTheEvictorsTest` | partial | `TestAnEvictionKeepsTheFreedSlotForItsBoot` | Go checks the capacity count under host.lock: once the victim is stopped, only the evicting agent's boot has room, a second eviction of the same victim is refused, and the slot is free again when the evicting turn ends. Ordinary work booting the victim is that count's refusal. |
 
 ### `composition.qnt`
 
@@ -177,8 +181,8 @@ in the ordinary unit tests.
 
 | Run or witness | Status | Go projection | Notes |
 |---|---|---|---|
-| `fairAdmissionShared.noOvertakeTest` | full | `TestNoOvertake`, `TestCommonAdmissionQueueDoesNotLetLaterBarriersOvertakeWork` |  |
-| `fairAdmissionExclusive.deadOwnerTest` | full | `TestDeadOwner`, `TestBarrierAdmissionWorkerSIGKILL` |  |
+| `fairAdmissionShared.noOvertakeTest` | full | `TestNoOvertake`, `TestCommonAdmissionQueueDoesNotLetLaterBarriersOvertakeWork` | On one agent's queue: since the v0.1.0 audit each agent has its own (S-02). |
+| `fairAdmissionExclusive.deadOwnerTest` | full | `TestDeadOwner`, `TestBarrierAdmissionWorkerSIGKILL` | On one agent's queue; `TestBarrierAdmissionWorkerSIGKILL` also checks that another agent's barrier does not wait for the dead owner. |
 
 ### `fencing.qnt`
 

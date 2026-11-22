@@ -102,9 +102,11 @@ func probe(ctx context.Context, socket string) error {
 
 func opts(t *testing.T, root string) runtime.FirecrackerOptions {
 	c := config(t)
+	// The KVM campaigns keep the guests' consoles in their evidence, and some
+	// tests read what a guest printed (S-20: a debugging option).
 	return runtime.FirecrackerOptions{Root: root, Firecracker: c.Firecracker, Jailer: c.Jailer, Kernel: c.Kernel, Initrd: c.Initrd,
 		FirecrackerSHA256: digest(t, c.Firecracker), JailerSHA256: digest(t, c.Jailer), KernelSHA256: digest(t, c.Kernel), InitrdSHA256: digest(t, c.Initrd),
-		MaxActive: 2, BootTimeout: 12 * time.Second, Ready: probe}
+		MaxActive: 2, BootTimeout: 12 * time.Second, Ready: probe, SerialConsole: true}
 }
 
 func lab(t *testing.T, authenticated ...bool) (*Placements, *pgxpool.Pool, string, runtime.FirecrackerOptions) {

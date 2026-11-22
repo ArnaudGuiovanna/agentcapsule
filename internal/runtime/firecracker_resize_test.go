@@ -74,7 +74,7 @@ func TestHostBootCapacitySerializesComputeAdmission(t *testing.T) {
 				wg.Go(func() {
 					ch <- h.locked(t.Context(), func(r *hostRegistry) error {
 						p := VMResources{2, 512, 64}
-						if !h.hasBootCapacity(r, p) {
+						if !h.hasBootCapacity(r, p, id) {
 							return ErrCapacity
 						}
 						a := r.Agents[id]

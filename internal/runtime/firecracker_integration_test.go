@@ -93,9 +93,12 @@ func readyGuest(ctx context.Context, path string) error {
 	}
 }
 
+// options keep the guests' consoles and the logs of ended runs: the tests
+// read what a failed boot printed (S-20: a debugging option).
 func options(t *testing.T, root string) FirecrackerOptions {
 	c := kvmSettings(t)
-	return FirecrackerOptions{Root: root, Firecracker: c.Firecracker, Jailer: c.Jailer, Kernel: c.Kernel, Initrd: c.Initrd, FirecrackerSHA256: hashFile(t, c.Firecracker), JailerSHA256: hashFile(t, c.Jailer), KernelSHA256: hashFile(t, c.Kernel), InitrdSHA256: hashFile(t, c.Initrd), MaxActive: 2, BootTimeout: 12 * time.Second, Ready: readyGuest, Confirm: func(context.Context, string, VMRun) error { return nil }, Adopt: func(context.Context, string, VMRun) error { return nil }}
+	return FirecrackerOptions{Root: root, Firecracker: c.Firecracker, Jailer: c.Jailer, Kernel: c.Kernel, Initrd: c.Initrd, FirecrackerSHA256: hashFile(t, c.Firecracker), JailerSHA256: hashFile(t, c.Jailer), KernelSHA256: hashFile(t, c.Kernel), InitrdSHA256: hashFile(t, c.Initrd), MaxActive: 2, BootTimeout: 12 * time.Second, Ready: readyGuest, Confirm: func(context.Context, string, VMRun) error { return nil }, Adopt: func(context.Context, string, VMRun) error { return nil },
+		SerialConsole: true}
 }
 
 func newHost(t *testing.T) (*FirecrackerHost, string) {

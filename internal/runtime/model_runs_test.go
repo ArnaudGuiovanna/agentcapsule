@@ -13,9 +13,10 @@ import (
 	"time"
 )
 
-// Go projections of the runs of spec/fair_admission.qnt on the host's
+// Go projections of the runs of spec/fair_admission.qnt on an agent's
 // admission queue: WithApplication is a shared client, WithBarrier an
-// exclusive one. spec/projections.md lists every run and its projection.
+// exclusive one, all for agent "a". spec/projections.md lists every run and
+// its projection.
 
 type admissionClient struct {
 	queued, entered chan struct{}
@@ -43,7 +44,7 @@ func startAdmission(t *testing.T, h *FirecrackerHost, ctx context.Context, share
 	}
 	go func() {
 		if shared {
-			c.done <- peer.WithApplication(ctx, fn)
+			c.done <- peer.WithApplication(ctx, target, fn)
 		} else {
 			c.done <- peer.WithBarrier(ctx, target, fn)
 		}
@@ -101,11 +102,11 @@ func TestNoOvertake(t *testing.T) {
 	// init: queue (3, 1). admit(3).
 	three := startAdmission(t, h, ctx, false, "a")
 	three.admitted(t)
-	one := startAdmission(t, h, ctx, true, "")
+	one := startAdmission(t, h, ctx, true, "a")
 	// enqueue(2), then 3 queues again. The model queues 3 again after it
 	// finishes; queued before, it is still behind 1 and 2, the same queue.
-	two := startAdmission(t, h, ctx, true, "")
-	again := startAdmission(t, h, ctx, false, "b")
+	two := startAdmission(t, h, ctx, true, "a")
+	again := startAdmission(t, h, ctx, false, "a")
 	one.waiting(t)
 	two.waiting(t)
 	// finish(3), admit(1), admit(2): expect s.active == Set(1, 2).
@@ -162,7 +163,7 @@ func TestDeadOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	// prune, enqueue(2), admit(1).
-	two := startAdmission(t, h, ctx, true, "")
+	two := startAdmission(t, h, ctx, true, "a")
 	one.admitted(t)
 	// admit(2).fail(): 2 is behind the exclusive 1.
 	two.waiting(t)
@@ -185,7 +186,7 @@ func TestDeadOwnerChild(t *testing.T) {
 			select {} // killed here, holding its shared admission
 		}
 	}}
-	if err := h.WithApplication(t.Context(), func(context.Context) error { return nil }); err != nil {
+	if err := h.WithApplication(t.Context(), "a", func(context.Context) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
 }

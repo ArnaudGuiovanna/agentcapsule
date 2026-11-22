@@ -101,23 +101,35 @@ func TestRecoverIsolatesAFailingAgent(t *testing.T) {
 		if err := os.MkdirAll(filepath.Join(h.root, "credentials"), 0700); err != nil {
 			t.Fatal(err)
 		}
-		r := &hostRegistry{Version: 1, Agents: map[string]*HostAgent{}}
-		for i := range 8 {
-			id := fmt.Sprintf("agent-%d", i)
-			r.Agents[id] = &HostAgent{ID: id, Run: &VMRun{ID: fmt.Sprintf("%016x", round*100+i), Generation: 1, Phase: "STARTING"}}
+		var bad *VMRun
+		if err := h.locked(t.Context(), func(r *hostRegistry) error {
+			r.Agents = map[string]*HostAgent{}
+			for i := range 8 {
+				id := fmt.Sprintf("agent-%d", i)
+				run := &VMRun{ID: fmt.Sprintf("%016x", round*100+i), Generation: 1, Phase: "STARTING"}
+				run.Socket = filepath.Join(h.jail(run), "vsock")
+				r.Agents[id] = &HostAgent{ID: id, UID: uint32(10000 + i), Volume: filepath.Join(h.root, "volumes", id), Generation: 1, Run: run}
+			}
+			bad = r.Agents["agent-3"].Run
+			return h.save(r)
+		}); err != nil {
+			t.Fatal(err)
 		}
-		bad := r.Agents["agent-3"]
 		// A non-empty cgroup directory cannot be removed, so cleanup fails.
-		group := h.group(bad.Run)
+		group := h.group(bad)
 		if err := os.MkdirAll(group, 0700); err != nil {
 			t.Fatal(err)
 		}
 		if err := os.WriteFile(filepath.Join(group, "occupied"), []byte("x"), 0600); err != nil {
 			t.Fatal(err)
 		}
-		err := h.recover(t.Context(), r)
+		err := h.recover(t.Context())
 		if err == nil || !strings.Contains(err.Error(), "agent-3") {
 			t.Fatal("failure of one agent was not reported:", err)
+		}
+		var r *hostRegistry
+		if err = h.locked(t.Context(), func(current *hostRegistry) error { r = current; return nil }); err != nil {
+			t.Fatal(err)
 		}
 		for id, a := range r.Agents {
 			if id == "agent-3" {
