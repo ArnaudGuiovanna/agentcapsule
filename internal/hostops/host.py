@@ -560,6 +560,21 @@ Type=oneshot
 ExecStart=/usr/bin/python3 -I /var/lib/agentcapsule-install/operations/%i/helper.py --execute %i
 UMask=0077
 TimeoutStartSec=infinity
+# The operation installs the signed packages, configures the host and runs
+# the worker binary for archives and restores: it keeps root's capabilities,
+# writable file systems, devices and cgroups. Left out: RestrictNamespaces
+# (the worker starts the jailer with clone3), RestrictSUIDSGID (packages ship
+# setuid programs), ProtectKernelTunables and ProtectKernelModules (package
+# scripts), MemoryDenyWriteExecute (package scripts), ProtectHome (profile
+# files may live there), PrivateTmp (package scripts and services share /tmp).
+NoNewPrivileges=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectHostname=yes
+LockPersonality=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_ALG
 [Install]
 WantedBy=multi-user.target
 """

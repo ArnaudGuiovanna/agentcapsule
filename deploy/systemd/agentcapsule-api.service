@@ -14,13 +14,46 @@ ExecStart=/opt/agentcapsule/agentcapsule-api -listen ${API_LISTEN} -host-id ${HO
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=3
-NoNewPrivileges=yes
-PrivateTmp=yes
-PrivateDevices=yes
-ProtectSystem=strict
-ProtectHome=yes
 UMask=0077
 LimitCORE=0
+# Bounds (S-06): the requests, the event streams (-max-event-streams) and the
+# connections to PostgreSQL each hold descriptors and memory. Raise both with
+# a drop-in on a large host.
+LimitNOFILE=65536
+MemoryMax=2G
+
+# The authority service's profile (S-06): the API needs no privilege and no
+# device, and writes no file; it reads its keys and certificate, and reaches
+# PostgreSQL and the authority service through their sockets.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+# Clients over TCP; the authority service, and PostgreSQL, over Unix sockets
+# (or PostgreSQL over TLS on another host). No IPAddressDeny=: clients come
+# from anywhere.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
 [Install]
 WantedBy=multi-user.target

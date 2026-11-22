@@ -15,3 +15,36 @@ ExecStart=/usr/bin/pgbackrest --stanza=agentcapsule --repo=2 --type=%i backup
 TimeoutStartSec=6h
 Nice=10
 IOSchedulingClass=idle
+
+# Confinement (S-06). pgBackRest reads the cluster, talks to PostgreSQL over
+# its socket and to both repositories over the network, and writes only its
+# log, its spool and its locks. Those locks are in /tmp/pgbackrest (its
+# lock-path default) and must be the ones every pgBackRest process of the
+# host sees: the other timer's backup, the installer's, archive-push. So no
+# PrivateTmp=, and /tmp stays writable.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ReadWritePaths=/tmp -/var/log/pgbackrest -/var/spool/pgbackrest
+ProtectHome=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallErrorNumber=EPERM
+# AF_NETLINK: glibc's resolver asks the kernel for the host's addresses when
+# it sorts the repositories' addresses.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK

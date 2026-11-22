@@ -252,6 +252,25 @@ the service does not answer on the socket, when this account may not open it
 authorities than the pinned ones. A service in degraded mode, or waiting for
 its standby, is a warning.
 
+## Service confinement
+
+Every shipped unit confines its service with systemd (S-05, S-06), and
+`scripts/test_systemd_units.py` fails when a unit loses a directive.
+
+| Unit | Confinement |
+|---|---|
+| `agentcapsule-authority`, `agentcapsule-slim-bridge`, `agentcapsule-api` | No capability, no device, read-only system, private `/tmp` and `/proc`, `@system-service` without `@privileged` and `@resources`, no namespace, no writable and executable memory. The API also has `LimitNOFILE=65536` and `MemoryMax=2G`; raise them with a drop-in on a large host. |
+| `agentcapsule-worker` | Root, with ten capabilities, a read-only system but its state directories, a system call deny list, and no access to the authorities' directories. What it leaves out, and why: [worker.md](worker.md#confinement). |
+| `agentcapsule-interop` | The Docker CLI only: no capability, Unix sockets only, no IP traffic, and its own Docker configuration directory, so that root's registry credentials stay out of it. |
+| `agentcapsule-pg-backup@` | `postgres`, no capability, read-only system but `/tmp` (pgBackRest's locks, shared with its other processes), its log and its spool. |
+| `agentcapsule-backup-metrics`, `agentcapsule-archive-ship`, `agentcapsule-standby-metrics` | Root with `CAP_SETUID`, `CAP_SETGID` and `CAP_DAC_OVERRIDE` only, to run pgBackRest, rclone or psql as their accounts and write node_exporter's directory; read-only system, private `/tmp`, `@system-service`. |
+| `agentcapsule-host@` | The host operations install packages, configure the host and run the worker binary: they keep root, writable file systems and devices. They get `NoNewPrivileges`, `ProtectKernelLogs`, `ProtectClock`, `ProtectHostname`, `LockPersonality`, `RestrictRealtime`, native system calls and the address families they use. |
+
+A directory a service must write that the unit does not name (another
+runtime root, archive root or trace file) needs a drop-in with
+`ReadWritePaths=`. Check an installed host with `systemd-analyze security
+<unit>`.
+
 ## Operator steps
 
 1. **Host.** A Linux host with KVM, a 6.1 or 6.18 kernel, cgroup v2 and a time
