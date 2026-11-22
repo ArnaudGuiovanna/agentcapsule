@@ -21,6 +21,12 @@
  * implementation/operator contracts. Losing both hosts is outside the model.
  * Logical subjects and store identities use separate roles even when numerically
  * equal. Crypto is symbolic: a surviving raw KEK is an explicit negative case.
+ * Scopes (after the v0.1.0 audit, docs/adr/006-authority-service.md): a store
+ * acts only on the subjects of the events addressed to it (reach). A scan names
+ * the pending subjects of its scope, a revocation completes once each executing
+ * store of its scope acknowledges it, and an activation rechecks its scope only.
+ * That the scope is complete and stays fixed once a subject is revoked is
+ * modelled in store_enrollment.qnt (RELATE_GUARD).
  */
 module restoreAuthority {
   type AgentId = int
@@ -91,6 +97,9 @@ module restoreAuthority {
   // Broken: key destruction continues in degraded mode.
   const DESTROY_DEGRADED: bool
   pure val EVENTS = EVENT_DEST.keys()
+  // The scope of a store: the subjects of the events addressed to it, the only
+  // ones it can act on (beginEffect).
+  pure def reach(a: AgentId): Set[AgentId] = EVENTS.filter(e => EVENT_DEST.get(e) == a).map(e => EVENT_SUBJECT.get(e))
   // One bearer token (it also stands for a delegated JWT) and one standing
   // grant (a membership, team membership, assignment, mandate, delegation
   // trust, organization or LLM provider).
@@ -247,7 +256,7 @@ module restoreAuthority {
     Set(Ready,Reconciling).contains(x.stores.get(a).phase)
   pure def scanned(r: Root, x: State, a: AgentId): State = { ...x, scanned:x.scanned.union(Set(a)),
     scans:x.scans.set(a,{ store:a, incarnation:x.stores.get(a).incarnation, revision:r.revision,
-      subjects:r.pending, epoch:x.epoch }) }
+      subjects:r.pending.intersect(reach(a)), epoch:x.epoch }) }
   action scan(a: AgentId): bool = all { canScan(s,a), root' = root, s' = scanned(root,s,a) }
   pure def canSynchronize(x: State, a: AgentId): bool = x.stores.get(a).alive and
     Set(Ready,Reconciling).contains(x.stores.get(a).phase) and x.stores.get(a).writer == -1 and
@@ -274,7 +283,7 @@ module restoreAuthority {
   pure def subjectAcknowledged(r: Root, a: AgentId, p: AgentId): bool =
     r.acks.get(a).incarnation == r.incarnations.get(a) and r.acks.get(a).subjects.contains(p)
   pure def canFinishRevocation(r: Root, x: State, p: AgentId): bool = x.rootAvailable and r.pending.contains(p) and
-    not(r.revoked.contains(p)) and STORES.forall(a => not(executes(x,a)) or subjectAcknowledged(r,a,p))
+    not(r.revoked.contains(p)) and STORES.forall(a => not(executes(x,a)) or not(reach(a).contains(p)) or subjectAcknowledged(r,a,p))
   // A physically stopped or restricted restoration image cannot execute old
   // work. It must catch up before any subsequent ordinary activation.
   action finishRevocation(p: AgentId): bool = {
@@ -290,13 +299,15 @@ module restoreAuthority {
     x.rootAvailable and b.phase == Reconciling and b.alive and x.scanned.contains(a) and
       b.incarnation == r.incarnations.get(a) and (not(SEAL_GUARD) or not(r.sealed.contains(a))) and
       r.acks.get(a).incarnation == r.incarnations.get(a) and
-      (not(RECHECK) or r.acks.get(a).revision == r.revision) and
+      // No subject of its scope begun since its receipt (the code: no scope
+      // row above the acknowledged revision).
+      (not(RECHECK) or r.pending.intersect(reach(a)).subseteq(r.acks.get(a).subjects)) and
       (not(HISTORY_GUARD) or accounted(b.disk,required(r,a),r.lost,b.incarnation))
   }
   pure def activated(r: Root, x: State, a: AgentId): State = {
     val b = x.stores.get(a)
     { ...x, stores:x.stores.set(a,{ ...b, phase:Ready }),
-      badActivation:x.badActivation or not(r.pending.subseteq(b.fences)),
+      badActivation:x.badActivation or not(r.pending.intersect(reach(a)).subseteq(b.fences)),
       lostAcknowledgedEffect:x.lostAcknowledgedEffect or not(hasOutcomes(b.disk,ackedFor(x,a))),
       undeclaredLoss:x.undeclaredLoss or not(announcedFor(x,b.disk,ackedFor(x,a),b.incarnation)) }
   }
@@ -496,7 +507,7 @@ module restoreAuthority {
   val revocationsSurvive = s.everRevoked.subseteq(root.revoked)
   val acksSound = STORES.forall(a => root.acks.get(a).incarnation == root.incarnations.get(a) implies
     (s.stores.get(a).incarnation == root.incarnations.get(a) and root.acks.get(a).subjects.subseteq(s.stores.get(a).fences)))
-  val noRestoredRevocation = STORES.forall(a => executes(s,a) implies root.revoked.subseteq(s.stores.get(a).fences))
+  val noRestoredRevocation = STORES.forall(a => executes(s,a) implies root.revoked.intersect(reach(a)).subseteq(s.stores.get(a).fences))
   val activationCurrent = not(s.badActivation)
   val noStaleEffect = not(s.staleEffect)
   val keyDestructionSurvives = s.everDestroyed.subseteq(root.destroyedKeys)
