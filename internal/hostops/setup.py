@@ -406,9 +406,10 @@ def authority():
 def searchable_parent(root):
     # init-restore-authority runs as agentcapsule-authority and resolves the
     # worker's runtime root, which needs search permission on its parent.
-    # The worker's unit keeps that parent 0711 (StateDirectoryMode); on a host
-    # a v0.1.0 unit set up it is still 0700 until the worker restarts. Add
-    # o+x, nothing else, to a real directory that lacks it.
+    # The worker's state directory is now the runtime root itself, so its
+    # unit leaves that parent alone; a v0.1.0 unit, whose state directory it
+    # was, left it 0700. Add o+x, nothing else, to a real directory that
+    # lacks it.
     parent=Path(root).parent
     try:
         st=os.lstat(parent)
