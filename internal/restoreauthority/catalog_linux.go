@@ -57,7 +57,8 @@ type Catalog struct {
 
 	// locks are the holds per store (holds_linux.go), shared by every
 	// handle of this file in this process.
-	locks *lockTable
+	locks      *lockTable
+	closeLocks sync.Once
 	// legacy is the highest revision of a subject begun before schema
 	// version 5, once legacyKnown (scopes_linux.go).
 	legacyOnce  sync.Mutex
@@ -454,7 +455,7 @@ func (c *Catalog) KeyAuthorityIdentity() string { return c.keyIdentity }
 // Close stops the link to the replica, if any, then closes the catalogue.
 func (c *Catalog) Close() error {
 	c.repl.close()
-	c.locks.close()
+	c.closeLocks.Do(c.locks.close)
 	return c.db.Close()
 }
 
@@ -761,20 +762,29 @@ func (c *Catalog) reserve(ctx context.Context, old Binding, next *Binding, opera
 	})
 }
 
-// BeginRevocation begins subject in every store's scope: its scope is
-// unknown. The worker names the scope with BeginRevocations instead.
+// BeginRevocation begins subject in every store's scope, unless it is begun
+// already: its scope is unknown. A subject begun in a scope keeps it, so a
+// worker of the previous protocol, which begins PostgreSQL's whole catalogue
+// at each boot, widens no scope. The worker names the scope with
+// BeginRevocations instead.
 func (c *Catalog) BeginRevocation(ctx context.Context, subject string) (uint64, error) {
 	var revision uint64
 	if !validName(subject) {
 		return 0, ErrInput
 	}
-	if err := c.BeginRevocations(ctx, []Scope{{Subject: subject}}); err != nil {
+	read := func() error {
+		return c.transaction(ctx, func(tx *sql.Tx) error {
+			return tx.QueryRowContext(ctx, "SELECT revision FROM revocations WHERE subject=?", subject).Scan(&revision)
+		})
+	}
+	err := read()
+	if !errors.Is(err, sql.ErrNoRows) {
+		return revision, err
+	}
+	if err = c.BeginRevocations(ctx, []Scope{{Subject: subject}}); err != nil {
 		return 0, err
 	}
-	err := c.transaction(ctx, func(tx *sql.Tx) error {
-		return tx.QueryRowContext(ctx, "SELECT revision FROM revocations WHERE subject=?", subject).Scan(&revision)
-	})
-	return revision, err
+	return revision, read()
 }
 
 // receiptTag versions the receipt's MAC and separates it from the archive's.

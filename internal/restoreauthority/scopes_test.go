@@ -229,6 +229,27 @@ func TestScopeAdditionTakesANewRevision(t *testing.T) {
 	}
 }
 
+// A worker of the previous protocol begins PostgreSQL's whole catalogue at
+// each boot, without scopes: a subject already begun in its scope stays
+// there, and no other store receives it.
+func TestBeginWithoutScopeKeepsAKnownScope(t *testing.T) {
+	c, a := fixture(t)
+	b, err := c.Register(t.Context(), "store-b", "volume-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	subject := beginScoped(t, c, "event/a-only-", 1, "store-a")[0]
+	if _, err = c.BeginRevocation(t.Context(), subject); err != nil {
+		t.Fatal(err)
+	}
+	if r, err := c.Scan(t.Context(), b); err != nil || len(r.Subjects) != 0 {
+		t.Fatal("a known subject was widened to every store", r.Subjects, err)
+	}
+	if r, err := c.Scan(t.Context(), a); err != nil || !slices.Equal(r.Subjects, []string{subject}) {
+		t.Fatal(r.Subjects, err)
+	}
+}
+
 // Subjects begun before schema version 5 have no scope: they stay in every
 // store's, as before the upgrade.
 func TestSubjectsBeforeTheUpgradeAreInEveryScope(t *testing.T) {

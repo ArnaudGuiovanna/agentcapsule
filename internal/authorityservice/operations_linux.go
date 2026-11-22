@@ -132,9 +132,9 @@ var operations = map[string]operation{
 		if err != nil {
 			return nil, err
 		}
-		// A subject already in every store's scope writes nothing: it
-		// answers at once.
-		known, err := s.local.KnownScopes(ctx, []restoreauthority.Scope{{Subject: a.Subject}})
+		// A known subject writes nothing, whatever its scope: it answers at
+		// once.
+		known, err := s.local.KnownSubject(ctx, a.Subject)
 		if err != nil {
 			return nil, err
 		}
