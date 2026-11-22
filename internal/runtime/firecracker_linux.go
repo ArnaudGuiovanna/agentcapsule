@@ -11,18 +11,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/workerhelper"
 )
 
 var (
@@ -82,6 +81,11 @@ type FirecrackerOptions struct {
 	// output joins the VMM's bounded log: for debugging only (S-20). Without
 	// it the guest kernel has no serial port at all.
 	SerialConsole bool
+	// Helper, when set, is the worker's root helper (ADR 024): this process
+	// is not root, owns the runtime root, and asks the helper for every
+	// operation that needs root. Without it, this process must be root and
+	// does them itself (laboratories and the KVM suites).
+	Helper *workerhelper.Client
 }
 
 type BootImage struct {
@@ -181,14 +185,24 @@ type FirecrackerHost struct {
 	uidMu     sync.Mutex
 	uidsHeld  map[uint32]bool
 	ownVolume func(*os.File, uint32) error
+	// priv does what needs root (ADR 024): the helper's client, or nil for
+	// this process itself (localPrivileged). jails is the helper's chroot
+	// base; empty: <root>/jails.
+	priv  Privileged
+	jails string
 }
 
-// NewFirecrackerHost requires a private root-owned state directory. The parent
+// NewFirecrackerHost requires a private state directory of this process's
+// account: root's, or the worker's with its helper (ADR 024). The parent
 // hierarchy and the supplied expected hashes are trusted operator configuration.
 // The Firecracker digest MUST designate the AgentCapsule volume-lock build.
 func NewFirecrackerHost(opts FirecrackerOptions) (*FirecrackerHost, error) {
-	if os.Geteuid() != 0 {
-		return nil, errors.New("host driver requires root for jailer/cgroups")
+	remote := opts.Helper != nil
+	if !remote && os.Geteuid() != 0 {
+		return nil, errors.New("host driver requires root for jailer/cgroups, or the worker helper (ADR 024)")
+	}
+	if remote && os.Geteuid() == 0 {
+		return nil, errors.New("a worker with a helper does not run as root (ADR 024)")
 	}
 	if (opts.Ready == nil && !opts.AuthenticatedControl) || opts.Confirm == nil || opts.Adopt == nil || opts.MaxActive < 1 {
 		return nil, errors.New("readiness, placement confirmation and capacity are required")
@@ -225,22 +239,37 @@ func NewFirecrackerHost(opts FirecrackerOptions) (*FirecrackerHost, error) {
 		return nil, err
 	}
 	sys := st.Sys().(*syscall.Stat_t)
-	if !st.IsDir() || sys.Uid != 0 || st.Mode().Perm() != 0700 {
-		return nil, errors.New("runtime root must be a root-owned 0700 directory")
+	if !st.IsDir() || sys.Uid != uint32(os.Geteuid()) || st.Mode().Perm() != 0700 {
+		return nil, errors.New("runtime root must be a 0700 directory of this account")
 	}
-	if len(filepath.Join(root, "jails", "firecracker", strings.Repeat("x", 16), "root", "vsock_5001")) >= 108 {
+	h := &FirecrackerHost{opts: opts, root: root, cgroup: workerhelper.CgroupFor(root)}
+	// The jailer and Firecracker run as root: the helper pins its own copies.
+	artifacts := []struct{ name, path, hash string }{{"firecracker", opts.Firecracker, opts.FirecrackerSHA256}, {"jailer", opts.Jailer, opts.JailerSHA256}}
+	dirs := []string{"bin", "volumes", "jails", "logs", "credentials", "platform", "admission", "locks"}
+	if remote {
+		hello, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		resp, err := opts.Helper.Hello(hello)
+		cancel()
+		if err != nil {
+			return nil, err
+		}
+		if resp.Cgroup != h.cgroup || !filepath.IsAbs(resp.Jails) || filepath.Clean(resp.Jails) != resp.Jails {
+			return nil, errors.New("the worker helper serves another runtime root")
+		}
+		h.priv, h.jails, artifacts, dirs = remotePrivileged{opts.Helper}, resp.Jails, nil, slices.DeleteFunc(dirs, func(d string) bool { return d == "jails" })
+	}
+	if len(filepath.Join(workerhelper.Jail(h.jailBase(), strings.Repeat("x", 16)), "vsock_5001")) >= 108 {
 		return nil, errors.New("runtime root too long for Unix socket")
 	}
-	hash := sha256.Sum256([]byte(root))
-	h := &FirecrackerHost{opts: opts, root: root, cgroup: filepath.Join("/sys/fs/cgroup", "acp-runtime-"+hex.EncodeToString(hash[:8]))}
-	for _, d := range []string{"bin", "volumes", "jails", "logs", "credentials", "platform", "admission", "locks"} {
+	for _, d := range dirs {
 		if err = os.MkdirAll(filepath.Join(root, d), 0700); err != nil {
 			return nil, err
 		}
 	}
+	artifacts = append(artifacts, []struct{ name, path, hash string }{{"kernel", opts.Kernel, opts.KernelSHA256}, {"initrd", opts.Initrd, opts.InitrdSHA256}}...)
 	// Serialize initialization with all other worker processes.
 	err = h.locked(context.Background(), func(r *hostRegistry) error {
-		for _, a := range []struct{ name, path, hash string }{{"firecracker", opts.Firecracker, opts.FirecrackerSHA256}, {"jailer", opts.Jailer, opts.JailerSHA256}, {"kernel", opts.Kernel, opts.KernelSHA256}, {"initrd", opts.Initrd, opts.InitrdSHA256}} {
+		for _, a := range artifacts {
 			if err := pinFile(a.path, filepath.Join(root, "bin", a.name), a.hash); err != nil {
 				return err
 			}
@@ -260,11 +289,11 @@ func NewFirecrackerHost(opts FirecrackerOptions) (*FirecrackerHost, error) {
 		if err := cacheSystemImage(root, BootImage{opts.Kernel, opts.Initrd, opts.KernelSHA256, opts.InitrdSHA256}); err != nil {
 			return err
 		}
-		if err := os.MkdirAll(h.cgroup, 0700); err != nil {
-			return err
-		}
-		if err := os.WriteFile(filepath.Join(h.cgroup, "cgroup.subtree_control"), []byte("+cpu +memory +pids"), 0600); err != nil {
-			return err
+		// The helper sets the VMs' parent cgroup up at its own start.
+		if !remote {
+			if err := workerhelper.SetupCgroup(h.cgroup); err != nil {
+				return err
+			}
 		}
 		return h.save(r)
 	})
@@ -406,10 +435,18 @@ func (h *FirecrackerHost) Register(ctx context.Context, id, volume string, uid u
 				return errors.New("UID or volume inode already assigned")
 			}
 		}
-		if err = os.Chown(abs, int(uid), int(uid)); err != nil {
+		f, err := os.OpenFile(abs, os.O_RDWR|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+		if err != nil {
 			return err
 		}
-		if err = os.Chmod(abs, 0600); err != nil {
+		defer f.Close()
+		if again, err := f.Stat(); err != nil || !os.SameFile(st, again) {
+			return errors.Join(errors.New("registered volume identity changed"), err)
+		}
+		if err = f.Chmod(0600); err != nil {
+			return err
+		}
+		if err = h.privileged().GiveVolume(ctx, f, abs, id, uid); err != nil {
 			return err
 		}
 		r.Agents[id] = &HostAgent{ID: id, UID: uid, Volume: abs, Device: uint64(s.Dev), Inode: s.Ino}
@@ -417,63 +454,23 @@ func (h *FirecrackerHost) Register(ctx context.Context, id, volume string, uid u
 	})
 }
 
-func (h *FirecrackerHost) jail(run *VMRun) string {
-	return filepath.Join(h.root, "jails", "firecracker", run.ID, "root")
-}
+// jail is the chroot of a new run, under the jailer's chroot base. A
+// recorded run's is where its socket is (jailOf).
+func (h *FirecrackerHost) jail(run *VMRun) string  { return workerhelper.Jail(h.jailBase(), run.ID) }
 func (h *FirecrackerHost) group(run *VMRun) string { return filepath.Join(h.cgroup, run.ID) }
-
-func populated(path string) (bool, error) {
-	b, e := os.ReadFile(filepath.Join(path, "cgroup.events"))
-	if errors.Is(e, os.ErrNotExist) {
-		return false, nil
-	}
-	if e != nil {
-		return false, e
-	}
-	for _, line := range strings.Split(string(b), "\n") {
-		if line == "populated 1" {
-			return true, nil
-		}
-		if line == "populated 0" {
-			return false, nil
-		}
-	}
-	return false, errors.New("missing populated cgroup field")
-}
 
 // cleanup runs under the agent's lock, never under host.lock: the attempt's
 // cgroup may take up to ten seconds to empty. clone3 places every launcher in
 // its attempt cgroup AT FORK, so no late launcher can escape an interrupted
 // attempt. The run stays in the registry, holding its slot, until cleanup
-// returns.
-func (h *FirecrackerHost) cleanup(run *VMRun) error {
+// returns. Root kills the cgroup and removes it and the jail (ADR 024), even
+// when the caller gave up; an unanswered helper leaves the run in place.
+func (h *FirecrackerHost) cleanup(ctx context.Context, id string, run *VMRun) error {
 	h.closePlatform(run.ID)
 	h.dropClient(run.ID)
-	group := h.group(run)
-	busy, err := populated(group)
-	if err != nil {
-		return err
-	}
-	if busy {
-		if err = os.WriteFile(filepath.Join(group, "cgroup.kill"), []byte("1"), 0600); err != nil {
-			return err
-		}
-	}
-	deadline := time.Now().Add(10 * time.Second)
-	for busy {
-		if time.Now().After(deadline) {
-			return errors.New("attempt cgroup still populated; volume remains unavailable")
-		}
-		time.Sleep(10 * time.Millisecond)
-		busy, err = populated(group)
-		if err != nil {
-			return err
-		}
-	}
-	if err = os.Remove(group); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	if err := os.RemoveAll(filepath.Dir(h.jail(run))); err != nil {
+	privileged, cancel := cleanupContext(ctx)
+	defer cancel()
+	if err := h.privileged().Cleanup(privileged, id, run); err != nil {
 		return err
 	}
 	if err := os.Remove(h.credentialPath(run)); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -492,59 +489,28 @@ func (h *FirecrackerHost) cleanup(run *VMRun) error {
 	return syncDir(filepath.Join(h.root, "credentials"))
 }
 
-func (h *FirecrackerHost) identify(a *HostAgent) (int, string, error) {
-	run := a.Run
-	// The jail belongs to the VMM's user: its PID file is read without
-	// following a link, at most a few bytes, never blocking (L-15).
-	pid, err := readPIDFile(h.jail(run), "firecracker.pid")
+// observe identifies a's VMM through root (ADR 024): its PID file in the
+// jail, its process's root, UIDs, cgroup and executable, and with lock its
+// lock on the volume. workerhelper.ErrAbsent: no VMM could be identified;
+// any other error says nothing of the VMM.
+func (h *FirecrackerHost) observe(ctx context.Context, a *HostAgent, lock bool) (workerhelper.Observation, error) {
+	return h.privileged().Observe(ctx, a, lock)
+}
+
+// ownsVolume checks that a's identified VMM holds its volume's exclusive
+// lock, on its actual backing descriptor.
+func (h *FirecrackerHost) ownsVolume(ctx context.Context, a *HostAgent) error {
+	o, err := h.observe(ctx, a, true)
 	if err != nil {
-		return 0, "", err
+		return err
 	}
-	ticks, err := procIdentity(pid)
-	if err != nil {
-		return 0, "", err
+	if !o.Locked {
+		if o.LockError != "" {
+			return errors.New(o.LockError)
+		}
+		return errVolumeLock
 	}
-	if run.PID != 0 && (pid != run.PID || ticks != run.StartTicks) {
-		return 0, "", errors.New("PID was reused")
-	}
-	root, err := os.Stat(fmt.Sprintf("/proc/%d/root", pid))
-	if err != nil {
-		return 0, "", err
-	}
-	want, err := os.Lstat(h.jail(run))
-	if err != nil {
-		return 0, "", err
-	}
-	if !want.IsDir() || !os.SameFile(root, want) {
-		return 0, "", errors.New("unexpected VMM root")
-	}
-	status, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
-	if err != nil {
-		return 0, "", err
-	}
-	uidLine := fmt.Sprintf("Uid:\t%d\t%d\t%d\t%d", a.UID, a.UID, a.UID, a.UID)
-	if !strings.Contains(string(status), uidLine) {
-		return 0, "", errors.New("unexpected VMM UID")
-	}
-	cgroup, err := os.ReadFile(fmt.Sprintf("/proc/%d/cgroup", pid))
-	if err != nil {
-		return 0, "", err
-	}
-	if strings.TrimSpace(string(cgroup)) != "0::"+strings.TrimPrefix(h.group(run), "/sys/fs/cgroup") {
-		return 0, "", errors.New("unexpected VMM cgroup")
-	}
-	exe, err := os.Stat(fmt.Sprintf("/proc/%d/exe", pid))
-	if err != nil {
-		return 0, "", err
-	}
-	expected, err := os.Lstat(filepath.Join(h.jail(run), "firecracker"))
-	if err != nil {
-		return 0, "", err
-	}
-	if !expected.Mode().IsRegular() || !os.SameFile(exe, expected) {
-		return 0, "", errors.New("unexpected VMM executable")
-	}
-	return pid, ticks, nil
+	return nil
 }
 
 // recover observes only a fully identified, previously confirmed VMM. Its
@@ -629,11 +595,11 @@ func (h *FirecrackerHost) recoverOne(ctx context.Context, id string) error {
 // retired: the VMM is gone, obsolete or interrupted while starting.
 func (h *FirecrackerHost) recoverAgent(ctx context.Context, a *HostAgent) (bool, error) {
 	if a.Run.Phase == "RUNNING" && !a.Fenced {
-		if alive, err := h.confirmedVMM(a); err != nil {
+		if alive, err := h.confirmedVMM(ctx, a); err != nil {
 			return false, err
 		} else if alive {
 			if err := h.opts.Adopt(ctx, a.ID, *a.Run); err == nil {
-				return false, h.ensurePlatform(a)
+				return false, h.ensurePlatform(ctx, a)
 			} else if !errors.Is(err, ErrGeneration) {
 				return false, err
 			}
@@ -799,7 +765,7 @@ func (h *FirecrackerHost) start(ctx context.Context, id string, generation uint6
 				}
 				// Fast rejection only. The VMM itself must acquire/retain the same inode
 				// lock after this descriptor closes; this check is not the safety barrier.
-				probe, err := os.OpenFile(current.Volume, os.O_RDWR, 0)
+				probe, err := h.privileged().OpenVolume(ctx, current.Volume, true)
 				if err != nil {
 					return err
 				}
@@ -829,26 +795,19 @@ func (h *FirecrackerHost) start(ctx context.Context, id string, generation uint6
 			fail := func(e error) error {
 				return errors.Join(e, h.retireRun(ctx, id, run))
 			}
-			if err = h.prepare(a); err != nil {
+			if err = h.prepare(ctx, a); err != nil {
 				return fail(err)
 			}
-			group, err := os.Open(h.group(run))
-			if err != nil {
-				return fail(err)
-			}
-			defer group.Close()
 			log, err := h.openLog(run.ID)
 			if err != nil {
 				return fail(err)
 			}
 			defer log.Close()
-			cmd := h.jailerCommand(run, a.UID, group)
-			cmd.Stdout = log
-			cmd.Stderr = log
-			if err = cmd.Start(); err != nil {
+			// The jailer starts in the run's cgroup, as root; the VMM's output
+			// goes to this process's bounded log (S-20).
+			if err = h.privileged().Start(ctx, a, log); err != nil {
 				return fail(err)
 			}
-			go func() { _ = cmd.Wait() }()
 			h.watch()
 			if h.hook != nil {
 				h.hook("spawned", *run)
@@ -859,16 +818,16 @@ func (h *FirecrackerHost) start(ctx context.Context, id string, generation uint6
 			// guest failed (ErrBootFailed) before it is cleaned up.
 			failBoot := func(e error) error { return fail(h.bootFailure(ctx, a, e)) }
 			for {
-				pid, ticks, e := h.identify(a)
-				if e == nil && h.opts.PrepareGuest != nil {
-					// Do not hand an unlock secret to a process until it actually
-					// owns the exclusive backing-volume lock. Startup may have
-					// reached its PID file before opening the block backend.
-					e = ownedVolumeLock(pid, a.Volume)
+				// Do not hand an unlock secret to a process until it actually
+				// owns the exclusive backing-volume lock. Startup may have
+				// reached its PID file before opening the block backend.
+				o, e := h.observe(boot, a, h.opts.PrepareGuest != nil)
+				if e == nil && h.opts.PrepareGuest != nil && !o.Locked {
+					e = errVolumeLock
 				}
 				if e == nil {
-					run.PID = pid
-					run.StartTicks = ticks
+					run.PID = o.PID
+					run.StartTicks = o.Ticks
 					break
 				}
 				select {
@@ -894,7 +853,7 @@ func (h *FirecrackerHost) start(ctx context.Context, id string, generation uint6
 			if err != nil {
 				return failBoot(err)
 			}
-			if err = ownedVolumeLock(run.PID, a.Volume); err != nil {
+			if err = h.ownsVolume(boot, a); err != nil {
 				return failBoot(err)
 			}
 			if err = h.opts.Confirm(boot, id, *run); err != nil {
@@ -939,17 +898,16 @@ func (h *FirecrackerHost) start(ctx context.Context, id string, generation uint6
 	return result, err
 }
 
-func (h *FirecrackerHost) prepare(a *HostAgent) error {
-	run := a.Run
-	root := h.jail(run)
-	if err := os.MkdirAll(root, 0700); err != nil {
-		return err
-	}
+// prepare makes a's starting run's boot: its credentials, its config.json
+// and the files appended to its initrd here, then its jail and cgroup by
+// root (ADR 024), then its platform listener in the jail. The jail gets the
+// kernel linked, the initrd cloned or copied with the appendix, the volume
+// and the drives linked; nothing is synced (P-12). The cgroup's limits are
+// ADR 012's: the VM's memory and 256 MiB of VMM headroom, 32 tasks, its
+// vCPUs' processor time and no swap.
+func (h *FirecrackerHost) prepare(ctx context.Context, a *HostAgent) error {
 	guest, err := h.prepareControl(a)
 	if err != nil {
-		return err
-	}
-	if err := h.ensurePlatform(a); err != nil {
 		return err
 	}
 	// Each drive has its own I/O ceiling (CAP-03, ADR 012), enforced by the VMM.
@@ -963,26 +921,30 @@ func (h *FirecrackerHost) prepare(a *HostAgent) error {
 	if len(extra) != 0 && !h.opts.AuthenticatedControl {
 		return errors.New("a registry harness, corpora and build drives need the authenticated guest contract")
 	}
-	// The kernel is linked into the jail, the initrd cloned or copied with the
-	// boot's configuration appended; neither is synced (P-12).
-	var appendix func(*os.File) error
+	var appendix *os.File
 	if h.opts.AuthenticatedControl {
-		appendix = func(f *os.File) error { return appendControlConfig(f, guest, a.Harness, corpora) }
-	}
-	if err = h.placeBootImages(a, root, appendix); err != nil {
-		return err
-	}
-	if err := os.Link(a.Volume, filepath.Join(root, "data.ext4")); err != nil {
-		return err
+		initrd, err := h.bootImage(a, "initrd")
+		if err != nil {
+			return err
+		}
+		st, err := os.Stat(initrd)
+		if err != nil {
+			return err
+		}
+		b := &offsetBuffer{base: st.Size(), pos: st.Size()}
+		if err = appendControlConfig(b, guest, a.Harness, corpora); err != nil {
+			return err
+		}
+		if appendix, err = memfile(b.buf); err != nil {
+			return err
+		}
+		defer appendix.Close()
 	}
 	drives := []any{map[string]any{"drive_id": "data", "path_on_host": "/data.ext4", "is_root_device": false, "is_read_only": false, "cache_type": "Writeback", "io_engine": "Sync",
 		"rate_limiter": limits.Volume.rateLimiter(0)}}
 	for _, d := range extra {
 		// One inode shared by every VM of the image; a read-only drive's
 		// VMM holds it under LOCK_SH, a writable one under LOCK_EX.
-		if err := d.share(d.source, filepath.Join(root, d.name)); err != nil {
-			return err
-		}
 		drives = append(drives, map[string]any{"drive_id": d.id, "path_on_host": "/" + d.name, "is_root_device": false, "is_read_only": d.readOnly, "cache_type": d.cache, "io_engine": "Sync",
 			"rate_limiter": d.rate.rateLimiter(d.burst)})
 	}
@@ -993,26 +955,10 @@ func (h *FirecrackerHost) prepare(a *HostAgent) error {
 	if err != nil {
 		return err
 	}
-	configPath := filepath.Join(root, "config.json")
-	if err = os.WriteFile(configPath, b, 0600); err != nil {
+	if err = h.privileged().Prepare(ctx, a, b, appendix); err != nil {
 		return err
 	}
-	if err = os.Chmod(configPath, 0444); err != nil {
-		return err
-	}
-	if err = os.Mkdir(h.group(run), 0700); err != nil {
-		return err
-	}
-	for name, value := range map[string]string{"memory.max": strconv.FormatInt(int64(resources.MemoryMiB+256)<<20, 10), "pids.max": "32", "cpu.max": fmt.Sprintf("%d 100000", resources.VCPUs*100000)} {
-		if err = os.WriteFile(filepath.Join(h.group(run), name), []byte(value), 0600); err != nil {
-			return err
-		}
-	}
-	// A guest must not be able to exceed memory.max by spilling into host swap.
-	// Kernels booted without swap accounting do not expose this file, in which
-	// case there is nothing to limit, so a failure here is deliberately ignored.
-	_ = os.WriteFile(filepath.Join(h.group(run), "memory.swap.max"), []byte("0"), 0600)
-	return nil
+	return h.ensurePlatform(ctx, a)
 }
 
 // bootArgs is the guest kernel's command line. reboot=k: a guest that
@@ -1096,7 +1042,7 @@ func (h *FirecrackerHost) retire(ctx context.Context, id string, generation uint
 		return false, nil
 	}
 	if a.Run != nil {
-		if err := h.cleanup(a.Run); err != nil {
+		if err := h.cleanup(ctx, id, a.Run); err != nil {
 			return false, err
 		}
 	}
@@ -1147,86 +1093,34 @@ func (h *FirecrackerHost) FenceAgent(ctx context.Context, id string) error {
 	return h.retireRun(ctx, id, run)
 }
 
-func procIdentity(pid int) (string, error) {
-	b, e := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
-	if e != nil {
-		return "", e
-	}
-	i := strings.LastIndex(string(b), ")")
-	if i < 0 {
-		return "", errors.New("invalid proc stat")
-	}
-	f := strings.Fields(string(b[i+1:]))
-	if len(f) < 20 {
-		return "", errors.New("short proc stat")
-	}
-	if f[0] == "Z" {
-		return "", errors.New("process exited")
-	}
-	return f[19], nil
-}
-
-// Check the lock on the VMM's actual backing descriptor before exposing RUNNING.
-// A vanilla or incorrectly built Firecracker must not be accepted by this driver.
-func ownedVolumeLock(pid int, volume string) error {
-	_, locked, err := volumeLock(pid, volume)
-	if err == nil && !locked {
-		err = errVolumeLock
-	}
-	return err
-}
-
 var errVolumeLock = errors.New("VMM does not own the required writable-volume flock")
 
-// volumeLock tells whether pid has volume open, and whether it holds the
-// volume's exclusive lock through one of those descriptors.
-func volumeLock(pid int, volume string) (open, locked bool, err error) {
-	want, err := os.Stat(volume)
-	if err != nil {
-		return false, false, err
-	}
-	entries, err := os.ReadDir(fmt.Sprintf("/proc/%d/fd", pid))
-	if err != nil {
-		return false, false, err
-	}
-	for _, entry := range entries {
-		path := fmt.Sprintf("/proc/%d/fd/%s", pid, entry.Name())
-		got, err := os.Stat(path)
-		if err != nil || !os.SameFile(want, got) {
-			continue
-		}
-		info, err := os.ReadFile(fmt.Sprintf("/proc/%d/fdinfo/%s", pid, entry.Name()))
-		if errors.Is(err, fs.ErrNotExist) {
-			continue // closed since, as by a VMM that exits
-		}
-		if err != nil {
-			return true, false, err
-		}
-		open = true
-		for _, line := range strings.Split(string(info), "\n") {
-			f := strings.Fields(line)
-			if len(f) >= 6 && f[0] == "lock:" && f[2] == "FLOCK" && f[3] == "ADVISORY" && f[4] == "WRITE" {
-				return true, true, nil
-			}
-		}
-	}
-	return open, false, nil
-}
-
 // confirmedVMM tells whether a's confirmed VMM still runs. A live VMM that
-// has its volume open without its lock is an error, not an absence.
-func (h *FirecrackerHost) confirmedVMM(a *HostAgent) (bool, error) {
+// has its volume open without its lock is an error, not an absence. So is a
+// helper that does not answer (ADR 024): only an identification that failed
+// is an absence.
+func (h *FirecrackerHost) confirmedVMM(ctx context.Context, a *HostAgent) (bool, error) {
 	if h.census != nil {
 		return h.census(a)
 	}
-	if _, _, err := h.identify(a); err != nil {
+	o, err := h.observe(ctx, a, true)
+	if errors.Is(err, workerhelper.ErrAbsent) {
 		return false, nil
 	}
-	return vmmWithVolume(a.Run.PID, a.Volume, func() bool { _, _, err := h.identify(a); return err == nil })
+	if err != nil {
+		return false, err
+	}
+	return vmmWithVolume(o, func() (bool, error) {
+		_, err := h.observe(ctx, a, false)
+		if errors.Is(err, workerhelper.ErrAbsent) {
+			return false, nil
+		}
+		return err == nil, err
+	})
 }
 
-// vmmWithVolume tells whether a confirmed VMM, found alive, still runs with
-// its volume; alive identifies it again.
+// vmmWithVolume tells whether a confirmed VMM, found alive and observed with
+// its volume (o), still runs with it; alive identifies it again.
 //
 // A VMM releases its volume as it exits: Firecracker closes its drive, which
 // releases the lock, before its process ends (59 to 110 ms from "Vmm is
@@ -1236,17 +1130,21 @@ func (h *FirecrackerHost) confirmedVMM(a *HostAgent) (bool, error) {
 // no longer write it: it is gone, and the census's cleanup kills what is left
 // of it and waits until its cgroup is empty before the volume is used again.
 // So is a VMM that ended while it was examined. A VMM that has its volume
-// open without the lock is an error: an unpatched VMM, or another writer.
-func vmmWithVolume(pid int, volume string, alive func() bool) (bool, error) {
-	open, locked, err := volumeLock(pid, volume)
-	switch {
-	case locked:
+// open without the lock is an error: an unpatched VMM, or another writer. A
+// second look that cannot be made keeps the VMM, with the error.
+func vmmWithVolume(o workerhelper.Observation, alive func() (bool, error)) (bool, error) {
+	if o.Locked {
 		return true, nil
-	case !alive():
-		return false, nil
+	}
+	live, err := alive()
+	switch {
 	case err != nil:
 		return true, err
-	case !open:
+	case !live:
+		return false, nil
+	case o.LockError != "":
+		return true, errors.New(o.LockError)
+	case !o.Open:
 		return false, nil
 	}
 	return true, errVolumeLock

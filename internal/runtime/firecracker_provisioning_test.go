@@ -35,7 +35,7 @@ func TestProvisionedResourcesReachVMConfiguration(t *testing.T) {
 	func() {
 		old := syscall.Umask(0077)
 		defer syscall.Umask(old)
-		if err := h.prepare(a); err != nil {
+		if err := h.prepare(t.Context(), a); err != nil {
 			t.Fatal(err)
 		}
 	}()
@@ -112,16 +112,8 @@ func TestHarnessImagesAreSharedReadOnlyFiles(t *testing.T) {
 	if !sameHarness(good, &HarnessImage{Path: img, Digest: good.Digest, Entrypoint: []string{"/bin/harness"}}) || sameHarness(good, nil) {
 		t.Fatal("harness identity comparison")
 	}
-	// Sharing is by hard link: one inode for every agent of the release.
-	linked := filepath.Join(dir, "jail.ext4")
-	if err := linkOrCopy(img, linked); err != nil {
-		t.Fatal(err)
-	}
-	a, _ := os.Stat(img)
-	b, _ := os.Stat(linked)
-	if !os.SameFile(a, b) {
-		t.Fatal("the jail got a copy instead of the shared image")
-	}
+	// Sharing is by hard link: one inode for every agent of the release
+	// (workerhelper.System.PrepareJail, TestHarnessImagesAreSharedByLink).
 	// A registry harness needs the authenticated guest contract.
 	root := t.TempDir()
 	for _, d := range []string{"bin", "volumes", "groups"} {
@@ -140,7 +132,7 @@ func TestHarnessImagesAreSharedReadOnlyFiles(t *testing.T) {
 	}
 	h := &FirecrackerHost{root: root, cgroup: filepath.Join(root, "groups")}
 	agent := &HostAgent{ID: "a", UID: 60000, Volume: volume, Harness: good, Run: &VMRun{ID: "0123456789abcdef", Generation: 1, Phase: "STARTING"}}
-	if err := h.prepare(agent); err == nil {
+	if err := h.prepare(t.Context(), agent); err == nil {
 		t.Fatal("a registry harness was prepared without the authenticated contract")
 	}
 }

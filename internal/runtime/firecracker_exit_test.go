@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/workerhelper"
 )
 
 // TestVolumeHolderChild plays a VMM's hold on its volume for
@@ -92,14 +94,14 @@ func TestAnExitingVMMLeavesTheCensus(t *testing.T) {
 	}
 	pid := cmd.Process.Pid
 	expect("locked")
-	ticks, err := procIdentity(pid)
+	ticks, err := workerhelper.ProcIdentity(pid)
 	if err != nil {
 		t.Fatal(err)
 	}
-	alive := func() bool { got, err := procIdentity(pid); return err == nil && got == ticks }
+	alive := func() bool { got, err := workerhelper.ProcIdentity(pid); return err == nil && got == ticks }
 	census := func(stage string, want bool) {
 		t.Helper()
-		if got, err := vmmWithVolume(pid, volume, alive); err != nil || got != want {
+		if got, err := vmmWithVolume(observed(pid, volume), func() (bool, error) { return alive(), nil }); err != nil || got != want {
 			t.Fatalf("%s: alive %v, error %v; want alive %v and no error", stage, got, err, want)
 		}
 	}
@@ -131,7 +133,7 @@ func TestAnExitingVMMLeavesTheCensus(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	if got, err := vmmWithVolume(os.Getpid(), volume, func() bool { return true }); err == nil {
+	if got, err := vmmWithVolume(observed(os.Getpid(), volume), func() (bool, error) { return true, nil }); err == nil {
 		t.Fatal("a VMM with its volume open without the lock was accepted; alive:", got)
 	}
 }

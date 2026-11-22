@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -15,32 +14,6 @@ import (
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
 )
-
-// linkOrCopy shares a read-only harness image with a jail by hard link, or
-// copies it when the registry cache lives on another filesystem. A corpus
-// image or a build drive is never copied (linkShared).
-func linkOrCopy(src, dst string) error {
-	err := os.Link(src, dst)
-	if !errors.Is(err, syscall.EXDEV) {
-		return err
-	}
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o444)
-	if err != nil {
-		return err
-	}
-	if _, err = io.Copy(out, in); err == nil {
-		err = out.Chmod(0444)
-	}
-	if err == nil {
-		err = out.Sync()
-	}
-	return errors.Join(err, out.Close())
-}
 
 type VMResources struct {
 	VCPUs     int `json:"vcpus"`
@@ -111,7 +84,7 @@ func (h *FirecrackerHost) RegisterProvisioned(ctx context.Context, in Provisione
 	if err := validHarness(in.Harness); err != nil {
 		return err
 	}
-	if err := h.verifyCorpora(in.Corpora); err != nil {
+	if err := h.verifyCorpora(ctx, in.Corpora); err != nil {
 		return err
 	}
 	unlock, err := h.lockAgent(ctx, in.ID)
@@ -182,9 +155,10 @@ func (h *FirecrackerHost) RegisterProvisioned(ctx context.Context, in Provisione
 		delete(h.uidsHeld, uid)
 		h.uidMu.Unlock()
 	}()
+	// The volume's owner changes as root (ADR 024), with its data made durable.
 	own := h.ownVolume
 	if own == nil {
-		own = ownVolume
+		own = func(f *os.File, uid uint32) error { return h.privileged().GiveVolume(ctx, f, path, in.ID, uid) }
 	}
 	if err = own(f, uid); err != nil {
 		return err
@@ -206,15 +180,6 @@ func (h *FirecrackerHost) RegisterProvisioned(ctx context.Context, in Provisione
 			Corpora: slices.Clone(in.Corpora)}
 		return h.save(r)
 	})
-}
-
-// ownVolume gives a provisioned volume to its agent's UID and makes its data
-// and owner durable.
-func ownVolume(f *os.File, uid uint32) error {
-	if err := f.Chown(int(uid), int(uid)); err != nil {
-		return err
-	}
-	return f.Sync()
 }
 
 // sameRegistration accepts a retry of a's registration only: the same

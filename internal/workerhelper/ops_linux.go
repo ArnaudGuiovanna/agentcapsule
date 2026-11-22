@@ -210,17 +210,24 @@ func (System) Start(p StartPlan) error {
 		return err
 	}
 	defer group.Close()
+	cmd := JailerCommand(p, group)
+	if err = cmd.Start(); err != nil {
+		return err
+	}
+	go func() { _ = cmd.Wait() }()
+	return nil
+}
+
+// JailerCommand is the jailer of a run, started into group, the run's
+// cgroup, in a network namespace of its own, with no environment.
+func JailerCommand(p StartPlan, group *os.File) *exec.Cmd {
 	cmd := exec.Command(p.Jailer, JailerArgs(p)...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{UseCgroupFD: true, CgroupFD: int(group.Fd()), Cloneflags: syscall.CLONE_NEWNET}
 	cmd.Env = []string{}
 	if p.Log != nil {
 		cmd.Stdout, cmd.Stderr = p.Log, p.Log
 	}
-	if err = cmd.Start(); err != nil {
-		return err
-	}
-	go func() { _ = cmd.Wait() }()
-	return nil
+	return cmd
 }
 
 // Target is the run observe identifies: its chroot, its VM's UID, its

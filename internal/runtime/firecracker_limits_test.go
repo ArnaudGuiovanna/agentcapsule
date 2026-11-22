@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/workerhelper"
 )
 
 type tokenBucket struct {
@@ -42,7 +43,7 @@ type vmConfig struct {
 // directory and returns the Firecracker configuration it wrote, raw and parsed.
 func preparedConfig(t *testing.T, h *FirecrackerHost, a *HostAgent) (map[string]any, vmConfig) {
 	t.Helper()
-	if err := h.prepare(a); err != nil {
+	if err := h.prepare(t.Context(), a); err != nil {
 		t.Fatal(err)
 	}
 	b, err := os.ReadFile(filepath.Join(h.jail(a.Run), "config.json"))
@@ -176,7 +177,8 @@ func TestGuestsHaveNoNetwork(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer group.Close()
-	cmd := h.jailerCommand(a.Run, a.UID, group)
+	cmd := workerhelper.JailerCommand(workerhelper.StartPlan{Jailer: filepath.Join(h.root, "bin", "jailer"), Firecracker: filepath.Join(h.root, "bin", "firecracker"),
+		ChrootBase: h.jailBase(), RunID: a.Run.ID, UID: a.UID, Cgroup: h.cgroup, Group: h.group(a.Run)}, group)
 	if cmd.SysProcAttr == nil || cmd.SysProcAttr.Cloneflags&syscall.CLONE_NEWNET == 0 {
 		t.Fatal("the VMM shares the host's network namespace")
 	}

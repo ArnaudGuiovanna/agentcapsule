@@ -4,6 +4,7 @@ package workerhelper
 
 import (
 	"bytes"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -178,6 +179,34 @@ func TestPrepareJailBuildsTheJailAndTheCgroup(t *testing.T) {
 	}
 	if _, err := os.Stat(outside); err != nil {
 		t.Fatal("a link was followed", err)
+	}
+}
+
+// A harness image is shared by hard link: one inode for every agent of the
+// release; a corpus image or a build drive is never copied.
+func TestHarnessImagesAreSharedByLink(t *testing.T) {
+	dir := t.TempDir()
+	img := filepath.Join(dir, "harness.ext4")
+	if err := os.WriteFile(img, make([]byte, 4096), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(img)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	linked := filepath.Join(dir, "jail.ext4")
+	if err = linkOrCopy(f, linked); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := os.Stat(img)
+	b, _ := os.Stat(linked)
+	if !os.SameFile(a, b) {
+		t.Fatal("the jail got a copy instead of the shared image")
+	}
+	// /dev/shm is another file system than the test's directory.
+	if err = (System{}).LinkProbe(f, "/dev/shm"); err != nil && !errors.Is(err, ErrCrossDevice) {
+		t.Fatal(err)
 	}
 }
 
