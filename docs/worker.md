@@ -1310,7 +1310,8 @@ authorities, with room for one volume. What it checks, in order:
 4. the key the key authority lends for the agent opens the copy's key slot.
    The payload is never unlocked: a volume opens only in its guest. The
    copy's header may be the guest's, so libcryptsetup reads it confined, as
-   `registry.inspection_uid` when the worker is root, and refuses a header
+   `registry.inspection_uid` when the worker is root or has its helper (which
+   runs the worker executable's check confined), and refuses a header
    that is not of the platform's shape before any key derivation
    ([registry.md](registry.md#the-key-check-of-a-restore-test)). A worker run
    as root without `inspection_uid` refuses the test

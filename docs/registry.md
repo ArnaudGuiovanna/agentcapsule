@@ -358,7 +358,9 @@ In the worker configuration ([example](../runtime/worker/config.example.json)):
   owns no file, it lies outside the provisioning range and is not the SLIM bridge's
   user. It needs no entry in `/etc/passwd`. It must lie between 1 and 2147483646, and
   not be 65535: the kernel takes -1 (4294967295) as "unchanged", and some interfaces
-  take 65535 the same way. Required when the worker runs as root. The worker refuses a
+  take 65535 the same way. Required when the worker runs as root, or with its helper
+  ([ADR 024](adr/024-worker-privilege-separation.md)), which runs `debugfs` as that UID
+  and refuses to start with one it could not use. The worker refuses a
   value outside that range, in the provisioning range, the SLIM bridge's, or one that
   an account or a group of the host has (as a GID, 6 would be `disk` on Debian); it
   then does not start (`registry_configuration_invalid`).
@@ -470,9 +472,11 @@ deliveries or VM lifecycle work.
 ### Image inspection sandbox
 
 `debugfs` (e2fsprogs) parses each downloaded image before the import accepts it. The
-worker runs as root, and the image comes from outside: a flaw of e2fsprogs must not
-reach the host. So every `debugfs` run on a downloaded image is confined
-(`internal/sandbox`, REG-01):
+image comes from outside: a flaw of e2fsprogs must not reach the host. So every
+`debugfs` run on a downloaded image is confined (`internal/sandbox`, REG-01). A
+worker that is not root opens the image and hands it to its root helper
+([ADR 024](adr/024-worker-privilege-separation.md)), which confines the run the same
+way, as `inspection_uid`; a root worker confines it itself:
 
 - The worker starts itself again as a helper, in new mount, network, PID, IPC and UTS
   namespaces, and the helper executes `debugfs`. Its network namespace has only an

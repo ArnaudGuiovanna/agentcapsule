@@ -142,7 +142,8 @@ The operations of version 1, and what each validates:
 | `give_drives` | agent, paths and modes | the agent is registered, without a run; each path under the corpus staging or the runtime root, a regular file of whole 4 KiB blocks with one link, owned by the worker or the agent; modes 0400 or 0600 only | `fchown`, `fchmod` |
 | `reclaim_drives` | agent | the build drives the registry records for the agent, which has no run | gives them back to the worker (0600) |
 | `check_linkable` | paths | each under the runtime root or a configured cache or staging, a regular file | a probe hard link into the jails, removed at once |
-| `spawn` | agent, run, `config.json`, whether to listen; the boot appendix and the VMM log as descriptors | the run is the registry's, `STARTING`, of an unfenced agent with a UID of the range; every file the jail gets comes from the registry (§4) | builds the jail and the cgroup, binds the platform socket, starts the jailer; returns the listener |
+| `prepare` | agent, run, `config.json`; the files the boot appends to its initrd as a descriptor | the run is the registry's, `STARTING`, of an agent neither fenced, sealed nor removed, with a UID of the range, in the helper's jails; every file the jail gets comes from the registry (§4) | builds the jail (kernel linked, initrd copied with the appendix, volume and drives linked, `config.json`) and the cgroup with its limits |
+| `start` | agent, run; the worker's VMM log as a descriptor | as `prepare`, and the jail exists | starts the jailer into the run's cgroup, its output to the log |
 | `observe` | agent, run | the run is the registry's | identifies the VMM (PID file, `/proc`), its volume lock |
 | `populated` | agent, run | the run is the registry's | reads `cgroup.events` |
 | `cleanup` | agent, run | the run is the registry's | kills the cgroup, waits up to 10 s, removes it and the jail |
@@ -220,8 +221,10 @@ jailer, the jail and the sandbox need (`CAP_SYS_ADMIN`, `CAP_MKNOD`,
 `CAP_CHOWN`, `CAP_FOWNER`, `CAP_DAC_OVERRIDE`, `CAP_SETUID`, `CAP_SETGID`,
 `CAP_SETPCAP`, `CAP_KILL`, `CAP_SYS_PTRACE`), `KillMode=process` and
 `Delegate=yes`, so that a restart of the helper never stops a VM, and the
-same deny-list of system calls. It loses `AF_INET` and `AF_INET6`: it
-opens no network socket.
+same deny-list of system calls. Its own code opens no network socket; its
+unit keeps `AF_INET`, `AF_INET6` and `AF_NETLINK` for the archive shipper's
+rclone, which it starts on a fetch, and `AF_ALG` for the confined LUKS2
+check.
 
 ### 7. The archive fetch
 
@@ -246,7 +249,7 @@ what the worker could write anyway.
 - **The helper is down.** Boots, stops and copies fail and are retried. A
   census never takes an unanswered `observe` for a dead VMM: the run stays,
   with its slot, and no fence or restore decision is taken on it.
-- **A crash during a spawn.** The worker recorded `STARTING` first, as
+- **A crash during a boot.** The worker recorded `STARTING` first, as
   before. If the helper dies, the worker's `fail` retires the run through
   `cleanup` once the helper answers; until then the run holds its slot.
   If the worker dies, its next census retires the `STARTING` run, and the
@@ -290,8 +293,9 @@ section refuses to run as root.
   keys that pass through it, the guests), and the helper's operations. It
   gives no root, no capability, no access to the authorities' directories,
   the other services' keys or other accounts' files.
-- **The helper** is the new root surface: 14 operations, about 1,500 lines
-  of Go, no network, no database, no cgo. A flaw in its checks matters as a
+- **The helper** is the new root surface: 15 operations, about 2,600 lines
+  of Go with their comments (the worker's client apart), no network, no
+  database, no cgo. A flaw in its checks matters as a
   flaw in the worker did before; the checks are unit-tested without root.
 - **Unchanged.** A guest still meets Firecracker's seccomp filters, the
   jailer's chroot and its own UID; a VMM still cannot reach the helper (the

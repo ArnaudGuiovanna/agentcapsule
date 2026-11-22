@@ -37,7 +37,8 @@ the worker runs the same host checks in both modes.
 | SLIM bridge → SLIM node | Mutual TLS 1.3, with a client certificate from a separate SLIM CA, on loopback. The bridge refuses a node URL that is not `https`. | [slimbridge config](../runtime/slimbridge/config.example.json), [slim.yaml](../deploy/interop/slim.yaml) |
 | Worker → model providers | HTTPS, with the system's CAs, to public addresses only unless the operator allows an internal one. No redirect, no environment proxy. Production refuses a provider URL on plain HTTP before anything is sent (`rejected`). | The organization's providers ([llm.md](api/llm.md)); internal ones in the worker's `llm` section ([below](#model-providers-on-internal-addresses)) |
 | Worker → OCI registries | HTTPS. Credentials are sent only in answer to a challenge. Production refuses a `local` rule, which uses plain HTTP. | Worker `registry` section ([registry.md](registry.md)) |
-| Worker, API → authority service | Two Unix sockets, on the same host. The service checks the peer's account on every connection: root on the worker's, the API's account (`api_uid`) or root on the API's. Each client pins both authorities' identities. | Worker `authority` section ([worker.md](worker.md)), the API's `-authority-socket` and identities ([docs/api](api/README.md#the-authority-service)) |
+| Worker, API → authority service | Two Unix sockets, on the same host. The service checks the peer's account on every connection: the worker's account (`worker_uid`, [ADR 024](adr/024-worker-privilege-separation.md)) or root on the worker's, the API's account (`api_uid`) or root on the API's. Each client pins both authorities' identities. |
+| Worker → worker helper | A Unix socket, on the same host (`/run/agentcapsule-worker-helper/worker.sock`). The helper admits the worker's account only, and the worker a helper that is root only (`SO_PEERCRED`). Each request names the worker's own agents, runs and files ([ADR 024](adr/024-worker-privilege-separation.md)). | Worker `helper` section ([worker.md](worker.md#privilege-separation)) | Worker `authority` section ([worker.md](worker.md)), the API's `-authority-socket` and identities ([docs/api](api/README.md#the-authority-service)) |
 | Authority service → its replica | Mutual TLS 1.3 with pinned self-signed certificates bound to this host's authorities. | `authority_replica` in `authority.json` ([recovery.md](recovery.md#install-the-replica)) |
 | pgBackRest → S3 | HTTPS, the server verified (pgBackRest's default). The data is encrypted before it leaves the host. | [deploy/backup/pgbackrest.conf](../deploy/backup/pgbackrest.conf) |
 | pgBackRest and the archive shipper → standby | SFTP over SSH, the standby's host key checked against a pinned `known_hosts`. The data is encrypted before it leaves the host. | [deploy/backup](../deploy/backup) |
@@ -119,8 +120,10 @@ AGENTCAPSULE_DATABASE_URL='host=/run/postgresql dbname=agentcapsule user=agentca
 ```
 
 With peer authentication, map each account to its role only, in
-`pg_ident.conf`: root to `agentcapsule` and `agentcapsule_worker`, the API's
-account to `agentcapsule_api`. The installer does this for its own cluster
+`pg_ident.conf`: root to `agentcapsule`, the worker's account
+(`agentcapsule-worker`, [ADR 024](adr/024-worker-privilege-separation.md)) to
+`agentcapsule_worker`, the API's account to `agentcapsule_api`. The installer
+does this for its own cluster
 ([cli-host.md](cli-host.md#profile)) and writes the owner's connection
 string to `/etc/agentcapsule/admin.env` (root, 0600).
 
@@ -212,11 +215,21 @@ module. Each check prints `ok`, `warn` or `fail`. A check that is not `ok`
 prints a `fix:` line under it. The last line is `preflight_passed` or
 `preflight_failed`, and the exit code is 1 on a failure.
 
-**Worker host.** Run as root, with the worker's configuration and environment:
+**Worker host.** Run as the worker's account, with its configuration and
+environment:
 
 ```sh
-AGENTCAPSULE_DATABASE_URL=... /opt/agentcapsule/agentcapsule-worker -config /etc/agentcapsule/worker.json -preflight
+runuser --preserve-environment -u agentcapsule-worker -- env AGENTCAPSULE_DATABASE_URL=... \
+  /opt/agentcapsule/agentcapsule-worker -config /etc/agentcapsule/worker.json -preflight
 ```
+
+With a `helper` section (the installer's), the check `worker_helper` stands
+in for `kvm`: the worker helper answers on its socket, as root, for this
+runtime root. The helper itself opens `/dev/kvm`, checks the cgroups and the
+jails' file system, and pins the jailer and Firecracker at its start, and
+refuses to start otherwise (`journalctl -u agentcapsule-worker-helper`). A
+root worker without a `helper` section, as in a laboratory, checks `kvm`
+itself.
 
 | Check | Fails when |
 |---|---|
@@ -269,7 +282,8 @@ Every shipped unit confines its service with systemd (S-05, S-06), and
 | Unit | Confinement |
 |---|---|
 | `agentcapsule-authority`, `agentcapsule-slim-bridge`, `agentcapsule-api`, `agentcapsule-oidc-edge` | No capability, no device, read-only system, private `/tmp` and `/proc`, `@system-service` without `@privileged` and `@resources`, no namespace, no writable and executable memory. The API also has `LimitNOFILE=65536` and `MemoryMax=2G`; raise them with a drop-in on a large host. |
-| `agentcapsule-worker` | Root, with ten capabilities, a read-only system but its state directories, a system call deny list, and no access to the authorities' directories. What it leaves out, and why: [worker.md](worker.md#confinement). |
+| `agentcapsule-worker` | The account `agentcapsule-worker`, no capability, no device, read-only system but its runtime root, archives, restore tests' scratch and SLIM socket directory, private `/tmp`, `/proc` showing its own processes, `@system-service` without `@privileged` and `@resources`, no namespace ([ADR 024](adr/024-worker-privilege-separation.md)). What it leaves out, and why: [worker.md](worker.md#the-worker). |
+| `agentcapsule-worker-helper` | Root, with ten capabilities, for the jailer, the VMs' cgroups and jails, the files of the VMs' UIDs and the confined inspections; it answers the worker's account only. A read-only system but `/var/lib/agentcapsule`, a system call deny list, and no access to the authorities' directories. What it leaves out, and why: [worker.md](worker.md#the-helper). |
 | `agentcapsule-interop` | The Docker CLI only: no capability, Unix sockets only, no IP traffic, and its own Docker configuration directory, so that root's registry credentials stay out of it. |
 | `agentcapsule-pg-backup@` | `postgres`, no capability, read-only system but `/tmp` (pgBackRest's locks, shared with its other processes), its log and its spool. |
 | `agentcapsule-backup-metrics`, `agentcapsule-archive-ship`, `agentcapsule-standby-metrics` | Root with `CAP_SETUID`, `CAP_SETGID` and `CAP_DAC_OVERRIDE` only, to run pgBackRest, rclone or psql as their accounts and write node_exporter's directory; read-only system, private `/tmp`, `@system-service`. |
@@ -307,7 +321,7 @@ runtime root, archive root or trace file) needs a drop-in with
    the service answers.
 8. **Preflight.** Run `agentcapsule-worker -preflight` and
    `agentcapsule-api -preflight`, and fix every `fail`.
-9. **Start** the authority service, the worker, then the API, without
+9. **Start** the authority service, the worker helper, the worker, then the API, without
    `AGENTCAPSULE_MODE`. The migrations of step 6 record the authorities'
    first epoch as reconciled: the API starts. After a failover it refuses
    (`authority_not_reconciled`) until `agentcapsule-admin reconcile` has run
