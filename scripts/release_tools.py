@@ -16,6 +16,11 @@ scan-artifacts.py) import this module. Run it alone to fetch every tool ahead,
 for example before going offline:
 
   python3 scripts/release_tools.py [--cache DIR] [--go GO] [TOOL ...]
+
+With --check-allowlist it fetches nothing: it checks
+scripts/vulnerability-allowlist.json, warns about every entry that expires
+within ALLOWLIST_WARNING_DAYS, and exits 1 if an entry is expired or
+malformed (the CI checks job runs it).
 """
 
 import argparse
@@ -41,6 +46,10 @@ ALLOWLIST = SCRIPTS / "vulnerability-allowlist.json"
 OIDC_UNIT = Path("deploy/oidc/agentcapsule-oidc.service")
 # An exception is reviewed again at least this often.
 MAX_ALLOWLIST_DAYS = 90
+# From this many days before an entry expires, every audit warns about it
+# (a GitHub Actions warning annotation), without failing: the review happens
+# before the expiry fails the audit.
+ALLOWLIST_WARNING_DAYS = 21
 ALLOWLIST_FIELDS = ("ids", "package", "reason", "expires")
 
 
@@ -108,6 +117,32 @@ def load_allowlist(path=ALLOWLIST, today=None):
             continue
         entries.append(dict(entry, targets=targets))
     return entries, problems
+
+
+def allowlist_warnings(entries, today=None, days=ALLOWLIST_WARNING_DAYS):
+    """One message per entry in force that expires within days (expired ones are problems)."""
+    today = today or datetime.date.today()
+    warnings = []
+    for entry in entries:
+        left = (datetime.date.fromisoformat(entry["expires"]) - today).days
+        if left <= days:
+            warnings.append(f"allowlist entry ({', '.join(entry['ids'][:3])}, {entry['package']}) expires on "
+                            f"{entry['expires']}, in {left} days: review it again or fix the finding before then")
+    return warnings
+
+
+def annotate(level, messages, stream=None):
+    """Print messages as GitHub Actions annotations (::warning:: or ::error::), readable in a terminal too."""
+    for message in messages:
+        print(f"::{level} title=Vulnerability allowlist::{message}", file=stream or sys.stdout)
+
+
+def check_allowlist(path=ALLOWLIST, today=None, stream=None):
+    """Warn about the entries that expire soon; return 1 if an entry is expired or malformed."""
+    entries, problems = load_allowlist(path, today)
+    annotate("warning", allowlist_warnings(entries, today), stream)
+    annotate("error", problems, stream)
+    return 1 if problems else 0
 
 
 def allowlist_entry(finding, entries):
@@ -253,12 +288,16 @@ def govulncheck(go, cache=None):
     return target
 
 
-def main():
+def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--cache", type=Path, default=default_cache(), help="tool cache (default: %(default)s)")
     p.add_argument("--go", type=Path, help="Go toolchain, to build govulncheck too")
+    p.add_argument("--check-allowlist", action="store_true",
+                   help="only check the allowlist: warn before an expiry, fail on an expired entry")
     p.add_argument("tools", nargs="*", help="tools to fetch (default: all)")
-    a = p.parse_args()
+    a = p.parse_args(argv)
+    if a.check_allowlist:
+        return check_allowlist()
     for name in a.tools or sorted(pins()):
         path = tool(name, a.cache)
         print(f"{name} {pins()[name]['version']} {path}")

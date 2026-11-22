@@ -1,3 +1,10 @@
+# The bundled identity provider (S-19). Keycloak shares the host's network to
+# reach PostgreSQL on 127.0.0.1:55432, and listens on loopback only
+# (KC_HTTP_HOST=127.0.0.1, port 9445, /etc/agentcapsule/oidc.env): its
+# administration console, its admin REST API and its master realm stay on the
+# host. agentcapsule-oidc-edge.service serves the public HTTPS port and
+# forwards only the realms' pages and endpoints and the static files.
+# KC_CACHE=local: one node, no JGroups port.
 [Unit]
 ConditionPathExists=!/var/lib/agentcapsule-install/maintenance
 Description=AgentCapsule member identity provider
@@ -10,7 +17,7 @@ StateDirectory=agentcapsule-oidc
 StateDirectoryMode=0700
 ExecStartPre=/usr/bin/python3 -I /usr/local/lib/agentcapsule-host/oidc-container.py prepare
 EnvironmentFile=/etc/agentcapsule/oidc.env
-ExecStart=/usr/bin/podman run --rm --cidfile=/var/lib/agentcapsule-oidc/container-id --name agentcapsule-oidc --pull=never --network=host --cap-drop=all --security-opt=no-new-privileges --env-file=/etc/agentcapsule/oidc.env -v /etc/agentcapsule/oidc/realm.json:/opt/keycloak/data/import/realm.json:ro -v /etc/agentcapsule/oidc-tls:/keycloak-tls:ro quay.io/keycloak/keycloak@sha256:7e66a96e4739239070aeaf72e4c5decf0f7f682cfc725b9f7ea2b336eaba38b3 start --import-realm
+ExecStart=/usr/bin/podman run --rm --cidfile=/var/lib/agentcapsule-oidc/container-id --name agentcapsule-oidc --pull=never --network=host --cap-drop=all --security-opt=no-new-privileges --env-file=/etc/agentcapsule/oidc.env -v /etc/agentcapsule/oidc/realm.json:/opt/keycloak/data/import/realm.json:ro quay.io/keycloak/keycloak@sha256:7e66a96e4739239070aeaf72e4c5decf0f7f682cfc725b9f7ea2b336eaba38b3 start --import-realm
 ExecStop=/usr/bin/python3 -I /usr/local/lib/agentcapsule-host/oidc-container.py stop
 ExecStopPost=/usr/bin/python3 -I /usr/local/lib/agentcapsule-host/oidc-container.py cleanup
 Restart=on-failure

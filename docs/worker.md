@@ -386,6 +386,68 @@ outgoing channel is used in the background by the harness, after the commit of
 the SQLite intent: no platform call blocks the callback that must first return
 its delivery acknowledgment.
 
+## Confinement
+
+The worker stays root: it creates each VM's cgroup under `/sys/fs/cgroup`,
+starts the jailer into it, and the jailer builds the VM's chroot and drops to
+the VM's UID. Its unit,
+[agentcapsule-worker.service](../deploy/systemd/agentcapsule-worker.service),
+confines it as far as that allows (S-05). Each directive also binds the
+jailer, Firecracker and the sandboxed `debugfs` and `mke2fs`, which inherit
+it. `scripts/test_systemd_units.py` fails when a unit loses a directive, or
+when the worker gains one of those below that would break it.
+
+What the unit keeps:
+
+| Directive | Why the worker needs it |
+|---|---|
+| `CapabilityBoundingSet=` ten capabilities | `CAP_SYS_ADMIN`: mount, PID and network namespaces, the jailer's `pivot_root`, the image sandbox's mounts. `CAP_MKNOD`: `/dev/kvm`, `/dev/net/tun`, `/dev/urandom` and `/dev/userfaultfd` in each jail. `CAP_CHOWN`, `CAP_FOWNER`, `CAP_DAC_OVERRIDE`: the files of the VMs' UIDs (jails, platform sockets). `CAP_SETUID`, `CAP_SETGID`: the jailer and the sandbox change UID. `CAP_SETPCAP`: the sandbox empties its bounding set. `CAP_KILL`: a sandboxed program that overruns its time runs under another UID. `CAP_SYS_PTRACE`: adoption reads `/proc/<pid>/root`, `exe`, `fd` and `fdinfo` of VMMs under other UIDs. |
+| `ProtectSystem=strict` | Writes only to `/var/lib/agentcapsule` (the runtime root and its caches), `/var/lib/agentcapsule-archives` (both `StateDirectory=`, root and 0700) and `/run/agentcapsule-worker`. |
+| `InaccessiblePaths=` | The authorities' directories: the worker reaches them through the authority service only. |
+| `SystemCallFilter=~...` | A deny list (clock, CPU emulation, debugging, modules, obsolete calls, raw I/O, reboot, swap, `bpf`, `open_by_handle_at`): the jailer needs `mount`, `pivot_root`, `mknod`, `chown`, `setuid`, `setgroups` and `setrlimit`, which `@system-service` refuses. |
+| `RestrictAddressFamilies=` | `AF_UNIX`, `AF_INET`, `AF_INET6`; `AF_ALG` for libcryptsetup, which encrypts and checks LUKS2 key slots with the kernel's crypto API; `AF_NETLINK` for glibc's resolver, which this cgo binary uses when `nsswitch.conf` names more than files and DNS. |
+| `NoNewPrivileges`, `ProtectHome`, `PrivateTmp`, `ProtectKernelTunables`, `ProtectKernelModules`, `ProtectKernelLogs`, `ProtectClock`, `ProtectHostname`, `RestrictRealtime`, `RestrictSUIDSGID`, `LockPersonality`, `MemoryDenyWriteExecute`, `SystemCallArchitectures=native` | Nothing the worker or its children do needs what these remove. `ProtectKernelTunables` keeps `/sys/fs/cgroup` writable. Firecracker maps no executable memory. |
+| `Delegate=yes`, `KillMode=process` | A restart of the worker keeps the running VMs, and the next worker adopts them. |
+
+What the unit leaves out, and why:
+
+| Directive | Why it would break the worker |
+|---|---|
+| `PrivateDevices` | It drops `CAP_MKNOD` and hides `/dev/kvm`, which the start checks open. |
+| `DevicePolicy` | The same devices, and libcryptsetup opens `/dev/mapper/control` and loop devices when the kernel's crypto API is missing. |
+| `ProtectControlGroups` | It makes `/sys/fs/cgroup` read-only; the worker creates and kills the VMs' cgroups there. |
+| `RestrictNamespaces` | The jailer needs mount, PID and network namespaces, the sandbox IPC and UTS ones. systemd's filter also makes `clone3` fail with `ENOSYS`, and Go starts the jailer only with `clone3` (`CLONE_INTO_CGROUP`). |
+| `ProtectProc`, `ProcSubset` | Adoption reads the VMMs' `/proc/<pid>`, which `CAP_SYS_PTRACE` allows anyway; provisioning reads `/proc/meminfo`. |
+| `PrivateNetwork`, `IPAddressDeny` | The worker calls registries, forges, model providers and the Directory. |
+| `PrivateUsers`, `User` | The jailer must run as root of the host. |
+| `PrivateIPC` | libdevmapper waits on udev through System V semaphores. |
+| `MemoryMax` | The VMs run in their own cgroups, outside the unit; their limits are the worker's ([ADR 012](adr/012-limits-restart-budgets-egress.md)). |
+
+With `CAP_SYS_ADMIN`, code that takes over the worker can undo the mount
+directives. They stop mistakes and path tricks, not such code. Moving the
+network-facing work out of the root process is A-03.
+
+**Paths elsewhere.** A runtime root, an archive root, a cache or a
+`trace_file` outside those directories needs a drop-in, for example
+`/etc/systemd/system/agentcapsule-worker.service.d/paths.conf` with
+`[Service]` and `ReadWritePaths=/srv/agentcapsule`. Run `-preflight` and the
+operator modes (`-archive-agent`, `-restore-agent`, `-test-restore`) from a
+root shell, outside the unit, as the host operations do: under the unit's
+`ProtectClock`, the `clock` check could not read the kernel's clock state.
+
+**Checks on a KVM host.** The confinement is checked statically here; it needs
+a run as root on a KVM host:
+1. `systemd-analyze security agentcapsule-worker.service`, and
+   `systemd-analyze verify` of the installed unit.
+2. A worker campaign under the installed unit: `systemctl restart
+   agentcapsule-worker`, then `scripts/verify-product-guest.py` (provisioning,
+   encrypted wake, deliveries), a registry import (the `debugfs` sandbox), an
+   archive and a restore test, and a restart of the worker with VMs running:
+   they must be adopted, not killed.
+3. `journalctl -u agentcapsule-worker` without `Operation not permitted` or
+   `Function not implemented`, and `audit` or `seccomp` denials in
+   `journalctl -k`.
+
 ## Replaying a dead letter
 
 An instruction that died without reaching its agent can be put back in its

@@ -6,6 +6,9 @@ name: Release
 # token that can sign or write. It assembles the offline host distribution. The sign job signs the checksums with cosign
 # (keyless, GitHub's OIDC identity) and attests their SLSA provenance. The
 # publish job creates a draft release, which a maintainer reviews and publishes.
+# Both run in the protected "release" environment (S-16, docs/release.md#the-release-environment):
+# a reviewer approves each, and the signing certificate names the environment,
+# which install.sh, the CLI and the host helper require.
 #
 # A rehearsal (workflow_dispatch on a branch) runs the build and the native
 # CLI tests under a pre-release tag created on the runner only, never pushed;
@@ -50,6 +53,8 @@ jobs:
       checksum-index: ${{ steps.assets.outputs.checksum-index }}
     permissions:
       contents: read
+      # Read the runtime images' provenance (scan-artifacts.py --verify-runtime-images).
+      attestations: read
     steps:
       - name: Check out the tagged commit with its history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -152,7 +157,9 @@ jobs:
             --harness-package "$RUNNER_TEMP/release/harness-adapted/package" \
             --host-assets "$RUNNER_TEMP/release/assets"
 
-      - name: Vulnerability scan (SBOMs and deploy images)
+      - name: Vulnerability scan (SBOMs and deploy images) and the runtime images' provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           release="$RUNNER_TEMP/release"
@@ -161,7 +168,8 @@ jobs:
           python3 scripts/release_oci.py --assets "$release/assets" --sboms "$release/sbom"
           sboms=("$RUNNER_TEMP"/release/sbom/*.spdx.json)
           python3 scripts/scan-artifacts.py --output "$RUNNER_TEMP/release/scan" \
-            "${sboms[@]/#/--sbom=}" --offline-image-index "$release/assets/component-sources.json" --deploy-images
+            "${sboms[@]/#/--sbom=}" --offline-image-index "$release/assets/component-sources.json" --deploy-images \
+            --verify-runtime-images
 
       - name: Assemble the release files and their checksums
         id: assets
@@ -252,6 +260,7 @@ jobs:
     name: Sign the checksums and attest the provenance
     needs: [build, native-cli]
     if: github.event_name == 'push'
+    environment: release
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
@@ -292,7 +301,29 @@ jobs:
           "$cosign" sign-blob --yes --bundle SHA256SUMS.sigstore.json SHA256SUMS
           "$cosign" verify-blob --bundle SHA256SUMS.sigstore.json \
             --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@${REF}" \
-            --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-github-workflow-trigger push \
+            --certificate-github-workflow-repository "$GITHUB_REPOSITORY" \
+            --certificate-github-workflow-ref "$REF" SHA256SUMS
+
+      - name: Install the CLI as users do, which checks the signer
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # install.sh verifies the signature with the same claims, and that the
+          # certificate names the release environment, from a local copy of
+          # the release laid out as GitHub serves it.
+          cosign="$(python3 scripts/release_tools.py cosign | awk '{print $3}')"
+          mkdir -p "$RUNNER_TEMP/tools" "$RUNNER_TEMP/served/download" "$RUNNER_TEMP/cli"
+          ln -s "$cosign" "$RUNNER_TEMP/tools/cosign"
+          ln -s "$RUNNER_TEMP/assets" "$RUNNER_TEMP/served/download/$TAG"
+          python3 -m http.server --bind 127.0.0.1 --directory "$RUNNER_TEMP/served" 18080 >/dev/null 2>&1 &
+          server=$!
+          trap 'kill "$server"' EXIT
+          for _ in $(seq 50); do curl -fsS -o /dev/null "http://127.0.0.1:18080/download/$TAG/SHA256SUMS" && break; sleep 0.2; done
+          PATH="$RUNNER_TEMP/tools:$PATH" AGENTCAPSULE_RELEASE_BASE_URL=http://127.0.0.1:18080 \
+            sh install.sh --version "$TAG" --dir "$RUNNER_TEMP/cli" </dev/null
 
       - name: Attest the SLSA build provenance of every file
         id: provenance
@@ -321,6 +352,7 @@ jobs:
     name: Create the draft release
     needs: [build, sign]
     if: github.event_name == 'push'
+    environment: release
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
@@ -355,9 +387,9 @@ jobs:
 
               curl -fsSL https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/install.sh | sh -s -- --version $TAG
 
-          The script checks the executable against SHA256SUMS, and the signature
-          of SHA256SUMS when cosign is installed (--require-signature makes it
-          mandatory). Then run \`agentcapsule install --help\`.
+          The script needs cosign: it verifies that SHA256SUMS was signed by this
+          release's workflow in the protected release environment, then checks the
+          executable against SHA256SUMS. Then run \`agentcapsule install --help\`.
 
           [Download and verify the workstation CLI by hand](https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_SHA/docs/release.md#verify-a-release).
           [Install the matching server bundle](https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_SHA/docs/cli-host.md).

@@ -17,5 +17,76 @@ KillMode=process
 UMask=0077
 LimitCORE=0
 
+# Confinement (S-05, docs/worker.md#confinement). The worker runs as root for
+# the jailer: it creates each VM's cgroup under /sys/fs/cgroup, starts the
+# jailer into it (clone3 with CLONE_INTO_CGROUP and CLONE_NEWNET), and the
+# jailer unshares a mount namespace, pivots into the chroot, creates /dev/kvm,
+# /dev/net/tun, /dev/urandom and /dev/userfaultfd there, chowns them and drops
+# to the VM's UID. Every directive below also binds the jailer, Firecracker and
+# the sandboxed debugfs and mke2fs, which inherit it.
+NoNewPrivileges=yes
+# CAP_SYS_ADMIN: namespaces, mounts and pivot_root (jailer, image sandbox).
+# CAP_MKNOD: the jail's device nodes. CAP_CHOWN, CAP_FOWNER, CAP_DAC_OVERRIDE:
+# files of the VMs' UIDs (jails, platform sockets). CAP_SETUID, CAP_SETGID:
+# the jailer and the sandbox drop to their UIDs. CAP_SETPCAP: the sandbox
+# empties its bounding set. CAP_KILL: a sandboxed program that overruns its
+# time runs under another UID. CAP_SYS_PTRACE: adoption reads /proc/<pid>/root,
+# exe, fd and fdinfo of VMMs that run under other UIDs.
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_MKNOD CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE CAP_SETUID CAP_SETGID CAP_SETPCAP CAP_KILL CAP_SYS_PTRACE
+AmbientCapabilities=
+# Writes: the runtime root (/var/lib/agentcapsule/host, with the registry's
+# and the corpora's caches), the archives, and the SLIM socket's directory.
+# A root, an archive root, a cache or a trace_file elsewhere needs a drop-in
+# with ReadWritePaths=.
+ProtectSystem=strict
+StateDirectory=agentcapsule agentcapsule-archives
+StateDirectoryMode=0700
+ReadWritePaths=-/run/agentcapsule-worker
+# The worker reaches the authorities through their service only.
+InaccessiblePaths=-/var/lib/agentcapsule-key-authority -/var/lib/agentcapsule-restore-authority -/var/lib/agentcapsule-authority-replica
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+# A deny list: the jailer needs mount, pivot_root, mknod, chown, setuid,
+# setgroups and setrlimit, the sandbox capset and sched_setaffinity.
+SystemCallFilter=~@clock @cpu-emulation @debug @module @obsolete @raw-io @reboot @swap
+SystemCallFilter=~bpf open_by_handle_at
+SystemCallErrorNumber=EPERM
+# AF_ALG: libcryptsetup encrypts and checks LUKS2 key slots with the kernel's
+# crypto API. AF_NETLINK: glibc's resolver, which Go uses in this cgo binary
+# when nsswitch.conf names more than files and dns.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_ALG
+# Left out, and why (each would break the worker):
+# - PrivateDevices: drops CAP_MKNOD and hides /dev/kvm, which the start checks
+#   open; libcryptsetup also uses /dev/mapper/control and loop devices when the
+#   kernel's crypto API is missing. DevicePolicy= is left open for the same
+#   reasons.
+# - ProtectControlGroups: makes /sys/fs/cgroup read-only; the worker creates
+#   and kills the VMs' cgroups there.
+# - RestrictNamespaces: the jailer needs mount, PID and network namespaces and
+#   the sandbox IPC and UTS ones; systemd's filter also makes clone3 fail with
+#   ENOSYS, and Go starts the jailer with clone3 (CLONE_INTO_CGROUP) only.
+# - ProtectProc, ProcSubset: adoption reads other UIDs' /proc/<pid>, which
+#   CAP_SYS_PTRACE allows anyway; provisioning reads /proc/meminfo.
+# - PrivateNetwork, IPAddressDeny: the worker calls registries, forges, model
+#   providers and the Directory.
+# - PrivateUsers, User=: the jailer must run as root of the host.
+# - PrivateIPC: libdevmapper waits on udev through System V semaphores.
+# - MemoryMax, TasksMax: the VMs run in their own cgroups, outside this unit;
+#   their limits are the worker's (ADR 012).
+# With CAP_SYS_ADMIN kept, code that takes over the worker can undo the mount
+# directives (ProtectSystem, InaccessiblePaths): they stop mistakes and path
+# tricks, not such code. Moving the network-facing work out of this root
+# process is ARCH-3 (A-03).
+
 [Install]
 WantedBy=multi-user.target

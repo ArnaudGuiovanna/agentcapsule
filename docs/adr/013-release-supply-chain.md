@@ -275,4 +275,74 @@ provenance attestation and the draft release.
 5. **Who may cut a release.** The workflow assumes that only maintainers can
    create `v*` tags (a tag ruleset, not created by this change).
    Recommendation: one maintainer tags, a second reviews the draft before it
-   is published, once there are two.
+   is published, once there are two. Settled after the v0.1.0 audit (below):
+   a tag ruleset restricts `v*` tags to the maintainers, and the `sign` and
+   `publish` jobs run in the protected `release` environment, whose required
+   reviewers approve each release; the verifiers refuse a signature made
+   outside it. The owner creates both settings
+   ([release.md](../release.md#the-release-environment)).
+
+## Changes after the v0.1.0 audit
+
+### The source of a signature (SEC-4, findings S-16 and S-17)
+
+Until v0.1.0 the verifiers pinned only the identity
+`release.yml@refs/tags/<tag>` and the issuer. The check that a release is a
+commit of `main` runs in the tagged commit's own workflow, and the `sign` job
+had no protected environment, so a tag on another commit could carry a
+workflow without that check and still produce an accepted signature.
+
+- `sign` and `publish` run in the environment `release`. Its required
+  reviewers approve each job, and its deployment policy admits only `v*`
+  tags. Fulcio writes the environment of the signing job in the certificate
+  (extension `1.3.6.1.4.1.57264.1.23`, Deployment Environment).
+- `install.sh`, `agentcapsule self update` and the host helper verify, with
+  cosign, the identity and the issuer as before, and the trigger (`push`),
+  the repository and the ref (`refs/tags/<tag>`) of the signing run. Then
+  they read the certificate and refuse one that does not name the `release`
+  environment. A workflow that leaves the environment out therefore signs
+  in vain, and the environment's reviewers are the gate of every release.
+  The `sign` job runs `install.sh` on its own output before publishing, so a
+  release that users would refuse is not published.
+- `v0.0.1` and `v0.1.0` were signed before the environment existed. The three
+  verifiers accept them by the SHA-256 of their `SHA256SUMS` only, for their
+  own tag.
+- `install.sh` requires the signature by default, with cosign and openssl
+  (S-17). `--insecure-skip-signature` checks the digest only and says so on
+  every run.
+
+What remains outside the repository: the owner creates the environment and
+its reviewers, and the tag ruleset. A maintainer who can approve the
+environment can still release a commit of their choice: the protection is
+that a second person approves, once there are two.
+
+### Downgrades (SEC-4, finding L-13)
+
+The host helper records the highest release a host has installed, and the
+CLI the highest release it has been. An install or update below it, and the
+install on an empty host of a release older than the CLI's, needs
+`--allow-older`; a rollback stays the explicit way back. The "latest" release
+read from GitHub without authentication is subject to the same floor.
+
+### The runtime images (SEC-4, finding S-18)
+
+The three runtime images with the OpenSSL backports are no longer built by
+hand. The manual runtime-images workflow builds them from the pinned
+Dockerfile and `deploy/images/openssl/images.json`, from `main` only. It
+pushes each under a new tag and attests its SLSA build provenance. The
+release (`scan-artifacts.py --verify-runtime-images`) refuses a pinned image
+unless it is its pinned upstream base plus the one layer of the runtime
+stage, and carries a provenance attestation signed for
+`.github/workflows/runtime-images.yml` of this repository on
+`refs/heads/main` by a GitHub-hosted runner. The images pinned on 21
+November 2026 fail that check; the next release needs the workflow's images.
+
+### The allowlist (SEC-4, finding L-10)
+
+The four OpenSSL entries of the Alpine 3.24 targets (libssl3 and libcrypto3
+of the harness SBOMs and the HAProxy image) matched nothing: the v0.1.0
+release scan listed them as unused, and an offline rescan with the same
+database and the repository's matching logic agreed. They are removed; the
+"OpenSSL 3.5.9" section above describes the entries as they were. Each audit
+now warns 21 days before an entry expires; an expired entry still fails it,
+and no expiry goes beyond 90 days.

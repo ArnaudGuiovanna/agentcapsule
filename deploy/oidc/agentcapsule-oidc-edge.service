@@ -1,0 +1,59 @@
+# The public HTTPS listener of the bundled identity provider (S-19,
+# internal/oidcedge). Keycloak listens on 127.0.0.1:9445 only; this edge serves
+# the identity provider's certificate on the public port and forwards only
+# /realms/<realm>/ for realms other than master, and /resources/. The
+# administration console and API (/admin/), the master realm, health and
+# metrics answer 404. Operators reach the console through SSH:
+#   ssh -L 9445:127.0.0.1:9445 admin@host, then http://localhost:9445/admin/
+# The certificate and key reach the service as credentials: it runs under a
+# dynamic account that owns nothing on disk.
+[Unit]
+ConditionPathExists=!/var/lib/agentcapsule-install/maintenance
+Description=AgentCapsule identity provider's public edge
+After=network-online.target agentcapsule-oidc.service
+Wants=network-online.target
+
+[Service]
+Type=exec
+DynamicUser=yes
+EnvironmentFile=/etc/agentcapsule/oidc-edge.env
+LoadCredential=tls.crt:/etc/agentcapsule/oidc-tls/tls.crt
+LoadCredential=tls.key:/etc/agentcapsule/oidc-tls/tls.key
+ExecStart=/opt/agentcapsule/agentcapsule-api oidc-edge -listen ${OIDC_LISTEN} -upstream 127.0.0.1:9445 -tls-cert %d/tls.crt -tls-key %d/tls.key -tls-server-name ${OIDC_NAME}
+Restart=on-failure
+RestartSec=3
+UMask=0077
+LimitCORE=0
+LimitNOFILE=16384
+MemoryMax=256M
+
+# No privilege, no device, no file to write: the profile of the API.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

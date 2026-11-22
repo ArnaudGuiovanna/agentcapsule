@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """Fetch the pinned pgBackRest and rclone of the backup qualifications.
 
-scripts/verify-backups.py qualifies pgBackRest 2.58, and
-scripts/verify-archive-shipping.py rclone 1.60.1: the packages of Ubuntu 26.04.
-Ubuntu 24.04, the CI runner's system, ships older versions. This script
-downloads those exact .deb files from a fixed snapshot of the Ubuntu archive,
-with the two libraries pgBackRest needs that Ubuntu 24.04 lacks or ships
-older. It checks each file against the SHA-256 written below, which is the one
-of Ubuntu's signed package index. It extracts them with dpkg-deb -x, without
-root and without apt, then runs each tool once. The binaries need glibc 2.38
-at most, so they run on Ubuntu 24.04 (glibc 2.39).
+scripts/verify-backups.py qualifies pgBackRest 2.50, the very package the
+server bundle installs: Ubuntu 24.04's, from the snapshot of
+scripts/build-server-bundle.py, with the libssh2 the bundle installs beside it.
+scripts/verify-archive-shipping.py qualifies rclone 1.60.1, Ubuntu 26.04's
+build (the bundle installs Ubuntu 24.04's build of the same release). This
+script downloads those exact .deb files from that fixed snapshot of the Ubuntu
+archive. It checks each file against the SHA-256 written below, which is the
+one of Ubuntu's signed package index. It extracts them with dpkg-deb -x,
+without root and without apt, then runs each tool once. The binaries need
+glibc 2.38 at most, so they run on Ubuntu 24.04 (glibc 2.39).
 
 pgBackRest also needs libpq.so.5: install libpq5 (it comes with PostgreSQL's
 client), or pass the directory that holds it with --library-path.
@@ -39,21 +40,19 @@ LIBRARIES = "usr/lib/x86_64-linux-gnu"
 
 # (tool, package, version, path in the pool, SHA-256)
 PACKAGES = (
-    ("pgbackrest", "pgbackrest", "2.58.0-1", "pool/universe/p/pgbackrest/pgbackrest_2.58.0-1_amd64.deb",
-     "5b9999e7f4cb445662d2100ffc614162eb8ebc98f410bcb20718d2e42721b56d"),
-    # Ubuntu 24.04 has libssh2 1.11.0; this is the build pgBackRest was qualified with.
-    ("pgbackrest", "libssh2-1t64", "1.11.1-1ubuntu0.26.04.4", "pool/main/libs/libssh2/libssh2-1t64_1.11.1-1ubuntu0.26.04.4_amd64.deb",
-     "bb3e334dc885d124d38cd4350f1cb4606c03ce58e9f53dc51a84c2c8d11c84e1"),
-    # Ubuntu 24.04 has only libxml2.so.2.
-    ("pgbackrest", "libxml2-16", "2.15.2+dfsg-0.1ubuntu0.3", "pool/main/libx/libxml2/libxml2-16_2.15.2+dfsg-0.1ubuntu0.3_amd64.deb",
-     "e82ce35fd61483c1febf83232e76e54a296a6a78391983a24a904ff640b75c09"),
+    # The pgBackRest of the server bundle (Ubuntu 24.04), and its libssh2,
+    # which a runner may lack; the bundle's package index has these SHA-256s.
+    ("pgbackrest", "pgbackrest", "2.50-1build2", "pool/universe/p/pgbackrest/pgbackrest_2.50-1build2_amd64.deb",
+     "4f9dbba62a14cc3b62bcf5ff5dfb154cd21d993ccc214d74619999222bfe2de7"),
+    ("pgbackrest", "libssh2-1t64", "1.11.0-4.1ubuntu0.24.04.4", "pool/main/libs/libssh2/libssh2-1t64_1.11.0-4.1ubuntu0.24.04.4_amd64.deb",
+     "c3008467513498b6db729b142ea01d766379797e67f9b9348c131d132678253c"),
     ("rclone", "rclone", "1.60.1+dfsg-4ubuntu3.2", "pool/universe/r/rclone/rclone_1.60.1+dfsg-4ubuntu3.2_amd64.deb",
      "37124f897112c536e4057cc3e4c68b7bcb8dadb88e415c959d900c7ff0378bee"),
 )
 
 # tool: (executable in its directory, arguments, start of the first line it prints)
 TOOLS = {
-    "pgbackrest": ("usr/bin/pgbackrest", ["version"], "pgBackRest 2.58.0"),
+    "pgbackrest": ("usr/bin/pgbackrest", ["version"], "pgBackRest 2.50"),
     "rclone": ("usr/bin/rclone", ["version"], "rclone v1.60.1"),
 }
 

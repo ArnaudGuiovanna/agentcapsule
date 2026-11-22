@@ -23,7 +23,7 @@ placeholders below with paths from your environment.
 - PostgreSQL (server binaries), for `verify-postgres.py` and the PostgreSQL
   phases of the KVM runners.
 - For the backup qualifications: Docker, OpenSSL, OpenSSH's client,
-  pgBackRest 2.58 and rclone 1.60.1. `fetch-backup-tools.py` gets the last two
+  pgBackRest 2.50 and rclone 1.60.1. `fetch-backup-tools.py` gets the last two
   without root ([below](#backup-qualifications)). The shipping run also needs
   `systemd-analyze` and `systemd-sysusers`.
 - For KVM campaigns: access to `/dev/kvm`, Firecracker 1.17.0 (the downstream
@@ -52,7 +52,7 @@ Do not run `go test ./...` at the repository root with sources outside
 | `test_verify_install.py` | Unit tests of `verify-install.py`'s reading of the worker's preflight |
 | `verify-postgres.py` | Go/race tests against a private, owned PostgreSQL cluster, with crash/WAL recovery; optional live LLM phase |
 | `load-test.py` | Load test of the API and the worker against a private PostgreSQL (or `--dsn`), without KVM or root: invocations at each rate in turn, delivered by real worker passes to the mock runtime; admission latency, queue age, backlog, dead letters, refusals and the limit observed; see [docs/worker.md](../docs/worker.md#load-test) |
-| `fetch-backup-tools.py` | Fetches pgBackRest 2.58 and rclone 1.60.1, Ubuntu 26.04's packages, from a fixed snapshot of the Ubuntu archive; checks each SHA-256, extracts them without root or apt and runs each once; see [below](#backup-qualifications) |
+| `fetch-backup-tools.py` | Fetches pgBackRest 2.50 (the server bundle's, Ubuntu 24.04's) and rclone 1.60.1 (Ubuntu 26.04's) from the bundle's fixed snapshot of the Ubuntu archive; checks each SHA-256, extracts them without root or apt and runs each once; see [below](#backup-qualifications) |
 | `test_fetch_backup_tools.py` | Unit tests of `fetch-backup-tools.py`, with small packages built on the spot and no network |
 | `verify-backups.py` | Continuous WAL archiving with pgBackRest to S3 and SFTP (Docker, pinned images): loss bound, restore from each store, no clear text, and the base-backup freshness written for node_exporter; then the standby: replay from the SFTP directory and from S3, a disaster and a promotion (rows lost, promotion time), the new primary's own repository |
 | `test_backup_metrics.py` | Unit tests of `deploy/backup/agentcapsule-backup-metrics.py` (base-backup freshness for node_exporter) |
@@ -71,6 +71,7 @@ Do not run `go test ./...` at the repository root with sources outside
 | `verify-interop.py` | Qualifies the pinned A2A/OASF/Directory/SLIM profile: the libraries, and with `--services` the private services of `deploy/interop` (Docker Compose) and the platform's SLIM bridge (`runtime/slimbridge`) against them; see [docs/interop.md](../docs/interop.md) |
 | `build-firecracker.py` | Builds the pinned Firecracker variant with VMM-owned file locks |
 | `build-guest-kernel.py` | Builds the pinned guest kernel with device-mapper/dm-crypt, without root |
+| `test_build_inputs.py` | Unit tests of the input checks of `build-firecracker.py` and `build-guest-kernel.py`, also under `python -O`, and that no script checks with `assert` (which `python -O` drops) |
 | `build-product-guest.py` | Builds capsule-init and the echo harness into a pinned initramfs |
 | `build-control-guest.py` | Builds the disposable authenticated SQL harness fixture |
 | `build-python-harness.py` | Builds the python-echo harness package with plain Docker (pinned base image, then `pack`); the reference build is the Dagger module (`dagger call python-echo`). Its `package/` directory is required by `verify-product-guest.py --python-harness` |
@@ -80,8 +81,9 @@ Do not run `go test ./...` at the repository root with sources outside
 | `audit-dependencies.py` | Release audit: govulncheck on every Go module (fails on a vulnerability the code calls), the licenses of every shipped dependency against `license-policy.json`, and `third-party-licenses.txt`; see [docs/release.md](../docs/release.md) |
 | `build-release.py` | The release binaries (and with `--guest-cryptsetup` the guest image) of one commit, from a clean clone, reproducibly; `--twice` builds again in a second clean environment and compares every digest |
 | `release-sbom.py` | One SPDX SBOM per binary, guest image or harness package (syft, pinned); the guest's native files attributed to their Debian packages |
-| `scan-artifacts.py` | grype (pinned) on SBOMs, the deploy images (by digest) and lock files: fails on High or Critical unless `vulnerability-allowlist.json` covers it |
-| `release_tools.py`, `release-tools.json`, `tools/` | The audit's tools, pinned by SHA-256 (syft, grype, cosign, actionlint) or `go.sum` (govulncheck), fetched into `~/.cache/agentcapsule-release-tools` |
+| `scan-artifacts.py` | grype (pinned) on SBOMs, the deploy images (by digest) and lock files: fails on High or Critical unless `vulnerability-allowlist.json` covers it; with `--verify-runtime-images`, also the runtime images' check of `runtime_images.py` |
+| `runtime_images.py`, `test_runtime_images.py` | The three runtime images with the OpenSSL backports: `build` (run by the runtime-images workflow: build, push under a new tag, record the digests), `verify` (each pinned image is its upstream base plus one layer and carries the workflow's provenance), and their unit tests without Docker or network; see [docs/release.md](../docs/release.md#runtime-images) |
+| `release_tools.py`, `release-tools.json`, `tools/` | The audit's tools, pinned by SHA-256 (syft, grype, cosign, actionlint) or `go.sum` (govulncheck), fetched into `~/.cache/agentcapsule-release-tools`; `--check-allowlist` warns 21 days before an allowlist entry expires and fails once it has |
 | `vulnerability-allowlist.json`, `license-policy.json` | Reviewed exceptions of the vulnerability gates (each expires within 90 days), and the allowed licenses |
 | `test_release_audit.py` | Unit tests of the release audit's rules, without network or tools |
 | `openapi-requirements.txt` | Python requirements for validating the OpenAPI specification |
@@ -196,9 +198,10 @@ secret, which is never written to the evidence.
 
 ## Backup qualifications
 
-`verify-backups.py` qualifies pgBackRest 2.58, and `verify-archive-shipping.py`
-rclone 1.60.1: the packages of Ubuntu 26.04. `verify-failover.py` runs the
-failover exercise with the same pgBackRest. Fetch both first:
+`verify-backups.py` qualifies pgBackRest 2.50, the package the server bundle
+installs (Ubuntu 24.04's), and `verify-archive-shipping.py` rclone 1.60.1,
+Ubuntu 26.04's build. `verify-failover.py` runs the failover exercise with the
+same pgBackRest. Fetch both first:
 
 ```bash
 python3 scripts/fetch-backup-tools.py --output <tools-dir> \
@@ -206,8 +209,8 @@ python3 scripts/fetch-backup-tools.py --output <tools-dir> \
 ```
 
 The script downloads the exact .deb files from a fixed snapshot of the Ubuntu
-archive (`snapshot.ubuntu.com`), with two libraries pgBackRest needs: libssh2
-1.11.1 and libxml2 2.15. It checks each file against the SHA-256 written in
+archive (`snapshot.ubuntu.com`), the snapshot of `build-server-bundle.py`, with
+the libssh2 1.11.0 the bundle installs beside pgBackRest. It checks each file against the SHA-256 written in
 the script, which is the one in Ubuntu's signed package index. It extracts
 them with `dpkg-deb -x`, without root or apt, then runs `pgbackrest version`
 and `rclone version`. Any other SHA-256 or version stops it, and it leaves no

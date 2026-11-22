@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import re
 
-DIAG_SERVICES = ("api", "worker", "authority", "interop", "slim-bridge", "oidc")
+DIAG_SERVICES = ("api", "worker", "authority", "interop", "slim-bridge", "oidc", "oidc-edge")
 METRIC_PORTS = {"api": 9464, "worker": 9465, "authority": 9466}
 
 
@@ -20,6 +20,7 @@ def add_diagnostics(host):
     group.add_parser("alerts")
     group.add_parser("backups")
     group.add_parser("images")
+    group.add_parser("certificates")
     p = group.add_parser("llm")
     p.add_argument("--organization", required=True)
     p.add_argument("--alias", required=True)
@@ -33,7 +34,7 @@ def service_observations():
                             "-p", "StateChangeTimestamp", timeout=10)
         entry = {"service": name}
         entry.update(line.split("=", 1) for line in properties.splitlines() if "=" in line)
-        if entry.get("LoadState") == "not-found" and name == "oidc":
+        if entry.get("LoadState") == "not-found" and name in ("oidc", "oidc-edge"):
             continue
         if entry.get("ActiveState") != "active":
             entry["next_check"] = "inspect_service_journal"
@@ -110,6 +111,20 @@ def runtime_images():
     return dict(installed=bundle["version"], verified=all(image["verified"] for image in images), images=images)
 
 
+def certificate_report(profile, now):
+    # Each certificate's expiry (L-14). An update renews the installer's own
+    # ones that expire within RENEW_BEFORE_DAYS; the operator renews the others.
+    report = []
+    for name, path, generated in host_certificates(profile):
+        end = output("openssl", "x509", "-noout", "-enddate", "-in", path).removeprefix("notAfter=")
+        expiry = datetime.datetime.strptime(end, "%b %d %H:%M:%S %Y GMT").replace(tzinfo=datetime.timezone.utc)
+        days = (expiry - now).total_seconds() / 86400
+        status = "expired" if days <= 0 else "renewal_due" if days <= RENEW_BEFORE_DAYS else "ok"
+        report.append(dict(certificate=name, not_after=expiry.isoformat(), days_remaining=int(days),
+                           renewed_by=("update" if generated else "operator"), status=status))
+    return report
+
+
 def diagnose(args):
     report = {"schema": "agentcapsule.host/v1", "observed_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}
     if args.sub == "alerts":
@@ -117,6 +132,9 @@ def diagnose(args):
         report["services"] = service_observations()
     elif args.sub == "images":
         report.update(runtime_images())
+    elif args.sub == "certificates":
+        profile = normalize_profile(read(STATE / "profile.json"))
+        report["certificates"] = certificate_report(profile, datetime.datetime.now(datetime.timezone.utc))
     elif args.sub == "metrics":
         conn = http.client.HTTPConnection("127.0.0.1", METRIC_PORTS[args.service], timeout=5)
         try:
