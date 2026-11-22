@@ -109,11 +109,21 @@ type RegistryRule struct {
 	PublisherKeys []string `json:"publisher_keys,omitempty"`
 }
 
+// harnessImportStore is the durable queue and the host's image retention
+// data used by the importer.
+type harnessImportStore interface {
+	ClaimHarnessImport(context.Context, string, time.Duration) (controlplane.ImportJob, error)
+	FailHarnessImport(context.Context, controlplane.ImportJob, string, bool, time.Duration) (controlplane.HarnessImport, error)
+	CompleteHarnessImport(context.Context, controlplane.ImportJob, controlplane.ImportedRelease) (controlplane.HarnessImport, error)
+	PinnedHarnessReleases(context.Context, string) ([]controlplane.HarnessRelease, error)
+	RetainedHarnessDigests(context.Context, string) (map[string]bool, error)
+}
+
 // HarnessImporter downloads requested packages, verifies them and publishes
 // them as releases. It runs beside maintenance so a large download never
 // delays deliveries or VM lifecycle work.
 type HarnessImporter struct {
-	store   *controlplane.Store
+	store   harnessImportStore
 	fetcher *ociregistry.Fetcher
 	cache   string
 	worker  string
@@ -232,7 +242,7 @@ func (h *HarnessImporter) PackageDir(digest string) string {
 // a download on this host.
 func (h *HarnessImporter) Run(ctx context.Context, poll time.Duration, report func(error)) error {
 	var lastEviction, lastRefill time.Time
-	for {
+	for ctx.Err() == nil {
 		worked, err := h.ImportOne(ctx)
 		if report != nil && err != nil {
 			report(err)
@@ -258,6 +268,7 @@ func (h *HarnessImporter) Run(ctx context.Context, poll time.Duration, report fu
 		case <-time.After(poll):
 		}
 	}
+	return ctx.Err()
 }
 
 // ImportOne processes one due import, if any.

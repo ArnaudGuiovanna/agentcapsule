@@ -191,9 +191,18 @@ func (e *eventWriter) write(name, id string, data any) error {
 	return nil
 }
 
+// eventCatalog supplies authorized pages, subsequent reads and final results
+// to the HTTP subscription.
+type eventCatalog interface {
+	ReadOutputStreamPage(context.Context, controlplane.Principal, string, int, int64, int) (controlplane.OutputStreamView, error)
+	ReadOutputStreamNews(context.Context, controlplane.Principal, string, int, int64, int) (controlplane.OutputStreamView, error)
+	ReadCorpusBuildStream(context.Context, controlplane.Principal, string, int, int64, int) (controlplane.OutputStreamView, error)
+	StreamResult(context.Context, controlplane.Principal, string, int) (json.RawMessage, error)
+}
+
 type subscriber struct {
 	build                bool
-	catalog              *controlplane.AgentCatalog
+	catalog              eventCatalog
 	principal            controlplane.Principal
 	op                   string
 	writer               eventWriter
