@@ -282,6 +282,11 @@ A root worker without a `helper` section still runs everything in process,
 as before: for labs and the KVM test suites. A worker with a `helper`
 section refuses to run as root.
 
+A rollback to a release before the split must retire the running VMs first:
+that release's registry check refuses a run whose jail is under the helper's
+directory, and would not start. Its root worker reads the files the update
+gave the worker's account; the next update gives them back.
+
 ### 10. The threat model
 
 - **Before.** Any code execution in the worker (a TLS, HTTP, JSON or
