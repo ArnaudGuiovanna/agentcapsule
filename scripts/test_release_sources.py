@@ -118,7 +118,9 @@ class CheckedDownloadTest(Temporary):
                 self.attempts, self.sleeps = attempts, sleeps
 
     def http(self, code):
-        return HTTPError("https://example.invalid/src.tar.gz", code, "status", {}, None)
+        error = HTTPError("https://example.invalid/src.tar.gz", code, "status", {}, None)
+        self.addCleanup(error.close)
+        return error
 
     def test_retries_server_errors_and_rate_limits_with_backoff(self):
         dest = self.download([self.http(503), self.http(429), b"source"], sha(b"source"))
