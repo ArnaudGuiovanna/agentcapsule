@@ -127,7 +127,7 @@ func (c *Catalog) AppendAccess(ctx context.Context, r AccessRecord) (AccessRecei
 	}
 	var stored AccessRecord
 	done, err := c.commitLoop(ctx, true, authoritylog.WriteAccess, func(tx *sql.Tx) error {
-		if v, err := version(ctx, tx); err != nil || v < schemaVersion {
+		if v, err := version(ctx, tx); err != nil || v < accessVersion {
 			return errors.Join(ErrUpgradeRequired, err)
 		}
 		epoch, err := writerEpoch(ctx, tx)
@@ -182,7 +182,7 @@ func (c *Catalog) AccessStatus(ctx context.Context, id string) (AccessReceipt, e
 	var stored AccessRecord
 	found := false
 	err := c.transaction(ctx, func(tx *sql.Tx) error {
-		if v, err := version(ctx, tx); err != nil || v < schemaVersion {
+		if v, err := version(ctx, tx); err != nil || v < accessVersion {
 			return errors.Join(ErrUpgradeRequired, err)
 		}
 		var err error
@@ -246,7 +246,7 @@ func accessRecord(ctx context.Context, tx *sql.Tx, id string) (AccessRecord, err
 func (c *Catalog) AccessRecords(ctx context.Context) ([]AccessRecord, error) {
 	var out []AccessRecord
 	err := c.transaction(ctx, func(tx *sql.Tx) error {
-		if v, err := version(ctx, tx); err != nil || v < schemaVersion {
+		if v, err := version(ctx, tx); err != nil || v < accessVersion {
 			return errors.Join(ErrUpgradeRequired, err)
 		}
 		var err error
@@ -291,7 +291,7 @@ func (c *Catalog) recordEvent(ctx context.Context, tx *sql.Tx, outcome Outcome) 
 	if outcome.Event == "" {
 		return nil
 	}
-	if v, err := version(ctx, tx); err != nil || v < schemaVersion {
+	if v, err := version(ctx, tx); err != nil || v < accessVersion {
 		return err
 	}
 	if _, err := c.exec(ctx, tx, stmtOutcomeEvent, outcome.ID, outcome.Event); err != nil {

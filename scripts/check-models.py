@@ -383,6 +383,7 @@ def checks(spec=SPEC):
         apalache("store_enrollment.qnt", "storeEnrollmentOldReceipt", "currentAcks", 7, VIOLATION),
         apalache("store_enrollment.qnt", "storeEnrollmentNoRetirement", "retiredBeforeInstall", 3, VIOLATION),
         apalache("store_enrollment.qnt", "storeEnrollmentRevivedSeal", "permanentSeals", 4, VIOLATION),
+        apalache("store_enrollment.qnt", "storeEnrollmentLateRelation", "noRestoredRevocation", 9, VIOLATION),
         tlc("barrier_capacity.qnt", "barrierCapacityOk", "safety"),
         tlc("barrier_capacity.qnt", "barrierCapacityOk", "progress", temporal=True),
         tlc("barrier_capacity.qnt", "barrierCapacityNoPriority", "progress", VIOLATION, temporal=True),

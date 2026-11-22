@@ -38,7 +38,13 @@ type Authority interface {
 	// binds an agent's store to the agent's ID). Its destruction waits.
 	HoldKey(ctx context.Context, b Binding, use func(context.Context, []byte) error) error
 	ReserveIncarnation(ctx context.Context, old Binding, operation string) (Binding, error)
+	// BeginRevocation begins subject in every store's scope.
 	BeginRevocation(ctx context.Context, subject string) (uint64, error)
+	// BeginRevocations begins each subject in the scope it names, in one
+	// operation (scopes_linux.go).
+	BeginRevocations(ctx context.Context, scopes []Scope) error
+	// Scan returns one page of the subjects of b's scope that its store has
+	// not acknowledged; the worker scans again while More is set.
 	Scan(ctx context.Context, b Binding) (Receipt, error)
 	RecordVerifiedFence(ctx context.Context, r Receipt) error
 	// HoldFences is WithCurrentFences: no new revocation subject and no

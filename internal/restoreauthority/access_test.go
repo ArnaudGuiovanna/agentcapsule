@@ -231,7 +231,7 @@ func TestOutcomeRecordKeepsTheEventID(t *testing.T) {
 func TestVersionThreeUpgradesForAccessRecords(t *testing.T) {
 	p := replicated(t)
 	b := everyWrite(t, p.keys, p.catalog)
-	if _, err := p.catalog.db.Exec("DROP TABLE outcome_events; DROP TABLE access_revocations; PRAGMA user_version=3"); err != nil {
+	if _, err := p.catalog.db.Exec("DROP TABLE revocation_scopes; DROP TABLE outcome_events; DROP TABLE access_revocations; PRAGMA user_version=3"); err != nil {
 		t.Fatal(err)
 	}
 	if err := p.catalog.CheckSchema(t.Context()); !errors.Is(err, ErrUpgradeRequired) {
@@ -252,7 +252,7 @@ func TestVersionThreeUpgradesForAccessRecords(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = db.Exec("DROP TABLE outcome_events; DROP TABLE access_revocations; PRAGMA user_version=3"); err != nil {
+	if _, err = db.Exec("DROP TABLE revocation_scopes; DROP TABLE outcome_events; DROP TABLE access_revocations; PRAGMA user_version=3"); err != nil {
 		t.Fatal(err)
 	}
 	db.Close()

@@ -286,8 +286,19 @@ func (s *Store) keepOwnSubjects(ctx context.Context, a ReconciliationAuthority, 
 			missing = append(missing, subject)
 		}
 	}
+	scoped, ok := a.(ScopedImporter)
 	for chunk := range slices.Chunk(missing, 500) {
-		if err = a.ImportSubjects(ctx, chunk); err != nil {
+		if ok {
+			// Each in its scope (revocation_scopes.go), not every store's.
+			var scopes []RevocationScope
+			if scopes, err = s.RevocationScopes(ctx, chunk); err != nil {
+				return 0, err
+			}
+			err = scoped.ImportScopes(ctx, scopes)
+		} else {
+			err = a.ImportSubjects(ctx, chunk)
+		}
+		if err != nil {
 			return 0, errors.Join(ErrAuthorityUnavailable, err)
 		}
 	}

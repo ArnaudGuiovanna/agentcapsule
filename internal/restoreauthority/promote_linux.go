@@ -289,7 +289,7 @@ func copyPromoted(ctx context.Context, conn *sql.Conn, replicaPath string, secre
 		return err
 	}
 	defer tx.Rollback()
-	if _, err = tx.ExecContext(ctx, schema+lossSchema+replicationSchema+accessSchema); err != nil {
+	if _, err = tx.ExecContext(ctx, schema+lossSchema+replicationSchema+accessSchema+scopeSchema); err != nil {
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, "INSERT INTO main.authority SELECT singleton,identity,key_identity,?,revision FROM replica.authority", secret); err != nil {

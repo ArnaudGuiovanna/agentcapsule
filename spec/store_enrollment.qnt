@@ -7,6 +7,12 @@
  * Revocation intent and its READY/DRAINING census are one SQL transaction.
  * Activation rechecks the durable catalogue in the same serialization domain.
  * Fence receipts identify the store incarnation; old receipts survive restore.
+ * Scopes (after the v0.1.0 audit, docs/adr/006-authority-service.md): a store
+ * acts only on the subjects of its scope (reach). A store joins a subject's
+ * scope only while the subject is LIVE: a request joins two LIVE agents only
+ * (RELATE_GUARD). So a scan reads, an activation rechecks and a revocation's
+ * completion waits for the store's scope only, and a new store catches up with
+ * nothing outside it.
  * Atomic durable SQL/local commits and authentic incarnation identities remain
  * contracts. This component does not prove filesystem copy, encryption, key
  * erasure, rollback of the authoritative SQL catalogue, or effect-ledger restore.
@@ -20,6 +26,7 @@ module storeEnrollment {
   const EPOCH_GUARD: bool
   const RETIRE_GUARD: bool
   const SEAL_GUARD: bool
+  const RELATE_GUARD: bool
 
   type Receipt = { store: str, subject: str, epoch: int }
   type State = {
@@ -27,7 +34,7 @@ module storeEnrollment {
     busy: str -> str, fences: str -> Set[str], receipts: Set[Receipt],
     acks: str -> (str -> int), catalogue: str -> str,
     targets: str -> Set[str], read: str -> Set[str], scanned: Set[str],
-    seals: Set[str], staleEffect: bool,
+    seals: Set[str], staleEffect: bool, reach: str -> Set[str],
   }
   var s: State
 
@@ -43,6 +50,7 @@ module storeEnrollment {
     fences: STORES.mapBy(_ => Set()), receipts: Set(), acks: STORES.mapBy(_ => EMPTY),
     catalogue: SUBJECTS.mapBy(_ => "LIVE"), targets: SUBJECTS.mapBy(_ => Set()),
     read: STORES.mapBy(_ => Set()), scanned: Set(), seals: Set(), staleEffect: false,
+    reach: STORES.mapBy(a => if (a == INITIAL) SUBJECTS else Set()),
   }
 
   action reserve(a: str): bool = all {
@@ -73,11 +81,11 @@ module storeEnrollment {
   }
   action scan(a: str): bool = all {
     s.phase.get(a) == "FENCING",
-    s' = { ...s, read: s.read.set(a,revoked), scanned: s.scanned.union(Set(a)) },
+    s' = { ...s, read: s.read.set(a,revoked.intersect(s.reach.get(a))), scanned: s.scanned.union(Set(a)) },
   }
   action activate(a: str): bool = all {
     s.phase.get(a) == "FENCING", s.scanned.contains(a),
-    caughtUp(a, if (RECHECK) revoked else s.read.get(a)),
+    caughtUp(a, if (RECHECK) revoked.intersect(s.reach.get(a)) else s.read.get(a)),
     s' = { ...s, phase: s.phase.set(a,"READY") },
   }
   action seal(a: str): bool = all {
@@ -102,12 +110,19 @@ module storeEnrollment {
   }
   action finishRevocation(p: str): bool = all {
     s.catalogue.get(p) == "FENCING",
-    s.targets.get(p).forall(a => not(executes(a)) or caughtUp(a,Set(p))),
+    s.targets.get(p).forall(a => not(executes(a)) or not(s.reach.get(a).contains(p)) or caughtUp(a,Set(p))),
     s' = { ...s, catalogue: s.catalogue.set(p,"DONE") },
+  }
+  // A store joins a subject's scope: a request between two agents. The broken
+  // alternative joins a revoked subject's scope.
+  action relate(a: str, p: str): bool = all {
+    s.phase.get(a) == "READY", not(s.reach.get(a).contains(p)),
+    if (RELATE_GUARD) s.catalogue.get(p) == "LIVE" else true,
+    s' = { ...s, reach: s.reach.set(a,s.reach.get(a).union(Set(p))) },
   }
   action beginEffect(a: str, p: str): bool = all {
     s.phase.get(a) == "READY", s.physical.get(a), s.busy.get(a) == "",
-    not(s.fences.get(a).contains(p)),
+    s.reach.get(a).contains(p), not(s.fences.get(a).contains(p)),
     s' = { ...s, busy: s.busy.set(a,p) },
   }
   action commitEffect(a: str): bool = all {
@@ -121,7 +136,7 @@ module storeEnrollment {
     nondet a = STORES.oneOf()
     nondet p = SUBJECTS.oneOf()
     any { reserve(a), restore(a), retire(a), skipRetirement(a), install(a), scan(a), activate(a),
-      seal(a), beginRevocation(p), fence(a,p), finishRevocation(p), beginEffect(a,p), commitEffect(a) },
+      seal(a), beginRevocation(p), fence(a,p), finishRevocation(p), relate(a,p), beginEffect(a,p), commitEffect(a) },
     nondet r = s.receipts.oneOf()
     acknowledge(r),
     loseResponses,
@@ -130,7 +145,7 @@ module storeEnrollment {
   val currentAcks = STORES.forall(a => SUBJECTS.forall(p =>
     (s.epoch.get(a) > 0 and s.acks.get(a).get(p) == s.epoch.get(a)) implies s.fences.get(a).contains(p)))
   val noRestoredRevocation = SUBJECTS.forall(p => s.catalogue.get(p) == "DONE" implies
-    STORES.forall(a => executes(a) implies s.fences.get(a).contains(p)))
+    STORES.forall(a => (executes(a) and s.reach.get(a).contains(p)) implies s.fences.get(a).contains(p)))
   val retiredBeforeInstall = STORES.forall(a => Set("ABSENT","INSTALLING","SEALED").contains(s.phase.get(a)) implies
     (not(s.physical.get(a)) and s.busy.get(a) == ""))
   val permanentSeals = s.seals.forall(a => s.phase.get(a) == "SEALED")
@@ -139,16 +154,19 @@ module storeEnrollment {
 
 module storeEnrollmentOk {
   import storeEnrollment(STORES=Set("a","b","c"), SUBJECTS=Set("agent/x","request/y"), INITIAL="a",
-    MAX_EPOCH=2, RECHECK=true, EPOCH_GUARD=true, RETIRE_GUARD=true, SEAL_GUARD=true).*
+    MAX_EPOCH=2, RECHECK=true, EPOCH_GUARD=true, RETIRE_GUARD=true, SEAL_GUARD=true, RELATE_GUARD=true).*
 
+  // A new store is outside every completed revocation's scope: it activates
+  // without its fence, and can never join that scope.
   run newlyCreatedStoreCatchesCompletedRevocationTest = init
     .then(beginRevocation("agent/x")).then(fence("a","agent/x"))
     .then(acknowledge({store:"a",subject:"agent/x",epoch:1})).then(finishRevocation("agent/x"))
     .then(reserve("b")).then(install("b")).then(scan("b"))
-    .then(activate("b")).fail()
+    .then(activate("b")).expect(safety and s.phase.get("b") == "READY")
+    .then(relate("b","agent/x")).fail()
   run activationRechecksConcurrentRevocationTest = init
-    .then(reserve("b")).then(install("b")).then(scan("b"))
-    .then(beginRevocation("agent/x")).then(activate("b")).fail()
+    .then(restore("a")).then(retire("a")).then(install("a")).then(scan("a"))
+    .then(beginRevocation("agent/x")).then(activate("a")).fail()
   run oldReceiptCannotAuthorizeRestoredImageTest = init
     .then(beginRevocation("agent/x")).then(fence("a","agent/x"))
     .then(restore("a")).then(retire("a")).then(install("a"))
@@ -170,21 +188,27 @@ module storeEnrollmentOk {
 }
 module storeEnrollmentTiny {
   import storeEnrollment(STORES=Set("a","b"), SUBJECTS=Set("agent/x"), INITIAL="a",
-    MAX_EPOCH=2, RECHECK=true, EPOCH_GUARD=true, RETIRE_GUARD=true, SEAL_GUARD=true).*
+    MAX_EPOCH=2, RECHECK=true, EPOCH_GUARD=true, RETIRE_GUARD=true, SEAL_GUARD=true, RELATE_GUARD=true).*
 }
 module storeEnrollmentStaleScan {
   import storeEnrollment(STORES=Set("a","b"), SUBJECTS=Set("agent/x"), INITIAL="a",
-    MAX_EPOCH=2, RECHECK=false, EPOCH_GUARD=true, RETIRE_GUARD=true, SEAL_GUARD=true).*
+    MAX_EPOCH=2, RECHECK=false, EPOCH_GUARD=true, RETIRE_GUARD=true, SEAL_GUARD=true, RELATE_GUARD=true).*
 }
 module storeEnrollmentOldReceipt {
   import storeEnrollment(STORES=Set("a","b"), SUBJECTS=Set("agent/x"), INITIAL="a",
-    MAX_EPOCH=2, RECHECK=true, EPOCH_GUARD=false, RETIRE_GUARD=true, SEAL_GUARD=true).*
+    MAX_EPOCH=2, RECHECK=true, EPOCH_GUARD=false, RETIRE_GUARD=true, SEAL_GUARD=true, RELATE_GUARD=true).*
 }
 module storeEnrollmentNoRetirement {
   import storeEnrollment(STORES=Set("a","b"), SUBJECTS=Set("agent/x"), INITIAL="a",
-    MAX_EPOCH=2, RECHECK=true, EPOCH_GUARD=true, RETIRE_GUARD=false, SEAL_GUARD=true).*
+    MAX_EPOCH=2, RECHECK=true, EPOCH_GUARD=true, RETIRE_GUARD=false, SEAL_GUARD=true, RELATE_GUARD=true).*
+}
+// Broken: a store joins a revoked subject's scope, after its revocation
+// completed without it.
+module storeEnrollmentLateRelation {
+  import storeEnrollment(STORES=Set("a","b"), SUBJECTS=Set("agent/x"), INITIAL="a",
+    MAX_EPOCH=2, RECHECK=true, EPOCH_GUARD=true, RETIRE_GUARD=true, SEAL_GUARD=true, RELATE_GUARD=false).*
 }
 module storeEnrollmentRevivedSeal {
   import storeEnrollment(STORES=Set("a","b"), SUBJECTS=Set("agent/x"), INITIAL="a",
-    MAX_EPOCH=2, RECHECK=true, EPOCH_GUARD=true, RETIRE_GUARD=true, SEAL_GUARD=false).*
+    MAX_EPOCH=2, RECHECK=true, EPOCH_GUARD=true, RETIRE_GUARD=true, SEAL_GUARD=false, RELATE_GUARD=true).*
 }

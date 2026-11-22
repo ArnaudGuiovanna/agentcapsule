@@ -542,6 +542,16 @@ standby runs the new release
 refusal took effect, and stays pending until the upgraded standby holds
 its record.
 
+**The upgrade to schema version 5** (scoped revocations and holds per
+store, after the v0.1.0 audit, [ADR 006](adr/006-authority-service.md#changes-after-the-v010-audit))
+adds a table, `revocation_scopes`, and one statement to the stream. Same
+order as wave 5: the standby's service first, then on the primary
+`init-restore-authority` (it upgrades the catalogue to version 5) with the
+service stopped, then the new service, then the worker and the API. The
+service speaks protocol 2 and still serves a worker of protocol 1 during
+the upgrade. Subjects revoked before the upgrade stay in every store's
+scope: a store restored later still fences them all.
+
 ### Install the replica
 
 1. **On the primary, stop the authority service**:
