@@ -204,6 +204,11 @@ func NewFirecrackerHost(opts FirecrackerOptions) (*FirecrackerHost, error) {
 	if remote && os.Geteuid() == 0 {
 		return nil, errors.New("a worker with a helper does not run as root (ADR 024)")
 	}
+	// A laboratory's readiness probe dials the VMM's socket by its path,
+	// which only root reaches: the helper dials for the authenticated client.
+	if remote && !opts.AuthenticatedControl {
+		return nil, errors.New("a worker with a helper needs the authenticated guest contract")
+	}
 	if (opts.Ready == nil && !opts.AuthenticatedControl) || opts.Confirm == nil || opts.Adopt == nil || opts.MaxActive < 1 {
 		return nil, errors.New("readiness, placement confirmation and capacity are required")
 	}

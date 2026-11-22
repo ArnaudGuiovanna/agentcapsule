@@ -19,6 +19,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/workerhelper"
 )
 
 type kvmConfig struct{ Firecracker, Jailer, Kernel, Initrd, UpstreamFirecracker, Output, RootParent string }
@@ -38,6 +40,17 @@ func kvmSettings(t *testing.T) kvmConfig {
 	}
 	return c
 }
+
+// ownedVolumeLock checks that pid holds the volume's exclusive lock, as the
+// helper's observe reads it (workerhelper.VolumeLock).
+func ownedVolumeLock(pid int, volume string) error {
+	_, locked, err := workerhelper.VolumeLock(pid, volume)
+	if err == nil && !locked {
+		err = errVolumeLock
+	}
+	return err
+}
+
 func hashFile(t *testing.T, path string) string {
 	t.Helper()
 	b, e := os.ReadFile(path)
@@ -138,7 +151,7 @@ func newHostWithOptions(t *testing.T, change func(*FirecrackerOptions)) (*Firecr
 		if e := h.locked(context.Background(), func(r *hostRegistry) error {
 			for _, a := range r.Agents {
 				if a.Run != nil {
-					if e := h.cleanup(a.Run); e != nil {
+					if e := h.cleanup(context.Background(), a.ID, a.Run); e != nil {
 						return e
 					}
 					a.Run = nil
