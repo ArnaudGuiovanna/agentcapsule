@@ -52,10 +52,13 @@ FOR EACH ROW EXECUTE FUNCTION preserve_audit_retention();
 -- up to a horizon taken before the reader looks at that lock's holders, and
 -- once those holders have ended (ListAudit): every event stamped before the
 -- horizon has then committed or rolled back, and a later one is stamped after
--- it. Writers never wait on each other or on a reader.
+-- it. Writers never wait on each other or on a reader. The lock's second key
+-- names the table's schema with the organization, as the store's gate names
+-- its schema: a reader waits only for the writers of its own installation,
+-- never for another schema's in the same database (FIX-2).
 CREATE FUNCTION stamp_audit_event() RETURNS trigger LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
 BEGIN
-  PERFORM pg_advisory_xact_lock_shared(756610047, hashtext(NEW.tenant_id));
+  PERFORM pg_advisory_xact_lock_shared(756610047, hashtext(TG_TABLE_SCHEMA || '/' || NEW.tenant_id));
   IF TG_ARGV[0] = 'replayed_at' THEN
     NEW.replayed_at := clock_timestamp();
   ELSE

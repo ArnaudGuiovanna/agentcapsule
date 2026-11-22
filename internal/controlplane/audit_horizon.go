@@ -20,7 +20,10 @@ import (
 // lock: writers never wait for it.
 
 // auditFeedLock is the first key of an organization's feed lock; the second
-// is hashtext of its ID (stamp_audit_event).
+// is hashtext of its schema and its ID, "<schema>/<id>" (stamp_audit_event):
+// the table's schema there, the transaction's current schema here, which is
+// the store's (connections.go). A page never waits for the writers of
+// another schema of the database.
 const auditFeedLock = 756610047
 
 // auditWriterWait bounds how long a page waits for the organization's
@@ -35,7 +38,7 @@ var ErrAuditBusy = errors.New("an audited transaction of the organization is sti
 // among $3 when it is not null.
 const auditWriters = `SELECT coalesce(array_agg(virtualtransaction),'{}') FROM pg_locks
     WHERE locktype='advisory' AND database=(SELECT oid FROM pg_database WHERE datname=current_database())
-      AND classid=$1::bigint::oid AND objid=(hashtext($2)::bigint & 4294967295)::oid AND objsubid=2 AND granted
+      AND classid=$1::bigint::oid AND objid=(hashtext(current_schema()||'/'||$2)::bigint & 4294967295)::oid AND objsubid=2 AND granted
       AND ($3::text[] IS NULL OR virtualtransaction=ANY($3::text[]))`
 
 // auditHorizon returns the time before which the organization's trail is
