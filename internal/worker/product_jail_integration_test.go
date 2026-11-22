@@ -14,6 +14,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/runtime"
 )
 
 // hostAgentUID is the UID the host's registry gave the agent's VMM.
@@ -142,10 +144,13 @@ func entries(t *testing.T, dir string) []string {
 // and network namespaces, in its own cgroup with the plan's memory, CPU and
 // process limits, with its open files bounded, and holds a KVM VM. A stop
 // leaves nothing for another capsule (RUN-008): no process of the agent's
-// UID, no jail, cgroup, socket, platform lock or boot credentials; only the
-// agent's own volume is still its UID's, and its log stays the host's. After
-// the agent's deletion, the next agent gets another UID.
+// UID, no jail, cgroup, socket, platform lock, boot credentials or log; only
+// the agent's own volume is still its UID's. After the agent's deletion, the
+// next agent gets another UID. The host runs as in production: no guest
+// serial console (S-20).
 func TestProductWorkerJailsEachVMAndLeavesNothingBehind(t *testing.T) {
+	labRuntimeOptions = func(o *runtime.FirecrackerOptions) { o.SerialConsole = false }
+	t.Cleanup(func() { labRuntimeOptions = nil })
 	l := newRegistryLab(t)
 	agent := l.createOn("jailed", "reference", "1.0.0").AgentID
 	if got := l.agentState(agent); got != "READY" {

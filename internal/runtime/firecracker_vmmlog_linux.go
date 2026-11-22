@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -18,8 +19,10 @@ import (
 // The file is opened for appending, so the host can cut it without the VMM:
 // the host's monitor empties it once it passes VMMLogCap, at most one
 // monitorPeriod late. It goes with its run's cleanup, and the census removes
-// a log whose run is gone. A pipe would bound it exactly, but a VMM must
-// outlive the worker process, which would close the pipe's reading end.
+// a log whose run is gone; a debugging host keeps the newest debugLogsKept
+// of those, and -collect-garbage removes them. A pipe would bound it exactly,
+// but a VMM must outlive the worker process, which would close the pipe's
+// reading end.
 
 // VMMLogCap bounds each VMM's log, give or take one monitorPeriod of output.
 var VMMLogCap int64 = 1 << 20
@@ -86,10 +89,39 @@ func (h *FirecrackerHost) listLogs() ([]string, error) {
 	return ids, nil
 }
 
-// removeStaleLogs removes the logs listed whose run is in no agent's record.
+// debugLogsKept is how many logs of ended runs a debugging host keeps.
+const debugLogsKept = 16
+
+// removeStaleLogs removes the logs listed whose run is in no agent's record;
+// a debugging host (SerialConsole) keeps the newest debugLogsKept of them.
 func (h *FirecrackerHost) removeStaleLogs(ctx context.Context, listed []string) error {
+	if h.opts.SerialConsole {
+		listed = olderLogs(h, listed, debugLogsKept)
+	}
 	_, err := h.staleLogs(ctx, listed, false)
 	return err
+}
+
+// olderLogs drops the keep newest of the logs listed.
+func olderLogs(h *FirecrackerHost, listed []string, keep int) []string {
+	type stamped struct {
+		id string
+		at time.Time
+	}
+	logs := make([]stamped, 0, len(listed))
+	for _, id := range listed {
+		if st, err := os.Lstat(h.logPath(id)); err == nil {
+			logs = append(logs, stamped{id, st.ModTime()})
+		}
+	}
+	slices.SortFunc(logs, func(a, b stamped) int { return b.at.Compare(a.at) })
+	var older []string
+	for i, l := range logs {
+		if i >= keep {
+			older = append(older, l.id)
+		}
+	}
+	return older
 }
 
 // staleLogs counts, and unless dryRun removes, the logs listed whose run is

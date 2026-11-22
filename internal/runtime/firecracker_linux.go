@@ -461,9 +461,12 @@ func (h *FirecrackerHost) cleanup(run *VMRun) error {
 	if err := os.Remove(h.platformLockPath(run.ID)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	// The VMM's log goes with its run (S-20).
-	if err := os.Remove(h.logPath(run.ID)); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
+	// The VMM's log goes with its run (S-20). While debugging, it stays for
+	// inspection; the census keeps the newest few (removeStaleLogs).
+	if !h.opts.SerialConsole {
+		if err := os.Remove(h.logPath(run.ID)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
 	}
 	return syncDir(filepath.Join(h.root, "credentials"))
 }

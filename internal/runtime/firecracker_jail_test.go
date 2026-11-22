@@ -4,6 +4,7 @@ package runtime
 
 import (
 	"bytes"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -84,6 +85,54 @@ func TestAVMMLogIsBoundedAndRemovedWithItsRun(t *testing.T) {
 	}
 	if _, err = os.Stat(l.h.logPath(run.ID)); !os.IsNotExist(err) {
 		t.Fatal("the log outlived its run:", err)
+	}
+}
+
+// A debugging host keeps the log of a run that ended, for inspection, and
+// the census keeps only the newest few of those; garbage collection removes
+// them all (S-20).
+func TestADebuggingHostKeepsOnlyItsNewestLogs(t *testing.T) {
+	l := newAdoptionLab(t, 1, false)
+	l.h.opts.SerialConsole = true
+	if err := os.MkdirAll(filepath.Join(l.h.root, "logs"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	run := l.runOf(t, "agent-00")
+	if err := os.WriteFile(l.h.logPath(run.ID), []byte("console"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	l.refuse["agent-00"] = ErrGeneration
+	if _, err := l.h.ReconcileAgent(t.Context(), "agent-00"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(l.h.logPath(run.ID)); err != nil {
+		t.Fatal("a debugging host lost the log of a run that ended:", err)
+	}
+	old := time.Now().Add(-time.Hour)
+	for i := range debugLogsKept + 3 {
+		id := fmt.Sprintf("%016x", 0xabc000+i)
+		if err := os.WriteFile(l.h.logPath(id), nil, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(l.h.logPath(id), old, old.Add(time.Duration(i)*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := l.h.Reconcile(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	left, err := l.h.listLogs()
+	if err != nil || len(left) != debugLogsKept {
+		t.Fatal("the census kept", len(left), err)
+	}
+	if n, err := CollectStaleLogsAt(t.Context(), l.h.root, true); err != nil || n != debugLogsKept {
+		t.Fatal("a dry run counted", n, err)
+	}
+	if n, err := CollectStaleLogsAt(t.Context(), l.h.root, false); err != nil || n != debugLogsKept {
+		t.Fatal("the collection removed", n, err)
+	}
+	if left, err = l.h.listLogs(); err != nil || len(left) != 0 {
+		t.Fatal("logs left after the collection", left, err)
 	}
 }
 
