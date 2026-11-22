@@ -11,6 +11,7 @@ import (
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorization"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol/wire"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane/identity"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -470,18 +471,7 @@ func (c *AgentCatalog) ReadOutputStream(ctx context.Context, p Principal, op str
 	return c.ReadOutputStreamPage(ctx, p, op, 0, after, limit)
 }
 
-// snapshotTx is used only by read-only REPEATABLE READ projections. They see
-// authority and content at the same snapshot. Mutating callers keep all the
-// normal row locks until commit. ListAudit also uses it for an early check
-// of the caller's rights, which a check under the row locks follows.
-type snapshotTx struct{ pgx.Tx }
-
-func authorityLock(tx pgx.Tx, clause string) string {
-	if _, snapshot := tx.(snapshotTx); snapshot {
-		return ""
-	}
-	return clause
-}
+type snapshotTx = identity.SnapshotTx
 
 // ReadOutputStreamPage reads state, rights and sealed frames at one database
 // snapshot. A cursor from another attempt starts at its replacement's first
@@ -501,7 +491,7 @@ func (c *AgentCatalog) ReadOutputStreamPage(ctx context.Context, p Principal, op
 	if err != nil {
 		return out, err
 	}
-	tx := snapshotTx{base}
+	tx := snapshotTx{Tx: base}
 	defer rollback(tx)
 	if _, err = authorizeTenant(ctx, tx, p, authorization.ScopeAgentContentRead); err != nil {
 		return out, err
@@ -574,7 +564,7 @@ type sealedChunk struct {
 func (c *AgentCatalog) openStreamChunk(op, agentID, requester string, attempt int, sealed sealedChunk) (StreamChunk, error) {
 	ch := StreamChunk{Attempt: attempt, FirstSeq: sealed.firstSeq, LastSeq: sealed.lastSeq}
 	b := sealed.binding
-	b.Version, b.Parties = 1, []transitParty{{agentID, requester}}
+	b.Version, b.Parties = 1, []transitParty{{Agent: agentID, Owner: requester}}
 	if !slices.Equal(sealed.agents, []string{agentID}) || !slices.Equal(sealed.owners, []string{requester}) {
 		return ch, ErrNotFound
 	}
@@ -585,7 +575,7 @@ func (c *AgentCatalog) openStreamChunk(op, agentID, requester string, attempt in
 	if !ok || !bytes.Equal(sealed.keyHash, key.hash[:]) {
 		return ch, ErrTransitKey
 	}
-	body, err := openTransitPayload(key, b, sealed.ciphertext)
+	body, err := b.Open(key.cipher, sealed.ciphertext)
 	ch.Frames = body
 	return ch, err
 }

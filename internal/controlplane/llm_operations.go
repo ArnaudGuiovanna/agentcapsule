@@ -2,10 +2,10 @@ package controlplane
 
 import (
 	"context"
-	"math/big"
 	"slices"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorization"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane/accounting"
 )
 
 // The operations an alias's model may serve (ADR 023 §12). A platform channel
@@ -13,11 +13,11 @@ import (
 // /v1/llm/transcribe and /v1/llm/ocr their own. vision is informative: the
 // gateway does not inspect a forwarded body.
 const (
-	LLMChat       = "chat"
-	LLMVision     = "vision"
-	LLMEmbed      = "embed"
-	LLMTranscribe = "transcribe"
-	LLMOCR        = "ocr"
+	LLMChat       = accounting.Chat
+	LLMVision     = accounting.Vision
+	LLMEmbed      = accounting.Embed
+	LLMTranscribe = accounting.Transcribe
+	LLMOCR        = accounting.OCR
 )
 
 // llmOperations is the canonical order an alias's operations are stored in.
@@ -116,89 +116,5 @@ func (a *Accounts) SetLLMAliasOperations(ctx context.Context, p Principal, alias
 	return r, commit(ctx, tx)
 }
 
-// LLMAmounts is what one call reserves or settles, in its operation's units:
-// tokens for chat and embed (an embedding has no output), seconds of audio
-// for a transcription, pages for OCR.
-type LLMAmounts struct {
-	Operation           string
-	Input, Output       int64
-	AudioSeconds, Pages int64
-}
-
-// maxLLMUnits bounds a reported amount in any unit, as validUsage does.
-const maxLLMUnits = 1e12
-
-// valid says whether the amounts fit their operation. A reservation must
-// count something; a settlement may be zero.
-func (q LLMAmounts) valid(reservation bool) bool {
-	for _, v := range []int64{q.Input, q.Output, q.AudioSeconds, q.Pages} {
-		if v < 0 || v > maxLLMUnits {
-			return false
-		}
-	}
-	switch q.Operation {
-	case LLMChat:
-		return q.AudioSeconds == 0 && q.Pages == 0 && (!reservation || q.Input+q.Output >= 1)
-	case LLMEmbed:
-		return q.Output == 0 && q.AudioSeconds == 0 && q.Pages == 0 && (!reservation || q.Input >= 1)
-	case LLMTranscribe:
-		return q.Input == 0 && q.Output == 0 && q.Pages == 0 && (!reservation || q.AudioSeconds >= 1)
-	case LLMOCR:
-		return q.Input == 0 && q.Output == 0 && q.AudioSeconds == 0 && q.Pages <= 1e9 && (!reservation || q.Pages >= 1)
-	}
-	return false
-}
-
-// tokens is what a token budget counts of the amounts: transcription and OCR
-// count none.
-func (q LLMAmounts) tokens() int64 { return q.Input + q.Output }
-
-// llmPrices are an alias's prices as a call keeps them from its reservation.
-// priced says whether the call's own unit was priced.
-type llmPrices struct {
-	priced                  bool
-	input, output           int64 // per million tokens
-	audioPerMinute, perPage int64
-}
-
-// cost is the estimated cost of the amounts in micro-units, rounded up once so
-// that an estimate never under-reports; ok is false if it does not fit in an
-// int64.
-func (p llmPrices) cost(q LLMAmounts) (int64, bool) {
-	switch q.Operation {
-	case LLMTranscribe:
-		return ceilProduct(q.AudioSeconds, p.audioPerMinute, 60)
-	case LLMOCR:
-		return ceilProduct(q.Pages, p.perPage, 1)
-	}
-	return costMicro(q.Input, q.Output, p.input, p.output)
-}
-
-// ceilProduct is ceil(a*b/d), exact.
-func ceilProduct(a, b, d int64) (int64, bool) {
-	v := new(big.Int).Mul(big.NewInt(a), big.NewInt(b))
-	v.Add(v, big.NewInt(d-1))
-	v.Quo(v, big.NewInt(d))
-	if !v.IsInt64() {
-		return 0, false
-	}
-	return v.Int64(), true
-}
-
-// aliasPrices reads the prices an operation's call keeps from its alias.
-func aliasPrices(op string, tokensPriced bool, input, output int64, audio, page *int64) llmPrices {
-	p := llmPrices{priced: tokensPriced, input: input, output: output}
-	if audio != nil {
-		p.audioPerMinute = *audio
-	}
-	if page != nil {
-		p.perPage = *page
-	}
-	switch op {
-	case LLMTranscribe:
-		p.priced = audio != nil
-	case LLMOCR:
-		p.priced = page != nil
-	}
-	return p
-}
+// LLMAmounts holds a reservation or settlement in the units of its operation.
+type LLMAmounts = accounting.Amounts

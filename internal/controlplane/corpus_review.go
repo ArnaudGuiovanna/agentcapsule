@@ -12,6 +12,7 @@ import (
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorization"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol/wire"
+	corpusdb "github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane/corpus"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/ociregistry/reference"
 	"github.com/jackc/pgx/v5"
 )
@@ -99,12 +100,12 @@ func (t *Transit) CompleteCorpusReview(ctx context.Context, j CorpusWork, r Corp
 		return err
 	}
 	if q.MaxCorpusStorageMiB != nil {
-		used, _, err := corpusOccupation(ctx, tx, j.Tenant)
+		used, _, err := corpusdb.Occupation(ctx, tx, j.Tenant)
 		if err != nil {
 			return err
 		}
-		var pinned bool
-		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM (`+tenantCorpusPins+`) pins WHERE digest=$2)`, j.Tenant, r.Digest).Scan(&pinned); err != nil {
+		pinned, err := corpusdb.HoldsDigest(ctx, tx, j.Tenant, r.Digest)
+		if err != nil {
 			return err
 		}
 		if !pinned && r.Bytes > (*q.MaxCorpusStorageMiB<<20)-used {

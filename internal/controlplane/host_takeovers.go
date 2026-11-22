@@ -7,12 +7,13 @@ import (
 	"slices"
 	"time"
 
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane/workqueue"
 	"github.com/jackc/pgx/v5"
 )
 
 // ErrHostLost refuses work on a host that another host took over (ADR 020):
 // its worker gets no job, and no agent is reserved on it.
-var ErrHostLost = errors.New("this host was lost and another host took it over")
+var ErrHostLost = workqueue.ErrHostLost
 
 // maxTakeoverChain bounds the hosts a takeover chain may pass through: a host
 // lost, then the host that took it over lost in turn, and so on.
@@ -164,7 +165,7 @@ func relocateAgent(ctx context.Context, tx pgx.Tx, agentID, from, host string) e
 		return err
 	}
 	for _, j := range jobs {
-		n, err := nextWorkTicket(ctx, tx, host)
+		n, err := workqueue.NextTicket(ctx, tx, host)
 		if err != nil {
 			return err
 		}

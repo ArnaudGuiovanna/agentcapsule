@@ -3,43 +3,7 @@ package controlplane
 import (
 	"context"
 	"errors"
-	"time"
-
-	"github.com/jackc/pgx/v5"
 )
-
-// checkMailboxLease runs with the mailbox row locked, before an attempt can
-// claim the head. Expiry takes precedence over a busy or exhausted lease.
-func checkMailboxLease(ctx context.Context, tx pgx.Tx, m mailboxRow) error {
-	var now time.Time
-	if err := tx.QueryRow(ctx, "SELECT clock_timestamp()").Scan(&now); err != nil {
-		return err
-	}
-	if !m.Deadline.After(now) {
-		return ErrExpired
-	}
-	if m.LeaseUntil != nil && m.LeaseUntil.After(now) {
-		return ErrDeliveryBusy
-	}
-	if m.Attempts >= m.Limit {
-		return ErrAttemptsExhausted
-	}
-	return nil
-}
-
-// takeMailboxLease consumes the attempt in both the mailbox and its outbox
-// entry. The caller still holds the head's lock in the same transaction.
-func takeMailboxLease(ctx context.Context, tx pgx.Tx, id string, lease time.Duration) (string, error) {
-	token := newID("lease")
-	if _, err := tx.Exec(ctx, `UPDATE agent_mailboxes SET attempts=attempts+1,lease_token=$2,dispatch_authorized=false,
-        lease_until=clock_timestamp()+$3::bigint*interval '1 microsecond' WHERE id=$1`, id, token, lease.Microseconds()); err != nil {
-		return "", err
-	}
-	if _, err := tx.Exec(ctx, "UPDATE outbox SET attempts=attempts+1 WHERE mailbox_id=$1", id); err != nil {
-		return "", err
-	}
-	return token, nil
-}
 
 // dispatchPending runs an attempt inside the destination's admission turn.
 // A claim that finds the delivery due to retire releases admission first:

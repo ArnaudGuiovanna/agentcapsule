@@ -11,7 +11,7 @@ import (
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorization"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/capability"
-
+	corpusdb "github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane/corpus"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -76,10 +76,10 @@ func (c *AgentCatalog) ApproveSystemImage(ctx context.Context, p Principal, key 
 	if err = authorizePlatform(ctx, tx, p); err != nil {
 		return APIReceipt{}, err
 	}
-	if !imageID(in.ID) || !validArtifactDigest(in.Kernel) || !validArtifactDigest(in.Initrd) || !validFeatures(in.Features) {
+	if !imageID(in.ID) || !validArtifactDigest(in.Kernel) || !validArtifactDigest(in.Initrd) || !corpusdb.ValidFeatures(in.Features) {
 		return APIReceipt{}, ErrInput
 	}
-	in.Features = sortedFeatures(in.Features)
+	in.Features = corpusdb.SortedFeatures(in.Features)
 	out, err := c.accounts.withReceipt(ctx, tx, scope(p, "POST", "/v1/system-images", key), in, func() (int, any, error) {
 		var id string
 		err := tx.QueryRow(ctx, `INSERT INTO system_images(id,kernel_digest,initrd_digest,approved_by,features) VALUES($1,$2,$3,$4,$5)
@@ -126,7 +126,7 @@ func (c *AgentCatalog) SystemImages(ctx context.Context, p Principal, after stri
 		if err := rows.Scan(&v.ID, &v.Kernel, &v.Initrd, &v.Features); err != nil {
 			return nil, err
 		}
-		v.Features = sortedFeatures(v.Features)
+		v.Features = corpusdb.SortedFeatures(v.Features)
 		items = append(items, v)
 	}
 	return items, rows.Err()
@@ -187,7 +187,7 @@ func validateTemplate(ctx context.Context, tx pgx.Tx, tenant, host string, s Tem
 		return "", err
 	}
 	if len(s.Corpora) > 0 {
-		if err = corporaMountable(ctx, tx, release, s.SystemImage); err != nil {
+		if err = corpusdb.CheckMount(ctx, tx, release, s.SystemImage); err != nil {
 			return "", err
 		}
 		if _, err = resolveCorpusBindings(ctx, tx, tenant, host, s.SystemImage, s.Corpora, true); err != nil {

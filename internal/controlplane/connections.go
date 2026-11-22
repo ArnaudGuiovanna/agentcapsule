@@ -65,7 +65,7 @@ func OpenWith(ctx context.Context, connectionString string, c Connections) (*Sto
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{pool: pool}
+	s := newStore(pool)
 	tx, err := s.begin(ctx)
 	if err != nil {
 		pool.Close()

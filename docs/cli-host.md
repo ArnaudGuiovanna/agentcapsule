@@ -200,7 +200,7 @@ OIDC realm when both are on the managed cluster. [Recovery](recovery.md)
 
 On a shared PostgreSQL installation, an admin can apply an expand migration
 while API and worker processes from the preceding build continue to serve.
-Deploy the first build with migration 0083 using the maintenance procedure
+Deploy the first build with migration 0084 using the maintenance procedure
 above. Earlier binaries require their exact ledger. After that upgrade:
 
 1. Back up the installation and compare the signed migration manifests. An

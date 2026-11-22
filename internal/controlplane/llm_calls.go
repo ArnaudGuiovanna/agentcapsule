@@ -2,7 +2,8 @@ package controlplane
 
 import (
 	"context"
-	"errors"
+
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane/budgets"
 )
 
 // The LLM service (internal/llmservice) calls the model providers; the
@@ -15,7 +16,7 @@ import (
 
 // ErrLLMAlreadyProcessed: this request key already has a reservation that is not
 // safe to replay. The caller must use a new key to ask again.
-var ErrLLMAlreadyProcessed = errors.New("llm request key already used")
+var ErrLLMAlreadyProcessed = budgets.ErrAlreadyProcessed
 
 // OrganizationDisabled reports whether the organization tenantID is
 // disabled: its agents call no model (organization_suspension.go).

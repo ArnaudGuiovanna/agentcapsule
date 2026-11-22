@@ -3,24 +3,13 @@ package controlplane
 import (
 	"context"
 	"encoding/json"
+
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorization"
+	corpusdb "github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane/corpus"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpussource/repository"
 	"github.com/jackc/pgx/v5"
 )
 
-const tenantCorpusPins = `SELECT digest,image_bytes AS size FROM corpus_releases WHERE tenant_id=$1 AND deprecated_at IS NULL
- UNION ALL SELECT ext->>'digest',(ext->>'bytes')::bigint FROM corpus_releases CROSS JOIN LATERAL jsonb_array_elements(extensions) ext WHERE tenant_id=$1 AND deprecated_at IS NULL
- UNION ALL SELECT image_digest,image_bytes FROM corpus_builds WHERE tenant_id=$1 AND state='REVIEW'
- UNION ALL SELECT x.image_digest,x.image_bytes FROM corpus_extensions x JOIN corpus_builds b ON b.id=x.build_id WHERE b.tenant_id=$1 AND b.state='REVIEW' AND x.state='READY'`
-
-// corpusOccupation counts identical active images once, including their reviews.
-func corpusOccupation(ctx context.Context, tx pgx.Tx, tenant string) (bytes int64, builds int, err error) {
-	err = tx.QueryRow(ctx, `SELECT coalesce(sum(bytes),0),(SELECT count(*) FROM corpus_builds WHERE tenant_id=$1 AND state IN ('QUEUED','FETCHING','SCANNING','FETCHING_LFS','CONVERTING','PACKAGING'))
- FROM (SELECT digest,max(size) AS bytes FROM (
- `+tenantCorpusPins+`
- ) pins GROUP BY digest) held`, tenant).Scan(&bytes, &builds)
-	return
-}
 func (a *Accounts) RequestCorpusBuild(ctx context.Context, p Principal, id, key string, in RequestCorpusBuildInput) (APIReceipt, error) {
 	if in.Ref != "" && (!repository.ValidRef(in.Ref) || in.Commit != "") || in.Commit != "" && !repository.ValidCommit(in.Commit) {
 		return APIReceipt{}, ErrInput
@@ -40,7 +29,7 @@ func (a *Accounts) RequestCorpusBuild(ctx context.Context, p Principal, id, key 
 		if err != nil {
 			return 0, nil, err
 		}
-		bytes, builds, err := corpusOccupation(ctx, tx, p.TenantID)
+		bytes, builds, err := corpusdb.Occupation(ctx, tx, p.TenantID)
 		if err != nil {
 			return 0, nil, err
 		}
@@ -58,7 +47,7 @@ func (a *Accounts) RequestCorpusBuild(ctx context.Context, p Principal, id, key 
 		if _, err = tx.Exec(ctx, `INSERT INTO corpus_builds(id,tenant_id,corpus_id,requested_ref,commit_sha) VALUES($1,$2,$3,$4,nullif($5,''))`, build, p.TenantID, id, ref, in.Commit); err != nil {
 			return 0, nil, err
 		}
-		b, err := scanBuild(tx.QueryRow(ctx, buildSelect+" WHERE b.id=$1", build))
+		b, err := corpusdb.GetBuild(ctx, tx, p.TenantID, build)
 		if err != nil {
 			return 0, nil, err
 		}
@@ -67,7 +56,7 @@ func (a *Accounts) RequestCorpusBuild(ctx context.Context, p Principal, id, key 
 }
 func (a *Accounts) CancelCorpusBuild(ctx context.Context, p Principal, id, key string) (APIReceipt, error) {
 	return a.corpusMutation(ctx, p, authorization.ManageCorpus, key, "corpus.cancel/"+id, struct{}{}, func(tx pgx.Tx) (int, any, error) {
-		b, err := scanBuild(tx.QueryRow(ctx, buildSelect+" WHERE b.id=$1 AND b.tenant_id=$2 FOR UPDATE", id, p.TenantID))
+		b, err := corpusdb.LockBuild(ctx, tx, p.TenantID, id)
 		if err != nil {
 			return 0, nil, err
 		}
@@ -84,7 +73,7 @@ func (a *Accounts) CancelCorpusBuild(ctx context.Context, p Principal, id, key s
 		if err = purgeCorpusReview(ctx, tx, id); err != nil {
 			return 0, nil, err
 		}
-		b, err = scanBuild(tx.QueryRow(ctx, buildSelect+" WHERE b.id=$1", id))
+		b, err = corpusdb.GetBuild(ctx, tx, p.TenantID, id)
 		if err != nil {
 			return 0, nil, err
 		}
@@ -133,7 +122,7 @@ func (a *Accounts) PublishCorpusBuild(ctx context.Context, p Principal, id, key 
 		return APIReceipt{}, ErrInput
 	}
 	return a.corpusMutation(ctx, p, authorization.ManageCorpus, key, "corpus.publish/"+id, version, func(tx pgx.Tx) (int, any, error) {
-		b, err := scanBuild(tx.QueryRow(ctx, buildSelect+" WHERE b.id=$1 AND b.tenant_id=$2 FOR UPDATE", id, p.TenantID))
+		b, err := corpusdb.LockBuild(ctx, tx, p.TenantID, id)
 		if err != nil {
 			return 0, nil, err
 		}
@@ -161,7 +150,7 @@ func (a *Accounts) PublishCorpusBuild(ctx context.Context, p Principal, id, key 
 		if err != nil {
 			return 0, nil, err
 		}
-		r, err := scanCorpusRelease(tx.QueryRow(ctx, releaseSelect+" WHERE r.corpus_id=$1 AND r.version=$2", b.CorpusID, version))
+		r, err := corpusdb.ReleaseVersion(ctx, tx, p.TenantID, b.CorpusID, version)
 		if err != nil {
 			return 0, nil, err
 		}
@@ -188,7 +177,7 @@ func (a *Accounts) DeprecateCorpusRelease(ctx context.Context, p Principal, id, 
 		if err != nil {
 			return 0, nil, err
 		}
-		r, err := scanCorpusRelease(tx.QueryRow(ctx, releaseSelect+" WHERE r.id=$1 AND r.tenant_id=$2", id, p.TenantID))
+		r, err := corpusdb.GetRelease(ctx, tx, p.TenantID, id)
 		if err != nil {
 			return 0, nil, err
 		}

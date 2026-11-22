@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorization"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane/workqueue"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -153,7 +154,7 @@ func (s *Store) advanceGrowth(ctx context.Context, g VolumeGrowth, to, reason st
 	}
 	if to == "capturing" {
 		var busy bool
-		if err := tx.QueryRow(ctx, `SELECT `+workInProgress+` OR a.phase<>'LIVE' FROM agents a WHERE a.id=$1`, g.AgentID).Scan(&busy); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT `+workqueue.WorkInProgress+` OR a.phase<>'LIVE' FROM agents a WHERE a.id=$1`, g.AgentID).Scan(&busy); err != nil {
 			return err
 		}
 		if busy {

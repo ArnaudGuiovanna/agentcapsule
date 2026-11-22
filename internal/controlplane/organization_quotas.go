@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorization"
+	corpusdb "github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane/corpus"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -136,7 +137,7 @@ func organizationUsage(ctx context.Context, tx pgx.Tx, tenant, except string) (O
 	if err != nil {
 		return u, err
 	}
-	bytes, builds, err := corpusOccupation(ctx, tx, tenant)
+	bytes, builds, err := corpusdb.Occupation(ctx, tx, tenant)
 	u.CorpusStorageMiB = (bytes + 1048575) >> 20
 	u.CorpusBuilds = builds
 	return u, err

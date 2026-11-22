@@ -137,7 +137,7 @@ func (a *p3Replay) setupLookupOutage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reader := &Store{pool: pool}
+	reader := newStore(pool)
 	a.lookup = reader
 	t.Cleanup(reader.Close)
 	tx, err := reader.begin(t.Context())

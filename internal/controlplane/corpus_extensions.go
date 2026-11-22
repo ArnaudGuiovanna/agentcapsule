@@ -7,6 +7,7 @@ import (
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorization"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol/wire"
+	corpusdb "github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane/corpus"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/ociregistry/reference"
 	"github.com/jackc/pgx/v5"
 )
@@ -35,12 +36,7 @@ type CorpusExtension struct {
 	ImageBytes int64  `json:"image_bytes,omitempty"`
 	ErrorCode  string `json:"error_code,omitempty"`
 }
-type CorpusExtensionImage struct {
-	Name   string `json:"name"`
-	Digest string `json:"digest"`
-	UUID   string `json:"uuid"`
-	Bytes  int64  `json:"bytes"`
-}
+type CorpusExtensionImage = corpusdb.CorpusExtensionImage
 
 const enricherSelect = `SELECT e.id,e.name,r.name,r.version,r.artifact_digest,r.signer FROM corpus_enrichers e JOIN harness_releases r ON r.id=e.release_id`
 
@@ -51,7 +47,7 @@ func scanEnricher(r pgx.Row) (CorpusEnricher, error) {
 }
 func (a *Accounts) ListCorpusEnrichers(ctx context.Context, p Principal, after string, limit int) ([]CorpusEnricher, error) {
 	return corpusRead(ctx, a, p, authorization.ManageCorpus, func(tx pgx.Tx) ([]CorpusEnricher, error) {
-		return corpusPage(ctx, tx, limit, scanEnricher, enricherSelect+" WHERE e.tenant_id=$1 AND e.id>$2 ORDER BY e.id LIMIT $3", p.TenantID, after, limit)
+		return corpusdb.Page(ctx, tx, limit, scanEnricher, enricherSelect+" WHERE e.tenant_id=$1 AND e.id>$2 ORDER BY e.id LIMIT $3", p.TenantID, after, limit)
 	})
 }
 func (a *Accounts) AuthorizeCorpusEnricher(ctx context.Context, p Principal, key string, in AuthorizeCorpusEnricherInput) (APIReceipt, error) {
@@ -257,12 +253,12 @@ func (s *Store) SettleCorpusExtension(ctx context.Context, w CorpusExtensionWork
 			return err
 		}
 		if q.MaxCorpusStorageMiB != nil {
-			used, _, err := corpusOccupation(ctx, tx, w.Tenant)
+			used, _, err := corpusdb.Occupation(ctx, tx, w.Tenant)
 			if err != nil {
 				return err
 			}
-			var pinned bool
-			if err = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM ("+tenantCorpusPins+") p WHERE digest=$2)", w.Tenant, img.Digest).Scan(&pinned); err != nil {
+			pinned, err := corpusdb.HoldsDigest(ctx, tx, w.Tenant, img.Digest)
+			if err != nil {
 				return err
 			}
 			if !pinned && img.Bytes > (*q.MaxCorpusStorageMiB<<20)-used {

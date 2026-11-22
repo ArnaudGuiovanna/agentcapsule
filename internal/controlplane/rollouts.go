@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorization"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane/workqueue"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -227,7 +228,7 @@ func (s *Store) RolloutStep(ctx context.Context, id, agent, host string, running
 			return step, ErrNoWork
 		}
 		var busy bool
-		if err = tx.QueryRow(ctx, "SELECT "+workInProgress+" FROM agents a WHERE a.id=$1", agent).Scan(&busy); err != nil {
+		if err = tx.QueryRow(ctx, "SELECT "+workqueue.WorkInProgress+" FROM agents a WHERE a.id=$1", agent).Scan(&busy); err != nil {
 			return step, err
 		}
 		if busy {

@@ -6,13 +6,14 @@ import (
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorization"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane/budgets"
 	"github.com/jackc/pgx/v5"
 )
 
 // ErrLLMAliasDenied refuses a model call, before any reservation, when the
 // alias's access is "listed" and no active grant names the calling agent,
 // directly or through an active assignment of the agent to an active team.
-var ErrLLMAliasDenied = errors.New("llm alias not granted to this agent")
+var ErrLLMAliasDenied = budgets.ErrAliasDenied
 
 // LLMAliasGrant lets one agent, or the agents assigned to one team, call an
 // alias whose access is "listed" (ADR 011).

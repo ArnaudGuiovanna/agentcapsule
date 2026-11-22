@@ -154,7 +154,7 @@ func tracedStore(t testing.TB, dsn string) (*Store, *statementCounter) {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	return &Store{pool: pool}, counter
+	return newStore(pool), counter
 }
 
 // P-06: a transaction's preamble (the shared or exclusive gate, the request
@@ -220,7 +220,7 @@ func TestPreambleWithoutThePreparedCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	bare := &Store{pool: pool}
+	bare := newStore(pool)
 	tx, err := bare.begin(t.Context())
 	if err != nil {
 		t.Fatal("a connection without the prepared check:", err)

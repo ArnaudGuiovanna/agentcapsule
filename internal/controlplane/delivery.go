@@ -7,17 +7,18 @@ import (
 	"errors"
 	"time"
 
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane/mailbox"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/harnessstore/envelope"
 	"github.com/jackc/pgx/v5"
 )
 
 var (
-	ErrNoDelivery        = errors.New("no pending delivery")
-	ErrNotHead           = errors.New("delivery is not the FIFO head")
-	ErrDeliveryBusy      = errors.New("delivery lease is active")
-	ErrLeaseLost         = errors.New("delivery lease is no longer current")
-	ErrAttemptsExhausted = errors.New("delivery attempt budget exhausted")
-	ErrDeliveryClosing   = errors.New("delivery is waiting for its durable barrier")
+	ErrNoDelivery        = mailbox.ErrNoDelivery
+	ErrNotHead           = mailbox.ErrNotHead
+	ErrDeliveryBusy      = mailbox.ErrDeliveryBusy
+	ErrLeaseLost         = mailbox.ErrLeaseLost
+	ErrAttemptsExhausted = mailbox.ErrAttemptsExhausted
+	ErrDeliveryClosing   = mailbox.ErrDeliveryClosing
 )
 
 // DeliveryRuntime must authenticate the destination/envelope and send an ACK
@@ -65,16 +66,7 @@ type DeliveryAttempt struct {
 	Envelope                          envelope.Event
 }
 
-type mailboxRow struct {
-	ID, Destination, Kind, State, Token string
-	StatusReason                        string
-	Sequence                            int64
-	Attempts, Limit                     int
-	Closing                             bool
-	MayHaveReached                      bool
-	Deadline                            time.Time
-	LeaseUntil                          *time.Time
-}
+type mailboxRow = mailbox.Row
 
 func lockMailbox(ctx context.Context, tx pgx.Tx, id string) (mailboxRow, requestRow, map[string]agent, error) {
 	m := mailboxRow{ID: id}
@@ -103,12 +95,7 @@ func lockMailbox(ctx context.Context, tx pgx.Tx, id string) (mailboxRow, request
 }
 
 func (s *Store) HeadDelivery(ctx context.Context, agentID string) (string, error) {
-	var id string
-	err := s.pool.QueryRow(ctx, "SELECT id FROM agent_mailboxes WHERE dest_agent_id=$1 AND delivery_state='PENDING' ORDER BY seq LIMIT 1", agentID).Scan(&id)
-	if errors.Is(err, pgx.ErrNoRows) {
-		err = ErrNoDelivery
-	}
-	return id, err
+	return mailbox.HeadDelivery(ctx, s.pool, agentID)
 }
 
 // deliverable reports whether the agents a delivery needs are live: its
@@ -117,20 +104,6 @@ func (s *Store) HeadDelivery(ctx context.Context, agentID string) (string, error
 // (revocation.go), telling the sender of a revoked reply.
 func deliverable(m mailboxRow, r requestRow, agents map[string]agent) bool {
 	return agents[m.Destination].Phase == "LIVE" && (m.Kind == "status" || agents[r.Sender].Phase == "LIVE" && agents[r.Recipient].Phase == "LIVE")
-}
-
-func isHead(ctx context.Context, tx pgx.Tx, m mailboxRow) error {
-	if m.State != "PENDING" {
-		return ErrNoDelivery
-	}
-	var head string
-	if err := tx.QueryRow(ctx, "SELECT id FROM agent_mailboxes WHERE dest_agent_id=$1 AND delivery_state='PENDING' ORDER BY seq LIMIT 1", m.Destination).Scan(&head); err != nil {
-		return err
-	}
-	if head != m.ID {
-		return ErrNotHead
-	}
-	return nil
 }
 
 // ClaimDelivery reserves the head and consumes a durable attempt BEFORE any RPC.
@@ -150,7 +123,7 @@ func (s *Store) ClaimDelivery(ctx context.Context, mailboxID string, lease time.
 	if err != nil {
 		return attempt, err
 	}
-	if err := isHead(ctx, tx, m); err != nil {
+	if err := mailbox.RequireHead(ctx, tx, m); err != nil {
 		return attempt, err
 	}
 	if !deliverable(m, r, agents) {
@@ -176,7 +149,7 @@ func (s *Store) ClaimDelivery(ctx context.Context, mailboxID string, lease time.
 	if m.Closing {
 		return attempt, ErrDeliveryClosing
 	}
-	if err := checkMailboxLease(ctx, tx, m); err != nil {
+	if err := mailbox.CheckLease(ctx, tx, m); err != nil {
 		return attempt, err
 	}
 	// The envelope is stable across retries. Private bodies remain opaque transit
@@ -202,7 +175,7 @@ func (s *Store) ClaimDelivery(ctx context.Context, mailboxID string, lease time.
 	if err != nil {
 		return attempt, err
 	}
-	token, err := takeMailboxLease(ctx, tx, m.ID, lease)
+	token, err := mailbox.TakeLease(ctx, tx, m.ID, lease)
 	if err != nil {
 		return attempt, err
 	}
@@ -334,7 +307,7 @@ func (s *Store) retireDelivery(ctx context.Context, mailboxID string, runtime Re
 		return err
 	}
 	if m.Kind == "request" {
-		if err := isHead(ctx, tx, m); err != nil {
+		if err := mailbox.RequireHead(ctx, tx, m); err != nil {
 			return err
 		}
 		var existing bool
@@ -390,7 +363,7 @@ func (s *Store) retireDelivery(ctx context.Context, mailboxID string, runtime Re
 	}
 	// An attempt may have reached it, so it was claimed as the head, and
 	// stays the head while pending.
-	if err := isHead(ctx, tx, m); err != nil {
+	if err := mailbox.RequireHead(ctx, tx, m); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, "UPDATE agent_mailboxes SET closing=true WHERE id=$1", mailboxID); err != nil {
@@ -493,20 +466,8 @@ func (s *Store) dispatchMailbox(ctx context.Context, agentID, id string, lease t
 	return s.dispatchMailboxWithTransit(ctx, agentID, id, lease, runtime, nil)
 }
 
-// retirementDue reports whether a pending reply, status or instruction is to
-// be retired, however its destination fares: closing, past its deadline, or
-// out of attempts with no live lease. A request is closed by its own closure;
-// a delivery to an agent being deleted is canceled by the deletion. It reads
-// without locks: the retirement checks the agents again under theirs.
 func (s *Store) retirementDue(ctx context.Context, id string) (bool, error) {
-	var due bool
-	err := s.pool.QueryRow(ctx, `SELECT m.kind<>'request' AND m.delivery_state='PENDING' AND a.phase='LIVE' AND (m.closing
-        OR m.expires_at<=clock_timestamp() OR m.attempts>=m.attempt_limit AND (m.lease_until IS NULL OR m.lease_until<=clock_timestamp()))
-        FROM agent_mailboxes m JOIN agents a ON a.id=m.dest_agent_id WHERE m.id=$1`, id).Scan(&due)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil
-	}
-	return due, err
+	return mailbox.RetirementDue(ctx, s.pool, id)
 }
 
 func (s *Store) dispatchMailboxWithTransit(ctx context.Context, agentID, id string, lease time.Duration, runtime DeliveryRuntime, transit *Transit) error {

@@ -217,7 +217,7 @@ type ledgerReader interface {
 }
 
 func migrationLedger(ctx context.Context, db ledgerReader, migrations []schemaMigration, allowExpand bool) (int, error) {
-	// Converting the row also works before 0083 adds the declaration column.
+	// Converting the row also works before 0084 adds the declaration column.
 	rows, err := db.Query(ctx, `SELECT version,name,checksum,
         coalesce((to_jsonb(m)->>'compatible_with_previous')::boolean,false)
         FROM schema_migrations AS m ORDER BY version`)

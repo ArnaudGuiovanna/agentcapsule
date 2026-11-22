@@ -12,6 +12,7 @@ import (
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authoritylog"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorization"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane/identity"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -91,7 +92,7 @@ func (s *Store) authenticateService(ctx context.Context, secret string) (Princip
 	if err != nil {
 		return Principal{}, err
 	}
-	current, err := resolveService(ctx, tx, b)
+	current, err := identity.ResolveServiceToken(ctx, tx, b.tenantID, b.tokenID)
 	if err != nil {
 		return Principal{}, err
 	}
@@ -102,40 +103,6 @@ func (s *Store) authenticateService(ctx context.Context, secret string) (Princip
 		return Principal{}, err
 	}
 	return Principal{Kind: "tenant", ID: principal, TenantID: b.tenantID, TokenID: b.tokenID, Scopes: slices.Clone(b.scopes), service: &b}, nil
-}
-
-// resolveService rechecks that the organization, the technical account, its
-// membership and the token are all current. Every mutation of these rows
-// holds the organization row FOR UPDATE, so FOR KEY SHARE on it, held until
-// this transaction ends, excludes a concurrent revocation; the other rows are
-// read without a lock (P-07, as resolveTenant).
-func resolveService(ctx context.Context, tx pgx.Tx, b serviceBinding) (CurrentOrganization, error) {
-	var current CurrentOrganization
-	o, err := scanOrganization(tx.QueryRow(ctx, `SELECT id,name,status,policy_version,created_at FROM organizations WHERE id=$1`+authorityLock(tx, " FOR KEY SHARE"), b.tenantID))
-	if errors.Is(err, ErrNotFound) || (err == nil && o.Status != "active") {
-		return current, ErrAuthentication
-	}
-	if err != nil {
-		return current, err
-	}
-	current.Organization = o
-	var status, membership string
-	err = tx.QueryRow(ctx, `SELECT p.id,p.display_name,p.status,m.role,m.status
-        FROM service_tokens t
-        JOIN principals p ON (p.tenant_id,p.id)=(t.tenant_id,t.principal_id)
-        JOIN memberships m ON (m.tenant_id,m.principal_id)=(p.tenant_id,p.id)
-        WHERE t.id=$1 AND t.tenant_id=$2 AND p.kind='service'
-          AND t.revoked_at IS NULL AND t.expires_at>clock_timestamp()`, b.tokenID, b.tenantID).Scan(&current.PrincipalID, &current.DisplayName, &status, &current.Role, &membership)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return CurrentOrganization{}, ErrAuthentication
-	}
-	if err != nil {
-		return CurrentOrganization{}, err
-	}
-	if status != "active" || membership != "active" {
-		return CurrentOrganization{}, ErrAuthentication
-	}
-	return current, nil
 }
 
 // revokeIssuedServiceTokens revokes tokens a person issued when that person

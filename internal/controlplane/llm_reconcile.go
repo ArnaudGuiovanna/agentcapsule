@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorization"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane/budgets"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -112,7 +113,7 @@ func (a *Accounts) SettleLLMOutcome(ctx context.Context, p Principal, id, key st
 		}{id, in.InputTokens, in.OutputTokens, in.AudioSeconds, in.Pages}
 	}
 	return a.resolveLLMOutcome(ctx, p, id, key, "llm.usage.settle", hashed, func(tx pgx.Tx) error {
-		_, err := settleCall(ctx, tx, p.TenantID, id, LLMAmounts{Input: in.InputTokens, Output: in.OutputTokens, AudioSeconds: in.AudioSeconds, Pages: in.Pages}, &p.ID)
+		_, err := budgets.SettleUsage(ctx, tx, p.TenantID, id, LLMAmounts{Input: in.InputTokens, Output: in.OutputTokens, AudioSeconds: in.AudioSeconds, Pages: in.Pages}, &p.ID)
 		return err
 	}, "usage.settled")
 }
@@ -124,7 +125,7 @@ func (a *Accounts) ReleaseLLMOutcome(ctx context.Context, p Principal, id, key s
 		return APIReceipt{}, ErrInput
 	}
 	return a.resolveLLMOutcome(ctx, p, id, key, "llm.usage.release", struct{ ID string }{id}, func(tx pgx.Tx) error {
-		return releaseCall(ctx, tx, p.TenantID, id, &p.ID)
+		return budgets.ReleaseUsage(ctx, tx, p.TenantID, id, &p.ID)
 	}, "usage.released")
 }
 

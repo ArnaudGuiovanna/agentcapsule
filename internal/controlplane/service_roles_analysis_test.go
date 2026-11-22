@@ -338,14 +338,16 @@ func serviceRoleWrites(t *testing.T) map[string]map[string]map[string]bool {
 	}
 	bodies, triggers := sqlFunctions()
 	fset := token.NewFileSet()
-	self := parsePackage(t, fset, ".")
-	nodes := packageNodes(self)
 	out := map[string]map[string]map[string]bool{}
 	for role, command := range serviceCommands {
+		nodes := map[string][]*sqlNode{}
 		need := map[string]map[string]bool{}
 		var names []string
 		for dir, p := range closure(t, fset, root, command) {
-			if dir == "internal/controlplane" {
+			if dir == "internal/controlplane" || strings.HasPrefix(dir, "internal/controlplane/") {
+				for name, definitions := range packageNodes(p) {
+					nodes[name] = append(nodes[name], definitions...)
+				}
 				continue
 			}
 			for _, f := range p.files {

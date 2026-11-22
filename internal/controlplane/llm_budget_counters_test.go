@@ -185,7 +185,7 @@ func TestBudgetWindowsCountWhatTheCallsSum(t *testing.T) {
 	summed := readWindows(t, b.s, windowSums, tenant)
 	for _, it := range items {
 		var now time.Time
-		if err = b.s.pool.QueryRow(t.Context(), `SELECT `+windowStart(it.Period)).Scan(&now); err != nil {
+		if err = b.s.pool.QueryRow(t.Context(), `SELECT date_trunc($1, clock_timestamp() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`, it.Period).Scan(&now); err != nil {
 			t.Fatal(err)
 		}
 		if it.Used == nil || *it.Used != summed[window{it.ID, now.UTC()}] {
@@ -227,7 +227,7 @@ func TestReservationReadsTheWindowsNotTheCalls(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	a, err := NewAccounts(&Store{pool: pool}, bytes.Repeat([]byte{0x42}, 32))
+	a, err := NewAccounts(newStore(pool), bytes.Repeat([]byte{0x42}, 32))
 	if err != nil {
 		t.Fatal(err)
 	}

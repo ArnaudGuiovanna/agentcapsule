@@ -27,7 +27,7 @@ func roleStore(t *testing.T, s *Store, role string) *Store {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
-	return &Store{pool: pool}
+	return newStore(pool)
 }
 
 // agent_activity is kept by the triggers of the tables each process writes

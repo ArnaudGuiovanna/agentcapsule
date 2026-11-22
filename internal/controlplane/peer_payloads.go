@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol/wire"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane/mailbox"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/harnessstore/envelope"
 	"github.com/jackc/pgx/v5"
 )
@@ -33,8 +34,8 @@ func admissionHash(input any, payload *admissionPayload) ([32]byte, error) {
 }
 
 type peerContent struct {
-	Subject       string                      `json:"subject,omitempty"`
-	CorrelationID string                      `json:"correlation_id,omitempty"`
+	Subject       string           `json:"subject,omitempty"`
+	CorrelationID string           `json:"correlation_id,omitempty"`
 	Payload       wire.PeerPayload `json:"payload"`
 }
 
@@ -105,7 +106,7 @@ func (t *Transit) resolveDelivery(ctx context.Context, attempt DeliveryAttempt) 
 	if err != nil {
 		return empty, err
 	}
-	if err = isHead(ctx, tx, m); err != nil {
+	if err = mailbox.RequireHead(ctx, tx, m); err != nil {
 		return empty, err
 	}
 	var current bool
@@ -190,7 +191,7 @@ func (t *Transit) readPeerContent(ctx context.Context, tx pgx.Tx, r requestRow, 
 	if !bound {
 		return peerContent{}, ErrTransitPayload
 	}
-	parties := []transitParty{{r.Sender, owners[r.Sender]}, {r.Recipient, owners[r.Recipient]}}
+	parties := []transitParty{{Agent: r.Sender, Owner: owners[r.Sender]}, {Agent: r.Recipient, Owner: owners[r.Recipient]}}
 	if parties[0].Agent > parties[1].Agent {
 		parties[0], parties[1] = parties[1], parties[0]
 	}

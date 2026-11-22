@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane/identity"
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/jackc/pgx/v5"
 )
 
 // OIDCKey is a pinned public RSA signing key from the issuer's JWKS. The
@@ -66,12 +66,7 @@ type appClaims struct {
 
 // Only the verifier constructs the binding. The same claims are authenticated
 // by the AEAD if serialized in a short-lived private download link.
-type appBinding struct {
-	Tenant, App, Subject, Token string
-	Generation                  int64
-	Issued, NotBefore, Expires  time.Time
-	Scopes                      []string
-}
+type appBinding = identity.Application
 
 func (c appClaims) client() string {
 	if c.ClientID != "" {
@@ -126,34 +121,6 @@ func verifyAppToken(v Application, raw string, now time.Time) (appClaims, appBin
 	return c, b, nil
 }
 
-// resolveApp holds the organization's row FOR KEY SHARE until the
-// transaction ends and reads the application, its activation, its principals
-// and the membership without a lock, as resolveTenant does (P-07): every
-// transaction that revokes or changes them takes that row FOR UPDATE first.
-func resolveApp(ctx context.Context, tx pgx.Tx, b appBinding) (CurrentOrganization, error) {
-	var current CurrentOrganization
-	o, err := scanOrganization(tx.QueryRow(ctx, `SELECT id,name,status,policy_version,created_at FROM organizations WHERE id=$1`+authorityLock(tx, " FOR KEY SHARE"), b.Tenant))
-	if errors.Is(err, ErrNotFound) || err == nil && o.Status != "active" {
-		return current, ErrAuthentication
-	}
-	if err != nil {
-		return current, err
-	}
-	current.Organization = o
-	err = tx.QueryRow(ctx, `SELECT p.id,p.display_name,m.role FROM applications a
-        JOIN principals signer ON signer.id=a.signing_principal AND signer.status='active'
-        JOIN principals integration ON integration.id=a.id AND integration.status='active'
-        JOIN app_activations v ON v.app_id=a.id AND NOT v.disabled
-        JOIN principals p ON (p.tenant_id,p.id)=(v.tenant_id,v.principal_id)
-        JOIN memberships m ON (m.tenant_id,m.principal_id)=(p.tenant_id,p.id)
-        WHERE a.tenant_id=$1 AND a.id=$2 AND a.generation=$3 AND a.minimum_iat<=$6 AND p.issuer=a.issuer AND p.subject=$4
-        AND p.status='active' AND m.status='active' AND $5>clock_timestamp() AND $6<=clock_timestamp() AND $7<=clock_timestamp()`, b.Tenant, b.App, b.Generation, b.Subject, b.Expires, b.Issued, b.NotBefore).Scan(&current.PrincipalID, &current.DisplayName, &current.Role)
-	if errors.Is(err, pgx.ErrNoRows) {
-		err = ErrAuthentication
-	}
-	return current, err
-}
-
 func (s *Store) authenticateApp(ctx context.Context, raw string, c appClaims) (Principal, error) {
 	tx, err := s.begin(ctx)
 	if err != nil {
@@ -175,7 +142,7 @@ func (s *Store) authenticateApp(ctx context.Context, raw string, c appClaims) (P
 	if err != nil {
 		return Principal{}, err
 	}
-	current, err := resolveApp(ctx, tx, b)
+	current, err := identity.ResolveApplication(ctx, tx, b)
 	if err != nil {
 		return Principal{}, err
 	}

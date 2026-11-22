@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane/workqueue"
 )
 
 // historyTables keep a row for every operation, request, model call, payload
@@ -30,10 +32,10 @@ func TestPollingQueriesUseIndexesOfOpenRows(t *testing.T) {
 		sql  string
 		args []any
 	}{
-		{"DiscoverWork", discoverWorkQuery, []any{"local", 64}},
+		{"DiscoverWork", workqueue.DiscoverySQL, []any{"local", 64}},
 		{"idle policy", idleCandidates, []any{now, "local", "", 16}},
 		{"eviction order", evictionOrderQuery, []any{[]string{il.agent}, true}},
-		{"resume", `SELECT EXISTS(SELECT 1 FROM agents a WHERE a.id=$1 AND ` + resumeDue + `)`, []any{il.agent}},
+		{"resume", `SELECT EXISTS(SELECT 1 FROM agents a WHERE a.id=$1 AND ` + workqueue.ResumeDuePredicate + `)`, []any{il.agent}},
 		{"slot", `SELECT EXISTS(SELECT 1 FROM agents a WHERE a.id=$1 AND ` + slotDue + `)`, []any{il.agent}},
 		{"transit retention", transitRetentionStart, []any{64, int64(time.Hour / time.Microsecond)}},
 		{"transit purge", transitPurgeDue, []any{64}},

@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	corpusdb "github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane/corpus"
 )
 
 func approvedImages(t *testing.T, c *AgentCatalog, p Principal) map[string]SystemImage {
@@ -165,7 +167,7 @@ func TestCorporaNeedABaseTwoHarnessAndAMountingSystemImage(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer rollback(tx)
-		return corporaMountable(ctx, tx, releaseID, image)
+		return corpusdb.CheckMount(ctx, tx, releaseID, image)
 	}
 	for _, ok := range []struct{ release, image string }{{base2, "mounting@1"}, {base2, "other@1"}, {reference, "mounting@1"}} {
 		if err := check(ok.release, ok.image); err != nil {

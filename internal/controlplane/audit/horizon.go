@@ -1,4 +1,4 @@
-package controlplane
+package audit
 
 import (
 	"context"
@@ -30,9 +30,9 @@ const auditFeedLock = 756610047
 // audited transactions still open when it was asked for.
 const auditWriterWait = 5 * time.Second
 
-// ErrAuditBusy: an audited transaction of the organization stayed open
+// ErrBusy: an audited transaction of the organization stayed open
 // longer than auditWriterWait. Nothing is lost: ask again.
-var ErrAuditBusy = errors.New("an audited transaction of the organization is still open; retry")
+var ErrBusy = errors.New("an audited transaction of the organization is still open; retry")
 
 // auditWriters are the transactions that hold the organization's feed lock,
 // among $3 when it is not null.
@@ -41,9 +41,9 @@ const auditWriters = `SELECT coalesce(array_agg(virtualtransaction),'{}') FROM p
       AND classid=$1::bigint::oid AND objid=(hashtext(current_schema()||'/'||$2)::bigint & 4294967295)::oid AND objsubid=2 AND granted
       AND ($3::text[] IS NULL OR virtualtransaction=ANY($3::text[]))`
 
-// auditHorizon returns the time before which the organization's trail is
+// Horizon returns the time before which the organization's trail is
 // complete for this transaction's next statements.
-func auditHorizon(ctx context.Context, tx pgx.Tx, tenant string) (time.Time, error) {
+func Horizon(ctx context.Context, tx pgx.Tx, tenant string) (time.Time, error) {
 	var horizon time.Time
 	if err := tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&horizon); err != nil {
 		return time.Time{}, err
@@ -55,7 +55,7 @@ func auditHorizon(ctx context.Context, tx pgx.Tx, tenant string) (time.Time, err
 	deadline := time.Now().Add(auditWriterWait)
 	for len(open) > 0 {
 		if !time.Now().Before(deadline) {
-			return time.Time{}, ErrAuditBusy
+			return time.Time{}, ErrBusy
 		}
 		select {
 		case <-ctx.Done():
