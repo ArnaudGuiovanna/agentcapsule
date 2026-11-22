@@ -33,8 +33,8 @@ func admissionHash(input any, payload *admissionPayload) ([32]byte, error) {
 }
 
 type peerContent struct {
-	Subject       string                      `json:"subject,omitempty"`
-	CorrelationID string                      `json:"correlation_id,omitempty"`
+	Subject       string           `json:"subject,omitempty"`
+	CorrelationID string           `json:"correlation_id,omitempty"`
 	Payload       wire.PeerPayload `json:"payload"`
 }
 
@@ -190,7 +190,7 @@ func (t *Transit) readPeerContent(ctx context.Context, tx pgx.Tx, r requestRow, 
 	if !bound {
 		return peerContent{}, ErrTransitPayload
 	}
-	parties := []transitParty{{r.Sender, owners[r.Sender]}, {r.Recipient, owners[r.Recipient]}}
+	parties := []transitParty{{Agent: r.Sender, Owner: owners[r.Sender]}, {Agent: r.Recipient, Owner: owners[r.Recipient]}}
 	if parties[0].Agent > parties[1].Agent {
 		parties[0], parties[1] = parties[1], parties[0]
 	}

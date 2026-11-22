@@ -311,7 +311,7 @@ func (t *Transit) sealFor(ctx context.Context, tx pgx.Tx, id, kind, reference st
 				return binding, nil, ErrInput
 			}
 		}
-		binding.Parties = append(binding.Parties, transitParty{id, owner})
+		binding.Parties = append(binding.Parties, transitParty{Agent: id, Owner: owner})
 	}
 	k, err := t.activeKey(ctx, tx)
 	if err != nil {

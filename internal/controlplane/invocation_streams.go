@@ -564,7 +564,7 @@ type sealedChunk struct {
 func (c *AgentCatalog) openStreamChunk(op, agentID, requester string, attempt int, sealed sealedChunk) (StreamChunk, error) {
 	ch := StreamChunk{Attempt: attempt, FirstSeq: sealed.firstSeq, LastSeq: sealed.lastSeq}
 	b := sealed.binding
-	b.Version, b.Parties = 1, []transitParty{{agentID, requester}}
+	b.Version, b.Parties = 1, []transitParty{{Agent: agentID, Owner: requester}}
 	if !slices.Equal(sealed.agents, []string{agentID}) || !slices.Equal(sealed.owners, []string{requester}) {
 		return ch, ErrNotFound
 	}

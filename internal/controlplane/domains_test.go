@@ -14,7 +14,7 @@ import (
 // The store composes these domains. It opens the transaction with the durable
 // preamble and owns its outcome, including post-commit revocation recording.
 func TestDomainQueriesUseTheCallingTransaction(t *testing.T) {
-	for _, domain := range []string{"workqueue", "diagnostics", "corpus", "identity", "accounting", "transitcrypto"} {
+	for _, domain := range []string{"workqueue", "diagnostics", "corpus", "identity", "budgets", "accounting", "transitcrypto"} {
 		t.Run(domain, func(t *testing.T) {
 			p, err := build.Default.ImportDir(domain, 0)
 			if err != nil {
