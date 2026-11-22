@@ -1,35 +1,36 @@
-package controlplane
+package llmservice
 
 import (
 	"context"
 	"time"
 
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmgateway"
 )
 
 // How a model stream ended (ADR 022 §4.2, the `end` frame's outcome).
 const (
-	LLMStreamCompleted      = "completed"
-	LLMStreamOutcomeUnknown = "outcome_unknown"
+	StreamCompleted      = "completed"
+	StreamOutcomeUnknown = "outcome_unknown"
 )
 
-// LLMStreamEnd ends a model stream whose first event was relayed, or that
-// completed. With LLMStreamCompleted it carries the usage settled, the soft
+// StreamEnd ends a model stream whose first event was relayed, or that
+// completed. With StreamCompleted it carries the usage settled, the soft
 // budget warning and, for CompleteStreamFromVM, the finish reason. With
-// LLMStreamOutcomeUnknown it carries nothing: the provider may have billed
+// StreamOutcomeUnknown it carries nothing: the provider may have billed
 // the call, its reservation stays counted as unknown, and the key must not be
 // sent again.
-type LLMStreamEnd struct {
+type StreamEnd struct {
 	Outcome            string
 	Usage              llmgateway.Usage
 	FinishReason       string
 	SoftBudgetExceeded bool
 }
 
-// LLMStreamObserver is an LLMObserver that also times model streams. It must
+// StreamObserver is an Observer that also times model streams. It must
 // not block.
-type LLMStreamObserver interface {
-	LLMObserver
+type StreamObserver interface {
+	Observer
 	// ObserveFirstEvent receives, for each stream whose provider sent an
 	// event, the time from the provider request to its first event.
 	ObserveFirstEvent(time.Duration)
@@ -49,14 +50,14 @@ type LLMStreamObserver interface {
 // event). Once sink has been called the error is nil and the end's Outcome
 // says how the stream ended. A sink error cancels the provider call: the
 // outcome is unknown.
-func (s *LLMService) ForwardStreamFromVM(ctx context.Context, caller VMCaller, requestKey, alias, dialect string, body []byte,
-	admission func(context.Context, func(context.Context) error) error, sink func(llmgateway.Event) error) (LLMStreamEnd, error) {
+func (s *Service) ForwardStreamFromVM(ctx context.Context, caller controlplane.VMCaller, requestKey, alias, dialect string, body []byte,
+	admission func(context.Context, func(context.Context) error) error, sink func(llmgateway.Event) error) (StreamEnd, error) {
 	if _, err := llmgateway.ForwardStreamOutputCap(dialect, body); err != nil {
-		return LLMStreamEnd{}, err
+		return StreamEnd{}, err
 	}
 	hold, err := s.admitFromVM(ctx, caller, requestKey, alias, forwardCall(dialect, body, true), admission)
 	if err != nil {
-		return LLMStreamEnd{}, err
+		return StreamEnd{}, err
 	}
 	relayed := false
 	out, err := s.settleStream(ctx, hold, func(route llmgateway.Route) (llmgateway.StreamResult, error) {
@@ -71,11 +72,11 @@ func (s *LLMService) ForwardStreamFromVM(ctx context.Context, caller VMCaller, r
 // CompleteStreamFromVM is CallFromVM as a stream: sink receives each fragment
 // of the answer's text (never empty, at most llmgateway.MaxStreamText
 // bytes). Admission, errors and the end are ForwardStreamFromVM's.
-func (s *LLMService) CompleteStreamFromVM(ctx context.Context, caller VMCaller, requestKey, alias string, q llmgateway.Request,
-	admission func(context.Context, func(context.Context) error) error, sink func(text string) error) (LLMStreamEnd, error) {
+func (s *Service) CompleteStreamFromVM(ctx context.Context, caller controlplane.VMCaller, requestKey, alias string, q llmgateway.Request,
+	admission func(context.Context, func(context.Context) error) error, sink func(text string) error) (StreamEnd, error) {
 	hold, err := s.admitFromVM(ctx, caller, requestKey, alias, textCall(q), admission)
 	if err != nil {
-		return LLMStreamEnd{}, err
+		return StreamEnd{}, err
 	}
 	relayed := false
 	out, err := s.settleStream(ctx, hold, func(route llmgateway.Route) (llmgateway.StreamResult, error) {
@@ -90,7 +91,7 @@ func (s *LLMService) CompleteStreamFromVM(ctx context.Context, caller VMCaller, 
 // settleStream runs one stream for an admitted hold and records its single
 // outcome as settle does: settled at the usage of its final events, unknown
 // after a cut, or released after a refusal before the first byte.
-func (s *LLMService) settleStream(ctx context.Context, h llmHold, call func(llmgateway.Route) (llmgateway.StreamResult, error)) (llmgateway.StreamResult, error) {
+func (s *Service) settleStream(ctx context.Context, h llmHold, call func(llmgateway.Route) (llmgateway.StreamResult, error)) (llmgateway.StreamResult, error) {
 	var out llmgateway.StreamResult
 	// A stream without its final usage is a cut (ErrOutcomeUnknown): its
 	// usage is always reported.
@@ -100,7 +101,7 @@ func (s *LLMService) settleStream(ctx context.Context, h llmHold, call func(llmg
 		return out.Usage, llmgateway.Unreported{}, err
 	})
 	if o := s.observer.Load(); o != nil && out.FirstEvent > 0 {
-		if timed, ok := o.LLMObserver.(LLMStreamObserver); ok {
+		if timed, ok := o.Observer.(StreamObserver); ok {
 			timed.ObserveFirstEvent(out.FirstEvent)
 		}
 	}
@@ -109,12 +110,12 @@ func (s *LLMService) settleStream(ctx context.Context, h llmHold, call func(llmg
 
 // streamEnd is the end of an admitted stream. After its first relayed event,
 // every failure, a settlement's included, is an unknown outcome.
-func (h llmHold) streamEnd(out llmgateway.StreamResult, relayed bool, err error) (LLMStreamEnd, error) {
+func (h llmHold) streamEnd(out llmgateway.StreamResult, relayed bool, err error) (StreamEnd, error) {
 	switch {
 	case err == nil:
-		return LLMStreamEnd{Outcome: LLMStreamCompleted, Usage: out.Usage, FinishReason: out.FinishReason, SoftBudgetExceeded: h.res.SoftExceeded}, nil
+		return StreamEnd{Outcome: StreamCompleted, Usage: out.Usage, FinishReason: out.FinishReason, SoftBudgetExceeded: h.res.SoftExceeded}, nil
 	case relayed:
-		return LLMStreamEnd{Outcome: LLMStreamOutcomeUnknown}, nil
+		return StreamEnd{Outcome: StreamOutcomeUnknown}, nil
 	}
-	return LLMStreamEnd{}, err
+	return StreamEnd{}, err
 }

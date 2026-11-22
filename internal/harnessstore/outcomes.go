@@ -2,10 +2,9 @@ package harnessstore
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
+
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/harnessstore/envelope"
 )
 
 // OutcomeFingerprint commits to the same canonical envelope as Apply and its
@@ -20,27 +19,8 @@ func OutcomeFingerprint(store string, event Event, result []byte) (string, [32]b
 	return StoredOutcomeFingerprint(store, event.ID, envelope, result)
 }
 
-// StoredOutcomeFingerprint reconstructs a commitment from capsule_inbox data.
-// Matching this digest does NOT establish that application effects are present;
-// restoration must inspect the actual recovered database as well.
-func StoredOutcomeFingerprint(store, eventID string, envelope [32]byte, result []byte) (string, [32]byte, error) {
-	if store == "" || eventID == "" {
-		return "", [32]byte{}, errors.New("outcome store and event ID are required")
-	}
-	identity, err := json.Marshal(struct{ Domain, Store, Event string }{"agentcapsule-outcome-id-v1", store, eventID})
-	if err != nil {
-		return "", [32]byte{}, err
-	}
-	id := sha256.Sum256(identity)
-	if result == nil {
-		result = []byte{}
-	}
-	data, err := json.Marshal(struct {
-		Domain, Store, Event string
-		Envelope             [32]byte
-		Result               []byte
-	}{"agentcapsule-outcome-data-v1", store, eventID, envelope, result})
-	return "outcome-v1/" + hex.EncodeToString(id[:]), sha256.Sum256(data), err
+func StoredOutcomeFingerprint(store, eventID string, hash [32]byte, result []byte) (string, [32]byte, error) {
+	return envelope.StoredOutcomeFingerprint(store, eventID, hash, result)
 }
 
 // Outcomes reports which of ids this database holds, each with the digest of

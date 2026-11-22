@@ -1,4 +1,4 @@
-package controlplane
+package llmservice
 
 import (
 	"context"
@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	. "github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmgateway"
 )
 
@@ -43,7 +44,7 @@ type streamLab struct {
 	*tenantLab
 	owner  Principal
 	caller VMCaller
-	svc    *LLMService
+	svc    *Service
 	calls  atomic.Int32
 	mode   atomic.Value // the provider's answer, see serve
 	held   chan struct{}
@@ -53,11 +54,11 @@ type streamLab struct {
 
 type firstEvents struct {
 	mu     sync.Mutex
-	events []LLMCallEvent
+	events []CallEvent
 	first  []time.Duration
 }
 
-func (f *firstEvents) ObserveLLM(e LLMCallEvent) {
+func (f *firstEvents) ObserveLLM(e CallEvent) {
 	f.mu.Lock()
 	f.events = append(f.events, e)
 	f.mu.Unlock()
@@ -86,7 +87,7 @@ func newStreamLab(t *testing.T, attempts int) *streamLab {
 		if err != nil || r.Status != 201 || json.Unmarshal(r.Body, &v) != nil {
 			t.Fatal("create provider", err)
 		}
-		if _, err = l.s.pool.Exec(t.Context(), `UPDATE llm_providers SET base_url=$1 WHERE id=$2`, p.base, v.ID); err != nil {
+		if _, err = l.db.Exec(t.Context(), `UPDATE llm_providers SET base_url=$1 WHERE id=$2`, p.base, v.ID); err != nil {
 			t.Fatal(err)
 		}
 		if _, err = l.a.CreateLLMAlias(t.Context(), owner, "alias-"+p.alias, CreateLLMAliasInput{Alias: p.alias, ProviderID: v.ID, UpstreamModel: "up-" + p.alias,
@@ -108,7 +109,7 @@ func newStreamLab(t *testing.T, attempts int) *streamLab {
 	}
 	s.caller = VMCaller{AgentID: agent, HostID: "local", VMID: vm, Generation: pl.Generation}
 	g := llmgateway.NewForTests(llmgateway.Config{MaxAttempts: attempts, Backoff: time.Millisecond, MaxResponse: 4096, StreamIdle: 2 * time.Second}, llmgateway.TestOptions{Loopback: true})
-	if s.svc, err = NewLLMService(l.a, g); err != nil {
+	if s.svc, err = New(l.a, g); err != nil {
 		t.Fatal(err)
 	}
 	s.svc.Observe(s.seen)
@@ -163,14 +164,14 @@ func (s *streamLab) serve(w http.ResponseWriter, r *http.Request) {
 
 func (s *streamLab) usage(t *testing.T, key string) (id, state string, in, out *int64) {
 	t.Helper()
-	if err := s.s.pool.QueryRow(t.Context(), `SELECT id,state,input_tokens,output_tokens FROM llm_usage WHERE agent_id=$1 AND request_key=$2`,
+	if err := s.db.QueryRow(t.Context(), `SELECT id,state,input_tokens,output_tokens FROM llm_usage WHERE agent_id=$1 AND request_key=$2`,
 		s.caller.AgentID, key).Scan(&id, &state, &in, &out); err != nil {
 		t.Fatal(key, err)
 	}
 	return id, state, in, out
 }
 
-func (s *streamLab) forward(t *testing.T, key, alias string, sink func(llmgateway.Event) error) (LLMStreamEnd, error) {
+func (s *streamLab) forward(t *testing.T, key, alias string, sink func(llmgateway.Event) error) (StreamEnd, error) {
 	t.Helper()
 	dialect, body := "openai", `{"model":"fast","messages":[{"role":"user","content":"hi"}],"stream":true,"max_tokens":32}`
 	if alias == "claude" {
@@ -198,7 +199,7 @@ func TestAModelStreamSettlesTheExactUsage(t *testing.T) {
 		var got []string
 		key := "nominal-" + tc.alias
 		end, err := s.forward(t, key, tc.alias, relay(&got))
-		if err != nil || end.Outcome != LLMStreamCompleted || end.Usage != tc.usage || len(got) != tc.events {
+		if err != nil || end.Outcome != StreamCompleted || end.Usage != tc.usage || len(got) != tc.events {
 			t.Fatal(tc.alias, end, err, len(got))
 		}
 		if _, state, in, out := s.usage(t, key); state != "settled" || *in != tc.usage.InputTokens || *out != tc.usage.OutputTokens {
@@ -214,7 +215,7 @@ func TestAModelStreamSettlesTheExactUsage(t *testing.T) {
 	var text []string
 	q := llmgateway.Request{Messages: []llmgateway.Message{{Role: "user", Content: "hi"}}, MaxTokens: 32}
 	end, err := s.svc.CompleteStreamFromVM(t.Context(), s.caller, "text-1", "fast", q, nil, func(s string) error { text = append(text, s); return nil })
-	if err != nil || end.Outcome != LLMStreamCompleted || strings.Join(text, "") != "Hello" || end.FinishReason != "stop" || end.Usage.OutputTokens != 5 {
+	if err != nil || end.Outcome != StreamCompleted || strings.Join(text, "") != "Hello" || end.FinishReason != "stop" || end.Usage.OutputTokens != 5 {
 		t.Fatal(end, err, text)
 	}
 	if _, state, _, _ := s.usage(t, "text-1"); state != "settled" {
@@ -260,7 +261,7 @@ func TestACutModelStreamStaysUnknownAndReconcilable(t *testing.T) {
 		var got []string
 		before := s.calls.Load()
 		end, err := s.forward(t, key, tc.alias, tc.sink(&got))
-		if err != nil || end.Outcome != LLMStreamOutcomeUnknown || end.Usage != (llmgateway.Usage{}) || len(got) < tc.events || s.calls.Load() != before+1 {
+		if err != nil || end.Outcome != StreamOutcomeUnknown || end.Usage != (llmgateway.Usage{}) || len(got) < tc.events || s.calls.Load() != before+1 {
 			t.Fatal(key, end, err, len(got))
 		}
 		if _, state, _, _ := s.usage(t, key); state != "unknown" {
@@ -313,7 +314,7 @@ func TestAStreamRefusedBeforeItsFirstByteIsReleased(t *testing.T) {
 	}
 	s.mode.Store("429-once")
 	end, err := s.forward(t, "retried", "claude", relay(&got))
-	if err != nil || end.Outcome != LLMStreamCompleted || s.calls.Load() != 4 {
+	if err != nil || end.Outcome != StreamCompleted || s.calls.Load() != 4 {
 		t.Fatal("429 then a stream", end, err, s.calls.Load())
 	}
 	if _, state, _, _ := s.usage(t, "retried"); state != "settled" {
@@ -330,7 +331,7 @@ func TestReplayingAStreamKeyInFlightNeverReachesTheProvider(t *testing.T) {
 	s.mode.Store("held")
 	first := make(chan struct{})
 	type result struct {
-		end LLMStreamEnd
+		end StreamEnd
 		err error
 	}
 	done := make(chan result, 1)
@@ -362,7 +363,7 @@ func TestReplayingAStreamKeyInFlightNeverReachesTheProvider(t *testing.T) {
 	}
 	s.resume()
 	r := <-done
-	if r.err != nil || r.end.Outcome != LLMStreamCompleted || r.end.Usage.InputTokens != 12 {
+	if r.err != nil || r.end.Outcome != StreamCompleted || r.end.Usage.InputTokens != 12 {
 		t.Fatal("the running stream", r.end, r.err)
 	}
 	if _, state, in, _ := s.usage(t, "live"); state != "settled" || *in != 12 {

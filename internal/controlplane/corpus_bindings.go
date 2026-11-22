@@ -5,7 +5,7 @@ import (
 	"errors"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorization"
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol/wire"
 	corpusdb "github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane/corpus"
 	"github.com/jackc/pgx/v5"
 )
@@ -43,7 +43,7 @@ func resolveCorpusBindings(ctx context.Context, tx pgx.Tx, tenant, host, image s
 		if m == "" {
 			m = entry.Name
 		}
-		if !sourceCredentialName.MatchString(entry.Name) || entry.Version < 1 || entry.Version > 2147483647 || !capsuleprotocol.ValidCorpusMount(m) || mounts[m] || names[entry.Name] {
+		if !sourceCredentialName.MatchString(entry.Name) || entry.Version < 1 || entry.Version > 2147483647 || !wire.ValidCorpusMount(m) || mounts[m] || names[entry.Name] {
 			return nil, ErrInput
 		}
 		mounts[m], names[entry.Name] = true, true
@@ -191,7 +191,7 @@ func (a *Accounts) TryCorpusBuild(ctx context.Context, p Principal, build, key s
 		if mount == "" {
 			mount = name
 		}
-		if !capsuleprotocol.ValidCorpusMount(mount) {
+		if !wire.ValidCorpusMount(mount) {
 			return 0, nil, ErrInput
 		}
 		var position *int

@@ -9,8 +9,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/harnessstore"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol/wire"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/harnessstore/envelope"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -35,7 +35,7 @@ func admissionHash(input any, payload *admissionPayload) ([32]byte, error) {
 type peerContent struct {
 	Subject       string                      `json:"subject,omitempty"`
 	CorrelationID string                      `json:"correlation_id,omitempty"`
-	Payload       capsuleprotocol.PeerPayload `json:"payload"`
+	Payload       wire.PeerPayload `json:"payload"`
 }
 
 func encodePeerContent(content peerContent) ([]byte, error) {
@@ -58,7 +58,7 @@ func encodePeerContent(content peerContent) ([]byte, error) {
 
 // SubmitFromVM uses the existing authorization/mandate/idempotency transaction.
 // The client supplies content, never a reference to another party's payload.
-func (t *Transit) SubmitFromVM(ctx context.Context, caller VMCaller, key string, in capsuleprotocol.Submission) (Receipt, error) {
+func (t *Transit) SubmitFromVM(ctx context.Context, caller VMCaller, key string, in wire.Submission) (Receipt, error) {
 	if in.Payload == nil || in.PayloadRef != "" || in.PayloadHash != ([32]byte{}) {
 		return Receipt{}, ErrInput
 	}
@@ -71,7 +71,7 @@ func (t *Transit) SubmitFromVM(ctx context.Context, caller VMCaller, key string,
 	return t.store.submitPayload(ctx, caller.AgentID, key, input, &caller, &admissionPayload{t, body})
 }
 
-func (t *Transit) ReplyFromVM(ctx context.Context, caller VMCaller, id, key string, in capsuleprotocol.Reply) (Receipt, error) {
+func (t *Transit) ReplyFromVM(ctx context.Context, caller VMCaller, id, key string, in wire.Reply) (Receipt, error) {
 	if in.PayloadRef != "" || in.PayloadHash != ([32]byte{}) {
 		return Receipt{}, ErrInput
 	}
@@ -94,8 +94,8 @@ func (t *Transit) ReplyFromVM(ctx context.Context, caller VMCaller, id, key stri
 
 // Resolve only a current, authorized delivery; all parties are locked in the
 // existing order. The resulting plaintext is transient and has no new mandate.
-func (t *Transit) resolveDelivery(ctx context.Context, attempt DeliveryAttempt) (harnessstore.Event, error) {
-	var empty harnessstore.Event
+func (t *Transit) resolveDelivery(ctx context.Context, attempt DeliveryAttempt) (envelope.Event, error) {
+	var empty envelope.Event
 	tx, err := t.store.begin(ctx)
 	if err != nil {
 		return empty, err
@@ -147,7 +147,7 @@ func (t *Transit) resolveDelivery(ctx context.Context, attempt DeliveryAttempt) 
 	if err != nil {
 		return empty, err
 	}
-	encoded, err := json.Marshal(capsuleprotocol.PeerEvent{Kind: m.Kind, RequestID: r.ID, SenderAgentID: r.Sender, RecipientAgentID: r.Recipient, Sequence: m.Sequence, Subject: content.Subject, CorrelationID: content.CorrelationID, Payload: content.Payload})
+	encoded, err := json.Marshal(wire.PeerEvent{Kind: m.Kind, RequestID: r.ID, SenderAgentID: r.Sender, RecipientAgentID: r.Recipient, Sequence: m.Sequence, Subject: content.Subject, CorrelationID: content.CorrelationID, Payload: content.Payload})
 	if err != nil {
 		return empty, err
 	}
@@ -155,7 +155,7 @@ func (t *Transit) resolveDelivery(ctx context.Context, attempt DeliveryAttempt) 
 		clear(encoded)
 		return empty, err
 	}
-	return harnessstore.Event{ID: m.ID, Subjects: []string{"agent/" + r.Sender, "agent/" + r.Recipient, "request/" + r.ID, "event/" + m.ID}, Body: encoded}, nil
+	return envelope.Event{ID: m.ID, Subjects: []string{"agent/" + r.Sender, "agent/" + r.Recipient, "request/" + r.ID, "event/" + m.ID}, Body: encoded}, nil
 }
 
 // readPeerContent requires the caller to own both participant locks, or the

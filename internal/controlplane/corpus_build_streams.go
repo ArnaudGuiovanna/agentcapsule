@@ -7,7 +7,7 @@ import (
 	"regexp"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorization"
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol/wire"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -57,7 +57,7 @@ func (c *AgentCatalog) ReadCorpusBuildStream(ctx context.Context, p Principal, i
 			return OutputStreamView{}, err
 		}
 		for i := range out.Chunks {
-			var frames []capsuleprotocol.OutputFrame
+			var frames []wire.OutputFrame
 			raw := out.Chunks[i].Frames
 			err = json.Unmarshal(raw, &frames)
 			clear(raw)
@@ -67,7 +67,7 @@ func (c *AgentCatalog) ReadCorpusBuildStream(ctx context.Context, p Principal, i
 			progress := frames[:0]
 			for _, f := range frames {
 				if f.Type == "step" && corpusFileStep.MatchString(f.Step) {
-					progress = append(progress, capsuleprotocol.OutputFrame{Type: f.Type, Seq: f.Seq, Step: f.Step, State: f.State, Label: f.Label})
+					progress = append(progress, wire.OutputFrame{Type: f.Type, Seq: f.Seq, Step: f.Step, State: f.State, Label: f.Label})
 				}
 			}
 			out.Chunks[i].Frames, err = json.Marshal(progress)

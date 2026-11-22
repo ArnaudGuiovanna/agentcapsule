@@ -10,6 +10,7 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmgateway"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmservice"
 )
 
 func TestModelBridgeErrorsCrossAsEnumeratedCodesOnly(t *testing.T) {
@@ -26,7 +27,7 @@ func TestModelBridgeErrorsCrossAsEnumeratedCodesOnly(t *testing.T) {
 		// The alias's request policy and the agent's calls in flight (v0.1.0
 		// audit, S-11 and S-13).
 		"feature_denied":      llmgateway.ErrFeatureDenied,
-		"concurrency_limited": controlplane.ErrLLMConcurrency,
+		"concurrency_limited": llmservice.ErrConcurrency,
 	} {
 		wrapped := fmt.Errorf("provider said sk-live-secret: %w", err)
 		var pe *capsuleprotocol.PlatformError

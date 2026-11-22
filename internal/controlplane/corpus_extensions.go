@@ -6,7 +6,7 @@ import (
 	"errors"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorization"
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol/wire"
 	corpusdb "github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane/corpus"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/ociregistry/reference"
 	"github.com/jackc/pgx/v5"
@@ -51,7 +51,7 @@ func (a *Accounts) ListCorpusEnrichers(ctx context.Context, p Principal, after s
 	})
 }
 func (a *Accounts) AuthorizeCorpusEnricher(ctx context.Context, p Principal, key string, in AuthorizeCorpusEnricherInput) (APIReceipt, error) {
-	if !capsuleprotocol.ValidCorpusMount(in.Name) || !catalogName(in.Harness.Name) || !catalogName(in.Harness.Version) {
+	if !wire.ValidCorpusMount(in.Name) || !catalogName(in.Harness.Name) || !catalogName(in.Harness.Version) {
 		return APIReceipt{}, ErrInput
 	}
 	return a.corpusMutation(ctx, p, authorization.ManageCorpus, key, "corpus_enricher.authorize", in, func(tx pgx.Tx) (int, any, error) {
@@ -129,7 +129,7 @@ func (a *Accounts) RequestCorpusExtension(ctx context.Context, p Principal, buil
 		if err = tx.QueryRow(ctx, "SELECT count(*) FROM corpus_extensions WHERE build_id=$1 AND enricher_id<>$2", build, in.EnricherID).Scan(&count); err != nil {
 			return 0, nil, err
 		}
-		if count >= capsuleprotocol.MaxCorpusExtensions {
+		if count >= wire.MaxCorpusExtensions {
 			return 0, nil, ErrInput
 		}
 		tag, err := tx.Exec(ctx, `INSERT INTO corpus_extensions(id,tenant_id,build_id,enricher_id) VALUES($1,$2,$3,$4) ON CONFLICT(build_id,enricher_id) DO UPDATE SET state='QUEUED',error_code=NULL,invocation_id=NULL,deadline_at=clock_timestamp()+interval '24 hours',next_attempt_at=clock_timestamp() WHERE corpus_extensions.state='FAILED'`, newID("cex"), p.TenantID, build, in.EnricherID)
@@ -242,7 +242,7 @@ func (s *Store) SettleCorpusExtension(ctx context.Context, w CorpusExtensionWork
 		return err
 	}
 	if img != nil {
-		if !reference.ValidDigest(img.Digest) || !capsuleprotocol.ValidUUID(img.UUID) || img.Bytes <= 0 {
+		if !reference.ValidDigest(img.Digest) || !wire.ValidUUID(img.UUID) || img.Bytes <= 0 {
 			return ErrInput
 		}
 		if err = lockOrganizationQuota(ctx, tx, w.Tenant); err != nil {

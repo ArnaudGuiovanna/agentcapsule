@@ -8,15 +8,15 @@ import (
 	"errors"
 	"time"
 
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol/wire"
 	"github.com/jackc/pgx/v5"
 )
 
 // PostOwnerFromVM commits the private body, owner notification and stable
 // receipt together. It never creates or renews a mandate. Linked summaries are
 // bound to both parties for revocation, but readable only by this agent's owner.
-func (t *Transit) PostOwnerFromVM(ctx context.Context, caller VMCaller, key string, in capsuleprotocol.OwnerPost) (capsuleprotocol.OwnerPostReceipt, error) {
-	var result capsuleprotocol.OwnerPostReceipt
+func (t *Transit) PostOwnerFromVM(ctx context.Context, caller VMCaller, key string, in wire.OwnerPost) (wire.OwnerPostReceipt, error) {
+	var result wire.OwnerPostReceipt
 	if requireIdentity(caller.AgentID, key) != nil || in.Validate() != nil {
 		return result, ErrInput
 	}
@@ -53,7 +53,7 @@ func (t *Transit) PostOwnerFromVM(ctx context.Context, caller VMCaller, key stri
 	err = tx.QueryRow(ctx, "SELECT id,body_hash FROM owner_messages WHERE agent_id=$1 AND idempotency_key=$2", caller.AgentID, key).Scan(&result.MessageID, &oldHash)
 	if err == nil {
 		if !bytes.Equal(oldHash, hash[:]) {
-			return capsuleprotocol.OwnerPostReceipt{}, ErrConflict
+			return wire.OwnerPostReceipt{}, ErrConflict
 		}
 		result.Replayed = true
 		return result, commit(ctx, tx)
@@ -67,16 +67,16 @@ func (t *Transit) PostOwnerFromVM(ctx context.Context, caller VMCaller, key stri
 	result.MessageID = newID("msg")
 	payload, err := t.put(ctx, tx, "owner_message", result.MessageID, parties, body)
 	if err != nil {
-		return capsuleprotocol.OwnerPostReceipt{}, err
+		return wire.OwnerPostReceipt{}, err
 	}
 	_, err = tx.Exec(ctx, `INSERT INTO owner_messages(id,agent_id,owner_user_id,request_id,payload_id,idempotency_key,body_hash)
         VALUES($1,$2,$3,NULLIF($4,''),$5,$6,$7)`, result.MessageID, caller.AgentID, agents[caller.AgentID].Owner, in.RequestID, payload.ID, key, hash[:])
 	if err != nil {
-		return capsuleprotocol.OwnerPostReceipt{}, err
+		return wire.OwnerPostReceipt{}, err
 	}
 	_, err = tx.Exec(ctx, `INSERT INTO inbox_items(id,user_id,kind,owner_message_id) VALUES($1,$2,'agent_message',$3)`, newID("inb"), agents[caller.AgentID].Owner, result.MessageID)
 	if err != nil {
-		return capsuleprotocol.OwnerPostReceipt{}, err
+		return wire.OwnerPostReceipt{}, err
 	}
 	return result, commit(ctx, tx)
 }
@@ -85,7 +85,7 @@ type OwnerMessageView struct {
 	ID        string                        `json:"id"`
 	AgentID   string                        `json:"agent_id"`
 	RequestID string                        `json:"request_id,omitempty"`
-	Content   []capsuleprotocol.TextContent `json:"content"`
+	Content   []wire.TextContent `json:"content"`
 	CreatedAt time.Time                     `json:"created_at"`
 }
 
@@ -132,7 +132,7 @@ func (c *AgentCatalog) OwnerMessage(ctx context.Context, p Principal, id string)
 		return result, err
 	}
 	defer clear(body)
-	var in capsuleprotocol.OwnerPost
+	var in wire.OwnerPost
 	if json.Unmarshal(body, &in) != nil || in.Validate() != nil || in.RequestID != result.RequestID {
 		return OwnerMessageView{}, ErrTransitPayload
 	}

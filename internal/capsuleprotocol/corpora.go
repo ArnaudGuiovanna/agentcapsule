@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol/wire"
 )
 
 // Corpora (ADR 023 §5). A VM mounts at most MaxCorpora corpora, each a
@@ -22,7 +24,7 @@ const (
 	// HarnessMountPoints: capsule-init mounts the VM's corpora under it.
 	CorpusMountPoint    = "/corpus"
 	MaxCorpora          = 4
-	MaxCorpusExtensions = 4
+	MaxCorpusExtensions = wire.MaxCorpusExtensions
 	// HarnessDrive is the index of a registry harness's drive. Drive 0 is
 	// the agent's data volume; the extra drives follow (FirstExtraDrive).
 	HarnessDrive = 1
@@ -96,36 +98,9 @@ func DriveDevice(index int) (string, error) {
 	return "/dev/vd" + string(rune('a'+index)), nil
 }
 
-// ValidCorpusMount: a directory name under /corpus, ^[a-z0-9][a-z0-9_-]{0,62}$.
-func ValidCorpusMount(m string) bool {
-	if len(m) < 1 || len(m) > 63 {
-		return false
-	}
-	for i, c := range []byte(m) {
-		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || i > 0 && (c == '_' || c == '-')) {
-			return false
-		}
-	}
-	return true
-}
+func ValidCorpusMount(m string) bool { return wire.ValidCorpusMount(m) }
 
-// ValidUUID: a lowercase canonical UUID other than the nil UUID.
-func ValidUUID(u string) bool {
-	if len(u) != 36 || u == "00000000-0000-0000-0000-000000000000" {
-		return false
-	}
-	for i, c := range []byte(u) {
-		switch {
-		case i == 8 || i == 13 || i == 18 || i == 23:
-			if c != '-' {
-				return false
-			}
-		case !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f'):
-			return false
-		}
-	}
-	return true
-}
+func ValidUUID(u string) bool { return wire.ValidUUID(u) }
 
 // Validate checks c for a VM whose extra drives start at first
 // (FirstExtraDrive): at most MaxCorpora corpora with distinct mounts and

@@ -22,6 +22,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/harnessstore/envelope"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -50,18 +51,8 @@ func (v transactionView) QueryRowContext(c context.Context, q string, a ...any) 
 	return v.tx.QueryRowContext(c, q, a...)
 }
 
-// Subjects must include every participant whose revocation invalidates the work,
-// e.g. agent/sender, agent/recipient, request/ID. They are part of the stored hash.
-type Event struct {
-	ID       string
-	Subjects []string
-	Body     []byte
-}
-
-type Receipt struct {
-	Result   []byte
-	Replayed bool
-}
+type Event = envelope.Event
+type Receipt = envelope.Receipt
 
 type Store struct{ db *sql.DB }
 

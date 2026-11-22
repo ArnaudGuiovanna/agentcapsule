@@ -7,7 +7,7 @@ import (
 	"slices"
 	"time"
 
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmservice"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/telemetry"
 )
 
@@ -77,7 +77,7 @@ func NewLLMTelemetry(registry *telemetry.Registry, problems *telemetry.Logger, u
 
 // ObserveLLM counts one call. A soft budget passed and a refusal are also
 // logged to problems (standard error), with codes only.
-func (m *LLMTelemetry) ObserveLLM(e controlplane.LLMCallEvent) {
+func (m *LLMTelemetry) ObserveLLM(e llmservice.CallEvent) {
 	for _, hit := range e.SoftBudgets {
 		m.soft.Inc(hit.Unit)
 		m.problems.Event("llm_budget_soft_exceeded", telemetry.Code("unit", hit.Unit), telemetry.Code("period", hit.Period), telemetry.Code("scope", hit.Scope))
@@ -104,7 +104,7 @@ func (m *LLMTelemetry) ObserveLLM(e controlplane.LLMCallEvent) {
 // ObserveFirstEvent times a stream's first provider event.
 func (m *LLMTelemetry) ObserveFirstEvent(d time.Duration) { m.firstEvent.Observe(d.Seconds()) }
 
-var _ controlplane.LLMStreamObserver = (*LLMTelemetry)(nil)
+var _ llmservice.StreamObserver = (*LLMTelemetry)(nil)
 
 // LLMEvents and LLMEventCodes are the vocabulary of the model gateway's
 // events, for the worker's loggers.

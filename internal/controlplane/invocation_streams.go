@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorization"
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol/wire"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane/identity"
 	"github.com/jackc/pgx/v5"
 )
@@ -97,15 +97,15 @@ func scanStreamState(row pgx.Row) (streamState, error) {
 func (s streamState) closeReason(attempt int) string {
 	switch {
 	case s.attempt != attempt:
-		return capsuleprotocol.StreamReset
+		return wire.StreamReset
 	case s.status == "CANCELED":
-		return capsuleprotocol.StreamCanceled
+		return wire.StreamCanceled
 	case s.status == "FAILED" && s.errorCode == "work_timeout":
-		return capsuleprotocol.StreamExpired
+		return wire.StreamExpired
 	case s.status != "RUNNING" || !s.working || s.keyed:
-		return capsuleprotocol.StreamTerminal
+		return wire.StreamTerminal
 	case s.due:
-		return capsuleprotocol.StreamExpired
+		return wire.StreamExpired
 	}
 	return ""
 }
@@ -178,9 +178,9 @@ func (t *Transit) OpenOutputStreamFromVM(ctx context.Context, caller VMCaller, o
 	out.Attempt = s.attempt
 	switch {
 	case attempt != 0 && attempt != s.attempt:
-		out.Closing = capsuleprotocol.StreamReset
+		out.Closing = wire.StreamReset
 	case truncated:
-		out.Closing = capsuleprotocol.StreamTruncated
+		out.Closing = wire.StreamTruncated
 	}
 	return out, commit(ctx, tx)
 }
@@ -196,7 +196,7 @@ func (t *Transit) OpenOutputStreamFromVM(ctx context.Context, caller VMCaller, o
 // check stores nothing and gives the stream's close reason. Past the
 // attempt's limits, it stores the frames that fit and truncates the attempt.
 // frames must follow each other from the attempt's next seq.
-func (t *Transit) AppendOutputStreamFromVM(ctx context.Context, caller VMCaller, op string, attempt int, frames []capsuleprotocol.OutputFrame, limits StreamLimits) (StreamAppend, error) {
+func (t *Transit) AppendOutputStreamFromVM(ctx context.Context, caller VMCaller, op string, attempt int, frames []wire.OutputFrame, limits StreamLimits) (StreamAppend, error) {
 	var out StreamAppend
 	if caller.AgentID == "" || !validStreamOperation(op) || attempt < 1 || len(frames) == 0 || !limits.Valid() {
 		return out, ErrInput
@@ -219,14 +219,14 @@ func (t *Transit) AppendOutputStreamFromVM(ctx context.Context, caller VMCaller,
 		return out, err
 	}
 	if err = authorizeVM(ctx, tx, &caller, agents); revokedBoot(err) {
-		out.Reason = capsuleprotocol.StreamRevoked
+		out.Reason = wire.StreamRevoked
 		return out, nil
 	} else if err != nil {
 		return out, err
 	}
 	s, err := scanStreamState(tx.QueryRow(ctx, streamStateSelect+` FOR UPDATE OF i,o`, op, caller.AgentID))
 	if errors.Is(err, ErrNotFound) {
-		out.Reason = capsuleprotocol.StreamRevoked
+		out.Reason = wire.StreamRevoked
 		return out, nil
 	}
 	if err != nil {
@@ -241,7 +241,7 @@ func (t *Transit) AppendOutputStreamFromVM(ctx context.Context, caller VMCaller,
 	err = tx.QueryRow(ctx, `SELECT attempt,last_seq,frames,bytes,truncated,first_delta_at IS NULL FROM invocation_streams
         WHERE operation_id=$1 FOR UPDATE`, op).Scan(&bound, &out.LastSeq, &count, &size, &truncated, &firstDelta)
 	if errors.Is(err, pgx.ErrNoRows) || err == nil && bound != attempt {
-		out.Reason = capsuleprotocol.StreamReset
+		out.Reason = wire.StreamReset
 		return out, nil
 	}
 	if err != nil {
@@ -249,10 +249,10 @@ func (t *Transit) AppendOutputStreamFromVM(ctx context.Context, caller VMCaller,
 	}
 	switch {
 	case truncated:
-		out.Reason = capsuleprotocol.StreamTruncated
+		out.Reason = wire.StreamTruncated
 		return out, nil
 	case frames[0].Seq != out.LastSeq+1:
-		out.Reason = capsuleprotocol.StreamInvalid
+		out.Reason = wire.StreamInvalid
 		return out, nil
 	}
 	take, bytes, delta := 0, int64(0), false
@@ -266,7 +266,7 @@ func (t *Transit) AppendOutputStreamFromVM(ctx context.Context, caller VMCaller,
 		take++
 	}
 	if take > 0 {
-		chunk, err := capsuleprotocol.EncodeOutputChunk(frames[:take])
+		chunk, err := wire.EncodeOutputChunk(frames[:take])
 		if err != nil {
 			return out, err
 		}
@@ -305,7 +305,7 @@ func (t *Transit) AppendOutputStreamFromVM(ctx context.Context, caller VMCaller,
 		out.FirstDelta = time.Duration(*micros) * time.Microsecond
 	}
 	if truncated {
-		out.Reason = capsuleprotocol.StreamTruncated
+		out.Reason = wire.StreamTruncated
 	}
 	return out, nil
 }
@@ -337,7 +337,7 @@ func (s *Store) OutputStreamSignal(ctx context.Context, caller VMCaller, op stri
 	var current bool
 	st, err := scanStreamState(s.pool.QueryRow(ctx, streamStateSelect, op, caller.AgentID))
 	if errors.Is(err, ErrNotFound) {
-		return capsuleprotocol.StreamRevoked, nil
+		return wire.StreamRevoked, nil
 	}
 	if err != nil {
 		return "", err
@@ -351,7 +351,7 @@ func (s *Store) OutputStreamSignal(ctx context.Context, caller VMCaller, op stri
 		return "", err
 	}
 	if !current {
-		return capsuleprotocol.StreamRevoked, nil
+		return wire.StreamRevoked, nil
 	}
 	return "", nil
 }

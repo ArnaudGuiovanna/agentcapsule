@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol/wire"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -139,8 +139,8 @@ type RequestView struct {
 	ExpiresAt        time.Time                    `json:"expires_at"`
 	Subject          string                       `json:"subject,omitempty"`
 	CorrelationID    string                       `json:"correlation_id,omitempty"`
-	Payload          *capsuleprotocol.PeerPayload `json:"payload,omitempty"`
-	Reply            *capsuleprotocol.PeerPayload `json:"reply,omitempty"`
+	Payload          *wire.PeerPayload `json:"payload,omitempty"`
+	Reply            *wire.PeerPayload `json:"reply,omitempty"`
 	// LostAt is the time a restore last lost one of the request's events
 	// (ADR 008). The event may have been delivered again since.
 	LostAt *time.Time `json:"lost_at,omitempty"`

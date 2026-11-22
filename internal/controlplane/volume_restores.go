@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/harnessstore"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/harnessstore/envelope"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -331,9 +331,9 @@ func (s *Store) ActivateVolumeRestore(ctx context.Context, restoreID, host strin
 }
 
 // outcomeID is the restore authority's identifier of the outcome of event
-// eventID delivered to agentID (harnessstore.StoredOutcomeFingerprint).
+// eventID delivered to agentID (envelope.StoredOutcomeFingerprint).
 func outcomeID(agentID, eventID string) (string, error) {
-	id, _, err := harnessstore.StoredOutcomeFingerprint(agentID, eventID, [32]byte{}, nil)
+	id, _, err := envelope.StoredOutcomeFingerprint(agentID, eventID, [32]byte{}, nil)
 	return id, err
 }
 

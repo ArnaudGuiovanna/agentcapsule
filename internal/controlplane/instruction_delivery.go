@@ -6,14 +6,14 @@ import (
 	"errors"
 	"time"
 
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/harnessstore"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol/wire"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/harnessstore/envelope"
 	"github.com/jackc/pgx/v5"
 )
 
 type InstructionRuntime interface {
 	DeliveryRuntime
-	Invoke(context.Context, string, harnessstore.Event) (harnessstore.Receipt, error)
+	Invoke(context.Context, string, envelope.Event) (envelope.Receipt, error)
 }
 
 type InstructionAttempt struct {
@@ -126,25 +126,11 @@ func (t *Transit) ClaimInstruction(ctx context.Context, id string, lease time.Du
 		}
 		return attempt, ErrRerunSkipped
 	}
-	var now time.Time
-	if err = tx.QueryRow(ctx, "SELECT clock_timestamp()").Scan(&now); err != nil {
+	if err := checkMailboxLease(ctx, tx, i.mailboxRow); err != nil {
 		return attempt, err
 	}
-	if !i.Deadline.After(now) {
-		return attempt, ErrExpired
-	}
-	if i.LeaseUntil != nil && i.LeaseUntil.After(now) {
-		return attempt, ErrDeliveryBusy
-	}
-	if i.Attempts >= i.Limit {
-		return attempt, ErrAttemptsExhausted
-	}
-	token := newID("lease")
-	if _, err = tx.Exec(ctx, `UPDATE agent_mailboxes SET attempts=attempts+1,lease_token=$2,dispatch_authorized=false,
-        lease_until=clock_timestamp()+$3::bigint*interval '1 microsecond' WHERE id=$1`, id, token, lease.Microseconds()); err != nil {
-		return attempt, err
-	}
-	if _, err = tx.Exec(ctx, "UPDATE outbox SET attempts=attempts+1 WHERE mailbox_id=$1", id); err != nil {
+	token, err := takeMailboxLease(ctx, tx, id, lease)
+	if err != nil {
 		return attempt, err
 	}
 	if _, err = tx.Exec(ctx, "UPDATE platform_operations SET status='RUNNING' WHERE id=$1", i.Operation); err != nil {
@@ -157,8 +143,8 @@ func (t *Transit) ClaimInstruction(ctx context.Context, id string, lease time.Du
 // AuthorizeInstruction commits the possibility of an effect and creates the
 // single stable grant before returning an envelope. Reauthorization never resets
 // remaining, validity or expiry. The guest cannot replenish its own authority.
-func (t *Transit) AuthorizeInstruction(ctx context.Context, id, token string) (harnessstore.Event, error) {
-	var event harnessstore.Event
+func (t *Transit) AuthorizeInstruction(ctx context.Context, id, token string) (envelope.Event, error) {
+	var event envelope.Event
 	if token == "" {
 		return event, ErrLeaseLost
 	}
@@ -218,7 +204,7 @@ func (t *Transit) AuthorizeInstruction(ctx context.Context, id, token string) (h
 			return event, err
 		}
 	}
-	grant := capsuleprotocol.InstructionMandate{ID: i.Mandate}
+	grant := wire.InstructionMandate{ID: i.Mandate}
 	err = tx.QueryRow(ctx, `SELECT max_requests,expires_at FROM mandates WHERE id=$1 AND agent_id=$2 AND origin_event_id=$3`,
 		i.Mandate, i.Destination, i.ID).Scan(&grant.MaxAgentRequests, &grant.ExpiresAt)
 	if err != nil {
@@ -233,7 +219,7 @@ func (t *Transit) AuthorizeInstruction(ctx context.Context, id, token string) (h
 	if err != nil {
 		return event, err
 	}
-	encoded, err := json.Marshal(capsuleprotocol.Invocation{Kind: "message.user", OperationID: i.Operation, Mandate: grant, Content: input.Content, Attachments: refs})
+	encoded, err := json.Marshal(wire.Invocation{Kind: "message.user", OperationID: i.Operation, Mandate: grant, Content: input.Content, Attachments: refs})
 	if err != nil {
 		return event, err
 	}
@@ -251,7 +237,7 @@ func (t *Transit) AuthorizeInstruction(ctx context.Context, id, token string) (h
 		clear(encoded)
 		return event, err
 	}
-	return harnessstore.Event{ID: id, Subjects: []string{"agent/" + i.Destination, "event/" + id}, Body: encoded}, nil
+	return envelope.Event{ID: id, Subjects: []string{"agent/" + i.Destination, "event/" + id}, Body: encoded}, nil
 }
 
 // AcknowledgeInstruction publishes encrypted result, terminal operation and FIFO
@@ -260,7 +246,7 @@ func (t *Transit) AcknowledgeInstruction(ctx context.Context, id, token string, 
 	if token == "" {
 		return ErrLeaseLost
 	}
-	if len(result) > capsuleprotocol.MaxContentBytes || !json.Valid(result) {
+	if len(result) > wire.MaxContentBytes || !json.Valid(result) {
 		return ErrInput
 	}
 	tx, err := t.store.begin(ctx)
@@ -287,7 +273,7 @@ func (t *Transit) AcknowledgeInstruction(ctx context.Context, id, token string, 
 	if i.Status != "RUNNING" || i.Mandate == "" {
 		return ErrTransition
 	}
-	if capsuleprotocol.IsWorkingResult(result) {
+	if wire.IsWorkingResult(result) {
 		// Delivered, not finished: the agent will post the outcome later over the
 		// platform channel, which it cannot use during this exclusive delivery.
 		// The operation stays RUNNING until then, or until result_due_at.
@@ -488,55 +474,28 @@ func (t *Transit) DispatchMailbox(ctx context.Context, id string, lease time.Dur
 	if kind != "instruction" {
 		return t.store.dispatchMailboxWithTransit(ctx, destination, id, lease, runtime, t)
 	}
-	// Due to die: no prepared agent is needed (see dispatchMailboxWithTransit).
-	if due, err := t.store.retirementDue(ctx, id); err != nil {
-		return err
-	} else if due {
-		return t.RetireInstruction(ctx, id, runtime)
-	}
-	// A disabled organization's instructions wait, and boot no VM.
-	if disabled, err := agentSuspended(ctx, t.store.pool, destination); err != nil {
-		return err
-	} else if disabled {
-		return errors.Join(ErrNoDelivery, ErrOrganizationDisabled)
-	}
-	retire := false
-	dispatch := func(ctx context.Context) error {
+	retire := func() error { return t.RetireInstruction(ctx, id, runtime) }
+	return t.store.dispatchPending(ctx, destination, id, runtime, retire, func(ctx context.Context) (bool, error) {
 		a, err := t.ClaimInstruction(ctx, id, lease)
 		if errors.Is(err, ErrExpired) || errors.Is(err, ErrAttemptsExhausted) || errors.Is(err, ErrDeliveryClosing) {
-			retire = true
-			return nil
+			return true, nil
 		}
 		if errors.Is(err, ErrRerunSkipped) {
-			return nil
+			return false, nil
 		}
 		if err != nil {
-			return err
+			return false, err
 		}
 		e, err := t.AuthorizeInstruction(ctx, a.ID, a.Token)
 		if err != nil {
-			return err
+			return false, err
 		}
 		defer clear(e.Body)
 		r, err := runtime.Invoke(ctx, a.Destination, e)
 		defer clear(r.Result)
 		if err != nil {
-			return err
+			return false, err
 		}
-		return t.AcknowledgeInstruction(ctx, a.ID, a.Token, r.Result)
-	}
-	if admission, ok := runtime.(PreparedDeliveryAdmission); ok {
-		err = admission.WithPreparedDelivery(ctx, destination, dispatch)
-	} else if admission, ok := runtime.(DeliveryAdmission); ok {
-		err = admission.WithDeliveryAdmission(ctx, dispatch)
-	} else {
-		err = dispatch(ctx)
-	}
-	if err != nil {
-		return err
-	}
-	if retire {
-		return t.RetireInstruction(ctx, id, runtime)
-	}
-	return nil
+		return false, t.AcknowledgeInstruction(ctx, a.ID, a.Token, r.Result)
+	})
 }

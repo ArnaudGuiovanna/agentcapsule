@@ -8,13 +8,14 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmgateway"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmservice"
 )
 
 // Embeddings, transcription and OCR from the running capsule (ADR 023 §12),
 // with the admission rules of CompleteLLM: placement and reservation under
 // host admission, the provider call outside it.
 
-func (a platformAPI) mediaService() *controlplane.LLMService {
+func (a platformAPI) mediaService() *llmservice.Service {
 	if a.llm == nil {
 		return nil
 	}

@@ -1,6 +1,6 @@
 //go:build llmlive
 
-package controlplane
+package llmservice
 
 // Metered model streams end to end against a real provider (ADR 022), with
 // the variables of llm_live_test.go. The Anthropic API is the same server's,
@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	. "github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmgateway"
 )
 
@@ -31,7 +32,7 @@ func (l *liveLab) withAnthropic(t *testing.T) {
 		t.Fatal(err)
 	}
 	var proxy string
-	if err = l.s.pool.QueryRow(t.Context(), `SELECT base_url FROM llm_providers WHERE tenant_id=$1`, l.owner.TenantID).Scan(&proxy); err != nil {
+	if err = l.db.QueryRow(t.Context(), `SELECT base_url FROM llm_providers WHERE tenant_id=$1`, l.owner.TenantID).Scan(&proxy); err != nil {
 		t.Fatal(err)
 	}
 	p, _ := url.Parse(proxy)
@@ -68,7 +69,7 @@ func TestLiveModelStreamIsSettledAtTheProviderReportedUsage(t *testing.T) {
 	for _, c := range []struct{ key, alias, dialect string }{{"s-openai", "local", "openai"}, {"s-anthropic", "local-anthropic", "anthropic"}} {
 		events := 0
 		end, err := svc.ForwardStreamFromVM(t.Context(), l.caller, c.key, c.alias, c.dialect, liveStreamBody(c.dialect), nil, func(llmgateway.Event) error { events++; return nil })
-		if err != nil || end.Outcome != LLMStreamCompleted || events < 3 || end.Usage.InputTokens <= 0 || end.Usage.OutputTokens <= 0 {
+		if err != nil || end.Outcome != StreamCompleted || events < 3 || end.Usage.InputTokens <= 0 || end.Usage.OutputTokens <= 0 {
 			t.Fatal(c.dialect, end, err, events)
 		}
 		if l.usageState(t, c.key) != "settled" {
@@ -80,7 +81,7 @@ func TestLiveModelStreamIsSettledAtTheProviderReportedUsage(t *testing.T) {
 	}
 	var text []string
 	end, err := svc.CompleteStreamFromVM(t.Context(), l.caller, "s-text", "local", liveRequest(16), nil, func(s string) error { text = append(text, s); return nil })
-	if err != nil || end.Outcome != LLMStreamCompleted || len(text) == 0 || end.FinishReason == "" || l.usageState(t, "s-text") != "settled" {
+	if err != nil || end.Outcome != StreamCompleted || len(text) == 0 || end.FinishReason == "" || l.usageState(t, "s-text") != "settled" {
 		t.Fatal("text stream", end, err)
 	}
 	settled.InputTokens += end.Usage.InputTokens
@@ -114,7 +115,7 @@ func TestLiveModelStreamCutStaysUnknownAndReconcilable(t *testing.T) {
 			}
 			return nil
 		})
-		if err != nil || end.Outcome != LLMStreamOutcomeUnknown || events != 2 {
+		if err != nil || end.Outcome != StreamOutcomeUnknown || events != 2 {
 			t.Fatal(c.dialect, end, err, events)
 		}
 		if l.usageState(t, c.key) != "unknown" {

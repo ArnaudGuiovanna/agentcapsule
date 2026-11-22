@@ -4,15 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol/wire"
 	"math"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 )
 
-type TextContent = capsuleprotocol.TextContent
-type OwnerInstruction = capsuleprotocol.OwnerMessage
+type TextContent = wire.TextContent
+type OwnerInstruction = wire.OwnerMessage
 
 // Instruct commits encrypted content, operation, shared FIFO mailbox/outbox and
 // the original HTTP receipt atomically. Authentication is rechecked before any

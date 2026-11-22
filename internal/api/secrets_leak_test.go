@@ -29,6 +29,7 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/harnessstore"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmgateway"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmservice"
 	vmruntime "github.com/ArnaudGuiovanna/agentcapsule/internal/runtime"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/telemetry"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/volumearchive"
@@ -64,7 +65,7 @@ type guestBridge struct {
 	caller  controlplane.VMCaller
 	store   *controlplane.Store
 	transit *controlplane.Transit
-	llm     *controlplane.LLMService
+	llm     *llmservice.Service
 }
 
 func bridgeError(err error) error {
@@ -445,7 +446,7 @@ func newSecretScenario(t *testing.T) *secretScenario {
 	do("POST", "/v1/llm/aliases", owner, "a2", `{"alias":"deep","provider_id":"`+deep.ID+`","upstream_model":"d"}`, 201)
 	do("POST", "/v1/llm/budgets", owner, "b1", `{"alias":"deep","period":"day","limit_tokens":200,"mode":"hard"}`, 201)
 
-	svc, err := controlplane.NewLLMService(l.server.accounts, llmgateway.NewForTests(llmgateway.Config{Timeout: 5 * time.Second, MaxAttempts: 2, Backoff: time.Millisecond},
+	svc, err := llmservice.New(l.server.accounts, llmgateway.NewForTests(llmgateway.Config{Timeout: 5 * time.Second, MaxAttempts: 2, Backoff: time.Millisecond},
 		llmgateway.TestOptions{Loopback: true}))
 	if err != nil {
 		t.Fatal(err)

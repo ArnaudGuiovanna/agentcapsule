@@ -1,6 +1,6 @@
 //go:build llmlive
 
-package controlplane
+package llmservice
 
 // End-to-end metered model calls against a real OpenAI-compatible provider,
 // normally a local Ollama (see internal/llmgateway/live_test.go for the
@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	. "github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmgateway"
 )
 
@@ -87,9 +88,9 @@ func newLiveLab(t *testing.T) *liveLab {
 	return &liveLab{tenantLab: l, owner: owner, caller: VMCaller{AgentID: agent, HostID: "local", VMID: vm, Generation: pl.Generation}, sent: sent}
 }
 
-func (l *liveLab) service(t *testing.T, timeout time.Duration) *LLMService {
+func (l *liveLab) service(t *testing.T, timeout time.Duration) *Service {
 	t.Helper()
-	svc, err := NewLLMService(l.a, llmgateway.NewForTests(llmgateway.Config{Timeout: timeout, MaxAttempts: 1}, llmgateway.TestOptions{Loopback: true}))
+	svc, err := New(l.a, llmgateway.NewForTests(llmgateway.Config{Timeout: timeout, MaxAttempts: 1}, llmgateway.TestOptions{Loopback: true}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +100,7 @@ func (l *liveLab) service(t *testing.T, timeout time.Duration) *LLMService {
 func (l *liveLab) usageState(t *testing.T, key string) string {
 	t.Helper()
 	var state string
-	if err := l.s.pool.QueryRow(t.Context(), `SELECT state FROM llm_usage WHERE agent_id=$1 AND request_key=$2`, l.caller.AgentID, key).Scan(&state); err != nil {
+	if err := l.db.QueryRow(t.Context(), `SELECT state FROM llm_usage WHERE agent_id=$1 AND request_key=$2`, l.caller.AgentID, key).Scan(&state); err != nil {
 		t.Fatal(key, err)
 	}
 	return state

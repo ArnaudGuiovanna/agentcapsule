@@ -15,6 +15,7 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/directory"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/keyauthority"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmservice"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/restoreauthority"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/runtime"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/slimlink"
@@ -37,7 +38,7 @@ type Placements struct {
 	// imported release; nil when this host does not import harnesses.
 	registry atomic.Pointer[HarnessImporter]
 	transit  atomic.Pointer[controlplane.Transit]
-	llm      atomic.Pointer[controlplane.LLMService]
+	llm      atomic.Pointer[llmservice.Service]
 	// directory answers the agents' searches; nil without a Directory.
 	directory atomic.Pointer[directory.Client]
 	// slim carries deliveries between agents through the SLIM bridge; nil

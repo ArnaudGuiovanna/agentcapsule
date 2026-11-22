@@ -22,6 +22,7 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/delegatedidentity"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmgateway"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmservice"
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -155,7 +156,7 @@ func TestProductWorkerTenantAsyncInvocationWithFileAndModel(t *testing.T) {
 		_, _ = fmt.Fprintf(w, `{"choices":[{"message":{"content":%s},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":4}}`, answer)
 	}))
 	t.Cleanup(provider.Close)
-	svc, err := controlplane.NewLLMService(lab.accounts, llmgateway.NewForTests(llmgateway.Config{Timeout: 10 * time.Second, MaxAttempts: 1}, llmgateway.TestOptions{Loopback: true}))
+	svc, err := llmservice.New(lab.accounts, llmgateway.NewForTests(llmgateway.Config{Timeout: 10 * time.Second, MaxAttempts: 1}, llmgateway.TestOptions{Loopback: true}))
 	if err != nil {
 		t.Fatal(err)
 	}

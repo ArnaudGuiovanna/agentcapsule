@@ -15,13 +15,14 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol/wire"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/harnessstore"
 )
 
 const MaxMessageBytes = 1 << 20
-const MaxContentBytes = 512 << 10
+const MaxContentBytes = wire.MaxContentBytes
 
-var ErrProtocol = errors.New("invalid capsule control message")
+var ErrProtocol = wire.ErrProtocol
 var ErrTransport = errors.New("capsule transport unavailable or outcome unknown")
 var ErrFenceOnly = errors.New("capsule boot permits barriers only")
 

@@ -17,6 +17,7 @@ import (
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmgateway"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmservice"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/runtime"
 )
 
@@ -98,7 +99,7 @@ func (l *registryLab) enableHeldModel() *heldModel {
 	}))
 	t.Cleanup(provider.Close)
 	t.Cleanup(m.open) // runs first: a held call ends before the server closes
-	svc, err := controlplane.NewLLMService(l.accounts, llmgateway.NewForTests(llmgateway.Config{Timeout: 4 * time.Minute, MaxAttempts: 1}, llmgateway.TestOptions{Loopback: true}))
+	svc, err := llmservice.New(l.accounts, llmgateway.NewForTests(llmgateway.Config{Timeout: 4 * time.Minute, MaxAttempts: 1}, llmgateway.TestOptions{Loopback: true}))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -15,6 +15,7 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmgateway"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmservice"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/telemetry"
 )
 
@@ -65,10 +66,10 @@ func TestMediaMetricsCountSecondsAndPagesByProviderKind(t *testing.T) {
 		vocabulary[k] = v
 	}
 	m := NewLLMTelemetry(registry, telemetry.NewLogger(&logs, vocabulary), func(context.Context) (int64, error) { return 0, nil })
-	m.ObserveLLM(controlplane.LLMCallEvent{Provider: "openai_compatible", Operation: "transcribe", Outcome: "settled", AudioSeconds: 288, CostMicro: 28_800})
-	m.ObserveLLM(controlplane.LLMCallEvent{Provider: "openai_compatible", Operation: "ocr", Outcome: "settled", Pages: 3})
-	m.ObserveLLM(controlplane.LLMCallEvent{Provider: "openai_compatible", Operation: "embed", Outcome: "settled", InputTokens: 9})
-	m.ObserveLLM(controlplane.LLMCallEvent{Provider: "openai_compatible", Outcome: "refused", Reason: "unsupported"})
+	m.ObserveLLM(llmservice.CallEvent{Provider: "openai_compatible", Operation: "transcribe", Outcome: "settled", AudioSeconds: 288, CostMicro: 28_800})
+	m.ObserveLLM(llmservice.CallEvent{Provider: "openai_compatible", Operation: "ocr", Outcome: "settled", Pages: 3})
+	m.ObserveLLM(llmservice.CallEvent{Provider: "openai_compatible", Operation: "embed", Outcome: "settled", InputTokens: 9})
+	m.ObserveLLM(llmservice.CallEvent{Provider: "openai_compatible", Outcome: "refused", Reason: "unsupported"})
 	rec := httptest.NewRecorder()
 	registry.Handler(5*time.Second).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	body := rec.Body.String()

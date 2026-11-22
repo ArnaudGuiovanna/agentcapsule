@@ -160,7 +160,7 @@ are set at the alias's creation, or both replaced with `POST
 `priced`; zero prices set on purpose are a free model. An alias created without
 prices is not priced.
 
-Each call goes through `LLMService`: alias resolution, the alias's request
+Each call goes through `llmservice.Service`: alias resolution, the alias's request
 policy (below), access check, **reservation**, call, then a single outcome.
 The provider's status and credential are read again in the reservation's
 transaction: a provider disabled since the route was resolved refuses the

@@ -10,6 +10,7 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/directory"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmgateway"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmservice"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/restoreauthority"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/runtime"
 )
@@ -28,7 +29,7 @@ type platformAPI struct {
 	host        applicationHost
 	caller      controlplane.VMCaller
 	transit     func() *controlplane.Transit
-	llm         func() *controlplane.LLMService
+	llm         func() *llmservice.Service
 	directory   func() *directory.Client
 	authority   restoreauthority.Authority
 	incarnation uint64
@@ -124,7 +125,7 @@ func platformError(err error) error {
 	case errors.Is(err, llmgateway.ErrFeatureDenied):
 		// The alias's request policy refuses a field or a tool type.
 		code = "feature_denied"
-	case errors.Is(err, controlplane.ErrLLMConcurrency):
+	case errors.Is(err, llmservice.ErrConcurrency):
 		code = "concurrency_limited"
 	}
 	return &capsuleprotocol.PlatformError{Code: code}

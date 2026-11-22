@@ -20,13 +20,14 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpusmeta"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmgateway"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmservice"
 )
 
 type corpusMediaRefusals struct {
 	alias, budget atomic.Int64
 }
 
-func (m *corpusMediaRefusals) ObserveLLM(e controlplane.LLMCallEvent) {
+func (m *corpusMediaRefusals) ObserveLLM(e llmservice.CallEvent) {
 	if e.Outcome == "refused" {
 		switch e.Reason {
 		case "alias_access":
@@ -72,7 +73,7 @@ func TestCorpusBuilderPaidInferenceOnKVM(t *testing.T) {
 	t.Cleanup(upstream.Close)
 	setup := setupCorpusBuilder(t, fixtures, "")
 	lab, owner := setup.lab, setup.owner
-	service, err := controlplane.NewLLMService(lab.accounts, llmgateway.NewForTests(llmgateway.Config{Timeout: 110 * time.Second, MaxAttempts: 1}, llmgateway.TestOptions{Loopback: true}))
+	service, err := llmservice.New(lab.accounts, llmgateway.NewForTests(llmgateway.Config{Timeout: 110 * time.Second, MaxAttempts: 1}, llmgateway.TestOptions{Loopback: true}))
 	if err != nil {
 		t.Fatal(err)
 	}
