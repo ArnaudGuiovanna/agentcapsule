@@ -229,6 +229,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Request-ID", requestID)
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if r.TLS != nil {
+		// HTTPS only from now on, for a year (v0.1.0 audit, L-19).
+		w.Header().Set("Strict-Transport-Security", "max-age=31536000")
+	}
 	recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 	w = recorder
 	route := invalidRoute
