@@ -35,7 +35,7 @@ platform credential; later credential administration is covered by
 `agentcapsule-admin list-credentials` and `revoke-credential` (see the
 [README](README.md)). A revocation is audited too. In production
 `revoke-credential` needs the authority service's flags: it records the
-revocation there before it commits ([README](README.md#revocations-pending-and-confirmed)). So does
+revocation there once it has committed ([README](README.md#revocations-pending-and-confirmed)). So does
 `POST /v1/organizations/{id}/disable`, whose answer carries `revocations`.
 
 ## Available routes
@@ -85,9 +85,22 @@ organization's name can be used again.
 Disabling is persistent and increments `policy_version` exactly once. A new
 command on an already disabled organization has no effect on that version and
 leaves an audit entry with `changed=false`. Replaying the same receipt adds no
-audit. Members are kept. Forbidding future tenant operations
-for a disabled organization relies on this status in the tenant routes; this
-route does not itself offboard anything.
+audit. Members are kept, and lose access at once: every tenant route
+authenticates against this status. The organization's work stops too:
+- a scheduled invocation that comes due is closed, `CANCELED` with
+  `error_code` `organization_disabled`, and its content is erased;
+- a wake of one of its agents is canceled the same way;
+- its agents cannot send requests to one another (refused as unavailable);
+- a delivery to one of its agents (an invocation, a request, a reply, a
+  status) is not claimed and boots no VM: it waits, and dies at its deadline
+  as any other;
+- the worker puts each of its running VMs to sleep with the ordinary sleep
+  command (`cause` `organization_disabled`), which the guest acknowledges
+  as for any sleep; a VM is not woken again, for work or to resume it.
+
+Work that already started may finish its current step: an invocation the
+agent is working on ends with the VM's sleep, as with any sleep. Disabling
+is permanent; nothing held runs later.
 
 The credential hash, its scopes, its expiry and its revocation are checked again
 in each transaction, including before a receipt is returned. An already

@@ -256,7 +256,7 @@ func (a *Accounts) RotateLLMProviderSecret(ctx context.Context, p Principal, id,
 	if err != nil {
 		return APIReceipt{}, err
 	}
-	return r, commit(ctx, tx)
+	return a.store.settled(ctx, r, commit(ctx, tx))
 }
 
 // DisableLLMProvider makes the credential unusable from the next resolution and
@@ -311,7 +311,7 @@ func (a *Accounts) DisableLLMProvider(ctx context.Context, p Principal, id, key 
 	if err != nil {
 		return APIReceipt{}, err
 	}
-	return r, commit(ctx, tx)
+	return a.store.settled(ctx, r, commit(ctx, tx))
 }
 
 // maxPriceMicroPerMTok bounds a price: a million currency units per million

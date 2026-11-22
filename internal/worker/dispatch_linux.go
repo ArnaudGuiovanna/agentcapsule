@@ -44,6 +44,9 @@ func (w *Placements) DispatchPass(ctx context.Context, o DispatchOptions, attemp
 		step, cancel := context.WithTimeout(ctx, attemptTimeout)
 		_, releaseErr := w.store.ReleaseDueInstructions(step, nil, o.Batch)
 		_, idleErr := w.store.ScheduleIdleSleeps(step, w.hostID, nil, o.Batch)
+		// A disabled organization's VMs go to sleep (docs/api/organizations.md).
+		_, suspendErr := w.store.ScheduleSuspensionSleeps(step, w.hostID, o.Batch)
+		idleErr = errors.Join(idleErr, suspendErr)
 		_, workErr := w.store.ExpireWorkingInvocations(step, nil, o.Batch)
 		// A slot freed by a sleep, a deletion or a crash goes to the oldest
 		// work waiting for capacity (ADR 017).

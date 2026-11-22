@@ -40,11 +40,11 @@ Each token records the human who issued it. It is revoked:
 Promoting a role resurrects no token. Another authorized human issues a new
 token to transfer operation.
 
-Every revocation of a token or of an account is recorded with the authority
-service before it commits. A token's is a bearer token's: confirmed at once
+Every revocation of a token or of an account takes effect at once and is
+recorded with the authority service once it has committed: `recording` until
+the service holds it. A token's is a bearer token's: confirmed at once
 while the service runs in degraded mode. A disabled account's is a standing
-grant's: `pending` until the standby holds it. A 503 `authority_unavailable`
-means that nothing changed: try again ([README](README.md#revocations-pending-and-confirmed)).
+grant's: `pending` until the standby holds it ([README](README.md#revocations-pending-and-confirmed)).
 
 ## Limits
 

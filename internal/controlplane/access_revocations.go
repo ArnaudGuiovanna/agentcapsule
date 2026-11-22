@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
+	"sync"
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authoritylog"
@@ -12,24 +14,32 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// Access revocation records (docs/adr/006-authority-service.md §7, wave 5;
-// docs/adr/005-keys-outside-restored-domain.md, items 6 and 7). Every
-// transaction that revokes access appends a record to the authority service
-// before it commits: a record the service did not commit fails the request,
-// and nothing is committed here (ErrAuthorityUnavailable). The API confirms
-// a revocation once the standby's replica holds its record, or at once when
-// it is a bearer token's and the service runs in degraded mode: the blanket
-// revocation of every bearer token at a failover covers it. Otherwise the
-// revocation is pending: it took effect here and on the primary's
-// authorities, and ConfirmAccessRevocations confirms it later.
+// Access revocation records (docs/adr/006-authority-service.md §7, wave 5,
+// and "Changes after the v0.1.0 audit"; docs/adr/005-keys-outside-restored-
+// domain.md, items 6 and 7). Every transaction that revokes access inserts
+// its record's row, recording, with its effect. Once it has committed, the
+// record is appended to the authority service with no lock held
+// (recordCommitted): never under the organization's row lock or the shared
+// gate, and never for a transaction that rolled back. The row then becomes
+// confirmed once the standby's replica holds the record, or at once when it
+// is a bearer token's and the service runs in degraded mode: the blanket
+// revocation of every bearer token at a failover covers it. Otherwise it is
+// pending, and ConfirmAccessRevocations confirms it later. A record the
+// service did not commit leaves its row recording: the revocation took
+// effect here, and ConfirmAccessRevocations, every 5 seconds, or the
+// reconciliation after a failover, appends it.
 
 // ErrAuthorityUnavailable means that the authority service did not record a
-// revocation: it does not answer, or the standby holds its record back
-// before degraded mode begins. Nothing was committed: try again in a moment.
+// personal volume's claim, which needs its answer before the commit: it does
+// not answer, or the standby holds its record back before degraded mode
+// begins. Nothing was committed: try again in a moment.
 var ErrAuthorityUnavailable = errors.New("authority service did not record the revocation: try again")
 
 // The states of an access revocation.
 const (
+	// RevocationRecording: the revocation took effect here; the authority
+	// service does not hold its record yet.
+	RevocationRecording = "recording"
 	RevocationPending   = "pending"
 	RevocationConfirmed = "confirmed"
 )
@@ -69,7 +79,7 @@ type AccessRecorder interface {
 type accessRecorder struct{ AccessRecorder }
 
 // RecordAccessWith makes every revoking transaction append its record to r
-// before it commits. Without it (development without the authority
+// once it has committed. Without it (development without the authority
 // service), revocations are recorded in PostgreSQL only, and their answers
 // carry no revocation state.
 func (s *Store) RecordAccessWith(r AccessRecorder) {
@@ -116,15 +126,97 @@ type revocations struct {
 	// them; empty for the platform's own revocations.
 	reader string
 	list   []AccessRevocation
+	// records are those the authority service gets once tx has committed.
+	records []AccessRecord
+}
+
+// unrecorded holds, for each transaction that inserted records, the
+// collectors to record once it has committed: pgx.Tx -> *[]*revocations.
+// Only the goroutine running a transaction touches its entry.
+var unrecorded sync.Map
+
+// forgetRecords drops what tx would have recorded: it did not commit.
+func forgetRecords(tx pgx.Tx) { unrecorded.Delete(tx) }
+
+// recordCommitted appends to the authority service the records of tx, which
+// has just committed, with no lock held, and brings their states up to date
+// in the collectors. A record the service does not commit now stays
+// recording, for ConfirmAccessRevocations.
+func recordCommitted(ctx context.Context, tx pgx.Tx) {
+	v, ok := unrecorded.LoadAndDelete(tx)
+	if !ok {
+		return
+	}
+	for _, r := range *v.(*[]*revocations) {
+		for _, record := range r.records {
+			state, at, ok := r.store.record(ctx, record)
+			if !ok {
+				continue
+			}
+			for i := range r.list {
+				if r.list[i].ID == record.ID {
+					r.list[i].State, r.list[i].ConfirmedAt = state, at
+				}
+			}
+		}
+	}
+}
+
+// record appends record to the authority service, and moves its row from
+// recording to pending or confirmed. It reports the row's state, and false
+// when the service did not commit the record. The request's end does not
+// stop it: the revocation took effect, and recording it is due.
+func (s *Store) record(ctx context.Context, record AccessRecord) (string, *time.Time, bool) {
+	recorder := s.recorder()
+	if recorder == nil {
+		return "", nil, false
+	}
+	wait, cancel := context.WithTimeout(context.WithoutCancel(ctx), recordTimeout)
+	defer cancel()
+	receipt, err := recorder.RecordAccess(wait, record)
+	if err != nil || !receipt.Known {
+		return "", nil, false
+	}
+	return s.settle(wait, record.ID, record.Kind, receipt)
+}
+
+// settle moves a recording row to the state its receipt gives. A row
+// another pass recorded first keeps what that pass wrote.
+func (s *Store) settle(ctx context.Context, id, kind string, receipt AccessReceipt) (string, *time.Time, bool) {
+	state := RevocationPending
+	if confirmable(kind, receipt) {
+		state = RevocationConfirmed
+	}
+	var at *time.Time
+	err := s.pool.QueryRow(ctx, `UPDATE access_revocations SET state=$2,epoch=$3,seq=$4,
+        confirmed_at=CASE WHEN $2='confirmed' THEN clock_timestamp() END
+        WHERE id=$1 AND state='recording' RETURNING confirmed_at`, id, state, int64(receipt.Epoch), int64(receipt.Seq)).Scan(&at)
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = s.pool.QueryRow(ctx, `SELECT state,confirmed_at FROM access_revocations WHERE id=$1`, id).Scan(&state, &at)
+	}
+	return state, at, err == nil
+}
+
+// settled gives the revocations of r, the answer of a transaction that has
+// just committed, the states they have now that commit recorded them.
+func (s *Store) settled(ctx context.Context, r APIReceipt, err error) (APIReceipt, error) {
+	if err != nil || !bytes.Contains(r.Body, []byte(revocationsMember)) {
+		return r, err
+	}
+	if body, e := currentRevocations(ctx, s.pool, r.Body); e == nil {
+		r.Body = body
+	}
+	return r, nil
 }
 
 func (s *Store) revocations(tx pgx.Tx, reader string) *revocations {
 	return &revocations{store: s, tx: tx, reader: reader}
 }
 
-// add appends the record of kind for objects to the authority service, then
-// inserts its row, in the caller's transaction, before its commit. Nothing
-// to revoke appends nothing; nor does a store without the authority service.
+// add inserts the row of the record of kind for objects, in the caller's
+// transaction; its commit appends the record to the authority service.
+// Nothing to revoke appends nothing; nor does a store without the authority
+// service.
 func (r *revocations) add(ctx context.Context, kind, organization string, objects [][]string) error {
 	if len(objects) == 0 || r.store.recorder() == nil {
 		return nil
@@ -158,9 +250,39 @@ func (r *revocations) addOne(ctx context.Context, kind, organization string, obj
 
 func (r *revocations) appendRecord(ctx context.Context, record AccessRecord) error {
 	kind, organization, objects := record.Kind, record.Organization, record.Objects
-	recorder := r.store.recorder()
 	if _, known := authoritylog.AccessBearer(kind); !known || !authoritylog.ValidAccessObjects(objects) ||
 		(organization != "" && !authoritylog.ValidAccessText(organization)) {
+		return ErrInput
+	}
+	encoded, err := json.Marshal(objects)
+	if err != nil {
+		return err
+	}
+	v := AccessRevocation{ID: record.ID, Kind: kind, State: RevocationRecording}
+	if err = r.tx.QueryRow(ctx, `INSERT INTO access_revocations(id,tenant_id,organization_id,kind,objects,state)
+        VALUES($1,nullif($2,''),nullif($3,''),$4,$5,'recording') RETURNING recorded_at`, record.ID, r.reader, organization, kind, encoded).
+		Scan(&v.RecordedAt); err != nil {
+		return err
+	}
+	r.list = append(r.list, v)
+	r.records = append(r.records, record)
+	held, _ := unrecorded.LoadOrStore(r.tx, &[]*revocations{})
+	if list := held.(*[]*revocations); !slices.Contains(*list, r) {
+		*list = append(*list, r)
+	}
+	return nil
+}
+
+// claim appends record to the authority service inside the caller's
+// transaction, before its commit, then inserts its row. Only a personal
+// volume's claim does (personal_volume_holds.go): the service's answer
+// decides it, since it refuses another record under the same ID. A record
+// the service did not commit fails it, and nothing is committed here.
+func (r *revocations) claim(ctx context.Context, record AccessRecord) error {
+	kind, organization, objects := record.Kind, record.Organization, record.Objects
+	recorder := r.store.recorder()
+	if _, known := authoritylog.AccessBearer(kind); !known || !authoritylog.ValidAccessObjects(objects) ||
+		(organization != "" && !authoritylog.ValidAccessText(organization)) || recorder == nil {
 		return ErrInput
 	}
 	wait, cancel := context.WithTimeout(ctx, recordTimeout)
@@ -222,7 +344,7 @@ func spliceRevocations(b []byte, list []AccessRevocation) (json.RawMessage, erro
 // currentRevocations brings the states of a stored answer's revocations up
 // to date: a replayed answer says what holds now, not what held when it was
 // first given.
-func currentRevocations(ctx context.Context, tx pgx.Tx, body []byte) ([]byte, error) {
+func currentRevocations(ctx context.Context, tx rowQuerier, body []byte) ([]byte, error) {
 	at := bytes.LastIndex(body, []byte(revocationsMember))
 	if at < 0 || len(body) < 2 || body[len(body)-1] != '}' {
 		return body, nil
@@ -248,6 +370,12 @@ func (s *Store) ConfirmAccessRevocations(ctx context.Context, limit int) (int, e
 	if recorder == nil || limit < 1 {
 		return 0, nil
 	}
+	// First the records the service does not hold yet: their transactions
+	// committed, and recording them right after did not succeed.
+	confirmed, err := s.recordAccessRevocations(ctx, limit)
+	if err != nil {
+		return confirmed, err
+	}
 	rows, err := s.pool.Query(ctx, `SELECT id,kind FROM access_revocations WHERE state='pending' ORDER BY recorded_at,id LIMIT $1`, limit)
 	if err != nil {
 		return 0, err
@@ -264,9 +392,8 @@ func (s *Store) ConfirmAccessRevocations(ctx context.Context, limit int) (int, e
 	}
 	rows.Close()
 	if err = rows.Err(); err != nil {
-		return 0, err
+		return confirmed, err
 	}
-	confirmed := 0
 	for _, p := range list {
 		ok, err := s.confirm(ctx, recorder, p.id, p.kind)
 		if err != nil {
@@ -277,6 +404,55 @@ func (s *Store) ConfirmAccessRevocations(ctx context.Context, limit int) (int, e
 		}
 	}
 	return confirmed, nil
+}
+
+// recordAccessRevocations appends to the authority service the records of
+// at most limit recording rows, oldest first, with no lock held. It stops at
+// the first record the service does not commit, and returns how many became
+// confirmed.
+func (s *Store) recordAccessRevocations(ctx context.Context, limit int) (int, error) {
+	rows, err := s.pool.Query(ctx, `SELECT id,kind,coalesce(organization_id,''),objects FROM access_revocations
+        WHERE state='recording' ORDER BY recorded_at,id LIMIT $1`, limit)
+	if err != nil {
+		return 0, err
+	}
+	records, err := pgx.CollectRows(rows, scanAccessRecord)
+	if err != nil {
+		return 0, err
+	}
+	confirmed := 0
+	for _, record := range records {
+		state, _, ok := s.record(ctx, record)
+		if !ok {
+			return confirmed, nil // the service does not answer now: the next pass tries again
+		}
+		if state == RevocationConfirmed {
+			confirmed++
+		}
+	}
+	return confirmed, nil
+}
+
+func scanAccessRecord(row pgx.CollectableRow) (AccessRecord, error) {
+	var r AccessRecord
+	var objects []byte
+	if err := row.Scan(&r.ID, &r.Kind, &r.Organization, &objects); err != nil {
+		return r, err
+	}
+	return r, json.Unmarshal(objects, &r.Objects)
+}
+
+// UnrecordedAccessRevocations counts the revocations whose record the
+// authority service does not hold yet, and gives the time of the oldest one
+// (zero when none).
+func (s *Store) UnrecordedAccessRevocations(ctx context.Context) (int64, time.Time, error) {
+	var count int64
+	var oldest *time.Time
+	err := s.pool.QueryRow(ctx, `SELECT count(*),min(recorded_at) FROM access_revocations WHERE state='recording'`).Scan(&count, &oldest)
+	if err != nil || oldest == nil {
+		return count, time.Time{}, err
+	}
+	return count, *oldest, nil
 }
 
 // progressTimeout bounds one question to the authority service: while the
@@ -347,12 +523,26 @@ func (a *Accounts) AccessRevocation(ctx context.Context, p Principal, id string)
 		return v, commit(ctx, tx)
 	}
 	v, err := read()
-	if err != nil || v.State != RevocationPending {
+	if err != nil || v.State == RevocationConfirmed {
 		return v, err
 	}
 	recorder := a.store.recorder()
 	if recorder == nil {
 		return v, nil
+	}
+	if v.State == RevocationRecording {
+		rows, err := a.store.pool.Query(ctx, `SELECT id,kind,coalesce(organization_id,''),objects FROM access_revocations WHERE id=$1`, id)
+		if err != nil {
+			return v, nil
+		}
+		record, err := pgx.CollectExactlyOneRow(rows, scanAccessRecord)
+		if err != nil {
+			return v, nil
+		}
+		if _, _, ok := a.store.record(ctx, record); !ok {
+			return v, nil // still recording; the service may not answer now
+		}
+		return read()
 	}
 	if ok, err := a.store.confirm(ctx, recorder, id, v.Kind); err != nil || !ok {
 		return v, nil // still pending; the service may not answer now

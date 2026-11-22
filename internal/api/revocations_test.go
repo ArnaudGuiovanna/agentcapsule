@@ -98,20 +98,36 @@ func revocationLab(t *testing.T) (*apiDelegationFixture, time.Time, string, *fak
 }
 
 // Every revoking transaction appends its record to the authority service
-// before its PostgreSQL commit (ADR 005 item 6): while the service records
-// it, the member is still active in PostgreSQL. The record names its kind,
-// the organization and the member; the answer reports it confirmed once the
-// replica holds it, and a replay says the same.
-func TestRevocationAppendsItsRecordBeforeItsCommit(t *testing.T) {
+// once it has committed (ADR 006, "Changes after the v0.1.0 audit"): while
+// the service records it, the member is already revoked in PostgreSQL, and
+// neither the organization's row nor the shared gate is held, so a slow
+// service stalls no other request of the organization. The record names its
+// kind, the organization and the member; the answer reports it confirmed
+// once the replica holds it, and a replay says the same.
+func TestRevocationRecordsItsRecordAfterItsCommitWithNoLockHeld(t *testing.T) {
 	l, _, owner, fake, db := revocationLab(t)
 	target := apiAddMember(t, l, owner, "leaver", "agent_user")
 	var before []string
 	fake.during = func(r controlplane.AccessRecord) {
+		ctx := context.Background()
 		var status string
-		if err := db.QueryRow(context.Background(), `SELECT status FROM memberships WHERE principal_id=$1`, target.PrincipalID).Scan(&status); err != nil {
+		if err := db.QueryRow(ctx, `SELECT status FROM memberships WHERE principal_id=$1`, target.PrincipalID).Scan(&status); err != nil {
 			t.Error(err)
 		}
 		before = append(before, status)
+		tx, err := db.Begin(ctx)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer tx.Rollback(ctx)
+		var gate bool
+		if err = tx.QueryRow(ctx, `SELECT pg_try_advisory_xact_lock(hashtextextended(current_schema()::text,756610045))`).Scan(&gate); err != nil || !gate {
+			t.Error("the shared gate is held while the service records", gate, err)
+		}
+		if _, err = tx.Exec(ctx, `SELECT id FROM organizations WHERE id=$1 FOR UPDATE NOWAIT`, l.org.ID); err != nil {
+			t.Error("the organization's row is locked while the service records:", err)
+		}
 	}
 	r := call(t, l.server, "POST", "/v1/members/"+target.PrincipalID+"/revoke", owner, "revoke-leaver", `{}`)
 	if r.Code != 200 {
@@ -122,8 +138,8 @@ func TestRevocationAppendsItsRecordBeforeItsCommit(t *testing.T) {
 		len(records[0].Objects) != 1 || records[0].Objects[0][0] != target.PrincipalID || !strings.HasPrefix(records[0].ID, "arv_") {
 		t.Fatal("the record", records)
 	}
-	if fmt.Sprint(before) != "[active]" {
-		t.Fatal("the record did not precede the commit", before)
+	if fmt.Sprint(before) != "[revoked]" {
+		t.Fatal("the record did not follow the commit", before)
 	}
 	revocations := revocationsOf(t, r.Body.Bytes())
 	if len(revocations) != 1 || revocations[0].ID != records[0].ID || revocations[0].Kind != "member" ||
@@ -140,33 +156,94 @@ func TestRevocationAppendsItsRecordBeforeItsCommit(t *testing.T) {
 	}
 }
 
-// A record the authority service did not commit fails the request with
-// "try again" (ADR 006 answer 2(a)): nothing is committed in PostgreSQL,
-// no answer is stored for the key, and a later try revokes.
-func TestRevocationTriesAgainWithoutTheAuthorityService(t *testing.T) {
+// A revocation takes effect while the authority service does not answer
+// (fail closed): the member loses access at once, the answer says the
+// revocation is recording, and the API records it once the service answers
+// again, without another request. The revocation's resource and a replay
+// give its current state.
+func TestRevocationTakesEffectWhileTheAuthorityServiceIsDown(t *testing.T) {
 	l, at, owner, fake, db := revocationLab(t)
 	target := apiAddMember(t, l, owner, "stays", "agent_user")
 	token := l.sign(t, at, "stays-token", "stays", allAgentScopes)
 	fake.set(false, false, errors.New("the authority service does not answer"))
 	r := call(t, l.server, "POST", "/v1/members/"+target.PrincipalID+"/revoke", owner, "revoke-stays", `{}`)
-	var problem struct{ Code string }
-	if r.Code != 503 || r.Header().Get("Retry-After") != "5" || json.Unmarshal(r.Body.Bytes(), &problem) != nil || problem.Code != "authority_unavailable" {
-		t.Fatal("a revocation the service did not record", r.Code, r.Header(), r.Body.String())
+	revoked := revocationsOf(t, r.Body.Bytes())
+	if r.Code != 200 || len(revoked) != 1 || revoked[0].State != controlplane.RevocationRecording || revoked[0].ConfirmedAt != nil {
+		t.Fatal("a revocation the service did not record", r.Code, r.Body.String())
 	}
-	if call(t, l.server, "GET", "/v1/organizations/current", token, "", "").Code != 200 {
-		t.Fatal("the member lost access although nothing was committed")
+	if call(t, l.server, "GET", "/v1/organizations/current", token, "", "").Code != 401 {
+		t.Fatal("the revoked member kept access while the service is down")
+	}
+	if len(fake.recorded()) != 0 {
+		t.Fatal("the service recorded it", fake.recorded())
+	}
+	if n, _, err := l.store.UnrecordedAccessRevocations(t.Context()); err != nil || n != 1 {
+		t.Fatal("unrecorded revocations", n, err)
+	}
+	if n, err := l.store.ConfirmAccessRevocations(t.Context(), 100); err != nil || n != 0 {
+		t.Fatal("recorded while the service is down", n, err)
+	}
+	// The service answers again: the next pass records it.
+	fake.set(true, false, nil)
+	if n, err := l.store.ConfirmAccessRevocations(t.Context(), 100); err != nil || n != 1 {
+		t.Fatal("not recorded once the service answers", n, err)
+	}
+	records := fake.recorded()
+	if len(records) != 1 || records[0].ID != revoked[0].ID || records[0].Kind != "member" || records[0].Organization != l.org.ID ||
+		records[0].Objects[0][0] != target.PrincipalID {
+		t.Fatal("the record", records)
+	}
+	var state string
+	var epoch, seq *int64
+	if err := db.QueryRow(t.Context(), `SELECT state,epoch,seq FROM access_revocations WHERE id=$1`, revoked[0].ID).Scan(&state, &epoch, &seq); err != nil ||
+		state != controlplane.RevocationConfirmed || epoch == nil || *epoch != 1 || seq == nil || *seq != 1 {
+		t.Fatal("the row", state, epoch, seq, err)
+	}
+	again := call(t, l.server, "POST", "/v1/members/"+target.PrincipalID+"/revoke", owner, "revoke-stays", `{}`)
+	if now := revocationsOf(t, again.Body.Bytes()); again.Code != 200 || again.Header().Get("Idempotency-Replayed") != "true" ||
+		len(now) != 1 || now[0].State != controlplane.RevocationConfirmed {
+		t.Fatal("the replay", again.Code, again.Body.String())
+	}
+	// Recorded twice changes nothing: the next pass finds nothing to record.
+	if n, err := l.store.ConfirmAccessRevocations(t.Context(), 100); err != nil || n != 0 || len(fake.recorded()) != 1 {
+		t.Fatal("recorded again", n, err)
+	}
+	if n, _, err := l.store.UnrecordedAccessRevocations(t.Context()); err != nil || n != 0 {
+		t.Fatal("unrecorded revocations", n, err)
+	}
+}
+
+// A revoking transaction that rolls back leaves no record in the authority
+// service: no later reconciliation can replay a revocation PostgreSQL never
+// made. Here its audit row fails, after the revocation's row.
+func TestRolledBackRevocationLeavesNoRecord(t *testing.T) {
+	l, at, owner, fake, db := revocationLab(t)
+	target := apiAddMember(t, l, owner, "kept", "agent_user")
+	token := l.sign(t, at, "kept-token", "kept", allAgentScopes)
+	if _, err := db.Exec(t.Context(), `CREATE FUNCTION refuse_member_audit() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'audit refused by the test'; END $$`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(t.Context(), `CREATE TRIGGER refuse_member_audit BEFORE INSERT ON tenant_member_audit
+        FOR EACH ROW EXECUTE FUNCTION refuse_member_audit()`); err != nil {
+		t.Fatal(err)
+	}
+	r := call(t, l.server, "POST", "/v1/members/"+target.PrincipalID+"/revoke", owner, "revoke-kept", `{}`)
+	if r.Code < 500 {
+		t.Fatal("the revocation did not fail", r.Code, r.Body.String())
+	}
+	if len(fake.recorded()) != 0 {
+		t.Fatal("a rolled-back revocation reached the authority service", fake.recorded())
 	}
 	var rows int
 	if err := db.QueryRow(t.Context(), `SELECT count(*) FROM access_revocations`).Scan(&rows); err != nil || rows != 0 {
-		t.Fatal("a revocation row without its record", rows, err)
+		t.Fatal("a revocation row without its transaction", rows, err)
 	}
-	fake.set(true, false, nil)
-	again := call(t, l.server, "POST", "/v1/members/"+target.PrincipalID+"/revoke", owner, "revoke-stays", `{}`)
-	if again.Code != 200 || again.Header().Get("Idempotency-Replayed") != "" || len(revocationsOf(t, again.Body.Bytes())) != 1 {
-		t.Fatal("the next try", again.Code, again.Body.String())
+	if n, err := l.store.ConfirmAccessRevocations(t.Context(), 100); err != nil || n != 0 || len(fake.recorded()) != 0 {
+		t.Fatal("a later pass recorded it", n, err)
 	}
-	if call(t, l.server, "GET", "/v1/organizations/current", token, "", "").Code != 401 {
-		t.Fatal("the revoked member kept access")
+	if call(t, l.server, "GET", "/v1/organizations/current", token, "", "").Code != 200 {
+		t.Fatal("the member lost access although nothing was committed")
 	}
 }
 

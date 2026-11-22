@@ -265,6 +265,13 @@ func (s *Store) keepOwnRecords(ctx context.Context, a ReconciliationAuthority, h
 	for _, r := range missing {
 		wait, cancel := context.WithTimeout(ctx, recordTimeoutReconciling)
 		receipt, err := a.RecordAccess(wait, r)
+		if err == nil && receipt.Known {
+			// A revocation whose recording did not succeed after its
+			// commit is recorded now.
+			if _, _, ok := s.settle(wait, r.ID, r.Kind, receipt); !ok {
+				err = errors.New("the revocation's row could not be updated")
+			}
+		}
 		cancel()
 		if err != nil || !receipt.Known {
 			return 0, errors.Join(ErrAuthorityUnavailable, err)

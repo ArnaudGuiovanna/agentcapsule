@@ -229,7 +229,7 @@ func (a *Accounts) DisableTeam(ctx context.Context, p Principal, id, key string)
 	if err != nil {
 		return APIReceipt{}, err
 	}
-	return r, commit(ctx, tx)
+	return a.store.settled(ctx, r, commit(ctx, tx))
 }
 func (a *Accounts) AddTeamMember(ctx context.Context, p Principal, team, key string, in AddTeamMemberInput) (APIReceipt, error) {
 	return a.changeTeamMembership(ctx, p, team, in.PrincipalID, key, true)
@@ -313,5 +313,5 @@ func (a *Accounts) changeTeamMembership(ctx context.Context, p Principal, team, 
 	if err != nil {
 		return APIReceipt{}, err
 	}
-	return r, commit(ctx, tx)
+	return a.store.settled(ctx, r, commit(ctx, tx))
 }

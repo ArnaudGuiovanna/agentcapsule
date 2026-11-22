@@ -641,6 +641,27 @@ tests:
             exp_annotations:
               summary: The authority service keeps failing to reach the replica outside degraded mode; every authority operation waits or fails.
 
+  # Access revocations the authority service has not recorded (ADR 006,
+  # changes after the v0.1.0 audit): the oldest one ages from 00:02 while
+  # the service does not answer, and is recorded at 00:09.
+  - interval: 1m
+    input_series:
+      - series: 'agentcapsule_api_access_revocation_oldest_unrecorded_seconds{job="agentcapsule-api",instance="api-1"}'
+        values: '0 0 0 60 120 180 240 300 360 0x5'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: AgentCapsuleAccessRevocationsUnrecorded
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: AgentCapsuleAccessRevocationsUnrecorded
+        exp_alerts:
+          - exp_labels: {severity: critical, job: agentcapsule-api, instance: api-1}
+            exp_annotations:
+              summary: Access revocations took effect, but the authority service has not recorded them for over two minutes; a failover or a restore of the database now could undo them.
+      - eval_time: 12m
+        alertname: AgentCapsuleAccessRevocationsUnrecorded
+        exp_alerts: []
+
   # The authority service (ADR 006). host-1's service stops answering at
   # 00:03 and is back at 00:10; host-2's misses one scrape at 00:04. The
   # API's and the worker's AgentCapsuleTargetDown does not fire for it.

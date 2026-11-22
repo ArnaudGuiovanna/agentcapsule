@@ -21,6 +21,7 @@ def normalize_profile(raw):
     defaults = dict(schema="agentcapsule.install/v1", api_name=socket.getfqdn(), api_port=9443,
                     platform_account="sysadmin", host_id="local", storage_mib=8192, max_active=2,
                     first_uid=62100, last_uid=63123, allow_internal_providers=[], database_url_file=None,
+                    api_database_url_file=None, worker_database_url_file=None,
                     tls_certificate=None, tls_key=None, tls_ca=None, interop_certs=None, pgbackrest_config=None,
                     registry_rules=None, oidc_port=9444, oidc_name=None, oidc_cert=None, oidc_key=None,
                     oidc_ca=None, monapp_redirect_uri=None, rclone_config=None)
@@ -45,9 +46,11 @@ def normalize_profile(raw):
             or min(p["storage_mib"],p["max_active"]) < 1 or not 10000 <= p["first_uid"] <= p["last_uid"] < 2147483647
             or p["last_uid"]-p["first_uid"] > 1 << 20):
         raise ValueError("invalid profile capacity or listen port")
-    for key in ("database_url_file","tls_certificate","tls_key","tls_ca","interop_certs","pgbackrest_config","oidc_cert","oidc_key","oidc_ca","rclone_config"):
+    for key in ("database_url_file","api_database_url_file","worker_database_url_file","tls_certificate","tls_key","tls_ca","interop_certs","pgbackrest_config","oidc_cert","oidc_key","oidc_ca","rclone_config"):
         if p[key] is not None and (not isinstance(p[key],str) or not Path(p[key]).is_absolute()):
             raise ValueError("expected absolute host path for "+key)
+    if (p["api_database_url_file"] or p["worker_database_url_file"]) and not p["database_url_file"]:
+        raise ValueError("a service's database URL file needs database_url_file")
     if bool(p["oidc_cert"]) != bool(p["oidc_key"]):
         raise ValueError("provide both OIDC TLS certificate and key")
     if bool(p["tls_key"]) != bool(p["tls_certificate"]):
@@ -154,42 +157,94 @@ def configure_system():
     ETC.chmod(0o755)
 
 
-def db_env(profile):
-    path = profile["database_url_file"]
-    if path:
-        f=Path(path)
-        if f.stat().st_uid != 0 or f.stat().st_mode & 0o077:
-            raise ValueError("the database URL must be in a root-owned private file")
-        dsn=f.read_text().strip()
-    else:
-        dsn="host=/run/postgresql port=55432 dbname=agentcapsule user=agentcapsule"
+def database_url(path):
+    f=Path(path)
+    if f.stat().st_uid != 0 or f.stat().st_mode & 0o077:
+        raise ValueError("the database URL must be in a root-owned private file")
+    dsn=f.read_text().strip()
     if not dsn or any(ord(c)<32 for c in dsn):
         raise ValueError("invalid database URL file")
+    return dsn
+
+
+# The bundled cluster's roles (ADR 001, "Changes after the v0.1.0 audit"):
+# agentcapsule owns the database and every object and runs the migrations
+# (agentcapsule-admin, as root); the API and the worker connect as roles that
+# own nothing and write only what they write.
+LOCAL_DSN="host=/run/postgresql port=55432 dbname=agentcapsule user="
+SERVICE_ROLES=("agentcapsule_api","agentcapsule_worker")
+
+
+def db_env(profile):
+    # The owner's connection: migrations and agentcapsule-admin.
+    path = profile["database_url_file"]
+    dsn = database_url(path) if path else LOCAL_DSN+"agentcapsule"
     return dict(os.environ,AGENTCAPSULE_DATABASE_URL=dsn)
+
+
+def service_dsns(profile):
+    # The API's and the worker's connections, each as its own role.
+    if not profile.get("database_url_file"):
+        return {"api":LOCAL_DSN+"agentcapsule_api","worker":LOCAL_DSN+"agentcapsule_worker"}
+    files={"api":profile.get("api_database_url_file"),"worker":profile.get("worker_database_url_file")}
+    if not all(files.values()):
+        raise ValueError("an external database needs api_database_url_file and worker_database_url_file: "
+                         "the API and the worker connect as roles that do not own the schema")
+    return {name:database_url(path) for name,path in files.items()}
+
+
+def worker_env(profile):
+    return dict(os.environ,AGENTCAPSULE_DATABASE_URL=service_dsns(profile)["worker"])
+
+
+# pg_ident.conf: root runs agentcapsule-admin as the owner and the worker as
+# its role; the API's account reaches only the API's role. pg_hba.conf admits
+# those three roles by peer authentication on the socket.
+PEER_MAP=("agentcapsule root agentcapsule\nagentcapsule root agentcapsule_worker\n"
+          "agentcapsule agentcapsule-api agentcapsule_api\n")
+PEER_HBA=("local agentcapsule agentcapsule,agentcapsule_api,agentcapsule_worker peer map=agentcapsule\n"
+          "host all all 127.0.0.1/32 scram-sha-256\nhost all all ::1/128 scram-sha-256\n")
+# What an earlier release wrote, which mapped the API's account to the owner.
+OLD_PEER_HBA=("local agentcapsule agentcapsule peer map=agentcapsule",)
+
+
+def peer_entries(text, entries, ours):
+    # Our block first, once; every line it replaces removed.
+    kept=[line for line in text.splitlines(keepends=True) if not ours(line.strip())]
+    return entries+"".join(kept)
+
+
+def database_roles(folder=Path("/etc/postgresql/16/agentcapsule")):
+    hba = folder/"pg_hba.conf"
+    ident = folder/"pg_ident.conf"
+    block=set(PEER_HBA.splitlines())|set(OLD_PEER_HBA)
+    for file,entries,ours in [(ident,PEER_MAP,lambda line:line.split()[:1]==["agentcapsule"]),
+                              (hba,PEER_HBA,lambda line:line in block)]:
+        text=file.read_text()
+        updated=peer_entries(text,entries,ours)
+        if updated!=text:
+            write_file(file,updated.encode(),0o640)
+            os.chown(file,user_id("postgres"),pwd.getpwnam("postgres").pw_gid)
+    cmd=["psql","-XAt","-v","ON_ERROR_STOP=1","-h","/run/postgresql","-p","55432","-d","postgres","-c"]
+    for role in ("agentcapsule",*SERVICE_ROLES):
+        if not run_user("postgres",*cmd,"SELECT 1 FROM pg_roles WHERE rolname='"+role+"'",capture=True):
+            run_user("postgres",*cmd,"CREATE ROLE "+role+" LOGIN")
+        run_user("postgres",*cmd,"ALTER ROLE "+role+" NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS")
+    run("pg_ctlcluster","16","agentcapsule","reload")
 
 
 def database():
     # A dedicated cluster avoids modifying pg_hba.conf or WAL retention on an
-    # operator's other databases. The API's role has no cluster privileges.
+    # operator's other databases. The services' roles have no cluster privileges.
     folder=Path("/etc/postgresql/16/agentcapsule")
     if not folder.exists():
         run("pg_createcluster","16","agentcapsule","--port","55432","--","--auth-local=peer","--auth-host=scram-sha-256")
-    hba = folder/"pg_hba.conf"
-    ident = folder/"pg_ident.conf"
-    for file,entries in [(ident,"agentcapsule root agentcapsule\nagentcapsule agentcapsule-api agentcapsule\n"),
-                         (hba,"local agentcapsule agentcapsule peer map=agentcapsule\n"
-                              "host all all 127.0.0.1/32 scram-sha-256\nhost all all ::1/128 scram-sha-256\n")]:
-        if not file.read_text().startswith(entries):
-            write_file(file,(entries+file.read_text()).encode(),0o640)
-            os.chown(file,user_id("postgres"),pwd.getpwnam("postgres").pw_gid)
     write_file(folder/"conf.d"/"agentcapsule.conf",b"listen_addresses = '127.0.0.1'\n",0o644)
     run("systemctl","enable","--now","postgresql@16-agentcapsule.service")
-    run("pg_ctlcluster","16","agentcapsule","reload")
+    database_roles(folder)
     cmd=["psql","-XAt","-v","ON_ERROR_STOP=1","-h","/run/postgresql","-p","55432","-d","postgres","-c"]
-    for query,statement in [("SELECT 1 FROM pg_roles WHERE rolname='agentcapsule'","CREATE ROLE agentcapsule LOGIN"),
-                            ("SELECT 1 FROM pg_database WHERE datname='agentcapsule'","CREATE DATABASE agentcapsule OWNER agentcapsule")]:
-        if not run_user("postgres",*cmd,query,capture=True):
-            run_user("postgres",*cmd,statement)
+    if not run_user("postgres",*cmd,"SELECT 1 FROM pg_database WHERE datname='agentcapsule'",capture=True):
+        run_user("postgres",*cmd,"CREATE DATABASE agentcapsule OWNER agentcapsule")
 
 
 def create_key(path,data):
@@ -275,15 +330,31 @@ def authority():
     return config
 
 
+def environment_quote(s):
+    if any(ord(c)<32 for c in s):
+        raise ValueError("unsupported environment value")
+    return '"'+s.replace("\\","\\\\").replace('"','\\"')+'"'
+
+
 def environment_file(path, settings):
-    def quote(s):
-        if any(ord(c)<32 for c in s):
-            raise ValueError("unsupported environment value")
-        return '"'+s.replace("\\","\\\\").replace('"','\\"')+'"'
-    write_file(path,"".join(k+"="+quote(v)+"\n" for k,v in settings.items()).encode())
+    write_file(path,"".join(k+"="+environment_quote(v)+"\n" for k,v in settings.items()).encode())
+
+
+def service_environment(p):
+    # Each unit's own connection string, also on an installation whose
+    # files still name the owner for every service; the other settings stay.
+    dsns=service_dsns(p)
+    for unit in ("api","worker"):
+        path=ETC/(unit+".env")
+        lines=path.read_text().splitlines() if path.exists() else []
+        lines=[l for l in lines if not l.startswith("AGENTCAPSULE_DATABASE_URL=")]
+        lines.insert(0,"AGENTCAPSULE_DATABASE_URL="+environment_quote(dsns[unit]))
+        write_file(path,("\n".join(lines)+"\n").encode())
+    environment_file(ETC/"admin.env",dict(AGENTCAPSULE_DATABASE_URL=db_env(p)["AGENTCAPSULE_DATABASE_URL"]))
 
 
 def configure(p,version,initial):
+    service_dsns(p)  # an external database names each service's role, or nothing changes
     configure_system()
     if not initial:
         # A release transition preserves the operator's current credentials,
@@ -294,7 +365,9 @@ def configure(p,version,initial):
         env=db_env(p)
         if not p["database_url_file"]:
             run("systemctl", "start", "postgresql@16-agentcapsule.service")
+            database_roles()
         run(admin,"migrate",env=env)
+        service_environment(p)
         upgrade=json.loads(run_user("agentcapsule-authority",admin,"init-restore-authority",
                            "-root",cfg["restore_authority"]["root"],"-data-root",read(ETC/"worker.json")["root"],
                            "-key-authority-root",cfg["key_authority"]["root"],"-key-authority-id",cfg["key_authority"]["identity"],capture=True))
@@ -319,10 +392,9 @@ def configure(p,version,initial):
         install_file(ETC/(name+".key"),ETC/("api-"+name+".key"),0o600,user_id("agentcapsule-api"))
     run(admin,"activate-transit-keys","-active-key","initial","-key","initial="+str(ETC/"transit.key"),env=env)
     pins=dict(restore_authority_id=auth["restore_authority"]["identity"],key_authority_id=auth["key_authority"]["identity"])
-    values=dict(AGENTCAPSULE_DATABASE_URL=env["AGENTCAPSULE_DATABASE_URL"])
-    environment_file(ETC/"worker.env",values)
-    environment_file(ETC/"api.env",dict(values,API_LISTEN="0.0.0.0:"+str(p["api_port"]),API_NAME=p["api_name"],
+    environment_file(ETC/"api.env",dict(API_LISTEN="0.0.0.0:"+str(p["api_port"]),API_NAME=p["api_name"],
                                         HOST_ID=p["host_id"],RESTORE_AUTHORITY=pins["restore_authority_id"],KEY_AUTHORITY=pins["key_authority_id"]))
+    service_environment(p)
     config_path=ETC/"worker.json"
     if initial and not config_path.exists():
         cfg=read(ACTIVE/"config/worker.json")
@@ -447,7 +519,7 @@ def worker_exclusive(args, profile, checkpoint):
     restart=read(checkpoint)["restart"]
     run("systemctl","stop","agentcapsule-worker")
     try:
-        return output(*args,env=db_env(profile))
+        return output(*args,env=worker_env(profile))
     finally:
         if restart:
             run("systemctl","start","agentcapsule-worker")
@@ -550,7 +622,7 @@ def verify_volume_copies(profile, agent, archive, directory, conf):
             run("python3","-I",ACTIVE/"agentcapsule-archive-ship.py","--rclone-config",conf,
                 "--archive-root",root,"fetch","--store",store,"--archive",archive)
             result=json.loads(output(ACTIVE/"agentcapsule-worker","-config",ETC/"worker.json","-test-restore",agent,
-                                     "-archive-id",archive,"-archive-root",root,"-scratch",scratch,env=db_env(profile)))
+                                     "-archive-id",archive,"-archive-root",root,"-scratch",scratch,env=worker_env(profile)))
             if (result.get("archive_id")!=archive or result.get("agent_id")!=agent or result.get("archive_store")!="local"
                     or not {"manifest","digest","volume","copy","key"}<=set(result.get("checked",[]))):
                 raise ValueError("restore test did not confirm the fetched probe archive")
@@ -713,7 +785,7 @@ def run_storage(request,directory):
         scratch.mkdir(parents=True,exist_ok=True)
         args+=["-scratch",scratch]
     if action=="restore-test":
-        result=output(*args,env=db_env(profile))
+        result=output(*args,env=worker_env(profile))
     else:
         result=worker_exclusive(args,profile,directory/"worker-state.json")
     return {"storage_result":json.loads(result.splitlines()[-1])}

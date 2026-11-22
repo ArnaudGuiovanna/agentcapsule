@@ -77,16 +77,51 @@ Start failures print one code: `tls_required_in_production`,
 
 ## PostgreSQL
 
-On a single host, use the Unix socket: there is no network hop.
+Three roles reach the database:
+
+| Role | Used by | Can |
+|---|---|---|
+| `agentcapsule` | `agentcapsule-admin` | owns the database and every object; alone runs `agentcapsule-admin migrate` |
+| `agentcapsule_api` | the API | reads every table; writes the rows the API writes |
+| `agentcapsule_worker` | the worker | reads every table; writes the rows the worker writes |
+
+The API's and the worker's roles own nothing. They cannot truncate a table,
+alter or drop it, disable or drop a trigger (the guards that keep revocations,
+seals and access revocations permanent), create an object, or run the
+migrations. The migration `service-roles` grants their privileges, and
+`agentcapsule-admin migrate` grants them again at each run: create the roles
+before you migrate, or migrate again after you create them. A role that does
+not exist is skipped. Neither the API nor the worker migrates: each refuses to
+start on a schema that is behind, ahead of or different from its binary
+(`database_schema_unavailable`).
 
 ```sh
-AGENTCAPSULE_DATABASE_URL='host=/run/postgresql dbname=agentcapsule user=agentcapsule'
+psql -c 'CREATE ROLE agentcapsule LOGIN' -c 'CREATE DATABASE agentcapsule OWNER agentcapsule' \
+     -c 'CREATE ROLE agentcapsule_api LOGIN' -c 'CREATE ROLE agentcapsule_worker LOGIN'
 ```
+
+On a single host, use the Unix socket: there is no network hop. Give each
+process its own role:
+
+```sh
+# agentcapsule-admin
+AGENTCAPSULE_DATABASE_URL='host=/run/postgresql dbname=agentcapsule user=agentcapsule'
+# the API (/etc/agentcapsule/api.env)
+AGENTCAPSULE_DATABASE_URL='host=/run/postgresql dbname=agentcapsule user=agentcapsule_api'
+# the worker (/etc/agentcapsule/worker.env)
+AGENTCAPSULE_DATABASE_URL='host=/run/postgresql dbname=agentcapsule user=agentcapsule_worker'
+```
+
+With peer authentication, map each account to its role only, in
+`pg_ident.conf`: root to `agentcapsule` and `agentcapsule_worker`, the API's
+account to `agentcapsule_api`. The installer does this for its own cluster
+([cli-host.md](cli-host.md#profile)) and writes the owner's connection
+string to `/etc/agentcapsule/admin.env` (root, 0600).
 
 For a server on another host, use TLS that checks the server:
 
 ```sh
-AGENTCAPSULE_DATABASE_URL='host=db.example.net dbname=agentcapsule user=agentcapsule sslmode=verify-full sslrootcert=/etc/agentcapsule/postgres-ca.pem'
+AGENTCAPSULE_DATABASE_URL='host=db.example.net dbname=agentcapsule user=agentcapsule_api sslmode=verify-full sslrootcert=/etc/agentcapsule/postgres-ca.pem'
 ```
 
 On the server, set `ssl = on` with its certificate and key, and use only

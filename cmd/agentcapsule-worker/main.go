@@ -38,7 +38,6 @@ import (
 
 func run() int {
 	path := flag.String("config", "", "root-owned worker JSON configuration")
-	migrate := flag.Bool("migrate", false, "apply control-plane schema migration before maintenance")
 	archiveAgent := flag.String("archive-agent", "", "capture this agent once, leaving it stopped")
 	archiveID := flag.String("archive-id", "", "stable arc_ identifier with 32 lowercase hex digits; reuse on retry")
 	archiveRoot := flag.String("archive-root", "", "absolute private archive directory outside runtime and authorities")
@@ -62,13 +61,13 @@ func run() int {
 	if *restoreHost != "" && (*restoreAgent != "" || *restoreID != "" || *archiveAgent != "" || *archiveID != "" || !filepath.IsAbs(*archiveRoot)) {
 		return fail("restore_host_configuration_invalid")
 	}
-	if *testAgent != "" && (*restoreAgent != "" || *restoreID != "" || *restoreHost != "" || *archiveAgent != "" || *migrate || *check || *collect ||
+	if *testAgent != "" && (*restoreAgent != "" || *restoreID != "" || *restoreHost != "" || *archiveAgent != "" || *check || *collect ||
 		!filepath.IsAbs(*archiveRoot) || !filepath.IsAbs(*scratch) || *archiveID != "" && !volumearchive.ValidID(*archiveID)) ||
 		*testAgent == "" && *scratch != "" {
 		return fail("restore_test_configuration_invalid")
 	}
 	if *collect && (*restoreAgent != "" || *restoreID != "" || *restoreHost != "" || *archiveAgent != "" || *archiveID != "" || *archiveRoot != "" ||
-		*archiveFetch != "" || *migrate || *check) || !*collect && (*dryRun || *confirm != "") {
+		*archiveFetch != "" || *check) || !*collect && (*dryRun || *confirm != "") {
 		return fail("collect_garbage_configuration_invalid")
 	}
 	if *archiveFetch != "" && (!filepath.IsAbs(*archiveFetch) || (*restoreHost == "" && *restoreAgent == "" && *testAgent == "")) {
@@ -185,10 +184,12 @@ func run() int {
 		return fail("database_initialization_failed")
 	}
 	defer s.Close()
-	if *migrate {
-		if err = s.Migrate(startup); err != nil {
-			return fail("database_migration_failed")
-		}
+	// The worker never migrates: agentcapsule-admin migrate does, as the
+	// role that owns the schema, which the worker's role does not (ADR 001,
+	// "Changes after the v0.1.0 audit"). It refuses a ledger behind, ahead
+	// of or different from this binary's, as the API does.
+	if err = s.Ready(startup); err != nil {
+		return fail("database_schema_unavailable")
 	}
 	if _, err = s.PendingCredentialRenewals(startup, c.HostID); err != nil {
 		return fail("database_schema_unavailable")

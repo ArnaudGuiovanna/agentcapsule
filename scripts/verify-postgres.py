@@ -182,6 +182,11 @@ def main():
             started = True
             run("settings", [pg_bin / "psql", "-h", socket_dir, "-U", "agentcapsule_test", "-d", "postgres", "-Atc",
                              "SELECT version(); SHOW fsync; SHOW full_page_writes; SHOW synchronous_commit; SHOW listen_addresses;"])
+            # The service roles, as the installer creates them (migration
+            # service-roles grants them their privileges in each test schema):
+            # the tests prove what they may and may not do.
+            run("service-roles", [pg_bin / "psql", "-h", socket_dir, "-U", "agentcapsule_test", "-d", "postgres", "-v", "ON_ERROR_STOP=1",
+                                  "-c", "CREATE ROLE agentcapsule_api LOGIN", "-c", "CREATE ROLE agentcapsule_worker LOGIN"])
             # Each store test migrates a fresh schema; the control-plane package
             # alone takes nearly ten minutes under the race detector on a shared
             # host (533 s to 600 s in November 2026, 865 s for the whole phase on

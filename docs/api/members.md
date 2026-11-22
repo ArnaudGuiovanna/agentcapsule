@@ -58,10 +58,10 @@ private content.
 
 Revocation retains the historical principal, revokes the membership and all of
 its team memberships, and neither deletes agents nor transfers historical
-content. It is recorded with the authority service before it commits: the
-answer's `revocations` says whether the standby holds the record
-(`confirmed`) or not yet (`pending`), and a 503 `authority_unavailable` means
-that nothing changed: try again ([README](README.md#revocations-pending-and-confirmed)). A role change that
+content. It takes effect at once, and is recorded with the authority service
+once it has committed: the answer's `revocations` says whether the service
+does not hold the record yet (`recording`), holds it without the standby
+(`pending`) or with it (`confirmed`) ([README](README.md#revocations-pending-and-confirmed)). A role change that
 revokes service tokens records them the same way. There is no reactivation route. A future reactivation feature needs a
 signed/current member or credential generation before enabling access again,
 so previously issued JWTs cannot regain access. Database operators remain

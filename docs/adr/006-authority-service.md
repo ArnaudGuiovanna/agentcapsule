@@ -1390,3 +1390,76 @@ are open; their recommended or safest options are built as the defaults.
      reconciliation (wave 7) replays them.
 
    Built: (a). Recommended: (b), with wave 7.
+
+## Changes after the v0.1.0 audit
+
+### Access revocations recorded after their commit (SEC-3, finding S-14)
+
+As built in wave 5, every revoking transaction appended its record to the
+service inside the transaction, before its commit, for up to 5 seconds. It
+held meanwhile the organization's row lock (`FOR UPDATE`) and the shared
+gate that every transaction takes first (`store.go`), which store
+activation takes exclusively: a slow service stalled every request of the
+organization, and a waiting activation every transaction of the
+installation. No revocation could commit while the service did not answer.
+And a transaction that rolled back after the service committed its record
+left a record of a revocation PostgreSQL never made, which a later
+reconciliation would have replayed, undoing a later grant.
+
+Now the record is an outbox row:
+
+1. The revoking transaction writes its effect and its record's row in
+   `access_revocations`, in a new state `recording`, without epoch or
+   sequence number (migration `access-revocation-recording`), and commits.
+   Its answer is stored with its receipt.
+2. Once it has committed, with no lock held, the API appends the record to
+   the service (`commit` in `store.go`, `recordCommitted` in
+   `access_revocations.go`), for up to 5 seconds, even past the request's
+   end. The row takes the stream record's epoch and sequence number and
+   becomes `pending` or `confirmed`, by the same rule as before, and the
+   answer gives that state.
+3. A record the service did not commit leaves its row `recording`. The API
+   records the recording rows every 5 seconds, oldest first, before it asks
+   about the pending ones (`ConfirmAccessRevocations`), and when one is
+   read. The reconciliation after a failover appends them too, as every
+   row the promoted authorities lack. `append_access` of the same record
+   again changes nothing, so two passes may race.
+4. A transaction that rolls back appends nothing: `rollback` forgets its
+   records. The service never holds a record of a revocation PostgreSQL did
+   not make, and a record PostgreSQL lacks is one it lost with every later
+   commit, as the reconciliation assumes.
+
+Revocation stays fail closed: the revocation takes effect at once, also
+while the service is down, which before refused it and left the access in
+place. What waits for the service is the record that keeps the revocation
+across a restore or a failover. A `recording` revocation is an
+unacknowledged write, like a `pending` one: the model's acknowledged access
+revocation is still the confirmed one, which waits for the replica as
+before, so `spec/restore_authority.qnt` and its projections need no change
+(`grantRevocationWaitsForReplicaTest` and
+`grantRevocationResumesAfterResyncTest` keep their tests). What widens is
+the window in which a revocation is not yet in the authorities: a restore
+of the database on the same host, or a failover, before the service records
+it could undo it. `agentcapsule_api_access_revocations_unrecorded` counts
+such revocations, `AgentCapsuleAccessRevocationsUnrecorded` fires after 2
+minutes, and [recovery.md](../recovery.md#revocations-the-authority-service-has-not-recorded)
+says what to do while the service is down: bring it back, and neither
+restore the database nor fail over meanwhile.
+
+One record stays inside its transaction: the claim of a personal volume
+(`personal_volume`, `personal_volume_holds.go`). It is not a revocation but
+an allocation that the service decides, since it refuses another record
+under the same ID; the transaction needs the answer before it commits, and
+fails with 503 `authority_unavailable` without it.
+
+Tests: `TestRevocationRecordsItsRecordAfterItsCommitWithNoLockHeld` (the
+member is revoked, the organization's row and the shared gate are free
+while the service records), `TestRevocationTakesEffectWhileTheAuthorityServiceIsDown`
+and `TestRolledBackRevocationLeavesNoRecord` (`internal/api`), each failing
+on the code of wave 5; `TestLongRevocationGoesInSeveralRecords` now checks
+that nothing reaches the service before the commit.
+
+This replaces, in the decision above, "An access revocation fails while the
+service is down: nothing is committed in PostgreSQL before its record", and
+in §7, "The API commits in PostgreSQL once the record is committed" and "A
+record that the service did not commit fails the request".

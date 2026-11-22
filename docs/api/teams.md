@@ -62,9 +62,9 @@ Revocation keeps the relationship with `status: "revoked"`. It allows cleanup of
 a member already revoked from the organization. A missing relationship returns
 404; an already revoked relationship is a no-change operation. Disabling sets the
 team to `disabled` and revokes all its memberships in the same transaction.
-Both revocations are recorded with the authority service before they commit:
-the answer's `revocations` says `pending` or `confirmed`, and a 503
-`authority_unavailable` means that nothing changed ([README](README.md#revocations-pending-and-confirmed)).
+Both revocations take effect at once and are recorded with the authority
+service once they have committed: the answer's `revocations` says
+`recording`, `pending` or `confirmed` ([README](README.md#revocations-pending-and-confirmed)).
 There is no reactivation route. Replaying an old creation does not undo this
 disabling. Names are not unique: a new same-name creation has an independent
 identifier.

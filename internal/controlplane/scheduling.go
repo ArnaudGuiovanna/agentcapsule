@@ -94,6 +94,15 @@ func (s *Store) releaseOne(ctx context.Context, op string, now *time.Time) (bool
 		}
 		return false, commit(ctx, tx)
 	}
+	// Nor does a disabled organization's work (organization_suspension.go).
+	if disabled, err := organizationDisabled(ctx, tx, a.Tenant); err != nil {
+		return false, err
+	} else if disabled {
+		if err = cancelScheduled(ctx, tx, op, CauseOrganizationDisabled); err != nil {
+			return false, err
+		}
+		return false, commit(ctx, tx)
+	}
 	var seq int64
 	if err = tx.QueryRow(ctx, "UPDATE agents SET next_seq=next_seq+1 WHERE id=$1 AND next_seq<9223372036854775807 RETURNING next_seq", agentID).Scan(&seq); err != nil {
 		return false, err

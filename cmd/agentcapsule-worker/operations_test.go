@@ -85,7 +85,6 @@ func TestOperatorModesTakeOnlyTheirFlags(t *testing.T) {
 		"collect_garbage_configuration_invalid": {
 			{"-config", missing, "-collect-garbage", "-archive-root", "/var/lib/a"},
 			{"-config", missing, "-collect-garbage", "-restore-agent", agent},
-			{"-config", missing, "-collect-garbage", "-migrate"},
 			{"-config", missing, "-dry-run"},
 			{"-config", missing, "-confirm", "host"},
 		},

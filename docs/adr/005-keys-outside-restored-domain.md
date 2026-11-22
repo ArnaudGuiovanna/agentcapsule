@@ -1025,3 +1025,14 @@ For degraded mode:
 The model does not cover the unlock key, wrapping, both hosts lost, or
 liveness: it shows what can be lost and what cannot, not that a restore
 eventually completes.
+
+## Changes after the v0.1.0 audit
+
+Item 6 of "What the code must do" changed (SEC-3, finding S-14): an access
+revocation's record is now written in PostgreSQL with its effect, and
+appended to the authority service once the transaction has committed, with
+no lock held; while the service does not answer, the revocation takes
+effect and stays `recording` until the API appends it. A transaction that
+rolls back leaves no record in the authorities. Item 7 is unchanged: the
+API confirms a revocation only once its record is on the replica. See
+[ADR 006](006-authority-service.md#changes-after-the-v010-audit).

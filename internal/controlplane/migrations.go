@@ -227,6 +227,15 @@ var corpusBuildStreamsSQL string
 //go:embed migrations/0064_corpus_file_progress_search_path.sql
 var corpusFileProgressSearchPathSQL string
 
+//go:embed migrations/0065_service_roles.sql
+var serviceRolesSQL string
+
+//go:embed migrations/0066_access_revocation_recording.sql
+var accessRevocationRecordingSQL string
+
+//go:embed migrations/0067_organization_suspension.sql
+var organizationSuspensionSQL string
+
 // Append migrations; never edit an installed migration. The original schema
 // also upgrades pre-ledger installations, preserving its historical backfills.
 // Later calls validate its checksum without replaying DDL or those backfills.
@@ -295,6 +304,9 @@ var controlPlaneMigrations = []schemaMigration{
 	{version: 62, name: "corpus-extensions", sql: corpusExtensionsSQL},
 	{version: 63, name: "corpus-build-streams", sql: corpusBuildStreamsSQL},
 	{version: 64, name: "corpus-file-progress-search-path", sql: corpusFileProgressSearchPathSQL},
+	{version: 65, name: "service-roles", sql: serviceRolesSQL},
+	{version: 66, name: "access-revocation-recording", sql: accessRevocationRecordingSQL},
+	{version: 67, name: "organization-suspension", sql: organizationSuspensionSQL},
 }
 
 func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error {
@@ -352,6 +364,7 @@ func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error
 	if err != nil {
 		return err
 	}
+	granted := false
 	for _, m := range migrations[applied:] {
 		if _, err = tx.Exec(ctx, m.sql); err != nil {
 			return fmt.Errorf("apply schema migration %d: %w", m.version, err)
@@ -359,6 +372,22 @@ func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error
 		checksum := sha256.Sum256([]byte(m.sql))
 		if _, err = tx.Exec(ctx, `INSERT INTO schema_migrations(version,name,checksum)
             VALUES($1,$2,$3)`, m.version, m.name, checksum[:]); err != nil {
+			return err
+		}
+		granted = granted || m.name == "service-roles"
+	}
+	// The service roles' privileges (migration service-roles), again, unless
+	// that migration just stated them: a role created since the last run
+	// gets them now, and a table a later migration created gets the default
+	// ones.
+	grants := false
+	if !granted {
+		if err = tx.QueryRow(ctx, `SELECT to_regprocedure('agentcapsule_service_grants()') IS NOT NULL`).Scan(&grants); err != nil {
+			return err
+		}
+	}
+	if grants {
+		if _, err = tx.Exec(ctx, `SELECT agentcapsule_service_grants()`); err != nil {
 			return err
 		}
 	}

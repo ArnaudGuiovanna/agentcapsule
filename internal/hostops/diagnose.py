@@ -165,6 +165,6 @@ def diagnose(args):
             raise ValueError("invalid organization or alias")
         raw = output(ACTIVE / "agentcapsule-worker", "-config", ETC / "worker.json",
                      "-probe-organization", args.organization, "-probe-llm-alias", args.alias,
-                     env=db_env(read(STATE / "profile.json")), timeout=20)
+                     env=worker_env(read(STATE / "profile.json")), timeout=20)
         report["provider"] = json.loads(raw)
     return report

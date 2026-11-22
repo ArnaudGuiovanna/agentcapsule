@@ -74,7 +74,7 @@ answers only its own `acp_` credentials, never an organization's or the
 platform's.
 
 A success of a route that revokes access also carries the `revocations` it
-recorded with the authority service before its commit
+recorded with the authority service after its commit
 ([README](README.md#revocations-pending-and-confirmed)); the test checks
 their kinds route by route. `GET /v1/access-revocations/{id}` reads one of
 the organization's with the rights of `GET /v1/audit`; the platform reads

@@ -105,6 +105,11 @@ func (t *Transit) ClaimInstruction(ctx context.Context, id string, lease time.Du
 	if a.Phase != "LIVE" {
 		return attempt, ErrUnavailable
 	}
+	if disabled, err := organizationDisabled(ctx, tx, a.Tenant); err != nil {
+		return attempt, err
+	} else if disabled {
+		return attempt, errors.Join(ErrNoDelivery, ErrOrganizationDisabled)
+	}
 	if i.Status != "PENDING" && i.Status != "RUNNING" {
 		return attempt, ErrTransition
 	}
@@ -488,6 +493,12 @@ func (t *Transit) DispatchMailbox(ctx context.Context, id string, lease time.Dur
 		return err
 	} else if due {
 		return t.RetireInstruction(ctx, id, runtime)
+	}
+	// A disabled organization's instructions wait, and boot no VM.
+	if disabled, err := agentSuspended(ctx, t.store.pool, destination); err != nil {
+		return err
+	} else if disabled {
+		return errors.Join(ErrNoDelivery, ErrOrganizationDisabled)
 	}
 	retire := false
 	dispatch := func(ctx context.Context) error {

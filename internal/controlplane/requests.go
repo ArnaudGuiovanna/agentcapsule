@@ -70,6 +70,14 @@ func (s *Store) submitPayload(ctx context.Context, callerAgentID, key string, in
 	if sender.Phase != "LIVE" {
 		return Receipt{}, ErrUnavailable
 	}
+	// A disabled organization's agents send nothing (organization_suspension.go).
+	// A submission that read the organization active just before its disable
+	// commits is held at its delivery, which checks again.
+	if disabled, err := organizationDisabled(ctx, tx, sender.Tenant); err != nil {
+		return Receipt{}, err
+	} else if disabled {
+		return Receipt{}, ErrUnavailable
+	}
 	// Hidden and missing recipients intentionally have the same error. Agents
 	// only reach agents of their own domain: the same organization, or, for an
 	// historical agent, other historical agents. Another organization's agent
