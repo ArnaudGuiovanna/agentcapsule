@@ -179,9 +179,12 @@ TLC with four workers; evidence kept locally under
   guards for the next cycle and increments the epoch. Thus the current
   instance has infinitely many reachable states even with one store and
   one subject. TLC can find a finite counterexample within its time budget.
-  Establishing safety for arbitrarily many promotions requires induction
-  or a verified abstraction. The restore witnesses provide additional
-  checks for specific failover scenarios.
+  Run `python3 scripts/check-restore-authority-induction.py` from the
+  repository root to verify all 21 conjuncts of `safety` for arbitrarily
+  many promotions in this instance. The certificate covers all 45 actions,
+  identifies its compiler and solver inputs, and records every obligation
+  and control result. The restore witnesses exercise specific failover
+  scenarios. [Inductive proof and reproduction](proofs/restore-authority-induction.md)
 - **The other models.** The depth wrappers of `bounded.qnt` hold, among them
   `messagingDepth10` (34,486,031 states) and `deliveryLargeDepth12`
   (46,714,801 states), and so does every reachable state of `deliveryLarge`

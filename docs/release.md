@@ -167,8 +167,12 @@ check not run, never a pass: the release notes list the checks that did not
 finish. The two bounded P1 checks, `concurrentProtocolDepth8` and
 `concurrentProtocolLoadedDepth12`, have exceeded the budget on a 12-core,
 15 GB machine. The P2 instance `restoreAuthorityTiny` admits arbitrarily
-many promotions. Report the depth and states explored when its time budget
-expires. Releasing with these outstanding checks listed is the default
+many promotions. Record the TLC verdict, depth, distinct states and remaining
+queue when its time budget expires. Record the separate `certificate.json`
+from `python3 scripts/check-restore-authority-induction.py` for unbounded
+safety of this instance. [P2 certificate and scope](../spec/proofs/restore-authority-induction.md)
+
+Releasing with these outstanding checks listed is the default
 pending the product owner. [Formal check scopes](../spec/README.md#bounded-and-exhaustive-checks)
 
 ### Pinned tools
