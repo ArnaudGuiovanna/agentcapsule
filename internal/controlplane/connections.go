@@ -115,18 +115,22 @@ func poolConfig(connectionString string, c Connections) (*pgxpool.Config, error)
 // table can be made UNLOGGED at any time.
 const unsafeValue = "database durability settings are unsafe"
 
-var durabilityCheck = `PREPARE agentcapsule_durability AS SELECT pg_catalog.set_config('synchronous_commit',
+var (
+	durabilityQuery = `SELECT pg_catalog.set_config('synchronous_commit',
   CASE WHEN pg_catalog.current_setting('fsync') = 'on' AND pg_catalog.current_setting('full_page_writes') = 'on'
     AND NOT EXISTS(SELECT FROM pg_catalog.pg_class WHERE relnamespace = pg_catalog.current_schema()::regnamespace
       AND relname = ANY('{` + strings.Join(durableTables, ",") + `}'::name[]) AND relpersistence <> 'p')
   THEN 'on' ELSE '` + unsafeValue + `' END, true)`
+	durabilityCheck = `PREPARE agentcapsule_durability AS ` + durabilityQuery
+)
 
 // requestIDForm is telemetry's: 32 lowercase hex digits, which need no
 // quoting.
 var requestIDForm = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
-// preamble is the statement that begins a transaction with options.
-func preamble(ctx context.Context, exclusive bool, options pgx.TxOptions) string {
+// preamble is the statement that begins a transaction with options; inline
+// writes the durability check out instead of executing the prepared one.
+func preamble(ctx context.Context, exclusive bool, options pgx.TxOptions, inline bool) string {
 	var b strings.Builder
 	b.WriteString("BEGIN ISOLATION LEVEL ")
 	b.WriteString(strings.ToUpper(string(options.IsoLevel)))
@@ -146,20 +150,31 @@ func preamble(ctx context.Context, exclusive bool, options pgx.TxOptions) string
 	if id := telemetry.RequestIDFrom(ctx); requestIDForm.MatchString(id) {
 		b.WriteString(", set_config('agentcapsule.request_id','" + id + "',true)")
 	}
-	b.WriteString(";\nEXECUTE agentcapsule_durability")
+	if inline {
+		b.WriteString(";\n" + durabilityQuery)
+	} else {
+		b.WriteString(";\nEXECUTE agentcapsule_durability")
+	}
 	return b.String()
 }
 
 // beginPreamble begins a transaction with its whole preamble in one round
 // trip. A preamble that fails leaves its connection in a failed transaction:
-// the pool closes it.
+// the pool closes it. A connection that did not prepare the check (a pool
+// whose own connect hook replaced poolConfig's) begins again with the check
+// written out.
 func (s *Store) beginPreamble(ctx context.Context, exclusive bool, options pgx.TxOptions) (pgx.Tx, error) {
 	if options.IsoLevel == "" {
 		options.IsoLevel = pgx.ReadCommitted
 	}
-	options.BeginQuery = preamble(ctx, exclusive, options)
-	tx, err := s.pool.BeginTx(ctx, options)
+	begin := options
+	begin.BeginQuery = preamble(ctx, exclusive, options, false)
+	tx, err := s.pool.BeginTx(ctx, begin)
 	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "26000" {
+		begin.BeginQuery = preamble(ctx, exclusive, options, true)
+		tx, err = s.pool.BeginTx(ctx, begin)
+	}
 	if errors.As(err, &pgErr) && pgErr.Code == "22023" && strings.Contains(pgErr.Message, unsafeValue) {
 		return nil, ErrUnsafeDatabase
 	}

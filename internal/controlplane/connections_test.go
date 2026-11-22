@@ -206,6 +206,44 @@ func TestTransactionPreambleIsOneRoundTrip(t *testing.T) {
 	}
 }
 
+// A pool whose connections did not prepare the durability check (its own
+// connect hook replaced the store's) begins with the check written out, and
+// refuses an UNLOGGED table as the store's pool does.
+func TestPreambleWithoutThePreparedCheck(t *testing.T) {
+	s, dsn := freshStore(t, "auto", 2)
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool, err := pgxpool.NewWithConfig(t.Context(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	bare := &Store{pool: pool}
+	tx, err := bare.begin(t.Context())
+	if err != nil {
+		t.Fatal("a connection without the prepared check:", err)
+	}
+	var commit string
+	err = tx.QueryRow(t.Context(), "SELECT current_setting('synchronous_commit')").Scan(&commit)
+	rollback(tx)
+	if err != nil || commit != "on" {
+		t.Fatal(commit, err)
+	}
+	if _, err = s.pool.Exec(t.Context(), "ALTER TABLE llm_budget_windows SET UNLOGGED"); err != nil {
+		t.Fatal(err)
+	}
+	for name, store := range map[string]*Store{"prepared": s, "written out": bare} {
+		if tx, err := store.begin(t.Context()); !errors.Is(err, ErrUnsafeDatabase) {
+			if tx != nil {
+				rollback(tx)
+			}
+			t.Errorf("%s: an UNLOGGED table accepted: %v", name, err)
+		}
+	}
+}
+
 // BenchmarkTransactionPreamble measures an empty transaction: its preamble
 // and its commit. AGENTCAPSULE_BENCHMARK_POSTGRES, when set, names the
 // database to measure on (a TCP address, to count the network).
