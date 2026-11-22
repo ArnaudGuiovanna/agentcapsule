@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -89,10 +90,12 @@ func TestHandlerForwardsOnlyAllowedRequests(t *testing.T) {
 }
 
 func TestHandlerBoundsTheBody(t *testing.T) {
-	var received int
+	// The upstream's handler may still read when the edge has answered:
+	// its count is read once the upstream has closed, which waits for it.
+	var received atomic.Int64
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n, _ := io.Copy(io.Discard, r.Body)
-		received = int(n)
+		received.Store(n)
 	}))
 	defer upstream.Close()
 	target, _ := url.Parse(upstream.URL)
@@ -104,8 +107,10 @@ func TestHandlerBoundsTheBody(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if resp.StatusCode == http.StatusOK || received > MaxBody {
-		t.Fatalf("an oversized body passed: %d, %d bytes", resp.StatusCode, received)
+	edge.Close()
+	upstream.Close()
+	if resp.StatusCode == http.StatusOK || received.Load() > MaxBody {
+		t.Fatalf("an oversized body passed: %d, %d bytes", resp.StatusCode, received.Load())
 	}
 }
 
