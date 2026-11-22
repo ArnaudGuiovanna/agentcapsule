@@ -186,6 +186,7 @@ var rbacRoutes = append([]rbacRoute{
 	{Method: "POST", Path: "/v1/llm/aliases/{fresh}/access", Success: 200, Want: rbacManage, body: `{"access":"listed"}`, fresh: rbacFreshAlias, Note: "a disposable alias"},
 	{Method: "POST", Path: "/v1/llm/aliases/{fresh}/prices", Success: 200, Want: rbacManage, body: `{"input_micro_per_mtok":1,"output_micro_per_mtok":2}`, fresh: rbacFreshAlias, Note: "a disposable alias"},
 	{Method: "POST", Path: "/v1/llm/aliases/{fresh}/operations", Success: 200, Want: rbacManage, body: `{"operations":["chat","embed"]}`, fresh: rbacFreshAlias, Note: "a disposable alias"},
+	{Method: "POST", Path: "/v1/llm/aliases/{fresh}/request-policy", Success: 200, Want: rbacManage, body: `{"allowed_tool_types":["web_search_preview"],"max_output_tokens":2048}`, fresh: rbacFreshAlias, Note: "a disposable alias"},
 	{Method: "GET", Path: "/v1/llm/aliases/{alias}/grants", Success: 200, Want: rbacManage},
 	{Method: "POST", Path: "/v1/llm/aliases/{fresh}/grants", Success: 201, Want: rbacManage, body: `{"agent_id":"{agent}"}`, fresh: rbacFreshAlias, Note: "a disposable alias, to the agent"},
 	{Method: "POST", Path: "/v1/llm/aliases/{fresh}/grants/{grant}/revoke", Success: 200, Want: rbacManage, body: `{}`, fresh: rbacFreshGrant, Note: "a disposable grant"},

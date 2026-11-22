@@ -283,8 +283,13 @@ func explain(err error, alias string) (int, string, string) {
 		return http.StatusBadRequest, "invalid_request_error", "The model alias " + alias + " is served by a provider that speaks the other API (OpenAI Chat Completions or Anthropic Messages)."
 	case "invalid":
 		return http.StatusBadRequest, "invalid_request_error", "The request was refused: it must not ask for several choices, and it must bound its output (Anthropic) to at most 1,000,000 tokens."
+	case "feature_denied":
+		return http.StatusBadRequest, "invalid_request_error", "The organization does not allow this request on model alias " + alias +
+			": it uses a tool the provider runs itself (web search, code execution, file search, computer use, MCP) or an option that changes its price."
 	case "quota_exceeded":
 		return http.StatusTooManyRequests, "rate_limit_error", "The organization's token budget for this agent or model is exhausted."
+	case "concurrency_limited":
+		return http.StatusTooManyRequests, "rate_limit_error", "This agent has too many model calls in flight; retry when one ends."
 	case "rate_limited":
 		return http.StatusTooManyRequests, "rate_limit_error", "The provider is rate limiting; retry later."
 	case "rejected":

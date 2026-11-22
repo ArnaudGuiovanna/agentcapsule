@@ -221,5 +221,5 @@ func (a *Accounts) DisableOrganization(ctx context.Context, p Principal, id, key
 	if err != nil {
 		return APIReceipt{}, err
 	}
-	return r, commit(ctx, tx)
+	return a.store.settled(ctx, r, commit(ctx, tx))
 }

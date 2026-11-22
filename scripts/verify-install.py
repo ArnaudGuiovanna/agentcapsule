@@ -8,9 +8,11 @@ docs/bootstrap.md and docs/install.md step by step, without root:
    builds every binary as bootstrap.md says (`go build -trimpath -o bin/
    ./cmd/...`), then installs them into a throwaway prefix that stands for
    /, with /opt/agentcapsule, /etc/agentcapsule, /var/lib and /run;
-2. creates a PostgreSQL cluster, a role and the database it owns, reached
-   over a Unix socket;
-3. `agentcapsule-admin migrate`, twice: the second run only checks;
+2. creates a PostgreSQL cluster, the role that owns the database, the API's
+   and the worker's roles, reached over a Unix socket;
+3. `agentcapsule-admin migrate`, twice: the second run only checks; the API's
+   and the worker's roles read, and cannot truncate a table, disable or drop
+   a guard trigger, or create a table;
 4. `agentcapsule-admin bootstrap-platform`: the receipt key and the platform
    token, private files; again with the same files (confirmed), and with
    another token file (refused);
@@ -92,7 +94,8 @@ OWNER_SCOPES = "org:read member:read member:manage audit:read"
 # Every check the worker's preflight prints with this configuration.
 PREFLIGHT_CHECKS = ("mode", "configuration", "kvm", "kernel", "cgroups", "namespaces", "runtime_filesystem",
                     "artifact_firecracker", "artifact_jailer", "artifact_kernel", "artifact_initrd", "clock",
-                    "disk_runtime", "authority", "metrics_listen", "registry", "registry_inspection", "postgresql")
+                    "disk_runtime", "authority", "metrics_listen", "registry", "registry_inspection", "registry_signatures",
+                    "postgresql")
 MANDATORY = ("kvm", "kernel", "cgroups", "namespaces", "runtime_filesystem", "disk_runtime",
              "artifact_firecracker", "artifact_jailer", "artifact_kernel", "artifact_initrd")
 ARTIFACTS = ("firecracker", "jailer", "kernel", "initrd")
@@ -433,6 +436,9 @@ def main():
     dsn = f"host={pg_socket} dbname=agentcapsule user=agentcapsule"
     # Production mode: AGENTCAPSULE_MODE is not set (docs/install.md, Modes).
     admin_env = {**base_env, "AGENTCAPSULE_DATABASE_URL": dsn}
+    # Each service connects as its own role, which owns nothing (install.md, PostgreSQL).
+    api_env = {**base_env, "AGENTCAPSULE_DATABASE_URL": f"host={pg_socket} dbname=agentcapsule user=agentcapsule_api"}
+    worker_env = {**base_env, "AGENTCAPSULE_DATABASE_URL": f"host={pg_socket} dbname=agentcapsule user=agentcapsule_worker"}
     api_port, api_metrics, authority_metrics, worker_metrics = free_port(), free_port(), free_port(), free_port()
     # What the install listens on, for the count of connections (DEP-1).
     report["listeners"] = {"api": api_port, "api_metrics": api_metrics, "authority_metrics": authority_metrics,
@@ -507,7 +513,8 @@ def main():
         run.done()
 
         # ---- 2. PostgreSQL (bootstrap.md, Before you start; install.md, PostgreSQL).
-        run.step("postgresql", "docs/install.md#postgresql", "a cluster on a Unix socket, a role and the database it owns")
+        run.step("postgresql", "docs/install.md#postgresql", "a cluster on a Unix socket, the owner's role and the database it owns, "
+                 "the API's and the worker's roles")
         work.mkdir(exist_ok=True)
         pg_socket.mkdir(mode=0o700)
         run.run("postgresql", [a.pg_bin / "initdb", "-D", pg_data, "--username=postgres", "--auth-local=trust", "--auth-host=reject",
@@ -516,7 +523,8 @@ def main():
                                f"-c listen_addresses= -k {pg_socket} -c unix_socket_permissions=0700", "start"], pg_env)
         pg_started = True
         psql = [a.pg_bin / "psql", "-X", "-v", "ON_ERROR_STOP=1", "-h", pg_socket, "-U", "postgres", "-d", "postgres"]
-        run.run("postgresql", [*psql, "-c", "CREATE ROLE agentcapsule LOGIN", "-c", "CREATE DATABASE agentcapsule OWNER agentcapsule"], pg_env)
+        run.run("postgresql", [*psql, "-c", "CREATE ROLE agentcapsule LOGIN", "-c", "CREATE DATABASE agentcapsule OWNER agentcapsule",
+                               "-c", "CREATE ROLE agentcapsule_api LOGIN", "-c", "CREATE ROLE agentcapsule_worker LOGIN"], pg_env)
         report["postgresql"] = run.run("postgresql", [*psql, "-tAc", "SHOW server_version"], pg_env).stdout.strip()
         run.checked(f"PostgreSQL {report['postgresql']}; AGENTCAPSULE_DATABASE_URL='{dsn}'")
         run.done()
@@ -527,6 +535,20 @@ def main():
             r = admin("migrate", "migrate")
             run.expect("migration_complete" in r.stdout, f"migrate run {attempt} did not print migration_complete")
         run.checked("migration_complete twice; the second run only checks")
+        # The services' roles read and write rows, and nothing more: no
+        # truncation, no disabled or dropped guard, no new table.
+        for role in ("agentcapsule_api", "agentcapsule_worker"):
+            as_role = [a.pg_bin / "psql", "-X", "-At", "-v", "ON_ERROR_STOP=1", "-h", pg_socket, "-U", role, "-d", "agentcapsule"]
+            r = run.run("service-roles", [*as_role, "-c", "SELECT count(*) FROM revocation_catalogue"], pg_env)
+            run.expect(r.stdout.strip() == "0", f"{role} does not read revocation_catalogue")
+            for statement in ("TRUNCATE revocation_catalogue", "ALTER TABLE revocation_catalogue DISABLE TRIGGER revocation_catalogue_guard",
+                              "DROP TRIGGER access_revocation_guard ON access_revocations", "CREATE TABLE intruder(id int)",
+                              "SET session_replication_role = replica"):
+                r = run.run("service-roles", [*as_role, "-c", statement], pg_env, check=False)
+                run.expect(r.returncode != 0 and ("permission denied" in r.stderr or "must be owner" in r.stderr),
+                           f"{role}: {statement} was not refused; see logs/service-roles.log")
+        run.checked("agentcapsule_api and agentcapsule_worker read revocation_catalogue; truncating it, disabling or dropping a guard, "
+                    "creating a table and turning triggers off are refused")
         run.done()
 
         # ---- 4. The platform operator's credential (bootstrap.md, 2).
@@ -622,7 +644,7 @@ def main():
                     "-metrics-listen", f"127.0.0.1:{api_metrics}"]
         authority_args = ["-authority-socket", sockets / "api.sock", "-restore-authority-id", restore_id, "-key-authority-id", key_id]
         api_args = [*api_base, *authority_args]
-        r = run.run("api-preflight", [opt / "agentcapsule-api", *api_args, "-preflight"], admin_env, check=False)
+        r = run.run("api-preflight", [opt / "agentcapsule-api", *api_args, "-preflight"], api_env, check=False)
         results, last = parse_preflight(r.stdout)
         report["api_preflight"] = [{"status": s, "check": c, "detail": d} for s, c, d in results]
         run.expect(r.returncode == 0 and last == "preflight_passed",
@@ -634,11 +656,11 @@ def main():
         other = ["-authority-socket", sockets / "api.sock", "-restore-authority-id", "restoreauth_" + "0" * 32, "-key-authority-id", key_id]
         for label, args, code in (("api-without-authority", api_base, "authority_required_in_production"),
                                   ("api-other-authority", [*api_base, *other], "authority_identity_mismatch")):
-            r = run.run(label, [opt / "agentcapsule-api", *args], admin_env, check=False, timeout=60)
+            r = run.run(label, [opt / "agentcapsule-api", *args], api_env, check=False, timeout=60)
             run.expect(r.returncode == 1 and r.stderr.strip() == code, f"{label}: exit {r.returncode}, not 1 with {code}; see logs/{label}.log")
         run.checked("without the authority flags: authority_required_in_production; with another restore authority: "
                     "authority_identity_mismatch")
-        run.start("api", [opt / "agentcapsule-api", *api_args], admin_env)
+        run.start("api", [opt / "agentcapsule-api", *api_args], api_env)
 
         def ready():
             r = subprocess.run(["curl", "-sS", "-o", "/dev/null", "-w", "%{http_code}", *curl_tls, url + "/v1/health/ready"],
@@ -797,7 +819,7 @@ def main():
         # inspection sandbox refuses it, as it refuses a container's root.
         may_fail["registry_inspection"] = "the worker runs as root of a user namespace (unshare -r), which the inspection sandbox refuses"
         r = run.run("worker-preflight", ["unshare", "-r", opt / "agentcapsule-worker", "-config", etc / "worker.json", "-preflight"],
-                    admin_env, check=False, timeout=180)
+                    worker_env, check=False, timeout=180)
         results, last = parse_preflight(r.stdout)
         report["worker_preflight"] = {"kvm_usable_by_this_account": kvm, "artifacts_given": sorted(given), "last_line": last,
                                       "exit_code": r.returncode, "may_fail_here": may_fail,
@@ -807,7 +829,7 @@ def main():
         run.expect(not host_root.exists(), "the preflight created the runtime root")
         run.checked("; ".join(f"{c} {s}" for s, c, _ in results) + f"; {last}; the runtime root not created")
         if any(s == "fail" and c in MANDATORY for s, c, _ in results):
-            r = run.run("worker-start", ["unshare", "-r", opt / "agentcapsule-worker", "-config", etc / "worker.json"], admin_env,
+            r = run.run("worker-start", ["unshare", "-r", opt / "agentcapsule-worker", "-config", etc / "worker.json"], worker_env,
                         check=False, timeout=120)
             run.expect(r.returncode == 1 and "preflight_failed" in r.stderr, "the worker started although a mandatory check fails")
             run.expect(not host_root.exists(), "the refused worker created the runtime root")
@@ -817,10 +839,10 @@ def main():
         # The garbage collection on demand (docs/worker.md, OPR-5): the guards
         # of ADR 014, and nothing created. This host has nothing to collect.
         collect = ["unshare", "-r", opt / "agentcapsule-worker", "-config", etc / "worker.json", "-collect-garbage"]
-        r = run.run("worker-collect-garbage", collect, admin_env, check=False, timeout=120)
+        r = run.run("worker-collect-garbage", collect, worker_env, check=False, timeout=120)
         run.expect(r.returncode == 1 and r.stderr.strip() == "confirmation_required", "the collection ran without -confirm")
         for extra, dry in ((["-dry-run"], True), (["-confirm", "local"], False)):
-            r = run.run("worker-collect-garbage", [*collect, *extra], admin_env, check=False, timeout=120)
+            r = run.run("worker-collect-garbage", [*collect, *extra], worker_env, check=False, timeout=120)
             outcome = json.loads(r.stdout) if r.returncode == 0 and r.stdout.strip() else {}
             run.expect(outcome.get("outcome") == "unchanged" and outcome.get("dry_run") is dry and outcome.get("target") == "local",
                        f"-collect-garbage {' '.join(extra)}: exit {r.returncode}; see logs/worker-collect-garbage.log")

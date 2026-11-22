@@ -21,6 +21,12 @@ def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def check_digest(path, expected, what):
+    """Stop unless path has the pinned SHA-256; unlike assert, python -O keeps the check."""
+    if sha(path) != expected:
+        raise ValueError(f"{what} checksum mismatch: {path} differs from the pinned SHA-256")
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--output", required=True, type=Path)
@@ -32,7 +38,7 @@ def main():
     inputs = root / "runtime/firecracker"
     manifest = json.loads((inputs / "manifest.json").read_text())
     patch = inputs / manifest["patch"]
-    assert sha(patch) == manifest["patch_sha256"], "patch checksum mismatch"
+    check_digest(patch, manifest["patch_sha256"], "patch")
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
     shutil.copy2(inputs / "manifest.json", out / "manifest.json")
@@ -43,7 +49,7 @@ def main():
         shutil.copyfile(args.source_archive, archive)
     else:
         urllib.request.urlretrieve(manifest["source_url"], archive)
-    assert sha(archive) == manifest["source_sha256"], "upstream checksum mismatch"
+    check_digest(archive, manifest["source_sha256"], "upstream")
     with tarfile.open(archive) as t:
         t.extractall(out, filter="data")
     source = out / ("firecracker-" + manifest["version"])

@@ -74,8 +74,9 @@ expired or was lost, or a store that cannot be read, shows too.
 
 The files are in [deploy/backup](../deploy/backup).
 
-1. **Install pgBackRest**: `apt install pgbackrest`. The configuration is
-   qualified with pgBackRest 2.58.
+1. **Install pgBackRest**: `apt install pgbackrest`. On Ubuntu 24.04 that is
+   pgBackRest 2.50, the package the installer ships and CI qualifies
+   ([Qualify](#qualify)).
 2. **Repositories.**
    - Create the bucket at the provider, with versioning, and a credential
      limited to that bucket.
@@ -83,7 +84,9 @@ The files are in [deploy/backup](../deploy/backup).
      with a `repo` directory ([the standby](#the-standby-rec-03), step 1).
 3. **Configuration and secrets.**
    - Copy `pgbackrest.conf` to `/etc/pgbackrest/` (root:postgres, 0640).
-     Replace the endpoint, region, bucket and standby host.
+     Replace the endpoint, region, bucket and standby host. Its `pg1-` lines
+     name the installer's cluster (`16/agentcapsule`, port 55432); give yours
+     if it differs.
    - Write `conf.d/secrets.conf` from the example (postgres, 0600). Generate
      each passphrase with `openssl rand -hex 32`.
    - **Keep a copy of both passphrases off the host**: without them, the
@@ -140,8 +143,9 @@ python3 scripts/verify-backups.py --pg-bin <postgres-bin-dir> --pgbackrest <pgba
   [--pg-library-path <dir>] --output <new-dir>
 ```
 
-`scripts/fetch-backup-tools.py` gets pgBackRest 2.58 without root or apt: the
-exact package of Ubuntu 26.04, checked against its SHA-256
+`scripts/fetch-backup-tools.py` gets pgBackRest 2.50 without root or apt: the
+exact package the server bundle installs (Ubuntu 24.04's, from the bundle's
+snapshot of the archive), checked against its SHA-256
 ([scripts/README.md](../scripts/README.md#backup-qualifications)). CI runs
 this qualification on every pull request and every push to `main`.
 
@@ -162,6 +166,14 @@ It checks:
   With the standby's store stopped, that repository is reported unreadable
   and S3's times stay. The file has mode 0644 and holds none of the run's
   secrets. Passed on 2026-11-13.
+
+On 2026-11-22 the run passed with the packages the server bundle installs,
+PostgreSQL 16.15 and pgBackRest 2.50 (Ubuntu 24.04's), and the configurations
+whose `pg1-` lines name the installer's cluster: a commit archived in 30.9 s
+(`archive_timeout` 30 s), 201 of 201 rows restored from each store, no clear
+text in either store, the standby caught up and promoted in 1.0 s. pgBackRest
+2.50 checks the S3 server's certificate against its DNS names only, so the
+lab's certificate names `127.0.0.1` as both an address and a DNS name.
 
 pgBackRest writes `<redacted>` in its logs for the S3 secret and the cipher
 passphrases. The run searches all its evidence, pgBackRest's own log files
@@ -218,8 +230,11 @@ On the standby host, as root.
        PermitTTY no
    ```
    The key file is outside the chroot, so the `backup` user cannot change it.
-2. **PostgreSQL and pgBackRest**, the same versions as the primary's:
-   `apt install postgresql-18 pgbackrest`. Then let `postgres` read the
+2. **PostgreSQL and pgBackRest**, the same versions as the primary's: on
+   Ubuntu 24.04, `apt install postgresql-16 pgbackrest` (PostgreSQL 16 and
+   pgBackRest 2.50, as the installer's primary). The package creates the
+   cluster `16/main` on port 5432, which
+   [pgbackrest.conf](../deploy/standby/pgbackrest.conf) names. Then let `postgres` read the
    repository: `usermod -aG backup postgres`.
 3. **Configuration and secrets.**
    - Copy [pgbackrest.conf](../deploy/standby/pgbackrest.conf) to
@@ -231,7 +246,7 @@ On the standby host, as root.
      repository 2 there. The S3 credential is a new one, limited to reading
      and listing the bucket.
 4. **PostgreSQL.** Append [postgresql.conf](../deploy/standby/postgresql.conf)
-   to `/etc/postgresql/18/main/postgresql.conf`. Its `archive_command` is
+   to `/etc/postgresql/16/main/postgresql.conf`. Its `archive_command` is
    empty on purpose: see [Promote](#promote).
 5. **Replay freshness.** Copy
    [agentcapsule-standby-metrics.py](../deploy/standby/agentcapsule-standby-metrics.py)
@@ -282,9 +297,9 @@ The alerts fire when:
 Once the primary has a backup in repository 2, as `postgres`:
 
 ```sh
-pg_ctlcluster 18 main stop
+pg_ctlcluster 16 main stop
 pgbackrest --stanza=agentcapsule --type=standby --delta restore
-pg_ctlcluster 18 main start
+pg_ctlcluster 16 main start
 ```
 
 The restore copies the latest backup of the first repository that has one:
@@ -315,7 +330,7 @@ When the primary is lost. The RTO starts at the decision to fail over.
    - stop it, or cut it off, if it can still be reached;
    - remove its key from `/etc/ssh/authorized_keys/backup` on the standby;
    - revoke its S3 credential at the provider.
-2. **Promote**, as `postgres`: `pg_ctlcluster 18 main promote`. PostgreSQL
+2. **Promote**, as `postgres`: `pg_ctlcluster 16 main promote`. PostgreSQL
    first replays every segment it can still fetch, from either repository,
    then accepts writes on a new timeline. `SELECT pg_is_in_recovery()`
    returns `f`.
@@ -324,8 +339,10 @@ When the primary is lost. The RTO starts at the decision to fail over.
    primary's repositories.
    - `/etc/pgbackrest/pgbackrest.conf`: the primary's
      [file](../deploy/backup/pgbackrest.conf), with
-     `repo1-path=/agentcapsule-2` (a path the old primary never wrote), and
-     without the `repo2` lines until there is a new standby.
+     `repo1-path=/agentcapsule-2` (a path the old primary never wrote), the
+     standby's cluster in the `pg1-` lines (`pg1-path=/var/lib/postgresql/16/main`,
+     `pg1-port=5432`), and without the `repo2` lines until there is a new
+     standby.
    - `conf.d/secrets.conf`: a new S3 credential that can write, and a new
      `repo1-cipher-pass`.
 
@@ -618,6 +635,12 @@ its record.
    `serve -config /etc/agentcapsule/authority.json` as
    `agentcapsule-authority`. Add the primary's address to its
    `IPAddressAllow=` in a drop-in, and let only that address reach the port.
+   The listener holds a connection that has not authenticated for 3 seconds
+   at most, at most 4 at a time from an address the primary has not
+   authenticated from, and 32 in all, of which 8 are kept for the addresses
+   the primary authenticated from; an
+   authenticated connection keeps a slot of its own (32 at most), so
+   connections that never authenticate cannot keep the primary out.
    A version 1 file without `role` is read as the replica's too. It logs JSON events
    (`replica_started`, `replica_refused` with its kind, `replica_stopped`) and
    serves `agentcapsule_authority_replica_applied_sequence`, `_epoch`,
@@ -744,6 +767,50 @@ the standby as soon as it starts, without waiting for an operation.
 of such failures. It also fires when the replica refuses the service, after
 a promotion for instance. Restarting the worker is harmless: degraded mode
 belongs to the service, and goes on.
+
+#### Revocations the authority service has not recorded
+
+An access revocation takes effect in PostgreSQL when its request commits,
+whatever the authority service does. The API then appends its record to the
+service, with no lock held, and the revocation is `recording` until the
+service holds it ([ADR 006](adr/006-authority-service.md), changes after
+the v0.1.0 audit). While the service does not answer (stopped, crashed,
+upgrading, or holding records back in the first 30 seconds of a standby's
+outage):
+
+- revocations keep working: members, tokens, assignments, providers and
+  organizations lose their access at once, and each answer lists its
+  revocation as `recording`;
+- the API records them every 5 seconds, oldest first, and again when one is
+  read (`GET /v1/access-revocations/{id}`); appending a record twice changes
+  nothing;
+- `agentcapsule_api_access_revocations_unrecorded` counts them, and
+  `AgentCapsuleAccessRevocationsUnrecorded` (critical) fires when the
+  oldest has waited 2 minutes.
+
+What to do:
+
+1. Bring the authority service back on the primary: `systemctl status
+   agentcapsule-authority`, its journal, then `systemctl start
+   agentcapsule-authority`. Within 5 seconds of its return the count falls
+   to 0, and the revocations become `pending` or `confirmed`.
+2. Until then, **do not restore the database and do not fail over**: a
+   database brought back to an earlier point, or a standby that lacks the
+   last commits, would bring back the access those revocations removed, and
+   the authorities do not hold them to replay. Rows the database still holds
+   are not lost: the reconciliation after a failover appends them to the
+   promoted authorities ([Reconcile the database](#reconcile-the-database)).
+3. If the primary is lost while revocations are recording, list the
+   revocations of the last minutes before the loss in the audit feed
+   (`agentcapsule-admin list-audit`, `GET /v1/audit`) and make again those
+   the promoted database lacks, as for the announced window of a degraded
+   period ([below](#announce-the-databases-loss)).
+
+A transaction that rolls back appends nothing: the service never holds a
+record of a revocation that PostgreSQL did not make. Only the claim of a
+personal volume is recorded before its commit, since the service's answer
+decides it; it fails with 503 `authority_unavailable` while the service is
+down, and the invitation's acceptance is tried again.
 
 ### The daily receipt keys
 
@@ -917,11 +984,14 @@ database. `agentcapsule-admin reconcile` brings the database up to the
 authorities ([ADR 006](adr/006-authority-service.md), wave 7). The API
 refuses to start until it has run for the authorities' epoch
 (`authority_not_reconciled`), and its readiness probe answers 503
-`authority_not_reconciled`. Run it as the API's account, with the API's
-database and its three authority flags:
+`authority_not_reconciled`. Run it as root, which the API socket admits,
+with the database's owner role (`agentcapsule`, in
+`/etc/agentcapsule/admin.env`: the API's role cannot write everything the
+replay writes) and the API's three authority flags:
 
 ```sh
-runuser -u <the API's account> -- env AGENTCAPSULE_DATABASE_URL=<the API's> agentcapsule-admin reconcile \
+set -a; . /etc/agentcapsule/admin.env; set +a
+agentcapsule-admin reconcile \
   -authority-socket /run/agentcapsule-authority/api.sock \
   -restore-authority-id <restoreauth_…> -key-authority-id <keyauth_…>
 ```
@@ -1100,7 +1170,7 @@ one by one (step 13).
 4. **Promote** the standby's PostgreSQL, as `postgres` (*0.5 s measured;
    with step 5, 1 to 2 minutes on real hosts*):
    ```sh
-   pg_ctlcluster 18 main promote
+   pg_ctlcluster 16 main promote
    psql -Atc 'SELECT pg_is_in_recovery(), pg_last_xact_replay_timestamp()'
    ```
    `f` means promoted. Write down the time it prints: the loss window starts
@@ -1113,7 +1183,8 @@ one by one (step 13).
    the API requires: the directory and the key files readable by the API's
    account only (0700 and 0600). The organizations' identity trusts are in
    PostgreSQL: the promoted database brings them.
-   Set `AGENTCAPSULE_DATABASE_URL` to the standby's own PostgreSQL.
+   Set `AGENTCAPSULE_DATABASE_URL` to the standby's own PostgreSQL, each
+   process with its own role ([install.md](install.md#postgresql)).
 7. **Reconcile the database** with the promoted authorities:
    [Reconcile the database](#reconcile-the-database). It replays the access
    revocations the database lost, the blanket revocation of bearer tokens
@@ -2058,11 +2129,13 @@ rules are about copies, not about forensic erasure.
    lifecycle rules are recommended, not qualified: SeaweedFS stands for the
    provider without them.
 6. **PostgreSQL 18 in CI.** CI runs both qualifications (the `backups` job
-   of [ci.yml](../.github/workflows/ci.yml)). Its runner is Ubuntu 24.04,
-   which ships an older pgBackRest and rclone. So `fetch-backup-tools.py`
-   gets Ubuntu 26.04's packages, pgBackRest 2.58 and rclone 1.60.1, and
-   checks their SHA-256. They need glibc 2.38 at most, and the runner has
-   2.39. PostgreSQL is another matter: Ubuntu 26.04's PostgreSQL 18 needs
-   glibc 2.43, so CI uses Ubuntu 24.04's PostgreSQL 16. The qualifications
-   with PostgreSQL 18 run on Ubuntu 26.04 only (above). A runner on Ubuntu
-   26.04 would close that gap.
+   of [ci.yml](../.github/workflows/ci.yml)). Its runner is Ubuntu 24.04.
+   `fetch-backup-tools.py` gets the pgBackRest the server bundle installs
+   (Ubuntu 24.04's 2.50) and Ubuntu 26.04's rclone 1.60.1 (the bundle
+   installs Ubuntu 24.04's build of that release), and checks their SHA-256.
+   They need glibc 2.38 at most, and the runner has 2.39. Until the v0.1.0
+   audit, CI qualified Ubuntu 26.04's pgBackRest 2.58, which no host
+   installs. CI uses Ubuntu 24.04's PostgreSQL 16, the one the installer
+   creates its cluster with; Ubuntu 26.04's PostgreSQL 18 needs glibc 2.43.
+   The qualifications with PostgreSQL 18 ran on Ubuntu 26.04 only (above),
+   with pgBackRest 2.58. A runner on Ubuntu 26.04 would close that gap.

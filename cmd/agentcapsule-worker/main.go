@@ -26,6 +26,7 @@ import (
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/directory"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/ociregistry"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/operatorconfig"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/pgnotify"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/preflight"
@@ -38,7 +39,6 @@ import (
 
 func run() int {
 	path := flag.String("config", "", "root-owned worker JSON configuration")
-	migrate := flag.Bool("migrate", false, "apply control-plane schema migration before maintenance")
 	archiveAgent := flag.String("archive-agent", "", "capture this agent once, leaving it stopped")
 	archiveID := flag.String("archive-id", "", "stable arc_ identifier with 32 lowercase hex digits; reuse on retry")
 	archiveRoot := flag.String("archive-root", "", "absolute private archive directory outside runtime and authorities")
@@ -62,13 +62,13 @@ func run() int {
 	if *restoreHost != "" && (*restoreAgent != "" || *restoreID != "" || *archiveAgent != "" || *archiveID != "" || !filepath.IsAbs(*archiveRoot)) {
 		return fail("restore_host_configuration_invalid")
 	}
-	if *testAgent != "" && (*restoreAgent != "" || *restoreID != "" || *restoreHost != "" || *archiveAgent != "" || *migrate || *check || *collect ||
+	if *testAgent != "" && (*restoreAgent != "" || *restoreID != "" || *restoreHost != "" || *archiveAgent != "" || *check || *collect ||
 		!filepath.IsAbs(*archiveRoot) || !filepath.IsAbs(*scratch) || *archiveID != "" && !volumearchive.ValidID(*archiveID)) ||
 		*testAgent == "" && *scratch != "" {
 		return fail("restore_test_configuration_invalid")
 	}
 	if *collect && (*restoreAgent != "" || *restoreID != "" || *restoreHost != "" || *archiveAgent != "" || *archiveID != "" || *archiveRoot != "" ||
-		*archiveFetch != "" || *migrate || *check) || !*collect && (*dryRun || *confirm != "") {
+		*archiveFetch != "" || *check) || !*collect && (*dryRun || *confirm != "") {
 		return fail("collect_garbage_configuration_invalid")
 	}
 	if *archiveFetch != "" && (!filepath.IsAbs(*archiveFetch) || (*restoreHost == "" && *restoreAgent == "" && *testAgent == "")) {
@@ -185,10 +185,12 @@ func run() int {
 		return fail("database_initialization_failed")
 	}
 	defer s.Close()
-	if *migrate {
-		if err = s.Migrate(startup); err != nil {
-			return fail("database_migration_failed")
-		}
+	// The worker never migrates: agentcapsule-admin migrate does, as the
+	// role that owns the schema, which the worker's role does not (ADR 001,
+	// "Changes after the v0.1.0 audit"). It refuses a ledger behind, ahead
+	// of or different from this binary's, as the API does.
+	if err = s.Ready(startup); err != nil {
+		return fail("database_schema_unavailable")
 	}
 	if _, err = s.PendingCredentialRenewals(startup, c.HostID); err != nil {
 		return fail("database_schema_unavailable")
@@ -227,7 +229,7 @@ func run() int {
 	// Events, one JSON object per line, from a closed vocabulary (OPS-02):
 	// progress on standard output, retries and failures on standard error.
 	vocabulary := map[string][]string{"event": {"maintenance_started", "maintenance_complete", "maintenance_retry", "wake_budget_exhausted",
-		"harness_import_retry", "corpus_fetch_retry", "corpus_build_retry", "directory_publish_retry", "slim_callback_stopped", "job_done", "job_retried",
+		"harness_import_retry", "registry_unsigned_rules", "corpus_fetch_retry", "corpus_build_retry", "directory_publish_retry", "slim_callback_stopped", "job_done", "job_retried",
 		"volume_archive_captured", "volume_archive_retry", "volume_archive_purged", "delivery_dead", "agent_failed"},
 		"reason": append(append(append(worker.RetryReasons(), worker.ArchiveRetryReasons()...), worker.DeadDeliveryReasons()...), worker.AgentFailureReasons()...),
 		"kind":   append(worker.JobKinds(), worker.DeadDeliveryKinds()...), "vm": worker.ArchiveVMs()}
@@ -360,12 +362,20 @@ func run() int {
 			})
 		}()
 	}
-	importer, err := c.OpenRegistry(s, workerID)
+	importer, err := c.OpenRegistry(s, workerID, mode == operatorconfig.Production)
 	if errors.Is(err, worker.ErrInspection) {
 		return fail("registry_inspection_unavailable")
 	}
+	if errors.Is(err, ociregistry.ErrUnsigned) {
+		return fail("registry_signatures_required_in_production")
+	}
 	if err != nil {
 		return fail("registry_configuration_invalid")
+	}
+	if n := len(c.UnsignedRegistryRules()); importer != nil && n > 0 {
+		// Each rule that imports unsigned packages, as its configuration
+		// allows (L-16); the preflight names them.
+		problems.Event("registry_unsigned_rules", telemetry.Int("rules", int64(n)))
 	}
 	if importer != nil {
 		if err = w.EnableRegistry(importer); err != nil {

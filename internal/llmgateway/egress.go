@@ -168,14 +168,17 @@ func NewForTests(c Config, t TestOptions) *Gateway {
 
 // newClient is the gateway's only HTTP client: no redirect is followed, no
 // environment proxy is used (the address check would then apply to the proxy,
-// not to the provider), and every connection passes the address policy.
-func newClient(allow Allowlist, t TestOptions) *http.Client {
+// not to the provider), and every connection passes the address policy. It
+// keeps idlePerHost idle connections to each provider address.
+func newClient(allow Allowlist, idlePerHost int, t TestOptions) *http.Client {
 	e := &egress{allow: allow, loopback: t.Loopback}
 	dialer := &addrpolicy.Dialer{Allow: e.allowed, Refused: ErrAddressRefused, Lookup: t.Lookup,
 		Connect: (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
 	transport.DialContext = dialer.DialContext
+	transport.MaxIdleConnsPerHost = idlePerHost
+	transport.MaxIdleConns = max(transport.MaxIdleConns, idlePerHost)
 	if t.RootCAs != nil {
 		transport.TLSClientConfig = &tls.Config{RootCAs: t.RootCAs, MinVersion: tls.VersionTLS12}
 	}

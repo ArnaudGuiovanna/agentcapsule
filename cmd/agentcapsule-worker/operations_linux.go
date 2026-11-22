@@ -40,6 +40,12 @@ func testRestore(c worker.ServiceConfig, mode operatorconfig.Mode, agent, archiv
 	if err != nil {
 		return fail("configuration_invalid")
 	}
+	// The key check parses the copy's LUKS2 header, which the guest may
+	// have written: confined, as registry.inspection_uid when root (S-21).
+	confined, err := c.Inspection()
+	if err != nil {
+		return fail("inspection_uid_required")
+	}
 	for _, pair := range [][2]string{{opts.Root, archiveRoot}, {opts.Root, scratch}, {archiveRoot, scratch}} {
 		if restoreauthority.CheckSeparation(pair[0], pair[1]) != nil {
 			return fail("archive_domain_overlap")
@@ -84,7 +90,8 @@ func testRestore(c worker.ServiceConfig, mode operatorconfig.Mode, agent, archiv
 	if err != nil {
 		return fail("archive_storage_unavailable")
 	}
-	t := worker.RestoreTest{Store: s, HostID: c.HostID, Authority: authority, RuntimeRoot: opts.Root, Archives: archives, Scratch: scratch}
+	t := worker.RestoreTest{Store: s, HostID: c.HostID, Authority: authority, RuntimeRoot: opts.Root, Archives: archives, Scratch: scratch,
+		Sandbox: confined}
 	if fetchScript != "" {
 		t.Fetch = func(root string) worker.ArchiveFetcher { return worker.ScriptFetcher([]string{fetchScript}, root) }
 	}

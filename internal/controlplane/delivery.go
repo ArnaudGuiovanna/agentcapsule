@@ -156,6 +156,11 @@ func (s *Store) ClaimDelivery(ctx context.Context, mailboxID string, lease time.
 	if !deliverable(m, r, agents) {
 		return attempt, ErrUnavailable
 	}
+	if disabled, err := organizationDisabled(ctx, tx, agents[m.Destination].Tenant); err != nil {
+		return attempt, err
+	} else if disabled {
+		return attempt, errors.Join(ErrNoDelivery, ErrOrganizationDisabled)
+	}
 	if m.Kind == "request" {
 		var closing bool
 		if err := tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM request_closures WHERE request_id=$1)", r.ID).Scan(&closing); err != nil {
@@ -527,6 +532,13 @@ func (s *Store) dispatchMailboxWithTransit(ctx context.Context, agentID, id stri
 		return err
 	} else if due {
 		return s.retireDelivery(ctx, id, runtime, transit)
+	}
+	// A disabled organization's deliveries wait, and boot no VM: they die
+	// at their deadline, as above.
+	if disabled, err := agentSuspended(ctx, s.pool, agentID); err != nil {
+		return err
+	} else if disabled {
+		return errors.Join(ErrNoDelivery, ErrOrganizationDisabled)
 	}
 	var err error
 	retire := false

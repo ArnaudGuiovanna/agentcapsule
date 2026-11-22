@@ -41,6 +41,9 @@ func (fixedLog) Write(p []byte) (int, error) {
 }
 
 func run(args []string) int {
+	if len(args) > 0 && args[0] == "oidc-edge" {
+		return runOIDCEdge(args[1:])
+	}
 	f := flag.NewFlagSet("agentcapsule-api", flag.ContinueOnError)
 	listen := f.String("listen", "127.0.0.1:8080", "HTTPS listener; plain HTTP only on loopback in development mode")
 	keyPath := f.String("receipt-key-file", "", "private receipt encryption key")

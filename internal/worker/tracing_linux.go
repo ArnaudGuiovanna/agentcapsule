@@ -22,7 +22,7 @@ var (
 		"llm_complete", "llm_forward", "describe_agent", "request_status", "llm_embed", "llm_transcribe", "llm_ocr", "output_stream"}
 	// platformOutcomes are "ok" and the codes platformError answers with.
 	platformOutcomes = []string{"ok", "unavailable", "invalid", "unauthorized", "not_found", "mandate", "conflict", "expired", "transition",
-		"commit_unknown", "quota_exceeded", "rate_limited", "rejected", "outcome_unknown", "dialect", "unsupported",
+		"commit_unknown", "quota_exceeded", "rate_limited", "rejected", "outcome_unknown", "dialect", "unsupported", "feature_denied", "concurrency_limited",
 		// An output stream's closed reasons (ADR 022).
 		"done", "terminal", "reset", "revoked", "truncated", "idle"}
 

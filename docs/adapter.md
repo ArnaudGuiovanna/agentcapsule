@@ -376,10 +376,14 @@ without Docker.
 | `GET /v1/models` | The names listed in `models` and `default_model` |
 
 - **Forwarded as written.** The body reaches the provider as the agent wrote it:
-  messages, tools and tool choice, images, response formats, temperature, and so
-  on. The platform replaces only `model` (the alias's upstream model) and the
-  credential (`/v1/llm/forward` on the platform channel, see
-  [api/llm.md](api/llm.md#native-requests-from-the-model-endpoint)).
+  messages, the agent's own tools and tool choice, images, response formats,
+  temperature, and so on. The platform replaces only `model` (the alias's
+  upstream model) and the credential, and writes an output cap into a request
+  that declares none (`/v1/llm/forward` on the platform channel, see
+  [api/llm.md](api/llm.md#native-requests-from-the-model-endpoint)). A tool the
+  provider runs itself (web search, code execution, MCP...) or an option that
+  changes the price of a call passes only where the organization allows it on
+  the alias ([request policy](api/llm.md#request-policy)).
 - **Same API on both sides.** An OpenAI request goes only to an
   `openai_compatible` provider, and an Anthropic request only to an `anthropic`
   provider. A mismatch answers 400. There is no translation between the two
@@ -400,8 +404,10 @@ without Docker.
   |---|---|
   | Unknown alias | 404 |
   | Budget exhausted (`hard`) or provider rate limit | 429 |
+  | Too many model calls of the agent in flight | 429 |
   | Provider refusal, or a request with several choices (`n` > 1) | 400 |
   | Anthropic request without `max_tokens` | 400 |
+  | A provider-executed tool or a cost-changing option the alias does not allow | 400 |
   | Provider timeout after sending | 504 |
   | Platform unavailable | 503 |
 

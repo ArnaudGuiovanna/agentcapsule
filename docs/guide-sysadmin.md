@@ -42,12 +42,12 @@ ssh "$cible" 'test -d /run/systemd/system && test -c /dev/kvm && sudo -n true &&
 
 La première commande doit afficher `x86_64`, Ubuntu 24.04 et le nom DNS attendu. La seconde doit réussir et afficher au moins `cpu`, `memory` et `pids`. Sur une VM hébergée, demandez une instance qui expose KVM à l’invité. Le plan d’installation vérifie ensuite que le noyau répond réellement à l’API KVM.
 
-**Sur le poste**, installez `curl`, `jq` et un `cosign` de confiance (version 2.4 ou ultérieure). `jq` lit les réponses JSON. `cosign` vérifie la signature de l’index des fichiers pour le workflow GitHub et le tag attendus. Relevez le tag de la dernière version publique et utilisez-le pour le client et le serveur. Les parcours de streaming et de corpus des étapes 6 et 7 nécessitent la version 0.1.0 ou ultérieure. [Installation de cosign](https://docs.sigstore.dev/cosign/system_config/installation/) · [Vérification manuelle pour Windows, macOS et Linux](release.md#verify-a-release)
+**Sur le poste**, installez `curl`, `jq`, `openssl` et un `cosign` de confiance (version 2.4 ou ultérieure) : sans eux, le script d’installation s’arrête. `jq` lit les réponses JSON. `cosign` vérifie la signature de l’index des fichiers pour le workflow GitHub et le tag attendus. Relevez le tag de la dernière version publique et utilisez-le pour le client et le serveur. Les parcours de streaming et de corpus des étapes 6 et 7 nécessitent la version 0.1.0 ou ultérieure. [Installation de cosign](https://docs.sigstore.dev/cosign/system_config/installation/) · [Vérification manuelle pour Windows, macOS et Linux](release.md#verify-a-release)
 
 ```sh
 version=$(curl -fsSL https://api.github.com/repos/ArnaudGuiovanna/agentcapsule/releases/latest | jq -er '.tag_name')
 curl -fsSLo install-agentcapsule.sh "https://github.com/ArnaudGuiovanna/agentcapsule/releases/download/$version/install.sh"
-sh install-agentcapsule.sh --version "$version" --require-signature --dir "$HOME/.local/bin"
+sh install-agentcapsule.sh --version "$version" --dir "$HOME/.local/bin"
 export PATH="$HOME/.local/bin:$PATH"
 agentcapsule version
 ```

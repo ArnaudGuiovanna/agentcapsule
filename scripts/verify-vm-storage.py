@@ -23,6 +23,12 @@ import tempfile
 import time
 
 
+def require(condition, message):
+    """Stop unless condition holds; unlike assert, python -O keeps the check."""
+    if not condition:
+        raise RuntimeError(message)
+
+
 def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
@@ -75,7 +81,7 @@ class VM:
                 raise RuntimeError(f"{self.name} exited {self.process.returncode}; inspect console log")
             try:
                 result = self.call({"op": "info"}, timeout=1)
-                assert result["ok"], result
+                require(result["ok"], result)
                 self.boot_seconds = time.monotonic() - self.started
                 return result
             except (OSError, TimeoutError, EOFError) as exc:

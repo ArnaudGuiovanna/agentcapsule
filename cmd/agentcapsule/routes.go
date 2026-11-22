@@ -71,6 +71,8 @@ var commands = map[string]string{
 	"alias prices":  "POST /llm/aliases/{alias}/prices",
 	"alias revoke":  "POST /llm/aliases/{alias}/grants/{id}/revoke",
 
+	"alias request-policy": "POST /llm/aliases/{alias}/request-policy",
+
 	"app connection": "GET /applications/{id}",
 	"app invite":     "POST /applications/{app}/invitations",
 	"app list":       "GET /applications",

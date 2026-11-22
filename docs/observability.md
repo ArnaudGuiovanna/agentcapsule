@@ -42,6 +42,8 @@ volume archives and, on the standby host, its replay.
 | `agentcapsule_api_request_duration_seconds` | histogram | `route` | API latency, excluding invocation and corpus build event subscriptions |
 | `agentcapsule_api_streams_active` | gauge | — | Open invocation and corpus build event subscriptions. Each events route counts once in `agentcapsule_api_requests_total` and the request log when the subscription closes |
 | `agentcapsule_api_access_revocations_pending` | gauge | — | Access revocations recorded with the authority service but not confirmed: the standby does not hold their record yet ([ADR 006](adr/006-authority-service.md) wave 5). Above 0 in degraded mode; it falls once the standby catches up and the API confirms them (every 5 seconds) |
+| `agentcapsule_api_access_revocations_unrecorded` | gauge | — | Access revocations that took effect and that the authority service has not recorded yet: it did not answer after their commit ([ADR 006](adr/006-authority-service.md), changes after the v0.1.0 audit). The API records them every 5 seconds; 0 while the service answers |
+| `agentcapsule_api_access_revocation_oldest_unrecorded_seconds` | gauge | — | How long the oldest unrecorded revocation has waited; 0 when none ([recovery.md](recovery.md#revocations-the-authority-service-has-not-recorded)) |
 | `agentcapsule_api_access_revocation_oldest_pending_seconds` | gauge | — | How long the oldest pending revocation has waited; 0 when none. Long after degraded mode ended, the standby refuses the records: a standby of an older release ([recovery.md](recovery.md#pending-revocations)) |
 | `agentcapsule_worker_jobs_total` | counter | `kind`, `outcome` | Durable jobs processed: `done` or `retried` |
 | `agentcapsule_worker_job_retries_total` | counter | `kind`, `reason` | Why a job waits: `wake_budget`, `agent_failed`, `slim_unavailable`, `capacity`, `organization_quota` (its organization's quotas on VMs, vCPUs or RAM, [ADR 021](adr/021-organization-quotas.md)), `storage_pressure`, `error` |
@@ -75,7 +77,7 @@ volume archives and, on the standby host, its replay.
 | `agentcapsule_llm_calls_total` | counter | `provider` (`openai_compatible`, `anthropic`), `outcome` (`settled`, `released`, `unknown`) | Model calls through the worker's bridge ([llm.md](api/llm.md#budgets-and-consumption-llm-03)), once their outcome is recorded. Only with the model bridge on |
 | `agentcapsule_llm_tokens_total` | counter | `provider`, `direction` (`input`, `output`) | Tokens of settled calls, as the provider reported them |
 | `agentcapsule_llm_estimated_cost_micro_total` | counter | `provider` | Estimated cost of settled calls, in micro-units of each organization's own currency: a sum across organizations that price in different currencies has no meaning |
-| `agentcapsule_llm_refusals_total` | counter | `reason` (`budget_tokens`, `budget_cost`, `unpriced`, `alias_access`) | Calls refused before any reservation. Every series is served from zero |
+| `agentcapsule_llm_refusals_total` | counter | `reason` (`budget_tokens`, `budget_cost`, `unpriced`, `alias_access`, `unsupported`, `feature_denied`, `concurrency_limited`) | Calls refused before any reservation. Every series is served from zero |
 | `agentcapsule_llm_budget_soft_exceeded_total` | counter | `unit` (`tokens`, `cost`) | Calls that went past a soft budget; a call past two counts twice. Every series is served from zero |
 | `agentcapsule_llm_unresolved_calls` | gauge | — | Calls of unknown outcome, across the installation, that wait for their organization to settle or release them |
 | `agentcapsule_llm_stream_first_event_seconds` | histogram | — | Time from a model stream's provider request to its first event ([ADR 022](adr/022-native-streaming.md) §3), buckets 0.1 to 60 s. A stream is a call for `agentcapsule_llm_calls_total` |
@@ -180,6 +182,7 @@ Each process writes one JSON object per line, with `time` and `event` first:
 | Worker | `maintenance_started`, `maintenance_complete` | — |
 | Worker | `maintenance_retry` | `reason` (as above) |
 | Worker | `wake_budget_exhausted`, `harness_import_retry`, `directory_publish_retry`, `slim_callback_stopped` | — |
+| Worker | `registry_unsigned_rules` (standard error, at start) | `rules`: the number of registry rules that import unsigned packages, as their configuration allows ([registry.md](registry.md#publisher-signatures)); the preflight names them |
 | Worker | `job_done` (standard output), `job_retried` (standard error) | `kind`, `request_id` of the API request that started the work, if any, and `reason` for a retry |
 | Worker | `agent_failed` (standard error) | `reason` (`boot_failed`, `crashed`, `unresponsive`): an agent spent its restart budget; the event never names it |
 | Worker | `delivery_dead` (standard error) | `kind` (`reply`, `status`, `instruction`), `request_id` of the API request that started the work, if any, `reason` (`attempts_exhausted`, `expired`). The job that retired the delivery still ends with `job_done` |
@@ -187,7 +190,7 @@ Each process writes one JSON object per line, with `time` and `event` first:
 | Worker | `volume_archive_retry` (standard error) | `vm`, `reason`: `placement`, `busy`, `disk_full`, `authority`, `timeout`, `retention`, `error`; or, without `vm`, `reason` `purge`: the purge of deleted agents' archives stopped, and runs again an hour later |
 | Worker | `volume_archive_purged` (standard output) | `removed`: archives of deleted agents, whose key is destroyed, deleted from the host ([worker.md](worker.md#nightly-encrypted-archives)) |
 | Worker | `llm_budget_soft_exceeded` (standard error) | `unit` (`tokens`, `cost`), `period` (`day`, `month`), `scope` (`organization`, `agent`, `alias`, `agent_alias`) of the soft budget a model call went past |
-| Worker | `llm_call_refused` (standard error) | `reason` (`budget_tokens`, `budget_cost`, `unpriced`, `alias_access`), and for a budget its `period` and `scope` |
+| Worker | `llm_call_refused` (standard error) | `reason` (`budget_tokens`, `budget_cost`, `unpriced`, `alias_access`, `unsupported`, `feature_denied`, `concurrency_limited`), and for a budget its `period` and `scope` |
 | Worker, API | `authority_service_waiting` (standard error, once) | — : the process waits for the authority service at start |
 | Worker, restore command | `restore_paused` (standard error) | `reason`: `authority_unavailable`, `waits_for_replica` |
 | Authority service | `service_started` (standard output) | `epoch`, `mode` (`standalone`, `synchronous`, `degraded`, `waiting`) |
@@ -358,6 +361,7 @@ Their annotations are fixed text.
 | `AgentCapsuleAuthorityServiceDown` | The authority service does not answer its scrape for 2 minutes: no agent boots, platform calls fail, deliveries wait, a restore pauses, the API's readiness probe answers 503 (critical) |
 | `AgentCapsuleAuthorityDegraded` | The authority service has run in degraded mode, without the standby, for a minute: creating, deleting and restoring agents wait, and losing the host loses the outcomes recorded since (critical) |
 | `AgentCapsuleAuthorityOperationsRefused` | An authority operation gave up waiting for the standby in degraded mode in the last 15 minutes |
+| `AgentCapsuleAccessRevocationsUnrecorded` | An access revocation took effect more than 2 minutes ago and the authority service has not recorded it: a failover or a restore of the database now could undo it ([recovery.md](recovery.md#revocations-the-authority-service-has-not-recorded)) (critical) |
 | `AgentCapsuleAuthorityReplicationStopped` | Outside degraded mode, attempts to reach the authorities' replica have kept failing for 5 minutes: an authority service restarted without its standby, or a replica that refuses it. Every authority operation waits or fails (critical) |
 | `AgentCapsuleReceiptKeyMissing` | The authority service has held no usable receipt key of the day for 5 minutes: the API refuses every request that takes an `Idempotency-Key` (503). A day started while a restarted service waited for its standby (critical) |
 | `AgentCapsuleNextReceiptKeyMissing` | Tomorrow's receipt key has been missing for an hour: the standby is away, and the next day's key will be created on the primary alone if it does not return by midnight UTC (ADR 006, answer 4(b)) |

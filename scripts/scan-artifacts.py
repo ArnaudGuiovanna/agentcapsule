@@ -14,12 +14,20 @@ grype, pinned by scripts/release-tools.json, scans:
                        requirements, npm package-lock.json), cataloged by
                        syft first (development dependencies included);
   --dev-manifest FILE  the same for tools that do not ship: reported, never
-                       blocking.
+                       blocking;
+  --verify-runtime-images
+                       the release's check of the three runtime images with
+                       the OpenSSL backports (runtime_images.py verify): each
+                       pinned image must be its pinned upstream base plus one
+                       layer, and carry the build provenance of the
+                       runtime-images workflow. Any failure, a missing tool
+                       included, fails the scan.
 
 A High or Critical finding fails the scan unless an entry of
 scripts/vulnerability-allowlist.json covers it (same ID or alias, same
 package, a target pattern that matches). An expired or malformed entry also
-fails it. Lower severities are reported. Go findings carry no severity in the
+fails it; an entry that expires within release_tools.ALLOWLIST_WARNING_DAYS
+gets a warning annotation. Lower severities are reported. Go findings carry no severity in the
 Go vulnerability database: audit-dependencies.py gates them by reachability.
 
 The vulnerability database is updated once per run (grype checks its
@@ -43,6 +51,9 @@ SPEC = importlib.util.spec_from_file_location("release_tools", SCRIPTS / "releas
 TOOLS = importlib.util.module_from_spec(SPEC)
 sys.dont_write_bytecode = True
 SPEC.loader.exec_module(TOOLS)
+RUNTIME_SPEC = importlib.util.spec_from_file_location("runtime_images", SCRIPTS / "runtime_images.py")
+RUNTIME = importlib.util.module_from_spec(RUNTIME_SPEC)
+RUNTIME_SPEC.loader.exec_module(RUNTIME)
 
 BLOCKING = {"Critical", "High"}
 SEVERITIES = ("Critical", "High", "Medium", "Low", "Negligible", "Unknown")
@@ -185,6 +196,8 @@ def main(argv=None):
     p.add_argument("--image", action="append", default=[])
     p.add_argument("--manifest", action="append", default=[], type=Path)
     p.add_argument("--dev-manifest", action="append", default=[], type=Path)
+    p.add_argument("--verify-runtime-images", action="store_true",
+                   help="refuse a runtime image without its upstream base and its workflow provenance")
     p.add_argument("--allowlist", type=Path, default=TOOLS.ALLOWLIST)
     p.add_argument("--cache", type=Path, default=TOOLS.default_cache())
     p.add_argument("--no-db-update", action="store_true", help="use the database already in the cache")
@@ -215,7 +228,7 @@ def main(argv=None):
             continue
         targets.append((target_name("image", image), f"registry:{image}", True))
     manifests = [(m, True) for m in a.manifest] + [(m, False) for m in a.dev_manifest]
-    if not targets and not unpinned and not manifests:
+    if not targets and not unpinned and not manifests and not a.verify_runtime_images:
         p.error("nothing to scan")
 
     out = a.output.resolve()
@@ -244,10 +257,23 @@ def main(argv=None):
         "database": json.loads(status),
         "allowlist": str(a.allowlist.relative_to(ROOT) if a.allowlist.resolve().is_relative_to(ROOT) else a.allowlist),
         "allowlist_problems": problems,
+        "allowlist_warnings": TOOLS.allowlist_warnings(entries),
         "unpinned_images": unpinned,
         "targets": [],
     }
     failed = bool(problems or unpinned)
+    if a.verify_runtime_images:
+        try:
+            images, refused = RUNTIME.verify()
+        except (OSError, ValueError, KeyError) as error:
+            images, refused = [], [f"runtime images: {error}"]
+        summary["runtime_images"] = {"images": images, "problems": refused}
+        failed |= bool(refused)
+        for image in images:
+            print(f"{'ok  ' if image['layers'] == image['provenance'] == 'verified' else 'FAIL'} runtime image "
+                  f"{image['name']}: layers {image['layers']}, provenance {image['provenance']}")
+        for problem in refused:
+            print("RUNTIME IMAGE " + problem, file=sys.stderr)
     for name, source, blocking in targets:
         report_path = out / (slug(name) + ".grype.json")
         command = [str(grype), source, "-o", f"json={report_path}", "-q"]
@@ -281,6 +307,7 @@ def main(argv=None):
     (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     for problem in problems:
         print("ALLOWLIST " + problem, file=sys.stderr)
+    TOOLS.annotate("warning", summary["allowlist_warnings"])
     for image in unpinned:
         print("NOT PINNED BY DIGEST " + image, file=sys.stderr)
     print(f"{summary['status']}: {out / 'summary.json'}")

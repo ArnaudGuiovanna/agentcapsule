@@ -27,7 +27,8 @@ func (a *recordingAuthority) AccessProgress(context.Context, string) (AccessRece
 }
 
 // A revocation of many objects goes in several records, each within the
-// authority's bounds: at most 1000 objects, far below a stream record.
+// authority's bounds: at most 1000 objects, far below a stream record. They
+// reach the authority once the transaction has committed.
 func TestLongRevocationGoesInSeveralRecords(t *testing.T) {
 	s, _ := freshStore(t, "manual", 10)
 	authority := &recordingAuthority{}
@@ -50,6 +51,12 @@ func TestLongRevocationGoesInSeveralRecords(t *testing.T) {
 		large = append(large, []string{fmt.Sprintf("%d", i), strings.Repeat("x", 1000)})
 	}
 	if err = revoked.add(t.Context(), "delegated_token", "org_1", large); err != nil {
+		t.Fatal(err)
+	}
+	if len(authority.records) != 0 {
+		t.Fatal("recorded before the commit", len(authority.records))
+	}
+	if err = commit(t.Context(), tx); err != nil {
 		t.Fatal(err)
 	}
 	var sizes []int

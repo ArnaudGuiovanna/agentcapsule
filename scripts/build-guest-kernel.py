@@ -25,6 +25,19 @@ def sha(path):
         return hashlib.file_digest(f, "sha256").hexdigest()
 
 
+def check_digest(path, expected, what):
+    """Stop unless path has the pinned SHA-256; unlike assert, python -O keeps the check."""
+    if sha(path) != expected:
+        raise ValueError(f"{what} checksum mismatch: {path} differs from the pinned SHA-256")
+
+
+def check_builtins(options, names):
+    """Stop unless every required option is built in (CONFIG_<name>=y) in the .config lines."""
+    missing = [name for name in names if "CONFIG_" + name + "=y" not in options]
+    if missing:
+        raise ValueError("required built-in unavailable: " + ", ".join(missing))
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--output", type=Path, required=True)
@@ -37,7 +50,7 @@ def main():
     source_manifest = ROOT / "runtime/guest/kernel.json"
     spec = json.loads(source_manifest.read_text())
     config = source_manifest.parent / spec["base_config"]
-    assert sha(config) == spec["base_config_sha256"], "base config checksum mismatch"
+    check_digest(config, spec["base_config_sha256"], "base config")
     out = a.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
     shutil.copy2(source_manifest, out / "kernel.json")
@@ -89,13 +102,13 @@ def main():
 
     archive = out / "linux.tar.xz"
     if a.source_archive:
-        assert sha(a.source_archive) == spec["source_sha256"], "cached Linux source checksum mismatch"
+        check_digest(a.source_archive, spec["source_sha256"], "cached Linux source")
         shutil.copy2(a.source_archive, archive)
     else:
         print("DOWNLOAD", spec["source_url"], flush=True)
         with urllib.request.urlopen(spec["source_url"], timeout=90) as response, archive.open("wb") as f:
             shutil.copyfileobj(response, f)
-    assert sha(archive) == spec["source_sha256"], "Linux source checksum mismatch"
+    check_digest(archive, spec["source_sha256"], "Linux source")
     source_root = out / "source"
     source_root.mkdir()
     with tarfile.open(archive) as tar:
@@ -112,8 +125,7 @@ def main():
     make = ["make", "O=" + str(build)]
     run("olddefconfig", make + ["olddefconfig"], source)
     options = (build / ".config").read_text().splitlines()
-    for name in spec["required_builtins"]:
-        assert "CONFIG_" + name + "=y" in options, f"required built-in unavailable: {name}"
+    check_builtins(options, spec["required_builtins"])
     run("kernel", make + ["-j" + str(a.jobs), "vmlinux"], source, timeout=3600)
     shutil.copy2(build / "vmlinux", out / "vmlinux")
     shutil.copy2(build / ".config", out / "config")

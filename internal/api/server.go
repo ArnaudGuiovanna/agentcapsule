@@ -190,6 +190,7 @@ func New(store *controlplane.Store, accounts *controlplane.Accounts) (*Server, e
 	s.handle("/v1/llm/aliases/{alias}/access", s.setLLMAliasAccess)
 	s.handle("/v1/llm/aliases/{alias}/prices", s.setLLMAliasPrices)
 	s.handle("/v1/llm/aliases/{alias}/operations", s.setLLMAliasOperations)
+	s.handle("/v1/llm/aliases/{alias}/request-policy", s.setLLMAliasRequestPolicy)
 	s.handle("/v1/llm/aliases/{alias}/grants", s.llmAliasGrants)
 	s.handle("/v1/llm/aliases/{alias}/grants/{id}/revoke", s.revokeLLMAliasGrant)
 	s.handle("/v1/llm/calls/unresolved", s.unresolvedLLMCalls)

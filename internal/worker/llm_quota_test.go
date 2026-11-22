@@ -459,6 +459,14 @@ func TestModelErrorsReachTheGuestAndLeaveItsVMRunning(t *testing.T) {
 	for range 3 {
 		expect("hard budget", "tight", "quota_exceeded", false)
 	}
+	// A provider-executed tool the alias does not allow (v0.1.0 audit,
+	// S-11): refused before the provider, with its own code.
+	before := providerCalls.Load()
+	_, err = harness.ForwardLLM(ctx, "model-search", capsuleprotocol.LLMForward{Alias: "fast", Dialect: "openai",
+		Body: json.RawMessage(`{"model":"fast","messages":[{"role":"user","content":"look it up"}],"tools":[{"type":"web_search_preview"}]}`)})
+	if pe := (*capsuleprotocol.PlatformError)(nil); !errors.As(err, &pe) || pe.Code != "feature_denied" || providerCalls.Load() != before {
+		t.Fatal("a server tool: the guest got", err)
+	}
 	mode.Store(http.StatusTooManyRequests)
 	expect("provider rate limit", "fast", "rate_limited", true)
 	mode.Store(http.StatusUnauthorized)
@@ -516,7 +524,8 @@ func TestModelErrorsReachTheGuestAndLeaveItsVMRunning(t *testing.T) {
 	metrics := rec.Body.String()
 	for _, want := range []string{`agentcapsule_worker_guest_failures_total{kind="boot"} 0`, `agentcapsule_worker_guest_failures_total{kind="crash"} 0`,
 		`agentcapsule_worker_agents_failed_total 0`, `agentcapsule_worker_agents_failed 0`, `agentcapsule_worker_vms_running 1`,
-		`agentcapsule_llm_refusals_total{reason="budget_tokens"} 3`, `agentcapsule_llm_calls_total{provider="openai_compatible",outcome="settled"} 1`} {
+		`agentcapsule_llm_refusals_total{reason="budget_tokens"} 3`, `agentcapsule_llm_refusals_total{reason="feature_denied"} 1`,
+		`agentcapsule_llm_refusals_total{reason="concurrency_limited"} 0`, `agentcapsule_llm_calls_total{provider="openai_compatible",outcome="settled"} 1`} {
 		if !strings.Contains(metrics, want+"\n") {
 			t.Fatal("metrics lack", want, "\n", metrics)
 		}

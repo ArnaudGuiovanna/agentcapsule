@@ -63,6 +63,12 @@ SLIM_WORKER = {"TestProductWorkerTenantAgentsTalkOverSLIM", "TestProductWorkerTe
 RCLONE_WORKER = {"TestProductWorkerRestoresAgentFromShippedArchiveOnAnotherHost"}
 
 
+def require(condition, message):
+    """Stop unless condition holds; unlike assert, python -O keeps the check."""
+    if not condition:
+        raise RuntimeError(message)
+
+
 def declared_worker_tests(worker_dir):
     """Discover Go tests named TestProduct followed by a capitalized scenario."""
     return {name for path in sorted(worker_dir.glob("*_test.go"))
@@ -218,21 +224,21 @@ def main():
         if not (shutil.which("docker") and shutil.which("openssl")):
             p.error("--slim-bridge-build needs Docker with Compose and openssl")
         slim_build = json.loads((a.slim_bridge_build / "artifacts.json").read_text())
-        assert sha(a.slim_bridge_build / slim_build["binary"]) == slim_build["binary_sha256"], "SLIM bridge binary"
+        require(sha(a.slim_bridge_build / slim_build["binary"]) == slim_build["binary_sha256"], "SLIM bridge binary")
         for name, expected in slim_build["source_sha256"].items():
-            assert sha(ROOT / name) == expected, "rebuild the SLIM bridge after source changes: " + name
+            require(sha(ROOT / name) == expected, "rebuild the SLIM bridge after source changes: " + name)
     if a.pg_user and pwd.getpwnam(a.pg_user).pw_uid == 0:
         p.error("PostgreSQL must run as a non-root user")
     fc = json.loads((a.firecracker_build / "artifacts.json").read_text())
-    assert fc["variant"] == "agentcapsule-volume-lock-v1"
-    assert all(r["passed"] for r in json.loads((a.firecracker_build / "summary.json").read_text()))
+    require(fc["variant"] == "agentcapsule-volume-lock-v1", "the Firecracker build is not the volume-lock variant")
+    require(all(r["passed"] for r in json.loads((a.firecracker_build / "summary.json").read_text())), "the Firecracker build has a failed phase")
     for name, expected in fc["sha256"].items():
-        assert sha(a.firecracker_build / name) == expected, name
+        require(sha(a.firecracker_build / name) == expected, name)
     guest = json.loads((a.guest_build / "artifacts.json").read_text())
     for name, expected in guest["artifacts"].items():
-        assert sha(a.guest_build / name) == expected, name
+        require(sha(a.guest_build / name) == expected, name)
     for name, expected in guest["source_sha256"].items():
-        assert sha(ROOT / name) == expected, "rebuild guest after source changes: " + name
+        require(sha(ROOT / name) == expected, "rebuild guest after source changes: " + name)
     python_package = {name: sha(a.python_harness / name) for name in ["harness.yaml", "checksums.json", "harness.ext4"]}
     adapted_package = {name: sha(a.adapted_harness / name) for name in ["harness.yaml", "checksums.json", "harness.ext4"]}
     a2a_package = {name: sha(a.a2a_harness / name) for name in ["harness.yaml", "checksums.json", "harness.ext4"]}
@@ -316,7 +322,7 @@ def main():
         run("integration", [a.go, "tool", "test2json", "-p", "github.com/ArnaudGuiovanna/agentcapsule/internal/runtime",
                             out / "product-runtime.test", "-test.v", "-test.run="+runtime_tests, "-test.timeout=600s"], 630)
         events = [json.loads(line) for line in (out / "integration.log").read_text().splitlines()]
-        assert not any(e["Action"] in ["skip", "fail"] for e in events)
+        require(not any(e["Action"] in ["skip", "fail"] for e in events), "skipped or failed checks")
         passed = {e["Test"] for e in events if e["Action"] == "pass" and "Test" in e}
         required = {"TestProductGuestEncryptedPersistenceAndIsolation", "TestProductGuestRejectsUnlockedVMMBeforeKeyDelivery",
                     "TestProductGuestSharesOneCorpusImageAcrossThreeVMs", "TestProductGuestMountsCorporaReadOnlyAndNoExec",
@@ -324,7 +330,7 @@ def main():
                     "TestProductGuestRunsABaseOneHarnessUnchanged"}
         if a.course_enricher:
             required.add("TestProductCourseEnrichmentKVM")
-        assert required <= passed
+        require(required <= passed, "missing required checks: " + ", ".join(sorted(required - passed)))
         worker_passed = set()
         conformance_passed = set()
         capacity_summary = None
@@ -364,7 +370,7 @@ def main():
                 lab = out / "slim-lab"
                 lab.mkdir()
                 node = (src / "deploy/interop/slim.yaml").read_text()
-                assert "  log_level: info\n" in node, "the SLIM node's log level moved in deploy/interop/slim.yaml"
+                require("  log_level: info\n" in node, "the SLIM node's log level moved in deploy/interop/slim.yaml")
                 (lab / "slim.yaml").write_text(node.replace("  log_level: info\n", '  log_level: "info,slim_datapath::message_processing=debug"\n', 1))
                 (lab / "slim.yaml").chmod(0o644)
                 (lab / "compose.yml").write_text("services:\n  slim:\n    volumes:\n      - " + json.dumps(str(lab / "slim.yaml") + ":/etc/slim/config.yaml:ro") + "\n")
@@ -390,7 +396,7 @@ def main():
                            AGENTCAPSULE_KVM_INTEROP_CERTS=str(certs), AGENTCAPSULE_KVM_DIRECTORY_ADDR=edge,
                            AGENTCAPSULE_KVM_INTEROP_CONTROL=str(control))
             unlisted = sorted(declared_worker_tests(src / "internal/worker") - REQUIRED_WORKER - PI_WORKER - SLIM_WORKER - RCLONE_WORKER)
-            assert not unlisted, "product worker scenarios this script does not require: " + ", ".join(unlisted)
+            require(not unlisted, "product worker scenarios this script does not require: " + ", ".join(unlisted))
             required_worker = (REQUIRED_WORKER | (PI_WORKER if a.pi_harness else set()) | (SLIM_WORKER if slim_build else set())
                                | (RCLONE_WORKER if a.rclone else set()))
             if a.corpus_builder:
@@ -409,21 +415,21 @@ def main():
             run("worker-integration", [a.go, "tool", "test2json", "-p", "github.com/ArnaudGuiovanna/agentcapsule/internal/worker",
                 out / "product-worker.test", "-test.v", "-test.run=" + selection, "-test.timeout=3600s"], 3660)
             events = [json.loads(line) for line in (out / "worker-integration.log").read_text().splitlines()]
-            assert not any(e["Action"] in ["skip", "fail"] for e in events)
+            require(not any(e["Action"] in ["skip", "fail"] for e in events), "skipped or failed checks")
             worker_passed = {e["Test"] for e in events if e["Action"] == "pass" and "Test" in e}
             missing = sorted(required_worker - worker_passed)
-            assert not missing, "missing required product worker scenarios: " + ", ".join(missing)
+            require(not missing, "missing required product worker scenarios: " + ", ".join(missing))
             run("conformance-compile", [a.go, "test", "-c", "-buildvcs=false", "-race", "-tags=kvm_integration,kvm_product_integration",
                 "-o", out / "product-conformance.test", "./internal/controlplane"], 300)
             run("conformance-integration", [a.go, "tool", "test2json", "-p", "github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane",
                 out / "product-conformance.test", "-test.v", "-test.run=^TestPreimplementationP1HostSealITF$", "-test.timeout=120s"], 150,
                 cwd=src / "internal/controlplane")
             events = [json.loads(line) for line in (out / "conformance-integration.log").read_text().splitlines()]
-            assert not any(e["Action"] in ["skip", "fail"] for e in events)
+            require(not any(e["Action"] in ["skip", "fail"] for e in events), "skipped or failed checks")
             conformance_passed = {e["Test"] for e in events if e["Action"] == "pass" and "Test" in e}
             required_conformance = {"TestPreimplementationP1HostSealITF",
                 "TestPreimplementationP1HostSealITF/sealed-store-satisfies-future-barrier"}
-            assert required_conformance <= conformance_passed, "missing P1 host seal projection"
+            require(required_conformance <= conformance_passed, "missing P1 host seal projection")
             if capacity:
                 # The capacity benchmark, last: its VMs never overlap a scenario.
                 env.update(AGENTCAPSULE_KVM_CAPACITY_AGENTS=",".join(map(str, capacity)),
@@ -432,8 +438,8 @@ def main():
                 run("capacity-benchmark", [a.go, "tool", "test2json", "-p", "github.com/ArnaudGuiovanna/agentcapsule/internal/worker",
                     out / "product-worker.test", "-test.v", "-test.run=^TestCapacityBenchmark$", "-test.timeout=5400s"], 5520)
                 events = [json.loads(line) for line in (out / "capacity-benchmark.log").read_text().splitlines()]
-                assert not any(e["Action"] in ["skip", "fail"] for e in events)
-                assert any(e["Action"] == "pass" and e.get("Test") == "TestCapacityBenchmark" for e in events), "capacity benchmark did not pass"
+                require(not any(e["Action"] in ["skip", "fail"] for e in events), "skipped or failed checks")
+                require(any(e["Action"] == "pass" and e.get("Test") == "TestCapacityBenchmark" for e in events), "capacity benchmark did not pass")
                 capacity_summary = check_capacity_report(json.loads((out / "capacity.json").read_text()), capacity)
         (out / "verification.json").write_text(json.dumps({"status": "passed", "executed_tests": sorted(passed),
             "worker_tests": sorted(worker_passed),

@@ -17,6 +17,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/sandbox"
 )
 
 func fixture(t *testing.T) (*Store, Spec, []byte) {
@@ -141,8 +143,10 @@ func TestPublishedContainerCannotBeReformattedOrReplaced(t *testing.T) {
 	if err = os.Rename(c.Path+".retained", c.Path); err != nil {
 		t.Fatal(err)
 	}
-	// Destroy both LUKS header magic values, keeping the original inode. The
-	// failure must be surfaced without trying to repair by generating new keys.
+	// Destroy both LUKS header magic values, keeping the original inode.
+	// Prepare never reads a published header (S-21): it returns the same
+	// container, and never repairs it by generating new keys. The guest
+	// fails to open it.
 	f, err = os.OpenFile(c.Path, os.O_RDWR, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -157,8 +161,8 @@ func TestPublishedContainerCannotBeReformattedOrReplaced(t *testing.T) {
 	}
 	f.Close()
 	before := sha256.Sum256(header(t, c.Path))
-	if _, err = s.Prepare(t.Context(), spec, key); !errors.Is(err, ErrLUKS) {
-		t.Fatal("damaged published volume accepted", err)
+	if again, err := s.Prepare(t.Context(), spec, key); err != nil || again != c {
+		t.Fatal("damaged published volume not adopted as it is", again, err)
 	}
 	if sha256.Sum256(header(t, c.Path)) != before {
 		t.Fatal("damaged published volume reformatted")
@@ -265,7 +269,8 @@ func TestCheckContainerOpensOnlyItsOwnKeySlot(t *testing.T) {
 	if err = os.WriteFile(scratch, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err = CheckContainer(scratch, spec.VolumeID, key); err != nil {
+	ctx := t.Context()
+	if err = CheckContainer(ctx, sandbox.Options{}, scratch, spec.VolumeID, key); err != nil {
 		t.Fatal("the volume's own key", err)
 	}
 	if after, err := os.ReadFile(scratch); err != nil || !bytes.Equal(after, data) {
@@ -273,13 +278,13 @@ func TestCheckContainerOpensOnlyItsOwnKeySlot(t *testing.T) {
 	}
 	wrong := bytes.Clone(key)
 	wrong[0] ^= 1
-	if err = CheckContainer(scratch, spec.VolumeID, wrong); !errors.Is(err, ErrLUKS) {
+	if err = CheckContainer(ctx, sandbox.Options{}, scratch, spec.VolumeID, wrong); !errors.Is(err, ErrLUKS) || errors.Is(err, ErrHeader) {
 		t.Fatal("another key opened the container", err)
 	}
-	if err = CheckContainer(scratch, "vol_"+strings.Repeat("c", 32), key); !errors.Is(err, ErrLUKS) {
+	if err = CheckContainer(ctx, sandbox.Options{}, scratch, "vol_"+strings.Repeat("c", 32), key); !errors.Is(err, ErrLUKS) || errors.Is(err, ErrHeader) {
 		t.Fatal("another volume's container passed", err)
 	}
-	if err = CheckContainer(scratch, spec.VolumeID, key[:16]); !errors.Is(err, ErrInput) {
+	if err = CheckContainer(ctx, sandbox.Options{}, scratch, spec.VolumeID, key[:16]); !errors.Is(err, ErrInput) {
 		t.Fatal("a short key", err)
 	}
 	f, err := os.OpenFile(scratch, os.O_RDWR, 0)
@@ -292,7 +297,7 @@ func TestCheckContainerOpensOnlyItsOwnKeySlot(t *testing.T) {
 		}
 	}
 	f.Close()
-	if err = CheckContainer(scratch, spec.VolumeID, key); !errors.Is(err, ErrLUKS) {
+	if err = CheckContainer(ctx, sandbox.Options{}, scratch, spec.VolumeID, key); !errors.Is(err, ErrLUKS) {
 		t.Fatal("a damaged header passed", err)
 	}
 }

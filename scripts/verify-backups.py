@@ -66,6 +66,14 @@ def free_port():
         return s.getsockname()[1]
 
 
+# The cluster lines of the shipped configurations: the installer's cluster in
+# deploy/backup (internal/hostops/setup.py), Ubuntu 24.04's default cluster of
+# postgresql-16 in deploy/standby. The labs give their own data directory,
+# port and socket in their place.
+PRIMARY_CLUSTER = "pg1-path=/var/lib/postgresql/16/agentcapsule\npg1-port=55432\npg1-socket-path=/run/postgresql"
+STANDBY_CLUSTER = "pg1-path=/var/lib/postgresql/16/main"
+
+
 def shipped(relative, replacements):
     """A file of deploy/ as shipped, with only this environment's values replaced."""
     text = (ROOT / relative).read_text()
@@ -180,7 +188,9 @@ class Lab:
                       "-subj", "/CN=backup lab CA", "-keyout", certs / "ca.key", "-out", certs / "ca.pem"])
         run("setup", ["openssl", "req", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-subj", "/CN=127.0.0.1",
                       "-keyout", certs / "s3.key", "-out", certs / "s3.csr"])
-        (certs / "san.ext").write_text("subjectAltName=IP:127.0.0.1\nextendedKeyUsage=serverAuth\n")
+        # The address also as a DNS name: pgBackRest 2.50, Ubuntu 24.04's, finds
+        # the host it connects to only among the DNS names of the certificate.
+        (certs / "san.ext").write_text("subjectAltName=IP:127.0.0.1,DNS:127.0.0.1\nextendedKeyUsage=serverAuth\n")
         run("setup", ["openssl", "x509", "-req", "-in", certs / "s3.csr", "-CA", certs / "ca.pem", "-CAkey", certs / "ca.key",
                       "-CAcreateserial", "-days", "1", "-extfile", certs / "san.ext", "-out", certs / "s3.crt"])
         # One S3 credential for the primary, a read-only one for the standby,
@@ -248,7 +258,7 @@ class Lab:
             "/etc/pgbackrest/known_hosts": str(self.certs / "known_hosts"),
             "spool-path=/var/spool/pgbackrest": f"spool-path={self.work / 'spool'}\nlock-path={self.work / 'lock'}\nlog-level-console=info",
             "log-path=/var/log/pgbackrest": f"log-path={self.out / 'pgbackrest'}",
-            "pg1-path=/var/lib/postgresql/18/main": f"pg1-path={data}\npg1-socket-path={sock}",
+            PRIMARY_CLUSTER: f"pg1-path={data}\npg1-port=5432\npg1-socket-path={sock}",
         }))
         self.secrets_file(self.include, [f"repo1-s3-key={self.keys['primary'][0]}", f"repo1-s3-key-secret={self.keys['primary'][1]}",
                                          f"repo1-cipher-pass={self.passes['s3']}", f"repo2-cipher-pass={self.passes['sftp']}"])
@@ -277,7 +287,7 @@ class Lab:
             "repo2-s3-region=fr-par": "repo2-s3-region=us-east-1",
             "spool-path=/var/spool/pgbackrest": f"spool-path={self.work / 'standby-spool'}\nlock-path={self.work / 'standby-lock'}\nlog-level-console=info",
             "log-path=/var/log/pgbackrest": f"log-path={self.out / 'pgbackrest-standby'}",
-            "pg1-path=/var/lib/postgresql/18/main": f"pg1-path={standby}\npg1-socket-path={ssock}",
+            STANDBY_CLUSTER: f"pg1-path={standby}\npg1-socket-path={ssock}",
         }))
         self.secrets_file(sinclude, [f"repo1-cipher-pass={self.passes['sftp']}", f"repo2-s3-key={self.keys['standby'][0]}",
                                      f"repo2-s3-key-secret={self.keys['standby'][1]}", f"repo2-cipher-pass={self.passes['s3']}"])
@@ -316,7 +326,7 @@ class Lab:
             "repo1-s3-region=fr-par": "repo1-s3-region=us-east-1",
             "spool-path=/var/spool/pgbackrest": f"spool-path={self.work / 'promoted-spool'}\nlock-path={self.work / 'promoted-lock'}\nlog-level-console=info",
             "log-path=/var/log/pgbackrest": f"log-path={self.out / 'pgbackrest-promoted'}",
-            "pg1-path=/var/lib/postgresql/18/main": f"pg1-path={standby}\npg1-socket-path={ssock}",
+            PRIMARY_CLUSTER: f"pg1-path={standby}\npg1-port=5432\npg1-socket-path={ssock}",
         })
         nconf.write_text("".join(line for line in text.splitlines(keepends=True) if not line.startswith("repo2-")))
         self.secrets_file(ninclude, [f"repo1-s3-key={self.keys['promoted'][0]}", f"repo1-s3-key-secret={self.keys['promoted'][1]}",

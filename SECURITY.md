@@ -60,8 +60,10 @@ Advisories are published through GitHub's security advisories once fixed.
 ## Verifying a release
 
 Each release's checksums are signed with cosign (keyless, the release workflow's
-GitHub identity), every file has a SLSA provenance attestation and every binary
-an SPDX SBOM. [docs/release.md](docs/release.md#verify-a-release) says how to verify them.
+GitHub identity, in the protected `release` environment), every file has a SLSA
+provenance attestation and every binary an SPDX SBOM. The installer, the CLI and
+the host helper refuse a signature from another workflow, tag, trigger,
+repository or environment. [docs/release.md](docs/release.md#verify-a-release) says how to verify them.
 
 ## Secrets in this repository
 

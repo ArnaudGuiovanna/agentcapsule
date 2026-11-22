@@ -116,6 +116,12 @@ func valid(id, prefix string) bool {
 	return err == nil && strings.ToLower(id) == id
 }
 
+// withLock runs fn under the volume's lock, a flock of locks/<volume>. The
+// lock file goes with the volume's key (L-18): after fn, once the volume is
+// revoked and its key file gone, withLock removes it, holding it alone
+// (retireHeld). A lock then taken on the removed file protects nothing, so
+// withLock takes the lock of the file the path names, and tries again until
+// it holds that one.
 func (s *Files) withLock(ctx context.Context, agent, volume string, exclusive bool, fn func() error) error {
 	if !valid(agent, "agt_") || !valid(volume, "vol_") {
 		return ErrInput
@@ -123,22 +129,109 @@ func (s *Files) withLock(ctx context.Context, agent, volume string, exclusive bo
 	if err := s.checkIdentity(); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(filepath.Join(s.root, "locks", volume), os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0600)
+	path := filepath.Join(s.root, "locks", volume)
+	for {
+		f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0600)
+		if err != nil {
+			return err
+		}
+		held, err := holdLock(ctx, f, path, exclusive)
+		if err != nil || !held {
+			f.Close()
+			if err != nil {
+				return err
+			}
+			continue
+		}
+		err = s.checkIdentity()
+		if err == nil {
+			err = fn()
+			s.retireHeld(f, path, volume)
+		}
+		f.Close()
+		return err
+	}
+}
+
+// withLiveLock is withLock for a call that a revocation ends: a revoked
+// volume answers ErrRevoked at once. Its tombstone never goes, and its lock
+// file went with its key: the call does not create it again.
+func (s *Files) withLiveLock(ctx context.Context, agent, volume string, exclusive bool, fn func() error) error {
+	if !valid(agent, "agt_") || !valid(volume, "vol_") {
+		return ErrInput
+	}
+	if err := s.checkIdentity(); err != nil {
+		return err
+	}
+	if err := s.revoked(agent, volume); err != nil {
+		return err
+	}
+	return s.withLock(ctx, agent, volume, exclusive, fn)
+}
+
+// holdLock locks f, the file opened at path, and reports whether path still
+// names it.
+func holdLock(ctx context.Context, f *os.File, path string, exclusive bool) (bool, error) {
+	st, err := f.Stat()
+	if err != nil || !st.Mode().IsRegular() || st.Mode().Perm() != 0600 || st.Sys().(*syscall.Stat_t).Uid != uint32(os.Geteuid()) {
+		return false, ErrUnavailable
+	}
+	if err = lockFile(ctx, f, exclusive); err != nil {
+		return false, err
+	}
+	now, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return os.SameFile(st, now), nil
+}
+
+// retired reports whether the volume is revoked and its key file gone: its
+// lock protects nothing any more. Its tombstone never goes.
+func (s *Files) retired(volume string) bool {
+	if _, err := os.Lstat(filepath.Join(s.root, "revoked", volume)); err != nil {
+		return false
+	}
+	_, err := os.Lstat(filepath.Join(s.root, "records", volume))
+	return errors.Is(err, os.ErrNotExist)
+}
+
+// retireHeld removes the lock file at path, which f holds, once the volume
+// is retired, if it can hold it alone at once: f's lock becomes exclusive,
+// without waiting. A holder that cannot leaves it to the last one. A failed
+// conversion drops f's lock (flock(2)); f is closed next.
+func (s *Files) retireHeld(f *os.File, path, volume string) {
+	if !s.retired(volume) || syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) != nil {
+		return
+	}
+	st, err := f.Stat()
+	if now, e := os.Lstat(path); err == nil && e == nil && os.SameFile(st, now) {
+		_ = os.Remove(path)
+	}
+}
+
+// retireLocks removes the lock files that revocations left before L-18 (see
+// withLock), each held alone without waiting; a lock in use stays.
+func (s *Files) retireLocks() error {
+	names, err := os.ReadDir(filepath.Join(s.root, "locks"))
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	st, err := f.Stat()
-	if err != nil || !st.Mode().IsRegular() || st.Mode().Perm() != 0600 || st.Sys().(*syscall.Stat_t).Uid != uint32(os.Geteuid()) {
-		return ErrUnavailable
+	for _, n := range names {
+		volume := n.Name()
+		if !valid(volume, "vol_") || !s.retired(volume) {
+			continue
+		}
+		path := filepath.Join(s.root, "locks", volume)
+		if f, err := os.OpenFile(path, os.O_RDWR|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0); err == nil {
+			s.retireHeld(f, path, volume)
+			f.Close()
+		}
 	}
-	if err = lockFile(ctx, f, exclusive); err != nil {
-		return err
-	}
-	if err = s.checkIdentity(); err != nil {
-		return err
-	}
-	return fn()
+	return nil
 }
 
 func lockFile(ctx context.Context, f *os.File, exclusive bool) error {
@@ -168,19 +261,22 @@ func lockFile(ctx context.Context, f *os.File, exclusive bool) error {
 	return nil
 }
 
+// read reads the record of agent and volume at path, in a locked buffer
+// (memory_linux.go) that the caller releases.
 func read(path, magic, agent, volume string) ([]byte, error) {
 	b, err := readRecord(path, magic)
 	if err != nil {
 		return nil, err
 	}
 	if string(b[8:44]) != agent || string(b[44:80]) != volume {
-		clear(b)
+		release(b)
 		return nil, ErrConflict
 	}
 	return b, nil
 }
 
-// readRecord reads one complete record and checks its magic and checksum.
+// readRecord reads one complete record and checks its magic and checksum,
+// into a locked buffer that the caller releases.
 func readRecord(path, magic string) ([]byte, error) {
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
@@ -191,28 +287,35 @@ func readRecord(path, magic string) ([]byte, error) {
 	if err != nil || !st.Mode().IsRegular() || st.Mode().Perm() != 0600 || st.Size() != recordSize || st.Sys().(*syscall.Stat_t).Uid != uint32(os.Geteuid()) {
 		return nil, ErrUnavailable
 	}
-	b := make([]byte, recordSize)
+	b, err := lockedBuffer(recordSize)
+	if err != nil {
+		return nil, err
+	}
 	if _, err = io.ReadFull(f, b); err != nil {
-		clear(b)
+		release(b)
 		return nil, ErrUnavailable
 	}
 	h := sha256.Sum256(b[:112])
 	if string(b[:8]) != magic || string(b[112:]) != string(h[:]) {
-		clear(b)
+		release(b)
 		return nil, ErrUnavailable
 	}
 	return b, nil
 }
 
-func record(magic, agent, volume string, key []byte) []byte {
-	b := make([]byte, recordSize)
+// record writes a record, in a locked buffer that the caller releases.
+func record(magic, agent, volume string, key []byte) ([]byte, error) {
+	b, err := lockedBuffer(recordSize)
+	if err != nil {
+		return nil, err
+	}
 	copy(b[:8], magic)
 	copy(b[8:44], agent)
 	copy(b[44:80], volume)
 	copy(b[80:112], key)
 	h := sha256.Sum256(b[:112])
 	copy(b[112:], h[:])
-	return b
+	return b, nil
 }
 
 func syncDir(path string) error {
@@ -291,21 +394,23 @@ func (s *Files) cleanTemps(directory, volume string) error {
 func (s *Files) allocation(agent, volume string, create bool) error {
 	path := filepath.Join(s.root, "records", volume+".allocated")
 	b, err := read(path, "ACPALO01", agent, volume)
-	clear(b)
+	release(b)
 	if err == nil {
 		return nil
 	}
 	if !create || !errors.Is(err, os.ErrNotExist) {
 		return ErrUnavailable
 	}
-	b = record("ACPALO01", agent, volume, nil)
-	defer clear(b)
+	if b, err = record("ACPALO01", agent, volume, nil); err != nil {
+		return err
+	}
+	defer release(b)
 	return publish(path, b, nil, nil)
 }
 
 func (s *Files) revoked(agent, volume string) error {
 	b, err := read(filepath.Join(s.root, "revoked", volume), "ACPREV01", agent, volume)
-	clear(b)
+	release(b)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
@@ -322,7 +427,7 @@ func (s *Files) Ensure(ctx context.Context, agent, volume string) error {
 	if err := s.standalone(); err != nil {
 		return err
 	}
-	return s.withLock(ctx, agent, volume, true, func() error {
+	return s.withLiveLock(ctx, agent, volume, true, func() error {
 		if err := s.revoked(agent, volume); err != nil {
 			return err
 		}
@@ -332,7 +437,7 @@ func (s *Files) Ensure(ctx context.Context, agent, volume string) error {
 		path := filepath.Join(s.root, "records", volume)
 		b, err := read(path, "ACPKEY01", agent, volume)
 		if err == nil {
-			clear(b)
+			release(b)
 			return s.allocation(agent, volume, true)
 		}
 		if !errors.Is(err, os.ErrNotExist) {
@@ -344,11 +449,16 @@ func (s *Files) Ensure(ctx context.Context, agent, volume string) error {
 		if _, err := os.Lstat(allocated); err == nil || !errors.Is(err, os.ErrNotExist) {
 			return ErrUnavailable
 		}
-		key := make([]byte, 32)
+		key, err := lockedBuffer(32)
+		if err != nil {
+			return err
+		}
+		defer release(key)
 		_, _ = rand.Read(key)
-		defer clear(key)
-		b = record("ACPKEY01", agent, volume, key)
-		defer clear(b)
+		if b, err = record("ACPKEY01", agent, volume, key); err != nil {
+			return err
+		}
+		defer release(b)
 		if err = publish(path, b, func() { s.boundary("key_written") }, func() { s.boundary("key_linked") }); err != nil {
 			return err
 		}
@@ -361,7 +471,7 @@ func (s *Files) WithKey(ctx context.Context, agent, volume string, use func([]by
 	if use == nil {
 		return ErrInput
 	}
-	return s.withLock(ctx, agent, volume, false, func() error {
+	return s.withLiveLock(ctx, agent, volume, false, func() error {
 		if err := s.revoked(agent, volume); err != nil {
 			return err
 		}
@@ -372,7 +482,7 @@ func (s *Files) WithKey(ctx context.Context, agent, volume string, use func([]by
 		if err != nil {
 			return ErrUnavailable
 		}
-		defer clear(b)
+		defer release(b)
 		if err = syncDir(filepath.Join(s.root, "records")); err != nil {
 			return err
 		}
@@ -397,13 +507,16 @@ func (s *Files) Revoke(ctx context.Context, agent, volume string) error {
 		}
 		path := filepath.Join(s.root, "records", volume)
 		if b, e := read(path, "ACPKEY01", agent, volume); e == nil {
-			clear(b)
+			release(b)
 		} else if !errors.Is(e, os.ErrNotExist) {
 			return e
 		}
 		if err == nil {
-			marker := record("ACPREV01", agent, volume, nil)
-			defer clear(marker)
+			marker, err := record("ACPREV01", agent, volume, nil)
+			if err != nil {
+				return err
+			}
+			defer release(marker)
 			if err = publish(filepath.Join(s.root, "revoked", volume), marker, nil, func() { s.boundary("revocation_linked") }); err != nil {
 				return err
 			}
@@ -423,6 +536,7 @@ func (s *Files) Revoke(ctx context.Context, agent, volume string) error {
 		if err = os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
+		// withLock removes the lock file next: the key is gone.
 		return syncDir(filepath.Dir(path))
 	})
 }

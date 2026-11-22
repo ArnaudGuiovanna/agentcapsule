@@ -4,6 +4,7 @@ package sandbox
 
 import (
 	"errors"
+	"slices"
 
 	"golang.org/x/sys/unix"
 )
@@ -63,6 +64,51 @@ const (
 	futexPrivate, futexClockRealtime                       = 128, 256
 )
 
+// selfAllowed are the calls a program of this executable (RunSelf) makes
+// besides debugfs's. They were measured on the LUKS2 check
+// (internal/volumestore: a key that opens, another key, another volume, a
+// damaged header) with a filter that logs any other call, until none was
+// logged, with Go 1.27, glibc 2.43, libcryptsetup 2.8.4 and OpenSSL 3.5:
+// docs/registry.md says how.
+var selfAllowed = []uint32{
+	// The Go runtime: its threads' signal stacks and masks, preemption
+	// (a signal to one of its threads, and the return from its handler),
+	// and its sleeps.
+	unix.SYS_RT_SIGPROCMASK, unix.SYS_SIGALTSTACK, unix.SYS_RT_SIGRETURN, unix.SYS_GETPID, unix.SYS_GETTID, unix.SYS_TGKILL,
+	unix.SYS_NANOSLEEP, unix.SYS_SCHED_YIELD,
+	// The packages' start in the worker's executable: protobuf's reads the
+	// executable to seed its "random" output (internal/detrand), through
+	// the os package, which starts the runtime's poller.
+	unix.SYS_READLINKAT, unix.SYS_EPOLL_CREATE1, unix.SYS_EPOLL_CTL, unix.SYS_EPOLL_PWAIT, unix.SYS_EVENTFD2,
+	// The program's own, stricter filter (sandbox.Self): it can only add
+	// restrictions.
+	unix.SYS_SECCOMP,
+	// libcryptsetup and its libraries: the file systems of the image and of
+	// /sys (empty), the kernel's version and memory, the memory it locks
+	// for keys, the mask around a directory it tries to create.
+	unix.SYS_STATFS, unix.SYS_FSTATFS, unix.SYS_UNAME, unix.SYS_SYSINFO, unix.SYS_MLOCK, unix.SYS_MUNLOCK, unix.SYS_UMASK,
+}
+
+// selfChecked are the calls a program of this executable may make with some
+// arguments only, or that the filter answers.
+var selfChecked = []argRule{
+	// A thread, never a process: CLONE_THREAD, and no new namespace.
+	{nr: unix.SYS_CLONE, arg: 0, mask: unix.CLONE_THREAD | cloneNamespaces, values: []uint32{unix.CLONE_THREAD}, answer: kill},
+	// clone3 takes its flags in memory, which a filter cannot read: the C
+	// library then falls back to clone, as on an older kernel.
+	{nr: unix.SYS_CLONE3, answer: errno(unix.ENOSYS)},
+	// libcryptsetup tries to create its lock directory, which the read-only
+	// mounts would refuse, and asks for a key of the kernel's keyring, as
+	// a kernel without keys answers.
+	{nr: unix.SYS_MKDIR, answer: errno(unix.EROFS)},
+	{nr: unix.SYS_MKDIRAT, answer: errno(unix.EROFS)},
+	{nr: unix.SYS_REQUEST_KEY, answer: errno(unix.ENOSYS)},
+}
+
+// cloneNamespaces are the flags of clone that create a namespace.
+const cloneNamespaces = unix.CLONE_NEWNS | unix.CLONE_NEWCGROUP | unix.CLONE_NEWUTS | unix.CLONE_NEWIPC | unix.CLONE_NEWUSER |
+	unix.CLONE_NEWPID | unix.CLONE_NEWNET
+
 // testToolsDenied are the only calls the shells and tools of the package's
 // tests are refused (Options.TestTools): starting a process, opening a
 // socket.
@@ -98,6 +144,18 @@ func strict() policy {
 // testTools is the filter of Options.TestTools.
 func testTools() policy {
 	return policy{deny: testToolsDenied, otherwise: unix.SECCOMP_RET_ALLOW}
+}
+
+// selfPolicy is the filter of a program of this executable (RunSelf):
+// debugfs's allow-list, and selfAllowed and selfChecked.
+func selfPolicy() policy {
+	return policy{allow: slices.Concat(allowed, selfAllowed), checked: slices.Concat(checked, selfChecked), otherwise: kill}
+}
+
+// noExec is the filter a program of this executable adds once it runs
+// (Self): it executes no program, and nothing else changes.
+func noExec() policy {
+	return policy{deny: []uint32{execve, unix.SYS_EXECVEAT}, otherwise: unix.SECCOMP_RET_ALLOW}
 }
 
 // compile writes p as a seccomp program. Whatever the policy: another

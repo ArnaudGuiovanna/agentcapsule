@@ -184,3 +184,91 @@ func TestFilterAllowsOnlyWhatDebugfsCalls(t *testing.T) {
 		t.Error("a jump past 255 instructions was written")
 	}
 }
+
+// selfMeasured are the calls a program of this executable adds to debugfs's
+// (docs/registry.md), written a second time.
+var selfMeasured = []uint32{
+	unix.SYS_RT_SIGPROCMASK, unix.SYS_SIGALTSTACK, unix.SYS_RT_SIGRETURN, unix.SYS_GETPID, unix.SYS_GETTID, unix.SYS_TGKILL,
+	unix.SYS_NANOSLEEP, unix.SYS_SCHED_YIELD, unix.SYS_READLINKAT, unix.SYS_EPOLL_CREATE1, unix.SYS_EPOLL_CTL, unix.SYS_EPOLL_PWAIT,
+	unix.SYS_EVENTFD2, unix.SYS_SECCOMP, unix.SYS_STATFS, unix.SYS_FSTATFS, unix.SYS_UNAME, unix.SYS_SYSINFO, unix.SYS_MLOCK,
+	unix.SYS_MUNLOCK, unix.SYS_UMASK,
+}
+
+// S-21: the self filter (RunSelf) allows debugfs's calls and the measured
+// ones, and nothing else: a clone that starts a thread, never a process or
+// a namespace; clone3, mkdir and request_key answered without the kernel;
+// the rest as the strict filter. The program's own filter kills execve and
+// execveat and lets everything else through.
+func TestSelfFilterAllowsOnlyWhatAProgramOfThisExecutableCalls(t *testing.T) {
+	prog, err := compile(selfPolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := func(nr uint32, args ...uint64) seccompData {
+		d := seccompData{nr: nr, arch: unix.AUDIT_ARCH_X86_64}
+		copy(d.args[:], args)
+		return d
+	}
+	special := map[uint32]bool{unix.SYS_IOCTL: true, unix.SYS_PRCTL: true, unix.SYS_FCNTL: true, unix.SYS_FUTEX: true,
+		unix.SYS_CLONE: true, unix.SYS_CLONE3: true, unix.SYS_MKDIR: true, unix.SYS_MKDIRAT: true, unix.SYS_REQUEST_KEY: true}
+	for nr := uint32(0); nr <= newest; nr++ {
+		want := uint32(kill)
+		if slices.Contains(measured, nr) || slices.Contains(selfMeasured, nr) {
+			want = unix.SECCOMP_RET_ALLOW
+		}
+		if got := evaluate(t, prog, call(nr)); !special[nr] && got != want {
+			t.Errorf("system call %d: %#x, not %#x", nr, got, want)
+		}
+	}
+	thread := uint64(unix.CLONE_VM | unix.CLONE_FS | unix.CLONE_FILES | unix.CLONE_SIGHAND | unix.CLONE_THREAD | unix.CLONE_SYSVSEM |
+		unix.CLONE_SETTLS | unix.CLONE_PARENT_SETTID | unix.CLONE_CHILD_CLEARTID)
+	allow := uint32(unix.SECCOMP_RET_ALLOW)
+	for _, c := range []struct {
+		name string
+		d    seccompData
+		want uint32
+	}{
+		{"clone of a thread", call(unix.SYS_CLONE, thread), allow},
+		{"clone of a process", call(unix.SYS_CLONE, uint64(unix.SIGCHLD)), kill},
+		{"clone of a process sharing memory", call(unix.SYS_CLONE, unix.CLONE_VM|unix.CLONE_VFORK|uint64(unix.SIGCHLD)), kill},
+		{"clone of a thread in a new user namespace", call(unix.SYS_CLONE, thread|unix.CLONE_NEWUSER), kill},
+		{"clone of a thread in a new mount namespace", call(unix.SYS_CLONE, thread|unix.CLONE_NEWNS), kill},
+		{"clone of a thread in a new network namespace", call(unix.SYS_CLONE, thread|unix.CLONE_NEWNET), kill},
+		{"clone of a thread in a new PID namespace", call(unix.SYS_CLONE, thread|unix.CLONE_NEWPID), kill},
+		{"clone3", call(unix.SYS_CLONE3), errno(unix.ENOSYS)},
+		{"mkdir", call(unix.SYS_MKDIR), errno(unix.EROFS)},
+		{"mkdirat", call(unix.SYS_MKDIRAT), errno(unix.EROFS)},
+		{"request_key", call(unix.SYS_REQUEST_KEY), errno(unix.ENOSYS)},
+		{"keyctl", call(unix.SYS_KEYCTL), kill},
+		{"unshare", call(unix.SYS_UNSHARE, unix.CLONE_NEWUSER), kill},
+		{"fork", call(unix.SYS_FORK), kill},
+		{"vfork", call(unix.SYS_VFORK), kill},
+		{"socket", call(unix.SYS_SOCKET, unix.AF_UNIX), kill},
+		{"flock", call(unix.SYS_FLOCK), kill},
+		{"ioctl TCGETS", call(unix.SYS_IOCTL, 1, unix.TCGETS), errno(unix.ENOTTY)},
+		{"prctl PR_SET_NO_NEW_PRIVS", call(unix.SYS_PRCTL, unix.PR_SET_NO_NEW_PRIVS), errno(unix.EINVAL)},
+		{"futex FUTEX_LOCK_PI", call(unix.SYS_FUTEX, 0, futexLockPI), kill},
+		{"futex FUTEX_WAKE_PRIVATE", call(unix.SYS_FUTEX, 0, futexWake|futexPrivate), allow},
+		{"above the table", call(newest + 1), errno(unix.ENOSYS)},
+		{"x32 read", call(0x40000000 | unix.SYS_READ), kill},
+		{"i386 read", seccompData{nr: 3, arch: unix.AUDIT_ARCH_I386}, kill},
+	} {
+		if got := evaluate(t, prog, c.d); got != c.want {
+			t.Errorf("%s: %#x, not %#x", c.name, got, c.want)
+		}
+	}
+
+	exec, err := compile(noExec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for nr := uint32(0); nr <= newest; nr++ {
+		want := uint32(unix.SECCOMP_RET_ALLOW)
+		if nr == unix.SYS_EXECVE || nr == unix.SYS_EXECVEAT {
+			want = kill
+		}
+		if got := evaluate(t, exec, call(nr)); got != want {
+			t.Errorf("the program's own filter, system call %d: %#x, not %#x", nr, got, want)
+		}
+	}
+}

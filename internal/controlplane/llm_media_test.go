@@ -238,7 +238,7 @@ func TestAliasOperationsAreValidatedAuditedAndApplyFromTheNextReservation(t *tes
 	if _, err = m.a.ReserveLLM(t.Context(), m.owner.TenantID, m.agent, "fast", "embed-now", 0, 0); !errors.Is(err, ErrInput) {
 		t.Fatal(err)
 	}
-	if _, err = m.a.reserveLLM(t.Context(), m.owner.TenantID, m.agent, "fast", "embed-now", llmAmounts{Operation: LLMEmbed, Input: 5}); err != nil {
+	if _, err = m.a.reserveLLM(t.Context(), m.owner.TenantID, m.agent, "fast", "embed-now", llmAmounts{Operation: LLMEmbed, Input: 5}, nil); err != nil {
 		t.Fatal("an operation added was not served", err)
 	}
 	if r, err = set("s2", "fast", "chat", "embed", "vision"); err != nil || r.Status != 200 {
@@ -508,7 +508,7 @@ func TestMediaCallCutAfterSendingIsUnknownAndReconcilable(t *testing.T) {
 // uncertain when its key comes back: it is never sent again.
 func TestMediaKeyLeftReservedComesBackUnknown(t *testing.T) {
 	m := newMediaLab(t)
-	if _, err := m.a.reserveLLM(t.Context(), m.owner.TenantID, m.agent, "ocr", "orphan", llmAmounts{Operation: LLMOCR, Pages: 2}); err != nil {
+	if _, err := m.a.reserveLLM(t.Context(), m.owner.TenantID, m.agent, "ocr", "orphan", llmAmounts{Operation: LLMOCR, Pages: 2}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := m.service(t, time.Second).OCRFromVM(t.Context(), m.caller, "orphan", "ocr", scan, nil); !errors.Is(err, llmgateway.ErrOutcomeUnknown) {

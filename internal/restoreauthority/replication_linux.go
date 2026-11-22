@@ -8,6 +8,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -524,7 +525,15 @@ func (r *replicator) exchange(ctx context.Context, c *Catalog, epoch, upTo uint6
 		r.succeeded()
 		return nil
 	}
-	r.metrics.Load().Failed(err)
+	// An attempt that its caller's context ended before the standby answered
+	// anything (no error of a network operation: waiting for the link,
+	// reading the log) says nothing of the standby: the metrics keep the last
+	// kind. It still counts for the degraded delay. The context's own error
+	// is a net.Error too, hence *net.OpError, which a dial or a read gives.
+	var netErr *net.OpError
+	if ctx.Err() == nil || errors.As(err, &netErr) {
+		r.metrics.Load().Failed(err)
+	}
 	r.failed(err, start)
 	return err
 }

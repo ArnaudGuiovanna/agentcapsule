@@ -21,6 +21,8 @@ release online. Run as root on the host or select an SSH target.
   --offline DIR          Read release assets from this directory on the target
   --trusted-root FILE    Use this trusted Sigstore root for offline verification
   --development-key FILE Trust a local public key for an offline -dev.N build
+  --allow-older          Install a release older than this CLI's, or than the
+                         highest release the host has installed
 
   agentcapsule install --ssh admin@host --plan-only
   agentcapsule install --ssh admin@host

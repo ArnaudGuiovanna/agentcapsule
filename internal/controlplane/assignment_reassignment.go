@@ -142,5 +142,5 @@ func (a *Accounts) ReassignAgentAssignment(ctx context.Context, p Principal, age
 	if err != nil {
 		return APIReceipt{}, err
 	}
-	return r, commit(ctx, tx)
+	return a.store.settled(ctx, r, commit(ctx, tx))
 }

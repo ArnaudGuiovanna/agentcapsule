@@ -9,6 +9,7 @@ release-audit job runs the real tools.
 """
 
 import datetime
+import fnmatch
 import hashlib
 import importlib.util
 import io
@@ -210,6 +211,66 @@ class AllowlistTest(Temporary):
                 self.assertTrue(str(entry.get(field, "")).strip(), field)
             datetime.date.fromisoformat(entry["expires"])
 
+    def test_an_entry_close_to_its_expiry_warns_without_failing(self):
+        soon = TODAY + datetime.timedelta(days=TOOLS.ALLOWLIST_WARNING_DAYS)
+        later = soon + datetime.timedelta(days=1)
+        entries, problems = self.entries(self.entry(expires=soon.isoformat()),
+                                         self.entry(ids=["CVE-2"], expires=later.isoformat()))
+        self.assertEqual(problems, [])
+        self.assertEqual(len(entries), 2)
+        warnings = TOOLS.allowlist_warnings(entries, TODAY)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("CVE-1", warnings[0])
+        self.assertIn(soon.isoformat(), warnings[0])
+
+    def test_the_allowlist_check_warns_ahead_and_fails_once_expired(self):
+        expires = TODAY + datetime.timedelta(days=5)
+        path = self.write_json("allowlist.json", {"entries": [self.entry(expires=expires.isoformat())]})
+        out = io.StringIO()
+        self.assertEqual(TOOLS.check_allowlist(path, TODAY, out), 0)
+        self.assertIn("::warning title=Vulnerability allowlist::", out.getvalue())
+        self.assertNotIn("::error", out.getvalue())
+        out = io.StringIO()
+        self.assertEqual(TOOLS.check_allowlist(path, expires + datetime.timedelta(days=1), out), 1)
+        self.assertIn("::error title=Vulnerability allowlist::", out.getvalue())
+        self.assertIn("expired", out.getvalue())
+        out = io.StringIO()
+        far = self.write_json("far.json", {"entries": [self.entry(expires=(TODAY + datetime.timedelta(days=60)).isoformat())]})
+        self.assertEqual(TOOLS.check_allowlist(far, TODAY, out), 0)
+        self.assertEqual(out.getvalue(), "")
+
+    def test_no_entry_covers_an_openssl_advisory_that_alpine_3_24_fixes(self):
+        # The Alpine 3.24 targets carry the rebuilt OpenSSL 3.5.9-r20261121
+        # (deploy/images/openssl), which keeps Alpine's patches for OpenSSL's
+        # advisory of 2026-11-10; Alpine 3.24's security data records their
+        # fix (3.5.9-r1), so grype reports none of them there. v0.1.0's
+        # release scan listed those four entries as unused. Only the OASF
+        # image, on Alpine 3.23 (no record, a match by NVD CPE), needs them.
+        qualification = json.loads((SCAN.ROOT / "deploy/images/openssl/qualification.json").read_text())
+        targets = [SCAN.target_name("image", ref) for ref, profile in qualification["registry_images"].items()
+                   if profile == "alpine-3.24"]
+        targets += [SCAN.target_name("sbom", Path(name)) for name, profile in qualification["harness_sboms"].items()
+                    if profile == "alpine-3.24"]
+        self.assertEqual(len(targets), 4)
+        advisory = {"CVE-2026-88823", "CVE-2026-95691", "CVE-2026-95692", "CVE-2026-107496"}
+        for entry in json.loads(TOOLS.ALLOWLIST.read_text())["entries"]:
+            if entry["package"] not in qualification["profiles"]["alpine-3.24"] or not advisory & set(entry["ids"]):
+                continue
+            for target in targets:
+                covered = any(fnmatch.fnmatchcase(target, pattern) for pattern in entry.get("targets") or ["*"])
+                self.assertFalse(covered, (entry["package"], target))
+
+    def test_openssl_entries_name_the_version_that_ships(self):
+        # A reason must describe the bytes that ship: the rebuilt packages, not
+        # the upstream 3.5.9-r0 they replaced.
+        qualification = json.loads((SCAN.ROOT / "deploy/images/openssl/qualification.json").read_text())
+        packages = {name for profile in qualification["profiles"].values() for name in profile}
+        rebuilt = [SCAN.target_name("image", ref) for ref in qualification["registry_images"]]
+        for entry in json.loads(TOOLS.ALLOWLIST.read_text())["entries"]:
+            if entry["package"] in packages and any(fnmatch.fnmatchcase(t, p) for t in rebuilt for p in entry["targets"]):
+                self.assertIn(qualification["version"], entry["reason"], entry["package"])
+                self.assertNotIn("3.5.9-r0", entry["reason"], entry["package"])
+
 
 class ScanTest(Temporary):
     def test_backport_requires_owned_file_hash_and_exact_package(self):
@@ -311,6 +372,50 @@ class ScanTest(Temporary):
         keycloak = next(t for t in summary["targets"] if t["name"] == SCAN.target_name("image", oidc))
         self.assertTrue(keycloak["blocking"])
         self.assertEqual([f["id"] for f in keycloak["blocked"]], ["TEST-1"])
+
+    def test_runtime_image_verification_fails_the_release_scan_closed(self):
+        def status(args, **kwargs):
+            self.assertEqual(args[1:3], ["db", "status"])
+            return subprocess.CompletedProcess(args, 0, stdout="{}")
+
+        allowlist = self.write_json("allowlist.json", {"entries": []})
+        refused = ([{"name": "python-3.13", "ref": "r", "layers": "verified", "provenance": "refused"}],
+                   ["python-3.13: no build provenance"])
+
+        def broken():
+            raise ValueError("the qualification does not pin every runtime image")
+        for case, verify, code in (("refused", lambda: refused, 1), ("broken", broken, 1),
+                                   ("verified", lambda: (refused[0][:0], []), 0)):
+            with self.subTest(case=case):
+                out = self.dir / ("out-" + case)
+                with (patch.object(SCAN.RUNTIME, "verify", verify), patch.object(SCAN.TOOLS, "tool", return_value="grype"),
+                      patch.object(SCAN.subprocess, "run", status), patch("sys.stdout", new_callable=io.StringIO),
+                      patch("sys.stderr", new_callable=io.StringIO)):
+                    self.assertEqual(SCAN.main(["--verify-runtime-images", "--no-db-update", "--allowlist", str(allowlist),
+                                                "--output", str(out), "--cache", str(self.dir / "cache")]), code)
+                summary = json.loads((out / "summary.json").read_text())
+                self.assertEqual(summary["status"], "failed" if code else "passed")
+                self.assertEqual(bool(summary["runtime_images"]["problems"]), bool(code))
+    def test_scan_warns_about_an_entry_close_to_its_expiry_and_passes(self):
+        def grype(args, **kwargs):
+            if args[1:3] == ["db", "status"]:
+                return subprocess.CompletedProcess(args, 0, stdout="{}")
+            Path(args[args.index("-o") + 1].removeprefix("json=")).write_text(json.dumps({"matches": []}))
+            return subprocess.CompletedProcess(args, 0)
+
+        soon = (datetime.date.today() + datetime.timedelta(days=3)).isoformat()
+        allowlist = self.write_json("allowlist.json", {"entries": [
+            {"ids": ["CVE-1"], "package": "zlib", "reason": "reviewed", "expires": soon}]})
+        sbom = self.write_json("x.spdx.json", {"packages": []})
+        out = self.dir / "out"
+        with (patch.object(SCAN.TOOLS, "tool", return_value="grype"), patch.object(SCAN.subprocess, "run", grype),
+              patch("sys.stdout", new_callable=io.StringIO) as stdout):
+            self.assertEqual(SCAN.main(["--sbom", str(sbom), "--no-db-update", "--allowlist", str(allowlist),
+                                        "--output", str(out), "--cache", str(self.dir / "cache")]), 0)
+        summary = json.loads((out / "summary.json").read_text())
+        self.assertEqual(summary["status"], "passed")
+        self.assertEqual(len(summary["allowlist_warnings"]), 1)
+        self.assertIn("::warning title=Vulnerability allowlist::", stdout.getvalue())
 
     def test_grype_matches_with_null_fields_are_normalized(self):
         report = {"matches": [{

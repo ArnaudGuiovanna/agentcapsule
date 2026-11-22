@@ -335,7 +335,7 @@ def main(argv=None):
     govulncheck = TOOLS.govulncheck(a.go, a.cache)
     summary = {"date": datetime.date.today().isoformat(), "govulncheck": TOOLS.govulncheck_version(),
                "go": subprocess.run([str(a.go), "version"], env=env, capture_output=True, text=True).stdout.strip(),
-               "allowlist_problems": problems}
+               "allowlist_problems": problems, "allowlist_warnings": TOOLS.allowlist_warnings(entries)}
     results, failed = run_govulncheck(govulncheck, sources, out, env, entries, a.release)
     summary["release"] = a.release
     summary["vulnerabilities"] = results
@@ -353,6 +353,7 @@ def main(argv=None):
     shutil.rmtree(sources)
     for problem in problems:
         print("ALLOWLIST " + problem, file=sys.stderr)
+    TOOLS.annotate("warning", summary["allowlist_warnings"])
     print(f"{summary['status']}: {out / 'summary.json'}")
     return 1 if failed else 0
 

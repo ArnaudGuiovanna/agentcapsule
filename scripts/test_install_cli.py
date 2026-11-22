@@ -3,15 +3,18 @@
 
 The script runs as it would from `curl -fsSL .../install.sh | sh -s -- ...`:
 read from standard input by /bin/sh, against a local server with GitHub's
-release layout. PATH holds only the commands the script may use, so cosign
-is present only when a test puts a fake one there. The script must pick the
-executable for the system, install it only when its digest is the single
-SHA256SUMS entry for its name, call cosign with the release workflow's
-identity for the exact tag when cosign exists, and leave an installed CLI
-untouched whenever a check fails.
+release layout. PATH holds only the commands the script may use, and a fake
+cosign that records its arguments. The script must pick the executable for the
+system, install it only when its digest is the single SHA256SUMS entry for its
+name, call cosign with the release workflow's identity, trigger, repository and
+ref for the exact tag, accept only a certificate of the protected release
+environment (S-16), stop without cosign unless --insecure-skip-signature
+(S-17), and leave an installed CLI untouched whenever a check fails.
 """
 
+import base64
 import hashlib
+import json
 import http.server
 import os
 from pathlib import Path
@@ -24,13 +27,32 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "install.sh"
 TOOLS = ("sh", "curl", "awk", "grep", "cut", "sed", "mktemp", "id", "mkdir", "cp", "chmod", "mv", "rm", "cat",
-         "sha256sum", "printf", "env")
+         "sha256sum", "printf", "env", "tr", "openssl")
 ASSETS = ("agentcapsule-linux-amd64", "agentcapsule-linux-arm64", "agentcapsule-darwin-amd64",
           "agentcapsule-darwin-arm64", "agentcapsule-windows-amd64.exe", "agentcapsule-windows-arm64.exe")
 
 
 def fake_cli(tag, asset):
     return f"#!/bin/sh\nprintf '{{\"release\":\"{tag}\",\"asset\":\"{asset}\"}}\\n'\n".encode()
+
+
+def signing_bundle(directory, environment):
+    """A Sigstore bundle whose certificate carries Fulcio's deployment
+    environment extension, like the release workflow's, or none."""
+    directory.mkdir(parents=True, exist_ok=True)
+    extension = []
+    if environment:
+        extension = ["-addext", f"1.3.6.1.4.1.57264.1.23=ASN1:UTF8String:{environment}"]
+    subprocess.run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes",
+                    "-keyout", directory / "key.pem", "-out", directory / "cert.pem", "-subj", "/CN=sigstore",
+                    "-days", "1", "-addext", "1.3.6.1.4.1.57264.1.20=ASN1:UTF8String:push", *extension],
+                   check=True, capture_output=True)
+    der = subprocess.run(["openssl", "x509", "-in", directory / "cert.pem", "-outform", "DER"],
+                         check=True, capture_output=True).stdout
+    return json.dumps({"mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json",
+                       "verificationMaterial": {"certificate": {"rawBytes": base64.b64encode(der).decode()},
+                                                "tlogEntries": []},
+                       "messageSignature": {"signature": "AAAA"}}, separators=(",", ":")) + "\n"
 
 
 class Releases(http.server.BaseHTTPRequestHandler):
@@ -66,6 +88,14 @@ class Releases(http.server.BaseHTTPRequestHandler):
 
 
 class InstallScriptTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        work = Path(tempfile.mkdtemp(prefix="install-cli-bundles-"))
+        try:
+            cls.bundles = {name: signing_bundle(work / (name or "none"), name) for name in ("release", "staging", "")}
+        finally:
+            shutil.rmtree(work)
+
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="install-cli-"))
         self.addCleanup(shutil.rmtree, self.tmp)
@@ -86,10 +116,11 @@ class InstallScriptTest(unittest.TestCase):
                 self.skipTest(f"{tool} is not installed")
             (self.bin / tool).symlink_to(found)
         self.uname("Linux", "x86_64")
+        self.cosign(0)
         self.home = self.tmp / "home"
         self.home.mkdir()
 
-    def publish(self, tag, sums=None):
+    def publish(self, tag, sums=None, environment="release"):
         directory = self.releases / tag
         directory.mkdir(parents=True, exist_ok=True)
         lines = []
@@ -97,7 +128,7 @@ class InstallScriptTest(unittest.TestCase):
             body = fake_cli(tag, asset)
             (directory / asset).write_bytes(body)
             lines.append(f"{hashlib.sha256(body).hexdigest()}  {asset}")
-        (directory / "SHA256SUMS.sigstore.json").write_text("{}\n")
+        (directory / "SHA256SUMS.sigstore.json").write_text(self.bundles[environment])
         (directory / "SHA256SUMS").write_text("\n".join(sums if sums is not None else lines) + "\n")
         return directory
 
@@ -109,14 +140,15 @@ class InstallScriptTest(unittest.TestCase):
 
     def cosign(self, status):
         script = self.bin / "cosign"
+        script.unlink(missing_ok=True)
         script.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$@\" > '{self.tmp}/cosign-args'\nexit {status}\n")
         script.chmod(0o755)
 
-    def run_script(self, *args, **env):
+    def run_script(self, *args, script=None, **env):
         environment = {"PATH": str(self.bin), "HOME": str(self.home),
                        "AGENTCAPSULE_RELEASE_BASE_URL": f"http://127.0.0.1:{self.server.server_port}/releases"}
         environment.update(env)
-        return subprocess.run([str(self.bin / "sh"), "-s", "--", *args], input=SCRIPT.read_bytes(),
+        return subprocess.run([str(self.bin / "sh"), "-s", "--", *args], input=script or SCRIPT.read_bytes(),
                               env=environment, capture_output=True, timeout=60, check=False)
 
     def assert_installed(self, run, path, tag, asset):
@@ -131,7 +163,7 @@ class InstallScriptTest(unittest.TestCase):
         self.assert_installed(run, self.home / ".local/bin/agentcapsule", "v0.0.2", "agentcapsule-linux-amd64")
         self.assertIn("/releases/latest", self.requests)
         self.assertIn("/releases/download/v0.0.2/agentcapsule-linux-amd64", self.requests)
-        self.assertIn(b"cosign not found", run.stderr)
+        self.assertIn(b"verified the signature of SHA256SUMS", run.stderr)
         self.assertIn(b"to your PATH", run.stderr)
 
     def test_explicit_version_and_directory(self):
@@ -192,25 +224,86 @@ class InstallScriptTest(unittest.TestCase):
                 self.installed_then_refused(run)
                 self.assertIn(b"SHA256SUMS", run.stderr)
 
-    def test_signature_required_without_cosign_is_refused(self):
+    def test_without_cosign_the_signature_is_required_by_default(self):
+        (self.bin / "cosign").unlink()
         self.previous()
-        run = self.run_script("--version", "v0.0.1", "--dir", str(self.tmp / "dir"), "--require-signature")
+        for args in ((), ("--require-signature",)):
+            with self.subTest(args=args):
+                run = self.run_script("--version", "v0.0.1", "--dir", str(self.tmp / "dir"), *args)
+                self.installed_then_refused(run)
+                self.assertIn(b"cosign 2.4 or newer is required", run.stderr)
+                self.assertIn(b"--insecure-skip-signature", run.stderr)
+
+    def test_insecure_skip_signature_checks_the_digest_only_and_warns(self):
+        (self.bin / "cosign").unlink()
+        for args, env in ((("--insecure-skip-signature",), {}), ((), {"AGENTCAPSULE_INSECURE_SKIP_SIGNATURE": "1"})):
+            with self.subTest(args=args, env=env):
+                target = self.tmp / ("unsigned" + str(len(args)))
+                self.requests.clear()
+                run = self.run_script("--version", "v0.0.1", "--dir", str(target), *args, **env)
+                self.assert_installed(run, target / "agentcapsule", "v0.0.1", "agentcapsule-linux-amd64")
+                self.assertIn(b"WARNING: --insecure-skip-signature: the signature of SHA256SUMS is NOT verified",
+                              run.stderr)
+                self.assertNotIn("/releases/download/v0.0.1/SHA256SUMS.sigstore.json", self.requests)
+        # The digest is still checked.
+        (self.releases / "v0.0.1/agentcapsule-linux-amd64").write_bytes(b"#!/bin/sh\necho altered\n")
+        self.previous()
+        run = self.run_script("--version", "v0.0.1", "--dir", str(self.tmp / "dir"), "--insecure-skip-signature")
         self.installed_then_refused(run)
-        self.assertIn(b"needs cosign", run.stderr)
+        self.assertIn(b"checksum mismatch", run.stderr)
 
     def test_cosign_checks_the_release_workflow_of_the_exact_tag(self):
-        self.cosign(0)
         target = self.tmp / "signed"
-        run = self.run_script("--version", "v0.0.1", "--dir", str(target), "--require-signature")
+        run = self.run_script("--version", "v0.0.1", "--dir", str(target))
         self.assert_installed(run, target / "agentcapsule", "v0.0.1", "agentcapsule-linux-amd64")
         args = (self.tmp / "cosign-args").read_text().splitlines()
         self.assertEqual(args[0], "verify-blob")
-        self.assertEqual(args[args.index("--certificate-identity") + 1],
-                         "https://github.com/ArnaudGuiovanna/agentcapsule/.github/workflows/release.yml@refs/tags/v0.0.1")
-        self.assertEqual(args[args.index("--certificate-oidc-issuer") + 1], "https://token.actions.githubusercontent.com")
+        expected = {
+            "--certificate-identity":
+                "https://github.com/ArnaudGuiovanna/agentcapsule/.github/workflows/release.yml@refs/tags/v0.0.1",
+            "--certificate-oidc-issuer": "https://token.actions.githubusercontent.com",
+            "--certificate-github-workflow-trigger": "push",
+            "--certificate-github-workflow-repository": "ArnaudGuiovanna/agentcapsule",
+            "--certificate-github-workflow-ref": "refs/tags/v0.0.1",
+        }
+        for flag, value in expected.items():
+            self.assertEqual(args[args.index(flag) + 1], value, flag)
         self.assertTrue(args[args.index("--bundle") + 1].endswith("/SHA256SUMS.sigstore.json"))
         self.assertTrue(args[-1].endswith("/SHA256SUMS"))
         self.assertIn("/releases/download/v0.0.1/SHA256SUMS.sigstore.json", self.requests)
+        self.assertIn(b"release environment", run.stderr)
+
+    def test_a_signature_outside_the_release_environment_is_refused(self):
+        self.previous()
+        for environment in ("staging", ""):
+            with self.subTest(environment=environment):
+                self.publish("v0.0.1", environment=environment)
+                run = self.run_script("--version", "v0.0.1", "--dir", str(self.tmp / "dir"))
+                self.installed_then_refused(run)
+                self.assertIn(b"not signed in the protected release environment", run.stderr)
+        no_certificate = self.releases / "v0.0.1/SHA256SUMS.sigstore.json"
+        no_certificate.write_text('{"verificationMaterial":{}}\n')
+        run = self.run_script("--version", "v0.0.1", "--dir", str(self.tmp / "dir"))
+        self.installed_then_refused(run)
+        self.assertIn(b"no signing certificate", run.stderr)
+
+    def test_releases_signed_before_the_environment_pass_by_their_digest(self):
+        directory = self.publish("v0.0.1", environment="")
+        digest = hashlib.sha256((directory / "SHA256SUMS").read_bytes()).hexdigest()
+        script = SCRIPT.read_bytes()
+        for pinned in (b"500038470c97b46ea7efc31ca1fc08c305f46d2d181d61707a1c24e9ea30391e",
+                       b"b0574da8b4811af9c57edc5127a58a68a09140c58391c2566a4815946f1a4c41"):
+            self.assertIn(pinned, script)
+        script = script.replace(b"v0.0.1:500038470c97b46ea7efc31ca1fc08c305f46d2d181d61707a1c24e9ea30391e",
+                                b"v0.0.1:" + digest.encode())
+        target = self.tmp / "legacy"
+        run = self.run_script("--version", "v0.0.1", "--dir", str(target), script=script)
+        self.assert_installed(run, target / "agentcapsule", "v0.0.1", "agentcapsule-linux-amd64")
+        # The pin is for its own tag only.
+        self.publish("v0.0.2", environment="")
+        (self.releases / "v0.0.2/SHA256SUMS").write_bytes((directory / "SHA256SUMS").read_bytes())
+        run = self.run_script("--version", "v0.0.2", "--dir", str(target), script=script)
+        self.assertIn(b"not signed in the protected release environment", run.stderr)
 
     def test_a_failed_signature_is_refused(self):
         self.cosign(1)
@@ -241,7 +334,8 @@ class InstallScriptTest(unittest.TestCase):
     def test_help(self):
         run = self.run_script("--help")
         self.assertEqual(run.returncode, 0)
-        self.assertIn(b"--require-signature", run.stdout)
+        self.assertIn(b"--insecure-skip-signature", run.stdout)
+        self.assertIn(b"verified by default", run.stdout)
         self.assertEqual(self.requests, [])
 
 

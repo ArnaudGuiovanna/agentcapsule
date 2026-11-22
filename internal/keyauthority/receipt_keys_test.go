@@ -91,7 +91,11 @@ func TestReceiptKeysListsTheDaysHeld(t *testing.T) {
 	// A key published without its allocation marker, as a journaled
 	// creation leaves it until the replica holds it, is not usable yet.
 	pending := time.Date(2026, 11, 18, 0, 0, 0, 0, time.UTC)
-	b := record("ACPKEY01", ReceiptKeyAgent, ReceiptKeyVolume(pending), bytes.Repeat([]byte{7}, 32))
+	b, err := record("ACPKEY01", ReceiptKeyAgent, ReceiptKeyVolume(pending), bytes.Repeat([]byte{7}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release(b)
 	if err = publish(filepath.Join(s.root, "records", ReceiptKeyVolume(pending)), b, nil, nil); err != nil {
 		t.Fatal(err)
 	}

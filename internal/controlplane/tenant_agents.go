@@ -424,7 +424,7 @@ func (a *Accounts) RevokeAgentAssignment(ctx context.Context, p Principal, agent
 	if err != nil {
 		return APIReceipt{}, err
 	}
-	return r, commit(ctx, tx)
+	return a.store.settled(ctx, r, commit(ctx, tx))
 }
 
 // ReplaceAgentAssignment changes the permissions of an active assignment in one
@@ -500,7 +500,7 @@ func (a *Accounts) ReplaceAgentAssignment(ctx context.Context, p Principal, agen
 		if err = auditTenantAgent(ctx, tx, p, agentID, &s.ID, "assignment.created"); err != nil {
 			return 0, nil, err
 		}
-		// The replaced assignment is revoked: its record, before the commit.
+		// The replaced assignment is revoked: its record, after the commit.
 		revoked := a.store.revocations(tx, p.TenantID)
 		if err = revoked.add(ctx, authoritylog.AccessAssignment, p.TenantID, [][]string{{assignmentID}}); err != nil {
 			return 0, nil, err
@@ -511,7 +511,7 @@ func (a *Accounts) ReplaceAgentAssignment(ctx context.Context, p Principal, agen
 	if err != nil {
 		return APIReceipt{}, err
 	}
-	return r, commit(ctx, tx)
+	return a.store.settled(ctx, r, commit(ctx, tx))
 }
 
 func (a *Accounts) ListAgentAssignments(ctx context.Context, p Principal, agentID, after string, limit int) ([]AgentAssignment, error) {

@@ -218,7 +218,7 @@ func TestPlatformOutcomesBecomeSDKErrors(t *testing.T) {
 	f := &forwarder{}
 	srv := endpoint(t, f, minimal)
 	for code, status := range map[string]int{"not_found": 404, "dialect": 400, "invalid": 400, "quota_exceeded": 429, "rate_limited": 429,
-		"rejected": 400, "outcome_unknown": 504, "unavailable": 503, "unauthorized": 403} {
+		"rejected": 400, "outcome_unknown": 504, "unavailable": 503, "unauthorized": 403, "feature_denied": 400, "concurrency_limited": 429} {
 		f.err = &capsuleprotocol.PlatformError{Code: code}
 		r, body := post(t, srv.URL+"/v1/chat/completions", `{"model":"fast","messages":[]}`)
 		var openai struct {

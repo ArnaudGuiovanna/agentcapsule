@@ -255,7 +255,7 @@ func TestPrivateRegistryImportsNeedCredentials(t *testing.T) {
 	}
 	c := ServiceConfig{Root: t.TempDir(), Registry: &ServiceRegistry{Cache: l.cache, MaxHarnessMiB: 64,
 		Rules: []RegistryRule{{Rule: l.rule, CredentialsFile: path}}}}
-	importer, err := c.OpenRegistry(l.store, "importer-credentials")
+	importer, err := c.OpenRegistry(l.store, "importer-credentials", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -384,7 +384,7 @@ func TestSignedImportsRecordTheirPublisher(t *testing.T) {
 	}
 	c := ServiceConfig{Root: t.TempDir(), Registry: &ServiceRegistry{Cache: l.cache, MaxHarnessMiB: 64, RequireSignatures: true,
 		Rules: []RegistryRule{{Rule: l.rule, PublisherKeys: []string{path}}}}}
-	importer, err := c.OpenRegistry(l.store, "importer-signatures")
+	importer, err := c.OpenRegistry(l.store, "importer-signatures", false)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -15,8 +15,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptrace"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/telemetry"
@@ -38,10 +40,15 @@ type Usage struct {
 	OutputTokens int64 `json:"output_tokens"`
 }
 
+// Unreported says which counts a provider's answer left out (audit finding
+// L-06). The accounting counts the reservation's in their place, never zero.
+type Unreported struct{ Input, Output bool }
+
 type Response struct {
 	Text         string
 	FinishReason string
 	Usage        Usage
+	Unreported   Unreported
 }
 
 // Route is one resolved upstream. Secret stays in memory.
@@ -50,6 +57,8 @@ type Route struct {
 	Kind, BaseURL, UpstreamModel, Secret string
 	// Key identifies the breaker bucket, normally "tenant/provider".
 	Key string
+	// Policy is what the alias lets a call ask of the provider.
+	Policy RequestPolicy
 }
 
 // The empty mode preserves callers created before explicit authentication modes.
@@ -107,7 +116,14 @@ type Config struct {
 	// line included (60 s); in total, retries included (300 s, the platform
 	// channel's capsuleprotocol.LLMCallTimeout).
 	StreamFirstByte, StreamIdle, StreamTotal time.Duration
+	// MaxIdleConnsPerHost is how many idle connections the gateway keeps to
+	// each provider address, so that concurrent calls reuse them instead of
+	// a new TCP and TLS handshake each (DefaultMaxIdleConnsPerHost).
+	MaxIdleConnsPerHost int
 }
+
+// DefaultMaxIdleConnsPerHost replaces net/http's default of 2.
+const DefaultMaxIdleConnsPerHost = 32
 
 type Gateway struct {
 	cfg      Config
@@ -146,6 +162,7 @@ func newGateway(c Config, t TestOptions) *Gateway {
 	c.StreamFirstByte = cmp.Or(max(c.StreamFirstByte, 0), 60*time.Second)
 	c.StreamIdle = cmp.Or(max(c.StreamIdle, 0), 60*time.Second)
 	c.StreamTotal = cmp.Or(max(c.StreamTotal, 0), 300*time.Second)
+	c.MaxIdleConnsPerHost = cmp.Or(max(c.MaxIdleConnsPerHost, 0), DefaultMaxIdleConnsPerHost)
 	if c.Now == nil {
 		c.Now = time.Now
 	}
@@ -161,7 +178,7 @@ func newGateway(c Config, t TestOptions) *Gateway {
 			}
 		}
 	}
-	return &Gateway{cfg: c, http: newClient(c.AllowInternal, t), breakers: map[string]*breaker{}}
+	return &Gateway{cfg: c, http: newClient(c.AllowInternal, c.MaxIdleConnsPerHost, t), breakers: map[string]*breaker{}}
 }
 
 func (g *Gateway) admit(key string) error {
@@ -213,9 +230,10 @@ func (r Request) valid() bool {
 }
 
 // Complete performs one logical call: at most MaxAttempts upstream requests,
-// retrying only before the provider has accepted work (connection failure, 429,
-// 5xx). A timeout after the request was sent is reported as ErrOutcomeUnknown
-// and is not retried, since a retry could be billed twice.
+// retrying only when the provider cannot have accepted work (a failure before
+// any connection, 429, 5xx). A transport error once connected, a timeout
+// included, is reported as ErrOutcomeUnknown and is not retried, since the
+// request may have been written and a retry could be billed twice.
 func (g *Gateway) Complete(ctx context.Context, route Route, req Request) (out Response, err error) {
 	ctx, span := startCall(ctx, "complete", route)
 	defer func() { endCall(span, out.Usage, err) }()
@@ -287,6 +305,7 @@ func (g *Gateway) exchange(ctx context.Context, breakerKey, target string, body 
 func (g *Gateway) once(ctx context.Context, target string, body []byte, headers map[string]string, parse func([]byte) error) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, g.cfg.Timeout)
 	defer cancel()
+	ctx, conn := traceConnection(ctx)
 	hr, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(body))
 	if err != nil {
 		return false, ErrInvalid
@@ -297,14 +316,7 @@ func (g *Gateway) once(ctx context.Context, target string, body []byte, headers 
 	}
 	resp, err := g.http.Do(hr)
 	if err != nil {
-		if errors.Is(err, ErrAddressRefused) {
-			return false, ErrAddressRefused // nothing was sent
-		}
-		if ctx.Err() != nil || isTimeout(err) {
-			// Sent, answer never seen: do not retry, do not claim zero cost.
-			return false, ErrOutcomeUnknown
-		}
-		return true, ErrUnavailable // could not connect; nothing was accepted
+		return sendFailure(err, conn.got.Load())
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, g.cfg.MaxResponse+1))
@@ -327,20 +339,46 @@ func (g *Gateway) once(ctx context.Context, target string, body []byte, headers 
 	return false, nil
 }
 
-func isTimeout(err error) bool {
-	var t interface{ Timeout() bool }
-	return errors.As(err, &t) && t.Timeout()
+// connectionTrace records whether an attempt was given a connection. Until
+// then nothing of the request can have reached the provider.
+type connectionTrace struct{ got atomic.Bool }
+
+func traceConnection(ctx context.Context) (context.Context, *connectionTrace) {
+	c := &connectionTrace{}
+	return httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+		// net/http asks for another connection within one attempt only when
+		// the previous one wrote nothing of the request (a reused connection
+		// the server had closed): the attempt starts again from nothing.
+		GetConn: func(string) { c.got.Store(false) },
+		GotConn: func(httptrace.GotConnInfo) { c.got.Store(true) },
+	}), c
+}
+
+// sendFailure classifies a transport error of one attempt: whether it may be
+// retried, and the error. Only an error before any connection is proven to
+// have sent nothing (a name that does not resolve, a refused connection, a
+// failed TLS handshake, an address the policy refuses): it may be retried, and
+// the accounting releases the call. Once connected, the request may have been
+// written: whatever follows (a reset, a close, a timeout, the caller leaving)
+// is an unknown outcome, never retried, never read as zero cost.
+func sendFailure(err error, connected bool) (bool, error) {
+	switch {
+	case errors.Is(err, ErrAddressRefused):
+		return false, ErrAddressRefused // nothing was sent
+	case connected:
+		return false, ErrOutcomeUnknown
+	}
+	return true, ErrUnavailable
 }
 
 func join(base, path string) string { return strings.TrimRight(base, "/") + path }
 
 // ---- OpenAI-compatible ----
 
+// buildOpenAI always bounds the output: the request's cap, else the alias's
+// (CompleteOutputCap), in the field the alias names.
 func buildOpenAI(r Route, q Request) (string, []byte, map[string]string, error) {
-	payload := map[string]any{"model": r.UpstreamModel, "messages": q.Messages}
-	if q.MaxTokens > 0 {
-		payload["max_tokens"] = q.MaxTokens
-	}
+	payload := map[string]any{"model": r.UpstreamModel, "messages": q.Messages, r.Policy.capField(): CompleteOutputCap(r.Policy, q)}
 	if q.Temperature != nil {
 		payload["temperature"] = *q.Temperature
 	}
@@ -354,15 +392,42 @@ func parseOpenAI(raw []byte) (Response, error) {
 			Message      struct{ Content string } `json:"message"`
 			FinishReason string                   `json:"finish_reason"`
 		} `json:"choices"`
-		Usage struct {
-			Prompt     int64 `json:"prompt_tokens"`
-			Completion int64 `json:"completion_tokens"`
+		Usage *struct {
+			Prompt     *int64 `json:"prompt_tokens"`
+			Completion *int64 `json:"completion_tokens"`
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(raw, &v); err != nil || len(v.Choices) == 0 {
 		return Response{}, ErrInvalid
 	}
-	return Response{Text: v.Choices[0].Message.Content, FinishReason: v.Choices[0].FinishReason, Usage: Usage{v.Usage.Prompt, v.Usage.Completion}}, nil
+	out := Response{Text: v.Choices[0].Message.Content, FinishReason: v.Choices[0].FinishReason, Unreported: Unreported{true, true}}
+	if v.Usage != nil {
+		var ok bool
+		if out.Usage, out.Unreported, ok = reported(v.Usage.Prompt, v.Usage.Completion); !ok {
+			return Response{}, ErrInvalid
+		}
+	}
+	return out, nil
+}
+
+// reported is the usage of the counts a provider reported, and which it left
+// out. ok is false when a count is out of bounds (validCount).
+func reported(input, output *int64) (u Usage, missing Unreported, ok bool) {
+	for _, c := range []struct {
+		n    *int64
+		to   *int64
+		left *bool
+	}{{input, &u.InputTokens, &missing.Input}, {output, &u.OutputTokens, &missing.Output}} {
+		if c.n == nil {
+			*c.left = true
+			continue
+		}
+		if !validCount(c.n) {
+			return Usage{}, Unreported{}, false
+		}
+		*c.to = *c.n
+	}
+	return u, missing, true
 }
 
 // ---- Anthropic native ----
@@ -380,11 +445,8 @@ func buildAnthropic(r Route, q Request) (string, []byte, map[string]string, erro
 	if len(msgs) == 0 {
 		return "", nil, nil, ErrInvalid
 	}
-	max := q.MaxTokens
-	if max == 0 {
-		max = 1024 // the native API requires an explicit bound
-	}
-	payload := map[string]any{"model": r.UpstreamModel, "messages": msgs, "max_tokens": max}
+	// The native API requires an explicit bound.
+	payload := map[string]any{"model": r.UpstreamModel, "messages": msgs, "max_tokens": CompleteOutputCap(r.Policy, q)}
 	if len(system) > 0 {
 		payload["system"] = strings.Join(system, "\n\n")
 	}
@@ -401,11 +463,8 @@ func parseAnthropic(raw []byte) (Response, error) {
 			Type string `json:"type"`
 			Text string `json:"text"`
 		} `json:"content"`
-		StopReason string `json:"stop_reason"`
-		Usage      struct {
-			In  int64 `json:"input_tokens"`
-			Out int64 `json:"output_tokens"`
-		} `json:"usage"`
+		StopReason string          `json:"stop_reason"`
+		Usage      *anthropicUsage `json:"usage"`
 	}
 	if err := json.Unmarshal(raw, &v); err != nil || len(v.Content) == 0 {
 		return Response{}, ErrInvalid
@@ -416,5 +475,29 @@ func parseAnthropic(raw []byte) (Response, error) {
 			text.WriteString(c.Text)
 		}
 	}
-	return Response{Text: text.String(), FinishReason: v.StopReason, Usage: Usage{v.Usage.In, v.Usage.Out}}, nil
+	out := Response{Text: text.String(), FinishReason: v.StopReason}
+	var ok bool
+	if out.Usage, out.Unreported, ok = v.Usage.counts(); !ok {
+		return Response{}, ErrInvalid
+	}
+	return out, nil
+}
+
+// counts is the usage of an Anthropic answer, cached input included, and the
+// counts it left out. ok is false when a count is out of bounds.
+func (u *anthropicUsage) counts() (Usage, Unreported, bool) {
+	if u == nil {
+		return Usage{}, Unreported{true, true}, true
+	}
+	var cached int64
+	for _, n := range []*int64{u.CacheCreate, u.CacheRead} {
+		if n != nil && !validCount(n) {
+			return Usage{}, Unreported{}, false
+		} else if n != nil {
+			cached += *n
+		}
+	}
+	usage, missing, ok := reported(u.In, u.Out)
+	usage.InputTokens += cached
+	return usage, missing, ok
 }
