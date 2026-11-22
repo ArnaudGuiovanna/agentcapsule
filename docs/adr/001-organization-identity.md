@@ -311,8 +311,8 @@ that revokes or changes one of those rows takes its organization's row
 `FOR UPDATE` first (`authorizeTenantAdminMutation`, `DisableOrganization`,
 `ChangeDelegationAuthority`, `authorizeAppSync`). The admission now holds
 that one row, `FOR KEY SHARE`, from its authorization to its commit, and
-reads the other rows without a lock (`resolveTenant`, `resolveService`, and
-`reserveLLM` for the provider and the alias). `FOR KEY SHARE` is the weakest
+reads the other rows without a lock (`resolveTenant`, `resolveService`,
+`resolveApp`, and `reserveLLM` for the provider and the alias). `FOR KEY SHARE` is the weakest
 lock that conflicts with `FOR UPDATE`; the other updates of the
 organization's row and of the other rows no longer wait for admissions.
 Under `READ COMMITTED` each statement reads a new snapshot: an admission
@@ -333,8 +333,12 @@ lock.
   revocation of each row both ways, the replay included. The earlier races
   (`TestTenantRevocationSerializesWithExistingAdmission`, the members',
   teams' and reassignment tests) hold unchanged.
-- An application's admission (`resolveApp`) keeps its `FOR SHARE` locks:
-  its revocations are being reworked (SEC-1B); the same rule applies to it.
+- An application's admission (`resolveApp`) follows the same rule: its
+  organization's row `FOR KEY SHARE`, then the application, its activation,
+  its signing and integration principals and the member's membership without
+  a lock. Their revocations (an application revoked or rotated, a member
+  removed by its application, an approval withdrawn by the operator, a
+  blanket) all take the organization's row first; the test above lists them.
 
 The preamble of each transaction (the gate, synchronous commit and the
 durability check) is one round trip since PERF-3B (P-06), and each process

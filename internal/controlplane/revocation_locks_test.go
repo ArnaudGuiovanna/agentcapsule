@@ -9,10 +9,10 @@ import (
 )
 
 // The admission's one row lock (P-07; ADR 001, "Changes after the v0.1.0
-// audit"): resolveTenant, resolveService and reserveLLM hold the
+// audit"): resolveTenant, resolveService, resolveApp and reserveLLM hold the
 // organization's row FOR KEY SHARE, and read the principal, its membership,
-// the issuer, the trust, the key, the service token, the provider and the
-// alias without a lock. FOR KEY SHARE conflicts with FOR UPDATE only, not
+// the issuer, the trust, the key, the service token, the application and its
+// activation, the provider and the alias without a lock. FOR KEY SHARE conflicts with FOR UPDATE only, not
 // with the FOR NO KEY UPDATE a plain UPDATE takes: every statement that
 // revokes or changes one of those rows must run in a transaction that holds
 // the organization's row FOR UPDATE.
@@ -20,7 +20,7 @@ import (
 // admissionTables are the tables whose rows an admission reads after its
 // organization's row.
 var admissionTables = []string{"organizations", "principals", "memberships", "delegation_issuers", "delegation_trusts",
-	"delegation_keys", "delegation_revocations", "service_tokens", "llm_providers", "llm_model_aliases"}
+	"delegation_keys", "delegation_revocations", "service_tokens", "llm_providers", "llm_model_aliases", "applications", "app_activations"}
 
 var admissionWrite = regexp.MustCompile(`(?is)\b(?:UPDATE\s+(?:ONLY\s+)?(?:` + strings.Join(admissionTables, "|") + `)\b(?:\s+(?:AS\s+)?[a-z_]+)?\s+SET|DELETE\s+FROM\s+(?:ONLY\s+)?(?:` +
 	strings.Join(admissionTables, "|") + `)\b|INSERT\s+INTO\s+delegation_revocations\b)`)
@@ -44,6 +44,8 @@ var reviewedWriters = map[string]string{
 	"SetLLMAliasPrices":         "authorizeTenantAdminMutation",
 	"SetLLMAliasRequestPolicy":  "authorizeTenantAdminMutation",
 	"SyncActivation":            "authorizeAppSync: organizations FOR UPDATE, or authorizeMemberMutation",
+	"WithdrawApplicationClient": "lockClientOrganization: organizations FOR UPDATE",
+	"allocateSlots":             "its callers: AcceptInvitation's FOR UPDATE OF o, SyncActivation, retryOne's FOR UPDATE; it writes retry_at, which no admission reads",
 	"auditApplication":          "its callers: appAdmin, authorizeTenantAdminMutation (Invite, PlanPolicy, ApplyPolicy, templateMutation), AcceptInvitation's FOR UPDATE OF o, SyncActivation",
 	"auditMember":               "its callers: authorizeMemberMutation",
 	"auditService":              "its callers: authorizeIdentityMutation",

@@ -126,9 +126,13 @@ func verifyAppToken(v Application, raw string, now time.Time) (appClaims, appBin
 	return c, b, nil
 }
 
+// resolveApp holds the organization's row FOR KEY SHARE until the
+// transaction ends and reads the application, its activation, its principals
+// and the membership without a lock, as resolveTenant does (P-07): every
+// transaction that revokes or changes them takes that row FOR UPDATE first.
 func resolveApp(ctx context.Context, tx pgx.Tx, b appBinding) (CurrentOrganization, error) {
 	var current CurrentOrganization
-	o, err := scanOrganization(tx.QueryRow(ctx, `SELECT id,name,status,policy_version,created_at FROM organizations WHERE id=$1`+authorityLock(tx, " FOR SHARE"), b.Tenant))
+	o, err := scanOrganization(tx.QueryRow(ctx, `SELECT id,name,status,policy_version,created_at FROM organizations WHERE id=$1`+authorityLock(tx, " FOR KEY SHARE"), b.Tenant))
 	if errors.Is(err, ErrNotFound) || err == nil && o.Status != "active" {
 		return current, ErrAuthentication
 	}
@@ -143,7 +147,7 @@ func resolveApp(ctx context.Context, tx pgx.Tx, b appBinding) (CurrentOrganizati
         JOIN principals p ON (p.tenant_id,p.id)=(v.tenant_id,v.principal_id)
         JOIN memberships m ON (m.tenant_id,m.principal_id)=(p.tenant_id,p.id)
         WHERE a.tenant_id=$1 AND a.id=$2 AND a.generation=$3 AND a.minimum_iat<=$6 AND p.issuer=a.issuer AND p.subject=$4
-        AND p.status='active' AND m.status='active' AND $5>clock_timestamp() AND $6<=clock_timestamp() AND $7<=clock_timestamp()`+authorityLock(tx, " FOR SHARE OF a,integration,v,p,m"), b.Tenant, b.App, b.Generation, b.Subject, b.Expires, b.Issued, b.NotBefore).Scan(&current.PrincipalID, &current.DisplayName, &current.Role)
+        AND p.status='active' AND m.status='active' AND $5>clock_timestamp() AND $6<=clock_timestamp() AND $7<=clock_timestamp()`, b.Tenant, b.App, b.Generation, b.Subject, b.Expires, b.Issued, b.NotBefore).Scan(&current.PrincipalID, &current.DisplayName, &current.Role)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = ErrAuthentication
 	}
