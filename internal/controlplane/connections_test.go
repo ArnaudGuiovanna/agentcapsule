@@ -2,14 +2,131 @@ package controlplane
 
 import (
 	"context"
+	"errors"
 	"os"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/telemetry"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// P-08: a process's connections are bounded. The pool holds at most
+// MaxConns; a lock wait, an advisory lock's included, ends at LockTimeout
+// and gives its connection back to the pool; a statement ends at
+// StatementTimeout; a transaction left idle ends at
+// IdleInTransactionTimeout; a bound the database URL sets is kept.
+func TestConnectionsBoundTheirWaits(t *testing.T) {
+	_, dsn := freshStore(t, "auto", 2)
+	s, err := OpenWith(t.Context(), dsn, Connections{MaxConns: 2, StatementTimeout: time.Second,
+		LockTimeout: 200 * time.Millisecond, IdleInTransactionTimeout: 500 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if s.pool.Config().MaxConns != 2 {
+		t.Fatal("pool size", s.pool.Config().MaxConns)
+	}
+	holder, err := pgx.Connect(t.Context(), dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Close(context.Background())
+	if _, err = holder.Exec(t.Context(), "SELECT pg_advisory_lock(hashtextextended('organization-quota/org',0))"); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 { // more waits than the pool has connections
+		tx, err := s.begin(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		started := time.Now()
+		err = lockOrganizationQuota(t.Context(), tx, "org")
+		rollback(tx)
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != "55P03" || time.Since(started) > 5*time.Second {
+			t.Fatalf("an advisory lock wait: %v after %s", err, time.Since(started))
+		}
+	}
+	var pgErr *pgconn.PgError
+	if _, err = s.pool.Exec(t.Context(), "SELECT pg_sleep(3)"); !errors.As(err, &pgErr) || pgErr.Code != "57014" {
+		t.Fatal("a statement past its bound:", err)
+	}
+	tx, err := s.begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(1500 * time.Millisecond)
+	_, err = tx.Exec(t.Context(), "SELECT 1")
+	rollback(tx)
+	if err == nil {
+		t.Fatal("an idle transaction outlived its bound")
+	}
+	// A bound the database URL sets wins.
+	set, err := OpenWith(t.Context(), dsn+" lock_timeout=1234", Connections{LockTimeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer set.Close()
+	var lock string
+	if err = set.pool.QueryRow(t.Context(), "SHOW lock_timeout").Scan(&lock); err != nil || lock != "1234ms" {
+		t.Fatal(lock, err)
+	}
+	for _, c := range []Connections{APIConnections, WorkerConnections, AdminConnections} {
+		if !c.Valid() || c.MaxConns < 1 {
+			t.Error("invalid defaults", c)
+		}
+	}
+	if (Connections{MaxConns: MaxPoolConnections + 1}).Valid() || (Connections{LockTimeout: -time.Second}).Valid() {
+		t.Error("invalid bounds accepted")
+	}
+	if _, err = OpenWith(t.Context(), dsn, Connections{MaxConns: -1}); !errors.Is(err, ErrInput) {
+		t.Error("an invalid pool size:", err)
+	}
+}
+
+// A migration runs without the session's statement and lock bounds: it
+// waits for another migration past the session's lock bound.
+func TestMigrationsIgnoreTheSessionBounds(t *testing.T) {
+	rootURL := databaseURL(t)
+	admin, err := pgxpool.New(t.Context(), rootURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	schema := newID("test")
+	if _, err = admin.Exec(t.Context(), "CREATE SCHEMA "+pgx.Identifier{schema}.Sanitize()); err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Exec(context.Background(), "DROP SCHEMA "+pgx.Identifier{schema}.Sanitize()+" CASCADE")
+	s, err := OpenWith(t.Context(), scopedURL(t, rootURL, schema), Connections{StatementTimeout: time.Minute, LockTimeout: 100 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	// Another migration holds the migrations' lock for a second.
+	holder, err := admin.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = holder.Exec(t.Context(), "SELECT pg_advisory_xact_lock(756610042)"); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		time.Sleep(time.Second)
+		_ = holder.Rollback(context.Background())
+	}()
+	started := time.Now()
+	if err = s.Migrate(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(started) < time.Second {
+		t.Fatal("the migration did not wait for the other")
+	}
+}
 
 // statementCounter counts the statements its connections send: with the
 // simple protocol of the transaction preamble, one statement is one round

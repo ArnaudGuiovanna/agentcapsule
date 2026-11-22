@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -66,6 +67,9 @@ func run(args []string) int {
 	maxUploads := f.Int("max-uploads", api.DefaultMaxUploads, "attachment bodies the process reads at once (1 to 1024)")
 	maxPrincipalUploads := f.Int("max-principal-uploads", api.DefaultMaxPrincipalUploads, "attachment bodies one principal may send at once (1 to -max-uploads)")
 	sourceKeyPath := f.String("source-pseudonym-key-file", "", "private 32-byte key of the sources' pseudonyms in authentication_failed events (a key drawn at start when empty)")
+	database := controlplane.APIConnections
+	f.Func("database-max-connections", fmt.Sprintf("PostgreSQL connections the process holds at most (1 to %d, default %d)", controlplane.MaxPoolConnections, database.MaxConns),
+		func(v string) error { return parseConnections(v, &database.MaxConns) })
 	metricsListen := f.String("metrics-listen", "", "loopback address serving Prometheus metrics at /metrics (none when empty)")
 	traceFile := f.String("trace-file", "", "absolute path of a file receiving the spans as OTLP/JSON lines (none when empty)")
 	preflightOnly := f.Bool("preflight", false, "check this configuration (TLS files, ports, PostgreSQL, the authority service), print what to fix, then exit")
@@ -162,7 +166,7 @@ func run(args []string) int {
 		}
 	}
 	startup, cancel := context.WithTimeout(ctx, 30*time.Second)
-	s, err := controlplane.Open(startup, dsn)
+	s, err := controlplane.OpenWith(startup, dsn, database)
 	if err != nil {
 		cancel()
 		return fail("database_initialization_failed")
@@ -498,6 +502,16 @@ func authorityCheck(ctx context.Context, mode operatorconfig.Mode, authority aut
 			Detail: "the authority service answers with the pinned identities; standalone: no replica, no protection against the host's loss"}
 	}
 	return preflight.Result{Check: check, Status: preflight.OK, Detail: "the authority service answers with the pinned identities, synchronous with its standby"}
+}
+
+// parseConnections reads -database-max-connections (P-08).
+func parseConnections(v string, max *int32) error {
+	n, err := strconv.ParseInt(v, 10, 32)
+	if err != nil || n < 1 || n > controlplane.MaxPoolConnections {
+		return errors.New("a number of connections from 1 to 1000")
+	}
+	*max = int32(n)
+	return nil
 }
 
 func main() { os.Exit(run(os.Args[1:])) }

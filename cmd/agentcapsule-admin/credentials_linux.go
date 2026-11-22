@@ -19,7 +19,7 @@ func openOperatorStore(ctx context.Context, fail func(string) int) (*controlplan
 	if code != "" {
 		return nil, fail(code)
 	}
-	s, err := controlplane.Open(ctx, dsn)
+	s, err := controlplane.OpenWith(ctx, dsn, controlplane.AdminConnections)
 	if err != nil {
 		return nil, fail("database_initialization_failed")
 	}

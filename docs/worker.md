@@ -225,6 +225,11 @@ written only when it changes; the platform channel's accept check reads it
 without `host.lock`. The host's connections to each guest's control channel
 stay open between calls.
 
+**Database connections** (since the v0.1.0 audit, P-08). The worker holds
+at most 16 PostgreSQL connections (`"database_max_connections"`, 1 to
+1,000). A statement lasts at most 10 minutes, a lock wait 1 minute and an
+idle transaction 5 minutes ([install.md](install.md#connections)).
+
 **The VMM's log** (`<root>/logs/<run>.log`, the host's alone) holds what
 Firecracker prints. The host cuts it once it passes 1 MiB (within a second)
 and removes it with its run; the census and `-collect-garbage` remove the logs

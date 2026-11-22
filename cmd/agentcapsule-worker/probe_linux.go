@@ -26,7 +26,11 @@ func providerProbe(path string, mode operatorconfig.Mode, tenant, alias string) 
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	s, err := controlplane.Open(ctx, dsn)
+	database, err := cfg.DatabaseConnections()
+	if err != nil {
+		return fail("configuration_invalid")
+	}
+	s, err := controlplane.OpenWith(ctx, dsn, database)
 	if err != nil {
 		return fail("database_unavailable")
 	}

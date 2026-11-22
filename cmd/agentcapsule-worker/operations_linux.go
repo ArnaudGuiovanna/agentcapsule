@@ -74,7 +74,11 @@ func testRestore(c worker.ServiceConfig, mode operatorconfig.Mode, agent, archiv
 	}
 	startup, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	s, err := controlplane.Open(startup, dsn)
+	database, err := c.DatabaseConnections()
+	if err != nil {
+		return fail("configuration_invalid")
+	}
+	s, err := controlplane.OpenWith(startup, dsn, database)
 	if err != nil {
 		return fail("database_initialization_failed")
 	}
@@ -123,7 +127,11 @@ func collectGarbage(c worker.ServiceConfig, mode operatorconfig.Mode, dryRun boo
 	defer stop()
 	startup, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	s, err := controlplane.Open(startup, dsn)
+	database, err := c.DatabaseConnections()
+	if err != nil {
+		return fail("configuration_invalid")
+	}
+	s, err := controlplane.OpenWith(startup, dsn, database)
 	if err != nil {
 		return fail("database_initialization_failed")
 	}

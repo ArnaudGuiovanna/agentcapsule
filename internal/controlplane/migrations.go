@@ -351,6 +351,11 @@ func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error
 		return err
 	}
 	defer rollback(tx)
+	// A migration may build indexes and backfill tables for minutes, and
+	// waits for another to end: no session bound applies (P-08).
+	if _, err = tx.Exec(ctx, "SET LOCAL statement_timeout = 0; SET LOCAL lock_timeout = 0"); err != nil {
+		return err
+	}
 	if _, err = tx.Exec(ctx, "SELECT pg_advisory_xact_lock(756610042)"); err != nil {
 		return err
 	}

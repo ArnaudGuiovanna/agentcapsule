@@ -138,6 +138,32 @@ does, including the `PG*` variables. A refused string stops the process with
 `database_tls_required_in_production`; one that does not parse, or names an
 unreadable `sslrootcert`, with `database_configuration_invalid`.
 
+### Connections
+
+Since the v0.1.0 audit (P-08), each process bounds its connections: how many
+it holds at most, and how long one statement, one lock wait and one idle
+transaction may last on them (PostgreSQL's `statement_timeout`,
+`lock_timeout` and `idle_in_transaction_session_timeout`, set when each
+connection opens):
+
+| Process | Connections at most | Statement | Lock wait | Idle transaction |
+|---|---|---|---|---|
+| API | 32, `-database-max-connections` (1 to 1,000) | 1 minute | 15 seconds | 1 minute |
+| Worker | 16, `"database_max_connections"` in its configuration (1 to 1,000) | 10 minutes | 1 minute | 5 minutes |
+| `agentcapsule-admin` | 4 | none | 1 minute | 10 minutes |
+
+- A lock wait includes the advisory locks that serialize an organization's
+  quotas, queues and uploads: a caller that waits past the bound gives its
+  connection back, and the API answers `503 temporarily_unavailable`.
+- A migration has no statement or lock bound: it may build indexes for
+  minutes, and waits for a migration already running.
+- A bound written in `AGENTCAPSULE_DATABASE_URL` (for example
+  `lock_timeout=30000`, in milliseconds) replaces the process's.
+- PostgreSQL's `max_connections` (100 by default) must hold every process
+  together: the API and the worker of each host, `agentcapsule-admin`, the
+  API's and the worker's event listeners (one connection each) and the
+  backup and metrics jobs.
+
 ## Directory and SLIM
 
 The shipped [deploy/interop](../deploy/interop) keeps both services private:
