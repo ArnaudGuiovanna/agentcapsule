@@ -230,6 +230,9 @@ var corpusFileProgressSearchPathSQL string
 //go:embed migrations/0065_work_notifications.sql
 var workNotificationsSQL string
 
+//go:embed migrations/0066_open_state_indexes.sql
+var openStateIndexesSQL string
+
 // Append migrations; never edit an installed migration. The original schema
 // also upgrades pre-ledger installations, preserving its historical backfills.
 // Later calls validate its checksum without replaying DDL or those backfills.
@@ -299,6 +302,7 @@ var controlPlaneMigrations = []schemaMigration{
 	{version: 63, name: "corpus-build-streams", sql: corpusBuildStreamsSQL},
 	{version: 64, name: "corpus-file-progress-search-path", sql: corpusFileProgressSearchPathSQL},
 	{version: 65, name: "work-notifications", sql: workNotificationsSQL},
+	{version: 66, name: "open-state-indexes", sql: openStateIndexesSQL},
 }
 
 func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error {

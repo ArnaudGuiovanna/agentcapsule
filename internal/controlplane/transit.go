@@ -489,6 +489,22 @@ func (t *Transit) delivered(ctx context.Context, tx pgx.Tx, id string) error {
 	return err
 }
 
+// transitRetentionStart starts, for at most $1 payloads, the retention ($2
+// microseconds) of request content that ended without one (PurgeExpired).
+const transitRetentionStart = `UPDATE transit_payloads SET delivered_at=clock_timestamp(),
+        purge_after=clock_timestamp()+$2::bigint*interval '1 microsecond' WHERE id IN
+        (SELECT p.id FROM transit_payloads p JOIN agent_requests r ON r.id=p.ref_id
+          WHERE p.purged_at IS NULL AND p.purge_after IS NULL AND p.kind IN ('request','reply')
+            AND (p.kind='reply' AND r.reply_ref=p.id AND EXISTS(SELECT 1 FROM agent_mailboxes m
+                  WHERE m.ref_id=r.id AND m.kind='reply' AND m.delivery_state='DEAD')
+              OR p.kind='request' AND r.payload_ref=p.id AND r.state IN ('DECLINED','EXPIRED','CANCELED','FAILED'))
+          ORDER BY p.id LIMIT $1 FOR UPDATE OF p SKIP LOCKED)`
+
+// transitPurgeDue clears the ciphertext of at most $1 payloads past their
+// purge date, the oldest first (PurgeExpired).
+const transitPurgeDue = `UPDATE transit_payloads SET ciphertext=NULL,purged_at=clock_timestamp() WHERE id IN
+        (SELECT id FROM transit_payloads WHERE purged_at IS NULL AND purge_after<=clock_timestamp() ORDER BY purge_after,id LIMIT $1 FOR UPDATE SKIP LOCKED)`
+
 // PurgeExpired clears current SQL ciphertext only. Metadata tombstones remain;
 // retaining an old backup/key is outside this operation's erasure guarantees.
 //
@@ -508,18 +524,10 @@ func (t *Transit) PurgeExpired(ctx context.Context, limit int) (int64, error) {
 		return 0, err
 	}
 	defer rollback(tx)
-	if _, err = tx.Exec(ctx, `UPDATE transit_payloads SET delivered_at=clock_timestamp(),
-        purge_after=clock_timestamp()+$2::bigint*interval '1 microsecond' WHERE id IN
-        (SELECT p.id FROM transit_payloads p JOIN agent_requests r ON r.id=p.ref_id
-          WHERE p.purged_at IS NULL AND p.purge_after IS NULL
-            AND (p.kind='reply' AND r.reply_ref=p.id AND EXISTS(SELECT 1 FROM agent_mailboxes m
-                  WHERE m.ref_id=r.id AND m.kind='reply' AND m.delivery_state='DEAD')
-              OR p.kind='request' AND r.payload_ref=p.id AND r.state IN ('DECLINED','EXPIRED','CANCELED','FAILED'))
-          ORDER BY p.id LIMIT $1 FOR UPDATE OF p SKIP LOCKED)`, limit, t.retention.Microseconds()); err != nil {
+	if _, err = tx.Exec(ctx, transitRetentionStart, limit, t.retention.Microseconds()); err != nil {
 		return 0, err
 	}
-	tag, err := tx.Exec(ctx, `UPDATE transit_payloads SET ciphertext=NULL,purged_at=clock_timestamp() WHERE id IN
-        (SELECT id FROM transit_payloads WHERE purged_at IS NULL AND purge_after<=clock_timestamp() ORDER BY purge_after,id LIMIT $1 FOR UPDATE SKIP LOCKED)`, limit)
+	tag, err := tx.Exec(ctx, transitPurgeDue, limit)
 	if err != nil {
 		return 0, err
 	}

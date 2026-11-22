@@ -48,26 +48,9 @@ func nextWorkTicket(ctx context.Context, tx pgx.Tx, host string) (int64, error) 
 	return n, err
 }
 
-// DiscoverWork projects durable business intents onto a host-local work queue.
-// Only a mailbox head is scheduled, and a reply, status or instruction past
-// its deadline that no attempt reached, which dies wherever it is in the
-// queue (ADR 007). An agent whose VM stopped while it held work in progress
-// is resumed (ADR 017). A bounded oldest-first batch admits new
-// work; existing tickets are unchanged by repeated discovery. Multi-host fence
-// transport remains separate from this initial single-host coordinator.
-func (s *Store) DiscoverWork(ctx context.Context, host string, limit int) error {
-	if limit < 1 || limit > 1024 {
-		return errors.New("invalid work discovery limit")
-	}
-	tx, err := s.begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer rollback(tx)
-	if err = lockWorkerHost(ctx, tx, host); err != nil {
-		return err
-	}
-	rows, err := tx.Query(ctx, `SELECT kind,object_id,agent_id FROM (
+// discoverWorkQuery lists host $1's work that has no job yet, oldest first, at
+// most $2. Its open-state indexes keep it off the tables' history (P-04).
+const discoverWorkQuery = `SELECT kind,object_id,agent_id FROM (
         SELECT 'delivery' AS kind,m.id AS object_id,m.dest_agent_id AS agent_id,o.available_at AS created
           FROM outbox o JOIN agent_mailboxes m ON m.id=o.mailbox_id
           JOIN agent_placements p ON p.agent_id=m.dest_agent_id
@@ -101,9 +84,30 @@ func (s *Store) DiscoverWork(ctx context.Context, host string, limit int) error 
                 AND earlier.kind IN ('wake','sleep') AND earlier.status IN ('PENDING','RUNNING'))
         UNION ALL
         SELECT 'resume',a.id,a.id,clock_timestamp() FROM agents a JOIN agent_placements p ON p.agent_id=a.id
-          WHERE p.host_id=$1 AND p.state='STOPPED' AND `+resumeDue+`
+          WHERE p.host_id=$1 AND p.state='STOPPED' AND ` + resumeDue + `
       ) work WHERE NOT EXISTS(SELECT 1 FROM worker_jobs j WHERE j.host_id=$1 AND j.kind=work.kind AND j.object_id=work.object_id)
-      ORDER BY created,kind,object_id LIMIT $2`, host, limit)
+      ORDER BY created,kind,object_id LIMIT $2`
+
+// DiscoverWork projects durable business intents onto a host-local work queue.
+// Only a mailbox head is scheduled, and a reply, status or instruction past
+// its deadline that no attempt reached, which dies wherever it is in the
+// queue (ADR 007). An agent whose VM stopped while it held work in progress
+// is resumed (ADR 017). A bounded oldest-first batch admits new
+// work; existing tickets are unchanged by repeated discovery. Multi-host fence
+// transport remains separate from this initial single-host coordinator.
+func (s *Store) DiscoverWork(ctx context.Context, host string, limit int) error {
+	if limit < 1 || limit > 1024 {
+		return errors.New("invalid work discovery limit")
+	}
+	tx, err := s.begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer rollback(tx)
+	if err = lockWorkerHost(ctx, tx, host); err != nil {
+		return err
+	}
+	rows, err := tx.Query(ctx, discoverWorkQuery, host, limit)
 	if err != nil {
 		return err
 	}
