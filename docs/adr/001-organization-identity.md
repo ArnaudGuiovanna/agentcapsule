@@ -279,6 +279,66 @@ the retention's `FOR UPDATE OF` locks would have given the worker `UPDATE`
 on `instruction_replays`, `owner_messages`, `peer_redeliveries` and
 `tenant_agent_audit`.
 
+### One row lock per admission (PERF-3B, finding P-07)
+
+Until v0.1.0 every authenticated request took `FOR SHARE` on five or six
+rows: its organization, its principal, its membership, the issuer, the trust
+and the key (a technical account: the organization, its token, its principal
+and its membership). Every request wrote those locks, and every request of an
+organization wrote a new multixact on its organization's, issuer's, trust's
+and key's rows.
+
+PostgreSQL's conflict table, for the revocations of those rows:
+
+| Lock held by the admission | conflicts with `FOR UPDATE` | with `FOR NO KEY UPDATE` (a plain `UPDATE` of a column no foreign key names) |
+|---|---|---|
+| `FOR SHARE` | yes | yes |
+| `FOR KEY SHARE` | yes | no |
+
+No row is deleted. The revoking statements are plain `UPDATE`s
+(`FOR NO KEY UPDATE`): a membership's status or role, a principal's status,
+a token's `revoked_at`, a trust's status, generation or `minimum_iat`, a
+key's `retired_at` or `expires_at`, a provider's or an alias's status. Only
+the issuer's anchor (a token's tombstone), a key being retired and a service
+token being revoked are taken `FOR UPDATE` first. So `FOR KEY SHARE` on
+those rows alone would let a
+revocation commit while an admission it should wait for is in flight.
+
+What makes it hold is the rule ADR 002 already states: every transaction
+that revokes or changes one of those rows takes its organization's row
+`FOR UPDATE` first (`authorizeTenantAdminMutation`, `DisableOrganization`,
+`ChangeDelegationAuthority`, `authorizeAppSync`). The admission now holds
+that one row, `FOR KEY SHARE`, from its authorization to its commit, and
+reads the other rows without a lock (`resolveTenant`, `resolveService`, and
+`reserveLLM` for the provider and the alias). `FOR KEY SHARE` is the weakest
+lock that conflicts with `FOR UPDATE`; the other updates of the
+organization's row and of the other rows no longer wait for admissions.
+Under `READ COMMITTED` each statement reads a new snapshot: an admission
+that waited for a revocation reads it in the statements that follow its
+lock.
+
+- The replay of a revocation after a failover (`agentcapsule-admin
+  reconcile`, `replayEffect`) took no lock: it relied on the admissions'
+  `FOR SHARE` on the rows it updates. It now takes its organization's row
+  `FOR UPDATE`, and a blanket revocation every organization's row, in order.
+- `TestEveryRevocationHoldsItsOrganizationsRow` lists, from the sources,
+  every function whose statements revoke or change such a row, with where its
+  transaction takes the organization's row: a new one fails until it is
+  reviewed and listed. `TestAdmissionHoldsOnlyItsOrganizationsRowForKeyShare`
+  shows what the admission no longer blocks;
+  `TestEachRevocationWaitsForAnAdmissionAuthorizedBeforeIt` and
+  `TestAnAdmissionWaitingForARevocationReadsIt` order an admission and a
+  revocation of each row both ways, the replay included. The earlier races
+  (`TestTenantRevocationSerializesWithExistingAdmission`, the members',
+  teams' and reassignment tests) hold unchanged.
+- An application's admission (`resolveApp`) keeps its `FOR SHARE` locks:
+  its revocations are being reworked (SEC-1B); the same rule applies to it.
+
+The preamble of each transaction (the gate, synchronous commit and the
+durability check) is one round trip since PERF-3B (P-06), and each process
+bounds its connections, statements and lock waits (P-08,
+[install.md](../install.md#connections)).
+
 ### Row-level security: considered, not adopted
 
 The audit asked to consider policies on the tenant tables keyed by a

@@ -388,6 +388,26 @@ func replayEffect(ctx context.Context, tx pgx.Tx, r AuthorityRecord) error {
 	if tenantScoped && org == "" {
 		return ErrReconciliationRecord
 	}
+	// As every revoking route does, the replay holds the organizations' rows
+	// FOR UPDATE before it revokes: an admission holds its organization's row
+	// FOR KEY SHARE, and reads the other rows without a lock (P-07). A blanket
+	// revocation holds every organization's row, in their order.
+	locks := []string{}
+	switch {
+	case r.Kind == authoritylog.AccessBlanket:
+		locks = nil
+	case r.Kind == authoritylog.AccessOrganization:
+		for _, o := range r.Objects {
+			if len(o) == 1 {
+				locks = append(locks, o[0])
+			}
+		}
+	case org != "":
+		locks = append(locks, org)
+	}
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM organizations WHERE $1::text[] IS NULL OR id=ANY($1) ORDER BY id FOR UPDATE`, locks); err != nil {
+		return err
+	}
 	if r.Kind == authoritylog.AccessBlanket {
 		b, ok := authoritylog.ParseBlanket(r.Objects)
 		if !ok {

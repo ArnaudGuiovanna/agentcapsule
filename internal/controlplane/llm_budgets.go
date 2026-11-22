@@ -357,7 +357,7 @@ func (a *Accounts) reserveLLM(ctx context.Context, tenantID, agentID, alias, req
 	}
 	defer rollback(tx)
 	var orgActive bool
-	if err = tx.QueryRow(ctx, `SELECT status='active' FROM organizations WHERE id=$1 FOR SHARE`, tenantID).Scan(&orgActive); errors.Is(err, pgx.ErrNoRows) || (err == nil && !orgActive) {
+	if err = tx.QueryRow(ctx, `SELECT status='active' FROM organizations WHERE id=$1 FOR KEY SHARE`, tenantID).Scan(&orgActive); errors.Is(err, pgx.ErrNoRows) || (err == nil && !orgActive) {
 		return LLMReservation{}, ErrNotFound
 	} else if err != nil {
 		return LLMReservation{}, err
@@ -376,7 +376,8 @@ func (a *Accounts) reserveLLM(ctx context.Context, tenantID, agentID, alias, req
 	// The organization's row lock above serializes this read with every
 	// change of a provider or an alias, which takes that row FOR UPDATE first
 	// (authorizeTenantAdminMutation): a change committed before it is seen,
-	// one after it waits for this reservation.
+	// one after it waits for this reservation. FOR KEY SHARE is enough: it
+	// conflicts with FOR UPDATE (P-07).
 	err = tx.QueryRow(ctx, `SELECT m.access,m.priced,m.input_micro_per_mtok,m.output_micro_per_mtok,m.operations,m.audio_micro_per_minute,m.ocr_micro_per_page,
         p.id,p.secret_generation FROM llm_model_aliases m JOIN llm_providers p ON (p.tenant_id,p.id)=(m.tenant_id,m.provider_id)
         WHERE m.tenant_id=$1 AND m.alias=$2 AND m.status='active' AND p.status='active'`,

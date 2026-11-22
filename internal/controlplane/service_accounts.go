@@ -104,13 +104,14 @@ func (s *Store) authenticateService(ctx context.Context, secret string) (Princip
 	return Principal{Kind: "tenant", ID: principal, TenantID: b.tenantID, TokenID: b.tokenID, Scopes: slices.Clone(b.scopes), service: &b}, nil
 }
 
-// resolveService rechecks, under shared locks, that the organization, the
-// technical account, its membership and the token are all current. Every
-// mutation of these rows holds the organization row exclusively, so shared
-// access to it excludes a concurrent revocation until this transaction ends.
+// resolveService rechecks that the organization, the technical account, its
+// membership and the token are all current. Every mutation of these rows
+// holds the organization row FOR UPDATE, so FOR KEY SHARE on it, held until
+// this transaction ends, excludes a concurrent revocation; the other rows are
+// read without a lock (P-07, as resolveTenant).
 func resolveService(ctx context.Context, tx pgx.Tx, b serviceBinding) (CurrentOrganization, error) {
 	var current CurrentOrganization
-	o, err := scanOrganization(tx.QueryRow(ctx, `SELECT id,name,status,policy_version,created_at FROM organizations WHERE id=$1`+authorityLock(tx, " FOR SHARE"), b.tenantID))
+	o, err := scanOrganization(tx.QueryRow(ctx, `SELECT id,name,status,policy_version,created_at FROM organizations WHERE id=$1`+authorityLock(tx, " FOR KEY SHARE"), b.tenantID))
 	if errors.Is(err, ErrNotFound) || (err == nil && o.Status != "active") {
 		return current, ErrAuthentication
 	}
@@ -124,7 +125,7 @@ func resolveService(ctx context.Context, tx pgx.Tx, b serviceBinding) (CurrentOr
         JOIN principals p ON (p.tenant_id,p.id)=(t.tenant_id,t.principal_id)
         JOIN memberships m ON (m.tenant_id,m.principal_id)=(p.tenant_id,p.id)
         WHERE t.id=$1 AND t.tenant_id=$2 AND p.kind='service'
-          AND t.revoked_at IS NULL AND t.expires_at>clock_timestamp()`+authorityLock(tx, " FOR SHARE OF t,p,m"), b.tokenID, b.tenantID).Scan(&current.PrincipalID, &current.DisplayName, &status, &current.Role, &membership)
+          AND t.revoked_at IS NULL AND t.expires_at>clock_timestamp()`, b.tokenID, b.tenantID).Scan(&current.PrincipalID, &current.DisplayName, &status, &current.Role, &membership)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return CurrentOrganization{}, ErrAuthentication
 	}
