@@ -7,6 +7,8 @@ import (
 	"errors"
 	"sync"
 	"time"
+
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/keymem"
 )
 
 // The daily receipt keys (docs/adr/006-authority-service.md §7, wave 6;
@@ -24,7 +26,8 @@ import (
 // the LLM credential key and of the download link key: neither rotates.
 
 // ReceiptKeySource fetches the receipt key of day from the authority
-// service: 32 bytes, which the caller clears. An error that wraps
+// service: 32 bytes, which the caller clears and releases (keymem.Release:
+// the service's client gives them in a locked page). An error that wraps
 // ErrReceiptKeyGone means that the key no longer exists, for good.
 type ReceiptKeySource func(ctx context.Context, day time.Time) ([]byte, error)
 
@@ -91,6 +94,10 @@ func (r *receiptKeyRing) aead(ctx context.Context, day time.Time) (cipher.AEAD, 
 	ctx, cancel := context.WithTimeout(ctx, receiptFetch)
 	defer cancel()
 	key, err := r.fetch(ctx, day)
+	// The service's client gives the key in a locked page (internal/keymem):
+	// clear it, then give the page back. The cipher keeps its own copy of
+	// the key schedule, on the Go heap, as long as the ring holds the day.
+	defer keymem.Release(key)
 	defer clear(key)
 	switch {
 	case errors.Is(err, ErrReceiptKeyGone):

@@ -3,16 +3,16 @@
 package keyauthority
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"unsafe"
+
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/keymem/keymemtest"
 )
 
 // lockFile is the volume's lock file, and whether it exists.
@@ -144,27 +144,7 @@ func TestOpenRemovesTheLocksOfRevokedVolumes(t *testing.T) {
 // addr, from /proc/self/smaps, or "" when none does.
 func mapping(t *testing.T, addr uintptr) string {
 	t.Helper()
-	f, err := os.Open("/proc/self/smaps")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer f.Close()
-	inside := false
-	lines := bufio.NewScanner(f)
-	for lines.Scan() {
-		line := lines.Text()
-		if fields := strings.Fields(line); len(fields) > 1 && strings.Contains(fields[0], "-") && !strings.HasSuffix(fields[0], ":") {
-			start, end, _ := strings.Cut(fields[0], "-")
-			a, err1 := strconv.ParseUint(start, 16, 64)
-			b, err2 := strconv.ParseUint(end, 16, 64)
-			inside = err1 == nil && err2 == nil && uint64(addr) >= a && uint64(addr) < b
-			continue
-		}
-		if flags, ok := strings.CutPrefix(line, "VmFlags:"); ok && inside {
-			return " " + strings.TrimSpace(flags) + " "
-		}
-	}
-	return ""
+	return keymemtest.FlagsAt(t, addr)
 }
 
 // L-18: the key a callback borrows lies in a page of its own, outside the Go

@@ -12,6 +12,7 @@ import (
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authoritylog"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/keyauthority"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/keymem"
 )
 
 // The daily receipt keys (docs/adr/006-authority-service.md §7, wave 6): a
@@ -47,10 +48,11 @@ func replicaKey(t *testing.T, p *pair, day time.Time) (key []byte, revoked bool)
 func receiptKey(t *testing.T, l Local, day time.Time) []byte {
 	t.Helper()
 	key, err := l.ReceiptKey(t.Context(), day)
+	defer keymem.Release(key)
 	if err != nil || len(key) != 32 {
 		t.Fatal("the receipt key of", day, err)
 	}
-	return key
+	return bytes.Clone(key)
 }
 
 // Answer 4(b): the standby is away when a day's key is due. Its creation
