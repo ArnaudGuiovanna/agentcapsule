@@ -109,6 +109,13 @@ func (a *Accounts) ListAudit(ctx context.Context, p Principal, cursor string, li
 		return AuditPage{}, err
 	}
 	defer rollback(tx)
+	// The page ends at the trail's horizon (audit_horizon.go): an event that
+	// commits late is never behind its cursor. Taken before any row lock, so
+	// that its wait holds up no revocation.
+	horizon, err := auditHorizon(ctx, tx, p.TenantID)
+	if err != nil {
+		return AuditPage{}, err
+	}
 	current, err := authorizeTenant(ctx, tx, p, authorization.ScopeAuditRead)
 	if err != nil {
 		return AuditPage{}, err
@@ -117,7 +124,7 @@ func (a *Accounts) ListAudit(ctx context.Context, p Principal, cursor string, li
 		return AuditPage{}, ErrForbidden
 	}
 	rows, err := tx.Query(ctx, `SELECT `+auditColumns+` FROM (`+auditUnion+`) e
-        WHERE (created_at,id) > ($2::timestamptz,$3::text) ORDER BY created_at,id LIMIT $4`, p.TenantID, after, afterID, limit)
+        WHERE (created_at,id) > ($2::timestamptz,$3::text) AND created_at < $5 ORDER BY created_at,id LIMIT $4`, p.TenantID, after, afterID, limit, horizon)
 	if err != nil {
 		return AuditPage{}, err
 	}
@@ -219,7 +226,7 @@ type RefusedAttempt struct {
 }
 
 // maxRefusalAttempts bounds the attempts one refusal event stands for
-// (migration 0069).
+// (migration 0074).
 const maxRefusalAttempts = 1000000000
 
 var (

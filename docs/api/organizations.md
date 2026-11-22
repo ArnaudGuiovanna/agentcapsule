@@ -91,6 +91,9 @@ authenticates against this status. The organization's work stops too:
   `error_code` `organization_disabled`, and its content is erased;
 - a wake of one of its agents is canceled the same way;
 - its agents cannot send requests to one another (refused as unavailable);
+- its agents call no model: a call from one of its VMs that still runs is
+  refused before any reservation, with the guest's code for a call it may
+  not make (`unauthorized`; HTTP 403 inside the VM);
 - a delivery to one of its agents (an invocation, a request, a reply, a
   status) is not claimed and boots no VM: it waits, and dies at its deadline
   as any other;

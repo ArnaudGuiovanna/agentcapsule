@@ -374,14 +374,19 @@ func TestReadyChecksInstalledMigrationLedger(t *testing.T) {
 // fixtures simulating an older installation can replay it. Test-only: a ledger
 // row is never removed to repair a production database. The objects a later
 // migration creates and could not create again come first, newest first
-// (0072 to 0069, then 0065; 0073 only replaces a function); those of 0066
-// to 0068 go with the table, column and tables they change, dropped below
-// (access_revocations, platform_operations.cause, the llm tables).
+// (0079 and 0078, 0077 to 0075, 0072 to 0069, then 0065; 0073 and 0080 only
+// replace a function);
+// those of 0066 to 0068 and 0074 go with the table, column and tables they
+// change, dropped below (access_revocations, platform_operations.cause, the
+// llm tables, tenant_refusal_audit).
 func revertTenantAgents(t *testing.T, s *Store) {
 	t.Helper()
 	if _, err := s.pool.Exec(t.Context(), `
         DROP INDEX IF EXISTS llm_usage_finished, llm_audit_usage;
         DROP TABLE IF EXISTS llm_budget_windows;
+        DROP FUNCTION IF EXISTS preserve_audit_event(), stamp_audit_event(), preserve_audit_retention() CASCADE;
+        ALTER TABLE IF EXISTS platform_credentials DROP COLUMN IF EXISTS parent_id, DROP COLUMN IF EXISTS chain_started_at;
+        DROP TABLE IF EXISTS application_clients;
         DROP INDEX IF EXISTS platform_operations_finished, agent_requests_finished, agent_requests_mandate, agent_mailboxes_reference,
           idempotency_keys_response, inbox_items_reference, owner_messages_request, peer_wakes_request, tenant_agent_audit_request,
           corpus_builds_invocation, corpus_extensions_invocation;

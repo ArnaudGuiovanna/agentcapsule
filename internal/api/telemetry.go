@@ -12,7 +12,7 @@ import (
 
 // problemCodes lists every code the API answers with (application/problem+json);
 // TestEveryProblemCodeIsDeclared keeps it complete.
-var problemCodes = []string{"agent_already_exists", "agent_unavailable", "attachment_quota_exceeded", "attachment_too_large",
+var problemCodes = []string{"agent_already_exists", "agent_unavailable", "application_client_not_approved", "attachment_quota_exceeded", "attachment_too_large",
 	"attachment_unavailable", "attachments_purged", "audit_export_too_large", "authentication_required", "authority_not_reconciled", "authority_unavailable", "closure_pending", "expired", "forbidden",
 	"harness_unavailable", "idempotency_key_in_progress", "idempotency_key_required", "idempotency_key_reused", "idempotency_receipt_unreadable", "incomplete_body", "input_purged", "invalid_json",
 	"invalid_path", "invalid_request", "invalid_transition", "json_required", "media_type_required", "method_not_allowed", "not_found",

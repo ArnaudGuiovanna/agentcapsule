@@ -135,6 +135,10 @@ var commands = map[string]string{
 	"operation show": "GET /operations/{id}",
 	"operation wait": "GET /operations/{id}",
 
+	"organization approve-client":  "POST /organizations/{id}/application-clients",
+	"organization clients":         "GET /organizations/{id}/application-clients",
+	"organization withdraw-client": "POST /organizations/{id}/application-clients/{approval}/withdraw",
+
 	"organization capabilities":     "GET /organizations/current/capabilities",
 	"organization create":           "POST /organizations",
 	"organization current":          "GET /organizations/current",

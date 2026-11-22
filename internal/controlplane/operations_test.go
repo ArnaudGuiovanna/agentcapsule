@@ -177,12 +177,8 @@ func TestAuditRetentionPurgesOnlyOlderEvents(t *testing.T) {
 	l, c, owner := agentLab(t)
 	old := createTenantAgent(t, c, owner, "old")
 	createTenantAgent(t, c, owner, "recent")
-	if _, err := l.s.pool.Exec(t.Context(), "UPDATE tenant_agent_audit SET created_at=created_at-interval '40 days' WHERE agent_id=$1", old); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := l.s.pool.Exec(t.Context(), "UPDATE organization_audit SET created_at=created_at-interval '400 days'"); err != nil {
-		t.Fatal(err)
-	}
+	ageAudit(t, l.s, "tenant_agent_audit", "created_at=created_at-interval '40 days' WHERE agent_id=$1", old)
+	ageAudit(t, l.s, "organization_audit", "created_at=created_at-interval '400 days'")
 	before := count(t, l.s, "tenant_agent_audit") + count(t, l.s, "organization_audit")
 	if days, err := l.s.AuditRetention(t.Context()); err != nil || days != nil {
 		t.Fatal("a retention by default", days, err)
@@ -311,7 +307,7 @@ func TestAuditRetentionCoversEveryAuditTable(t *testing.T) {
 		if count(t, l.s, a.table) == 0 {
 			t.Fatal(a.table, "has no event: seed one")
 		}
-		seed("UPDATE " + a.table + " SET " + a.at + "=" + a.at + "-interval '400 days'")
+		ageAudit(t, l.s, a.table, a.at+"="+a.at+"-interval '400 days'")
 	}
 	thirty := 30
 	if out, err := l.s.SetAuditRetention(t.Context(), testOperator, &thirty); err != nil || out.Outcome != "done" {

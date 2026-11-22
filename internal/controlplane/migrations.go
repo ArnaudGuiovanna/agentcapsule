@@ -257,13 +257,22 @@ var servicePrivilegesActivityRetentionSQL string
 //go:embed migrations/0074_refusal_attempts.sql
 var refusalAttemptsSQL string
 
-//go:embed migrations/0075_llm_budget_windows.sql
+//go:embed migrations/0075_application_clients.sql
+var applicationClientsSQL string
+
+//go:embed migrations/0076_platform_session_chains.sql
+var platformSessionChainsSQL string
+
+//go:embed migrations/0077_append_only_audit.sql
+var appendOnlyAuditSQL string
+
+//go:embed migrations/0078_llm_budget_windows.sql
 var llmBudgetWindowsSQL string
 
-//go:embed migrations/0076_model_call_retention.sql
+//go:embed migrations/0079_model_call_retention.sql
 var modelCallRetentionSQL string
 
-//go:embed migrations/0077_service_privileges_model_calls.sql
+//go:embed migrations/0080_service_privileges_model_calls.sql
 var servicePrivilegesModelCallsSQL string
 
 // Append migrations; never edit an installed migration. The original schema
@@ -344,9 +353,12 @@ var controlPlaneMigrations = []schemaMigration{
 	{version: 72, name: "finished-record-retention", sql: finishedRecordRetentionSQL},
 	{version: 73, name: "service-privileges-activity-retention", sql: servicePrivilegesActivityRetentionSQL},
 	{version: 74, name: "refusal-attempts", sql: refusalAttemptsSQL},
-	{version: 75, name: "llm-budget-windows", sql: llmBudgetWindowsSQL},
-	{version: 76, name: "model-call-retention", sql: modelCallRetentionSQL},
-	{version: 77, name: "service-privileges-model-calls", sql: servicePrivilegesModelCallsSQL},
+	{version: 75, name: "application-clients", sql: applicationClientsSQL},
+	{version: 76, name: "platform-session-chains", sql: platformSessionChainsSQL},
+	{version: 77, name: "append-only-audit", sql: appendOnlyAuditSQL},
+	{version: 78, name: "llm-budget-windows", sql: llmBudgetWindowsSQL},
+	{version: 79, name: "model-call-retention", sql: modelCallRetentionSQL},
+	{version: 80, name: "service-privileges-model-calls", sql: servicePrivilegesModelCallsSQL},
 }
 
 func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error {

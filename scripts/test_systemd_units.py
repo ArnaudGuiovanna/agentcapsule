@@ -43,7 +43,7 @@ REQUIRED = {
     "deploy/systemd/agentcapsule-worker.service": {
         "Delegate": "yes", "KillMode": "process", "NoNewPrivileges": "yes",
         "CapabilityBoundingSet": " ".join(sorted(WORKER_CAPABILITIES)), "AmbientCapabilities": "",
-        "ProtectSystem": "strict", "StateDirectory": "agentcapsule agentcapsule-archives",
+        "ProtectSystem": "strict", "StateDirectory": "agentcapsule/host agentcapsule-archives",
         "StateDirectoryMode": "0700", "ReadWritePaths": "-/run/agentcapsule-worker",
         "InaccessiblePaths": "-/var/lib/agentcapsule-key-authority -/var/lib/agentcapsule-restore-authority "
                              "-/var/lib/agentcapsule-authority-replica",

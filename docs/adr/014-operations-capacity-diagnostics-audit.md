@@ -349,7 +349,7 @@ target is an event in full, up to ten targets; every other attempt is
 counted, and at the window's end one event records their number
 (`attempts`), with the actor, the action, the reason and the organization as
 target. Each refusal carries `attempts`, 1 for an event in full (migration
-0069). The refinement keeps §10's isolation: an attempt at another
+0074). The refinement keeps §10's isolation: an attempt at another
 organization's agent stays recorded exactly as one at an unknown agent (each
 is the first at its target), and whether an attempt is recorded in full or
 counted depends only on the actor's own earlier attempts. Per actor, action
@@ -368,3 +368,40 @@ Tests: `TestRequestBucketsAdmitABurstThenTheirRate`,
 `TestRefusalAttemptsMigrationKeepsExistingRefusals`,
 `TestASlowDownloadOutlivesTheServerWriteTimeout` (PG; the last one for L-05:
 a download now moves its write deadline, as an upload does).
+
+**Lot SEC-1B (finding L-03): an append-only trail, and a feed that skips no late commit.**
+
+Until v0.1.0 nothing kept the 17 audit tables (`auditTables`) from being
+changed or deleted by the roles that write them, and the feed
+(`GET /v1/audit`) paged on `(created_at, id)` with `created_at` taken at the
+insert: a page read while an audited transaction was still open moved its
+cursor past later events, and that transaction's event, stamped earlier,
+then committed behind the cursor and was never read.
+
+Now (migration `append-only-audit`):
+
+1. **Append-only.** A trigger on each audit table refuses every `UPDATE`,
+   every `TRUNCATE`, and every `DELETE` but the retention purge's: an event
+   older than the retention in force (§8). The purge (`PurgeAudit`, as the
+   worker) deletes as before. Only the schema's owner, which
+   `set-audit-retention` runs as, sets the retention: the worker, which reads
+   it under a row lock to purge, cannot shorten it. The trigger takes the
+   columns that may change as arguments; there are none today: the counted
+   refusals (L-04, above) are new rows, never a change of one.
+2. **A commit-safe feed.** Each event of the feed's tables is stamped once
+   its transaction holds its organization's feed lock, an advisory lock in
+   shared mode kept until its commit. A page first takes the time, then the
+   lock's holders, waits for those to end, and returns only events stamped
+   before that time: each of those has then committed or rolled back, and a
+   later event is stamped after it. Writers never wait for each other or for
+   a reader, and a reader waits only for that organization's audited
+   transactions open when it asked. Order and cursor are unchanged: a cursor
+   given before the update goes on.
+3. A page waits at most five seconds; past that, an audited transaction of
+   the organization is still open, and the answer is 503
+   `temporarily_unavailable` with `Retry-After: 1`. Nothing is lost: the next
+   page has the event. This assumes the database server's clock does not
+   step back, as the order on `created_at` always did.
+
+The export (`GET /v1/audit/export`) reads a closed range at one snapshot, as
+before: an event that commits later is in a later export of the same range.

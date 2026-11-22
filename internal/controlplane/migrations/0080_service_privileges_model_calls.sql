@@ -1,7 +1,7 @@
 -- The service roles' privileges after the budgets' counters and the
 -- retention of finished model calls (v0.1.0 audit, P-05; ADR 001, "Changes
 -- after the v0.1.0 audit"; the policy is migration 0065's
--- agentcapsule_service_grants(), unchanged). From migration 0073's list:
+-- agentcapsule_service_grants(), unchanged). From migration 0075's list:
 --
 -- - llm_budget_windows (migration llm-budget-windows): a reservation, a
 --   settlement and a release write it in the API (an organization's
@@ -9,9 +9,6 @@
 --   gateway); the worker deletes the windows its retention removes.
 -- - llm_usage: the worker deletes the finished calls its retention removes
 --   (migration model-call-retention).
--- - application_clients, as the security fixes give it (SEC-1B): the API
---   inserts, updates and deletes it, the worker writes nothing. A table
---   this schema does not hold yet is skipped.
 --
 -- The grants are stated again at the end.
 CREATE OR REPLACE FUNCTION agentcapsule_service_privileges() RETURNS TABLE(role text, tbl text, privileges text)

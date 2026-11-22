@@ -50,21 +50,52 @@ type PlatformSessionRequest struct {
 	ReplaceCurrent bool   `json:"replace_current,omitempty"`
 }
 
+// PlatformSessionChainLifetime bounds a chain of platform sessions (audit
+// finding L-01): no session outlives this long after the chain's root, an
+// enrollment proof or a credential of bootstrap-platform, was issued. Past
+// it, the operator enrolls again on the host (agentcapsule-admin
+// issue-enrollment).
+const PlatformSessionChainLifetime = 30 * 24 * time.Hour
+
+// platformSessionLifetime is one session's lifetime.
+const platformSessionLifetime = 12 * time.Hour
+
+// CreatePlatformSession issues a session to the credential p, or to an
+// enrollment proof. The session records its parent. An enrollment proof is
+// always consumed; replace_current consumes p. Consuming a credential
+// revokes it and every session descended from it. A credential has at most
+// one live child otherwise: a second is refused (ErrTransition). The
+// session ends at the latest PlatformSessionChainLifetime after its chain
+// started; a chain at its end issues no session (ErrExpired).
 func (a *Accounts) CreatePlatformSession(ctx context.Context, p Principal, enrollment, key string, in PlatformSessionRequest) (APIReceipt, error) {
 	tx, err := a.store.begin(ctx)
 	if err != nil {
 		return APIReceipt{}, err
 	}
 	defer rollback(tx)
+	var proof [32]byte
+	if enrollment != "" {
+		// A bearer that is no live enrollment proof is refused before the
+		// shared lock (audit finding L-02): it neither waits on it nor
+		// holds it. The proof is read again, and locked, under it.
+		proof = sha256.Sum256([]byte(enrollment))
+		p.Kind = "platform"
+		err = tx.QueryRow(ctx, `SELECT id,account FROM platform_credentials WHERE token_hash=$1
+			AND scopes=ARRAY['platform:enroll'] AND revoked_at IS NULL AND expires_at>clock_timestamp()`, proof[:]).Scan(&p.TokenID, &p.ID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return APIReceipt{}, ErrAuthentication
+		}
+		if err != nil {
+			return APIReceipt{}, err
+		}
+	}
 	// Stable ordering across issue, rotate and revoke, including self revocation.
 	if _, err = tx.Exec(ctx, "SELECT pg_advisory_xact_lock(756610045)"); err != nil {
 		return APIReceipt{}, err
 	}
 	if enrollment != "" {
-		hash := sha256.Sum256([]byte(enrollment))
-		p.Kind = "platform"
 		err = tx.QueryRow(ctx, `SELECT id,account FROM platform_credentials WHERE token_hash=$1
-			AND scopes=ARRAY['platform:enroll'] AND revoked_at IS NULL AND expires_at>clock_timestamp() FOR UPDATE`, hash[:]).Scan(&p.TokenID, &p.ID)
+			AND scopes=ARRAY['platform:enroll'] AND revoked_at IS NULL AND expires_at>clock_timestamp() FOR UPDATE`, proof[:]).Scan(&p.TokenID, &p.ID)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return APIReceipt{}, ErrAuthentication
 		}
@@ -79,25 +110,47 @@ func (a *Accounts) CreatePlatformSession(ctx context.Context, p Principal, enrol
 		return APIReceipt{}, ErrInput
 	}
 	out, err := a.withReceipt(ctx, tx, scope(p, "POST", "/v1/platform/sessions/"+p.TokenID, key), in, func() (int, any, error) {
+		var started time.Time
+		var open bool
+		err := tx.QueryRow(ctx, `SELECT chain_started_at,chain_started_at+$2::bigint*interval '1 microsecond'>clock_timestamp()+interval '1 minute'
+            FROM platform_credentials WHERE id=$1`, p.TokenID, PlatformSessionChainLifetime.Microseconds()).Scan(&started, &open)
+		if err != nil {
+			return 0, nil, err
+		}
+		if !open {
+			return 0, nil, ErrExpired
+		}
+		actor := WithOperator(ctx, p.ID)
+		records := a.store.revocations(tx, "")
+		if enrollment != "" || in.ReplaceCurrent {
+			// Revoked before the new session exists: the cascade never
+			// reaches it.
+			if err = revokeSession(actor, tx, records, p.TokenID); err != nil {
+				return 0, nil, err
+			}
+		} else {
+			var live bool
+			if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM platform_credentials WHERE parent_id=$1
+                AND revoked_at IS NULL AND expires_at>clock_timestamp())`, p.TokenID).Scan(&live); err != nil {
+				return 0, nil, err
+			}
+			if live {
+				return 0, nil, ErrTransition
+			}
+		}
 		session := OperatorCredential{Kind: "platform", Account: p.ID, Status: "active"}
-		err := tx.QueryRow(ctx, `INSERT INTO platform_credentials(id,account,token_hash,scopes,expires_at)
-		  VALUES($1,$2,$3,ARRAY['platform:admin'],clock_timestamp()+interval '12 hours')
-		  ON CONFLICT(token_hash) DO NOTHING RETURNING id,expires_at`, newID("ptok"), p.ID, hash).Scan(&session.ID, &session.ExpiresAt)
+		err = tx.QueryRow(ctx, `INSERT INTO platform_credentials(id,account,token_hash,scopes,expires_at,parent_id,chain_started_at)
+		  VALUES($1,$2,$3,ARRAY['platform:admin'],least(clock_timestamp()+$5::bigint*interval '1 microsecond',$6::timestamptz+$7::bigint*interval '1 microsecond'),$4,$6)
+		  ON CONFLICT(token_hash) DO NOTHING RETURNING id,expires_at`, newID("ptok"), p.ID, hash, p.TokenID,
+			platformSessionLifetime.Microseconds(), started, PlatformSessionChainLifetime.Microseconds()).Scan(&session.ID, &session.ExpiresAt)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return 0, nil, ErrTransition
 		}
 		if err != nil {
 			return 0, nil, err
 		}
-		actor := WithOperator(ctx, p.ID)
 		if err = auditPlatform(actor, tx, "platform_credential.created", session.ID, true); err != nil {
 			return 0, nil, err
-		}
-		records := a.store.revocations(tx, "")
-		if enrollment != "" || in.ReplaceCurrent {
-			if err = revokeSession(actor, tx, records, p.TokenID); err != nil {
-				return 0, nil, err
-			}
 		}
 		body, err := records.body(session)
 		return 201, body, err
@@ -108,15 +161,31 @@ func (a *Accounts) CreatePlatformSession(ctx context.Context, p Principal, enrol
 	return a.store.settled(ctx, out, commit(ctx, tx))
 }
 
+// revokeSession revokes the credential id and every session descended from
+// it, also below a session revoked before; each is audited and recorded.
 func revokeSession(ctx context.Context, tx pgx.Tx, records *revocations, id string) error {
-	tag, err := tx.Exec(ctx, `UPDATE platform_credentials SET revoked_at=clock_timestamp() WHERE id=$1 AND revoked_at IS NULL`, id)
-	if err != nil || tag.RowsAffected() == 0 {
+	ids, err := revokePlatformChain(ctx, tx, id)
+	if err != nil {
 		return err
 	}
-	if err = auditPlatform(ctx, tx, "platform_credential.revoked", id, true); err != nil {
-		return err
+	for _, revoked := range ids {
+		if err = auditPlatform(ctx, tx, "platform_credential.revoked", revoked, true); err != nil {
+			return err
+		}
 	}
-	return records.add(ctx, authoritylog.AccessPlatformCredential, "", [][]string{{id}})
+	return records.add(ctx, authoritylog.AccessPlatformCredential, "", objects(ids))
+}
+
+// revokePlatformChain revokes the platform credential id and its live
+// descendants, and returns those it revoked. A parent is older than its
+// children, and never changes: the chain has no cycle.
+func revokePlatformChain(ctx context.Context, tx pgx.Tx, id string) ([]string, error) {
+	return collect(tx.Query(ctx, `WITH RECURSIVE chain(id) AS (
+            SELECT id FROM platform_credentials WHERE id=$1
+            UNION ALL SELECT c.id FROM platform_credentials c JOIN chain ON c.parent_id=chain.id)
+        UPDATE platform_credentials c SET revoked_at=clock_timestamp() FROM chain
+         WHERE c.id=chain.id AND c.revoked_at IS NULL
+        RETURNING c.id`, id))
 }
 
 func (a *Accounts) RevokePlatformSession(ctx context.Context, p Principal, id, key string) (APIReceipt, error) {
