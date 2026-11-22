@@ -34,6 +34,130 @@ COSIGN_HASH = "424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa"
 COSIGN_URL = "https://github.com/sigstore/cosign/releases/download/v3.1.4/cosign-linux-amd64"
 OP_ID = r"host_[a-f0-9]{32}"
 SCHEMA = "agentcapsule.host/v1"
+ISSUER = "https://token.actions.githubusercontent.com"
+# The release workflow signs in the protected "release" environment (S-16,
+# ADR 013): Fulcio writes it in the certificate (OID 1.3.6.1.4.1.57264.1.23).
+# The two releases signed before that environment existed are accepted by the
+# digest of their SHA256SUMS only.
+RELEASE_ENVIRONMENT = "release"
+ENVIRONMENT_OID = "1.3.6.1.4.1.57264.1.23"
+SIGNED_BEFORE_ENVIRONMENT = {
+    "v0.0.1": "500038470c97b46ea7efc31ca1fc08c305f46d2d181d61707a1c24e9ea30391e",
+    "v0.1.0": "b0574da8b4811af9c57edc5127a58a68a09140c58391c2566a4815946f1a4c41",
+}
+
+
+def cosign_verification(cosign, bundle, version):
+    # The workflow, the tag, the trigger and the repository of the signing run.
+    return [cosign, "verify-blob", "--bundle", bundle,
+            "--certificate-identity", f"https://github.com/{REPO}/.github/workflows/release.yml@refs/tags/{version}",
+            "--certificate-oidc-issuer", ISSUER,
+            "--certificate-github-workflow-trigger", "push",
+            "--certificate-github-workflow-repository", REPO,
+            "--certificate-github-workflow-ref", "refs/tags/" + version]
+
+
+def der_items(data):
+    # The (tag, value) pairs of a DER sequence's contents.
+    i = 0
+    while i < len(data):
+        if i + 2 > len(data):
+            raise ValueError("truncated signing certificate")
+        tag, length = data[i], data[i + 1]
+        i += 2
+        if length & 0x80:
+            size = length & 0x7f
+            if not 1 <= size <= 4 or i + size > len(data):
+                raise ValueError("invalid signing certificate length")
+            length = int.from_bytes(data[i:i + size], "big")
+            i += size
+        if i + length > len(data):
+            raise ValueError("truncated signing certificate")
+        yield tag, data[i:i + length]
+        i += length
+
+
+def der_oid(dotted):
+    parts = [int(p) for p in dotted.split(".")]
+    out = bytearray([40 * parts[0] + parts[1]])
+    for part in parts[2:]:
+        chunk = [part & 0x7f]
+        while part > 0x7f:
+            part >>= 7
+            chunk.append(0x80 | (part & 0x7f))
+        out.extend(reversed(chunk))
+    return bytes(out)
+
+
+def certificate_extension(der, dotted):
+    # The value of one extension of an X.509 certificate, or None.
+    (tag, certificate), = der_items(der)
+    if tag != 0x30:
+        raise ValueError("invalid signing certificate")
+    tag, tbs = next(der_items(certificate))
+    if tag != 0x30:
+        raise ValueError("invalid signing certificate")
+    wanted = der_oid(dotted)
+    for tag, field in der_items(tbs):
+        if tag != 0xa3:
+            continue
+        (tag, extensions), = der_items(field)
+        for tag, extension in der_items(extensions):
+            parts = list(der_items(extension))
+            if parts[0] == (0x06, wanted):
+                return parts[-1][1]
+    return None
+
+
+def signing_environment(bundle):
+    # The deployment environment of the run that signed a Sigstore bundle.
+    material = json.loads(bundle)["verificationMaterial"]
+    raw = (material.get("certificate") or {}).get("rawBytes")
+    if raw is None:
+        raw = material["x509CertificateChain"]["certificates"][0]["rawBytes"]
+    value = certificate_extension(base64.b64decode(raw, validate=True), ENVIRONMENT_OID)
+    if value is None:
+        return None
+    (tag, text), = der_items(value)
+    if tag != 0x0c:
+        raise ValueError("invalid deployment environment in the signing certificate")
+    return text.decode()
+
+
+def check_signing_environment(bundle, sums, version):
+    if SIGNED_BEFORE_ENVIRONMENT.get(version) == sha(sums):
+        return
+    if signing_environment(bundle.read_bytes()) != RELEASE_ENVIRONMENT:
+        raise ValueError("release " + version + " was not signed in the protected release environment")
+
+
+def highest_recorded():
+    record = STATE / "highest-release.json"
+    return read(record)["version"] if record.is_file() else None
+
+
+def release_floor():
+    # The highest release this host has installed: no install or update goes
+    # below it without --allow-older (L-13). Hosts installed before the record
+    # existed start from their installed release.
+    versions = [v for v in (current(), highest_recorded()) if v]
+    return max(versions, key=version_order, default=None)
+
+
+def record_highest(version, floor):
+    # floor is release_floor() from before the activation of version.
+    highest = max((v for v in (version, floor) if v), key=version_order)
+    if highest_recorded() != highest:
+        save(STATE / "highest-release.json", {"version": highest})
+
+
+def validate_release_floor(request):
+    if request["action"] not in ("install", "update") or request.get("allow_older"):
+        return
+    floor = release_floor()
+    if floor and version_order(request["version"]) < version_order(floor):
+        raise ValueError(f"release {request['version']} is older than {floor}, the highest this host has installed; "
+                         "pass --allow-older to install it anyway")
 
 
 def write_file(path, data, mode=0o600):
@@ -289,9 +413,7 @@ def verify_assets(request,manifest_only,version,uri,dest):
                 download(COSIGN_URL, cosign, COSIGN_HASH, 240 << 20)
                 cosign.chmod(0o700)
         bundle = fetch("SHA256SUMS.sigstore.json", maxsize=8 << 20)
-        verify = [cosign, "verify-blob", "--bundle", bundle, "--certificate-identity",
-                  f"https://github.com/{REPO}/.github/workflows/release.yml@refs/tags/{version}",
-                  "--certificate-oidc-issuer", "https://token.actions.githubusercontent.com"]
+        verify = cosign_verification(cosign, bundle, version)
         custom_root = None
         if offline:
             root_contents = Path(request["trusted_root"]).read_bytes() if request.get("trusted_root") else TRUSTED_ROOT
@@ -301,6 +423,7 @@ def verify_assets(request,manifest_only,version,uri,dest):
                 custom_root = hashlib.sha256(root_contents).hexdigest()
             verify.extend(["--offline", "--trusted-root", root])
         run(*verify, sums,stdout=sys.stderr)
+        check_signing_environment(bundle, sums, version)
         signer = {"mode":"sigstore", "workflow":f"{REPO}/.github/workflows/release.yml",
                   "issuer":"https://token.actions.githubusercontent.com", "custom_root_sha256":custom_root}
     fingerprint=sha(sums)
@@ -402,10 +525,12 @@ def activate_verified(directory, request, release, dist):
     if request["action"] == "rollback":
         # Always check the live history with admissions closed, also on retry.
         check_binary_rollback(request, read(dist / "agentcapsule-bundle.json"), read(dist / "verified-origin.json"))
+    floor = release_floor()
     activate(ACTIVE, release)
     if verified.is_file():
         save(dist / "activated-origin.json", read(verified))
         save(STATE / "active-release.json", {"operation_id":directory.name, "version":request["version"]})
+    record_highest(request["version"], floor)
 
 
 def execute(directory):
@@ -448,6 +573,7 @@ def execute(directory):
                     step("invocation", lambda: smoke(read(STATE / "profile.json"), directory))
             else:
                 validate_release_direction(request)
+                validate_release_floor(request)
                 if "source_activation" in request and not owner:
                     if current() != request["from"] or activation_generation() != request["source_activation"]:
                         raise ValueError("installed activation changed after plan")
@@ -614,6 +740,9 @@ def main(argv, cli_version):
     rollbacks = groups.add_parser("rollback").add_subparsers(dest="sub", required=True)
     rollback_plan = rollbacks.add_parser("plan")
     rollbacks.add_parser("apply").add_argument("--plan", required=True)
+    for p in (install, plan):
+        p.add_argument("--allow-older", action="store_true",
+                       help="install a release older than the highest this host has installed")
     for p in (install, plan, rollback_plan):
         p.add_argument("--profile", help="installation profile JSON on host")
         p.add_argument("--to", required=p is rollback_plan)
@@ -643,7 +772,9 @@ def main(argv, cli_version):
         target = args.to or latest()
         if not re.fullmatch(VERSION, target):
             raise ValueError("invalid release tag")
-        return {"schema": SCHEMA, "installed": current(), "available": target, "different": current() != target}
+        floor = release_floor()
+        return {"schema": SCHEMA, "installed": current(), "available": target, "different": current() != target,
+                "highest_installed": floor, "older": bool(floor) and version_order(target) < version_order(floor)}
     if args.command == "host" and args.group == "diagnose":
         return diagnose(args)
     if args.command == "host":
@@ -708,6 +839,14 @@ def main(argv, cli_version):
                    "development_key":str(Path(args.development_key).resolve()) if args.development_key else None,
                    "offline": str(Path(args.offline).resolve()) if args.offline else None,
                    "trusted_root":str(Path(args.trusted_root).resolve()) if args.trusted_root else None}
+        if getattr(args, "allow_older", False):
+            request["allow_older"] = True
+        elif (action == "install" and re.fullmatch(VERSION, cli_version) and
+              version_order(version) < version_order(cli_version)):
+            # An empty host has no record: this CLI's own release is the floor.
+            raise ValueError(f"release {version} is older than this CLI ({cli_version}); "
+                             "pass --allow-older to install it anyway")
+        validate_release_floor(request)
         if action in ("update", "rollback"):
             request["source_activation"] = activation_generation()
     ident = "host_" + hashlib.sha256(json.dumps(request, sort_keys=True).encode()).hexdigest()[:32]

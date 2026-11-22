@@ -309,11 +309,13 @@ The maintainer:
      (`--release`), builds everything twice with fresh module caches and
      compares, writes the SBOMs, scans them and the deploy images, and
      assembles the files and `SHA256SUMS`;
-   - **sign** (an OIDC token, no write access to the repository): checks the
-     files against `SHA256SUMS`, signs it with cosign keyless and verifies
-     the signature, and attests the SLSA provenance of every file;
-   - **publish** (write access to the repository's contents only): creates
-     the draft release with every file.
+   - **sign** (an OIDC token, no write access to the repository), in the
+     `release` environment: checks the files against `SHA256SUMS`, signs it
+     with cosign keyless and verifies the signature, installs the CLI with
+     `install.sh` from those files as a user would (which checks the signer),
+     and attests the SLSA provenance of every file;
+   - **publish** (write access to the repository's contents only), in the
+     `release` environment: creates the draft release with every file.
 4. Reviews the draft: the files, `dependency-audit.json` and
    `vulnerability-scan.json` (every allowlisted finding is listed with its
    reason), and verifies the release as a user would (below). Then publishes
@@ -324,7 +326,42 @@ version; never move a published tag.
 
 Repository settings that the workflow assumes but does not create: a tag
 ruleset that lets only maintainers create `v*` tags and forbids moving or
-deleting them, and Actions allowed to create releases.
+deleting them, the `release` environment below, and Actions allowed to create
+releases.
+
+### The release environment
+
+The ancestry check (only a commit of `main` is released) runs in the tagged
+commit's own workflow, so a tag on another commit could carry a workflow
+without it (S-16). The `sign` and `publish` jobs therefore run in the
+protected environment `release`, and Fulcio writes the environment of the
+signing job in the certificate (extension `1.3.6.1.4.1.57264.1.23`).
+`install.sh`, `agentcapsule self update` and the host helper refuse a
+`SHA256SUMS` whose certificate does not name `release`, as well as a
+signature from another trigger than the tag's `push`, another repository or
+another ref. A workflow that leaves the environment out signs with a
+certificate that every verifier refuses. The two releases signed before the
+environment existed, `v0.0.1` and `v0.1.0`, are accepted by the SHA-256 of
+their `SHA256SUMS` only, pinned in the three verifiers.
+
+The owner creates, in the repository's settings:
+
+1. **Environments → New environment `release`**:
+   - *Required reviewers*: one or more maintainers. Each run waits for their
+     approval before `sign`, then before `publish`. Turn on *Prevent
+     self-review* when there is more than one maintainer.
+   - *Deployment branches and tags*: *Selected branches and tags*, with the
+     tag rules `v[0-9]*.[0-9]*.[0-9]*` and `v[0-9]*.[0-9]*.[0-9]*-*`, and no
+     branch: no other ref can run a job in this environment.
+   - *Allow administrators to bypass configured protection rules*: off.
+2. **Rules → Rulesets → New tag ruleset**, active, targeting `v*`:
+   *Restrict creations*, *Restrict updates* and *Restrict deletions*, with
+   only the maintainers (or a release team) in the bypass list.
+3. **Branch protection of `main`** stays as it is: changes to
+   `.github/workflows/release.yml` reach `main` only through review.
+
+A reviewer approves `sign` only for a tag of a commit of `main` that they
+expect to release: the approval page names the tag and the commit.
 
 ## Verify a release
 
@@ -335,23 +372,32 @@ below for the workstation CLI. It runs under any POSIX shell:
 
 ```sh
 curl -fsSL https://github.com/ArnaudGuiovanna/agentcapsule/releases/latest/download/install.sh | sh
-curl -fsSL https://github.com/ArnaudGuiovanna/agentcapsule/releases/download/v0.0.1/install.sh | sh -s -- --version v0.0.1 --require-signature
+curl -fsSL https://github.com/ArnaudGuiovanna/agentcapsule/releases/download/v0.0.1/install.sh | sh -s -- --version v0.0.1
 ```
 
 The script selects the executable from `uname` (Linux or macOS, amd64 or
 arm64; Windows under Git Bash or MSYS2). It takes the latest release unless
-`--version` names one, and downloads the executable with `SHA256SUMS`. When
-`cosign` is on PATH, the script verifies `SHA256SUMS.sigstore.json` against the
-release workflow's identity for that exact tag and stops on failure.
-`--require-signature` refuses to continue without cosign. The executable is
-installed only when `SHA256SUMS` lists its name exactly once with its digest.
-The default directory is `~/.local/bin`, or `/usr/local/bin` as root; `--dir`
-selects another. An existing CLI is replaced only after every check passes.
-Without cosign, the digest check protects against a damaged download but not
-against a compromised release: verify the signature as in step 2 before
-trusting the CLI with a production host. `scripts/test_install_cli.py` tests
-these refusals. Later updates use `agentcapsule self update`, which
-always verifies the signature with cosign.
+`--version` names one, and downloads the executable with `SHA256SUMS`. It
+needs `cosign` 2.4 or newer and `openssl` on PATH (S-17): it verifies
+`SHA256SUMS.sigstore.json` against the release workflow's identity for that
+exact tag, the `push` trigger, the repository and the tag's ref, then reads
+the certificate with openssl and requires the `release` environment
+([above](#the-release-environment)). It stops on any failure, and without
+cosign. The executable is installed only when `SHA256SUMS` lists its name
+exactly once with its digest. The default directory is `~/.local/bin`, or
+`/usr/local/bin` as root; `--dir` selects another. An existing CLI is
+replaced only after every check passes. `--require-signature`, the default,
+is still accepted.
+
+`--insecure-skip-signature` (or `AGENTCAPSULE_INSECURE_SKIP_SIGNATURE=1`)
+skips the signature and prints a warning: the digest check then protects
+against a damaged download but not against a compromised release, since
+whoever can replace the executable can replace `SHA256SUMS`. Verify the
+signature as in step 2 before trusting such a CLI with a production host.
+`scripts/test_install_cli.py` tests these refusals. Later updates use
+`agentcapsule self update`, which always verifies the signature, the same
+claims and the environment, and refuses a release older than the highest the
+CLI has been (`--allow-older` overrides, L-13).
 
 ### By hand
 
@@ -378,11 +424,21 @@ that will run the CLI. On Linux and macOS, `uname -m` reports `x86_64` or
    ```
 
 2. Verify the checksum index with an independently trusted cosign 2.4 or newer.
-   The signer must match the project workflow and selected tag. Continue only
-   when this command exits successfully. [Cosign](https://github.com/sigstore/cosign)
+   The signer must match the project workflow, the selected tag, the `push`
+   trigger and the repository. Continue only when this command exits
+   successfully. [Cosign](https://github.com/sigstore/cosign)
 
    ```sh
-   cosign verify-blob --bundle SHA256SUMS.sigstore.json --certificate-identity "https://github.com/ArnaudGuiovanna/agentcapsule/.github/workflows/release.yml@refs/tags/$tag" --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS
+   cosign verify-blob --bundle SHA256SUMS.sigstore.json --certificate-identity "https://github.com/ArnaudGuiovanna/agentcapsule/.github/workflows/release.yml@refs/tags/$tag" --certificate-oidc-issuer https://token.actions.githubusercontent.com --certificate-github-workflow-trigger push --certificate-github-workflow-repository ArnaudGuiovanna/agentcapsule --certificate-github-workflow-ref "refs/tags/$tag" SHA256SUMS
+   ```
+
+   Then check that the signing job ran in the `release` environment: this
+   prints `..release` (the extension's two DER header bytes, then the name)
+   for every release after `v0.1.0`.
+
+   ```sh
+   python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["verificationMaterial"]["certificate"]["rawBytes"])' SHA256SUMS.sigstore.json |
+     openssl base64 -d -A | openssl x509 -inform DER -noout -text | grep -A1 '1.3.6.1.4.1.57264.1.23:'
    ```
 
 3. Verify the **selected executable** under its original release filename.

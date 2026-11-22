@@ -7,14 +7,17 @@
 # The script picks the executable for this system (Linux or macOS, amd64 or
 # arm64; Windows through Git Bash or MSYS2), downloads it with the release's
 # SHA256SUMS, and installs it only if its digest is the one, single entry
-# for that file. When cosign is on PATH, it first verifies that SHA256SUMS
-# was signed by this repository's release workflow for that exact tag;
-# --require-signature makes that check mandatory. See docs/release.md.
+# for that file. First it verifies, with cosign and openssl, that SHA256SUMS
+# was signed by this repository's release workflow for that exact tag, run by
+# the push of the tag, in the protected release environment. Without cosign
+# it stops, unless --insecure-skip-signature says to check the digest only.
+# See docs/release.md.
 #
 # Options (or environment variables):
-#   --version TAG          AGENTCAPSULE_VERSION      release tag, default: the latest release
-#   --dir DIR              AGENTCAPSULE_INSTALL_DIR  default: /usr/local/bin as root, else ~/.local/bin
-#   --require-signature    AGENTCAPSULE_REQUIRE_SIGNATURE=1
+#   --version TAG               AGENTCAPSULE_VERSION      release tag, default: the latest release
+#   --dir DIR                   AGENTCAPSULE_INSTALL_DIR  default: /usr/local/bin as root, else ~/.local/bin
+#   --insecure-skip-signature   AGENTCAPSULE_INSECURE_SKIP_SIGNATURE=1
+#   --require-signature         the default; kept for older instructions
 #
 # The whole script is a function called on its last line, so a truncated
 # download runs nothing.
@@ -23,6 +26,12 @@ set -eu
 
 REPOSITORY="ArnaudGuiovanna/agentcapsule"
 ISSUER="https://token.actions.githubusercontent.com"
+# The signing run's deployment environment, in its certificate (S-16). The two
+# releases signed before that environment existed are accepted by the digest
+# of their SHA256SUMS; internal/hostops holds the same values.
+ENVIRONMENT_OID="1.3.6.1.4.1.57264.1.23"
+SIGNED_BEFORE_ENVIRONMENT="v0.0.1:500038470c97b46ea7efc31ca1fc08c305f46d2d181d61707a1c24e9ea30391e
+v0.1.0:b0574da8b4811af9c57edc5127a58a68a09140c58391c2566a4815946f1a4c41"
 
 say() {
 	printf 'agentcapsule-install: %s\n' "$*" >&2
@@ -37,13 +46,17 @@ usage() {
 	cat <<'EOF'
 Install the Agent Capsule workstation CLI from GitHub Releases.
 
-usage: install.sh [--version TAG] [--dir DIR] [--require-signature]
+usage: install.sh [--version TAG] [--dir DIR] [--insecure-skip-signature]
 
-  --version TAG        release tag (AGENTCAPSULE_VERSION); default: the latest release
-  --dir DIR            install directory (AGENTCAPSULE_INSTALL_DIR);
-                       default: /usr/local/bin as root, else ~/.local/bin
-  --require-signature  fail unless cosign verifies SHA256SUMS
-                       (AGENTCAPSULE_REQUIRE_SIGNATURE=1)
+  --version TAG              release tag (AGENTCAPSULE_VERSION); default: the latest release
+  --dir DIR                  install directory (AGENTCAPSULE_INSTALL_DIR);
+                             default: /usr/local/bin as root, else ~/.local/bin
+  --insecure-skip-signature  do not verify the signature of SHA256SUMS, only the
+                             executable's digest (AGENTCAPSULE_INSECURE_SKIP_SIGNATURE=1).
+                             Anyone who can change the release can change both.
+
+The signature is verified by default: it needs cosign 2.4 or newer and
+openssl on PATH. --require-signature, the default, is still accepted.
 EOF
 }
 
@@ -65,17 +78,41 @@ download() {
 		--output "$2" "$1" || die "download failed: $1"
 }
 
+signing_environment() {
+	# signing_environment BUNDLE: the deployment environment written in the
+	# signing certificate of a Sigstore bundle, or nothing. openssl prints the
+	# extension's DER bytes: ".." (UTF8String, length) then the name.
+	certificate="$(tr -d '\n' <"$1" |
+		sed -n 's/.*"certificate" *: *{ *"rawBytes" *: *"\([A-Za-z0-9+/=]*\)".*/\1/p')"
+	[ -n "$certificate" ] || die "no signing certificate in SHA256SUMS.sigstore.json"
+	printf '%s' "$certificate" | openssl base64 -d -A | openssl x509 -inform DER -noout -text |
+		awk -v oid="$ENVIRONMENT_OID" '$1 == oid ":" { getline; sub(/^[ \t]+/, ""); sub(/[ \t]+$/, ""); print; exit }'
+}
+
+check_signing_environment() {
+	# check_signing_environment BUNDLE SUMS: signed in the release environment.
+	pin="$version:$(sha256_of "$2")"
+	if printf '%s\n' "$SIGNED_BEFORE_ENVIRONMENT" | grep -Fqx -- "$pin"; then
+		return 0
+	fi
+	command -v openssl >/dev/null 2>&1 || die "openssl is required to read the signing certificate"
+	environment="$(signing_environment "$1")" || die "cannot read the signing certificate"
+	[ "$environment" = "..release" ] ||
+		die "SHA256SUMS of $version was not signed in the protected release environment"
+}
+
 main() {
 	version="${AGENTCAPSULE_VERSION:-}"
 	dir="${AGENTCAPSULE_INSTALL_DIR:-}"
-	require_signature="${AGENTCAPSULE_REQUIRE_SIGNATURE:-0}"
+	skip_signature="${AGENTCAPSULE_INSECURE_SKIP_SIGNATURE:-0}"
 	while [ "$#" -gt 0 ]; do
 		case "$1" in
 		--version) [ "$#" -ge 2 ] || die "--version needs a tag"; version="$2"; shift 2 ;;
 		--version=*) version="${1#--version=}"; shift ;;
 		--dir) [ "$#" -ge 2 ] || die "--dir needs a directory"; dir="$2"; shift 2 ;;
 		--dir=*) dir="${1#--dir=}"; shift ;;
-		--require-signature) require_signature=1; shift ;;
+		--require-signature) shift ;;
+		--insecure-skip-signature) skip_signature=1; shift ;;
 		-h | --help) usage; exit 0 ;;
 		*) die "unknown argument: $1 (see --help)" ;;
 		esac
@@ -134,18 +171,27 @@ main() {
 	download "$url/SHA256SUMS" "$tmp/SHA256SUMS"
 	download "$url/$asset" "$tmp/$asset"
 
-	if command -v cosign >/dev/null 2>&1; then
+	if [ "$skip_signature" = 1 ]; then
+		say "WARNING: --insecure-skip-signature: the signature of SHA256SUMS is NOT verified."
+		say "WARNING: the digest check below only proves that $asset matches SHA256SUMS;"
+		say "WARNING: anyone who can replace the release files can replace both. Install cosign"
+		say "WARNING: and run this script again without --insecure-skip-signature."
+	elif command -v cosign >/dev/null 2>&1; then
 		download "$url/SHA256SUMS.sigstore.json" "$tmp/SHA256SUMS.sigstore.json"
 		cosign verify-blob --bundle "$tmp/SHA256SUMS.sigstore.json" \
 			--certificate-identity "https://github.com/$REPOSITORY/.github/workflows/release.yml@refs/tags/$version" \
-			--certificate-oidc-issuer "$ISSUER" "$tmp/SHA256SUMS" </dev/null >&2 ||
+			--certificate-oidc-issuer "$ISSUER" \
+			--certificate-github-workflow-trigger push \
+			--certificate-github-workflow-repository "$REPOSITORY" \
+			--certificate-github-workflow-ref "refs/tags/$version" "$tmp/SHA256SUMS" </dev/null >&2 ||
 			die "the signature of SHA256SUMS is not the release workflow's for $version"
-		say "verified the signature of SHA256SUMS (release workflow, $version)"
-	elif [ "$require_signature" = 1 ]; then
-		die "--require-signature needs cosign 2.4 or newer on PATH"
+		check_signing_environment "$tmp/SHA256SUMS.sigstore.json" "$tmp/SHA256SUMS"
+		say "verified the signature of SHA256SUMS (release workflow, $version, release environment)"
 	else
-		say "cosign not found: checking the digest only. For the signature, see"
-		say "https://github.com/$REPOSITORY/blob/main/docs/release.md#verify-a-release"
+		die "cosign 2.4 or newer is required to verify the signature of SHA256SUMS:
+  https://docs.sigstore.dev/cosign/system_config/installation/
+  (or pass --insecure-skip-signature to check the digest only; see
+  https://github.com/$REPOSITORY/blob/main/docs/release.md#verify-a-release)"
 	fi
 
 	expected="$(awk -v name="$asset" '$2 == name && NF == 2 { print $1 }' "$tmp/SHA256SUMS")"
