@@ -623,13 +623,3 @@ func (a *Accounts) retryOne(ctx context.Context, ids [3]string) error {
 	}
 	return commit(ctx, tx)
 }
-
-func personalTarget(ctx context.Context, tx pgx.Tx, tenant, agent, member string) error {
-	var conflicts bool
-	err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM app_personal_reservations WHERE tenant_id=$1 AND agent_id=$2 AND principal_id<>$3)
-		OR EXISTS(SELECT 1 FROM personal_volume_holds WHERE tenant_id=$1 AND agent_id=$2 AND principal_id<>$3)`, tenant, agent, member).Scan(&conflicts)
-	if err == nil && conflicts {
-		return ErrTransition
-	}
-	return err
-}

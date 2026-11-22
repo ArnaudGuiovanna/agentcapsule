@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
-	"slices"
-	"strings"
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authoritylog"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorization"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane/assignments"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane/audit"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -41,24 +41,8 @@ type TenantAgent struct {
 	QueueReason *string `json:"queue_reason,omitempty"`
 }
 
-// AgentAssignment grants permissions on one agent to one principal or to every
-// active member of one team. Permissions are read_metadata, invoke, read_content.
-type AgentAssignment struct {
-	ID          string     `json:"id"`
-	AgentID     string     `json:"agent_id"`
-	PrincipalID *string    `json:"principal_id,omitempty"`
-	TeamID      *string    `json:"team_id,omitempty"`
-	Permissions []string   `json:"permissions"`
-	Status      string     `json:"status"`
-	CreatedAt   time.Time  `json:"created_at"`
-	RevokedAt   *time.Time `json:"revoked_at,omitempty"`
-}
-
-type CreateAssignmentInput struct {
-	PrincipalID string   `json:"principal_id,omitempty"`
-	TeamID      string   `json:"team_id,omitempty"`
-	Permissions []string `json:"permissions"`
-}
+type AgentAssignment = assignments.Assignment
+type CreateAssignmentInput = assignments.Input
 
 const tenantAgentColumns = `a.id,x.name,
         CASE WHEN a.phase<>'LIVE' THEN a.phase
@@ -211,17 +195,7 @@ func (c *AgentCatalog) reserveTenant(ctx context.Context, p Principal, key strin
 }
 
 func auditTenantAgent(ctx context.Context, tx pgx.Tx, p Principal, agent string, assignment *string, action string) error {
-	// A file upload or deletion changes no authorization policy. Bumping the
-	// version would also take the organization row exclusively after the agent
-	// lock, against concurrent uploads that read it shared before (deadlock).
-	if action != "agent.created" && !strings.HasPrefix(action, "attachment.") {
-		if _, err := tx.Exec(ctx, `UPDATE organizations SET policy_version=policy_version+1 WHERE id=$1`, p.TenantID); err != nil {
-			return err
-		}
-	}
-	_, err := tx.Exec(ctx, `INSERT INTO tenant_agent_audit(id,tenant_id,actor_principal_id,agent_id,assignment_id,action) VALUES($1,$2,$3,$4,$5,$6)`,
-		newID("audit"), p.TenantID, p.ID, agent, assignment, action)
-	return err
+	return audit.RecordAgent(ctx, tx, p.TenantID, p.ID, agent, assignment, action)
 }
 
 func (c *AgentCatalog) listTenant(ctx context.Context, p Principal, after string, limit int) ([]TenantAgent, error) {
@@ -285,37 +259,12 @@ func (c *AgentCatalog) getTenant(ctx context.Context, p Principal, id string) (T
 	return v, commit(ctx, tx)
 }
 
-var assignmentPermissions = []string{"read_metadata", "invoke", "read_content"}
-
 func validAssignmentInput(in CreateAssignmentInput) ([]string, bool) {
-	if (in.PrincipalID == "") == (in.TeamID == "") || len(in.Permissions) == 0 || len(in.Permissions) > len(assignmentPermissions) {
+	if !validOrganizationText(in.PrincipalID+in.TeamID, 100) {
 		return nil, false
 	}
-	target := in.PrincipalID + in.TeamID
-	if !validOrganizationText(target, 100) {
-		return nil, false
-	}
-	seen := []string{}
-	for _, p := range in.Permissions {
-		if !slices.Contains(assignmentPermissions, p) || slices.Contains(seen, p) {
-			return nil, false
-		}
-		seen = append(seen, p)
-	}
-	slices.Sort(seen)
-	return seen, true
+	return in.NormalizedPermissions()
 }
-
-func scanAssignment(row pgx.Row) (AgentAssignment, error) {
-	var s AgentAssignment
-	err := row.Scan(&s.ID, &s.AgentID, &s.PrincipalID, &s.TeamID, &s.Permissions, &s.Status, &s.CreatedAt, &s.RevokedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		err = ErrNotFound
-	}
-	return s, err
-}
-
-const assignmentColumns = `id,agent_id,principal_id,team_id,permissions,status,created_at,revoked_at`
 
 func (a *Accounts) CreateAgentAssignment(ctx context.Context, p Principal, agentID, key string, in CreateAssignmentInput) (APIReceipt, error) {
 	permissions, ok := validAssignmentInput(in)
@@ -331,47 +280,15 @@ func (a *Accounts) CreateAgentAssignment(ctx context.Context, p Principal, agent
 	if _, err = authorizeTenantAdminMutation(ctx, tx, p, authorization.ManageAssignments); err != nil {
 		return APIReceipt{}, err
 	}
-	var phase string
-	if err = tx.QueryRow(ctx, `SELECT phase FROM agents WHERE tenant_id=$1 AND id=$2 FOR SHARE`, p.TenantID, agentID).Scan(&phase); errors.Is(err, pgx.ErrNoRows) {
-		return APIReceipt{}, ErrNotFound
-	} else if err != nil {
+	subject := assignments.Subject{Tenant: p.TenantID, Agent: agentID, Actor: p.ID}
+	phase, err := subject.LockAgentPhase(ctx, tx)
+	if err != nil {
 		return APIReceipt{}, err
 	}
 	operation := "assignment.create/" + agentID
 	r, err := a.withTenantReceipt(ctx, tx, p, operation, key, in, func() (int, any, error) {
-		if phase == "DELETING" || phase == "DELETED" {
-			return 0, nil, ErrTransition
-		}
-		var targetActive bool
-		if in.PrincipalID != "" {
-			err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM principals p JOIN memberships m ON (m.tenant_id,m.principal_id)=(p.tenant_id,p.id)
-                WHERE p.tenant_id=$1 AND p.id=$2 AND p.status='active' AND m.status='active')`, p.TenantID, in.PrincipalID).Scan(&targetActive)
-		} else {
-			err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM teams WHERE tenant_id=$1 AND id=$2 AND status='active')`, p.TenantID, in.TeamID).Scan(&targetActive)
-		}
+		s, err := subject.CreateAssignment(ctx, tx, phase, in)
 		if err != nil {
-			return 0, nil, err
-		}
-		if !targetActive {
-			return 0, nil, ErrNotFound
-		}
-		var duplicate bool
-		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM agent_assignments WHERE tenant_id=$1 AND agent_id=$2 AND status='active'
-            AND policy_id IS NULL AND principal_id IS NOT DISTINCT FROM nullif($3,'') AND team_id IS NOT DISTINCT FROM nullif($4,''))`, p.TenantID, agentID, in.PrincipalID, in.TeamID).Scan(&duplicate); err != nil {
-			return 0, nil, err
-		}
-		if err = personalTarget(ctx, tx, p.TenantID, agentID, in.PrincipalID); err != nil {
-			return 0, nil, err
-		}
-		if duplicate {
-			return 0, nil, ErrTransition
-		}
-		s, err := scanAssignment(tx.QueryRow(ctx, `INSERT INTO agent_assignments(id,tenant_id,agent_id,principal_id,team_id,permissions,created_by)
-            VALUES($1,$2,$3,nullif($4,''),nullif($5,''),$6,$7) RETURNING `+assignmentColumns, newID("asg"), p.TenantID, agentID, in.PrincipalID, in.TeamID, in.Permissions, p.ID))
-		if err != nil {
-			return 0, nil, err
-		}
-		if err = auditTenantAgent(ctx, tx, p, agentID, &s.ID, "assignment.created"); err != nil {
 			return 0, nil, err
 		}
 		return 201, s, nil
@@ -394,7 +311,8 @@ func (a *Accounts) RevokeAgentAssignment(ctx context.Context, p Principal, agent
 	if _, err = authorizeTenantAdminMutation(ctx, tx, p, authorization.ManageAssignments); err != nil {
 		return APIReceipt{}, err
 	}
-	current, err := scanAssignment(tx.QueryRow(ctx, `SELECT `+assignmentColumns+` FROM agent_assignments WHERE tenant_id=$1 AND agent_id=$2 AND id=$3 FOR UPDATE`, p.TenantID, agentID, assignmentID))
+	subject := assignments.Subject{Tenant: p.TenantID, Agent: agentID, Actor: p.ID}
+	current, err := subject.LockAssignment(ctx, tx, assignmentID)
 	if err != nil {
 		return APIReceipt{}, err
 	}
@@ -406,12 +324,8 @@ func (a *Accounts) RevokeAgentAssignment(ctx context.Context, p Principal, agent
 		if current.Status == "revoked" {
 			return 200, current, nil
 		}
-		s, err := scanAssignment(tx.QueryRow(ctx, `UPDATE agent_assignments SET status='revoked',revoked_at=clock_timestamp(),revoked_by=$4
-            WHERE tenant_id=$1 AND agent_id=$2 AND id=$3 RETURNING `+assignmentColumns, p.TenantID, agentID, assignmentID, p.ID))
+		s, err := subject.RevokeAssignment(ctx, tx, assignmentID)
 		if err != nil {
-			return 0, nil, err
-		}
-		if err = auditTenantAgent(ctx, tx, p, agentID, &s.ID, "assignment.revoked"); err != nil {
 			return 0, nil, err
 		}
 		revoked := a.store.revocations(tx, p.TenantID)
@@ -444,7 +358,8 @@ func (a *Accounts) ReplaceAgentAssignment(ctx context.Context, p Principal, agen
 	if _, err = authorizeTenantAdminMutation(ctx, tx, p, authorization.ManageAssignments); err != nil {
 		return APIReceipt{}, err
 	}
-	current, err := scanAssignment(tx.QueryRow(ctx, `SELECT `+assignmentColumns+` FROM agent_assignments WHERE tenant_id=$1 AND agent_id=$2 AND id=$3 FOR UPDATE`, p.TenantID, agentID, assignmentID))
+	subject := assignments.Subject{Tenant: p.TenantID, Agent: agentID, Actor: p.ID}
+	current, err := subject.LockAssignment(ctx, tx, assignmentID)
 	if err != nil {
 		return APIReceipt{}, err
 	}
@@ -454,50 +369,8 @@ func (a *Accounts) ReplaceAgentAssignment(ctx context.Context, p Principal, agen
 		Permissions  []string `json:"permissions"`
 	}{agentID, assignmentID, perms}
 	r, err := a.withTenantReceipt(ctx, tx, p, "assignment.replace", key, in, func() (int, any, error) {
-		if current.Status != "active" {
-			return 0, nil, ErrTransition
-		}
-		var phase string
-		if err := tx.QueryRow(ctx, `SELECT phase FROM agents WHERE tenant_id=$1 AND id=$2 FOR SHARE`, p.TenantID, agentID).Scan(&phase); err != nil {
-			return 0, nil, err
-		}
-		if phase == "DELETING" || phase == "DELETED" {
-			return 0, nil, ErrTransition
-		}
-		if _, err := tx.Exec(ctx, `UPDATE agent_assignments SET status='revoked',revoked_at=clock_timestamp(),revoked_by=$4
-            WHERE tenant_id=$1 AND agent_id=$2 AND id=$3`, p.TenantID, agentID, assignmentID, p.ID); err != nil {
-			return 0, nil, err
-		}
-		if err := auditTenantAgent(ctx, tx, p, agentID, &assignmentID, "assignment.revoked"); err != nil {
-			return 0, nil, err
-		}
-		var principal, team string
-		if current.PrincipalID != nil {
-			principal = *current.PrincipalID
-		}
-		if current.TeamID != nil {
-			team = *current.TeamID
-		}
-		var targetActive bool
-		var err error
-		if principal != "" {
-			err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM principals p JOIN memberships m ON (m.tenant_id,m.principal_id)=(p.tenant_id,p.id)
-                WHERE p.tenant_id=$1 AND p.id=$2 AND p.status='active' AND m.status='active')`, p.TenantID, principal).Scan(&targetActive)
-		} else {
-			err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM teams WHERE tenant_id=$1 AND id=$2 AND status='active')`, p.TenantID, team).Scan(&targetActive)
-		}
+		s, err := subject.ReplacePermissions(ctx, tx, current, perms)
 		if err != nil {
-			return 0, nil, err
-		}
-		if !targetActive {
-			return 0, nil, ErrNotFound
-		}
-		s, err := scanAssignment(tx.QueryRow(ctx, `INSERT INTO agent_assignments(id,tenant_id,agent_id,principal_id,team_id,permissions,created_by)
-            VALUES($1,$2,$3,nullif($4,''),nullif($5,''),$6,$7) RETURNING `+assignmentColumns, newID("asg"), p.TenantID, agentID, principal, team, perms, p.ID))
-		if err != nil {
-			return 0, nil, err
-		}
-		if err = auditTenantAgent(ctx, tx, p, agentID, &s.ID, "assignment.created"); err != nil {
 			return 0, nil, err
 		}
 		// The replaced assignment is revoked: its record, after the commit.
@@ -530,30 +403,11 @@ func (a *Accounts) ListAgentAssignments(ctx context.Context, p Principal, agentI
 	if !authorization.CanAdminister(tenantAccess(p), authorization.Role(current.Role), authorization.ManageAssignments) {
 		return nil, ErrForbidden
 	}
-	var exists bool
-	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM agents WHERE tenant_id=$1 AND id=$2)`, p.TenantID, agentID).Scan(&exists); err != nil {
-		return nil, err
-	}
-	if !exists {
-		return nil, ErrNotFound
-	}
-	rows, err := tx.Query(ctx, `SELECT `+assignmentColumns+` FROM agent_assignments WHERE tenant_id=$1 AND agent_id=$2 AND id>$3 ORDER BY id LIMIT $4`, p.TenantID, agentID, after, limit)
+	subject := assignments.Subject{Tenant: p.TenantID, Agent: agentID}
+	items, err := subject.ListAssignments(ctx, tx, after, limit)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	items := []AgentAssignment{}
-	for rows.Next() {
-		s, err := scanAssignment(rows)
-		if err != nil {
-			return nil, err
-		}
-		items = append(items, s)
-	}
-	if err = rows.Err(); err != nil {
-		return nil, err
-	}
-	rows.Close()
 	return items, commit(ctx, tx)
 }
 
@@ -762,15 +616,8 @@ func (c *AgentCatalog) deleteTenant(ctx context.Context, p Principal, id, key st
 	return result, commit(ctx, tx)
 }
 
-// effectiveAgentPermissions are the permissions a principal holds on one agent
-// right now, through a direct assignment or an active team it actively belongs to.
-func effectiveAgentPermissions(ctx context.Context, tx pgx.Tx, tenant, principal, agentID string) ([]string, error) {
-	var perms []string
-	err := tx.QueryRow(ctx, `SELECT coalesce(array_agg(DISTINCT perm),'{}') FROM agent_assignments s, unnest(s.permissions) perm
-        WHERE s.tenant_id=$1 AND s.agent_id=$2 AND s.status='active' AND (s.principal_id=$3 OR s.team_id IN
-          (SELECT m.team_id FROM team_memberships m JOIN teams t ON (t.tenant_id,t.id)=(m.tenant_id,m.team_id)
-           WHERE m.tenant_id=$1 AND m.principal_id=$3 AND m.status='active' AND t.status='active'))`, tenant, agentID, principal).Scan(&perms)
-	return perms, err
+func effectiveAgentPermissions(ctx context.Context, tx pgx.Tx, tenant, principal, agent string) ([]string, error) {
+	return assignments.EffectivePermissions(ctx, tx, tenant, principal, agent)
 }
 
 // instructTenant admits an invocation of a tenant agent. The right to invoke
