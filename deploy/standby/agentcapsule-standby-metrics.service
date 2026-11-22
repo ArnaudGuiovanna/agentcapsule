@@ -2,6 +2,10 @@
 # PostgreSQL is in recovery, and the commit time of the last transaction it
 # replayed. On the standby host only. It runs as root only to write into
 # node_exporter's directory; psql runs as postgres, over the local socket.
+# psql's default port, 5432, is the standby's cluster, 16/main
+# (docs/recovery.md, the standby), not the installer's primary, 16/agentcapsule
+# on port 55432, where this timer is not installed. Another cluster takes
+# --port= (and --host=) in a drop-in.
 # Started every minute by agentcapsule-standby-metrics.timer.
 [Unit]
 Description=Agent Capsule standby replay for node_exporter
