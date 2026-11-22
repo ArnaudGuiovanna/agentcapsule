@@ -11,11 +11,14 @@ import (
 	svc "github.com/ArnaudGuiovanna/agentcapsule/internal/authorityservice"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/keyauthority"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/keymem"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/restoreauthority"
 )
 
 // ReceiptKey asks the service for the daily receipt key of day
-// (docs/adr/006-authority-service.md §7): 32 bytes, in a buffer the caller
-// owns and clears. The service gives yesterday's, today's and tomorrow's,
+// (docs/adr/006-authority-service.md §7): 32 bytes, in a locked page
+// outside the Go heap (internal/keymem) that the caller owns and releases
+// with keymem.Release. The service gives yesterday's, today's and tomorrow's,
 // by its clock, and creates today's if it is missing. A day whose key is
 // gone, destroyed or never held there, is keyauthority.ErrRevoked; a day
 // out of range keyauthority.ErrInput.
@@ -36,9 +39,18 @@ func (a *API) ReceiptKeys() controlplane.ReceiptKeySource {
 }
 
 // receiptKey runs receipt_key: its answer is a frame, then the key's raw
-// bytes, read into a buffer this client owns; never JSON.
-func (c *Client) receiptKey(ctx context.Context, day time.Time) ([]byte, error) {
+// bytes, read into a locked page this client owns; never JSON.
+func (c *Client) receiptKey(ctx context.Context, day time.Time) (_ []byte, err error) {
 	name := keyauthority.ReceiptDay(day).Format(time.DateOnly)
+	key, err := keymem.Buffer(svc.KeySize)
+	if err != nil {
+		return nil, errors.Join(restoreauthority.ErrUnavailable, err)
+	}
+	defer func() {
+		if err != nil {
+			keymem.Release(key)
+		}
+	}()
 	conn, deadline, err := c.send(ctx, svc.OpReceiptKey, svc.ReceiptKeyArgs{Day: name})
 	if err != nil {
 		return nil, err
@@ -61,10 +73,8 @@ func (c *Client) receiptKey(ctx context.Context, day time.Time) ([]byte, error) 
 		conn.Close()
 		return nil, svc.ErrorOf(svc.CodeProtocol)
 	}
-	key := make([]byte, svc.KeySize)
 	conn.SetReadDeadline(deadline.Add(grace))
 	if _, err = io.ReadFull(conn, key); err != nil {
-		clear(key)
 		conn.Close()
 		return nil, outage(ctx, err)
 	}

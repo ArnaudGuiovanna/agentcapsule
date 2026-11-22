@@ -27,6 +27,7 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authoritylog"
 	svc "github.com/ArnaudGuiovanna/agentcapsule/internal/authorityservice"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/keyauthority"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/keymem"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/restoreauthority"
 )
 
@@ -369,6 +370,17 @@ func (c *Client) hold(ctx context.Context, op string, args any, withKey bool, us
 	ctx, span := callSpan.Start(ctx)
 	code, released := "", false
 	defer func() { endCall(span, op, code, true, granted, released) }()
+	var key []byte
+	if withKey {
+		// The key follows the frame as raw bytes, into a locked page
+		// outside the Go heap (internal/keymem) that this client owns and
+		// releases; it never goes through encoding/json. The page comes
+		// first: nothing is asked without a place for the key.
+		if key, err = keymem.Buffer(svc.KeySize); err != nil {
+			return false, errors.Join(restoreauthority.ErrUnavailable, err)
+		}
+		defer keymem.Release(key)
+	}
 	conn, deadline, err := c.send(ctx, op, args)
 	if err != nil {
 		return false, err
@@ -393,12 +405,7 @@ func (c *Client) hold(ctx context.Context, op string, args any, withKey bool, us
 	}
 	heldAt := time.Now()
 	length := time.Duration(r.Held.HoldMS) * time.Millisecond
-	var key []byte
 	if withKey {
-		// The key follows the frame as raw bytes, into a buffer this
-		// client owns and clears; it never goes through encoding/json.
-		key = make([]byte, svc.KeySize)
-		defer clear(key)
 		conn.SetReadDeadline(heldAt.Add(length + grace))
 		if _, err = io.ReadFull(conn, key); err != nil {
 			conn.Close()

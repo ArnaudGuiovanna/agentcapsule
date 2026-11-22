@@ -275,6 +275,9 @@ var modelCallRetentionSQL string
 //go:embed migrations/0080_service_privileges_model_calls.sql
 var servicePrivilegesModelCallsSQL string
 
+//go:embed migrations/0081_revocation_subject_stores.sql
+var revocationSubjectStoresSQL string
+
 // Append migrations; never edit an installed migration. The original schema
 // also upgrades pre-ledger installations, preserving its historical backfills.
 // Later calls validate its checksum without replaying DDL or those backfills.
@@ -359,6 +362,7 @@ var controlPlaneMigrations = []schemaMigration{
 	{version: 78, name: "llm-budget-windows", sql: llmBudgetWindowsSQL},
 	{version: 79, name: "model-call-retention", sql: modelCallRetentionSQL},
 	{version: 80, name: "service-privileges-model-calls", sql: servicePrivilegesModelCallsSQL},
+	{version: 81, name: "revocation-subject-stores", sql: revocationSubjectStoresSQL},
 }
 
 func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error {
@@ -421,7 +425,6 @@ func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error
 	if err != nil {
 		return err
 	}
-	granted := false
 	for _, m := range migrations[applied:] {
 		if _, err = tx.Exec(ctx, m.sql); err != nil {
 			return fmt.Errorf("apply schema migration %d: %w", m.version, err)
@@ -431,17 +434,15 @@ func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error
             VALUES($1,$2,$3)`, m.version, m.name, checksum[:]); err != nil {
 			return err
 		}
-		granted = granted || m.name == "service-roles"
 	}
-	// The service roles' privileges (migration service-roles), again, unless
-	// that migration just stated them: a role created since the last run
-	// gets them now, and a table a later migration created gets the default
-	// ones.
-	grants := false
-	if !granted {
-		if err = tx.QueryRow(ctx, `SELECT to_regprocedure('agentcapsule_service_grants()') IS NOT NULL`).Scan(&grants); err != nil {
-			return err
-		}
+	// The service roles' privileges (migration service-roles), again, at the
+	// end of every run once the function exists: a role created since the
+	// last run gets them now, and a relation a migration of this run created
+	// gets the policy's, also when this run applied service-roles itself (a
+	// fresh install), whose own grants came before that relation existed.
+	var grants bool
+	if err = tx.QueryRow(ctx, `SELECT to_regprocedure('agentcapsule_service_grants()') IS NOT NULL`).Scan(&grants); err != nil {
+		return err
 	}
 	if grants {
 		if _, err = tx.Exec(ctx, `SELECT agentcapsule_service_grants()`); err != nil {

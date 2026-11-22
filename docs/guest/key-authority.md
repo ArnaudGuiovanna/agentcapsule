@@ -30,8 +30,11 @@ or unlock it at boot, it asks for a key hold under the volume's binding
 {agent, volume, incarnation}: the service holds the restore authority's
 binding (a lock of that store only: other agents' boots and calls go on),
 then the key's shared lock, and sends the key as 32 raw bytes after
-its `held` frame, never inside JSON. The worker uses the key, clears its
-buffer, and releases the hold; the end of its connection releases it too. A
+its `held` frame, never inside JSON. On both sides the key lies in a page of
+its own outside the Go heap, locked in RAM and left out of core dumps
+(`internal/keymem`); the API's daily receipt keys too. The worker uses the
+key, clears its page, and releases the hold; the end of its connection
+releases it too. A
 hold lasts at most `max_key_hold` (2 minutes by default). The service refuses
 a key without its binding. Creation and destruction go through the service
 too (`ensure_key`, `destroy_key`). The service's unit disables core dumps,

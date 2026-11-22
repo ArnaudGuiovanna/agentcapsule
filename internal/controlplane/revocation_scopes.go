@@ -12,17 +12,26 @@ import (
 // its subjects (peer_payloads.go, delivery.go, instruction_delivery.go):
 //
 //   - agent/<id>: the agent's own store, and the store of every agent that
-//     shares a request with it, as sender or recipient. A request joins only
-//     two LIVE agents of one organization (submitPayload), so once the
-//     deletion's subject is committed no store joins this scope;
+//     shares a kept request with it, as sender or recipient. A request joins
+//     only two LIVE agents of one organization (submitPayload), so once the
+//     deletion's subject is committed no store joins this scope. The
+//     retention of finished records (finished_retention.go) deletes a request
+//     only once no store can act on its events any more: each was delivered
+//     and answered, or died, or the request's closure fenced request/<id> in
+//     both parties, and no archive a restore can start from predates it. A
+//     party it joined to the agent alone then leaves the scope, safely;
 //   - request/<id>: the request's sender and recipient, which never change;
 //   - event/<id>: the mailbox's destination, which never changes.
 //
-// The worker names this scope when it begins the subject in the authority.
-// Another organization's store is never in it: its guests no longer receive
-// this organization's subject IDs. A subject of another form, or whose row
-// PostgreSQL lacks, gets no store: the authority then puts it in every
-// store's scope, as before.
+// The stores of a request/ or event/ subject are recorded with the subject
+// in revocation_catalogue.stores (publishRevocation): they outlive the
+// request and the mailbox entry, which the retention deletes, so a subject
+// the authority begins later (a reconciliation after a failover) keeps its
+// scope. The worker names this scope when it begins the subject in the
+// authority. Another organization's store is never in it: its guests no
+// longer receive this organization's subject IDs. A subject of another form,
+// or of which PostgreSQL holds neither its stores nor its row, gets no store:
+// the authority then puts it in every store's scope, as before.
 
 // RevocationScope is a revocation subject and the stores that can act on
 // it; no store means every store.
@@ -54,12 +63,17 @@ func (s *Store) RevocationScopes(ctx context.Context, subjects []string) ([]Revo
 		case "agent":
 			query = agentScope
 		case "request":
-			query = `SELECT sender_agent_id FROM agent_requests WHERE id=$1 UNION SELECT recipient_agent_id FROM agent_requests WHERE id=$1`
+			query = recordedStores + ` UNION SELECT sender_agent_id FROM agent_requests WHERE id=$1
+                UNION SELECT recipient_agent_id FROM agent_requests WHERE id=$1`
 		case "event":
-			query = `SELECT dest_agent_id FROM agent_mailboxes WHERE id=$1`
+			query = recordedStores + ` UNION SELECT dest_agent_id FROM agent_mailboxes WHERE id=$1`
 		}
 		if query != "" && id != "" {
-			rows, err := s.pool.Query(ctx, query, id)
+			args := []any{id}
+			if kind != "agent" {
+				args = append(args, subject)
+			}
+			rows, err := s.pool.Query(ctx, query, args...)
 			if err != nil {
 				return nil, err
 			}
@@ -81,6 +95,9 @@ func (s *Store) RevocationScopes(ctx context.Context, subjects []string) ([]Revo
 	}
 	return out, nil
 }
+
+// recordedStores are the stores recorded with subject $2, if any.
+const recordedStores = `SELECT unnest(stores) FROM revocation_catalogue WHERE subject=$2`
 
 // scopedSubjects is the part of revocation_catalogue in store's scope, with
 // $1 the store: what a new store must fence before it becomes LIVE. Its cost

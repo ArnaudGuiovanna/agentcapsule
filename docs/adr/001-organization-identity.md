@@ -345,6 +345,19 @@ durability check) is one round trip since PERF-3B (P-06), and each process
 bounds its connections, statements and lock waits (P-08,
 [install.md](../install.md#connections)).
 
+**Fresh installs and joined tables (FIX-1).** A run of the migrations that
+applied `service-roles` skipped the grants at its end. On a fresh install,
+which applies every migration in one run, a relation that a later migration
+created kept the default privileges (read and write rows, also on a view)
+until the next `agentcapsule-admin migrate`; 0073 hid it by calling the
+grants itself. The grants now run at the end of every run once the function
+exists (`migrations.go`; `TestAFreshInstallGrantsWhatLaterMigrationsCreate`).
+The analysis also saw only the first table of a comma-joined list
+(`FROM a x, b y`) and took the `JOIN` after a table without an alias for
+that alias, so a lock naming such a table fell back to every table read. It
+now sees each table (`TestTheRoleAnalysisSeesEveryTableAStatementReads`).
+The derived privileges did not change: 0073's list stays exact.
+
 ### Row-level security: considered, not adopted
 
 The audit asked to consider policies on the tenant tables keyed by a

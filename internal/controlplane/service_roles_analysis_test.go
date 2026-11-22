@@ -166,10 +166,26 @@ var (
 	onConflict    = regexp.MustCompile(`(?is)\bON\s+CONFLICT\b.*?\bDO\s+UPDATE\b`)
 	updateSet     = regexp.MustCompile(`(?is)\bUPDATE\s+(?:ONLY\s+)?` + sqlIdentifier + `(?:\s+(?:AS\s+)?[a-z_][a-z0-9_]*)?\s+SET\b`)
 	deleteFrom    = regexp.MustCompile(`(?is)\bDELETE\s+FROM\s+(?:ONLY\s+)?` + sqlIdentifier)
-	readsFrom     = regexp.MustCompile(`(?is)\b(?:FROM|JOIN)\s+(?:ONLY\s+)?` + sqlIdentifier + `(?:\s+(?:AS\s+)?` + sqlIdentifier + `)?`)
-	rowLock       = regexp.MustCompile(`(?is)\bFOR\s+(?:NO\s+KEY\s+UPDATE|UPDATE|KEY\s+SHARE|SHARE)\b(?:\s+OF\s+(` + sqlIdentifier + `(?:\s*,\s*[a-z_][a-z0-9_]*)*))?`)
-	dynamicTable  = regexp.MustCompile(`(?is)(?:^|[^a-z0-9_])(INSERT\s+INTO|(?:([a-z_]+)\s+)?UPDATE|DELETE\s+FROM)\s*$`)
+	readsFrom     = regexp.MustCompile(`(?is)\b(?:FROM|JOIN)\s+(?:ONLY\s+)?` + sqlIdentifier)
+	// alsoReads is the next table of a comma-joined list: FROM a x, b y.
+	alsoReads = regexp.MustCompile(`(?is)^\s*,\s*(?:ONLY\s+)?` + sqlIdentifier)
+	// aliasOf is the alias after a table, unless it is a keyword (notAliases).
+	aliasOf      = regexp.MustCompile(`(?is)^\s+(?:AS\s+)?` + sqlIdentifier)
+	rowLock      = regexp.MustCompile(`(?is)\bFOR\s+(?:NO\s+KEY\s+UPDATE|UPDATE|KEY\s+SHARE|SHARE)\b(?:\s+OF\s+(` + sqlIdentifier + `(?:\s*,\s*[a-z_][a-z0-9_]*)*))?`)
+	dynamicTable = regexp.MustCompile(`(?is)(?:^|[^a-z0-9_])(INSERT\s+INTO|(?:([a-z_]+)\s+)?UPDATE|DELETE\s+FROM)\s*$`)
 )
+
+// notAliases are the keywords that may follow a table without being its
+// alias: FROM a JOIN b reads b too.
+var notAliases = map[string]bool{}
+
+func init() {
+	for k := range strings.FieldsSeq(`where join inner left right full cross natural lateral on using group order limit offset fetch
+        for union except intersect having window returning set and or not when then else end with values select into do from
+        is in between like ilike case null true false tablesample`) {
+		notAliases[k] = true
+	}
+}
 
 // sqlWrites adds to need what the statements in literals write: table ->
 // privileges. A row lock anywhere in them needs UPDATE on every table they
@@ -209,12 +225,26 @@ func sqlWrites(literals []string, tables map[string]bool, need map[string]map[st
 		for _, m := range deleteFrom.FindAllStringSubmatch(text, -1) {
 			add(m[1], "DELETE")
 		}
-		for _, m := range readsFrom.FindAllStringSubmatch(text, -1) {
-			read = append(read, m[1])
-			for _, name := range []string{m[1], m[2]} {
-				if name = strings.ToLower(name); name != "" && !slices.Contains(aliases[name], m[1]) {
-					aliases[name] = append(aliases[name], m[1])
+		// reads records table, read, and its alias at the start of rest; it
+		// returns rest past the alias.
+		reads := func(table, rest string) string {
+			alias := ""
+			if a := aliasOf.FindStringSubmatchIndex(rest); a != nil && !notAliases[strings.ToLower(rest[a[2]:a[3]])] {
+				alias, rest = rest[a[2]:a[3]], rest[a[1]:]
+			}
+			read = append(read, table)
+			for _, name := range []string{table, alias} {
+				if name = strings.ToLower(name); name != "" && !slices.Contains(aliases[name], table) {
+					aliases[name] = append(aliases[name], table)
 				}
+			}
+			return rest
+		}
+		for _, m := range readsFrom.FindAllStringSubmatchIndex(text, -1) {
+			rest := reads(text[m[2]:m[3]], text[m[1]:])
+			// The tables that follow it in a comma-joined list.
+			for c := alsoReads.FindStringSubmatchIndex(rest); c != nil; c = alsoReads.FindStringSubmatchIndex(rest) {
+				rest = reads(rest[c[2]:c[3]], rest[c[1]:])
 			}
 		}
 		for _, m := range rowLock.FindAllStringSubmatch(text, -1) {

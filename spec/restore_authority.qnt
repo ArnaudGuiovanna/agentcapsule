@@ -26,7 +26,8 @@
  * the pending subjects of its scope, a revocation completes once each executing
  * store of its scope acknowledges it, and an activation rechecks its scope only.
  * That the scope is complete and stays fixed once a subject is revoked is
- * modelled in store_enrollment.qnt (RELATE_GUARD).
+ * modelled in store_enrollment.qnt (RELATE_GUARD), with the retention that
+ * takes out a store no longer acting on the subject (FORGET_GUARD).
  */
 module restoreAuthority {
   type AgentId = int
