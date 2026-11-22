@@ -44,7 +44,10 @@ module restoreAuthority {
   type Receipt = { store: AgentId, incarnation: int, revision: int, subjects: Set[AgentId], epoch: int }
   type Root = { revision: int, pending: Set[AgentId], revoked: Set[AgentId], destroyedKeys: Set[AgentId],
     incarnations: AgentId -> int, committed: Set[EventId], acks: AgentId -> Receipt, sealed: Set[AgentId],
-    lost: Set[Loss], rerun: Set[Loss], accessRevoked: Set[AccessId] }
+    lost: Set[Loss], rerun: Set[Loss], accessRevoked: Set[AccessId],
+    // The revision at which the last subject entered each store's scope (the
+    // code's highest scope row of the store).
+    scoped: AgentId -> int }
   // PostgreSQL's copies: access revocations, revocation subjects
   // (revocation_catalogue), deleted stores and incarnations (store_enrollments).
   type Database = { accessRevoked: Set[AccessId], subjects: Set[AgentId], sealed: Set[AgentId],
@@ -115,7 +118,7 @@ module restoreAuthority {
   pure val emptyDisk: Disk = { catalogue:Set(), wrappedKeys:SUBJECTS, seen:Set(), effects:Set() }
   pure val initialRoot: Root = { revision:0, pending:Set(), revoked:Set(), destroyedKeys:Set(),
     incarnations:STORES.mapBy(_ => 1), committed:Set(), acks:STORES.mapBy(a => blankReceipt(a)), sealed:Set(),
-    lost:Set(), rerun:Set(), accessRevoked:Set() }
+    lost:Set(), rerun:Set(), accessRevoked:Set(), scoped:STORES.mapBy(_ => 0) }
   pure val initialDatabase: Database = { accessRevoked:Set(), subjects:Set(), sealed:Set(),
     incarnations:STORES.mapBy(_ => 1) }
   pure val initialState: State = { rootAvailable:true,
@@ -246,7 +249,8 @@ module restoreAuthority {
   }
   // The subject is also in PostgreSQL's revocation_catalogue.
   action beginRevocation(p: AgentId): bool = {
-    val r = { ...root, pending:root.pending.union(Set(p)), revision:root.revision+1 }
+    val r = { ...root, pending:root.pending.union(Set(p)), revision:root.revision+1,
+      scoped:STORES.mapBy(a => if (reach(a).contains(p)) root.revision+1 else root.scoped.get(a)) }
     all {
       s.rootAvailable, not(root.pending.contains(p)), canWrite(s,RevocationIntent),
       root' = r, s' = replicated({ ...s, pg:{ ...s.pg, subjects:s.pg.subjects.union(Set(p)) } }, r),
@@ -299,9 +303,9 @@ module restoreAuthority {
     x.rootAvailable and b.phase == Reconciling and b.alive and x.scanned.contains(a) and
       b.incarnation == r.incarnations.get(a) and (not(SEAL_GUARD) or not(r.sealed.contains(a))) and
       r.acks.get(a).incarnation == r.incarnations.get(a) and
-      // No subject of its scope begun since its receipt (the code: no scope
-      // row above the acknowledged revision).
-      (not(RECHECK) or r.pending.intersect(reach(a)).subseteq(r.acks.get(a).subjects)) and
+      // No subject of its scope begun since its receipt: no scope row above
+      // the acknowledged revision.
+      (not(RECHECK) or r.scoped.get(a) <= r.acks.get(a).revision) and
       (not(HISTORY_GUARD) or accounted(b.disk,required(r,a),r.lost,b.incarnation))
   }
   pure def activated(r: Root, x: State, a: AgentId): State = {

@@ -322,7 +322,8 @@ should have preceded. For each hold, what still protects:
   `QUIESCING`, before the authority's reservation or seal, and the host
   retires or seals the VM under its barrier first.
 - **Revocations.** A target restored meanwhile is fenced with every subject
-  before its activation (`synchronizeAuthority`).
+  before its activation (`synchronizeAuthority`; since the v0.1.0 audit,
+  every subject of its scope).
 
 The root's hold is the guard that does not depend on PostgreSQL being
 current, which matters after a failover. The window is the same class as
