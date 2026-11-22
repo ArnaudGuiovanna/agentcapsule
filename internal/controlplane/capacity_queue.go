@@ -89,7 +89,7 @@ const computing = `((` + workInProgress + `
 
 // lastActivity is the latest time agent a did or received something the
 // platform tracks; the least recently active idle VM is stopped first. Its
-// operations, requests and model calls keep agent_activity (migration 0067).
+// operations, requests and model calls keep agent_activity (migration 0071).
 const lastActivity = `greatest(coalesce(x.created_at,'-infinity'::timestamptz),
         coalesce((SELECT v.at FROM agent_activity v WHERE v.agent_id=a.id),'-infinity'::timestamptz))`
 

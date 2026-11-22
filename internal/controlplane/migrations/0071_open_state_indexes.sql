@@ -1,7 +1,7 @@
 -- The worker's polling queries (P-04) read open work only: the open
 -- operations, requests and closures of a host's agents, the content due for
 -- purge (the model calls in flight have llm_usage_unresolved, and the
--- requests' scopes the indexes of 0065). These partial indexes hold those rows
+-- requests' scopes the indexes of 0069). These partial indexes hold those rows
 -- alone, so that the queries no longer scan the whole history of the tables
 -- under the worker_hosts row lock. Each CREATE INDEX takes its table's SHARE
 -- lock, which blocks writes to it (not reads) while it builds; the migration

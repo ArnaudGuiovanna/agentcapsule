@@ -383,7 +383,7 @@ for all 11 checks of the two models (evidence
 stop's transaction notifies the host's worker, whose next pass promotes the
 oldest waiter, as each pass did. The eviction order's "least recently active"
 reads `agent_activity`, each agent's last operation, request or model call,
-kept in the transaction of that activity (migration 0067); the order is
+kept in the transaction of that activity (migration 0071); the order is
 unchanged. A replay needs its dead letter's record: the retention of finished
 records keeps an invocation whose input is still held, and one an
 `instruction_replays` event names until the audit's retention removes it.
