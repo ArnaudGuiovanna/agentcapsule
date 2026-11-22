@@ -99,6 +99,11 @@ func sameHarness(a, b *HarnessImage) bool {
 // accepts only the exact original inode, size and immutable resources. UIDs of
 // retired/sealed agents remain reserved. The operator must dedicate the entire
 // UID range to this runtime root; it is never supplied by an API caller.
+//
+// It holds the agent's lock throughout. host.lock is held only to choose the
+// UID and to record the registration: the volume's owner and data are made
+// durable between the two, before the registry names the volume, so that a
+// large volume's fsync never holds the host's other agents back.
 func (h *FirecrackerHost) RegisterProvisioned(ctx context.Context, in ProvisionedAgent, firstUID, lastUID uint32) error {
 	if in.ID == "" || in.Inode == 0 || !in.Resources.valid() || firstUID < 10000 || lastUID < firstUID || lastUID == ^uint32(0) || lastUID-firstUID > 1<<20 {
 		return errors.New("invalid provisioning registration")
@@ -109,39 +114,43 @@ func (h *FirecrackerHost) RegisterProvisioned(ctx context.Context, in Provisione
 	if err := h.verifyCorpora(in.Corpora); err != nil {
 		return err
 	}
-	return h.locked(ctx, func(r *hostRegistry) error {
-		path, err := filepath.Abs(in.Volume)
-		if err != nil {
-			return err
-		}
-		real, err := filepath.EvalSymlinks(path)
-		if err != nil {
-			return err
-		}
-		if real != path || filepath.Dir(path) != filepath.Join(h.root, "volumes") {
-			return errors.New("volume outside managed directory")
-		}
-		f, err := os.OpenFile(path, os.O_RDWR|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-		st, err := f.Stat()
-		if err != nil {
-			return err
-		}
-		s := st.Sys().(*syscall.Stat_t)
-		if !st.Mode().IsRegular() || st.Mode().Perm() != 0600 || st.Size() != int64(in.Resources.VolumeMiB)<<20 || s.Ino != in.Inode || uint64(s.Dev) != in.Device {
-			return errors.New("provisioned volume binding changed")
-		}
+	unlock, err := h.lockAgent(ctx, in.ID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	path, err := filepath.Abs(in.Volume)
+	if err != nil {
+		return err
+	}
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return err
+	}
+	if real != path || filepath.Dir(path) != filepath.Join(h.root, "volumes") {
+		return errors.New("volume outside managed directory")
+	}
+	f, err := os.OpenFile(path, os.O_RDWR|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	s := st.Sys().(*syscall.Stat_t)
+	if !st.Mode().IsRegular() || st.Mode().Perm() != 0600 || st.Size() != int64(in.Resources.VolumeMiB)<<20 || s.Ino != in.Inode || uint64(s.Dev) != in.Device {
+		return errors.New("provisioned volume binding changed")
+	}
+	// The registration, if one exists, or a UID that neither a registered
+	// agent nor a registration under way holds.
+	var uid uint32
+	registered := false
+	err = h.locked(ctx, func(r *hostRegistry) error {
 		if a := r.Agents[in.ID]; a != nil {
-			if a.Fenced || a.SealID != "" {
-				return ErrHostFenced
-			}
-			if (a.SystemImage == nil) != (in.SystemImage == nil) || (a.SystemImage != nil && *a.SystemImage != *in.SystemImage) || a.Volume != path || a.Device != in.Device || a.Inode != in.Inode || a.Resources != in.Resources || !sameHarness(a.Harness, in.Harness) || !sameCorpora(a.Corpora, in.Corpora) || a.UID < firstUID || a.UID > lastUID || s.Uid != a.UID || s.Gid != a.UID {
-				return errors.New("provisioned registration is immutable")
-			}
-			return nil
+			registered = true
+			return sameRegistration(a, in, path, s, firstUID, lastUID)
 		}
 		used := map[uint32]bool{}
 		for _, a := range r.Agents {
@@ -150,23 +159,75 @@ func (h *FirecrackerHost) RegisterProvisioned(ctx context.Context, in Provisione
 			}
 			used[a.UID] = true
 		}
-		uid := firstUID
-		for used[uid] && uid < lastUID {
+		h.uidMu.Lock()
+		defer h.uidMu.Unlock()
+		uid = firstUID
+		for (used[uid] || h.uidsHeld[uid]) && uid < lastUID {
 			uid++
 		}
-		if used[uid] {
+		if used[uid] || h.uidsHeld[uid] {
 			return errors.New("dedicated UID range exhausted")
 		}
-		if err = f.Chown(int(uid), int(uid)); err != nil {
-			return err
+		if h.uidsHeld == nil {
+			h.uidsHeld = map[uint32]bool{}
 		}
-		if err = f.Sync(); err != nil {
-			return err
+		h.uidsHeld[uid] = true
+		return nil
+	})
+	if err != nil || registered {
+		return err
+	}
+	defer func() {
+		h.uidMu.Lock()
+		delete(h.uidsHeld, uid)
+		h.uidMu.Unlock()
+	}()
+	own := h.ownVolume
+	if own == nil {
+		own = ownVolume
+	}
+	if err = own(f, uid); err != nil {
+		return err
+	}
+	return h.locked(ctx, func(r *hostRegistry) error {
+		// Another worker process may have registered meanwhile.
+		if a := r.Agents[in.ID]; a != nil {
+			return sameRegistration(a, in, path, s, firstUID, lastUID)
+		}
+		for _, a := range r.Agents {
+			if a.Device == in.Device && a.Inode == in.Inode {
+				return errors.New("volume inode already assigned")
+			}
+			if a.UID == uid {
+				return errors.New("UID taken by another registration; retry")
+			}
 		}
 		r.Agents[in.ID] = &HostAgent{SystemImage: in.SystemImage, ID: in.ID, UID: uid, Volume: path, Device: in.Device, Inode: in.Inode, Resources: in.Resources, Harness: in.Harness,
 			Corpora: slices.Clone(in.Corpora)}
 		return h.save(r)
 	})
+}
+
+// ownVolume gives a provisioned volume to its agent's UID and makes its data
+// and owner durable.
+func ownVolume(f *os.File, uid uint32) error {
+	if err := f.Chown(int(uid), int(uid)); err != nil {
+		return err
+	}
+	return f.Sync()
+}
+
+// sameRegistration accepts a retry of a's registration only: the same
+// volume, binding, resources, harness and corpora, and a UID of the range
+// that owns the volume.
+func sameRegistration(a *HostAgent, in ProvisionedAgent, path string, s *syscall.Stat_t, firstUID, lastUID uint32) error {
+	if a.Fenced || a.SealID != "" {
+		return ErrHostFenced
+	}
+	if (a.SystemImage == nil) != (in.SystemImage == nil) || (a.SystemImage != nil && *a.SystemImage != *in.SystemImage) || a.Volume != path || a.Device != in.Device || a.Inode != in.Inode || a.Resources != in.Resources || !sameHarness(a.Harness, in.Harness) || !sameCorpora(a.Corpora, in.Corpora) || a.UID < firstUID || a.UID > lastUID || s.Uid != a.UID || s.Gid != a.UID {
+		return errors.New("provisioned registration is immutable")
+	}
+	return nil
 }
 
 // ErrHarnessInUse: the agent has a VM run; its harness changes only once that

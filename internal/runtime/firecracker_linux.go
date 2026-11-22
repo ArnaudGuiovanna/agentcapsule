@@ -175,6 +175,12 @@ type FirecrackerHost struct {
 	// lockMu guards agentLocks (firecracker_locks_linux.go).
 	lockMu     sync.Mutex
 	agentLocks map[string]*agentLock
+	// uidMu guards uidsHeld, the UIDs of registrations under way
+	// (RegisterProvisioned). ownVolume, when set, stands in for the chown
+	// and fsync of a provisioned volume: tests without root.
+	uidMu     sync.Mutex
+	uidsHeld  map[uint32]bool
+	ownVolume func(*os.File, uint32) error
 }
 
 // NewFirecrackerHost requires a private root-owned state directory. The parent
