@@ -34,6 +34,18 @@ named after a run exists and its row does not name it.
 `scripts/check-repo-hygiene.py` runs it, and so does CI. A new run needs a row
 here: `full` or `partial` with its Go tests, or another status with a reason.
 
+Since the v0.1.0 audit (A-10) the check follows an ITF case to its model: the
+test must select the case, the case's trace, driver and observations must be
+at the digests of the fixture's manifest, the model copy at the manifest's
+digest, and a `full` row must replay a trace of its own model or of a finer
+one. Every copy of a model under `testdata/` is declared in
+[pinned-models.json](pinned-models.json): `current` (identical to the model
+here) or `frozen` (an older revision, with the reason). A copy that differs
+from its model without being declared frozen fails the check. CI also runs
+`scripts/check-model-runs.py`: every run of the models must pass `quint
+test`, and every fixed schedule of a fixture must replay on the current
+model with the pinned trace's states and refusals.
+
 Several tests need more than PostgreSQL: the KVM build tags
 (`TestBarrierCapacityOneSlotThreeStoresAndReplay`,
 `TestKVMSlowDeliveryDoesNotDelayAnotherAgent`,

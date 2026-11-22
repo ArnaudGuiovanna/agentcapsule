@@ -42,8 +42,10 @@ Do not run `go test ./...` at the repository root with sources outside
 | `check-go.py` | Go tests with race detector, no PostgreSQL or KVM |
 | `test_check_go.py` | Unit tests of `check-go.py` |
 | `check-repo-hygiene.py` | Rejects new tracked files with a personal absolute path or Go sources committed under `_evidence/` (baseline: `hygiene-baseline.json`); runs `check-model-projections.py` and `check-acceptance.py` |
-| `check-model-projections.py` | Fails when a run or witness of `spec/*.qnt` is missing from [spec/projections.md](../spec/projections.md), or when the table names a Go test that does not exist |
+| `check-model-projections.py` | Fails when a run or witness of `spec/*.qnt` is missing from [spec/projections.md](../spec/projections.md), when the table names a Go test that does not exist, when an ITF case it names is not replayed from the pinned trace and model copy, or when a copy of a model is stale ([spec/pinned-models.json](../spec/pinned-models.json)) |
 | `test_check_model_projections.py` | Unit tests of `check-model-projections.py` |
+| `check-model-runs.py` | Needs Quint (`npm ci --prefix spec`): `quint test` of every run of the models, and every fixed schedule of the ITF fixtures replayed on the current model with the pinned states and refusals; run by CI |
+| `test_check_model_runs.py` | Unit tests of `check-model-runs.py`, with a fake Quint |
 | `check-models.py` | The bounded and exhaustive checks of the formal models, one at a time: Apalache and TLC through `quint verify`, each against the result the repository expects (a witness schedule and a broken configuration must fail); refuses to pass on a timeout or a missing tool; see [spec/README.md](../spec/README.md#bounded-and-exhaustive-checks) |
 | `test_check_models.py` | Unit tests of `check-models.py`: every witness schedule and every module of the checkers' files has a check, the reading of Quint's output, the refusal of a missing or changed tool |
 | `check-acceptance.py` | Fails when an MVP requirement of [docs/product.md](../docs/product.md) has no row in [docs/acceptance.md](../docs/acceptance.md), when a met row cites no test, or when a cited test or file does not exist |

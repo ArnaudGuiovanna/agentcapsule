@@ -34,7 +34,19 @@ npx quint verify --main=invocationCompletion --init=init --step=step \
 ```
 
 `npm run typecheck` checks every model; CI runs it on each change, and
-`scripts/check-repo-hygiene.py` checks [projections.md](projections.md).
+`scripts/check-repo-hygiene.py` checks [projections.md](projections.md) and
+the copies of the models kept with traces ([pinned-models.json](pinned-models.json)).
+CI also runs `python3 scripts/check-model-runs.py` (about four minutes with
+four jobs): `quint test` of every module that declares a run, and a replay
+of every fixed schedule of `internal/controlplane/testdata/` on the current
+model, which must give the pinned trace's states and refusals. It uses
+Quint's TypeScript evaluator, which downloads nothing.
+
+A change to a model that a fixture copies makes the copy stale: copy the
+model into the fixture and regenerate its traces with the commands of its
+`manifest.json`, then the Go replay's digests; or declare the copy `frozen`
+in `pinned-models.json` with the reason, if its schedules still replay on
+the new model.
 
 The concurrent protocol (P1) and service progress (P3) models are checked by
 their runs, by simulation of `safety`, and by the bounded and exhaustive
