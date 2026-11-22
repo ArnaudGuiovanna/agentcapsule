@@ -382,6 +382,7 @@ func TestReadyChecksInstalledMigrationLedger(t *testing.T) {
 func revertTenantAgents(t *testing.T, s *Store) {
 	t.Helper()
 	if _, err := s.pool.Exec(t.Context(), `
+        ALTER TABLE IF EXISTS schema_migrations DROP COLUMN IF EXISTS compatible_with_previous;
         ALTER TABLE revocation_catalogue DROP COLUMN IF EXISTS stores;
         DROP INDEX IF EXISTS llm_usage_finished, llm_audit_usage;
         DROP TABLE IF EXISTS llm_budget_windows;

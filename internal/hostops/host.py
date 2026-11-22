@@ -349,17 +349,28 @@ def check_migration_plan(installed, candidate):
     ledger = candidate["migration_ledger"]
     if (not isinstance(ledger, list) or len(ledger) != len(candidate["migrations"]) + 1 or
             any(not isinstance(row, dict) or row.get("version") != i or not row.get("name") or
-                not re.fullmatch("[a-f0-9]{64}", row.get("sha256", "")) for i, row in enumerate(ledger, 1))):
+                not re.fullmatch("[a-f0-9]{64}", row.get("sha256", "")) or
+                ("compatible_with_previous" in row and row["compatible_with_previous"] is not True)
+                for i, row in enumerate(ledger, 1))):
         raise ValueError("invalid migration ledger in signed bundle")
     if not installed:
         return "initial_install"
     expected = ledger[:len(before) + 1]
-    query = """SELECT coalesce(json_agg(json_build_object('version',version,'name',name,
-               'sha256',encode(checksum,'hex')) ORDER BY version),'[]'::json) FROM schema_migrations"""
+    query = """SELECT coalesce(jsonb_agg(jsonb_build_object('version',version,'name',name,
+               'sha256',encode(checksum,'hex')) || CASE WHEN to_jsonb(m)->>'compatible_with_previous'='true'
+               THEN '{"compatible_with_previous":true}'::jsonb ELSE '{}'::jsonb END ORDER BY version),'[]'::jsonb)
+               FROM schema_migrations AS m"""
     actual = json.loads(postgres_scalar(read(STATE / "profile.json"), query))
-    if actual != expected or installed.get("migration_ledger", actual) != actual:
-        raise MigrationHistoryMismatch("database migration history differs from the signed build; review the restore plan")
-    return "database_ledger_verified"
+    if installed.get("migration_ledger", expected) == expected:
+        if actual == expected:
+            return "database_ledger_verified"
+        # Another host may already have applied part or all of this signed
+        # release. Older installations require an exact ledger.
+        if (installed.get("rolling_schema") == 1 and isinstance(actual, list) and
+                len(expected) < len(actual) <= len(ledger) and actual == ledger[:len(actual)] and
+                all(row.get("compatible_with_previous") is True for row in actual[len(expected):])):
+            return "database_expand_verified"
+    raise MigrationHistoryMismatch("database migration history differs from the signed build; review the restore plan")
 
 
 def verify_assets(request,manifest_only,version,uri,dest):

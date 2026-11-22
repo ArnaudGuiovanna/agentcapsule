@@ -28,16 +28,17 @@ type schemaMigration struct {
 
 // MigrationRecord describes the ledger row the binary expects after a migration.
 type MigrationRecord struct {
-	Version int64  `json:"version"`
-	Name    string `json:"name"`
-	SHA256  string `json:"sha256"`
+	Version                int64  `json:"version"`
+	Name                   string `json:"name"`
+	SHA256                 string `json:"sha256"`
+	CompatibleWithPrevious bool   `json:"compatible_with_previous,omitempty"`
 }
 
 // MigrationManifest returns the ordered history compiled into the admin binary.
 func MigrationManifest() []MigrationRecord {
 	records := make([]MigrationRecord, len(controlPlaneMigrations))
 	for i, migration := range controlPlaneMigrations {
-		records[i] = MigrationRecord{migration.version, migration.name, fmt.Sprintf("%x", sha256.Sum256([]byte(migration.sql)))}
+		records[i] = MigrationRecord{migration.version, migration.name, fmt.Sprintf("%x", sha256.Sum256([]byte(migration.sql))), migration.expands()}
 	}
 	return records
 }
@@ -107,19 +108,38 @@ func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error
 	if len(migrations) == 0 {
 		return ErrMigrationHistory
 	}
+	online := false
 	for i, m := range migrations {
 		if m.version != int64(i+1) || m.name == "" || m.sql == "" {
 			return ErrMigrationHistory
 		}
+		if err := m.checkDeclaration(); err != nil {
+			return err
+		}
+		online = online || m.expands()
+	}
+	if online {
+		return s.migrateRolling(ctx, migrations)
 	}
 	tx, err := s.beginCensus(ctx, true)
 	if err != nil {
 		return err
 	}
+	return migrateBatch(ctx, tx, migrations, true)
+}
+
+// migrateBatch commits transactional DDL, receipts and grants together. A
+// concurrent index has already been built on the migration session.
+func migrateBatch(ctx context.Context, tx pgx.Tx, migrations []schemaMigration, final bool) error {
+	var err error
 	defer rollback(tx)
-	// A migration may build indexes and backfill tables for minutes, and
-	// waits for another to end: no session bound applies (P-08).
-	if _, err = tx.Exec(ctx, "SET LOCAL statement_timeout = 0; SET LOCAL lock_timeout = 0"); err != nil {
+	// Offline maintenance can wait for locks. An expand that cannot get its
+	// DDL lock promptly releases it for a later retry, so queued writers resume.
+	settings := "SET LOCAL statement_timeout = 0; SET LOCAL lock_timeout = 0"
+	if migrations[len(migrations)-1].expands() {
+		settings = "SET LOCAL statement_timeout = 0; SET LOCAL lock_timeout = '5s'"
+	}
+	if _, err = tx.Exec(ctx, settings); err != nil {
 		return err
 	}
 	if _, err = tx.Exec(ctx, "SELECT pg_advisory_xact_lock(756610042)"); err != nil {
@@ -133,43 +153,22 @@ func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error
     )`); err != nil {
 		return err
 	}
-	rows, err := tx.Query(ctx, "SELECT version,name,checksum FROM schema_migrations ORDER BY version")
-	if err != nil {
-		return err
-	}
-	applied := 0
-	for rows.Next() {
-		var version int64
-		var name string
-		var checksum []byte
-		if err = rows.Scan(&version, &name, &checksum); err != nil {
-			rows.Close()
-			return err
-		}
-		if applied >= len(migrations) || version != int64(applied+1) {
-			rows.Close()
-			return ErrMigrationHistory
-		}
-		m := migrations[applied]
-		want := sha256.Sum256([]byte(m.sql))
-		if name != m.name || !bytes.Equal(checksum, want[:]) {
-			rows.Close()
-			return fmt.Errorf("%w: version %d", ErrMigrationHistory, version)
-		}
-		applied++
-	}
-	err = rows.Err()
-	rows.Close()
+	applied, err := migrationLedger(ctx, tx, migrations, false)
 	if err != nil {
 		return err
 	}
 	for _, m := range migrations[applied:] {
-		if _, err = tx.Exec(ctx, m.sql); err != nil {
-			return fmt.Errorf("apply schema migration %d: %w", m.version, err)
+		if !m.concurrentIndex() {
+			if _, err = tx.Exec(ctx, m.sql); err != nil {
+				return fmt.Errorf("apply schema migration %d: %w", m.version, err)
+			}
 		}
 		checksum := sha256.Sum256([]byte(m.sql))
-		if _, err = tx.Exec(ctx, `INSERT INTO schema_migrations(version,name,checksum)
-            VALUES($1,$2,$3)`, m.version, m.name, checksum[:]); err != nil {
+		insert := "INSERT INTO schema_migrations(version,name,checksum) VALUES($1,$2,$3)"
+		if m.expands() {
+			insert = "INSERT INTO schema_migrations(version,name,checksum,compatible_with_previous) VALUES($1,$2,$3,true)"
+		}
+		if _, err = tx.Exec(ctx, insert, m.version, m.name, checksum[:]); err != nil {
 			return err
 		}
 	}
@@ -187,6 +186,9 @@ func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error
 			return err
 		}
 	}
+	if !final {
+		return commit(ctx, tx)
+	}
 	var count int
 	var durable bool
 	if err = tx.QueryRow(ctx, `SELECT count(*),coalesce(bool_and(relpersistence='p' AND relkind='r'),false)
@@ -200,13 +202,27 @@ func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error
 	return commit(ctx, tx)
 }
 
-// checkMigrationLedger is the read-only counterpart of migrate. The API never
-// migrates, so readiness must fail when the installed ledger is behind, ahead of
-// or different from the migrations compiled into this binary.
+// Readiness accepts a newer contiguous suffix if every step explicitly
+// preserved the preceding binary's reads and writes.
 func checkMigrationLedger(ctx context.Context, tx pgx.Tx, migrations []schemaMigration) error {
-	rows, err := tx.Query(ctx, "SELECT version,name,checksum FROM schema_migrations ORDER BY version")
+	applied, err := migrationLedger(ctx, tx, migrations, true)
+	if err == nil && applied < len(migrations) {
+		return fmt.Errorf("%w: schema at version %d, binary requires %d", ErrMigrationHistory, applied, len(migrations))
+	}
+	return err
+}
+
+type ledgerReader interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}
+
+func migrationLedger(ctx context.Context, db ledgerReader, migrations []schemaMigration, allowExpand bool) (int, error) {
+	// Converting the row also works before 0083 adds the declaration column.
+	rows, err := db.Query(ctx, `SELECT version,name,checksum,
+        coalesce((to_jsonb(m)->>'compatible_with_previous')::boolean,false)
+        FROM schema_migrations AS m ORDER BY version`)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer rows.Close()
 	applied := 0
@@ -214,23 +230,21 @@ func checkMigrationLedger(ctx context.Context, tx pgx.Tx, migrations []schemaMig
 		var version int64
 		var name string
 		var checksum []byte
-		if err = rows.Scan(&version, &name, &checksum); err != nil {
-			return err
+		var expands bool
+		if err := rows.Scan(&version, &name, &checksum, &expands); err != nil {
+			return 0, err
 		}
-		if applied >= len(migrations) || version != int64(applied+1) {
-			return fmt.Errorf("%w: unexpected installed version %d", ErrMigrationHistory, version)
+		if version != int64(applied+1) || (applied >= len(migrations) && !(allowExpand && expands)) {
+			return 0, fmt.Errorf("%w: unexpected installed version %d", ErrMigrationHistory, version)
 		}
-		want := sha256.Sum256([]byte(migrations[applied].sql))
-		if name != migrations[applied].name || !bytes.Equal(checksum, want[:]) {
-			return fmt.Errorf("%w: version %d differs from this binary", ErrMigrationHistory, version)
+		if applied < len(migrations) {
+			m := migrations[applied]
+			want := sha256.Sum256([]byte(m.sql))
+			if name != m.name || !bytes.Equal(checksum, want[:]) || expands != m.expands() {
+				return 0, fmt.Errorf("%w: version %d differs from this binary", ErrMigrationHistory, version)
+			}
 		}
 		applied++
 	}
-	if err = rows.Err(); err != nil {
-		return err
-	}
-	if applied != len(migrations) {
-		return fmt.Errorf("%w: schema at version %d, binary requires %d", ErrMigrationHistory, applied, len(migrations))
-	}
-	return nil
+	return applied, rows.Err()
 }

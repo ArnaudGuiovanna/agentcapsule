@@ -196,6 +196,40 @@ restore ID and retains destruction and revocation state. The service
 returns the observed result of the restore. The SQL database also holds the
 OIDC realm when both are on the managed cluster. [Recovery](recovery.md)
 
+### Rolling PostgreSQL upgrades
+
+On a shared PostgreSQL installation, an admin can apply an expand migration
+while API and worker processes from the preceding build continue to serve.
+Deploy the first build with migration 0083 using the maintenance procedure
+above. Earlier binaries require their exact ledger. After that upgrade:
+
+1. Back up the installation and compare the signed migration manifests. An
+   expand preserves the reads and writes of both builds. Apply it with the
+   candidate admin's `migrate` command.
+2. Check readiness on the old and new services, then replace API and worker
+   processes one host at a time. A signed host plan reports
+   `database_expand_verified` if another host has already applied the
+   candidate's compatible prefix. The host updater still drains its local
+   services before replacing them.
+3. Drain every older process before a contract migration. An older service
+   refuses readiness at the first undeclared or incompatible row. An admin
+   always requires its complete known history before managing the schema.
+   The host binary rollback checks below continue to cover the entire release.
+
+Migration authors declare compatibility with `-- agentcapsule:expand` on
+the first line of the SQL file. Each expand commits separately and shares the
+application's store gate. Use a later contract to remove old fields or enforce
+constraints that older writers cannot meet. Migrations without a declaration
+take the exclusive gate. Keep the historical SQL and its checksum intact.
+
+For a large existing table, put a plain B-tree index in its own migration.
+Use the first line `-- agentcapsule:expand-index`, followed by one statement
+such as `CREATE INDEX CONCURRENTLY jobs_by_state ON jobs (state, id);`.
+This form accepts ordinary lowercase identifiers and named columns in default
+order. A retry checks PostgreSQL's index definition, keeps a completed build
+and rebuilds an interrupted one. More complex index definitions require
+a reviewed online migration procedure or a maintenance window.
+
 Use `rollback plan --to TAG` to select an older release. An eligible plan
 reports `binary_rollback_compatible: true` and `database_ledger_verified`.
 The active build must have an authenticated activation receipt. Both signed

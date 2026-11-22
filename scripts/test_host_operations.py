@@ -129,6 +129,27 @@ class HostOperationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "protocol"):
             self.api["check_migration_plan"]({}, self.bundle)
 
+    def test_second_host_accepts_only_the_signed_expand_suffix(self):
+        base = dict(version=1, name="baseline", sha256="a"*64)
+        expand = dict(version=2, name="more", sha256="b"*64, compatible_with_previous=True)
+        installed = dict(migrations=[], migration_ledger=[base], rolling_schema=1)
+        candidate = dict(migrations=["0002_more.sql"], migration_ledger=[base, expand])
+        self.api["save"](self.state / "profile.json", {})
+        plan = self.api["check_migration_plan"]
+        def check(actual):
+            with patch.dict(self.api, postgres_scalar=lambda *_: json.dumps(actual).encode()):
+                return plan(installed, candidate)
+        self.assertEqual(check([base, expand]), "database_expand_verified")
+        with self.assertRaisesRegex(ValueError, "database migration history"):
+            check([base, dict(expand, sha256="c"*64)])
+        installed.pop("rolling_schema")
+        with self.assertRaisesRegex(ValueError, "database migration history"):
+            check([base, expand])
+        installed["rolling_schema"] = 1
+        expand.pop("compatible_with_previous")
+        with self.assertRaisesRegex(ValueError, "database migration history"):
+            check([base, expand])
+
     def test_check_running_image_exports_the_container_image_id(self):
         config = b'{"architecture":"amd64","os":"linux"}'
         expected = "sha256:" + hashlib.sha256(config).hexdigest()

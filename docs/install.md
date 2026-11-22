@@ -158,8 +158,10 @@ connection opens):
 - A lock wait includes the advisory locks that serialize an organization's
   quotas, queues and uploads: a caller that waits past the bound gives its
   connection back, and the API answers `503 temporarily_unavailable`.
-- A migration has no statement or lock bound: it may build indexes for
-  minutes, and waits for a migration already running.
+- An offline migration has no statement or lock bound: it may build indexes for
+  minutes, and waits for a migration already running. An online expand waits at most five seconds for a
+  transactional DDL lock. The schema owner can retry it while earlier
+  services continue to run. [Rolling PostgreSQL upgrades](cli-host.md#rolling-postgresql-upgrades)
 - A bound written in `AGENTCAPSULE_DATABASE_URL` (for example
   `lock_timeout=30000`, in milliseconds) replaces the process's.
 - PostgreSQL's `max_connections` (100 by default) must hold every process

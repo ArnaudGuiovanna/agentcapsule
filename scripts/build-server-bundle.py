@@ -268,7 +268,7 @@ def main():
         files["offline-images.json"]=json_bytes(images)
         files["host-packages.json"]=json_bytes(dict(snapshot=SNAPSHOT,packages=records))
         manifest={"schema":"agentcapsule.bundle/v1","version":build["version"],"commit":build["commit"],
-                  "platform":"ubuntu-24.04-amd64","protocol":"v1","migration_mode":"offline-exact-history",
+                  "platform":"ubuntu-24.04-amd64","protocol":"v1","migration_mode":"offline-exact-history","rolling_schema":1,
                   "binary_rollback_epoch":"agentcapsule-state/v1",
                   "migration_ledger":json.loads(output(files["agentcapsule-admin"],"migration-manifest")),
                   "migrations":[p.name for p in sorted((ROOT/"internal/controlplane/migrations").glob("*.sql"))],

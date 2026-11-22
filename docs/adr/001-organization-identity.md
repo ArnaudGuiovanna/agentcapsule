@@ -500,3 +500,20 @@ Now (migration `platform-session-chains`):
    host (`agentcapsule-admin issue-enrollment`).
 5. An enrollment proof is looked up before the lock; a bearer that is not
    one gets 401 without waiting for it (L-02).
+
+
+### Rolling schema upgrades (v0.1.0 audit, A-06)
+
+A migration can declare that the preceding binary can continue to read and
+write the new schema. The owner records that declaration with the SQL digest.
+A running API or worker checks every row in its compiled history and accepts
+each additional contiguous row only if it carries that declaration. Admin
+migration commands still refuse unknown rows. Contract migrations require
+the operator to drain older processes first.
+
+Transactional expands share the normal store gate, commit one at a time and
+release a contended DDL lock after five seconds for a later retry. A declared
+concurrent index builds on a dedicated migration connection. Its ledger row
+commits after PostgreSQL reports a valid index. A canceled build can leave an
+invalid index, which a retry repairs after checking its definition. The
+upgrade sequence is in [the host guide](../cli-host.md#rolling-postgresql-upgrades).
