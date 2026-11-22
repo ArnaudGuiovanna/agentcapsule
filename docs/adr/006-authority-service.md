@@ -1478,7 +1478,7 @@ the authority for all the others (S-15, P-10, A-05). Lot PERF-2 changes:
 **Revocation scopes.** A store acts only on the events addressed to it, and
 each event names its subjects. So a subject has a scope: the stores that can
 act on it. `agent/<id>`: the agent's store and every agent that shares a
-request with it; `request/<id>`: its two parties; `event/<id>`: its
+kept request with it (FIX-1 below); `request/<id>`: its two parties; `event/<id>`: its
 destination (`internal/controlplane/revocation_scopes.go`). A request joins
 two LIVE agents of one organization only, so no store joins a subject's
 scope once the subject is committed in PostgreSQL. The worker names the
@@ -1568,3 +1568,74 @@ this disk), plus a round trip to the standby in synchronous mode. A boot
 writes once per page of fences; a delivery once. The first scan after the
 service starts reads every subject once, to find those begun before version
 5.
+
+### Leftovers of the audit's fixes (FIX-1)
+
+November 22, 2026. Lot FIX-1 closes what the earlier lots found outside
+their scope.
+
+**A write given up before its first exchange.** The degraded delay runs
+from the first failed exchange since the last success (§5, ADR 005 item
+16): for the first `degraded_after`, every write waits for the standby and
+fails at its deadline. A write whose caller's deadline ended during its
+commit could leave its wait on that deadline without one exchange, when
+another exchange held the link: no failure was recorded, the delay never
+started, and the monitor did not send the committed record, which stayed on
+the primary until another write. Such a give-up, after the commit or in the
+barrier's wait before it, now counts as a failed exchange (`sync`,
+`internal/restoreauthority/replication_linux.go`): it
+starts the delay and the monitor. As SEC-5 decided, it says nothing of the
+standby, so the last error kind stays the standby's.
+`TestAWriteGivenUpDuringItsCommitStartsTheDegradedDelay` and
+`TestARecordGivenUpDuringItsCommitReachesTheStandby` failed before.
+
+**Keys in locked memory on both sides of the socket.** SEC-5 put the key
+authority's key buffers in pooled pages outside the Go heap, locked in RAM,
+left out of core dumps and cleared at their release. That mechanism is now
+`internal/keymem`. The worker's client reads a held volume key into such a
+page and releases it once the hold returns; the API's client reads a daily
+receipt key into one, which the API's ring releases once it has made its
+cipher; the service sends a receipt key from one (`Local.ReceiptKey`) and
+releases it after the answer, or when the answer is never sent. A volume
+key the service holds goes to the socket from the key authority's page, as
+before. What stays on the Go heap: the API's AES-GCM cipher of a day's
+receipt key, for as long as its ring keeps the day (two days), and the
+copies the worker makes after the hold (the guest's TLS channel,
+libcryptsetup).
+
+**Scopes and the retention of finished records.** The retention (PERF-3A,
+`finished_retention.go`) deletes finished requests and their mailbox
+entries, the rows a subject's scope was read from.
+
+- `agent/<id>` counts the agent's *kept* requests only: a party that only a
+  deleted request joined to the agent leaves its scope. That is safe. A
+  store acts only on the events addressed to it, and an event that names
+  `agent/<id>` belongs to a request between the two agents. The retention
+  deletes a request only once no store can act on its events: none is left
+  to deliver or still fencing; each was delivered and answered, or died
+  with its `event/<id>` fenced, or the request's closure fenced
+  `request/<id>`, which each of its events names, in both parties (the
+  authority keeps that scope, below); and the request finished more than
+  the retention ago, which exceeds the horizon of every archive a restore
+  can start from, so no restored image holds an event of it that its store
+  had not acted on or fenced. A request joins only LIVE agents, so none joins
+  them again after the deletion. `TestRetentionKeepsTheScopeOfARevokedEventAndNarrowsOnlyWhatNoStoreActsOn`
+  and `TestRetentionKeepsTheScopeOfAClosedRequest` check that no event for
+  the dropped party names the agent.
+- `request/<id>` and `event/<id>` had no store once their row was gone, so
+  a subject the authority began later (a reconciliation after a failover, a
+  barrier that never ran) fell into every store's scope: fail-safe, but its
+  ID reached the guests of every organization. Keeping the rows while a
+  revocation of them could still begin would keep them for good, as a
+  reconciliation can begin any subject the authority lacks. Instead the
+  stores of these scopes, which never change, are recorded with the subject
+  (`revocation_catalogue.stores`, migration `revocation-subject-stores`,
+  which fills them for the subjects already there): the sender and the
+  recipient, the mailbox entry's destination. `RevocationScopes` reads them
+  first. A subject of which PostgreSQL holds neither its stores nor its row
+  still gets every store.
+
+The models keep their meaning: a store's `reach` is what it can act on.
+`spec/store_enrollment.qnt` gains `forget`, the retention's deletion of the
+last kept request that joins a store to a subject, allowed only while the
+store is not acting on it (`FORGET_GUARD`; broken: `storeEnrollmentEagerForget`).

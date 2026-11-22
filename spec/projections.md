@@ -432,6 +432,8 @@ The runs of the output stream ([ADR 022](../docs/adr/022-native-streaming.md)) a
 | `storeEnrollmentOk.restorationCatchesCompletedAndConcurrentRevocationsTest` | partial | `TestReceiptRevisionAndForgeryCannotPublish`, `TestPublicationSerializesConcurrentRevocation` |  |
 | `storeEnrollmentOk.retirementWaitsForPhysicalStopTest` | partial | `TestInstallVolumeRequiresRetiredRegisteredInodeAndExactImage` |  |
 | `storeEnrollmentOk.permanentSealCannotBeRestoredTest` | full | `TestReceiptRevisionAndForgeryCannotPublish` |  |
+| `storeEnrollmentOk.retentionForgetsOnlyAnIdleRelationTest` | partial | `TestRetentionKeepsTheScopeOfARevokedEventAndNarrowsOnlyWhatNoStoreActsOn`, `TestRetentionKeepsTheScopeOfAClosedRequest` | FIX-1: once the retention deleted a request, `agent/<id>`'s scope no longer holds the other party, and no event left for that party names the agent; the request's and the dead event's subjects keep their recorded stores. The revocation's completion without that party's fence runs in the authority, not here. |
+| `storeEnrollmentOk.retentionKeepsARelationInUseTest` | partial | `TestFinishedRequestsGoAfterTheirRetention` | A request with a delivery still queued is not purged. The other conditions (closure committed, past the archives' horizon) are the retention's query (`finished_retention.go`). |
 
 ### `store_seal.qnt`
 
