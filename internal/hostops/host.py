@@ -366,7 +366,8 @@ def check_migration_plan(installed, candidate):
             return "database_ledger_verified"
         # Another host may already have applied part or all of this signed
         # release. Older installations require an exact ledger.
-        if (installed.get("rolling_schema") == 1 and isinstance(actual, list) and
+        if (installed.get("rolling_schema") == 1 and installed.get("migration_ledger") == expected and
+                isinstance(actual, list) and
                 len(expected) < len(actual) <= len(ledger) and actual == ledger[:len(actual)] and
                 all(row.get("compatible_with_previous") is True for row in actual[len(expected):])):
             return "database_expand_verified"

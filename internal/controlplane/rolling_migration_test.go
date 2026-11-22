@@ -27,6 +27,11 @@ func TestReadyDuringExpandAndAfterContract(t *testing.T) {
 	if err := s.migrate(ready, expanded); err != nil {
 		t.Fatal("expand with an active reader:", err)
 	}
+	retry, stop := context.WithTimeout(ctx, 4*time.Second)
+	defer stop()
+	if err := s.migrate(retry, expanded); err != nil {
+		t.Fatal("second host checking an applied expand with an active reader:", err)
+	}
 	rollback(tx)
 	if err := s.Ready(ctx); err != nil {
 		t.Fatal("older service after expand:", err)

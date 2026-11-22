@@ -89,7 +89,9 @@ func (s *Store) migrateRolling(ctx context.Context, migrations []schemaMigration
 		// The old offline migrations remain one atomic group. An expand
 		// shares the normal store gate and commits its own receipt.
 		options := pgx.TxOptions{IsoLevel: pgx.ReadCommitted}
-		options.BeginQuery = preamble(ctx, !expand, options, true)
+		// A second host may have applied the entire release already. Its
+		// final ledger and grant checks can run alongside active readers.
+		options.BeginQuery = preamble(ctx, !expand && end > applied, options, true)
 		tx, err := conn.BeginTx(ctx, options)
 		if err != nil {
 			return err

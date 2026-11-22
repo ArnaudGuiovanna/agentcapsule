@@ -140,6 +140,10 @@ class HostOperationTests(unittest.TestCase):
             with patch.dict(self.api, postgres_scalar=lambda *_: json.dumps(actual).encode()):
                 return plan(installed, candidate)
         self.assertEqual(check([base, expand]), "database_expand_verified")
+        installed.pop("migration_ledger")
+        with self.assertRaisesRegex(ValueError, "database migration history"):
+            check([base, expand])
+        installed["migration_ledger"] = [base]
         with self.assertRaisesRegex(ValueError, "database migration history"):
             check([base, dict(expand, sha256="c"*64)])
         installed.pop("rolling_schema")
