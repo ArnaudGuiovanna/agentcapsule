@@ -4,38 +4,15 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmpolicy"
 )
 
-// RequestPolicy is what an alias lets a call ask of its provider (audit
-// findings S-11 and S-13). A forwarded request keeps the agent's body, but
-// only its dialect's plain fields pass by default: the client's own tools
-// (functions and custom tools), messages, sampling and format options. A
-// tool the provider runs itself (web search or fetch, code execution, file
-// search, computer use, an MCP connector) and an option that changes the
-// price of a call or keeps data at the provider (a service tier, a stored or
-// background response, audio output, a vendor extension) are refused before
-// anything is reserved, unless the organization names them here.
-type RequestPolicy struct {
-	// AllowedFields are top-level fields of a forwarded request allowed
-	// beside the dialect's plain ones (service_tier, store, web_search_options,
-	// mcp_servers, top_k...).
-	AllowedFields []string
-	// AllowedToolTypes are tool types allowed beside the client's own
-	// (web_search_20250305, code_interpreter, mcp...).
-	AllowedToolTypes []string
-	// MaxOutputTokens is the output cap of a call that declares none: it is
-	// written into the request and reserved. 0: the route's default,
-	// DefaultForwardOutput or DefaultCompleteOutput.
-	MaxOutputTokens int
-	// OutputCapField is the field an openai_compatible provider reads that
-	// cap from: "max_tokens" (the default, which local servers such as Ollama
-	// read) or "max_completion_tokens" (which OpenAI's reasoning models
-	// require). An anthropic provider reads max_tokens.
-	OutputCapField string
-}
+// RequestPolicy is what an alias lets a call ask of its provider
+// (llmpolicy.RequestPolicy, which the control plane stores).
+type RequestPolicy = llmpolicy.RequestPolicy
 
 // ErrFeatureDenied refuses, before any reservation, a forwarded request that
 // uses a top-level field or a tool type its alias does not allow.
@@ -43,8 +20,6 @@ var ErrFeatureDenied = errors.New("llm request uses a field or a tool type its a
 
 // Bounds and defaults of a request policy.
 const (
-	// MaxPolicyNames bounds each list of a policy.
-	MaxPolicyNames = 32
 	// DefaultForwardOutput and DefaultCompleteOutput are the output caps of
 	// a call that declares none on an alias without MaxOutputTokens.
 	DefaultForwardOutput  = 4096
@@ -58,18 +33,6 @@ const (
 	ImageInputTokens    = 4096
 	DocumentInputTokens = 300_000
 )
-
-var policyName = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
-
-// ValidPolicyName is the syntax of a field or tool type a policy names.
-func ValidPolicyName(s string) bool { return policyName.MatchString(s) }
-
-// gatewayFields are the fields the gateway itself rules on: no policy can
-// allow them.
-var gatewayFields = []string{"model", "messages", "stream", "stream_options", "n", "max_tokens", "max_completion_tokens"}
-
-// GatewayField reports whether a field is the gateway's own.
-func GatewayField(s string) bool { return slices.Contains(gatewayFields, s) }
 
 // plainFields are the top-level fields every alias accepts, per dialect:
 // what the call costs is its tokens, which the output cap bounds and the
@@ -94,7 +57,9 @@ var neutralValues = map[string]map[string][]string{
 // without a type is the client's too.
 var clientToolTypes = []string{"function", "custom"}
 
-func (p RequestPolicy) outputCap(declared, fallback int) int {
+// outputCap is a call's output cap: its declared one, else the policy's,
+// else fallback.
+func outputCap(p RequestPolicy, declared, fallback int) int {
 	switch {
 	case declared > 0:
 		return declared
@@ -105,7 +70,7 @@ func (p RequestPolicy) outputCap(declared, fallback int) int {
 }
 
 // capField is the field an openai_compatible provider reads the cap from.
-func (p RequestPolicy) capField() string {
+func capField(p RequestPolicy) string {
 	if p.OutputCapField == "max_completion_tokens" {
 		return p.OutputCapField
 	}
@@ -116,13 +81,13 @@ func (p RequestPolicy) capField() string {
 // policy's, else DefaultCompleteOutput. The request sent to the provider
 // carries it, and the accounting reserves it.
 func CompleteOutputCap(p RequestPolicy, q Request) int {
-	return p.outputCap(q.MaxTokens, DefaultCompleteOutput)
+	return outputCap(p, q.MaxTokens, DefaultCompleteOutput)
 }
 
-// check applies the policy to a forwarded request's fields: a field neither
+// checkPolicy applies the policy to a forwarded request's fields: a field neither
 // plain nor allowed passes only with a neutral value (null is dropped), and
 // each tool must be the client's own or of an allowed type.
-func (p RequestPolicy) check(dialect string, fields map[string]json.RawMessage) error {
+func checkPolicy(p RequestPolicy, dialect string, fields map[string]json.RawMessage) error {
 	for name, raw := range fields {
 		if slices.Contains(plainFields[dialect], name) || slices.Contains(p.AllowedFields, name) {
 			continue
@@ -189,13 +154,13 @@ func prepareForward(p RequestPolicy, dialect string, body []byte, stream bool) (
 	if err != nil {
 		return nil, ForwardPlan{}, err
 	}
-	if err = p.check(dialect, fields); err != nil {
+	if err = checkPolicy(p, dialect, fields); err != nil {
 		return nil, ForwardPlan{}, err
 	}
-	output := p.outputCap(declared, DefaultForwardOutput)
+	output := outputCap(p, declared, DefaultForwardOutput)
 	field := "max_tokens"
 	if dialect == DialectOpenAI {
-		field = p.capField()
+		field = capField(p)
 	}
 	delete(fields, "max_tokens")
 	delete(fields, "max_completion_tokens")

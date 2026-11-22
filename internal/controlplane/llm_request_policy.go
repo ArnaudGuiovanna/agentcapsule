@@ -6,12 +6,12 @@ import (
 	"slices"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorization"
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmgateway"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmpolicy"
 	"github.com/jackc/pgx/v5"
 )
 
 // SetLLMAliasRequestPolicyInput replaces an alias's request policy
-// (llmgateway.RequestPolicy, v0.1.0 audit findings S-11 and S-13): the
+// (llmpolicy.RequestPolicy, v0.1.0 audit findings S-11 and S-13): the
 // top-level fields and the tool types a forwarded request may use beside the
 // plain ones, and the output cap of a call that declares none. A list left
 // out is empty, MaxOutputTokens left out is the platform's default, and
@@ -34,13 +34,13 @@ func normalizeRequestPolicy(in SetLLMAliasRequestPolicyInput, kind string) (SetL
 		from []string
 		to   *[]string
 	}{{in.AllowedFields, &out.AllowedFields}, {in.AllowedToolTypes, &out.AllowedToolTypes}} {
-		if len(list.from) > llmgateway.MaxPolicyNames {
+		if len(list.from) > llmpolicy.MaxPolicyNames {
 			return SetLLMAliasRequestPolicyInput{}, ErrInput
 		}
 		names := slices.Clone(list.from)
 		slices.Sort(names)
 		for i, name := range names {
-			if !llmgateway.ValidPolicyName(name) || (i > 0 && names[i-1] == name) || (list.to == &out.AllowedFields && llmgateway.GatewayField(name)) {
+			if !llmpolicy.ValidPolicyName(name) || (i > 0 && names[i-1] == name) || (list.to == &out.AllowedFields && llmpolicy.GatewayField(name)) {
 				return SetLLMAliasRequestPolicyInput{}, ErrInput
 			}
 		}

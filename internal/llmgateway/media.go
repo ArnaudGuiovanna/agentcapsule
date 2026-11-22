@@ -1,8 +1,9 @@
 package llmgateway
 
 import (
-	"errors"
 	"unicode/utf8"
+
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmpolicy"
 )
 
 // Bounds of the multimodal routes: embeddings, transcription and OCR
@@ -20,9 +21,8 @@ const (
 )
 
 // ErrUnsupported: the alias's provider kind does not serve this operation
-// (only an openai_compatible provider serves embeddings, transcription and
-// OCR). The alias's operations are checked before this, when it is set.
-var ErrUnsupported = errors.New("llm provider does not serve this operation")
+// (llmpolicy.ErrUnsupported, which the control plane's refusals match).
+var ErrUnsupported = llmpolicy.ErrUnsupported
 
 // AudioFormats maps the accepted audio formats to their media types.
 var AudioFormats = map[string]string{"mp3": "audio/mpeg", "wav": "audio/wav", "flac": "audio/flac", "ogg": "audio/ogg", "m4a": "audio/mp4", "webm": "audio/webm"}

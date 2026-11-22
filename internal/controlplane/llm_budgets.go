@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorization"
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmgateway"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmpolicy"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -35,7 +35,7 @@ func (e *LLMRefusal) Is(target error) bool {
 	case "alias_access":
 		return target == ErrLLMAliasDenied
 	case "unsupported":
-		return target == llmgateway.ErrUnsupported
+		return target == llmpolicy.ErrUnsupported
 	}
 	return target == ErrBudgetExceeded
 }

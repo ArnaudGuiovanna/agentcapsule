@@ -28,29 +28,6 @@ var ErrAddressRefused = fmt.Errorf("%w: provider address not allowed", ErrReject
 // a CIDR prefix of internal addresses.
 var ErrAllowlist = errors.New("invalid internal provider allowlist")
 
-// InternalHost reports whether a provider URL's host names a non-public
-// address without asking DNS: an IP address that is not public, localhost, or
-// a numeric form that some resolvers read as an address (127.1, 2130706433).
-// The API refuses such a URL at registration. The real guard is the check
-// when the gateway connects, after DNS resolution.
-func InternalHost(host string) bool {
-	if a, err := netip.ParseAddr(host); err == nil {
-		return addrpolicy.Classify(a) != addrpolicy.Public
-	}
-	name := normalName(host)
-	return name == "localhost" || strings.HasSuffix(name, ".localhost") || numericName(name)
-}
-
-func normalName(host string) string { return strings.TrimSuffix(strings.ToLower(host), ".") }
-
-var numericLabel = regexp.MustCompile(`^(0x[0-9a-f]*|[0-9]+)$`)
-
-// numericName: a top-level label is never numeric, so such a name is an
-// address in a form that inet_aton accepts.
-func numericName(name string) bool {
-	return numericLabel.MatchString(name[strings.LastIndex(name, ".")+1:])
-}
-
 // Allowlist is the operator's list of internal provider addresses the gateway
 // may connect to (ADR 010, question 2). It is empty by default.
 type Allowlist struct {
@@ -95,8 +72,8 @@ func ParseAllowlist(entries []string) (Allowlist, error) {
 			l.addrs[netip.AddrPortFrom(addrpolicy.Effective(a), uint16(port))] = true
 			continue
 		}
-		name := normalName(host)
-		if len(name) > 253 || !namePattern.MatchString(name) || numericName(name) {
+		name := addrpolicy.HostName(host)
+		if len(name) > 253 || !namePattern.MatchString(name) || addrpolicy.NumericName(name) {
 			return Allowlist{}, fmt.Errorf("%w: %q is not a host name", ErrAllowlist, e)
 		}
 		l.names[name+":"+strconv.Itoa(int(port))] = true
@@ -120,7 +97,7 @@ func (l Allowlist) covers(name string, port uint16, a netip.Addr) bool {
 // host:port. The corpus source client (internal/corpussource) reads its
 // operator's list, corpus.sources.allowed_internal_hosts, in this syntax.
 func (l Allowlist) Allows(host string, port uint16, a netip.Addr) bool {
-	return l.covers(normalName(host), port, addrpolicy.Effective(a))
+	return l.covers(addrpolicy.HostName(host), port, addrpolicy.Effective(a))
 }
 
 // egress is the gateway's address policy. It applies when a connection is
@@ -139,7 +116,7 @@ func (e *egress) allowed(host string, port uint16, a netip.Addr) bool {
 	case addrpolicy.Never:
 		return false
 	}
-	return e.loopback && a.IsLoopback() || e.allow.covers(normalName(host), port, a)
+	return e.loopback && a.IsLoopback() || e.allow.covers(addrpolicy.HostName(host), port, a)
 }
 
 // TestOptions change a gateway in ways the operator's configuration cannot.

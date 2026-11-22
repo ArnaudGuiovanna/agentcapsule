@@ -378,7 +378,7 @@ func join(base, path string) string { return strings.TrimRight(base, "/") + path
 // buildOpenAI always bounds the output: the request's cap, else the alias's
 // (CompleteOutputCap), in the field the alias names.
 func buildOpenAI(r Route, q Request) (string, []byte, map[string]string, error) {
-	payload := map[string]any{"model": r.UpstreamModel, "messages": q.Messages, r.Policy.capField(): CompleteOutputCap(r.Policy, q)}
+	payload := map[string]any{"model": r.UpstreamModel, "messages": q.Messages, capField(r.Policy): CompleteOutputCap(r.Policy, q)}
 	if q.Temperature != nil {
 		payload["temperature"] = *q.Temperature
 	}

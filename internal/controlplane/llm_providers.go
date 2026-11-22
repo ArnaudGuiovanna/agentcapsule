@@ -13,9 +13,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/addrpolicy"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authoritylog"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authorization"
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmgateway"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/llmpolicy"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -55,7 +56,7 @@ type LLMAlias struct {
 	// that unit is unpriced.
 	AudioMicroPerMinute *int64 `json:"audio_micro_per_minute,omitempty"`
 	OCRMicroPerPage     *int64 `json:"ocr_micro_per_page,omitempty"`
-	// The request policy (llmgateway.RequestPolicy): the top-level fields
+	// The request policy (llmpolicy.RequestPolicy): the top-level fields
 	// and tool types a forwarded request may use beside the plain ones, in
 	// sorted order, and the output cap of a call that declares none
 	// (absent: the platform's default) with the field it is written in.
@@ -114,7 +115,7 @@ type LLMRoute struct {
 	Secret                       string
 	ProviderID                   string
 	Generation                   int64
-	Policy                       llmgateway.RequestPolicy
+	Policy                       llmpolicy.RequestPolicy
 }
 
 // checkProviderURL accepts https to a host that is not an internal address
@@ -128,7 +129,7 @@ func checkProviderURL(raw string) error {
 	}
 	switch h := u.Hostname(); u.Scheme {
 	case "https":
-		if llmgateway.InternalHost(h) {
+		if addrpolicy.InternalHost(h) {
 			return ErrProviderAddress
 		}
 		return nil
