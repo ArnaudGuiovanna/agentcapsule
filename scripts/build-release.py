@@ -59,6 +59,7 @@ BINARIES = (
     ("agentcapsule-admin", ".", "./cmd/agentcapsule-admin", True, False),
     ("agentcapsule-authority", ".", "./cmd/agentcapsule-authority", True, False),
     ("agentcapsule-harness", ".", "./cmd/agentcapsule-harness", False, True),
+    ("agentcapsule-worker-helper", ".", "./cmd/agentcapsule-worker-helper", False, True),
     ("capsule-adapter", ".", "./cmd/capsule-adapter", True, True),
     ("agentcapsule-slim-bridge", "runtime/slimbridge", ".", True, False),
 )

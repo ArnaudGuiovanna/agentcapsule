@@ -22,7 +22,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 HOST_PROGRAMS = ("agentcapsule-api", "agentcapsule-admin", "agentcapsule-worker", "agentcapsule-authority",
-                 "agentcapsule-slim-bridge", "agentcapsule-harness", "capsule-adapter")
+                 "agentcapsule-slim-bridge", "agentcapsule-harness", "capsule-adapter", "agentcapsule-worker-helper")
 PACKAGES = ("postgresql-16", "docker.io", "docker-compose-v2", "pgbackrest", "rclone", "curl", "e2fsprogs",
             "libcryptsetup12", "podman", "openssl", "iproute2", "ca-certificates")
 # Noble systems upgraded from the installation ISO can still carry the

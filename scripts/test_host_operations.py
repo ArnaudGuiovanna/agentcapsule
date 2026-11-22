@@ -282,6 +282,10 @@ class HostOperationTests(unittest.TestCase):
 
     def test_update_drains_after_reboot_before_it_suspends_migration_services(self):
         self.api["UNIT_DIR"]=self.root/"units"
+        self.api["UNIT_DIR"].mkdir()
+        for unit in self.api["SUSPENDED_SERVICES"]:
+            if unit!="agentcapsule-oidc":  # its unit is the identity provider's, set up apart
+                (self.api["UNIT_DIR"]/(unit+".service")).write_text("")
         maintenance=self.state/"maintenance"
         admission=self.state/"admissions-paused"
         # A reboot during the old helper's drain left even the worker gated.
@@ -295,6 +299,8 @@ class HostOperationTests(unittest.TestCase):
         self.assertTrue(admission.exists() and maintenance.exists())
         starts=[e for e in events if e[0][0]=="start" and "agentcapsule-worker" in e[0]]
         self.assertEqual(len(starts),2)  # a final delivery raced the first stop
+        # The helper starts with the worker, before it (ADR 024).
+        self.assertTrue(all(e[0].index("agentcapsule-worker-helper")<e[0].index("agentcapsule-worker") for e in starts))
         self.assertTrue(all(paused and not suspended for _,paused,suspended in starts))
         stops=[e for e in events if e[0][0]=="stop" and "agentcapsule-worker" in e[0]]
         self.assertEqual(len(stops),2)
@@ -502,8 +508,9 @@ class HostOperationTests(unittest.TestCase):
 
     def test_database_roles_map_each_account_to_its_own_role(self):
         # An installation of an earlier release mapped the API's account to
-        # the owner of the database. The update maps root to the owner and to
-        # the worker's role, the API's account to the API's role only, and
+        # the owner of the database, then root to the worker's role. The
+        # update maps root to the owner, the worker's account to the worker's
+        # role only (ADR 024), the API's account to the API's role only, and
         # creates the roles, owning nothing and with no cluster privilege.
         from unittest.mock import Mock
         folder=self.root/"cluster"
@@ -524,7 +531,7 @@ class HostOperationTests(unittest.TestCase):
             self.api["database_roles"](folder)
             ident=(folder/"pg_ident.conf").read_text()
             hba=(folder/"pg_hba.conf").read_text()
-            self.assertEqual(ident,"agentcapsule root agentcapsule\nagentcapsule root agentcapsule_worker\n"
+            self.assertEqual(ident,"agentcapsule root agentcapsule\nagentcapsule agentcapsule-worker agentcapsule_worker\n"
                                    "agentcapsule agentcapsule-api agentcapsule_api\n"
                                    "# MAPNAME SYSTEM-USERNAME PG-USERNAME\nother alice bob\n")
             self.assertEqual(hba,"local agentcapsule agentcapsule,agentcapsule_api,agentcapsule_worker peer map=agentcapsule\n"
@@ -596,12 +603,50 @@ class HostOperationTests(unittest.TestCase):
             return json.dumps(dict(authority_id="ra"))
         etc=self.root/"etc"
         etc.mkdir()
+        separate=Mock(return_value=0)
         with patch.dict(self.api,ETC=etc,service_dsns=Mock(),configure_system=Mock(),read=lambda path:files[Path(path).name],
                         db_env=Mock(return_value={}),run=Mock(),database_roles=Mock(),service_environment=Mock(),run_user=run_user,
                         searchable_parent=lambda root:events.append(("searchable_parent",root)),renew_certificates=Mock(return_value=[]),
-                        setup_oidc_unit=Mock(),setup_interop_images=Mock()):
+                        setup_oidc_unit=Mock(),setup_interop_images=Mock(),separate_worker=separate):
             self.api["configure"]({"database_url_file":None},self.version,False)
         self.assertEqual(events,[("searchable_parent","/var/lib/agentcapsule/host"),("agentcapsule-authority","init-restore-authority")])
+        # The update gives the worker its own account's files (ADR 024 §9).
+        separate.assert_called_once_with()
+
+    def test_the_update_gives_the_worker_its_trees_but_the_vms_and_the_jails(self):
+        # ADR 024 §9: what root owns in the worker's trees goes to the
+        # worker's account; a VM's volume keeps its UID, a root worker's
+        # jails stay root's, and no link is followed.
+        uid,gid=os.getuid(),os.getgid()
+        root=self.root/"host"
+        for d in ("volumes","jails/firecracker/00000000000000a1/root","bin"):
+            (root/d).mkdir(parents=True)
+        (root/"registry.json").write_text("{}")
+        outside=self.root/"outside"
+        outside.write_text("x")
+        (root/"bin"/"link").symlink_to(outside)
+        given=[]
+        def lchown(path,u,g):
+            self.assertEqual((u,g),(uid,gid))
+            given.append(Path(path).relative_to(self.root).as_posix())
+        owners={}
+        real=os.lstat
+        def lstat(path):
+            st=real(path)
+            values=list(st)
+            values[4]=owners.get(Path(path).name,0)  # st_uid: root's, but the volume
+            return os.stat_result(values)
+        (root/"volumes"/"vol.luks").write_text("")
+        owners["vol.luks"]=20001
+        with patch.dict(self.api,worker_ids=lambda:(uid,gid),RESTORE_TESTS=self.root/"tests"), \
+             patch("os.lchown",side_effect=lchown), patch("os.lstat",side_effect=lstat):
+            count=self.api["give_worker_trees"](dict(root=str(root),archives=dict(root=str(self.root/"archives"))))
+        self.assertEqual(count,len(given))
+        self.assertEqual(sorted(given),["archives","host","host/bin","host/registry.json","host/volumes","tests"])
+        with patch.dict(self.api,worker_ids=lambda:(uid,gid)):
+            for bad in ("/","/var/lib","relative"):
+                with self.assertRaisesRegex(ValueError,"its own"):
+                    self.api["give_worker_trees"](dict(root=bad))
 
     def test_external_database_names_a_role_per_service(self):
         with self.assertRaisesRegex(ValueError,"api_database_url_file and worker_database_url_file"):

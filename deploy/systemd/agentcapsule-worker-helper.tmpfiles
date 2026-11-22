@@ -1,0 +1,6 @@
+# Install as /usr/lib/tmpfiles.d/agentcapsule-worker-helper.conf
+# (systemd-tmpfiles). The worker helper's socket directory, created at boot,
+# before the helper or the worker starts: root's, which the worker's group
+# may traverse to reach the socket (0660, root and agentcapsule-worker). The
+# helper admits the worker's account alone (SO_PEERCRED, ADR 024).
+d /run/agentcapsule-worker-helper 0750 root agentcapsule-worker -

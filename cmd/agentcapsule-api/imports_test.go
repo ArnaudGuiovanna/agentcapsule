@@ -206,12 +206,15 @@ var workerStarts = map[string]struct {
 		"read-only, on a downloaded image before it is accepted (harnesspkg.InspectRootfs), debugfs -f - (ls -p commands on its standard input) " +
 		"on a corpus image (corpuspkg.InspectImage), and debugfs -V at start; " +
 		"and for the restore test's LUKS2 key check, a program of this executable (sandbox.RunSelf, volumestore.CheckContainer)"},
-	"internal/sandbox/helper_linux.go":             {1, "the helper, confined, executes that debugfs, or this executable as that program"},
-	"internal/sandbox/seccomp_linux_amd64.go":      {1, "none: the filter a program of this executable adds refuses execve and execveat"},
-	"internal/ext4image/build.go":                  {2, "mkfs.ext4 and debugfs -w, which build a harness or corpus image: the publisher's side or the corpus builder's VM, never called by the worker"},
-	"internal/runtime/firecracker_limits_linux.go": {1, "the pinned jailer, which starts the pinned Firecracker: the boot"},
-	"internal/preflight/preflight_linux.go":        {1, "the pinned Firecracker and jailer with --version"},
-	"internal/worker/host_restore_linux.go":        {1, "the archive shipper the operator names with -archive-fetch"},
+	"internal/sandbox/helper_linux.go":        {1, "the helper, confined, executes that debugfs, or this executable as that program"},
+	"internal/sandbox/seccomp_linux_amd64.go": {1, "none: the filter a program of this executable adds refuses execve and execveat"},
+	"internal/ext4image/build.go":             {2, "mkfs.ext4 and debugfs -w, which build a harness or corpus image: the publisher's side or the corpus builder's VM, never called by the worker"},
+	"internal/workerhelper/ops_linux.go": {1, "the pinned jailer, which starts the pinned Firecracker: the boot, " +
+		"in the worker helper (ADR 024), or in a root worker that has none"},
+	"internal/workerhelper/jobs_linux.go": {1, "the archive shipper the worker helper was started with (-archive-fetch), " +
+		"for a worker's fetch: in the helper only (ADR 024)"},
+	"internal/preflight/preflight_linux.go": {1, "the pinned Firecracker and jailer with --version"},
+	"internal/worker/host_restore_linux.go": {1, "the archive shipper the operator names with -archive-fetch"},
 }
 
 // imageBuilders are the functions that build a harness package or an image,

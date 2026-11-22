@@ -195,7 +195,7 @@ jobs:
           dist="$RUNNER_TEMP/ci/release/dist"
           binaries=()
           for name in agentcapsule-api agentcapsule-worker agentcapsule-admin agentcapsule-authority \
-              agentcapsule-harness capsule-adapter agentcapsule-slim-bridge; do
+              agentcapsule-harness capsule-adapter agentcapsule-slim-bridge agentcapsule-worker-helper; do
             binaries+=(--binary "$dist/$name")
           done
           for cli in "$dist"/agentcapsule-{linux,darwin,windows}-*; do binaries+=(--binary "$cli"); done

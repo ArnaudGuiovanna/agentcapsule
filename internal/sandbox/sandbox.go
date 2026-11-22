@@ -41,7 +41,9 @@
 package sandbox
 
 import (
+	"context"
 	"errors"
+	"os"
 	"time"
 )
 
@@ -73,8 +75,7 @@ const (
 	// MaxInput bounds the standard input of a self run.
 	MaxInput = 4096
 	// MaxProgramInput bounds the standard input of a program's run
-	// (RunInput): half the 64 KiB a pipe holds on Linux, which takes it all
-	// before the program starts.
+	// (RunInput), including one batch of debugfs commands.
 	MaxProgramInput = 32 << 10
 )
 
@@ -114,6 +115,33 @@ type Options struct {
 	// confined: all but those that start a process or open a socket. Outside
 	// a test binary, Run refuses it.
 	TestTools bool
+	// Delegate, when set, runs the program through a process that is root
+	// of the host: the worker's helper (ADR 024), for a worker that is not
+	// root. The helper confines it as its configured inspection UID; UID and
+	// GID are not used. The image is opened here, by the caller, and handed
+	// over as a descriptor; the helper runs a program of this executable as
+	// the worker's own executable, never as itself.
+	Delegate Delegate
+}
+
+// Delegate runs a confined program in another process (Options.Delegate).
+// It returns the errors Run returns: ErrUnavailable, ErrLimit, ErrSyscall.
+type Delegate interface {
+	RunConfined(ctx context.Context, r Delegated) ([]byte, error)
+}
+
+// Delegated is one run a Delegate makes: Program, an absolute path, or Self,
+// the name of a program of the caller's executable (RunSelf).
+type Delegated struct {
+	// Image is open read-only, at ImagePath; nil for none.
+	Image     *os.File
+	ImagePath string
+	Program   string
+	Self      string
+	Args      []string
+	Input     []byte
+	// Timeout and CPU are Options', with their defaults applied.
+	Timeout, CPU time.Duration
 }
 
 // Reservable reports whether id may be the UID or GID of a run as root: not

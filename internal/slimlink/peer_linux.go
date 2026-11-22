@@ -8,6 +8,8 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/user"
+	"strconv"
 	"syscall"
 	"time"
 )
@@ -50,9 +52,12 @@ func (l peerListener) Accept() (net.Conn, error) {
 	}
 }
 
-// Listen creates the socket at path for one peer user: the file is owned by
-// peerUID with mode 0600, and every connection's peer is checked. A leftover
-// socket at path is replaced; any other file is an error.
+// Listen creates the socket at path for one peer user, and every
+// connection's peer is checked. As root, the file is given to peerUID with
+// mode 0600. A worker that is not root (ADR 024) cannot: its socket's
+// directory is set-group-ID to the peer's group, so the socket gets that
+// group, and mode 0660 lets the peer alone connect. A leftover socket at
+// path is replaced; any other file is an error.
 func Listen(path string, peerUID uint32) (net.Listener, error) {
 	if info, err := os.Lstat(path); err == nil {
 		if info.Mode()&os.ModeSocket == 0 {
@@ -69,14 +74,45 @@ func Listen(path string, peerUID uint32) (net.Listener, error) {
 		return nil, err
 	}
 	l.SetUnlinkOnClose(true)
-	if err = os.Chown(path, int(peerUID), -1); err == nil {
+	switch {
+	case os.Geteuid() == 0:
+		if err = os.Chown(path, int(peerUID), -1); err == nil {
+			err = os.Chmod(path, 0o600)
+		}
+	case uint32(os.Geteuid()) == peerUID:
 		err = os.Chmod(path, 0o600)
+	default:
+		err = peerGroup(path, peerUID)
 	}
 	if err != nil {
 		l.Close()
 		return nil, err
 	}
 	return peerListener{l, peerUID}, nil
+}
+
+// errPeerGroup: the socket did not get the peer's group from its directory.
+var errPeerGroup = errors.New("slimlink: the socket's directory must be set-group-ID to the peer's primary group")
+
+// peerGroup opens the socket at path to the peer's primary group, which its
+// directory gave it: mode 0660.
+func peerGroup(path string, peerUID uint32) error {
+	peer, err := user.LookupId(strconv.FormatUint(uint64(peerUID), 10))
+	if err != nil {
+		return err
+	}
+	gid, err := strconv.ParseUint(peer.Gid, 10, 32)
+	if err != nil {
+		return err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSocket == 0 || uint64(info.Sys().(*syscall.Stat_t).Gid) != gid {
+		return errPeerGroup
+	}
+	return os.Chmod(path, 0o660)
 }
 
 // ServeLocal serves h on l until ctx ends, then drains for up to five seconds.

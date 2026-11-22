@@ -1586,3 +1586,15 @@ models say the same: `deletionScope` and `deletionScopeCovers` in
 pinned traces, which fence every store, are replayed on the scope
 ([projections.md](../../spec/projections.md)). A store that activates later
 still fences the catalogue of its own scope before it serves.
+
+### The worker's own account on its socket (ARCH-3, finding A-03)
+
+The worker no longer runs as root ([ADR 024](024-worker-privilege-separation.md)):
+it runs as `agentcapsule-worker`, with its root helper beside it. The worker
+socket admitted root only. With `worker_uid` in `authority.json`, the
+service creates it 0660 for the clients' group, which the worker's account
+joins, and admits that account and root at accept (`SO_PEERCRED`), as the
+API socket admits `api_uid` and root. Without `worker_uid`, nothing changes:
+0600, root only, for a laboratory's root worker. The installer writes
+`worker_uid` at install and at each update. What the socket serves, the
+holds and their order are unchanged.

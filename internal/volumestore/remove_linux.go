@@ -44,7 +44,7 @@ func (s *Store) Remove(ctx context.Context, spec Spec, device, inode uint64) err
 	if !absence(filepath.Join(s.root, "volumes", spec.VolumeID+".pending")) {
 		return ErrState
 	}
-	f, err := file(path, false)
+	f, err := s.volume(path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}

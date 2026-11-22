@@ -1,7 +1,7 @@
 [Unit]
 Description=AgentCapsule Firecracker worker
-After=network-online.target postgresql.service agentcapsule-authority.service agentcapsule-interop.service
-Wants=network-online.target agentcapsule-authority.service agentcapsule-interop.service
+After=network-online.target postgresql.service agentcapsule-authority.service agentcapsule-interop.service agentcapsule-worker-helper.service
+Wants=network-online.target agentcapsule-authority.service agentcapsule-interop.service agentcapsule-worker-helper.service
 ConditionPathExists=!/var/lib/agentcapsule-install/maintenance
 
 [Service]
@@ -10,97 +10,68 @@ EnvironmentFile=/etc/agentcapsule/worker.env
 ExecStart=/opt/agentcapsule/agentcapsule-worker -config /etc/agentcapsule/worker.json
 Restart=on-failure
 RestartSec=5
-# The jailer manages cgroup v2 limits for each microVM. Restarting this
-# service preserves those processes for worker adoption.
-Delegate=yes
-KillMode=process
 UMask=0077
 LimitCORE=0
 
-# Confinement (S-05, docs/worker.md#confinement). The worker runs as root for
-# the jailer: it creates each VM's cgroup under /sys/fs/cgroup, starts the
-# jailer into it (clone3 with CLONE_INTO_CGROUP and CLONE_NEWNET), and the
-# jailer unshares a mount namespace, pivots into the chroot, creates /dev/kvm,
-# /dev/net/tun, /dev/urandom and /dev/userfaultfd there, chowns them and drops
-# to the VM's UID. Every directive below also binds the jailer, Firecracker and
-# the sandboxed debugfs and mke2fs, which inherit it. The restore test's
-# confined LUKS header check (S-21) runs with -test-restore, from a root shell
-# or a host operation, outside this unit.
+# Privilege separation (A-03, docs/adr/024-worker-privilege-separation.md,
+# docs/worker.md#privilege-separation). The worker runs as its own account,
+# with no capability: what needs root (the jailer, the VMs' cgroups and
+# jails, the files of the VMs' UIDs, /proc of their VMMs, the confined
+# inspections, the archive fetch) goes to agentcapsule-worker-helper, over
+# its socket. The VMMs run in their own cgroups, children of the helper,
+# never of this unit: restarting it stops no VM, so systemd's default
+# KillMode applies and Delegate is not needed.
+User=agentcapsule-worker
+Group=agentcapsule-worker
 NoNewPrivileges=yes
-# CAP_SYS_ADMIN: namespaces, mounts and pivot_root (jailer, image sandbox).
-# CAP_MKNOD: the jail's device nodes. CAP_CHOWN, CAP_FOWNER, CAP_DAC_OVERRIDE:
-# files of the VMs' UIDs (jails: the kernel hard-linked into them, the platform
-# sockets bound, given away and chmodded through O_PATH descriptors and
-# /proc/self/fd, never by a path the VMM could swap). CAP_SETUID, CAP_SETGID:
-# the jailer and the sandbox drop to their UIDs. CAP_SETPCAP: the sandbox
-# empties its bounding set. CAP_KILL: a sandboxed program that overruns its
-# time runs under another UID. CAP_SYS_PTRACE: adoption reads /proc/<pid>/root,
-# exe, fd and fdinfo of VMMs that run under other UIDs.
-CapabilityBoundingSet=CAP_SYS_ADMIN CAP_MKNOD CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE CAP_SETUID CAP_SETGID CAP_SETPCAP CAP_KILL CAP_SYS_PTRACE
+CapabilityBoundingSet=
 AmbientCapabilities=
-# Writes: the runtime root (/var/lib/agentcapsule/host: the registry and
-# host.lock, the per-agent locks/, the admission/ queue, the jails, the
-# cached kernels and initrds of bin/ that the jails hard-link, the VMM logs of
-# logs/, and the registry's and the corpora's caches), the archives, and the
-# SLIM socket's directory. A root, an archive root, a cache or a trace_file
-# elsewhere needs a drop-in with ReadWritePaths=.
+# Writes: the runtime root (the registry and host.lock, the per-agent
+# locks/, the admission/ queue, the boot credentials, the VMM logs, the
+# cached kernels and initrds of bin/, the volumes' files and journals, the
+# registry's and the corpora's caches), the archives, the restore tests'
+# scratch, and the SLIM socket's directory. The installer creates them, the
+# worker's; a root, an archive root, a cache or a trace_file elsewhere needs
+# a drop-in with ReadWritePaths=. No StateDirectory=: systemd would give a
+# state directory it finds of another owner, recursively, to this unit's
+# user, the VMs' volumes included.
 ProtectSystem=strict
-# The runtime root itself, not /var/lib/agentcapsule, is the state
-# directory: the restore authority's account (agentcapsule-authority)
-# resolves the runtime root at each update to keep its own directory outside
-# it (init-restore-authority), which needs search permission on the root's
-# parent. systemd creates a missing parent 0755 and never changes it; the
-# installer creates it 0711, and an update adds o+x to one an earlier
-# release left 0700. Both state directories stay root's and 0700, which the
-# worker requires of the runtime root and of the archive root.
-StateDirectory=agentcapsule/host agentcapsule-archives
-StateDirectoryMode=0700
-ReadWritePaths=-/run/agentcapsule-worker
+ReadWritePaths=-/var/lib/agentcapsule/host -/var/lib/agentcapsule-archives -/var/lib/agentcapsule-restore-tests -/run/agentcapsule-worker
 # The worker reaches the authorities through their service only.
 InaccessiblePaths=-/var/lib/agentcapsule-key-authority -/var/lib/agentcapsule-restore-authority -/var/lib/agentcapsule-authority-replica
 ProtectHome=yes
 PrivateTmp=yes
+PrivateDevices=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes
+ProtectControlGroups=yes
 ProtectClock=yes
 ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
+RemoveIPC=yes
 SystemCallArchitectures=native
-# A deny list: the jailer needs mount, pivot_root, mknod, chown, setuid,
-# setgroups and setrlimit, the sandbox capset and sched_setaffinity.
-SystemCallFilter=~@clock @cpu-emulation @debug @module @obsolete @raw-io @reboot @swap
-SystemCallFilter=~bpf open_by_handle_at
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
 SystemCallErrorNumber=EPERM
-# AF_ALG: libcryptsetup encrypts and checks LUKS2 key slots with the kernel's
-# crypto API. AF_NETLINK: glibc's resolver, which Go uses in this cgo binary
-# when nsswitch.conf names more than files and dns.
+# AF_ALG: libcryptsetup formats a new volume's LUKS2 key slot with the
+# kernel's crypto API (a regular file needs no device). AF_NETLINK: glibc's
+# resolver, which Go uses in this cgo binary when nsswitch.conf names more
+# than files and dns.
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_ALG
-# Left out, and why (each would break the worker):
-# - PrivateDevices: drops CAP_MKNOD and hides /dev/kvm, which the start checks
-#   open; libcryptsetup also uses /dev/mapper/control and loop devices when the
-#   kernel's crypto API is missing. DevicePolicy= is left open for the same
-#   reasons.
-# - ProtectControlGroups: makes /sys/fs/cgroup read-only; the worker creates
-#   and kills the VMs' cgroups there.
-# - RestrictNamespaces: the jailer needs mount, PID and network namespaces and
-#   the sandbox IPC and UTS ones; systemd's filter also makes clone3 fail with
-#   ENOSYS, and Go starts the jailer with clone3 (CLONE_INTO_CGROUP) only.
-# - ProtectProc, ProcSubset: adoption reads other UIDs' /proc/<pid>, which
-#   CAP_SYS_PTRACE allows anyway; provisioning reads /proc/meminfo.
+# Left out, and why:
+# - ProcSubset: provisioning reads /proc/meminfo for the deployment budget.
 # - PrivateNetwork, IPAddressDeny: the worker calls registries, forges, model
 #   providers and the Directory.
-# - PrivateUsers, User=: the jailer must run as root of the host.
-# - PrivateIPC: libdevmapper waits on udev through System V semaphores.
-# - MemoryMax, TasksMax: the VMs run in their own cgroups, outside this unit;
-#   their limits are the worker's (ADR 012).
-# With CAP_SYS_ADMIN kept, code that takes over the worker can undo the mount
-# directives (ProtectSystem, InaccessiblePaths): they stop mistakes and path
-# tricks, not such code. Moving the network-facing work out of this root
-# process is ARCH-3 (A-03).
+# - PrivateUsers: PostgreSQL's peer authentication and the authority
+#   service's and the helper's peer checks read this account's real UID.
+# - MemoryMax: the worker streams its downloads and archive copies; its
+#   ceiling is not measured yet. The VMs' limits are the helper's (ADR 012).
 
 [Install]
 WantedBy=multi-user.target

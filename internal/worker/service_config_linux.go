@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/restoreauthority"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/runtime"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/volumearchive"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/workerhelper"
 )
 
 type ServiceImage struct {
@@ -132,6 +134,10 @@ type ServiceConfig struct {
 	// DatabaseMaxConnections bounds the worker's PostgreSQL connections
 	// (P-08): 1 to 1000, 16 when absent (controlplane.WorkerConnections).
 	DatabaseMaxConnections int32 `json:"database_max_connections,omitempty"`
+	// Helper is the worker's root helper (ADR 024): the worker then runs as
+	// its own account, refuses root, and asks the helper for every operation
+	// that needs root. Without it, the worker must be root.
+	Helper *ServiceHelper `json:"helper,omitempty"`
 }
 
 // DatabaseConnections are the worker's PostgreSQL connections: its pool and
@@ -146,6 +152,36 @@ func (c ServiceConfig) DatabaseConnections() (controlplane.Connections, error) {
 		out.MaxConns = c.DatabaseMaxConnections
 	}
 	return out, nil
+}
+
+// ServiceHelper is where the worker reaches its root helper.
+type ServiceHelper struct {
+	Socket string `json:"socket"`
+}
+
+// helperClients holds one client per helper socket for the process: each
+// keeps a few connections open.
+var helperClients sync.Map
+
+// HelperClient is the configured helper's client; nil without a helper.
+func (c ServiceConfig) HelperClient() *workerhelper.Client {
+	if c.Helper == nil {
+		return nil
+	}
+	client, _ := helperClients.LoadOrStore(c.Helper.Socket, workerhelper.NewClient(c.Helper.Socket))
+	return client.(*workerhelper.Client)
+}
+
+// ErrRootWithHelper: a worker configured with a helper runs as its own
+// account, never as root (ADR 024).
+var ErrRootWithHelper = errors.New("the worker runs as its own account when it has a helper, not as root")
+
+// CheckAccount refuses root for a worker that has a helper.
+func (c ServiceConfig) CheckAccount() error {
+	if c.Helper != nil && os.Geteuid() == 0 {
+		return ErrRootWithHelper
+	}
+	return nil
 }
 
 // DefaultDispatchConcurrency is how many jobs of a pass run at once when the
@@ -435,10 +471,13 @@ func (c ServiceConfig) Settings() (runtime.FirecrackerOptions, time.Duration, Ma
 	if !d.valid() || d.WorkLease < m.AttemptTimeout+30*time.Second {
 		return r, 0, m, invalid
 	}
+	if c.Helper != nil && (!filepath.IsAbs(c.Helper.Socket) || filepath.Clean(c.Helper.Socket) != c.Helper.Socket) {
+		return r, 0, m, invalid
+	}
 	r = runtime.FirecrackerOptions{Root: c.Root, Firecracker: c.Firecracker.Path, FirecrackerSHA256: c.Firecracker.SHA256,
 		Jailer: c.Jailer.Path, JailerSHA256: c.Jailer.SHA256, Kernel: c.Kernel.Path, KernelSHA256: c.Kernel.SHA256,
 		SystemImages: c.bootImages(), Initrd: c.Initrd.Path, InitrdSHA256: c.Initrd.SHA256, MaxActive: c.MaxActive, BootTimeout: boot, DriveLimits: drives, AuthenticatedControl: true,
-		SerialConsole: c.VMSerialConsole}
+		SerialConsole: c.VMSerialConsole, Helper: c.HelperClient()}
 	return r, lease, m, nil
 }
 
