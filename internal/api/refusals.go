@@ -106,6 +106,10 @@ var auditedRoutes = map[string]auditedRoute{
 	"PUT /v1/organizations/{id}/quotas":                         {"organization.quotas_set", "id", ""},
 	"POST /v1/harness-imports":                                  {"harness.import.requested", "", ""},
 	"POST /v1/harness-releases/{id}/deprecate":                  {"harness.release.deprecated", "id", ""},
+
+	// The platform operator's approvals of application clients (S-10).
+	"POST /v1/organizations/{id}/application-clients":                        {"application_client.approved", "id", ""},
+	"POST /v1/organizations/{id}/application-clients/{approval_id}/withdraw": {"application_client.withdrawn", "id", "approval_id"},
 }
 
 // refusedStatuses are the answers that refuse an attempt: authorization

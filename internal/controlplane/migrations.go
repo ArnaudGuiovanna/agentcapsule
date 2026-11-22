@@ -242,6 +242,15 @@ var llmRequestPolicySQL string
 //go:embed migrations/0069_refusal_attempts.sql
 var refusalAttemptsSQL string
 
+//go:embed migrations/0070_application_clients.sql
+var applicationClientsSQL string
+
+//go:embed migrations/0071_platform_session_chains.sql
+var platformSessionChainsSQL string
+
+//go:embed migrations/0072_append_only_audit.sql
+var appendOnlyAuditSQL string
+
 // Append migrations; never edit an installed migration. The original schema
 // also upgrades pre-ledger installations, preserving its historical backfills.
 // Later calls validate its checksum without replaying DDL or those backfills.
@@ -315,6 +324,9 @@ var controlPlaneMigrations = []schemaMigration{
 	{version: 67, name: "organization-suspension", sql: organizationSuspensionSQL},
 	{version: 68, name: "llm-request-policy", sql: llmRequestPolicySQL},
 	{version: 69, name: "refusal-attempts", sql: refusalAttemptsSQL},
+	{version: 70, name: "application-clients", sql: applicationClientsSQL},
+	{version: 71, name: "platform-session-chains", sql: platformSessionChainsSQL},
+	{version: 72, name: "append-only-audit", sql: appendOnlyAuditSQL},
 }
 
 func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error {

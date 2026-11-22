@@ -51,7 +51,7 @@ agentcapsule login --key-file owner.pem
 agentcapsule team create --name Support --idempotency-key create-support
 ```
 
-A platform operator can rotate their session with `session renew` and invalidate it with `logout`. If an exchange response is lost, repeating the command recovers the credential already persisted privately on the workstation. Organization logout clears the local login. Membership and issuer revocation are separate server operations.
+A platform operator can rotate their session with `session renew` and invalidate it with `logout`. If an exchange response is lost, repeating the command recovers the credential already persisted privately on the workstation. Sessions renewed from one enrollment form a chain: revoking one (`session revoke ID`) revokes the sessions renewed from it, and no session of the chain lasts beyond 30 days after the enrollment. Then `session renew` answers 409 `expired`: issue a new enrollment on the host (`agentcapsule-admin issue-enrollment`) and log in again. Organization logout clears the local login. Membership and issuer revocation are separate server operations.
 
 ## Follow an invocation as it streams
 
@@ -118,7 +118,15 @@ The starter echoes text. For inference use an imported model-capable harness, re
 
 MonApp is the example client application for the fictional organization Acme. In this scenario a member signs in to MonApp and can use a personal assistant and the team's shared Support assistant. Substitute your application's name, issuer and callback URI when configuring your own environment. The command-line acceptance client exercises this user journey over HTTPS. [Acceptance client](../examples/monapp/verify.py)
 
-Configure the issuer, client and exact redirect URI. Put the registration document in `monapp.yaml` and the policy in `arrival.yaml`. Use the real pool, shared agent and team IDs. Give the backend access to the private registration output. Hand the developer the output of `app connection` after applying the policy. It includes the API origin, discovery URL, audience, client ID, redirects, PKCE method and authorized policy references. [Registration and policy examples](api/applications.md) · [Installation realm](../deploy/oidc/README.md)
+Configure the issuer, client and exact redirect URI. The platform operator approves the issuer and client ID for Acme first; until then registration answers 403 `application_client_not_approved`:
+
+```sh
+agentcapsule --context platform-dev organization approve-client "$org" --file - --idempotency-key approve-monapp <<'JSON'
+{"issuer":"https://identity.acme.test/realms/agentcapsule","client_id":"monapp"}
+JSON
+```
+
+Put the registration document in `monapp.yaml` and the policy in `arrival.yaml`. Use the real pool, shared agent and team IDs. Give the backend access to the private registration output. Hand the developer the output of `app connection` after applying the policy. It includes the API origin, discovery URL, audience, client ID, redirects, PKCE method and authorized policy references. [Registration and policy examples](api/applications.md) · [Installation realm](../deploy/oidc/README.md)
 
 ```sh
 agentcapsule app register monapp --config monapp.yaml --output-file monapp-backend.json

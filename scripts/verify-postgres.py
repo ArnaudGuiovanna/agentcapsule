@@ -49,7 +49,8 @@ def main():
     out.mkdir(parents=True, exist_ok=False)
     sources = out / "sources"
     sources.mkdir()
-    for name in ["go.mod", "go.sum"]:
+    # install.sh: internal/hostops checks its pinned release digests against it.
+    for name in ["go.mod", "go.sum", "install.sh"]:
         shutil.copy2(ROOT / name, sources / name)
     shutil.copytree(ROOT / "internal", sources / "internal")
     shutil.copytree(ROOT / "cmd", sources / "cmd")

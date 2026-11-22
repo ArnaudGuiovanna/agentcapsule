@@ -39,7 +39,15 @@ AmbientCapabilities=
 # A root, an archive root, a cache or a trace_file elsewhere needs a drop-in
 # with ReadWritePaths=.
 ProtectSystem=strict
-StateDirectory=agentcapsule agentcapsule-archives
+# The runtime root itself, not /var/lib/agentcapsule, is the state
+# directory: the restore authority's account (agentcapsule-authority)
+# resolves the runtime root at each update to keep its own directory outside
+# it (init-restore-authority), which needs search permission on the root's
+# parent. systemd creates a missing parent 0755 and never changes it; the
+# installer creates it 0711, and an update adds o+x to one an earlier
+# release left 0700. Both state directories stay root's and 0700, which the
+# worker requires of the runtime root and of the archive root.
+StateDirectory=agentcapsule/host agentcapsule-archives
 StateDirectoryMode=0700
 ReadWritePaths=-/run/agentcapsule-worker
 # The worker reaches the authorities through their service only.

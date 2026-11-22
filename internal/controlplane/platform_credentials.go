@@ -158,7 +158,8 @@ func (s *Store) ListOperatorCredentials(ctx context.Context) ([]OperatorCredenti
 }
 
 // RevokeOperatorCredential is a trusted local operation. It permanently revokes
-// a platform or service credential and is idempotent. Revocation takes effect at
+// a platform or service credential, with the platform sessions descended
+// from a platform one, and is idempotent. Revocation takes effect at
 // the next request because authentication reads the row each time. It is an
 // audited operator command (ADR 014): operator_audit records it with its
 // outcome, refusals included; a dry run revokes nothing.
@@ -184,6 +185,23 @@ func (s *Store) RevokeOperatorCredential(ctx context.Context, cmd OperatorComman
 		}
 		if err != nil {
 			return false, err
+		}
+		if kind == "platform" {
+			// The sessions descended from it go with it (audit finding
+			// L-01), also below one revoked before.
+			ids, err := revokePlatformChain(ctx, tx, id)
+			if err != nil || len(ids) == 0 {
+				return false, err
+			}
+			if cmd.DryRun {
+				return true, nil // a dry run commits nothing, and records nothing
+			}
+			recorded := s.revocations(tx, "")
+			if err = recorded.add(ctx, authoritylog.AccessPlatformCredential, "", objects(ids)); err != nil {
+				return false, err
+			}
+			list = recorded.list
+			return true, nil
 		}
 		if revoked {
 			return false, nil

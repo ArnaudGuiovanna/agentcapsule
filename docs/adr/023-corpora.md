@@ -242,8 +242,8 @@ section. Its `sources.rules` follow the registry rules:
 
 ```json
 "corpus": {
-  "cache": "/var/lib/agentcapsule/corpora",
-  "staging": "/var/lib/agentcapsule/corpus-staging",
+  "cache": "/var/lib/agentcapsule/host/corpora",
+  "staging": "/var/lib/agentcapsule/host/corpus-staging",
   "max_archive_mib": 2048,
   "max_lfs_mib": 20480,
   "max_lfs_objects": 10000,

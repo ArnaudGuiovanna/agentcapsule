@@ -6,8 +6,13 @@ The sysadmin installs the identity provider. An Acme owner registers one OAuth c
 
 Send requests to the installation's HTTPS URL. The API accepts JSON. All mutations require an `Idempotency-Key` header. Check the HTTP status before interpreting a response. Read `code` from `application/problem+json` on an error.
 
+The platform operator first approves the application's OIDC client, its issuer and client ID, for Acme. A client is approved for one organization at most, and a member's token reaches only the application of the organization its client is approved for. In the bundled Keycloak realm, one issuer for the whole installation, the operator creates each client for one organization and approves it for that organization. [Decision](../adr/001-organization-identity.md#application-clients-approved-by-the-platform-operator-sec-1b-finding-s-10)
+
 | Actor and command | HTTP request | Success |
 |---|---|---|
+| Platform operator, `organization approve-client ORG_ID --file client.json` | `POST /v1/organizations/{id}/application-clients` with `{"issuer":"…","client_id":"monapp"}`, platform credential | 201 approval ID; 200 for a client approved for Acme already |
+| Platform operator, `organization clients ORG_ID` | `GET /v1/organizations/{id}/application-clients` | Acme's approved clients, `approved_by` the platform account or `migration` |
+| Platform operator, `organization withdraw-client ORG_ID APPROVAL_ID` | `POST /v1/organizations/{id}/application-clients/{approval_id}/withdraw` with `{}` | Approval withdrawn; the application registered for the client disabled, with its `revocations` |
 | Acme owner, `app register monapp --config monapp.yaml --output-file backend.json` | `POST /v1/applications`, identity:manage | 201, application ID, OIDC parameters and backend token |
 | Acme owner, `app show <id>` | `GET /v1/applications/{id}` | Public client configuration, pinned public keys, applied policy IDs |
 | Acme owner, `app connection <id> --output-file monapp-public.json` | `GET /v1/applications/{id}` | Developer handoff with HTTPS API and issuer discovery URLs, organization and application IDs, audience, client ID, callbacks, PKCE method and applied policy IDs in `.data` |
@@ -31,7 +36,9 @@ Example registration body (replace the key with the real RSA public modulus of t
 }
 ```
 
-Extract `kid`, `n`, `e` and `kty` from the trusted issuer's HTTPS JWKS. The API accepts pinned RS256 signing keys of 2,048–8,192 bits and supports overlapping keys. Configure the exact same redirect URIs at the IdP. Each issuer/client pair identifies one environment and organization. The owner can list registrations with `after` and `limit` (1–100). Export the public connection after applying the policy.
+Extract `kid`, `n`, `e` and `kty` from the trusted issuer's HTTPS JWKS. The API accepts pinned RS256 signing keys of 2,048–8,192 bits and supports overlapping keys. Configure the exact same redirect URIs at the IdP. Each issuer/client pair identifies one environment and organization. Without the operator's approval for Acme, registration returns 403 `application_client_not_approved`, the same answer whether another organization holds the client or none does. A 409 `invalid_transition` concerns Acme's own applications: the name, or the client already registered. The owner can list registrations with `after` and `limit` (1–100). Export the public connection after applying the policy.
+
+Withdrawing an approval disables the application registered for its client at once, like `app revoke`; the operator can then approve the client for another organization, and Acme cannot register it again. Installations updated from v0.1.0 keep their registrations: the update approved each one's client for its organization (`approved_by` `migration`). Review them with `organization clients` and withdraw one an organization should not hold.
 
 The registration and rotation commands write the 90-day backend credential to `.data.provisioning_token` in a new private output file. Load this value into the MonApp backend’s secret store. Its single scope, `application:sync`, permits reading and updating activations of that registration. A human administrator or an eligible signed-in manager approves invitations. The member’s OIDC access token authorizes agent and result requests.
 
@@ -93,13 +100,13 @@ Request `openid email member:accept org:read agent:read agent:invoke agent:conte
 
 5. The MonApp backend owns the ordered membership events for its activations. Use the backend token or an authorized organization administrator for `PUT /v1/applications/{app}/activations/{id}`. Set `{"version":2,"team_id":"team_<Sales>"}` to transfer Alice, or omit `team_id` to leave the current team. A subsequent `{"version":3,"disabled":true}` revokes her membership. The response’s `admitted_work` lists counts of pending and running invocations. Those operations continue under their admission contract, and her next authenticated request fails. Read the activation to reconcile state after a lost response. The API prevents stale events and reactivation of a departed member. Existing manual principals and members promoted to administrative roles are outside this backend's authority.
 
-Reusing an idempotency key with a different authenticated request returns 422. An expired unused invitation returns 409. Unknown or wrongly addressed proofs and foreign resources return 404. Invalid or expired credentials and a revoked integration's OIDC tokens return 401. A disallowed team/manager returns 403. A stale event returns 409. A revoking response can include `revocations`, showing the actual record status (pending or confirmed) when using the authority service. Poll `GET /v1/access-revocations/{id}` with an audit-authorized credential for changes.
+Reusing an idempotency key with a different authenticated request returns 422. An expired unused invitation returns 409. Unknown or wrongly addressed proofs and foreign resources return 404. Invalid or expired credentials and the OIDC tokens of a revoked integration, or of a client whose approval was withdrawn, return 401. A disallowed team/manager returns 403. A stale event returns 409. A revoking response can include `revocations`, showing the actual record status (pending or confirmed) when using the authority service. Poll `GET /v1/access-revocations/{id}` with an audit-authorized credential for changes.
 
 ## Run the conformance client
 
 The signed Linux workstation CLI source archive `agentcapsule-source.tar.gz` contains this guide, the sysadmin manual (`docs/cli.md`), the OpenAPI contract (`openapi/openapi.yaml`) and the two scripts in `examples/monapp/`. After verifying the release checksums, extract the archive and run the examples from its `agentcapsule/` directory. [Release verification](../release.md#verify-a-release)
 
-Use a fresh test organization and two fresh identities. Prepare a pool containing at least two assignable agents and a shared Support agent that can answer an invocation. Supply a second organization's bearer credential to check isolation. For the bundled realm the test-only browser client follows the Keycloak password form, verifies state, and writes a short-lived API access token to a newly created private file.
+Use a fresh test organization and two fresh identities. The platform operator approves the scenario's issuer and client ID for that organization first. Prepare a pool containing at least two assignable agents and a shared Support agent that can answer an invocation. Supply a second organization's bearer credential to check isolation. For the bundled realm the test-only browser client follows the Keycloak password form, verifies state, and writes a short-lived API access token to a newly created private file.
 
 ```bash
 python3 examples/monapp/oidc-login.py --issuer https://identity.acme.test/realms/agentcapsule \
