@@ -161,7 +161,9 @@ request's closure or an agent's deletion, or stops a VM, notifies
 `agentcapsule_work` with the host's ID, and nothing else. The worker listens on
 its one dedicated connection (`pgnotify`), which its output streams share. A
 lost notification, or a connection down, only delays the work until the next
-pass; while the connection is down the hub wakes the loop every second. Each
+pass; while the connection is down the hub wakes the loop every second. An
+update keeps a host's `/etc/agentcapsule/worker.json`: a host installed with
+`"poll_interval": "30s"` keeps it until its operator sets `"5s"`. Each
 attempt has its own `attempt_timeout`; a failure keeps the SQL job
 and the other jobs in the list are still attempted. The logs are JSON events
 from a closed vocabulary (`maintenance_started`, `maintenance_complete`,
