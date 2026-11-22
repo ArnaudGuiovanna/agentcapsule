@@ -428,12 +428,13 @@ jobs:
           test -x "$postgres_executable"
           echo "PG_BIN=$(dirname "$postgres_executable")" >> "$GITHUB_ENV"
 
-      - name: Fetch pgBackRest 2.58 and rclone 1.60.1 (SHA-256 checked)
+      - name: Fetch pgBackRest 2.50 and rclone 1.60.1 (SHA-256 checked)
         id: tools
         run: |
-          # Ubuntu 26.04's exact packages, from a fixed snapshot of the Ubuntu
-          # archive, checked against the SHA-256s written in the script and
-          # extracted with dpkg-deb, without apt. Ubuntu 24.04's are older.
+          # The server bundle's pgBackRest (Ubuntu 24.04's) and Ubuntu 26.04's
+          # rclone, from the bundle's snapshot of the Ubuntu archive, checked
+          # against the SHA-256s written in the script and extracted with
+          # dpkg-deb, without apt.
           python3 scripts/fetch-backup-tools.py --output "$RUNNER_TEMP/backup-tools"
 
       - name: Record the toolchain

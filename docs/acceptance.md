@@ -376,7 +376,7 @@ What exists:
   2.8.0; OASF 1.1.0; Directory 1.8.0; SLIM 3.4.6;
 - Firecracker 1.17.0 ([manifest.json](../runtime/firecracker/manifest.json));
 - the guest kernel 6.1.188 ([kernel.json](../runtime/guest/kernel.json));
-- pgBackRest 2.58 and rclone 1.60.1;
+- pgBackRest 2.50 (the server bundle's) and rclone 1.60.1;
 - PostgreSQL 16 in CI, from Ubuntu 24.04 and not pinned; 18 in the local
   campaigns;
 - Go 1.27.4, one version for CI, releases and the local scripts. Every

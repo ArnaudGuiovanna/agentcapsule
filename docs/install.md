@@ -330,7 +330,7 @@ the items listed after the table.
 | Guest image and harnesses | SHA-256 in the worker's configuration; harnesses by OCI digest |
 | Go modules | `go.sum` (and each module of `runtime/`) |
 | SLIM native library | SHA-256 in [profile.json](../runtime/interop/profile.json) |
-| pgBackRest 2.58 and rclone 1.60.1 (CI) | SHA-256 in `scripts/fetch-backup-tools.py`, from a fixed Ubuntu snapshot |
+| pgBackRest 2.50, the server bundle's, and rclone 1.60.1 (CI) | SHA-256 in `scripts/fetch-backup-tools.py`, from the bundle's fixed Ubuntu snapshot |
 | SeaweedFS, OpenSSH (sftp) and Prometheus images (CI) | Digest |
 | GitHub Actions | Commit SHA |
 | Dagger CLI and Gitleaks (CI) | SHA-256 in the [CI workflow](../.github/workflows/ci.yml) and [Gitleaks action](../.github/actions/scan-secrets/action.yml), respectively |

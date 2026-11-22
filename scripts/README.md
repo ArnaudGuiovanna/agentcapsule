@@ -23,7 +23,7 @@ placeholders below with paths from your environment.
 - PostgreSQL (server binaries), for `verify-postgres.py` and the PostgreSQL
   phases of the KVM runners.
 - For the backup qualifications: Docker, OpenSSL, OpenSSH's client,
-  pgBackRest 2.58 and rclone 1.60.1. `fetch-backup-tools.py` gets the last two
+  pgBackRest 2.50 and rclone 1.60.1. `fetch-backup-tools.py` gets the last two
   without root ([below](#backup-qualifications)). The shipping run also needs
   `systemd-analyze` and `systemd-sysusers`.
 - For KVM campaigns: access to `/dev/kvm`, Firecracker 1.17.0 (the downstream
@@ -52,7 +52,7 @@ Do not run `go test ./...` at the repository root with sources outside
 | `test_verify_install.py` | Unit tests of `verify-install.py`'s reading of the worker's preflight |
 | `verify-postgres.py` | Go/race tests against a private, owned PostgreSQL cluster, with crash/WAL recovery; optional live LLM phase |
 | `load-test.py` | Load test of the API and the worker against a private PostgreSQL (or `--dsn`), without KVM or root: invocations at each rate in turn, delivered by real worker passes to the mock runtime; admission latency, queue age, backlog, dead letters, refusals and the limit observed; see [docs/worker.md](../docs/worker.md#load-test) |
-| `fetch-backup-tools.py` | Fetches pgBackRest 2.58 and rclone 1.60.1, Ubuntu 26.04's packages, from a fixed snapshot of the Ubuntu archive; checks each SHA-256, extracts them without root or apt and runs each once; see [below](#backup-qualifications) |
+| `fetch-backup-tools.py` | Fetches pgBackRest 2.50 (the server bundle's, Ubuntu 24.04's) and rclone 1.60.1 (Ubuntu 26.04's) from the bundle's fixed snapshot of the Ubuntu archive; checks each SHA-256, extracts them without root or apt and runs each once; see [below](#backup-qualifications) |
 | `test_fetch_backup_tools.py` | Unit tests of `fetch-backup-tools.py`, with small packages built on the spot and no network |
 | `verify-backups.py` | Continuous WAL archiving with pgBackRest to S3 and SFTP (Docker, pinned images): loss bound, restore from each store, no clear text, and the base-backup freshness written for node_exporter; then the standby: replay from the SFTP directory and from S3, a disaster and a promotion (rows lost, promotion time), the new primary's own repository |
 | `test_backup_metrics.py` | Unit tests of `deploy/backup/agentcapsule-backup-metrics.py` (base-backup freshness for node_exporter) |
@@ -198,9 +198,10 @@ secret, which is never written to the evidence.
 
 ## Backup qualifications
 
-`verify-backups.py` qualifies pgBackRest 2.58, and `verify-archive-shipping.py`
-rclone 1.60.1: the packages of Ubuntu 26.04. `verify-failover.py` runs the
-failover exercise with the same pgBackRest. Fetch both first:
+`verify-backups.py` qualifies pgBackRest 2.50, the package the server bundle
+installs (Ubuntu 24.04's), and `verify-archive-shipping.py` rclone 1.60.1,
+Ubuntu 26.04's build. `verify-failover.py` runs the failover exercise with the
+same pgBackRest. Fetch both first:
 
 ```bash
 python3 scripts/fetch-backup-tools.py --output <tools-dir> \
@@ -208,8 +209,8 @@ python3 scripts/fetch-backup-tools.py --output <tools-dir> \
 ```
 
 The script downloads the exact .deb files from a fixed snapshot of the Ubuntu
-archive (`snapshot.ubuntu.com`), with two libraries pgBackRest needs: libssh2
-1.11.1 and libxml2 2.15. It checks each file against the SHA-256 written in
+archive (`snapshot.ubuntu.com`), the snapshot of `build-server-bundle.py`, with
+the libssh2 1.11.0 the bundle installs beside pgBackRest. It checks each file against the SHA-256 written in
 the script, which is the one in Ubuntu's signed package index. It extracts
 them with `dpkg-deb -x`, without root or apt, then runs `pgbackrest version`
 and `rclone version`. Any other SHA-256 or version stops it, and it leaves no

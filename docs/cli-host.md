@@ -97,7 +97,10 @@ The realm and discovery URL are described in the identity provider guide.
 
 See the backup guide for the two encrypted repositories, off-host credentials
 and volume shipping. Provide `pgbackrest_config` and `rclone_config` in the
-installation profile. A missing destination is reported in the install
+installation profile. Start `pgbackrest_config` from
+[deploy/backup/pgbackrest.conf](../deploy/backup/pgbackrest.conf): its `pg1-`
+lines already name the installer's cluster (`16/agentcapsule`, port 55432).
+A missing destination is reported in the install
 result. The single-host authority can be paired to a replica using the
 recovery procedure. Verify custody of the receipt key, transit keys and
 authority recovery material independently. [Recovery](recovery.md)

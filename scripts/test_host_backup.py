@@ -1,6 +1,8 @@
 """The host may report a remote backup only after validating each independent copy."""
+import configparser
 import json
 from pathlib import Path
+import runpy
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -51,6 +53,27 @@ class BackupEvidenceTest(unittest.TestCase):
             conf.write_text(changed)
             with self.assertRaises(ValueError):
                 self.api["backup_destinations"](conf)
+
+    def test_the_backup_templates_name_the_installers_cluster(self):
+        # The cluster the installer creates, read from its own call.
+        created = []
+        with patch.dict(self.api, run=lambda *argv, **kw: created.append([str(a) for a in argv]),
+                        write_file=Mock(), database_roles=Mock(), run_user=Mock(return_value="1")):
+            self.api["database"]()
+        cluster = next(argv for argv in created if argv[0] == "pg_createcluster")
+        version, name, port = cluster[1], cluster[2], cluster[cluster.index("--port") + 1]
+        self.assertIn(f"host=/run/postgresql port={port} ", self.api["LOCAL_DSN"])
+        primary = configparser.ConfigParser(interpolation=None)
+        primary.read(ROOT / "deploy/backup/pgbackrest.conf")
+        self.assertEqual(dict(primary["agentcapsule"]), {
+            "pg1-path": f"/var/lib/postgresql/{version}/{name}", "pg1-port": port, "pg1-socket-path": "/run/postgresql"})
+        # The standby replays the primary's WAL: the same major version, in
+        # the default cluster of that version's package.
+        standby = configparser.ConfigParser(interpolation=None)
+        standby.read(ROOT / "deploy/standby/pgbackrest.conf")
+        self.assertEqual(dict(standby["agentcapsule"]), {"pg1-path": f"/var/lib/postgresql/{version}/main"})
+        bundle = runpy.run_path(str(ROOT / "scripts/build-server-bundle.py"))
+        self.assertIn(f"postgresql-{version}", bundle["PACKAGES"])
 
     def test_receipt_requires_both_named_copies_and_authority_checks(self):
         archive, agent = "arc_" + "0" * 32, "agt_" + "1" * 32

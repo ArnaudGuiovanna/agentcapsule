@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import re
+import runpy
 import shutil
 import subprocess
 import sys
@@ -34,7 +35,7 @@ case ":$LD_LIBRARY_PATH:" in *"/pgbackrest/usr/lib/x86_64-linux-gnu:"*) ;; *) ec
 if [ -n "$NEED_LIBPQ" ]; then
   case ":$LD_LIBRARY_PATH:" in *"/libpq:"*) ;; *) echo "libpq.so.5: cannot open shared object file" >&2; exit 127;; esac
 fi
-echo "pgBackRest 2.58.0"
+echo "pgBackRest 2.50"
 """
 RCLONE = """#!/bin/sh
 echo "rclone v1.60.1-DEV"
@@ -68,7 +69,7 @@ class Fetching(unittest.TestCase):
         self.dir = Path(tempfile.mkdtemp(prefix="fetch-test-"))
         self.addCleanup(shutil.rmtree, self.dir)
         self.archive = self.dir / "archive"
-        self.packages = [self.package("pgbackrest", "pgbackrest", "2.58.0-1", {"usr/bin/pgbackrest": (PGBACKREST, 0o755)}),
+        self.packages = [self.package("pgbackrest", "pgbackrest", "2.50-1build2", {"usr/bin/pgbackrest": (PGBACKREST, 0o755)}),
                          self.package("pgbackrest", "libssh2-1t64", "1.11.1-1",
                                       {"usr/lib/x86_64-linux-gnu/libssh2.so.1": ("not a library", 0o644)}),
                          self.package("rclone", "rclone", "1.60.1+dfsg-4", {"usr/bin/rclone": (RCLONE, 0o755)})]
@@ -90,7 +91,7 @@ class Fetching(unittest.TestCase):
     def test_extracts_checks_and_runs_each_tool(self):
         out = self.dir / "tools"
         report = self.fetch(out)
-        self.assertEqual(report["tools"]["pgbackrest"]["version"], "pgBackRest 2.58.0")
+        self.assertEqual(report["tools"]["pgbackrest"]["version"], "pgBackRest 2.50")
         self.assertEqual(report["tools"]["pgbackrest"]["path"], str(out / "pgbackrest/usr/bin/pgbackrest"))
         self.assertEqual(report["tools"]["pgbackrest"]["library_path"], str(out / "pgbackrest/usr/lib/x86_64-linux-gnu"))
         self.assertEqual(report["tools"]["rclone"], {"path": str(out / "rclone/usr/bin/rclone"), "version": "rclone v1.60.1-DEV"})
@@ -138,7 +139,7 @@ class Fetching(unittest.TestCase):
             self.fetch(self.dir / "without")
         (self.dir / "libpq").mkdir()
         report = self.fetch(self.dir / "with", library_path=[self.dir / "libpq"])
-        self.assertEqual(report["tools"]["pgbackrest"]["version"], "pgBackRest 2.58.0")
+        self.assertEqual(report["tools"]["pgbackrest"]["version"], "pgBackRest 2.50")
 
     def test_an_existing_output_is_refused_and_kept(self):
         out = self.dir / "tools"
@@ -183,13 +184,25 @@ class Pins(unittest.TestCase):
 
     def test_the_qualified_versions(self):
         versions = {package: version for _, package, version, _, _ in FETCH.PACKAGES}
-        self.assertEqual(versions["pgbackrest"], "2.58.0-1")
+        self.assertEqual(versions["pgbackrest"], "2.50-1build2")
         self.assertTrue(versions["rclone"].startswith("1.60.1+"))
-        self.assertEqual(FETCH.TOOLS["pgbackrest"][2], "pgBackRest 2.58.0")
+        self.assertEqual(FETCH.TOOLS["pgbackrest"][2], "pgBackRest 2.50")
         self.assertEqual(FETCH.TOOLS["rclone"][2], "rclone v1.60.1")
         # The scripts that take these tools find the libraries next to the executable.
         self.assertTrue(re.fullmatch(r"usr/bin/[a-z]+", FETCH.TOOLS["pgbackrest"][0]))
         self.assertEqual(FETCH.LIBRARIES, "usr/lib/x86_64-linux-gnu")
+
+    def test_ci_qualifies_the_pgbackrest_the_server_bundle_installs(self):
+        # The bundle installs pgBackRest from Ubuntu 24.04 at its snapshot
+        # (scripts/build-server-bundle.py); the qualification takes that very
+        # package (2.50-1build2 there, the SHA-256 of the bundle's index), not
+        # another release's build.
+        bundle = runpy.run_path(str(SCRIPT.parent / "build-server-bundle.py"))
+        self.assertEqual(FETCH.SNAPSHOT, bundle["SNAPSHOT"])
+        self.assertIn("pgbackrest", bundle["PACKAGES"])
+        for tool, package, version, _, _ in FETCH.PACKAGES:
+            if tool == "pgbackrest":
+                self.assertNotIn("26.04", version, package)
 
 
 if __name__ == "__main__":
