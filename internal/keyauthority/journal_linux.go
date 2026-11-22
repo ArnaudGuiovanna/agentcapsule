@@ -104,9 +104,18 @@ func (s *Files) ensureJournaled(ctx context.Context, agent, volume string) error
 		return ErrInput
 	}
 	path := filepath.Join(s.root, "records", volume)
+	// The keys handed to the journal, in locked buffers: the journal uses
+	// them only within Append (it clears them there), and they are released
+	// once it returns. A retried write hands it another.
+	var handed [][]byte
+	defer func() {
+		for _, k := range handed {
+			release(k)
+		}
+	}()
 	err := s.journal.Append(ctx, Change{Agent: agent, Volume: volume}, func() (*Change, error) {
 		var change *Change
-		err := s.withLock(ctx, agent, volume, true, func() error {
+		err := s.withLiveLock(ctx, agent, volume, true, func() error {
 			if err := s.revoked(agent, volume); err != nil {
 				return err
 			}
@@ -115,13 +124,18 @@ func (s *Files) ensureJournaled(ctx context.Context, agent, volume string) error
 			}
 			b, err := read(path, "ACPKEY01", agent, volume)
 			if err == nil {
-				defer clear(b)
+				defer release(b)
 				// The marker follows the replica's acknowledgment: the
 				// replica already holds this key.
 				if s.allocation(agent, volume, false) == nil {
 					return nil
 				}
-				change = &Change{Agent: agent, Volume: volume, Key: bytes.Clone(b[80:112])}
+				key, err := lockedCopy(b[80:112])
+				if err != nil {
+					return err
+				}
+				handed = append(handed, key)
+				change = &Change{Agent: agent, Volume: volume, Key: key}
 				return nil
 			}
 			if !errors.Is(err, os.ErrNotExist) {
@@ -130,12 +144,17 @@ func (s *Files) ensureJournaled(ctx context.Context, agent, volume string) error
 			if _, err := os.Lstat(path + ".allocated"); err == nil || !errors.Is(err, os.ErrNotExist) {
 				return ErrUnavailable
 			}
-			key := make([]byte, 32)
+			key, err := lockedBuffer(32)
+			if err != nil {
+				return err
+			}
+			handed = append(handed, key)
 			_, _ = rand.Read(key)
-			b = record("ACPKEY01", agent, volume, key)
-			defer clear(b)
+			if b, err = record("ACPKEY01", agent, volume, key); err != nil {
+				return err
+			}
+			defer release(b)
 			if err = publish(path, b, func() { s.boundary("key_written") }, func() { s.boundary("key_linked") }); err != nil {
-				clear(key)
 				return err
 			}
 			s.boundary("key_published")
@@ -148,12 +167,12 @@ func (s *Files) ensureJournaled(ctx context.Context, agent, volume string) error
 		return err
 	}
 	s.boundary("key_replicated")
-	return s.withLock(ctx, agent, volume, true, func() error {
+	return s.withLiveLock(ctx, agent, volume, true, func() error {
 		if err := s.revoked(agent, volume); err != nil {
 			return err
 		}
 		b, err := read(path, "ACPKEY01", agent, volume)
-		clear(b)
+		release(b)
 		if err != nil {
 			return ErrUnavailable
 		}
@@ -175,13 +194,16 @@ func (s *Files) revokeJournaled(ctx context.Context, agent, volume string) error
 				return err
 			}
 			if b, e := read(path, "ACPKEY01", agent, volume); e == nil {
-				clear(b)
+				release(b)
 			} else if !errors.Is(e, os.ErrNotExist) {
 				return e
 			}
 			if err == nil {
-				marker := record("ACPREV01", agent, volume, nil)
-				defer clear(marker)
+				marker, err := record("ACPREV01", agent, volume, nil)
+				if err != nil {
+					return err
+				}
+				defer release(marker)
 				if err = publish(filepath.Join(s.root, "revoked", volume), marker, nil, func() { s.boundary("revocation_linked") }); err != nil {
 					return err
 				}
@@ -213,6 +235,7 @@ func (s *Files) revokeJournaled(ctx context.Context, agent, volume string) error
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
+		// withLock removes the lock file next: the key is gone.
 		return syncDir(filepath.Dir(path))
 	})
 }
@@ -227,7 +250,8 @@ type Entry struct {
 	Revoked   bool
 }
 
-// readBound reads a record of volume and returns its agent.
+// readBound reads a record of volume, in a locked buffer that the caller
+// releases, and returns its agent.
 func readBound(path, magic, volume string) ([]byte, string, error) {
 	b, err := readRecord(path, magic)
 	if err != nil {
@@ -235,7 +259,7 @@ func readBound(path, magic, volume string) ([]byte, string, error) {
 	}
 	agent := string(b[8:44])
 	if string(b[44:80]) != volume || !valid(agent, "agt_") {
-		clear(b)
+		release(b)
 		return nil, "", ErrUnavailable
 	}
 	return b, agent, nil
@@ -265,7 +289,7 @@ func (s *Files) Export(ctx context.Context, each func(Entry) error) error {
 	keys := map[string][]byte{}
 	defer func() {
 		for _, k := range keys {
-			clear(k)
+			release(k)
 		}
 	}()
 	// Keys and markers first, tombstones after: a key removed meanwhile
@@ -296,12 +320,11 @@ func (s *Files) Export(ctx context.Context, each func(Entry) error) error {
 				continue
 			}
 			if err != nil {
-				clear(b)
 				return ErrUnavailable
 			}
 			e, err := get(volume, agent)
 			if err != nil {
-				clear(b)
+				release(b)
 				return err
 			}
 			switch {
@@ -309,10 +332,13 @@ func (s *Files) Export(ctx context.Context, each func(Entry) error) error {
 				e.Revoked = true
 			case marker:
 				e.Allocated = true
-			default:
-				keys[volume] = bytes.Clone(b[80:112])
+			case keys[volume] == nil:
+				if keys[volume], err = lockedCopy(b[80:112]); err != nil {
+					release(b)
+					return err
+				}
 			}
-			clear(b)
+			release(b)
 		}
 	}
 	volumes := make([]string, 0, len(entries))
@@ -335,7 +361,7 @@ func (s *Files) Export(ctx context.Context, each func(Entry) error) error {
 // ensureRecord publishes b at path, or checks that path already holds b.
 func ensureRecord(path, magic, agent, volume string, b []byte) error {
 	got, err := read(path, magic, agent, volume)
-	defer clear(got)
+	defer release(got)
 	if errors.Is(err, os.ErrNotExist) {
 		return publish(path, b, nil, nil)
 	}
@@ -404,23 +430,33 @@ func Install(ctx context.Context, root, identity string, entries []Entry) (*File
 			case err != nil:
 				return nil, err
 			default:
-				b := record("ACPKEY01", e.Agent, e.Volume, e.Key)
-				err = ensureRecord(filepath.Join(s.root, "records", e.Volume), "ACPKEY01", e.Agent, e.Volume, b)
-				clear(b)
+				b, err := record("ACPKEY01", e.Agent, e.Volume, e.Key)
+				if err == nil {
+					err = ensureRecord(filepath.Join(s.root, "records", e.Volume), "ACPKEY01", e.Agent, e.Volume, b)
+					release(b)
+				}
 				if err != nil {
 					return nil, err
 				}
 			}
 		}
 		if e.Allocated || e.Key != nil {
-			b := record("ACPALO01", e.Agent, e.Volume, nil)
-			if err = ensureRecord(filepath.Join(s.root, "records", e.Volume+".allocated"), "ACPALO01", e.Agent, e.Volume, b); err != nil {
+			b, err := record("ACPALO01", e.Agent, e.Volume, nil)
+			if err == nil {
+				err = ensureRecord(filepath.Join(s.root, "records", e.Volume+".allocated"), "ACPALO01", e.Agent, e.Volume, b)
+				release(b)
+			}
+			if err != nil {
 				return nil, err
 			}
 		}
 		if e.Revoked {
-			b := record("ACPREV01", e.Agent, e.Volume, nil)
-			if err = ensureRecord(filepath.Join(s.root, "revoked", e.Volume), "ACPREV01", e.Agent, e.Volume, b); err != nil {
+			b, err := record("ACPREV01", e.Agent, e.Volume, nil)
+			if err == nil {
+				err = ensureRecord(filepath.Join(s.root, "revoked", e.Volume), "ACPREV01", e.Agent, e.Volume, b)
+				release(b)
+			}
+			if err != nil {
 				return nil, err
 			}
 		}
