@@ -42,7 +42,7 @@ func TestAModelCallResolvesItsRouteWithoutWaitingForAProviderChange(t *testing.T
 		}, ErrNotFound},
 		{"rotation", "fast", fast, []string{
 			`UPDATE llm_providers SET secret_generation=secret_generation+1,rotated_at=clock_timestamp() WHERE tenant_id=$1 AND id=$2`,
-		}, errLLMRouteChanged},
+		}, ErrLLMRouteChanged},
 	} {
 		// The change in flight, as its administrator's transaction makes it:
 		// the organization's row FOR UPDATE, then plain UPDATEs.

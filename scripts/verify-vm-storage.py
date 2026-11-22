@@ -145,7 +145,7 @@ def main():
     initrd(args.guest, out / "initrd")
     root = Path(__file__).resolve().parents[1]
     sources = [Path(__file__).resolve(), root / "internal/verification/guest/main.go",
-               root / "internal/harnessstore/store.go", root / "go.mod", root / "go.sum"]
+               root / "internal/harnessstore/store.go", root / "internal/harnessstore/envelope/envelope.go", root / "go.mod", root / "go.sum"]
     hashes = {}
     for source in sources:
         rel = source.relative_to(root)

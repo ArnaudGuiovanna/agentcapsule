@@ -25,7 +25,7 @@ import urllib.request
 ROOT = Path(__file__).resolve().parents[1]
 REQUIRED = {"TestLiveOfficialSDKsThroughTheModelEndpoint", "TestLiveUnmodifiedAgentAnswersAnInvocation"}
 PI_TESTS = {"TestLivePiAnswersInvocations", "TestLivePiAnswersInvocations/capsule-anthropic", "TestLivePiAnswersInvocations/capsule-openai"}
-SOURCES = ["go.mod", "go.sum", "internal/agentadapter", "internal/llmgateway", "internal/capsuleprotocol/llm.go",
+SOURCES = ["go.mod", "go.sum", "internal/agentadapter", "internal/llmgateway", "internal/llmpolicy", "internal/addrpolicy", "internal/capsuleprotocol/llm.go",
            "scripts/verify-adapter.py", "scripts/adapter-sdk-requirements.txt", "examples/pi-agent/stream.mjs"]
 
 

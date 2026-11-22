@@ -59,7 +59,7 @@ jobs:
         run: |
           go vet ./...
           go vet -tags=kvm_integration,kvm_control_integration,kvm_product_integration ./internal/worker ./internal/runtime
-          go vet -tags=llmlive ./internal/llmgateway ./internal/controlplane
+          go vet -tags=llmlive ./internal/llmgateway ./internal/llmservice
 
       - name: go vet without cgo (the packages the interop job and the harness builds compile without it)
         env:

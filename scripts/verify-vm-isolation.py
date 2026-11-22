@@ -177,7 +177,7 @@ def main():
     cgroup_parent = "acp-lab-" + os.urandom(6).hex()
     root = Path(__file__).resolve().parents[1]
     sources = [Path(__file__).resolve(), Path(storage.__file__), root / "internal/verification/guest/main.go",
-               root / "internal/harnessstore/store.go", root / "go.mod", root / "go.sum"]
+               root / "internal/harnessstore/store.go", root / "internal/harnessstore/envelope/envelope.go", root / "go.mod", root / "go.sum"]
     hashes = {}
     for source in sources:
         rel = source.relative_to(root)

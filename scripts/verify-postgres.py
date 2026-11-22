@@ -199,7 +199,7 @@ def main():
             run("stream-load", ["go", "test", "-json", "-count=1", "-timeout=180s", "-run", stream_load, "./internal/api"],
                 timeout=300, go_json=True, extra_env={"AGENTCAPSULE_STREAM_LOAD": "1"})
             if args.llm_base_url:
-                run("llm-live", [*command, "-tags=llmlive", "-run=^TestLive", "./internal/llmgateway", "./internal/controlplane"], timeout=300, go_json=True,
+                run("llm-live", [*command, "-tags=llmlive", "-run=^TestLive", "./internal/llmgateway", "./internal/llmservice"], timeout=300, go_json=True,
                     extra_env={"AGENTCAPSULE_TEST_LLM_BASE_URL": args.llm_base_url, "AGENTCAPSULE_TEST_LLM_MODEL": args.llm_model})
             run("recovery-prepare", [*command, "./internal/controlplane", "-run=^Test(DurableDatabaseRestart|StoreSealDatabaseRecovery|RenewalDatabaseRecovery|WorkDatabaseRecovery|InvocationDatabaseRecovery)$"],
                 extra_env={"AGENTCAPSULE_PG_RECOVERY": "prepare"}, timeout=120, go_json=True)
