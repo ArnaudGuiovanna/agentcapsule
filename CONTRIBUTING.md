@@ -39,7 +39,10 @@ See [scripts/README.md](scripts/README.md) for every runner.
   and the relevant page in [docs/api/](docs/api/).
 - **Protocol changes in the models.** If you change delivery, revocation, lifecycle or
   completion rules, update the matching model in [spec/](spec/) and keep its
-  invariants passing.
+  invariants passing. `python3 scripts/check-model-runs.py` runs every run of
+  the models and replays the traces kept under `internal/**/testdata` on them;
+  a copy of a model kept there must match it or be declared frozen
+  ([spec/pinned-models.json](spec/pinned-models.json)).
 - **Honest documentation.** State limits and what is not validated.
 - `gofmt`, `go vet`, English everywhere (code, comments, docs, messages).
 
