@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"bytes"
 	"context"
 	"testing"
 
@@ -28,6 +29,49 @@ func roleStore(t *testing.T, s *Store, role string) *Store {
 	}
 	t.Cleanup(pool.Close)
 	return &Store{pool: pool}
+}
+
+func TestServiceRolesSeparateGuestSubmissionFromOwnerConsent(t *testing.T) {
+	serviceRoles(t)
+	s, accounts, admin := accountLab(t)
+	ctx := t.Context()
+	owner := createAccount(t, accounts, admin, "recipient-owner", "Recipient")
+	token := issueAccountToken(t, accounts, admin, owner, "recipient-token")
+	if _, err := s.pool.Exec(ctx, "UPDATE agents SET owner_user_id=$1 WHERE id='b'", owner.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	worker := roleStore(t, s, "agentcapsule_worker")
+	caller := confirmedCaller(t, s, "a")
+	request, err := worker.SubmitFromVM(ctx, caller, "vm-request", submission())
+	if err != nil || request.State != PendingApproval {
+		t.Fatalf("worker submission: %v, %v", request, err)
+	}
+
+	api := roleStore(t, s, "agentcapsule_api")
+	principal, err := api.Authenticate(ctx, token.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apiAccounts, err := NewAccounts(api, bytes.Repeat([]byte{0x42}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := NewAgentCatalog(apiAccounts, "host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	consent, err := catalog.DecideRequest(ctx, principal, request.RequestID, "consent", true)
+	if err != nil || consent.State != Delivering {
+		t.Fatalf("owner consent: %v, %v", consent, err)
+	}
+
+	var canLockPlacement, canCreateRequest bool
+	err = api.pool.QueryRow(ctx, `SELECT has_table_privilege(current_user, 'agent_placements', 'UPDATE'),
+		has_table_privilege(current_user, 'agent_requests', 'INSERT')`).Scan(&canLockPlacement, &canCreateRequest)
+	if err != nil || canLockPlacement || canCreateRequest {
+		t.Fatalf("API role can update placements: %v, insert requests: %v, error: %v", canLockPlacement, canCreateRequest, err)
+	}
 }
 
 // agent_activity is kept by the triggers of the tables each process writes
