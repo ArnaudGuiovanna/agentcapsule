@@ -358,6 +358,17 @@ that alias, so a lock naming such a table fell back to every table read. It
 now sees each table (`TestTheRoleAnalysisSeesEveryTableAStatementReads`).
 The derived privileges did not change: 0073's list stays exact.
 
+**The grants a model call reads (FIX-2).** `reserveLLM` also reads, without
+a lock, the alias's grants and the agent's team assignments and their teams
+(`aliasGranted`). The test above did not list these tables. Their
+administrators' revocations take the organization's row first, but a
+rollout's template install (`InstallRolloutSpec`, the worker), which revokes
+the agent's previous template grant, took no lock on it: a model call could
+read the grant while its revocation committed. The install now takes its
+organization's row `FOR UPDATE` before the placement's lock, as the
+administrators do; the test lists the three tables and their writers
+(`TestARolloutRevokesItsTemplateGrantUnderTheOrganizationsRow`).
+
 ### Row-level security: considered, not adopted
 
 The audit asked to consider policies on the tenant tables keyed by a
