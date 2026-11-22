@@ -164,10 +164,12 @@ A check that ends otherwise than expected blocks the release until it is
 explained: a counterexample in a correct configuration is a finding
 (projected into a failing Go test, or the model is fixed). A timeout is a
 check not run, never a pass: the release notes list the checks that did not
-finish. Three do not finish on a 12-core, 15 GB machine
-(`concurrentProtocolDepth8`, `concurrentProtocolLoadedDepth12`,
-`restoreAuthorityTiny`; see [spec/README.md](../spec/README.md#bounded-and-exhaustive-checks));
-releasing with them listed is the default pending the product owner.
+finish. The two bounded P1 checks, `concurrentProtocolDepth8` and
+`concurrentProtocolLoadedDepth12`, have exceeded the budget on a 12-core,
+15 GB machine. The P2 instance `restoreAuthorityTiny` admits arbitrarily
+many promotions. Report the depth and states explored when its time budget
+expires. Releasing with these outstanding checks listed is the default
+pending the product owner. [Formal check scopes](../spec/README.md#bounded-and-exhaustive-checks)
 
 ### Pinned tools
 

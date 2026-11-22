@@ -173,9 +173,15 @@ TLC with four workers; evidence kept locally under
   four broken or control configurations each yield a counterexample.
 - **P2.** `restoreAuthorityTiny` did not finish within two hours: 245.7
   million distinct states to depth 20, all keeping `safety`, with 112
-  million still queued. Since D-05 its state space is beyond this machine;
-  the November 7 model, without the replica and the failover, completed.
-  The restore witnesses and simulations remain its checks.
+  million still queued. The November 7 model, without the replica and the
+  failover, completed. With D-05, `losePrimary`, `promote` and
+  `seedStandby` can repeat from the initial state. Each cycle restores the
+  guards for the next cycle and increments the epoch. Thus the current
+  instance has infinitely many reachable states even with one store and
+  one subject. TLC can find a finite counterexample within its time budget.
+  Establishing safety for arbitrarily many promotions requires induction
+  or a verified abstraction. The restore witnesses provide additional
+  checks for specific failover scenarios.
 - **The other models.** The depth wrappers of `bounded.qnt` hold, among them
   `messagingDepth10` (34,486,031 states) and `deliveryLargeDepth12`
   (46,714,801 states), and so does every reachable state of `deliveryLarge`
