@@ -245,7 +245,24 @@ func (t *Transit) put(ctx context.Context, tx pgx.Tx, kind, reference string, pa
 // supplies the requesting principal: private content belongs to whoever asked,
 // not to whoever administers the agent (D-02).
 func (t *Transit) putOwned(ctx context.Context, tx pgx.Tx, kind, reference string, parties []string, owners map[string]string, body []byte) (TransitReference, error) {
-	binding, encrypted, err := t.seal(ctx, tx, newID("pay"), kind, reference, parties, owners, body)
+	return t.putSealed(ctx, tx, kind, reference, func(id string) (transitBinding, []byte, error) {
+		return t.seal(ctx, tx, id, kind, reference, parties, owners, body)
+	})
+}
+
+// putChunk is putOwned for a stream's chunk, whose agent the caller read
+// without its lock (AppendOutputStreamFromVM): the chunk's transaction holds
+// its invocation's rows, which the agent's deletion takes before it purges.
+func (t *Transit) putChunk(ctx context.Context, tx pgx.Tx, reference string, a agent, requester string, body []byte) (TransitReference, error) {
+	owners := map[string]string{a.ID: requester}
+	return t.putSealed(ctx, tx, "stream_chunk", reference, func(id string) (transitBinding, []byte, error) {
+		return t.sealFor(ctx, tx, id, "stream_chunk", reference, map[string]agent{a.ID: a}, []string{a.ID}, owners, body)
+	})
+}
+
+// putSealed stores the payload that seal binds to a new ID, and its parties.
+func (t *Transit) putSealed(ctx context.Context, tx pgx.Tx, kind, reference string, seal func(id string) (transitBinding, []byte, error)) (TransitReference, error) {
+	binding, encrypted, err := seal(newID("pay"))
 	if err != nil {
 		return TransitReference{}, err
 	}
@@ -274,6 +291,16 @@ func (t *Transit) seal(ctx context.Context, tx pgx.Tx, id, kind, reference strin
 	agents, err := lockAgents(ctx, tx, ids...)
 	if err != nil {
 		return binding, nil, err
+	}
+	return t.sealFor(ctx, tx, id, kind, reference, agents, ids, owners, body)
+}
+
+// sealFor is seal with the parties' agents read by the caller; ids are the
+// sorted parties.
+func (t *Transit) sealFor(ctx context.Context, tx pgx.Tx, id, kind, reference string, agents map[string]agent, ids []string, owners map[string]string, body []byte) (transitBinding, []byte, error) {
+	binding := transitBinding{Version: 1, ID: id, Kind: kind, Reference: reference, KeyID: t.active}
+	if !transitKind(kind) || reference == "" || len(reference) > 100 || len(body) < 1 || len(body) > MaxTransitBytes || len(ids) < 1 || len(ids) > 2 {
+		return binding, nil, ErrInput
 	}
 	for _, id := range ids {
 		a, ok := agents[id]

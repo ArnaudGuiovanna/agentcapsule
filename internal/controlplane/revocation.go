@@ -81,6 +81,14 @@ func requestDeletion(ctx context.Context, tx pgx.Tx, a agent, requestedBy string
 	if _, err := tx.Exec(ctx, "UPDATE agents SET phase='QUIESCING',discoverable=false WHERE id=$1", a.ID); err != nil {
 		return err
 	}
+	// Working invocations would otherwise wait for an outcome that can no
+	// longer come. Canceled before the purge: a stream's chunk, which takes
+	// the invocation's row and not the agent's, commits first and is purged
+	// below, or sees the cancellation (AppendOutputStreamFromVM).
+	if _, err := tx.Exec(ctx, `UPDATE platform_operations o SET status='CANCELED',error_code='agent_unavailable',completed_at=clock_timestamp()
+        FROM owner_instructions i WHERE i.operation_id=o.id AND o.agent_id=$1 AND `+workingFilter, a.ID); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(ctx, `UPDATE transit_payloads SET ciphertext=NULL,purged_at=clock_timestamp()
         WHERE purged_at IS NULL AND id IN (SELECT payload_id FROM transit_parties WHERE agent_id=$1)`, a.ID); err != nil {
 		return err
@@ -104,12 +112,6 @@ func requestDeletion(ctx context.Context, tx pgx.Tx, a agent, requestedBy string
 	if _, err := tx.Exec(ctx, `UPDATE platform_operations SET status='CANCELED',error_code='agent_unavailable',completed_at=clock_timestamp()
         WHERE agent_id=$1 AND kind='instruction' AND status='PENDING'
           AND id IN (SELECT operation_id FROM owner_instructions WHERE run_at IS NOT NULL AND released_at IS NULL)`, a.ID); err != nil {
-		return err
-	}
-	// Working invocations would otherwise wait for an outcome that can no longer
-	// come; their content was purged above.
-	if _, err := tx.Exec(ctx, `UPDATE platform_operations o SET status='CANCELED',error_code='agent_unavailable',completed_at=clock_timestamp()
-        FROM owner_instructions i WHERE i.operation_id=o.id AND o.agent_id=$1 AND `+workingFilter, a.ID); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `UPDATE owner_instructions SET released_at=clock_timestamp()

@@ -17,11 +17,13 @@ import (
 // The output stream of a working invocation (ADR 022 §5). While an
 // invocation works, its agent's current boot may stream deltas and steps; the
 // worker coalesces them into chunks. The opening binds the stream to the
-// invocation's current attempt, and each chunk's transaction checks again,
-// under the locks of CompleteInvocationFromVM, what the opening checked: the
-// stream lives in the worker's memory, and an outcome's transaction cannot
-// close it (model invocation_completion.qnt). Deltas are never an outcome:
-// nothing here writes the status, the key or the result.
+// invocation's current attempt, and each chunk's transaction checks again
+// what the opening checked, under the locks that every end of the stream
+// takes: the placement's (a boot that ends) and the invocation's rows (an
+// outcome, a cancellation, an expiry, a rerun). The stream lives in the
+// worker's memory, and an outcome's transaction cannot close it (model
+// invocation_completion.qnt). Deltas are never an outcome: nothing here
+// writes the status, the key or the result.
 
 // StreamLimits bound an attempt's output stream and the life of its chunks.
 type StreamLimits struct {
@@ -183,11 +185,16 @@ func (t *Transit) OpenOutputStreamFromVM(ctx context.Context, caller VMCaller, o
 }
 
 // AppendOutputStreamFromVM commits one chunk of an open stream (ADR 022 §5.6)
-// in its own transaction, under the opening's locks and in its order, after
-// checking again the boot, the working state, the due time and the attempt.
-// A refused check stores nothing and gives the stream's close reason. Past
-// the attempt's limits, it stores the frames that fit and truncates the
-// attempt. frames must follow each other from the attempt's next seq.
+// in its own transaction, after checking again the boot, the working state,
+// the due time and the attempt. It takes the opening's locks but the agent
+// row's (P-11): the placement's, then the invocation's rows and its stream's,
+// in that order, so a chunk no longer waits for every other transaction of
+// its agent, nor they for it. The agent's deletion cancels the invocation in
+// its transaction before it purges the agent's content, so a chunk commits
+// before it, and is purged with the rest, or sees the cancellation. A refused
+// check stores nothing and gives the stream's close reason. Past the
+// attempt's limits, it stores the frames that fit and truncates the attempt.
+// frames must follow each other from the attempt's next seq.
 func (t *Transit) AppendOutputStreamFromVM(ctx context.Context, caller VMCaller, op string, attempt int, frames []capsuleprotocol.OutputFrame, limits StreamLimits) (StreamAppend, error) {
 	var out StreamAppend
 	if caller.AgentID == "" || !validStreamOperation(op) || attempt < 1 || len(frames) == 0 || !limits.Valid() {
@@ -206,7 +213,7 @@ func (t *Transit) AppendOutputStreamFromVM(ctx context.Context, caller VMCaller,
 		return out, err
 	}
 	defer rollback(tx)
-	agents, err := lockAgents(ctx, tx, caller.AgentID)
+	agents, err := streamAgent(ctx, tx, caller.AgentID)
 	if err != nil {
 		return out, err
 	}
@@ -264,8 +271,7 @@ func (t *Transit) AppendOutputStreamFromVM(ctx context.Context, caller VMCaller,
 		}
 		first := frames[0].Seq
 		last := frames[take-1].Seq
-		payload, err := t.putOwned(ctx, tx, "stream_chunk", fmt.Sprintf("%s/%d/%d", op, attempt, first), []string{caller.AgentID},
-			map[string]string{caller.AgentID: s.requester}, chunk)
+		payload, err := t.putChunk(ctx, tx, fmt.Sprintf("%s/%d/%d", op, attempt, first), agents[caller.AgentID], s.requester, chunk)
 		clear(chunk)
 		if err != nil {
 			return out, err
@@ -301,6 +307,22 @@ func (t *Transit) AppendOutputStreamFromVM(ctx context.Context, caller VMCaller,
 		out.Reason = capsuleprotocol.StreamTruncated
 	}
 	return out, nil
+}
+
+// streamAgent reads agent id's row as lockAgents does, without its lock: a
+// chunk's transaction serializes through its placement and its invocation's
+// rows instead (AppendOutputStreamFromVM).
+func streamAgent(ctx context.Context, tx pgx.Tx, id string) (map[string]agent, error) {
+	var a agent
+	err := tx.QueryRow(ctx, `SELECT id, coalesce(owner_user_id,''), phase, inbound_mode, discoverable, coalesce(tenant_id,''), kind
+        FROM agents WHERE id=$1`, id).Scan(&a.ID, &a.Owner, &a.Phase, &a.Mode, &a.Visible, &a.Tenant, &a.Kind)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return map[string]agent{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return map[string]agent{a.ID: a}, nil
 }
 
 // OutputStreamSignal reads, without a lock, why an open stream must close
@@ -529,25 +551,40 @@ func (c *AgentCatalog) readStreamChunks(ctx context.Context, tx pgx.Tx, op, agen
 	}
 	defer rows.Close()
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (StreamChunk, error) {
-		ch := StreamChunk{Attempt: attempt}
-		b := transitBinding{Version: 1, Parties: []transitParty{{agentID, requester}}}
-		var ciphertext, keyHash []byte
-		var agents, owners []string
-		if err := row.Scan(&ch.FirstSeq, &ch.LastSeq, &b.ID, &b.Kind, &b.Reference, &b.KeyID, &b.Hash, &ciphertext, &keyHash, &agents, &owners); err != nil {
-			return ch, err
+		var sealed sealedChunk
+		if err := row.Scan(&sealed.firstSeq, &sealed.lastSeq, &sealed.binding.ID, &sealed.binding.Kind, &sealed.binding.Reference,
+			&sealed.binding.KeyID, &sealed.binding.Hash, &sealed.ciphertext, &sealed.keyHash, &sealed.agents, &sealed.owners); err != nil {
+			return StreamChunk{}, err
 		}
-		if !slices.Equal(agents, []string{agentID}) || !slices.Equal(owners, []string{requester}) {
-			return ch, ErrNotFound
-		}
-		if b.Kind != "stream_chunk" || b.Reference != fmt.Sprintf("%s/%d/%d", op, attempt, ch.FirstSeq) {
-			return ch, ErrTransitPayload
-		}
-		key, ok := c.transit.keys[b.KeyID]
-		if !ok || !bytes.Equal(keyHash, key.hash[:]) {
-			return ch, ErrTransitKey
-		}
-		body, err := openTransitPayload(key, b, ciphertext)
-		ch.Frames = body
-		return ch, err
+		return c.openStreamChunk(op, agentID, requester, attempt, sealed)
 	})
+}
+
+// sealedChunk is a stored chunk as read, before its binding is checked.
+type sealedChunk struct {
+	firstSeq, lastSeq   int64
+	binding             transitBinding
+	ciphertext, keyHash []byte
+	agents, owners      []string
+}
+
+// openStreamChunk authenticates a chunk's writer, requester and reference,
+// then opens it.
+func (c *AgentCatalog) openStreamChunk(op, agentID, requester string, attempt int, sealed sealedChunk) (StreamChunk, error) {
+	ch := StreamChunk{Attempt: attempt, FirstSeq: sealed.firstSeq, LastSeq: sealed.lastSeq}
+	b := sealed.binding
+	b.Version, b.Parties = 1, []transitParty{{agentID, requester}}
+	if !slices.Equal(sealed.agents, []string{agentID}) || !slices.Equal(sealed.owners, []string{requester}) {
+		return ch, ErrNotFound
+	}
+	if b.Kind != "stream_chunk" || b.Reference != fmt.Sprintf("%s/%d/%d", op, attempt, ch.FirstSeq) {
+		return ch, ErrTransitPayload
+	}
+	key, ok := c.transit.keys[b.KeyID]
+	if !ok || !bytes.Equal(sealed.keyHash, key.hash[:]) {
+		return ch, ErrTransitKey
+	}
+	body, err := openTransitPayload(key, b, sealed.ciphertext)
+	ch.Frames = body
+	return ch, err
 }
