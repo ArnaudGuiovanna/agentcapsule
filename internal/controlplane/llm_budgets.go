@@ -161,6 +161,9 @@ func (a *Accounts) CreateLLMBudget(ctx context.Context, p Principal, key string,
 		if err != nil {
 			return 0, nil, err
 		}
+		if err = countNewBudget(ctx, tx, p.TenantID, b); err != nil {
+			return 0, nil, err
+		}
 		if err = auditBudget(ctx, tx, p, b.ID, "budget.created"); err != nil {
 			return 0, nil, err
 		}
@@ -287,22 +290,89 @@ const (
 )
 
 func windowStart(period string) string {
-	if period == "day" {
-		return `date_trunc('day', clock_timestamp() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`
-	}
-	return `date_trunc('month', clock_timestamp() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`
+	return windowOf(period, "clock_timestamp()")
 }
+
+// windowOf is the start of the UTC day or month of period that holds the
+// time at, an SQL expression.
+func windowOf(period, at string) string {
+	if period == "day" {
+		return `date_trunc('day', (` + at + `) AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`
+	}
+	return `date_trunc('month', (` + at + `) AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'`
+}
+
+// The counters of the budgets (v0.1.0 audit, P-05, migration
+// llm-budget-windows). A row of llm_budget_windows holds what a budget's
+// UTC day or month counts, in its unit: what usedTokensSQL or usedCostSQL
+// sums over the calls of its scope created in that window. A reservation
+// adds its amounts to the windows of the budgets it locked (countReservation),
+// a settlement or a release adds the change of its call's amounts to the
+// windows that exist (countCall), and a new budget counts its current window
+// once (CreateLLMBudget). A reservation reads its budgets' windows, never
+// the calls: its cost no longer grows with the month's calls. Every change
+// locks its windows in budget order, after its call's row.
 
 // budgetUsed is what a budget's current window counts, in its unit.
 func budgetUsed(ctx context.Context, tx pgx.Tx, tenant string, b LLMBudget) (int64, error) {
+	var used int64
+	err := tx.QueryRow(ctx, `SELECT coalesce((SELECT used FROM llm_budget_windows WHERE tenant_id=$1 AND budget_id=$2
+        AND window_start=`+windowStart(b.Period)+`),0)`, tenant, b.ID).Scan(&used)
+	return used, err
+}
+
+// countNewBudget counts the current window of b, a budget its transaction
+// creates: the calls of its scope made since the window began. The calls of
+// the window still in flight are locked first, so that none settles or is
+// released between the count and the commit without countCall finding the
+// window. No call is reserved meanwhile: a reservation holds the
+// organization's row, which the creation holds FOR UPDATE.
+func countNewBudget(ctx context.Context, tx pgx.Tx, tenant string, b LLMBudget) error {
+	var start time.Time
+	if err := tx.QueryRow(ctx, `SELECT `+windowStart(b.Period)).Scan(&start); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM llm_usage WHERE tenant_id=$1 AND state IN ('reserved','unknown') AND created_at>=$2
+        AND ($3::text IS NULL OR agent_id=$3) AND ($4::text IS NULL OR alias=$4) ORDER BY id FOR SHARE`, tenant, start, b.AgentID, b.Alias); err != nil {
+		return err
+	}
 	sum := usedTokensSQL
 	if b.costs() {
 		sum = usedCostSQL
 	}
+	_, err := tx.Exec(ctx, `INSERT INTO llm_budget_windows(tenant_id,budget_id,window_start,used)
+        SELECT $1,$2,$3,`+sum+` FROM llm_usage WHERE tenant_id=$1 AND created_at>=$3
+        AND ($4::text IS NULL OR agent_id=$4) AND ($5::text IS NULL OR alias=$5)`, tenant, b.ID, start, b.AgentID, b.Alias)
+	return err
+}
+
+// countReservation adds amount to b's window that holds created, and returns
+// what the window counts with it.
+func countReservation(ctx context.Context, tx pgx.Tx, tenant string, b LLMBudget, created time.Time, amount int64) (int64, error) {
 	var used int64
-	err := tx.QueryRow(ctx, `SELECT `+sum+` FROM llm_usage WHERE tenant_id=$1 AND created_at >= `+windowStart(b.Period)+`
-        AND ($2::text IS NULL OR agent_id=$2) AND ($3::text IS NULL OR alias=$3)`, tenant, b.AgentID, b.Alias).Scan(&used)
+	err := tx.QueryRow(ctx, `INSERT INTO llm_budget_windows(tenant_id,budget_id,window_start,used) VALUES($1,$2,`+windowOf(b.Period, "$3::timestamptz")+`,$4)
+        ON CONFLICT (budget_id,window_start) DO UPDATE SET used=llm_budget_windows.used+EXCLUDED.used RETURNING used`, tenant, b.ID, created, amount).Scan(&used)
 	return used, err
+}
+
+// countCall adds to the windows of the budgets that count a call (of agent
+// and alias, created at created) the change of its amounts: tokens to token
+// budgets, micro-units to cost budgets. A window that does not exist counts
+// nothing that the call's change concerns: its budget did not exist, or was
+// not active, when the call was reserved.
+func countCall(ctx context.Context, tx pgx.Tx, tenant, agent, alias string, created time.Time, tokens, cost int64) error {
+	if tokens == 0 && cost == 0 {
+		return nil
+	}
+	_, err := tx.Exec(ctx, `WITH w AS (
+        SELECT w.budget_id,w.window_start,CASE WHEN b.limit_cost_micro IS NULL THEN $5::bigint ELSE $6::bigint END AS change
+          FROM llm_budgets b JOIN llm_budget_windows w ON w.budget_id=b.id
+         WHERE b.tenant_id=$1 AND (b.agent_id IS NULL OR b.agent_id=$2) AND (b.alias IS NULL OR b.alias=$3)
+           AND w.window_start=CASE b.period WHEN 'day' THEN `+windowOf("day", "$4::timestamptz")+` ELSE `+windowOf("month", "$4::timestamptz")+` END
+         ORDER BY w.budget_id FOR UPDATE OF w)
+        UPDATE llm_budget_windows v SET used=v.used+w.change FROM w WHERE (v.budget_id,v.window_start)=(w.budget_id,w.window_start)`,
+		tenant, agent, alias, created, tokens, cost)
+	return err
 }
 
 // costMicro is the estimated cost, in micro-units, of input and output tokens
@@ -448,6 +518,16 @@ func (a *Accounts) reserveLLM(ctx context.Context, tenantID, agentID, alias, req
 			return LLMReservation{}, ErrInput
 		}
 	}
+	// The call is written first: the time it is created at is the one each
+	// budget's window is taken at. A refusal below rolls it back with the
+	// counts.
+	var created time.Time
+	if err = tx.QueryRow(ctx, `INSERT INTO llm_usage(id,tenant_id,agent_id,alias,request_key,reserved_tokens,reserved_cost_micro,priced,input_micro_per_mtok,output_micro_per_mtok,
+        operation,reserved_audio_seconds,reserved_pages,audio_micro_per_minute,ocr_micro_per_page)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING created_at`, out.ID, tenantID, agentID, alias, requestKey, out.ReservedTokens, out.ReservedCostMicro, prices.priced,
+		inputPrice, outputPrice, q.Operation, q.AudioSeconds, q.Pages, prices.audioPerMinute, prices.perPage).Scan(&created); err != nil {
+		return LLMReservation{}, err
+	}
 	for _, b := range budgets {
 		if !b.costs() && out.ReservedTokens == 0 {
 			continue // seconds and pages count only in cost budgets
@@ -460,27 +540,24 @@ func (a *Accounts) reserveLLM(ctx context.Context, tenantID, agentID, alias, req
 			}
 			continue
 		}
-		used, err := budgetUsed(ctx, tx, tenantID, b)
-		if err != nil {
-			return LLMReservation{}, err
-		}
 		need := out.ReservedTokens
 		if b.costs() {
 			need = out.ReservedCostMicro
 		}
-		if used+need > b.limit() {
+		// The budget's row lock above serializes this count with every other
+		// reservation of the budget; a settlement changes it under its own row
+		// lock, which the count waits for.
+		used, err := countReservation(ctx, tx, tenantID, b, created, need)
+		if err != nil {
+			return LLMReservation{}, err
+		}
+		if used > b.limit() {
 			if b.Mode == "hard" {
 				return LLMReservation{}, &LLMRefusal{Reason: "budget_" + b.unit(), Period: b.Period, Scope: b.scope()}
 			}
 			out.SoftExceeded = true
 			out.SoftBudgets = append(out.SoftBudgets, LLMBudgetHit{Unit: b.unit(), Period: b.Period, Scope: b.scope()})
 		}
-	}
-	if _, err = tx.Exec(ctx, `INSERT INTO llm_usage(id,tenant_id,agent_id,alias,request_key,reserved_tokens,reserved_cost_micro,priced,input_micro_per_mtok,output_micro_per_mtok,
-        operation,reserved_audio_seconds,reserved_pages,audio_micro_per_minute,ocr_micro_per_page)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`, out.ID, tenantID, agentID, alias, requestKey, out.ReservedTokens, out.ReservedCostMicro, prices.priced,
-		inputPrice, outputPrice, q.Operation, q.AudioSeconds, q.Pages, prices.audioPerMinute, prices.perPage); err != nil {
-		return LLMReservation{}, err
 	}
 	return out, commit(ctx, tx)
 }
@@ -524,12 +601,15 @@ func validUsage(input, output int64) bool {
 // take the call's operation; another unit's amount is refused. resolver, when
 // set, is the principal who settled a call of unknown outcome.
 func settleCall(ctx context.Context, tx pgx.Tx, tenantID, id string, q llmAmounts, resolver *string) (*int64, error) {
-	var state string
+	var state, agent, alias string
 	var in, out, seconds, pages, cost *int64
+	var reservedTokens, reservedCost int64
+	var created time.Time
 	var p llmPrices
 	err := tx.QueryRow(ctx, `SELECT state,operation,input_tokens,output_tokens,audio_seconds,pages,estimated_cost_micro,priced,input_micro_per_mtok,output_micro_per_mtok,
-        audio_micro_per_minute,ocr_micro_per_page FROM llm_usage WHERE tenant_id=$1 AND id=$2 FOR UPDATE`, tenantID, id).
-		Scan(&state, &q.Operation, &in, &out, &seconds, &pages, &cost, &p.priced, &p.input, &p.output, &p.audioPerMinute, &p.perPage)
+        audio_micro_per_minute,ocr_micro_per_page,agent_id,alias,created_at,reserved_tokens,reserved_cost_micro FROM llm_usage WHERE tenant_id=$1 AND id=$2 FOR UPDATE`, tenantID, id).
+		Scan(&state, &q.Operation, &in, &out, &seconds, &pages, &cost, &p.priced, &p.input, &p.output, &p.audioPerMinute, &p.perPage,
+			&agent, &alias, &created, &reservedTokens, &reservedCost)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -571,7 +651,36 @@ func settleCall(ctx context.Context, tx pgx.Tx, tenantID, id string, q llmAmount
 		tenantID, id, q.Input, q.Output, cost, resolver, seconds, pages); err != nil {
 		return nil, err
 	}
+	// The budgets counted the reservation (a call in flight or of unknown
+	// outcome); they now count what the call used.
+	var settledCost int64
+	if cost != nil {
+		settledCost = *cost
+	}
+	if err = countCall(ctx, tx, tenantID, agent, alias, created, q.Input+q.Output-reservedTokens, settledCost-reservedCost); err != nil {
+		return nil, err
+	}
 	return cost, nil
+}
+
+// releaseCall releases call id of tenant, in a state that counts its
+// reservation (reserved or unknown), and takes its reservation off its
+// budgets' windows. resolver, when set, is the principal who released a call
+// of unknown outcome.
+func releaseCall(ctx context.Context, tx pgx.Tx, tenantID, id string, resolver *string) error {
+	var agent, alias string
+	var created time.Time
+	var tokens, cost int64
+	err := tx.QueryRow(ctx, `UPDATE llm_usage SET state='released',resolved_by=$3,resolved_at=CASE WHEN $3::text IS NULL THEN NULL ELSE clock_timestamp() END
+        WHERE tenant_id=$1 AND id=$2 RETURNING agent_id,alias,created_at,reserved_tokens,reserved_cost_micro`, tenantID, id, resolver).
+		Scan(&agent, &alias, &created, &tokens, &cost)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	return countCall(ctx, tx, tenantID, agent, alias, created, -tokens, -cost)
 }
 
 // equalAmount compares a settled amount in seconds or pages, null when the
@@ -617,7 +726,13 @@ func (a *Accounts) moveReservation(ctx context.Context, tenantID, reservationID,
 	if state != "reserved" {
 		return ErrTransition
 	}
-	if _, err = tx.Exec(ctx, `UPDATE llm_usage SET state=$3 WHERE tenant_id=$1 AND id=$2`, tenantID, reservationID, to); err != nil {
+	if to == "released" {
+		err = releaseCall(ctx, tx, tenantID, reservationID, nil)
+	} else {
+		// A call of unknown outcome keeps counting its reservation.
+		_, err = tx.Exec(ctx, `UPDATE llm_usage SET state=$3 WHERE tenant_id=$1 AND id=$2`, tenantID, reservationID, to)
+	}
+	if err != nil {
 		return err
 	}
 	return commit(ctx, tx)

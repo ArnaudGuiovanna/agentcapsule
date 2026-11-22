@@ -221,6 +221,14 @@ reservation, by that excess:
   thousands of tokens, at a lower price per token), or a document more than
   300,000.
 
+Each budget keeps what each of its windows counts (since the v0.1.0 audit,
+P-05): a reservation adds its amounts, a settlement or a release the change
+of its call's, in the transaction that changes the call. A reservation reads
+that count, never the window's calls, so its cost does not grow with them;
+the count is the sum described above, exactly, under any concurrency. A
+budget created during a window counts the calls its scope already made in
+it.
+
 Such an excess is settled and counted; the next call is then refused. How
 many calls can exceed at once is bounded: an agent has at most 8 model calls
 in flight, every route counted (`llm.max_calls_per_agent` in the worker's

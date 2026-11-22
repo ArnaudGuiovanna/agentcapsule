@@ -39,6 +39,7 @@ func TestUnknownOutcomesAreListedThenSettledOrReleasedByTheOrganization(t *testi
 	if _, err = b.s.pool.Exec(t.Context(), `UPDATE llm_usage SET created_at=created_at-interval '1 hour' WHERE id=$1`, stale.ID); err != nil {
 		t.Fatal(err)
 	}
+	recountBudgets(t, b.s, b.owner.TenantID) // its window counts it where it now is (P-05)
 	items, err := b.a.ListLLMUnresolved(t.Context(), b.owner, "", 10)
 	if err != nil || len(items) != 3 {
 		t.Fatal("unresolved", err, items)

@@ -124,8 +124,7 @@ func (a *Accounts) ReleaseLLMOutcome(ctx context.Context, p Principal, id, key s
 		return APIReceipt{}, ErrInput
 	}
 	return a.resolveLLMOutcome(ctx, p, id, key, "llm.usage.release", struct{ ID string }{id}, func(tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, `UPDATE llm_usage SET state='released',resolved_by=$3,resolved_at=clock_timestamp() WHERE tenant_id=$1 AND id=$2`, p.TenantID, id, p.ID)
-		return err
+		return releaseCall(ctx, tx, p.TenantID, id, &p.ID)
 	}, "usage.released")
 }
 
