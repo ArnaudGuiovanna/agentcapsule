@@ -227,6 +227,9 @@ var corpusBuildStreamsSQL string
 //go:embed migrations/0064_corpus_file_progress_search_path.sql
 var corpusFileProgressSearchPathSQL string
 
+//go:embed migrations/0065_work_notifications.sql
+var workNotificationsSQL string
+
 // Append migrations; never edit an installed migration. The original schema
 // also upgrades pre-ledger installations, preserving its historical backfills.
 // Later calls validate its checksum without replaying DDL or those backfills.
@@ -295,6 +298,7 @@ var controlPlaneMigrations = []schemaMigration{
 	{version: 62, name: "corpus-extensions", sql: corpusExtensionsSQL},
 	{version: 63, name: "corpus-build-streams", sql: corpusBuildStreamsSQL},
 	{version: 64, name: "corpus-file-progress-search-path", sql: corpusFileProgressSearchPathSQL},
+	{version: 65, name: "work-notifications", sql: workNotificationsSQL},
 }
 
 func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error {
