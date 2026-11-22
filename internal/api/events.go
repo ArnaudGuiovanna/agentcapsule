@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol/wire"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/pgnotify"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/telemetry"
@@ -261,7 +261,7 @@ func (s *subscriber) page(ctx context.Context, v controlplane.OutputStreamView, 
 	s.pos.haveID = true
 	recheck := time.Now().Add(eventRightsInterval)
 	for _, chunk := range v.Chunks {
-		var frames []capsuleprotocol.OutputFrame
+		var frames []wire.OutputFrame
 		if err = json.Unmarshal(chunk.Frames, &frames); err != nil {
 			return
 		}
