@@ -125,6 +125,9 @@ func run() int {
 	if err != nil {
 		return fail("configuration_invalid")
 	}
+	// A guest's serial console is for debugging: development mode, or the
+	// explicit vm_serial_console option (S-20).
+	opts.SerialConsole = opts.SerialConsole || mode == operatorconfig.Development
 	if err = c.CheckProductionTransport(); mode == operatorconfig.Production && errors.Is(err, worker.ErrClearTextCorpusSource) {
 		return fail("corpus_local_rule_refused_in_production")
 	} else if mode == operatorconfig.Production && err != nil {

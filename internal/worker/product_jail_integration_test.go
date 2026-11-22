@@ -229,6 +229,31 @@ func TestProductWorkerJailsEachVMAndLeavesNothingBehind(t *testing.T) {
 	if err != nil || credentials.Mode().Perm() != 0o600 || credentials.Sys().(*syscall.Stat_t).Uid != 0 {
 		t.Fatal("the boot credentials are not the host's alone", err)
 	}
+	// S-20: no serial console in production, and the VMM's log is the host's
+	// alone while the VM runs.
+	var boot struct {
+		Source struct {
+			Args string `json:"boot_args"`
+		} `json:"boot-source"`
+	}
+	if json.Unmarshal(raw, &boot) != nil || strings.Contains(boot.Source.Args, "console=ttyS0") || !strings.Contains(boot.Source.Args, "8250.nr_uarts=0") {
+		t.Fatal("the guest has a serial console", boot.Source.Args)
+	}
+	log, err := os.Stat(filepath.Join(l.root, "logs", run.ID+".log"))
+	if err != nil || log.Mode().Perm() != 0o600 || log.Sys().(*syscall.Stat_t).Uid != 0 || log.Size() > 2<<20 { // the cap, and one monitor period
+		t.Fatal("the VM's log is not the host's alone, or exceeds its limit", err)
+	}
+	// P-12: the kernel is the cached image itself, readable but not writable
+	// by the VMM; L-15: the platform socket is the VMM's, not a link.
+	kernel, err := os.Stat(filepath.Join(jail, "kernel"))
+	cached, err2 := os.Stat(filepath.Join(l.root, "bin", "kernel"))
+	if err != nil || err2 != nil || !os.SameFile(kernel, cached) || kernel.Mode().Perm() != 0o444 || kernel.Sys().(*syscall.Stat_t).Uid != 0 {
+		t.Fatal("the jail's kernel is not the cached image", err, err2)
+	}
+	socket, err := os.Lstat(filepath.Join(jail, "vsock_5001"))
+	if err != nil || socket.Mode()&os.ModeSocket == 0 || socket.Mode().Perm() != 0o600 || socket.Sys().(*syscall.Stat_t).Uid != uid {
+		t.Fatal("the platform socket is not the VMM's", err)
+	}
 
 	t.Log("stage: a stop leaves nothing for another capsule")
 	l.lifecycle(agent, "sleep", "jailed-sleep")
@@ -256,7 +281,8 @@ func TestProductWorkerJailsEachVMAndLeavesNothingBehind(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if strings.Contains(d.Name(), run.ID) && path != filepath.Join(l.root, "logs", run.ID+".log") {
+		// Its log included (S-20).
+		if strings.Contains(d.Name(), run.ID) {
 			return fmt.Errorf("%s names the stopped VM", path)
 		}
 		if d.Type()&fs.ModeSocket != 0 {
@@ -274,10 +300,6 @@ func TestProductWorkerJailsEachVMAndLeavesNothingBehind(t *testing.T) {
 	volume := filepath.Join(l.root, "volumes", e.VolumeID+".luks")
 	if owned := ownedBy(t, l.root, uid); len(owned) != 1 || owned[0] != volume {
 		t.Fatal("the agent's UID owns more than its volume", owned)
-	}
-	log, err := os.Stat(filepath.Join(l.root, "logs", run.ID+".log"))
-	if err != nil || log.Mode().Perm() != 0o600 || log.Sys().(*syscall.Stat_t).Uid != 0 {
-		t.Fatal("the VM's log is not the host's alone", err)
 	}
 
 	t.Log("stage: after the deletion, the next agent gets another UID")
