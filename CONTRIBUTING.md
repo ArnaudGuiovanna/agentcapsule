@@ -33,8 +33,9 @@ See [scripts/README.md](scripts/README.md) for every runner.
 - **Tests at the right level.** A transactional rule needs a PostgreSQL test; a VM,
   volume or jailer behavior needs a KVM test; concurrency needs a race test. Unit
   tests alone do not validate those.
-- **Database changes as new migrations.** Add `internal/controlplane/migrations/NNNN_*.sql`
-  and register it in `migrations.go`; never edit an installed migration.
+- **Database changes as new migrations.** Add `internal/controlplane/migrations/NNNN_name.sql`
+  with the next version; the file is the whole declaration (its name, with hyphens,
+  goes in the ledger). Never edit or rename an installed migration.
 - **API changes in the contract.** Update [openapi/openapi.yaml](openapi/openapi.yaml)
   and the relevant page in [docs/api/](docs/api/).
 - **Protocol changes in the models.** If you change delivery, revocation, lifecycle or

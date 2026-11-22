@@ -4,9 +4,13 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	_ "embed"
+	"embed"
 	"errors"
 	"fmt"
+	"io/fs"
+	"regexp"
+	"strconv"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -38,327 +42,65 @@ func MigrationManifest() []MigrationRecord {
 	return records
 }
 
-//go:embed migrations/0002_organization_identity.sql
-var organizationIdentitySQL string
-
-//go:embed migrations/0003_platform_organizations.sql
-var platformOrganizationsSQL string
-
-//go:embed migrations/0004_delegated_identity.sql
-var delegatedIdentitySQL string
-
-//go:embed migrations/0005_tenant_members.sql
-var tenantMembersSQL string
-
-//go:embed migrations/0006_tenant_teams.sql
-var tenantTeamsSQL string
-
-//go:embed migrations/0007_placement_control_contract.sql
-var placementControlContractSQL string
-
-//go:embed migrations/0008_token_issuer.sql
-var tokenIssuerSQL string
-
-//go:embed migrations/0009_receipt_expiry_index.sql
-var receiptExpiryIndexSQL string
-
-//go:embed migrations/0010_tenant_agents.sql
-var tenantAgentsSQL string
-
-//go:embed migrations/0011_service_accounts.sql
-var serviceAccountsSQL string
-
-//go:embed migrations/0012_llm_providers.sql
-var llmProvidersSQL string
-
-//go:embed migrations/0013_llm_budgets.sql
-var llmBudgetsSQL string
-
-//go:embed migrations/0014_instruction_queues.sql
-var instructionQueuesSQL string
-
-//go:embed migrations/0015_lifecycle_audit.sql
-var lifecycleAuditSQL string
-
-//go:embed migrations/0016_scheduling.sql
-var schedulingSQL string
-
-//go:embed migrations/0017_attachments.sql
-var attachmentsSQL string
-
-//go:embed migrations/0018_async_completion.sql
-var asyncCompletionSQL string
-
-//go:embed migrations/0019_harness_registry.sql
-var harnessRegistrySQL string
-
-//go:embed migrations/0020_registry_access_denied.sql
-var registryAccessDeniedSQL string
-
-//go:embed migrations/0021_agent_release_change.sql
-var agentReleaseChangeSQL string
-
-//go:embed migrations/0022_release_signatures.sql
-var releaseSignaturesSQL string
-
-//go:embed migrations/0023_agent_directory.sql
-var agentDirectorySQL string
-
-//go:embed migrations/0024_agent_inbound.sql
-var agentInboundSQL string
-
-//go:embed migrations/0025_held_requests.sql
-var heldRequestsSQL string
-
-//go:embed migrations/0026_peer_wakes.sql
-var peerWakesSQL string
-
-//go:embed migrations/0027_operation_request_id.sql
-var operationRequestIDSQL string
-
-//go:embed migrations/0028_volume_archives.sql
-var volumeArchivesSQL string
-
-//go:embed migrations/0029_volume_restores.sql
-var volumeRestoresSQL string
-
-//go:embed migrations/0030_invocation_reruns.sql
-var invocationRerunsSQL string
-
-//go:embed migrations/0031_restart_budgets.sql
-var restartBudgetsSQL string
-
-//go:embed migrations/0032_llm_access_and_cost.sql
-var llmAccessAndCostSQL string
-
-//go:embed migrations/0033_peer_redeliveries.sql
-var peerRedeliveriesSQL string
-
-//go:embed migrations/0034_operator_bootstrap.sql
-var operatorBootstrapSQL string
-
-//go:embed migrations/0035_capacity_queue_and_replays.sql
-var capacityQueueAndReplaysSQL string
-
-//go:embed migrations/0036_capabilities.sql
-var capabilitiesSQL string
-
-//go:embed migrations/0037_operations.sql
-var operationsSQL string
-
-//go:embed migrations/0038_host_takeovers.sql
-var hostTakeoversSQL string
-
-//go:embed migrations/0039_audit_retention_indexes.sql
-var auditRetentionIndexesSQL string
-
-//go:embed migrations/0040_access_revocations.sql
-var accessRevocationsSQL string
-
-//go:embed migrations/0041_receipt_key_days.sql
-var receiptKeyDaysSQL string
-
-//go:embed migrations/0042_authority_reconciliations.sql
-var authorityReconciliationsSQL string
-
-//go:embed migrations/0043_tenant_refusal_audit.sql
-var tenantRefusalAuditSQL string
-
-//go:embed migrations/0044_trace_pseudonym_key.sql
-var tracePseudonymKeySQL string
-
-//go:embed migrations/0045_garbage_collection_audit.sql
-var garbageCollectionAuditSQL string
-
-//go:embed migrations/0046_organization_quotas.sql
-var organizationQuotasSQL string
-
-//go:embed migrations/0047_unresponsive_guests.sql
-var unresponsiveGuestsSQL string
-
-//go:embed migrations/0048_directory_trigger_search_path.sql
-var directoryTriggerSearchPathSQL string
-
-//go:embed migrations/0049_deployments.sql
-var deploymentsSQL string
-
-//go:embed migrations/0050_applications.sql
-var applicationsSQL string
-
-//go:embed migrations/0051_provider_auth.sql
-var providerAuthSQL string
-
-//go:embed migrations/0052_rollouts.sql
-var rolloutsSQL string
-
-//go:embed migrations/0053_volume_growth.sql
-var volumeGrowthSQL string
-
-//go:embed migrations/0054_personal_volume_holds.sql
-var personalVolumeHoldsSQL string
-
-//go:embed migrations/0055_agent_resize.sql
-var agentResizeSQL string
-
-//go:embed migrations/0056_invocation_streams.sql
-var invocationStreamsSQL string
-
-//go:embed migrations/0057_llm_operations.sql
-var llmOperationsSQL string
-
-//go:embed migrations/0058_source_credentials.sql
-var sourceCredentialsSQL string
-
-//go:embed migrations/0059_corpus_mounts.sql
-var corpusMountsSQL string
-
-//go:embed migrations/0060_corpus_builds.sql
-var corpusBuildsSQL string
-
-//go:embed migrations/0061_corpus_builder.sql
-var corpusBuilderSQL string
-
-//go:embed migrations/0062_corpus_extensions.sql
-var corpusExtensionsSQL string
-
-//go:embed migrations/0063_corpus_build_streams.sql
-var corpusBuildStreamsSQL string
-
-//go:embed migrations/0064_corpus_file_progress_search_path.sql
-var corpusFileProgressSearchPathSQL string
-
-//go:embed migrations/0065_service_roles.sql
-var serviceRolesSQL string
-
-//go:embed migrations/0066_access_revocation_recording.sql
-var accessRevocationRecordingSQL string
-
-//go:embed migrations/0067_organization_suspension.sql
-var organizationSuspensionSQL string
-
-//go:embed migrations/0068_llm_request_policy.sql
-var llmRequestPolicySQL string
-
-//go:embed migrations/0069_revocation_scope_indexes.sql
-var revocationScopeIndexesSQL string
-
-//go:embed migrations/0070_work_notifications.sql
-var workNotificationsSQL string
-
-//go:embed migrations/0071_open_state_indexes.sql
-var openStateIndexesSQL string
-
-//go:embed migrations/0072_finished_record_retention.sql
-var finishedRecordRetentionSQL string
-
-//go:embed migrations/0073_service_privileges_activity_retention.sql
-var servicePrivilegesActivityRetentionSQL string
-
-//go:embed migrations/0074_refusal_attempts.sql
-var refusalAttemptsSQL string
-
-//go:embed migrations/0075_application_clients.sql
-var applicationClientsSQL string
-
-//go:embed migrations/0076_platform_session_chains.sql
-var platformSessionChainsSQL string
-
-//go:embed migrations/0077_append_only_audit.sql
-var appendOnlyAuditSQL string
-
-//go:embed migrations/0078_llm_budget_windows.sql
-var llmBudgetWindowsSQL string
-
-//go:embed migrations/0079_model_call_retention.sql
-var modelCallRetentionSQL string
-
-//go:embed migrations/0080_service_privileges_model_calls.sql
-var servicePrivilegesModelCallsSQL string
-
 // Append migrations; never edit an installed migration. The original schema
 // also upgrades pre-ledger installations, preserving its historical backfills.
 // Later calls validate its checksum without replaying DDL or those backfills.
-var controlPlaneMigrations = []schemaMigration{
-	{version: 1, name: "control-plane-baseline", sql: schemaSQL},
-	{version: 2, name: "organization-identity", sql: organizationIdentitySQL},
-	{version: 3, name: "platform-organizations", sql: platformOrganizationsSQL},
-	{version: 4, name: "delegated-identity", sql: delegatedIdentitySQL},
-	{version: 5, name: "tenant-members", sql: tenantMembersSQL},
-	{version: 6, name: "tenant-teams", sql: tenantTeamsSQL},
-	{version: 7, name: "placement-control-contract", sql: placementControlContractSQL},
-	{version: 8, name: "token-issuer", sql: tokenIssuerSQL},
-	{version: 9, name: "receipt-expiry-index", sql: receiptExpiryIndexSQL},
-	{version: 10, name: "tenant-agents", sql: tenantAgentsSQL},
-	{version: 11, name: "service-accounts", sql: serviceAccountsSQL},
-	{version: 12, name: "llm-providers", sql: llmProvidersSQL},
-	{version: 13, name: "llm-budgets", sql: llmBudgetsSQL},
-	{version: 14, name: "instruction-queues", sql: instructionQueuesSQL},
-	{version: 15, name: "lifecycle-audit", sql: lifecycleAuditSQL},
-	{version: 16, name: "scheduling", sql: schedulingSQL},
-	{version: 17, name: "attachments", sql: attachmentsSQL},
-	{version: 18, name: "async-completion", sql: asyncCompletionSQL},
-	{version: 19, name: "harness-registry", sql: harnessRegistrySQL},
-	{version: 20, name: "registry-access-denied", sql: registryAccessDeniedSQL},
-	{version: 21, name: "agent-release-change", sql: agentReleaseChangeSQL},
-	{version: 22, name: "release-signatures", sql: releaseSignaturesSQL},
-	{version: 23, name: "agent-directory", sql: agentDirectorySQL},
-	{version: 24, name: "agent-inbound", sql: agentInboundSQL},
-	{version: 25, name: "held-requests", sql: heldRequestsSQL},
-	{version: 26, name: "peer-wakes", sql: peerWakesSQL},
-	{version: 27, name: "operation-request-id", sql: operationRequestIDSQL},
-	{version: 28, name: "volume-archives", sql: volumeArchivesSQL},
-	{version: 29, name: "volume-restores", sql: volumeRestoresSQL},
-	{version: 30, name: "invocation-reruns", sql: invocationRerunsSQL},
-	{version: 31, name: "restart-budgets", sql: restartBudgetsSQL},
-	{version: 32, name: "llm-access-and-cost", sql: llmAccessAndCostSQL},
-	{version: 33, name: "peer-redeliveries", sql: peerRedeliveriesSQL},
-	{version: 34, name: "operator-bootstrap", sql: operatorBootstrapSQL},
-	{version: 35, name: "capacity-queue-and-replays", sql: capacityQueueAndReplaysSQL},
-	{version: 36, name: "capabilities", sql: capabilitiesSQL},
-	{version: 37, name: "operations", sql: operationsSQL},
-	{version: 38, name: "host-takeovers", sql: hostTakeoversSQL},
-	{version: 39, name: "audit-retention-indexes", sql: auditRetentionIndexesSQL},
-	{version: 40, name: "access-revocations", sql: accessRevocationsSQL},
-	{version: 41, name: "receipt-key-days", sql: receiptKeyDaysSQL},
-	{version: 42, name: "authority-reconciliations", sql: authorityReconciliationsSQL},
-	{version: 43, name: "tenant-refusal-audit", sql: tenantRefusalAuditSQL},
-	{version: 44, name: "trace-pseudonym-key", sql: tracePseudonymKeySQL},
-	{version: 45, name: "garbage-collection-audit", sql: garbageCollectionAuditSQL},
-	{version: 46, name: "organization-quotas", sql: organizationQuotasSQL},
-	{version: 47, name: "unresponsive-guests", sql: unresponsiveGuestsSQL},
-	{version: 48, name: "directory-trigger-search-path", sql: directoryTriggerSearchPathSQL},
-	{version: 49, name: "deployments", sql: deploymentsSQL},
-	{version: 50, name: "applications", sql: applicationsSQL},
-	{version: 51, name: "provider-auth", sql: providerAuthSQL},
-	{version: 52, name: "rollouts", sql: rolloutsSQL},
-	{version: 53, name: "volume-growth", sql: volumeGrowthSQL},
-	{version: 54, name: "personal-volume-holds", sql: personalVolumeHoldsSQL},
-	{version: 55, name: "agent-resize", sql: agentResizeSQL},
-	{version: 56, name: "invocation-streams", sql: invocationStreamsSQL},
-	{version: 57, name: "llm-operations", sql: llmOperationsSQL},
-	{version: 58, name: "source-credentials", sql: sourceCredentialsSQL},
-	{version: 59, name: "corpus-mounts", sql: corpusMountsSQL},
-	{version: 60, name: "corpus-builds", sql: corpusBuildsSQL},
-	{version: 61, name: "corpus-builder", sql: corpusBuilderSQL},
-	{version: 62, name: "corpus-extensions", sql: corpusExtensionsSQL},
-	{version: 63, name: "corpus-build-streams", sql: corpusBuildStreamsSQL},
-	{version: 64, name: "corpus-file-progress-search-path", sql: corpusFileProgressSearchPathSQL},
-	{version: 65, name: "service-roles", sql: serviceRolesSQL},
-	{version: 66, name: "access-revocation-recording", sql: accessRevocationRecordingSQL},
-	{version: 67, name: "organization-suspension", sql: organizationSuspensionSQL},
-	{version: 68, name: "llm-request-policy", sql: llmRequestPolicySQL},
-	{version: 69, name: "revocation-scope-indexes", sql: revocationScopeIndexesSQL},
-	{version: 70, name: "work-notifications", sql: workNotificationsSQL},
-	{version: 71, name: "open-state-indexes", sql: openStateIndexesSQL},
-	{version: 72, name: "finished-record-retention", sql: finishedRecordRetentionSQL},
-	{version: 73, name: "service-privileges-activity-retention", sql: servicePrivilegesActivityRetentionSQL},
-	{version: 74, name: "refusal-attempts", sql: refusalAttemptsSQL},
-	{version: 75, name: "application-clients", sql: applicationClientsSQL},
-	{version: 76, name: "platform-session-chains", sql: platformSessionChainsSQL},
-	{version: 77, name: "append-only-audit", sql: appendOnlyAuditSQL},
-	{version: 78, name: "llm-budget-windows", sql: llmBudgetWindowsSQL},
-	{version: 79, name: "model-call-retention", sql: modelCallRetentionSQL},
-	{version: 80, name: "service-privileges-model-calls", sql: servicePrivilegesModelCallsSQL},
+//
+// Each migration is declared once, by its file (audit finding A-08): version
+// 1 is schema.sql, named control-plane-baseline; then migrations/NNNN_name.sql
+// is version NNNN, named name with hyphens for its underscores. The ledger
+// stores these names: a file is never renamed. A file name of another form, a
+// version taken twice or a version skipped stops every binary and test at
+// start (loadMigrations).
+//
+//go:embed migrations/*.sql
+var migrationFiles embed.FS
+
+var controlPlaneMigrations = mustLoadMigrations()
+
+func mustLoadMigrations() []schemaMigration {
+	files, err := fs.Sub(migrationFiles, "migrations")
+	if err == nil {
+		var migrations []schemaMigration
+		if migrations, err = loadMigrations(schemaSQL, files); err == nil {
+			return migrations
+		}
+	}
+	panic(err)
+}
+
+// migrationFile is the form of a migration's file name: its four-digit
+// version, then its name in lower-case words joined by underscores.
+var migrationFile = regexp.MustCompile(`^([0-9]{4})_([a-z0-9]+(?:_[a-z0-9]+)*)\.sql$`)
+
+// loadMigrations is the history whose first migration is baseline and whose
+// others are the files of dir, in the order of their names. The versions must
+// follow each other from 2, without a gap or a repeat.
+func loadMigrations(baseline string, dir fs.FS) ([]schemaMigration, error) {
+	entries, err := fs.ReadDir(dir, ".")
+	if err != nil {
+		return nil, err
+	}
+	migrations := []schemaMigration{{version: 1, name: "control-plane-baseline", sql: baseline}}
+	for _, e := range entries {
+		parts := migrationFile.FindStringSubmatch(e.Name())
+		if parts == nil || !e.Type().IsRegular() {
+			return nil, fmt.Errorf("%w: migration file %q is not NNNN_name.sql", ErrMigrationHistory, e.Name())
+		}
+		version, _ := strconv.ParseInt(parts[1], 10, 64)
+		if want := int64(len(migrations) + 1); version != want {
+			return nil, fmt.Errorf("%w: migration file %q has version %d where %d comes next (a gap or a repeated version)", ErrMigrationHistory, e.Name(), version, want)
+		}
+		sql, err := fs.ReadFile(dir, e.Name())
+		if err != nil {
+			return nil, err
+		}
+		if len(bytes.TrimSpace(sql)) == 0 {
+			return nil, fmt.Errorf("%w: migration file %q is empty", ErrMigrationHistory, e.Name())
+		}
+		migrations = append(migrations, schemaMigration{version: version, name: strings.ReplaceAll(parts[2], "_", "-"), sql: string(sql)})
+	}
+	return migrations, nil
 }
 
 func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error {

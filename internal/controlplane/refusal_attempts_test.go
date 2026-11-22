@@ -19,7 +19,7 @@ func TestRefusalAttemptsMigrationKeepsExistingRefusals(t *testing.T) {
         VALUES('audit_before',$1,$2,'member.created',$1,'','forbidden')`, il.owner.TenantID, il.owner.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := il.s.pool.Exec(ctx, refusalAttemptsSQL); err != nil {
+	if _, err := il.s.pool.Exec(ctx, migrationSQL(t, "refusal-attempts")); err != nil {
 		t.Fatal("migrate", err)
 	}
 	if err := il.a.RecordRefusal(ctx, il.owner, RefusedAttempt{Action: "member.created", Target: "agt_" + "0123456789abcdef0123456789abcdef", Reason: "forbidden"}); err != nil {

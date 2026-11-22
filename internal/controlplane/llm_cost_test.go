@@ -249,7 +249,7 @@ func TestLLMAccessAndCostMigrationKeepsExistingInstallations(t *testing.T) {
         ALTER TABLE llm_model_aliases DROP COLUMN access, DROP COLUMN priced`); err != nil {
 		t.Fatal("revert", err)
 	}
-	if _, err = b.s.pool.Exec(t.Context(), llmAccessAndCostSQL); err != nil {
+	if _, err = b.s.pool.Exec(t.Context(), migrationSQL(t, "llm-access-and-cost")); err != nil {
 		t.Fatal("migrate", err)
 	}
 	if _, err = b.s.pool.Exec(t.Context(), "ALTER TABLE agent_specs ADD FOREIGN KEY (template_grant_id) REFERENCES llm_alias_grants(id)"); err != nil {

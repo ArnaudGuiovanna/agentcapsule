@@ -513,7 +513,7 @@ func TestLLMRequestPolicyMigrationKeepsExistingAliases(t *testing.T) {
         ALTER TABLE llm_model_aliases DROP COLUMN allowed_fields, DROP COLUMN allowed_tool_types, DROP COLUMN max_output_tokens, DROP COLUMN output_cap_field`); err != nil {
 		t.Fatal("revert", err)
 	}
-	if _, err := p.s.pool.Exec(t.Context(), llmRequestPolicySQL); err != nil {
+	if _, err := p.s.pool.Exec(t.Context(), migrationSQL(t, "llm-request-policy")); err != nil {
 		t.Fatal("migrate", err)
 	}
 	items, err := p.a.ListLLMAliases(t.Context(), p.owner, "", 10)
