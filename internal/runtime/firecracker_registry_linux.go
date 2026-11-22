@@ -290,55 +290,86 @@ func (h *FirecrackerHost) validRegistry(r *hostRegistry) error {
 var ErrOlderWorker = errors.New("an older worker still runs on this host: stop it first")
 
 // save writes r through under host.lock, durably, and only when it differs
-// from the version on disk (P-09).
+// from the version on disk (P-09). The lock-free readers (view) wait only for
+// the cached version to be replaced, never for the write's fsyncs.
 func (h *FirecrackerHost) save(r *hostRegistry) error {
 	h.cacheMu.Lock()
-	defer h.cacheMu.Unlock()
-	return h.saveLocked(r)
+	b, unchanged, err := h.encodeRegistry(r)
+	h.cacheMu.Unlock()
+	if err != nil || unchanged {
+		return err
+	}
+	f, st, err := h.writeRegistry(b)
+	if f == nil {
+		return err
+	}
+	h.cacheMu.Lock()
+	h.dropRegistryCache()
+	h.registry = &registryCache{reg: r.clone(), raw: b, id: fileIdentity(st), pin: f}
+	h.cacheMu.Unlock()
+	return err
 }
 
+// saveLocked is save under cacheMu: a migration as the registry is read.
 func (h *FirecrackerHost) saveLocked(r *hostRegistry) error {
+	b, unchanged, err := h.encodeRegistry(r)
+	if err != nil || unchanged {
+		return err
+	}
+	f, st, err := h.writeRegistry(b)
+	if f != nil {
+		h.dropRegistryCache()
+		h.registry = &registryCache{reg: r.clone(), raw: b, id: fileIdentity(st), pin: f}
+	}
+	return err
+}
+
+// encodeRegistry runs under cacheMu: r checked and encoded, and whether the
+// file on disk holds it already.
+func (h *FirecrackerHost) encodeRegistry(r *hostRegistry) ([]byte, bool, error) {
 	r.Version = registryVersion
 	if err := h.validRegistry(r); err != nil {
-		return err
+		return nil, false, err
 	}
 	b, err := json.MarshalIndent(r, "", "  ")
 	if err != nil {
-		return err
+		return nil, false, err
 	}
 	b = append(b, '\n')
 	if h.registry != nil && h.registry.pin != nil && string(h.registry.raw) == string(b) {
 		if st, err := os.Stat(h.registryPath()); err == nil && fileIdentity(st) == h.registry.id {
-			return nil
+			return b, true, nil
 		}
 	}
+	return b, false, nil
+}
+
+// writeRegistry replaces registry.json with b, durably. Once renamed, the
+// file is returned open with its identity, even if the directory's sync
+// fails: it holds the version already, and the error is returned.
+func (h *FirecrackerHost) writeRegistry(b []byte) (*os.File, os.FileInfo, error) {
 	f, err := os.CreateTemp(h.root, "registry-*.tmp")
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
-	kept := false
-	defer func() {
-		if !kept {
-			f.Close()
-			os.Remove(f.Name())
-		}
-	}()
+	fail := func(err error) (*os.File, os.FileInfo, error) {
+		f.Close()
+		os.Remove(f.Name())
+		return nil, nil, err
+	}
 	if _, err = f.Write(b); err != nil {
-		return err
+		return fail(err)
 	}
 	if err = f.Sync(); err != nil {
-		return err
+		return fail(err)
 	}
 	if err = os.Rename(f.Name(), h.registryPath()); err != nil {
-		return err
+		return fail(err)
 	}
-	// The written version is cached even if the directory's sync fails: the
-	// file holds it already, and the error is returned.
-	st, statErr := f.Stat()
-	h.dropRegistryCache()
-	if statErr == nil {
-		kept = true
-		h.registry = &registryCache{reg: r.clone(), raw: b, id: fileIdentity(st), pin: f}
+	st, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, nil, err
 	}
-	return errors.Join(statErr, syncDir(h.root))
+	return f, st, syncDir(h.root)
 }

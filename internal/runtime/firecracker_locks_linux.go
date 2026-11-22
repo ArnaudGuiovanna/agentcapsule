@@ -70,14 +70,20 @@ func (h *FirecrackerHost) openAgentLock(id string) (*os.File, error) {
 	return os.OpenFile(path, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0600)
 }
 
-// lockAgent waits for the agent's lock, as long as ctx lasts.
+// lockAgent waits for the agent's lock, as long as ctx lasts. A free lock is
+// taken even with ctx done, as host.lock always was: a cleanup that its
+// caller gave up on still completes.
 func (h *FirecrackerHost) lockAgent(ctx context.Context, id string) (func(), error) {
 	l := h.agentEntry(id)
 	select {
 	case l.ch <- struct{}{}:
-	case <-ctx.Done():
-		h.releaseEntry(id, l)
-		return nil, ctx.Err()
+	default:
+		select {
+		case l.ch <- struct{}{}:
+		case <-ctx.Done():
+			h.releaseEntry(id, l)
+			return nil, ctx.Err()
+		}
 	}
 	f, err := h.openAgentLock(id)
 	if err == nil {
@@ -128,16 +134,19 @@ func (h *FirecrackerHost) tryLockAgent(id string) (func(), error) {
 	}, nil
 }
 
-// agent returns a copy of the registered agent id, nil when unregistered.
-func (h *FirecrackerHost) agent(ctx context.Context, id string) (*HostAgent, error) {
-	var a *HostAgent
-	err := h.locked(ctx, func(r *hostRegistry) error {
-		if current := r.Agents[id]; current != nil {
-			a = current.clone()
-		}
-		return nil
-	})
-	return a, err
+// agent returns a copy of the registered agent id, nil when unregistered. It
+// reads the current registry without host.lock: whoever changes an agent's
+// run, fence, seal or volume holds that agent's lock, as the caller does, and
+// each change is rechecked under host.lock when it is written.
+func (h *FirecrackerHost) agent(_ context.Context, id string) (*HostAgent, error) {
+	r, err := h.view()
+	if err != nil {
+		return nil, err
+	}
+	if a := r.Agents[id]; a != nil {
+		return a.clone(), nil
+	}
+	return nil, nil
 }
 
 // endRun removes run from agent id once its VMM is cleaned up, unless the
