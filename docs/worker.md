@@ -25,18 +25,24 @@ protocol; the disposable SQL harness of the test campaigns remains a test tool.
 The configuration file must be owned by root, be a regular file and not be
 writable by group or others. Boot keys are not parameters of this file.
 
-The process requires root for the jailer, namespaces and cgroups; the VMMs use
-their dedicated UIDs. Provide `AGENTCAPSULE_DATABASE_URL` through the service
-manager's protected environment, naming the worker's own role,
-`agentcapsule_worker` ([install.md](install.md#postgresql)), then run:
+The process runs as its own account, `agentcapsule-worker`, with no
+capability; its root helper, `agentcapsule-worker-helper`, does what needs
+root: the jailer, namespaces and cgroups
+([privilege separation](#privilege-separation)). The VMMs use their dedicated
+UIDs. Provide `AGENTCAPSULE_DATABASE_URL` through the service manager's
+protected environment, naming the worker's own role, `agentcapsule_worker`
+([install.md](install.md#postgresql)), then run, as that account (the
+commands below are run the same way):
 
 ```sh
 /opt/agentcapsule/agentcapsule-worker -config /etc/agentcapsule/worker.json
 ```
 
-At every start the worker checks KVM, the kernel, cgroups, namespaces, the
-runtime root's file system and its free space (a failure from 95% used), and
-the pinned artifacts, and does not start when one fails, printing what to fix
+At every start the worker checks KVM (with its helper: that the helper
+answers, which checked KVM at its own start), the kernel, cgroups,
+namespaces, the runtime root's file system and its free space (a failure from
+95% used), and the pinned artifacts, and does not start when one fails,
+printing what to fix
 (RUN-012, DEP-3). `-preflight` runs every check of the
 host and of this configuration, changes nothing, and exits
 ([install.md](install.md#preflight)). In production, the worker reaches
