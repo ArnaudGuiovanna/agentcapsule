@@ -399,7 +399,8 @@ func revertTenantAgents(t *testing.T, s *Store) {
         DROP FUNCTION IF EXISTS work_notify_outbox(), work_notify_mailbox(), work_notify_operation(), work_notify_closure(),
           work_notify_deletion(), work_notify_placement() CASCADE;
         DROP FUNCTION IF EXISTS work_notify_agent(text), work_notify_host(text);
-        DROP FUNCTION IF EXISTS agentcapsule_service_grants(), agentcapsule_service_privileges(), agentcapsule_service_privileges_before_model_split();
+        DROP FUNCTION IF EXISTS agentcapsule_service_grants(), agentcapsule_service_privileges(),
+            agentcapsule_service_privileges_before_api_guest_split(), agentcapsule_service_privileges_before_model_split();
         ALTER TABLE agents DROP COLUMN IF EXISTS enricher_id CASCADE;
         DROP FUNCTION IF EXISTS corpus_remember_conversion(), corpus_notify_build(), corpus_notify_file_progress() CASCADE;
         ALTER TABLE IF EXISTS corpus_builds DROP COLUMN IF EXISTS conversion_invocation_id;
