@@ -190,11 +190,12 @@ def main():
             # Each store test migrates a fresh schema; the control-plane package
             # alone takes nearly ten minutes under the race detector on a shared
             # host (533 s to 600 s in November 2026, 865 s for the whole phase on
-            # the integrated tree under load), so it gets twenty.
-            command = ["go", "test", "-race", "-json", "-count=1", "-timeout=1200s"]
+            # the integrated tree under load; 1163 s in the v0.1.0 audit fixes
+            # with service roles), so it gets forty.
+            command = ["go", "test", "-race", "-json", "-count=1", "-timeout=2400s"]
             # The 100-stream latency target is measured without competing package tests.
             stream_load = "^TestInvocationEventsLoad$"
-            run("integration", [*command, "-skip", stream_load, "./..."], timeout=1800, go_json=True)
+            run("integration", [*command, "-skip", stream_load, "./..."], timeout=3600, go_json=True)
             run("stream-load", ["go", "test", "-json", "-count=1", "-timeout=180s", "-run", stream_load, "./internal/api"],
                 timeout=300, go_json=True, extra_env={"AGENTCAPSULE_STREAM_LOAD": "1"})
             if args.llm_base_url:
