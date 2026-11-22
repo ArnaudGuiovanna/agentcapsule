@@ -319,3 +319,15 @@ paths off a listener, so a third hop now stays in clear text inside the host:
 
 Both realms have brute-force detection, and the host helper deletes the
 bootstrap administrator once a permanent one exists.
+
+### The preflight of a worker that is not root (ARCH-3, finding A-03)
+
+The worker runs as its own account with no capability, and a root helper
+does what needs root ([ADR 024](024-worker-privilege-separation.md)). It can
+no longer open `/dev/kvm`: with a `helper` section, its mandatory check
+`kvm` becomes `worker_helper` (the helper answers, as root, for this runtime
+root), and the helper opens `/dev/kvm`, checks the cgroup controllers and
+the jails' mount (devices and execution allowed) and pins the jailer and
+Firecracker at its own start, which it refuses otherwise. The other
+mandatory checks stay the worker's. A worker with a `helper` section refuses
+to run as root (`worker_runs_as_its_account_not_root`).

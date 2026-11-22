@@ -124,8 +124,10 @@ func (l peerListener) Accept() (net.Conn, error) {
 	}
 }
 
-// listen creates the bridge's socket, mode 0600 for its own user (the worker
-// runs as root, or as the same user in tests), accepting only workerUID.
+// listen creates the bridge's socket, accepting only workerUID: mode 0600 for
+// its own user when the worker is root or this user (tests); 0660 for a
+// worker of its own account (ADR 024), whose group the socket's directory
+// gives it (set-group-ID).
 func listen(path string, workerUID uint32) (net.Listener, error) {
 	if info, err := os.Lstat(path); err == nil {
 		if info.Mode()&os.ModeSocket == 0 {
@@ -142,6 +144,12 @@ func listen(path string, workerUID uint32) (net.Listener, error) {
 		return nil, err
 	}
 	l.SetUnlinkOnClose(true)
+	if workerUID != 0 && workerUID != uint32(os.Geteuid()) {
+		if err = os.Chmod(path, 0o660); err != nil {
+			l.Close()
+			return nil, err
+		}
+	}
 	return peerListener{l, workerUID}, nil
 }
 

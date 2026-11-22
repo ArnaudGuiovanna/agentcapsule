@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -123,27 +122,25 @@ func (h *FirecrackerHost) platformCheck(agentID, vmID string, generation uint64)
 		if peer.Uid != current.UID || peer.Gid != current.UID || int(peer.Pid) != current.Run.PID {
 			return ErrGeneration
 		}
-		return h.platformPeer(current.clone(), peer)
+		return h.platformPeer(ctx, current.clone(), peer)
 	}
 }
 
 // platformPeer checks that the peer is the boot's identified VMM, which still
 // owns the agent's volume.
-func (h *FirecrackerHost) platformPeer(a *HostAgent, peer *syscall.Ucred) error {
+func (h *FirecrackerHost) platformPeer(ctx context.Context, a *HostAgent, peer *syscall.Ucred) error {
 	if h.peer != nil {
 		return h.peer(a, peer)
 	}
-	if _, _, err := h.identify(a); err != nil {
-		return err
-	}
-	return ownedVolumeLock(a.Run.PID, a.Volume)
+	return h.ownsVolume(ctx, a)
 }
 
 // ensurePlatform runs under the agent's lock. A second kernel lock elects ONE
 // listener owner across live worker processes. Worker death releases that
 // lock; stale socket files are removed only by its next owner. No secret
-// enters the jail log.
-func (h *FirecrackerHost) ensurePlatform(a *HostAgent) error {
+// enters the jail log. The socket is bound in the jail, which belongs to the
+// VM's user, by root (ADR 024).
+func (h *FirecrackerHost) ensurePlatform(ctx context.Context, a *HostAgent) error {
 	if h.opts.PlatformHandler == nil || a.Run.FenceOnly {
 		return nil
 	}
@@ -192,7 +189,7 @@ func (h *FirecrackerHost) ensurePlatform(a *HostAgent) error {
 	}
 	// The socket is <jail>/vsock_<port>, beside the VMM's own vsock socket,
 	// in the jail its user owns (L-15).
-	listener, err := listenInJail(filepath.Dir(a.Run.Socket), fmt.Sprintf("%s_%d", filepath.Base(a.Run.Socket), capsuleprotocol.PlatformPort), int(a.UID))
+	listener, err := h.privileged().Listen(ctx, a)
 	if err != nil {
 		return err
 	}

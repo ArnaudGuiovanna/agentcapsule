@@ -96,6 +96,19 @@ func decodeAuditCursor(cursor string) (time.Time, string, bool) {
 	return time.UnixMicro(micro).UTC(), id, true
 }
 
+// mayReadAudit checks that p may read its organization's trail: audit:read
+// and a role that may read it. Under a snapshotTx it takes no row lock.
+func mayReadAudit(ctx context.Context, tx pgx.Tx, p Principal) error {
+	current, err := authorizeTenant(ctx, tx, p, authorization.ScopeAuditRead)
+	if err != nil {
+		return err
+	}
+	if !authorization.CanAdminister(tenantAccess(p), authorization.Role(current.Role), authorization.ReadAudit) {
+		return ErrForbidden
+	}
+	return nil
+}
+
 // ListAudit returns the tenant's audit events in a stable order. It requires
 // audit:read and a role that may read the audit trail. Events of other tenants
 // are never selected, and no event discloses content.
@@ -109,19 +122,22 @@ func (a *Accounts) ListAudit(ctx context.Context, p Principal, cursor string, li
 		return AuditPage{}, err
 	}
 	defer rollback(tx)
+	// The caller's rights first, read without the organization's row lock: a
+	// caller who may not read the trail is refused before it waits (FIX-2).
+	if err = mayReadAudit(ctx, snapshotTx{tx}, p); err != nil {
+		return AuditPage{}, err
+	}
 	// The page ends at the trail's horizon (audit_horizon.go): an event that
-	// commits late is never behind its cursor. Taken before any row lock, so
-	// that its wait holds up no revocation.
+	// commits late is never behind its cursor. Its wait holds no row lock, so
+	// that it holds up no revocation. The rights are then checked again under
+	// the row lock, as every read does: a revocation that committed during
+	// the wait refuses the page.
 	horizon, err := auditHorizon(ctx, tx, p.TenantID)
 	if err != nil {
 		return AuditPage{}, err
 	}
-	current, err := authorizeTenant(ctx, tx, p, authorization.ScopeAuditRead)
-	if err != nil {
+	if err = mayReadAudit(ctx, tx, p); err != nil {
 		return AuditPage{}, err
-	}
-	if !authorization.CanAdminister(tenantAccess(p), authorization.Role(current.Role), authorization.ReadAudit) {
-		return AuditPage{}, ErrForbidden
 	}
 	rows, err := tx.Query(ctx, `SELECT `+auditColumns+` FROM (`+auditUnion+`) e
         WHERE (created_at,id) > ($2::timestamptz,$3::text) AND created_at < $5 ORDER BY created_at,id LIMIT $4`, p.TenantID, after, afterID, limit, horizon)
@@ -178,12 +194,8 @@ func (a *Accounts) ExportAudit(ctx context.Context, p Principal, from, to time.T
 		return AuditExport{}, err
 	}
 	defer rollback(tx)
-	current, err := authorizeTenant(ctx, tx, p, authorization.ScopeAuditRead)
-	if err != nil {
+	if err = mayReadAudit(ctx, tx, p); err != nil {
 		return AuditExport{}, err
-	}
-	if !authorization.CanAdminister(tenantAccess(p), authorization.Role(current.Role), authorization.ReadAudit) {
-		return AuditExport{}, ErrForbidden
 	}
 	out := AuditExport{OrganizationID: p.TenantID, From: from.UTC(), To: to.UTC(), Items: []AuditEvent{}}
 	err = tx.QueryRow(ctx, "SELECT clock_timestamp(),(SELECT retention_days FROM audit_retention)").Scan(&out.ExportedAt, &out.RetentionDays)

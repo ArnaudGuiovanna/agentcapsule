@@ -1,0 +1,9 @@
+# Install as /usr/lib/sysusers.d/agentcapsule-worker.conf (systemd-sysusers).
+# The worker's own account (ADR 024): it owns the runtime root, the archives
+# and the restore tests' scratch, and runs with no capability. It reaches the
+# authority service's worker socket (worker_uid in
+# /etc/agentcapsule/authority.json, through the clients' group) and the
+# worker helper's socket (its own group); PostgreSQL maps it to the role
+# agentcapsule_worker (pg_ident.conf).
+u agentcapsule-worker - "Agent Capsule worker" - -
+m agentcapsule-worker agentcapsule-authority-clients

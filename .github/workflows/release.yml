@@ -144,7 +144,7 @@ jobs:
           dist="$RUNNER_TEMP/release/build/dist"
           binaries=()
           for name in agentcapsule-api agentcapsule-worker agentcapsule-admin agentcapsule-authority \
-              agentcapsule-harness capsule-adapter agentcapsule-slim-bridge; do
+              agentcapsule-harness capsule-adapter agentcapsule-slim-bridge agentcapsule-worker-helper; do
             binaries+=(--binary "$dist/$name")
           done
           for cli in "$dist"/agentcapsule-{linux,darwin,windows}-*; do binaries+=(--binary "$cli"); done
@@ -183,7 +183,7 @@ jobs:
           install -m 0644 install.sh "$assets/install.sh"
           cp "$release"/sbom/*.spdx.json "$assets"/
           for name in agentcapsule-api agentcapsule-worker agentcapsule-admin agentcapsule-authority \
-              agentcapsule-harness agentcapsule-slim-bridge; do
+              agentcapsule-harness agentcapsule-slim-bridge agentcapsule-worker-helper; do
             cp "$release/build/dist/$name" "$release/sbom/$name.spdx.json" "$assets"/
           done
           verifier="$(python3 scripts/release_tools.py cosign | awk '{print $3}')"

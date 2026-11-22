@@ -165,7 +165,7 @@ func (h *FirecrackerHost) endRun(ctx context.Context, id string, run *VMRun) err
 // agent's lock, outside host.lock, since the attempt's cgroup may take up to
 // ten seconds to empty.
 func (h *FirecrackerHost) retireRun(ctx context.Context, id string, run *VMRun) error {
-	if err := h.cleanup(run); err != nil {
+	if err := h.cleanup(ctx, id, run); err != nil {
 		return err
 	}
 	// Recorded even when the caller gave up: the VMM is gone already.

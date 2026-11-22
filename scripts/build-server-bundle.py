@@ -22,7 +22,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 HOST_PROGRAMS = ("agentcapsule-api", "agentcapsule-admin", "agentcapsule-worker", "agentcapsule-authority",
-                 "agentcapsule-slim-bridge", "agentcapsule-harness", "capsule-adapter")
+                 "agentcapsule-slim-bridge", "agentcapsule-harness", "capsule-adapter", "agentcapsule-worker-helper")
 PACKAGES = ("postgresql-16", "docker.io", "docker-compose-v2", "pgbackrest", "rclone", "curl", "e2fsprogs",
             "libcryptsetup12", "podman", "openssl", "iproute2", "ca-certificates")
 # Noble systems upgraded from the installation ISO can still carry the
@@ -189,11 +189,17 @@ def matching_sources(sources,guest,src):
     return {f.name:f for f in src.iterdir() if f.is_file()}
 
 
+# One Debian package name, with its architecture if any: never a list
+# ("a, b: path") nor a diversion ("diversion by a from: path",
+# "local diversion to: path"), which dpkg-query -S prints in the same form.
+OWNER=re.compile(r"[a-z0-9][a-z0-9+.-]+(:[a-z0-9-]+)?")
+
+
 def run_owner(candidate):
     p=subprocess.run(["dpkg-query","-S",candidate],capture_output=True,text=True)
     for line in p.stdout.splitlines():
         package,sep,path=line.partition(": ")
-        if sep and path==candidate and "," not in package:
+        if sep and path==candidate and OWNER.fullmatch(package):
             return package
     return None
 

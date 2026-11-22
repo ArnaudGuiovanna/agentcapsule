@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"syscall"
@@ -45,6 +46,9 @@ const (
 	strictFilter    = "strict"
 	testToolsFilter = "test-tools"
 	selfFilter      = "self"
+	// selfExecutableFilter is the self filter for a program of another
+	// executable, whose path follows the program's name (RunExecutable).
+	selfExecutableFilter = "self-executable"
 )
 
 // limits are the memory limits set last, once no Go code runs (execFiltered).
@@ -75,7 +79,7 @@ func confine(args []string) error {
 			return errors.New("the test tools' filter outside a test binary")
 		}
 		filter = testTools()
-	case selfFilter:
+	case selfFilter, selfExecutableFilter:
 		filter, memory, self = selfPolicy(), limits{space: selfAddressSpace, data: selfData}, true
 		if raceBuild {
 			// The race detector's shadow memory: about four times the
@@ -87,11 +91,18 @@ func confine(args []string) error {
 	}
 	image, program, argv := args[4], args[5], args[5:]
 	if self {
-		// This executable, under the name its program has: argv[0].
+		// This executable, or the one named after the program, under the
+		// name its program has: argv[0].
 		if !selfName(program) {
 			return errors.New("not a program of this executable")
 		}
 		program = helperPath
+		if args[3] == selfExecutableFilter {
+			if len(args) < 7 || !filepath.IsAbs(args[6]) {
+				return errors.New("no executable for the program")
+			}
+			program, argv = args[6], append([]string{args[5]}, args[7:]...)
+		}
 	}
 	unix.CloseOnExec(statusFD)
 	unix.CloseOnExec(lifelineFD)

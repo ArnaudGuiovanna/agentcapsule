@@ -1,0 +1,94 @@
+[Unit]
+Description=AgentCapsule worker helper (root)
+Documentation=https://github.com/ArnaudGuiovanna/agentcapsule/blob/main/docs/adr/024-worker-privilege-separation.md
+After=local-fs.target
+ConditionPathExists=!/var/lib/agentcapsule-install/maintenance
+
+[Service]
+Type=exec
+ExecStart=/opt/agentcapsule/agentcapsule-worker-helper -config /etc/agentcapsule/worker.json -archive-fetch /opt/agentcapsule/agentcapsule-archive-ship.py
+Restart=on-failure
+RestartSec=2
+# The jailer starts each microVM in its own cgroup, under the VMs' parent
+# cgroup, never in this unit's: restarting the helper stops no VM, and the
+# worker adopts them as before (ADR 024 §8).
+Delegate=yes
+KillMode=process
+UMask=0077
+LimitCORE=0
+
+# Privilege separation (A-03, docs/adr/024-worker-privilege-separation.md).
+# The helper is the worker's only root process. It answers the worker's
+# account only, on its socket, requests about the worker's own VMs and
+# files; it reads the worker's configuration and registry, and opens no
+# network socket itself. Every directive below also binds the jailer,
+# Firecracker, the confined debugfs and LUKS2 check, and the archive
+# shipper, which it starts and which inherit it. The jailer: it unshares a
+# mount and PID namespace, pivots into the chroot, creates /dev/kvm,
+# /dev/net/tun, /dev/urandom and /dev/userfaultfd there, chowns them and
+# drops to the VM's UID.
+NoNewPrivileges=yes
+# CAP_SYS_ADMIN: namespaces, mounts and pivot_root (jailer, sandbox), and
+# clone3 into a cgroup. CAP_MKNOD: the jail's device nodes. CAP_CHOWN,
+# CAP_FOWNER, CAP_DAC_OVERRIDE: the files of the VMs' UIDs (volumes and
+# build drives given and reclaimed, jails built and removed, volumes hard
+# linked under fs.protected_hardlinks, the platform sockets bound, given away
+# and chmodded through O_PATH descriptors, never by a path the VMM could
+# swap), and the worker's files it reads (the registry, the images).
+# CAP_SETUID, CAP_SETGID: the jailer, the sandbox, and the shipper (rclone as
+# agentcapsule-ship, the archive as the worker) switch accounts. CAP_SETPCAP:
+# the sandbox empties its bounding set. CAP_KILL: a confined program that
+# overruns its time runs under another UID. CAP_SYS_PTRACE: observing a run
+# reads /proc/<pid>/root, exe, fd and fdinfo of VMMs that run under other
+# UIDs.
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_MKNOD CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE CAP_SETUID CAP_SETGID CAP_SETPCAP CAP_KILL CAP_SYS_PTRACE
+AmbientCapabilities=
+# Writes: its own directory /var/lib/agentcapsule/vmm (the pinned jailer and
+# Firecracker, the jails) and the worker's runtime root, on one mount, since
+# the volumes and images are hard linked into the jails; an archive fetched
+# into the archive root or a restore test's scratch (written as the worker);
+# its socket's directory. The VMs' cgroups are under /sys/fs/cgroup, which
+# ProtectSystem leaves writable.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/agentcapsule -/var/lib/agentcapsule-archives -/var/lib/agentcapsule-restore-tests /run/agentcapsule-worker-helper
+InaccessiblePaths=-/var/lib/agentcapsule-key-authority -/var/lib/agentcapsule-restore-authority -/var/lib/agentcapsule-authority-replica
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+# A deny list: the jailer needs mount, pivot_root, mknod, chown, setuid,
+# setgroups and setrlimit, the sandbox capset and sched_setaffinity.
+SystemCallFilter=~@clock @cpu-emulation @debug @module @obsolete @raw-io @reboot @swap
+SystemCallFilter=~bpf open_by_handle_at
+SystemCallErrorNumber=EPERM
+# AF_UNIX: its socket, the VMs' sockets. AF_ALG: the confined LUKS2 check's
+# libcryptsetup. AF_INET, AF_INET6, AF_NETLINK: the archive shipper's rclone
+# (the stores), which it starts on a fetch; the helper's own code opens none.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_ALG
+# Left out, and why (each would break the helper):
+# - PrivateDevices: drops CAP_MKNOD and hides /dev/kvm, which the start
+#   checks open. DevicePolicy= is left open for the same reason.
+# - ProtectControlGroups: makes /sys/fs/cgroup read-only; the helper creates
+#   and kills the VMs' cgroups there.
+# - RestrictNamespaces: the jailer needs mount, PID and network namespaces and
+#   the sandbox IPC and UTS ones; systemd's filter also makes clone3 fail with
+#   ENOSYS, and Go starts the jailer with clone3 (CLONE_INTO_CGROUP) only.
+# - ProtectProc, ProcSubset: observing a run reads other UIDs' /proc/<pid>.
+# - PrivateNetwork, IPAddressDeny: the shipper's rclone reaches the stores.
+# - PrivateUsers, User=: the jailer must run as root of the host.
+# - MemoryMax, TasksMax: the VMs run in their own cgroups, outside this unit;
+#   their limits are the helper's (ADR 012).
+# With CAP_SYS_ADMIN kept, code that takes over the helper can undo the mount
+# directives: they stop mistakes and path tricks. The helper's request
+# checks (ADR 024 §4) are what keep the worker from root.
+
+[Install]
+WantedBy=multi-user.target

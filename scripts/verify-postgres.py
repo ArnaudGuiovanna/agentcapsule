@@ -219,10 +219,47 @@ def main():
         finally:
             if started or (data / "postmaster.pid").exists():
                 # pg_ctl is always scoped to the PGDATA created by this invocation.
-                run("stop", [pg_bin / "pg_ctl", "-D", data, "-m", "fast", "-w", "stop"])
+                stop_cluster(run, pg_bin / "pg_ctl", data)
             if data.exists():
                 shutil.rmtree(data)
     print("Evidence:", out, flush=True)
+
+
+def postmaster(data):
+    """Return the PID of the postmaster running in data, or None. The PID
+    file's first line names it; the process must still work in data (the
+    postmaster's working directory is its data directory), so that a PID
+    reused by another process is never taken for it."""
+    try:
+        pid = int((data / "postmaster.pid").read_text().splitlines()[0])
+        return pid if Path(os.readlink(f"/proc/{pid}/cwd")) == Path(data).resolve() else None
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def stop_cluster(run, pg_ctl, data, kill=os.kill, patience=30):
+    """Stop the cluster of data, which this invocation started. A fast stop
+    writes a checkpoint first, which a loaded host can stretch past its wait,
+    and the cluster was then left running: an immediate stop follows, then
+    SIGKILL to the postmaster. Its data directory is deleted next, so the
+    checkpoint a fast stop saves is not needed. Raises if the cluster still
+    runs; the socket directory goes with its TemporaryDirectory either way."""
+    for label, mode, wait in (("stop", "fast", 120), ("stop-immediate", "immediate", 60)):
+        try:
+            run(label, [pg_ctl, "-D", data, "-m", mode, "-t", str(wait), "-w", "stop"], timeout=wait + 30)
+            return
+        except (RuntimeError, subprocess.TimeoutExpired) as error:
+            print("PostgreSQL did not stop:", error, flush=True)
+            if postmaster(data) is None:
+                return
+    pid = postmaster(data)
+    if pid is not None:
+        kill(pid, signal.SIGKILL)
+    deadline = time.monotonic() + patience
+    while postmaster(data) is not None:
+        if time.monotonic() > deadline:
+            raise RuntimeError(f"PostgreSQL in {data} still runs after SIGKILL")
+        time.sleep(0.1)
 
 
 if __name__ == "__main__":

@@ -541,6 +541,15 @@ func (a *Accounts) ListLLMAliases(ctx context.Context, p Principal, after string
 // ResolveLLMRoute is the gateway's lookup, keyed by a tenant taken from the
 // authenticated channel, never from a request body. A disabled organization,
 // alias or provider resolves to ErrNotFound on the very next call.
+//
+// It takes no row lock (FIX-2): the reservation that follows is what orders
+// the call with a disabling or a rotation (reserveLLM). Those are plain
+// UPDATEs under the organization's row FOR UPDATE; the reservation holds
+// that row FOR KEY SHARE and reads the alias's and the provider's status and
+// the credential's generation again, so a route resolved before such a
+// change committed is never used. FOR SHARE on the alias and the provider,
+// taken on every call until then, conflicted with those UPDATEs and added
+// nothing: it ended with this transaction, before the reservation.
 func (a *Accounts) ResolveLLMRoute(ctx context.Context, tenantID, alias string) (LLMRoute, error) {
 	if !validOrganizationText(tenantID, 100) || !validOrganizationText(alias, 100) {
 		return LLMRoute{}, ErrInput
@@ -557,7 +566,7 @@ func (a *Accounts) ResolveLLMRoute(ctx context.Context, tenantID, alias string) 
         m.allowed_fields,m.allowed_tool_types,m.max_output_tokens,m.output_cap_field
         FROM organizations o JOIN llm_model_aliases m ON m.tenant_id=o.id
         JOIN llm_providers p ON (p.tenant_id,p.id)=(m.tenant_id,m.provider_id)
-        WHERE o.id=$1 AND o.status='active' AND m.alias=$2 AND m.status='active' AND p.status='active' FOR SHARE OF m, p`, tenantID, alias).
+        WHERE o.id=$1 AND o.status='active' AND m.alias=$2 AND m.status='active' AND p.status='active'`, tenantID, alias).
 		Scan(&r.ProviderID, &r.Kind, &r.BaseURL, &r.UpstreamModel, &r.Generation, &sealed, &r.AuthMode,
 			&r.Policy.AllowedFields, &r.Policy.AllowedToolTypes, &maxOutput, &r.Policy.OutputCapField)
 	if errors.Is(err, pgx.ErrNoRows) {

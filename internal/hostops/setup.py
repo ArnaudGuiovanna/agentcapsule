@@ -219,10 +219,121 @@ def worker_env(profile):
     return dict(os.environ,AGENTCAPSULE_DATABASE_URL=service_dsns(profile)["worker"])
 
 
-# pg_ident.conf: root runs agentcapsule-admin as the owner and the worker as
-# its role; the API's account reaches only the API's role. pg_hba.conf admits
-# those three roles by peer authentication on the socket.
-PEER_MAP=("agentcapsule root agentcapsule\nagentcapsule root agentcapsule_worker\n"
+# The worker runs as its own account, with no capability; its helper keeps
+# root (ADR 024). Both read /etc/agentcapsule/worker.json.
+WORKER_USER="agentcapsule-worker"
+HELPER_SOCKET="/run/agentcapsule-worker-helper/worker.sock"
+RESTORE_TESTS=Path("/var/lib/agentcapsule-restore-tests")
+
+
+def worker_ids():
+    account=pwd.getpwnam(WORKER_USER)
+    return account.pw_uid,account.pw_gid
+
+
+def worker_output(*args,profile):
+    # The worker's operator modes run as its account, so that what they
+    # write stays the worker's, with the worker's database role.
+    return run_user(WORKER_USER,*args,env=worker_env(profile),capture=True)
+
+
+def give_worker_trees(cfg):
+    # The worker's trees: the runtime root, the archive root, the restore
+    # tests' scratch and the caches. Each entry root owns goes to the worker,
+    # but <root>/jails, where runs a root worker started keep their jails;
+    # the VMs' volumes and drives keep their UIDs. No link is followed.
+    # Directories that do not exist yet are created, 0700.
+    uid,gid=worker_ids()
+    root=Path(cfg["root"])
+    trees=[root,RESTORE_TESTS]
+    for section,key in (("archives","root"),("registry","cache"),("corpus","cache"),("corpus","staging")):
+        value=(cfg.get(section) or {}).get(key)
+        if value:
+            trees.append(Path(value))
+    system={Path(p) for p in ("/var/lib","/var/cache","/var/lib/agentcapsule","/srv","/opt","/home","/etc","/usr")}
+    given=0
+    for top in trees:
+        if not top.is_absolute() or len(top.parts)<3 or top in system or top.is_symlink():
+            raise ValueError("the worker's directories must be its own: "+str(top))
+        if not top.exists():
+            top.mkdir(mode=0o700,parents=True)
+        for directory,subdirectories,files in os.walk(top):
+            if Path(directory)==root:
+                subdirectories[:]=[d for d in subdirectories if d!="jails"]
+            paths=[Path(directory)/name for name in subdirectories+files]
+            for path in ([top] if Path(directory)==top else [])+paths:
+                st=os.lstat(path)
+                if st.st_uid==0 and not stat.S_ISLNK(st.st_mode):
+                    os.lchown(path,uid,gid)
+                    given+=1
+    return given
+
+
+def worker_private_files(cfg):
+    # The private files the worker reads (operatorconfig: 0600, its own or
+    # root's): they become its own. An operator's interop certificates
+    # (a link) stay the operator's to give.
+    files=[(cfg.get("llm") or {}).get("receipt_key"),(cfg.get("directory") or {}).get("key")]
+    files+=list(((cfg.get("transit") or {}).get("keys") or {}).values())
+    files+=[rule.get("credentials_file") for rule in (cfg.get("registry") or {}).get("rules") or []]
+    uid,_=worker_ids()
+    for name in filter(None,files):
+        path=Path(name)
+        if any(p.is_symlink() for p in [path,*path.parents]):
+            continue
+        try:
+            st=os.lstat(path)
+        except FileNotFoundError:
+            continue
+        if stat.S_ISREG(st.st_mode) and st.st_uid==0:
+            os.chown(path,uid,-1)
+
+
+def worker_configuration(path=None):
+    # worker.json: root's, readable by the worker's group (0640), with the
+    # helper's socket; an earlier release's gets the section.
+    path=path or ETC/"worker.json"
+    cfg=read(path)
+    if "helper" not in cfg:
+        cfg["helper"]=dict(socket=HELPER_SOCKET)
+        save(path,cfg)
+    _,gid=worker_ids()
+    os.chown(path,0,gid)
+    path.chmod(0o640)
+    return cfg
+
+
+def worker_accounts():
+    # authority.json names the worker's account, which its worker socket
+    # then admits; slim-bridge.json names it as the bridge's peer.
+    uid,_=worker_ids()
+    for path in (ETC/"authority.json",ETC/"slim-bridge.json"):
+        if not path.is_file():
+            continue
+        cfg=read(path)
+        key="worker_uid"
+        if path.name=="authority.json" and cfg.get("role")!="primary":
+            continue
+        if cfg.get(key)!=uid:
+            cfg[key]=uid
+            write_file(path,json.dumps(cfg).encode(),0o644)
+
+
+def separate_worker():
+    # ADR 024: the worker's account owns its trees and the private files it
+    # reads, and the services name it. Idempotent: install and every update.
+    cfg=worker_configuration()
+    given=give_worker_trees(cfg)
+    worker_private_files(cfg)
+    worker_accounts()
+    return given
+
+
+# pg_ident.conf: root runs agentcapsule-admin as the owner; the worker's
+# account reaches only the worker's role (ADR 024), the API's account only
+# the API's. pg_hba.conf admits those three roles by peer authentication on
+# the socket.
+PEER_MAP=("agentcapsule root agentcapsule\nagentcapsule agentcapsule-worker agentcapsule_worker\n"
           "agentcapsule agentcapsule-api agentcapsule_api\n")
 PEER_HBA=("local agentcapsule agentcapsule,agentcapsule_api,agentcapsule_worker peer map=agentcapsule\n"
           "host all all 127.0.0.1/32 scram-sha-256\nhost all all ::1/128 scram-sha-256\n")
@@ -475,6 +586,11 @@ def configure(p,version,initial):
         result={"renewed_certificates":renewed}
         if opted:
             result["registry_rules_allowing_unsigned"]=opted
+        # An update from a root worker: its trees, its keys and the services'
+        # configurations go to its own account (ADR 024 §9).
+        given=separate_worker()
+        if given:
+            result["worker_files_given"]=given
         return result
     database()  # Dedicated local cluster also owns the bundled OIDC realm.
     api_tls(p)
@@ -511,7 +627,9 @@ def configure(p,version,initial):
             cfg["registry"]["rules"]=p["registry_rules"]
         else:
             cfg["registry"]["rules"][0]["repositories"]=["arnaudguiovanna/"]
+        cfg["helper"]=dict(socket=HELPER_SOCKET)
         save(config_path,cfg)
+    separate_worker()
     if initial:
         run(admin,"configure-host","-host-id",p["host_id"],"-storage-mib",p["storage_mib"],env=env)
         run(admin,"approve-local-harness","-name","starter","-version","1.0.0","-artifact",read(config_path)["initrd"]["path"],env=env)
@@ -527,7 +645,13 @@ def issue_enrollment(p):
 # Keep these drop-ins on the host across release swaps. Older bundled units
 # gate both the worker and the API on "maintenance", or lack a gate entirely.
 SUSPENDED_SERVICES = ("agentcapsule-oidc", "agentcapsule-interop", "agentcapsule-authority",
-                      "agentcapsule-worker", "agentcapsule-slim-bridge")
+                      "agentcapsule-worker-helper", "agentcapsule-worker", "agentcapsule-slim-bridge")
+
+
+def installed(units):
+    # The units installed on this host: an update from a release before the
+    # worker helper (ADR 024) stops and drains without it.
+    return tuple(u for u in units if (UNIT_DIR/(u+".service")).is_file())
 
 
 def install_maintenance_gates():
@@ -559,7 +683,7 @@ def pause_admissions():
 
 def suspend_services():
     write_file(STATE / "maintenance", b"services suspended\n")
-    run("systemctl", "stop", *oidc_edge(), *SUSPENDED_SERVICES)
+    run("systemctl", "stop", *oidc_edge(), *installed(SUSPENDED_SERVICES))
 
 
 def start_services(p):
@@ -622,7 +746,8 @@ def worker_exclusive(args, profile, checkpoint):
     restart=read(checkpoint)["restart"]
     run("systemctl","stop","agentcapsule-worker")
     try:
-        return output(*args,env=worker_env(profile))
+        # As the worker's account; the helper keeps running (ADR 024).
+        return worker_output(*args,profile=profile)
     finally:
         if restart:
             run("systemctl","start","agentcapsule-worker")
@@ -717,15 +842,20 @@ def off_host_destinations(stores):
 
 def verify_volume_copies(profile, agent, archive, directory, conf):
     evidence={}
+    uid,gid=worker_ids()
     for store in ("s3","standby"):
-        with tempfile.TemporaryDirectory(dir=directory) as tmp:
+        # The worker's own scratch: the restore test runs as its account,
+        # and the shipper writes the copy as that account (ADR 024).
+        with tempfile.TemporaryDirectory(dir=RESTORE_TESTS) as tmp:
+            os.chown(tmp,uid,gid)
             root=Path(tmp)/"copies"
             scratch=Path(tmp)/"scratch"
-            scratch.mkdir()
+            scratch.mkdir(mode=0o700)
+            os.chown(scratch,uid,gid)
             run("python3","-I",ACTIVE/"agentcapsule-archive-ship.py","--rclone-config",conf,
-                "--archive-root",root,"fetch","--store",store,"--archive",archive)
-            result=json.loads(output(ACTIVE/"agentcapsule-worker","-config",ETC/"worker.json","-test-restore",agent,
-                                     "-archive-id",archive,"-archive-root",root,"-scratch",scratch,env=worker_env(profile)))
+                "--archive-root",root,"fetch","--store",store,"--archive",archive,"--owner",WORKER_USER)
+            result=json.loads(worker_output(ACTIVE/"agentcapsule-worker","-config",ETC/"worker.json","-test-restore",agent,
+                                            "-archive-id",archive,"-archive-root",root,"-scratch",scratch,profile=profile))
             if (result.get("archive_id")!=archive or result.get("agent_id")!=agent or result.get("archive_store")!="local"
                     or not {"manifest","digest","volume","copy","key"}<=set(result.get("checked",[]))):
                 raise ValueError("restore test did not confirm the fetched probe archive")
@@ -865,7 +995,7 @@ def drain(profile):
             # Also recover an interrupted older drain whose single marker
             # stopped the worker on reboot. The API retains its separate gate.
             clear_gate("maintenance")
-            run("systemctl", "start", *SUSPENDED_SERVICES, *oidc_edge())
+            run("systemctl", "start", *installed(SUSPENDED_SERVICES), *oidc_edge())
             while pending_operations(profile):
                 time.sleep(2)
         suspend_services()
@@ -884,11 +1014,12 @@ def run_storage(request,directory):
     if action=="restore-apply":
         args+=["-restore-id",request["restore"]]
     elif action=="restore-test":
-        scratch=Path("/var/lib/agentcapsule-restore-tests")/directory.name
-        scratch.mkdir(parents=True,exist_ok=True)
+        scratch=RESTORE_TESTS/directory.name
+        scratch.mkdir(mode=0o700,parents=True,exist_ok=True)
+        os.chown(scratch,*worker_ids())
         args+=["-scratch",scratch]
     if action=="restore-test":
-        result=output(*args,env=worker_env(profile))
+        result=worker_output(*args,profile=profile)
     else:
         result=worker_exclusive(args,profile,directory/"worker-state.json")
     return {"storage_result":json.loads(result.splitlines()[-1])}

@@ -244,7 +244,10 @@ To install them:
 5. **Configuration.** Write `/etc/agentcapsule/slim-bridge.json` from
    [config.example.json](../runtime/slimbridge/config.example.json):
    - `name` is `agentcapsule/platform/<host_id>`;
-   - `worker_uid` stays 0, since the worker runs as root;
+   - `worker_uid` is the worker's account (`id -u agentcapsule-worker`,
+     [ADR 024](adr/024-worker-privilege-separation.md)), which the installer
+     writes; 0 only for a laboratory's root worker. Each SLIM directory is
+     set-group-ID to the other side's group, so each socket is 0660 to it;
    - the file is owned by root and not writable by others.
 6. **Start.** Add the worker's `slim` section ([worker.md](worker.md)), with
    `bridge_uid` set to `id -u agentcapsule-slim`, and restart the worker. Then

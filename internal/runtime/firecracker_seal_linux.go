@@ -65,13 +65,14 @@ func (h *FirecrackerHost) SealAgent(ctx context.Context, id string, generation u
 			return receipt, err
 		}
 	}
-	// O_NOFOLLOW and fstat bind the proof to the registered regular inode.
-	fd, err := syscall.Open(a.Volume, syscall.O_RDWR|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	// O_NOFOLLOW and fstat bind the proof to the registered regular inode,
+	// which root opens: it is the VM's user's (ADR 024).
+	file, err := h.privileged().OpenVolume(ctx, a.Volume, true)
 	if err != nil {
 		return receipt, err
 	}
-	file := os.NewFile(uintptr(fd), a.Volume)
 	defer file.Close()
+	fd := int(file.Fd())
 	st, err := file.Stat()
 	if err != nil {
 		return receipt, err

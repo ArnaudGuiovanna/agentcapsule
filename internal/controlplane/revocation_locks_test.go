@@ -18,9 +18,11 @@ import (
 // the organization's row FOR UPDATE.
 
 // admissionTables are the tables whose rows an admission reads after its
-// organization's row.
+// organization's row. reserveLLM's access check (aliasGranted) reads the
+// alias's grants, and the agent's team assignments and their teams (FIX-2).
 var admissionTables = []string{"organizations", "principals", "memberships", "delegation_issuers", "delegation_trusts",
-	"delegation_keys", "delegation_revocations", "service_tokens", "llm_providers", "llm_model_aliases", "applications", "app_activations"}
+	"delegation_keys", "delegation_revocations", "service_tokens", "llm_providers", "llm_model_aliases", "applications", "app_activations",
+	"llm_alias_grants", "agent_assignments", "teams"}
 
 var admissionWrite = regexp.MustCompile(`(?is)\b(?:UPDATE\s+(?:ONLY\s+)?(?:` + strings.Join(admissionTables, "|") + `)\b(?:\s+(?:AS\s+)?[a-z_]+)?\s+SET|DELETE\s+FROM\s+(?:ONLY\s+)?(?:` +
 	strings.Join(admissionTables, "|") + `)\b|INSERT\s+INTO\s+delegation_revocations\b)`)
@@ -36,6 +38,12 @@ var reviewedWriters = map[string]string{
 	"DisableLLMProvider":        "authorizeTenantAdminMutation",
 	"DisableOrganization":       "SELECT ... FROM organizations ... FOR UPDATE",
 	"DisableServiceAccount":     "authorizeIdentityMutation: authorizeTenantAdminMutation",
+	"DisableTeam":               "authorizeTenantAdminMutation",
+	"ReassignAgentAssignment":   "authorizeTenantAdminMutation",
+	"ReplaceAgentAssignment":    "authorizeTenantAdminMutation",
+	"RevokeAgentAssignment":     "authorizeTenantAdminMutation",
+	"RevokeLLMAliasGrant":       "authorizeTenantAdminMutation",
+	"installRolloutTemplate":    "its caller: InstallRolloutSpec, organizations FOR UPDATE before the placement's lock",
 	"RevokeServiceToken":        "authorizeIdentityMutation: authorizeTenantAdminMutation",
 	"RotateLLMProviderSecret":   "authorizeTenantAdminMutation",
 	"SetInboundPolicy":          "authorizeTenantAdminMutation",
@@ -84,8 +92,11 @@ func TestEveryRevocationHoldsItsOrganizationsRow(t *testing.T) {
 			t.Errorf("%s no longer writes such a row: remove it from reviewedWriters", name)
 		}
 	}
-	// The replay of a revocation after a failover took no lock before P-07.
-	if !slices.ContainsFunc(nodes["replayEffect"][0].literals, regexp.MustCompile(`(?is)FROM organizations\b.*FOR UPDATE`).MatchString) {
-		t.Error("replayEffect does not take the organizations' rows FOR UPDATE")
+	// The replay of a revocation after a failover took no lock before P-07,
+	// a rollout's template install none before FIX-2.
+	for _, name := range []string{"replayEffect", "InstallRolloutSpec"} {
+		if !slices.ContainsFunc(nodes[name][0].literals, regexp.MustCompile(`(?is)FROM organizations\b.*FOR UPDATE`).MatchString) {
+			t.Error(name, "does not take the organizations' rows FOR UPDATE")
+		}
 	}
 }

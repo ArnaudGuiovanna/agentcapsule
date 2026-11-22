@@ -84,9 +84,8 @@ func within(t *testing.T, d time.Duration) context.Context {
 
 // degrade stops the standby. A write finds it unreachable and fails at its
 // deadline, as every write does within the delay; then the delay passes.
-// The deadline leaves a loaded host the time to commit the write and try
-// the standby at least once: a write that gives up before (100 ms did, under
-// load) records no failure, and the delay never starts.
+// A write that gives up before it tries the standby (100 ms did, under load)
+// also starts the delay (TestAWriteGivenUpDuringItsCommitStartsTheDegradedDelay).
 func degrade(t *testing.T, p *pair, k *clock, b Binding) {
 	t.Helper()
 	p.link.set(true)

@@ -12,7 +12,8 @@
  * scope only while the subject is LIVE: a request joins two LIVE agents only
  * (RELATE_GUARD). So a scan reads, an activation rechecks and a revocation's
  * completion waits for the store's scope only, and a new store catches up with
- * nothing outside it.
+ * nothing outside it. The retention of finished records takes a store out of
+ * a scope once it can no longer act on the subject (forget, FORGET_GUARD).
  * Atomic durable SQL/local commits and authentic incarnation identities remain
  * contracts. This component does not prove filesystem copy, encryption, key
  * erasure, rollback of the authoritative SQL catalogue, or effect-ledger restore.
@@ -27,6 +28,7 @@ module storeEnrollment {
   const RETIRE_GUARD: bool
   const SEAL_GUARD: bool
   const RELATE_GUARD: bool
+  const FORGET_GUARD: bool
 
   type Receipt = { store: str, subject: str, epoch: int }
   type State = {
@@ -120,6 +122,17 @@ module storeEnrollment {
     if (RELATE_GUARD) s.catalogue.get(p) == "LIVE" else true,
     s' = { ...s, reach: s.reach.set(a,s.reach.get(a).union(Set(p))) },
   }
+  // The retention of finished records deletes the last kept request that
+  // joins a store to a subject: the store leaves the subject's scope. It
+  // deletes it only once the store has no event of it left to act on (none
+  // is pending, its closure fenced it, no image a restore installs predates
+  // it: contracts here), so never while the store acts on the subject. The
+  // broken alternative forgets a relation in use.
+  action forget(a: str, p: str): bool = all {
+    s.reach.get(a).contains(p),
+    if (FORGET_GUARD) s.busy.get(a) != p else true,
+    s' = { ...s, reach: s.reach.set(a,s.reach.get(a).exclude(Set(p))) },
+  }
   action beginEffect(a: str, p: str): bool = all {
     s.phase.get(a) == "READY", s.physical.get(a), s.busy.get(a) == "",
     s.reach.get(a).contains(p), not(s.fences.get(a).contains(p)),
@@ -136,7 +149,7 @@ module storeEnrollment {
     nondet a = STORES.oneOf()
     nondet p = SUBJECTS.oneOf()
     any { reserve(a), restore(a), retire(a), skipRetirement(a), install(a), scan(a), activate(a),
-      seal(a), beginRevocation(p), fence(a,p), finishRevocation(p), relate(a,p), beginEffect(a,p), commitEffect(a) },
+      seal(a), beginRevocation(p), fence(a,p), finishRevocation(p), relate(a,p), forget(a,p), beginEffect(a,p), commitEffect(a) },
     nondet r = s.receipts.oneOf()
     acknowledge(r),
     loseResponses,
@@ -149,12 +162,13 @@ module storeEnrollment {
   val retiredBeforeInstall = STORES.forall(a => Set("ABSENT","INSTALLING","SEALED").contains(s.phase.get(a)) implies
     (not(s.physical.get(a)) and s.busy.get(a) == ""))
   val permanentSeals = s.seals.forall(a => s.phase.get(a) == "SEALED")
+  val noStaleEffect = not(s.staleEffect)
   val safety = all { currentAcks, noRestoredRevocation, retiredBeforeInstall, permanentSeals, not(s.staleEffect) }
 }
 
 module storeEnrollmentOk {
   import storeEnrollment(STORES=Set("a","b","c"), SUBJECTS=Set("agent/x","request/y"), INITIAL="a",
-    MAX_EPOCH=2, RECHECK=true, EPOCH_GUARD=true, RETIRE_GUARD=true, SEAL_GUARD=true, RELATE_GUARD=true).*
+    MAX_EPOCH=2, RECHECK=true, EPOCH_GUARD=true, RETIRE_GUARD=true, SEAL_GUARD=true, RELATE_GUARD=true, FORGET_GUARD=true).*
 
   // A new store is outside every completed revocation's scope: it activates
   // without its fence, and can never join that scope.
@@ -185,30 +199,45 @@ module storeEnrollmentOk {
     .expect(safety and s.busy.get("a") == "")
   run permanentSealCannotBeRestoredTest = init
     .then(reserve("b")).then(seal("b")).then(restore("b")).fail()
+  // The retention takes a store out of a scope once it no longer acts on the
+  // subject: the revocation then completes without its fence, and the store
+  // can no longer act on it. It never forgets a relation in use.
+  run retentionForgetsOnlyAnIdleRelationTest = init
+    .then(forget("a","request/y")).then(beginRevocation("request/y")).then(finishRevocation("request/y"))
+    .expect(safety and s.catalogue.get("request/y") == "DONE")
+    .then(beginEffect("a","request/y")).fail()
+  run retentionKeepsARelationInUseTest = init
+    .then(beginEffect("a","agent/x")).then(forget("a","agent/x")).fail()
 }
 module storeEnrollmentTiny {
   import storeEnrollment(STORES=Set("a","b"), SUBJECTS=Set("agent/x"), INITIAL="a",
-    MAX_EPOCH=2, RECHECK=true, EPOCH_GUARD=true, RETIRE_GUARD=true, SEAL_GUARD=true, RELATE_GUARD=true).*
+    MAX_EPOCH=2, RECHECK=true, EPOCH_GUARD=true, RETIRE_GUARD=true, SEAL_GUARD=true, RELATE_GUARD=true, FORGET_GUARD=true).*
 }
 module storeEnrollmentStaleScan {
   import storeEnrollment(STORES=Set("a","b"), SUBJECTS=Set("agent/x"), INITIAL="a",
-    MAX_EPOCH=2, RECHECK=false, EPOCH_GUARD=true, RETIRE_GUARD=true, SEAL_GUARD=true, RELATE_GUARD=true).*
+    MAX_EPOCH=2, RECHECK=false, EPOCH_GUARD=true, RETIRE_GUARD=true, SEAL_GUARD=true, RELATE_GUARD=true, FORGET_GUARD=true).*
 }
 module storeEnrollmentOldReceipt {
   import storeEnrollment(STORES=Set("a","b"), SUBJECTS=Set("agent/x"), INITIAL="a",
-    MAX_EPOCH=2, RECHECK=true, EPOCH_GUARD=false, RETIRE_GUARD=true, SEAL_GUARD=true, RELATE_GUARD=true).*
+    MAX_EPOCH=2, RECHECK=true, EPOCH_GUARD=false, RETIRE_GUARD=true, SEAL_GUARD=true, RELATE_GUARD=true, FORGET_GUARD=true).*
 }
 module storeEnrollmentNoRetirement {
   import storeEnrollment(STORES=Set("a","b"), SUBJECTS=Set("agent/x"), INITIAL="a",
-    MAX_EPOCH=2, RECHECK=true, EPOCH_GUARD=true, RETIRE_GUARD=false, SEAL_GUARD=true, RELATE_GUARD=true).*
+    MAX_EPOCH=2, RECHECK=true, EPOCH_GUARD=true, RETIRE_GUARD=false, SEAL_GUARD=true, RELATE_GUARD=true, FORGET_GUARD=true).*
 }
 // Broken: a store joins a revoked subject's scope, after its revocation
 // completed without it.
 module storeEnrollmentLateRelation {
   import storeEnrollment(STORES=Set("a","b"), SUBJECTS=Set("agent/x"), INITIAL="a",
-    MAX_EPOCH=2, RECHECK=true, EPOCH_GUARD=true, RETIRE_GUARD=true, SEAL_GUARD=true, RELATE_GUARD=false).*
+    MAX_EPOCH=2, RECHECK=true, EPOCH_GUARD=true, RETIRE_GUARD=true, SEAL_GUARD=true, RELATE_GUARD=false, FORGET_GUARD=true).*
+}
+// Broken: the retention forgets a relation the store is acting on; the
+// revocation completes without it, and its effect commits after.
+module storeEnrollmentEagerForget {
+  import storeEnrollment(STORES=Set("a","b"), SUBJECTS=Set("agent/x"), INITIAL="a",
+    MAX_EPOCH=2, RECHECK=true, EPOCH_GUARD=true, RETIRE_GUARD=true, SEAL_GUARD=true, RELATE_GUARD=true, FORGET_GUARD=false).*
 }
 module storeEnrollmentRevivedSeal {
   import storeEnrollment(STORES=Set("a","b"), SUBJECTS=Set("agent/x"), INITIAL="a",
-    MAX_EPOCH=2, RECHECK=true, EPOCH_GUARD=true, RETIRE_GUARD=true, SEAL_GUARD=false, RELATE_GUARD=true).*
+    MAX_EPOCH=2, RECHECK=true, EPOCH_GUARD=true, RETIRE_GUARD=true, SEAL_GUARD=false, RELATE_GUARD=true, FORGET_GUARD=true).*
 }

@@ -419,11 +419,26 @@ class Locking(Lab):
 
 
 class Fetching(Lab):
-    def fetch(self, store, archive_id, root):
+    def fetch(self, store, archive_id, root, *extra):
         argv = ["--archive-root", str(root), "--rclone", str(self.rclone), "--rclone-config", str(self.config),
-                "fetch", "--store", store, "--archive", archive_id]
+                "fetch", "--store", store, "--archive", archive_id, *extra]
         with contextlib.redirect_stdout(io.StringIO()):
             return SHIP.main(argv)
+
+    def test_fetch_as_another_account_needs_root(self):
+        # The worker's helper (ADR 024) writes the worker's archive root as
+        # the worker; nobody else may ask for another account. As root,
+        # --owner switches accounts: checked on a host.
+        if os.geteuid() == 0:
+            return
+        i = archive(self.root, 4000)
+        self.run_ship()
+        with self.assertRaises(SystemExit) as caught:
+            self.fetch("s3", i, self.dir / "restored-owner", "--owner", "nobody")
+        self.assertIn("--owner needs root", str(caught.exception))
+        self.assertFalse((self.dir / "restored-owner").exists())
+        with SHIP.as_account(None):
+            self.assertEqual(os.geteuid(), os.getuid())
 
     def test_fetch_from_each_store(self):
         i = archive(self.root, 4000)

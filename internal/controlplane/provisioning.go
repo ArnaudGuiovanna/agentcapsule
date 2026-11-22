@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -137,8 +138,15 @@ func (s *Store) VolumeEnrollment(ctx context.Context, id, host string) (Enrollme
 	return enrollment(ctx, tx, id, host)
 }
 
-func publishRevocation(ctx context.Context, tx pgx.Tx, subject string) error {
-	_, err := tx.Exec(ctx, "INSERT INTO revocation_catalogue(subject) VALUES($1) ON CONFLICT DO NOTHING", subject)
+// publishRevocation records subject's revocation intent, with the stores of
+// its scope when they never change (revocation_scopes.go): they outlive the
+// rows they come from, which the retention of finished records deletes.
+func publishRevocation(ctx context.Context, tx pgx.Tx, subject string, stores ...string) error {
+	var scope any // NULL: the scope follows the rows (agent/<id>)
+	if len(stores) > 0 {
+		scope = slices.Compact(slices.Sorted(slices.Values(stores)))
+	}
+	_, err := tx.Exec(ctx, "INSERT INTO revocation_catalogue(subject,stores) VALUES($1,$2) ON CONFLICT DO NOTHING", subject, scope)
 	return err
 }
 

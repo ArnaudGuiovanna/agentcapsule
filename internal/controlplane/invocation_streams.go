@@ -472,7 +472,8 @@ func (c *AgentCatalog) ReadOutputStream(ctx context.Context, p Principal, op str
 
 // snapshotTx is used only by read-only REPEATABLE READ projections. They see
 // authority and content at the same snapshot. Mutating callers keep all the
-// normal row locks until commit.
+// normal row locks until commit. ListAudit also uses it for an early check
+// of the caller's rights, which a check under the row locks follows.
 type snapshotTx struct{ pgx.Tx }
 
 func authorityLock(tx pgx.Tx, clause string) string {

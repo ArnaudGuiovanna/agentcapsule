@@ -59,9 +59,11 @@ func (c ServiceConfig) Inspection() (sandbox.Options, error) {
 // configured inspection UID and GID, checked against the values setresuid
 // may take as "unchanged" (sandbox.Reservable), the agents' range, the SLIM
 // bridge's user, and the host's accounts and groups: the program must own
-// nothing and belong to no group (6 is disk on Debian, with /dev/sd*).
+// nothing and belong to no group (6 is disk on Debian, with /dev/sd*). A
+// worker with a helper (ADR 024) delegates each run to it, which runs it as
+// that UID, checked the same way.
 func (c ServiceConfig) inspection(asRoot bool) (sandbox.Options, error) {
-	if !asRoot {
+	if !asRoot && c.Helper == nil {
 		return sandbox.Options{}, nil
 	}
 	if c.Registry == nil {
@@ -89,6 +91,9 @@ func (c ServiceConfig) inspection(asRoot bool) (sandbox.Options, error) {
 		} else if !errors.As(err, &group) {
 			return sandbox.Options{}, fmt.Errorf("look up GID %d: %w", uid, err)
 		}
+	}
+	if c.Helper != nil {
+		return sandbox.Options{Delegate: c.HelperClient()}, nil
 	}
 	return sandbox.Options{UID: uid, GID: uid}, nil
 }

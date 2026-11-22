@@ -66,7 +66,8 @@ type (
 
 // keyAnswer is the result of an operation that answers with a key: the
 // request writes its frame, then the key's bytes, once the operation has
-// ended, and clears the key. The operation must not write it itself: the
+// ended, and releases the key (keymem.Release: the key is in a locked page
+// outside the Go heap). The operation must not write it itself: the
 // client's next request may arrive before the operation ends, and would
 // then be taken for a broken protocol.
 type keyAnswer struct {

@@ -15,6 +15,7 @@ import (
 	"syscall"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/workerhelper"
 )
 
 // CorpusImage is a verified corpus.ext4 of the host's corpus cache, shared
@@ -58,9 +59,6 @@ type drive struct {
 	cache            string
 	rate             DriveRate
 	burst            int64
-	// share puts source into the jail: a hard link, or a copy for a harness
-	// image on another file system.
-	share func(src, dst string) error
 }
 
 // extraDrives lists a's drives after its data volume, in the order the guest
@@ -76,7 +74,7 @@ func extraDrives(a *HostAgent, limits DriveLimits) ([]drive, *capsuleprotocol.Gu
 			return nil, nil, err
 		}
 		out = append(out, drive{id: "harness", source: a.Harness.Path, name: "harness.ext4", readOnly: true, cache: "Unsafe",
-			rate: limits.Harness, burst: st.Size(), share: linkOrCopy})
+			rate: limits.Harness, burst: st.Size()})
 	}
 	if len(a.Corpora) == 0 && a.Build == nil {
 		return out, nil, nil
@@ -97,7 +95,7 @@ func extraDrives(a *HostAgent, limits DriveLimits) ([]drive, *capsuleprotocol.Gu
 		}
 		id := "corpus" + strconv.Itoa(i)
 		out = append(out, drive{id: id, source: c.Path, name: id + ".ext4", readOnly: true, cache: "Unsafe",
-			rate: limits.Corpus, burst: min(st.Size(), CorpusBurstBytes), share: linkShared})
+			rate: limits.Corpus, burst: min(st.Size(), CorpusBurstBytes)})
 		config.Corpora = append(config.Corpora, capsuleprotocol.CorpusMount{Index: next, Mount: c.Mount, UUID: c.UUID, Parent: c.Parent})
 		next++
 	}
@@ -124,7 +122,7 @@ func extraDrives(a *HostAgent, limits DriveLimits) ([]drive, *capsuleprotocol.Gu
 				cache = "Writeback"
 			}
 			d.into(capsuleprotocol.BuildDrive{Index: next, Bytes: st.Size()})
-			out = append(out, drive{id: d.id, source: d.path, name: d.name, readOnly: d.readOnly, cache: cache, rate: limits.Volume, share: linkShared})
+			out = append(out, drive{id: d.id, source: d.path, name: d.name, readOnly: d.readOnly, cache: cache, rate: limits.Volume})
 			next++
 		}
 		config.Build = build
@@ -135,14 +133,38 @@ func extraDrives(a *HostAgent, limits DriveLimits) ([]drive, *capsuleprotocol.Gu
 	return out, config, nil
 }
 
-// linkShared shares a file with a jail by hard link only: a corpus image or
-// a build drive is never copied (ErrCorpusFilesystem).
-func linkShared(src, dst string) error {
-	err := os.Link(src, dst)
-	if errors.Is(err, syscall.EXDEV) {
-		return ErrCorpusFilesystem
+// A corpus image or a build drive is shared with a jail by hard link only,
+// never copied (ErrCorpusFilesystem); a harness image is linked, or copied
+// from another file system (workerhelper.System.PrepareJail).
+
+// CheckLinkable tells whether each path, a regular file or a directory, can
+// be hard linked into the jails, as CheckLinkable below does, through root
+// when this process is not (ADR 024): the jails are then the helper's. For a
+// directory, a new empty file of this process in it is probed.
+func (h *FirecrackerHost) CheckLinkable(ctx context.Context, paths ...string) error {
+	if h.priv == nil {
+		return CheckLinkable(h.jailBase(), paths...)
 	}
-	return err
+	files := make([]string, 0, len(paths))
+	for _, p := range paths {
+		st, err := os.Lstat(p)
+		if err != nil {
+			return err
+		}
+		if st.IsDir() {
+			f, err := os.CreateTemp(p, ".link-probe-")
+			if err != nil {
+				return err
+			}
+			f.Close()
+			defer os.Remove(f.Name())
+			p = f.Name()
+		} else if !st.Mode().IsRegular() {
+			return errors.New("not a regular file")
+		}
+		files = append(files, p)
+	}
+	return h.privileged().CheckLinkable(ctx, files...)
 }
 
 // CheckLinkable tells whether each path can be hard linked into dir, as a
@@ -229,7 +251,7 @@ func validDigest(d string) bool {
 // write-protected regular file of whole 4 KiB blocks on the jails' file
 // system, whose superblock carries the recorded UUID. A wrong record fails
 // here, not at each boot against the agent's restart budget.
-func (h *FirecrackerHost) verifyCorpora(corpora []CorpusImage) error {
+func (h *FirecrackerHost) verifyCorpora(ctx context.Context, corpora []CorpusImage) error {
 	if err := checkCorpora(corpora); err != nil {
 		return err
 	}
@@ -252,7 +274,7 @@ func (h *FirecrackerHost) verifyCorpora(corpora []CorpusImage) error {
 		if err != nil {
 			return err
 		}
-		if err = CheckLinkable(filepath.Join(h.root, "jails"), c.Path); err != nil {
+		if err = h.CheckLinkable(ctx, c.Path); err != nil {
 			return err
 		}
 	}
@@ -279,7 +301,7 @@ func (h *FirecrackerHost) CorporaOf(ctx context.Context, id string) ([]CorpusIma
 // provisioned agent mounts from its next boot. Refused while a VM run
 // exists, for a fenced, sealed or removed agent, and for a builder.
 func (h *FirecrackerHost) ReplaceCorpora(ctx context.Context, id string, corpora []CorpusImage) error {
-	if err := h.verifyCorpora(corpora); err != nil {
+	if err := h.verifyCorpora(ctx, corpora); err != nil {
 		return err
 	}
 	return h.locked(ctx, func(r *hostRegistry) error {
@@ -323,7 +345,7 @@ func (h *FirecrackerHost) SetEnrichmentDrives(ctx context.Context, id string, ba
 		return errors.New("invalid enrichment base")
 	}
 	bases := []CorpusImage{base}
-	if err := h.verifyCorpora(bases); err != nil {
+	if err := h.verifyCorpora(ctx, bases); err != nil {
 		return err
 	}
 	return h.setWorkDrives(ctx, id, &BuildDrives{Enricher: true, Output: output}, bases)
@@ -356,7 +378,7 @@ func (h *FirecrackerHost) setWorkDrives(ctx context.Context, id string, b *Build
 				return errors.New("a build drive must be a regular file of whole 4 KiB blocks")
 			}
 		}
-		if err := CheckLinkable(filepath.Join(h.root, "jails"), paths...); err != nil {
+		if err := h.CheckLinkable(ctx, paths...); err != nil {
 			return err
 		}
 	}
@@ -372,18 +394,25 @@ func (h *FirecrackerHost) setWorkDrives(ctx context.Context, id string, b *Build
 		case bases == nil && len(a.Corpora) != 0 && b != nil:
 			return errors.New("the builder mounts no corpus")
 		}
+		// The drives of the agent's last build go back to this process before
+		// another build's, or none, are recorded: the output is read once the
+		// builder stopped (ADR 024).
+		if a.Build != nil {
+			if err := h.privileged().ReclaimDrives(ctx, a); err != nil {
+				return err
+			}
+		}
 		if b != nil {
+			drives := make([]workerhelper.Drive, 0, len(paths))
 			for _, p := range paths {
-				mode := os.FileMode(0o400)
+				mode := uint32(0o400)
 				if p == b.Output {
 					mode = 0o600
 				}
-				if err := os.Chown(p, int(a.UID), int(a.UID)); err != nil {
-					return err
-				}
-				if err := os.Chmod(p, mode); err != nil {
-					return err
-				}
+				drives = append(drives, workerhelper.Drive{Path: p, Mode: mode})
+			}
+			if err := h.privileged().GiveDrives(ctx, a, drives); err != nil {
+				return err
 			}
 			c := *b
 			b = &c

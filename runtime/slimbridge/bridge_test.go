@@ -11,6 +11,29 @@ import (
 	"testing"
 )
 
+// A worker of its own account (ADR 024) reaches the bridge's socket through
+// the group its directory gives it: 0660. The worker as the bridge's own
+// user (tests) keeps 0600.
+func TestTheBridgeSocketOpensToAWorkerOfItsOwnAccount(t *testing.T) {
+	dir, err := os.MkdirTemp("", "sb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	for uid, mode := range map[uint32]os.FileMode{uint32(os.Getuid()): 0o600, uint32(os.Getuid()) + 1: 0o660} {
+		path := filepath.Join(dir, "bridge.sock")
+		l, err := listen(path, uid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		st, err := os.Stat(path)
+		l.Close()
+		if err != nil || st.Mode().Perm() != mode {
+			t.Fatal(uid, st.Mode(), err)
+		}
+	}
+}
+
 // The worker (internal/slimlink, in the platform's module) writes the same
 // contract and owns these examples (internal/slimlink/testdata); both sides
 // decode them strictly and write them back unchanged.

@@ -483,16 +483,20 @@ func startAuthorityService(t *testing.T, dir string) *authorityService {
 	if err = os.WriteFile(a.config, []byte(config), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	a.start(t)
 	t.Cleanup(func() {
 		if a.process != nil {
 			_ = a.process.Process.Kill()
 			<-a.done
 		}
 	})
+	a.start(t)
 	return a
 }
 
+// start starts the service and returns once its API socket accepts a
+// connection: the service listens on both sockets once both authorities are
+// open, the worker's first. It fails if the service exits first, or does not
+// listen within authorityStart.
 func (a *authorityService) start(t *testing.T) {
 	t.Helper()
 	a.process = exec.Command(filepath.Join(a.dir, "agentcapsule-authority"), "serve", "-config", a.config)
@@ -501,7 +505,27 @@ func (a *authorityService) start(t *testing.T) {
 	}
 	a.done = make(chan error, 1)
 	go func(p *exec.Cmd, done chan error) { done <- p.Wait() }(a.process, a.done)
+	deadline := time.Now().Add(authorityStart)
+	for {
+		conn, err := net.DialTimeout("unix", a.socket, time.Second)
+		if err == nil {
+			conn.Close()
+			return
+		}
+		select {
+		case err := <-a.done:
+			a.process = nil
+			t.Fatal("the authority service exited before it listened", err)
+		case <-time.After(20 * time.Millisecond):
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the authority service did not listen within", authorityStart, err)
+		}
+	}
 }
+
+// authorityStart bounds the wait for a starting service, on a loaded host.
+const authorityStart = 30 * time.Second
 
 // stop ends the service with SIGTERM, as systemd stops it.
 func (a *authorityService) stop(t *testing.T) {
