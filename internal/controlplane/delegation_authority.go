@@ -160,7 +160,9 @@ func (s *Store) ChangeDelegationAuthority(ctx context.Context, in DelegationChan
 	}
 	out = DelegationChangeResult{TenantID: in.TenantID, Issuer: in.Issuer, Audience: in.Audience, TokenID: in.TokenID, KeyID: in.KeyID}
 	state, changed, err := identity.ApplyTrustChange(ctx, tx, in, fingerprint)
-	out.Status, out.Fingerprint, out.MinimumIAT, out.Generation, out.KeyExpiresAt = state.Status, state.Fingerprint, state.MinimumIAT, state.Generation, state.KeyExpiresAt
+	out.Status, out.Fingerprint = state.Status, state.Fingerprint
+	out.MinimumIAT, out.Generation = state.MinimumIAT, state.Generation
+	out.KeyExpiresAt = state.KeyExpiresAt
 	if err != nil {
 		return out, err
 	}

@@ -96,7 +96,7 @@ func TestTenantInvocationNeedsAnAssignmentNotARole(t *testing.T) {
 		t.Fatal("read_metadata allowed an invocation", err)
 	}
 	// Widening a right is a revocation followed by a new assignment.
-	if _, err := meta.revokeBy(t, il); err != nil {
+	if _, err := il.owner.revoke(t, il, meta.ID); err != nil {
 		t.Fatal(err)
 	}
 	// A scope without the right, and the right without the scope, both fail.
@@ -146,7 +146,7 @@ func TestTenantResultBelongsToTheRequesterAndCurrentRights(t *testing.T) {
 		t.Fatal("an administrator read someone else's result", err)
 	}
 	// Granting the requester read_content opens it; revoking it closes it again.
-	if _, err = asgAlice.revokeBy(t, il); err != nil {
+	if _, err = il.owner.revoke(t, il, asgAlice.ID); err != nil {
 		t.Fatal(err)
 	}
 	grant := assign(t, il.tenantLab, il.owner, il.agent, CreateAssignmentInput{PrincipalID: alice.PrincipalID, Permissions: both}, "grant")
@@ -165,11 +165,6 @@ func TestTenantResultBelongsToTheRequesterAndCurrentRights(t *testing.T) {
 func (p Principal) revoke(t *testing.T, il *invocationLab, assignment string) (APIReceipt, error) {
 	t.Helper()
 	return il.a.RevokeAgentAssignment(t.Context(), p, il.agent, assignment, "revoke-"+assignment)
-}
-
-func (s AgentAssignment) revokeBy(t *testing.T, il *invocationLab) (APIReceipt, error) {
-	t.Helper()
-	return il.owner.revoke(t, il, s.ID)
 }
 
 func TestTenantOffboardingStopsAccessButNotAcceptedWork(t *testing.T) {
