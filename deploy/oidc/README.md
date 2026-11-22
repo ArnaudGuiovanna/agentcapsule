@@ -2,6 +2,8 @@
 
 The bundled realm uses authorization code with S256 PKCE. The MonApp callback must match the registered URI exactly. Its public OAuth client has no signing key. Store the separate PaaS provisioning credential in the application's backend.
 
+The realm is one issuer for the whole installation: create each client for one organization, and approve it for that organization (`agentcapsule organization approve-client`) before its owner registers the application. A client serves one organization only. [Applications](../../docs/api/applications.md#register-the-environment)
+
 1. Provide PostgreSQL with a dedicated database named `keycloak` and a login owning that database. Include it in the installation's backup and restoration checks.
 2. Install Podman and load the pinned Keycloak image from the distribution or pull the digest printed in the unit. Place both units, `agentcapsule-oidc.service` and `agentcapsule-oidc-edge.service`, in `/etc/systemd/system` and the realm in `/etc/agentcapsule/oidc/realm.json`.
 3. Install a TLS certificate and key for the identity hostname in `/etc/agentcapsule/oidc-tls`, owned by root, the key mode 0600: the edge receives them as systemd credentials. Create a root-only `/etc/agentcapsule/oidc.env` from the example: Keycloak listens on `127.0.0.1:9445` only, behind the edge. Set both passwords to independently generated secrets, the public HTTPS URL and the application's exact callback URL. Create a root-only `/etc/agentcapsule/oidc-edge.env` with `OIDC_LISTEN=0.0.0.0:<public port>` and `OIDC_NAME=<identity hostname>`.

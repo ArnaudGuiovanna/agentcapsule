@@ -11,6 +11,7 @@ import re
 import secrets
 import shutil
 import socket
+import stat
 import subprocess
 import tempfile
 import time
@@ -388,6 +389,9 @@ def authority():
     key="/var/lib/agentcapsule-key-authority"
     restore="/var/lib/agentcapsule-restore-authority"
     run("install","-d","-o",user,"-g",user,"-m","0700",key,restore)
+    # The runtime root's parent: the authority's account may traverse it,
+    # never list it (searchable_parent).
+    run("install","-d","-m","0711","/var/lib/agentcapsule")
     admin=ACTIVE/"agentcapsule-admin"
     keyid=json.loads(run_user(user,admin,"init-key-authority","-root",key,capture=True))["authority_id"]
     restid=json.loads(run_user(user,admin,"init-restore-authority","-root",restore,"-key-authority-root",key,
@@ -397,6 +401,23 @@ def authority():
                 api_socket="/run/agentcapsule-authority/api.sock",metrics_listen="127.0.0.1:9466")
     write_file(path,json.dumps(config).encode(),0o644)
     return config
+
+
+def searchable_parent(root):
+    # init-restore-authority runs as agentcapsule-authority and resolves the
+    # worker's runtime root, which needs search permission on its parent.
+    # The worker's unit keeps that parent 0711 (StateDirectoryMode); on a host
+    # a v0.1.0 unit set up it is still 0700 until the worker restarts. Add
+    # o+x, nothing else, to a real directory that lacks it.
+    parent=Path(root).parent
+    try:
+        st=os.lstat(parent)
+    except FileNotFoundError:
+        return False
+    if not stat.S_ISDIR(st.st_mode) or st.st_mode & stat.S_IXOTH:
+        return False
+    os.chmod(parent,stat.S_IMODE(st.st_mode)|stat.S_IXOTH)
+    return True
 
 
 def environment_quote(s):
@@ -437,6 +458,7 @@ def configure(p,version,initial):
             database_roles()
         run(admin,"migrate",env=env)
         service_environment(p)
+        searchable_parent(read(ETC/"worker.json")["root"])
         upgrade=json.loads(run_user("agentcapsule-authority",admin,"init-restore-authority",
                            "-root",cfg["restore_authority"]["root"],"-data-root",read(ETC/"worker.json")["root"],
                            "-key-authority-root",cfg["key_authority"]["root"],"-key-authority-id",cfg["key_authority"]["identity"],capture=True))

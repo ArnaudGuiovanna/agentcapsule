@@ -47,14 +47,29 @@ func stringify(v any) string {
 func appTestConfig(name string) controlplane.ApplicationConfig {
 	return controlplane.ApplicationConfig{Name: name, Issuer: "https://login.example.test/" + name, Audience: "agentcapsule-api", ClientID: "monapp", RedirectURIs: []string{"https://monapp.example.test/callback"}, VerificationKeys: []controlplane.OIDCKey{testKey()}}
 }
+
+// approveAppClient approves, as the platform operator, the client of c for
+// the organization org (finding S-10).
+func approveAppClient(t *testing.T, f *rbacFixture, org string, c controlplane.ApplicationConfig) controlplane.ApplicationClient {
+	t.Helper()
+	var approval controlplane.ApplicationClient
+	f.must(t, "platform", "POST", "/v1/organizations/"+org+"/application-clients",
+		stringify(controlplane.ApplicationClientInput{Issuer: c.Issuer, ClientID: c.ClientID}), 201, &approval)
+	return approval
+}
 func appConfigFixture(t *testing.T, f *rbacFixture) map[string]string {
 	name := f.next()
-	return map[string]string{"app_config": stringify(appTestConfig(name)), "other_app_config": stringify(appTestConfig(name + "-other"))}
+	config, other := appTestConfig(name), appTestConfig(name+"-other")
+	approveAppClient(t, f, f.ids["org"], config)
+	approveAppClient(t, f, f.ids["org"], other)
+	return map[string]string{"app_config": stringify(config), "other_app_config": stringify(other)}
 }
 func appFixture(t *testing.T, f *rbacFixture) map[string]string {
 	var app controlplane.IssuedApplication
-	f.must(t, "owner", "POST", "/v1/applications", stringify(appTestConfig(f.next())), 201, &app)
-	return map[string]string{"app": app.ID, "issuer": app.Issuer, "backend": app.ProvisioningToken, "team": rbacFreshTeam(t, f)["fresh"]}
+	config := appTestConfig(f.next())
+	approval := approveAppClient(t, f, f.ids["org"], config)
+	f.must(t, "owner", "POST", "/v1/applications", stringify(config), 201, &app)
+	return map[string]string{"app": app.ID, "issuer": app.Issuer, "backend": app.ProvisioningToken, "team": rbacFreshTeam(t, f)["fresh"], "approval": approval.ID}
 }
 func policyFixture(t *testing.T, f *rbacFixture) map[string]string {
 	v := appFixture(t, f)
@@ -106,9 +121,14 @@ const appPolicyBody = `{"application_id":"{app}","allowed_teams":["{team}"],"on_
 const appInviteBody = `{"policy_id":"{policy}","team_id":"{team}","email":"alice@example.test","expires_at":"{expires}"}`
 
 var applicationRoutesMatrix = []rbacRoute{
+	{Method: "GET", Path: "/v1/organizations/{org}/application-clients", Success: 200, Want: rbacPlatformOnly},
+	{Method: "POST", Path: "/v1/organizations/{org}/application-clients", Success: 201, Want: rbacPlatformOnly, body: `{"issuer":"https://login.example.test/{name}","client_id":"monapp"}`, fresh: rbacName},
+	{Method: "POST", Path: "/v1/organizations/{org}/application-clients/{approval}/withdraw", Success: 200, Want: rbacPlatformOnly, body: "{}", fresh: appFixture, revokes: "principal",
+		Note: "disables the application registered for the client"},
 	{Method: "POST", Path: "/v1/pools/{pool}/expand", Success: 200, Want: "S S S 403 403 403 403 403 403 404 401 401 403", body: `{"count":1}`},
 	{Method: "GET", Path: "/v1/applications", Success: 200, Want: "S S 403 403 403 403 403 403 403 S 401 401 403"},
-	{Method: "POST", Path: "/v1/applications", Success: 201, Want: rbacCreateAdmin, body: "{app_config}", fresh: appConfigFixture},
+	{Method: "POST", Path: "/v1/applications", Success: 201, Want: "S S 403 403 403 403 403 403 403 403 401 401 403", body: "{app_config}", fresh: appConfigFixture,
+		Note: "the platform operator approved the client for the first organization only"},
 	{Method: "GET", Path: "/v1/applications/{app}", Success: 200, Want: rbacIdentity, fresh: appFixture},
 	{Method: "POST", Path: "/v1/applications/{app}/rotate", Success: 200, Want: rbacIdentity, body: "{}", fresh: appFixture, revokes: "service_token"},
 	{Method: "POST", Path: "/v1/applications/{app}/revoke", Success: 200, Want: rbacIdentity, body: "{}", fresh: appFixture, revokes: "service_token principal"},
@@ -261,6 +281,9 @@ func TestMonAppHTTPReference(t *testing.T) {
 			}
 		}
 	}
+	// The platform operator approves the client for Acme before its owner
+	// registers it (docs/api/applications.md).
+	approveAppClient(t, f, f.ids["org"], cfg)
 	var members []map[string]any
 	for _, name := range []string{"alice", "bob"} {
 		tokenFile := filepath.Join(dir, name+".jwt")

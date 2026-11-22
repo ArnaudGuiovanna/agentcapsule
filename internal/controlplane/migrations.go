@@ -257,6 +257,15 @@ var servicePrivilegesActivityRetentionSQL string
 //go:embed migrations/0074_refusal_attempts.sql
 var refusalAttemptsSQL string
 
+//go:embed migrations/0075_application_clients.sql
+var applicationClientsSQL string
+
+//go:embed migrations/0076_platform_session_chains.sql
+var platformSessionChainsSQL string
+
+//go:embed migrations/0077_append_only_audit.sql
+var appendOnlyAuditSQL string
+
 // Append migrations; never edit an installed migration. The original schema
 // also upgrades pre-ledger installations, preserving its historical backfills.
 // Later calls validate its checksum without replaying DDL or those backfills.
@@ -335,6 +344,9 @@ var controlPlaneMigrations = []schemaMigration{
 	{version: 72, name: "finished-record-retention", sql: finishedRecordRetentionSQL},
 	{version: 73, name: "service-privileges-activity-retention", sql: servicePrivilegesActivityRetentionSQL},
 	{version: 74, name: "refusal-attempts", sql: refusalAttemptsSQL},
+	{version: 75, name: "application-clients", sql: applicationClientsSQL},
+	{version: 76, name: "platform-session-chains", sql: platformSessionChainsSQL},
+	{version: 77, name: "append-only-audit", sql: appendOnlyAuditSQL},
 }
 
 func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error {
