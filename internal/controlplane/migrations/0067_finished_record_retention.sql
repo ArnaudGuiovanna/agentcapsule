@@ -1,12 +1,12 @@
 -- The retention of finished records (P-04, docs/worker.md). The worker
--- deletes, past terminal_retention, the finished invocations, wakes, sleeps
+-- deletes, past finished_retention, the finished invocations, wakes, sleeps
 -- and requests between agents of its host that nothing needs any more, with
 -- what hangs on them: their mailbox entries, idempotency keys, inbox items,
 -- closures, mandates and content tombstones. These indexes find them oldest
 -- first, and serve the checks of the foreign keys that point at the rows it
 -- deletes, so that no deletion scans a table. Each CREATE INDEX takes its
 -- table's SHARE lock while it builds; the migration runs with the API and the
--- workers stopped (docs/install.md).
+-- workers stopped, offline (docs/cli-host.md).
 CREATE INDEX platform_operations_finished ON platform_operations(completed_at)
   WHERE status IN ('SUCCEEDED','FAILED','CANCELED');
 CREATE INDEX agent_requests_finished ON agent_requests(expires_at)

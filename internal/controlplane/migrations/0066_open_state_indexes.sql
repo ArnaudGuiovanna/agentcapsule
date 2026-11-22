@@ -4,7 +4,7 @@
 -- alone, so that the queries no longer scan the whole history of the tables
 -- under the worker_hosts row lock. Each CREATE INDEX takes its table's SHARE
 -- lock, which blocks writes to it (not reads) while it builds; the migration
--- runs with the API and the workers stopped (docs/install.md).
+-- runs offline, the API and the workers stopped (docs/cli-host.md).
 CREATE INDEX agent_placements_host ON agent_placements(host_id, state);
 CREATE INDEX platform_operations_open ON platform_operations(agent_id, seq)
   WHERE status IN ('PENDING','RUNNING');
