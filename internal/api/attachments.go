@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol/wire"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 )
 
@@ -27,7 +27,7 @@ const attachmentReadTimeout = 2 * time.Minute
 //
 // The principal is authenticated, and its rights and its organization's room
 // checked, before the body is read (v0.1.0 audit, S-09). The body is held in
-// memory (at most capsuleprotocol.MaxAttachmentBytes), by a bounded number of
+// memory (at most wire.MaxAttachmentBytes), by a bounded number of
 // uploads at once (upload_slots.go), and encrypted before it reaches
 // PostgreSQL.
 func (s *Server) attachments(w http.ResponseWriter, r *http.Request) {
@@ -43,7 +43,7 @@ func (s *Server) attachments(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	media, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-	if err != nil || !capsuleprotocol.ValidAttachmentType(media) {
+	if err != nil || !wire.ValidAttachmentType(media) {
 		problem(w, 415, "media_type_required")
 		return
 	}
@@ -64,7 +64,7 @@ func (s *Server) attachments(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if r.ContentLength > capsuleprotocol.MaxAttachmentBytes {
+	if r.ContentLength > wire.MaxAttachmentBytes {
 		failure(w, controlplane.ErrTooLarge)
 		return
 	}
@@ -88,7 +88,7 @@ func (s *Server) attachments(w http.ResponseWriter, r *http.Request) {
 	rc := http.NewResponseController(w)
 	_ = rc.SetReadDeadline(time.Now().Add(attachmentReadTimeout))
 	_ = rc.SetWriteDeadline(time.Now().Add(attachmentReadTimeout + 15*time.Second))
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, capsuleprotocol.MaxAttachmentBytes))
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, wire.MaxAttachmentBytes))
 	defer clear(body)
 	if err != nil {
 		var large *http.MaxBytesError

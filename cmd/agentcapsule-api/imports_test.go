@@ -18,11 +18,11 @@ import (
 var guestPrograms = []string{"cmd/capsule-init", "cmd/capsule-echo", "cmd/capsule-adapter", "examples/a2a-agent",
 	"internal/verification/guest", "internal/verification/controlguest"}
 
-// guestShared are linked by the guests and by the host on purpose: the
-// protocol between them, the capability names, the guest's event store,
-// whose envelopes and outcome fingerprints the host checks, and the published
-// corpus metadata, which guests read and the worker validates.
-var guestShared = []string{"internal/capsuleprotocol", "internal/capability", "internal/harnessstore", "internal/corpusmeta"}
+// The host and guest share wire values, event envelopes, capability names and
+// corpus metadata. The worker also drives the guest through its protocol.
+var guestShared = []string{"internal/capsuleprotocol/wire", "internal/harnessstore/envelope", "internal/capability", "internal/corpusmeta"}
+
+var workerGuestPackages = []string{"internal/capsuleprotocol", "internal/harnessstore"}
 
 // hostRuntime starts and stops VMs, and opens, mounts or archives their
 // volumes: the worker's code, which runs as root.
@@ -60,11 +60,11 @@ func goModule(t *testing.T) string {
 
 // guestCode is what the guest programs link, but the host may not: the
 // programs themselves, the guest's init library and the harnesses.
-func guestCode(t *testing.T, module string) []string {
+func guestCode(t *testing.T, module string, shared []string) []string {
 	t.Helper()
 	var code []string
 	for _, p := range deps(t, module, guestPrograms...) {
-		if !slices.Contains(guestShared, p) {
+		if !slices.Contains(shared, p) {
 			code = append(code, p)
 		}
 	}
@@ -85,22 +85,6 @@ var hostImporter = []string{"internal/ociregistry", "internal/harnesspkg", "inte
 
 // Only the authoring CLI and the builder guest may read source documents.
 var corpusSourceReaders = []string{"internal/corpuspkg/source", "internal/corpusbuilder"}
-
-// apiStoreRoutes are the only packages through which the API may still link
-// the guest's event store (internal/harnessstore) and the SQLite driver,
-// which makes it need cgo. No other route may appear:
-//   - internal/capsuleprotocol, the protocol shared with the guest, uses
-//     harnessstore's Event and Receipt in its wire types and holds its
-//     server; splitting them changes the guest's code;
-//   - internal/controlplane names harnessstore.Event and Receipt in its
-//     delivery interfaces, and computes outcome IDs with it: moving those to
-//     a package without SQLite comes with the protocol's split;
-//   - internal/restoreauthority keeps the restore authority's catalogue in
-//     SQLite; the API links it through the authority service's client.
-var apiStoreRoutes = map[string][]string{
-	"internal/harnessstore":       {"internal/capsuleprotocol", "internal/controlplane"},
-	"github.com/mattn/go-sqlite3": {"internal/harnessstore", "internal/restoreauthority"},
-}
 
 // importers maps each package the packages link, outside the standard
 // library, to the linked packages that import it, all relative to the
@@ -132,10 +116,10 @@ func importers(t *testing.T, module string, packages ...string) map[string][]str
 // that runs in a guest. No route can then hand a command to a VM or to the
 // host, nor run a harness, whatever it is sent. REG-01: nor does it link the
 // importer, which downloads and inspects images with e2fsprogs; and it links
-// the guest's event store and SQLite only through apiStoreRoutes.
+// SQLite only through the restore authority's catalogue.
 func TestAPILinksNoRuntimeWorkerOrGuestCode(t *testing.T) {
 	module := goModule(t)
-	denied := slices.Concat(guestCode(t, module), hostRuntime, hostImporter, corpusSourceReaders)
+	denied := slices.Concat(guestCode(t, module, guestShared), hostRuntime, hostImporter, corpusSourceReaders)
 	deps(t, module, slices.Concat(hostRuntime, hostImporter, corpusSourceReaders)...) // fails when one is renamed or gone
 	linked := deps(t, module, "cmd/agentcapsule-api")
 	if !slices.Contains(linked, "internal/api") {
@@ -147,18 +131,8 @@ func TestAPILinksNoRuntimeWorkerOrGuestCode(t *testing.T) {
 		}
 	}
 	by := importers(t, module, "cmd/agentcapsule-api")
-	for store, allowed := range apiStoreRoutes {
-		for _, importer := range by[store] {
-			if !slices.Contains(allowed, importer) {
-				t.Errorf("agentcapsule-api links %s through %s, beyond apiStoreRoutes", store, importer)
-			}
-		}
-		// A route cut is removed from the list, so that it cannot come back.
-		for _, importer := range allowed {
-			if !slices.Contains(by[store], importer) {
-				t.Errorf("apiStoreRoutes lets %s link %s, which it no longer does: remove it", importer, store)
-			}
-		}
+	if from := by["github.com/mattn/go-sqlite3"]; !slices.Equal(from, []string{"internal/restoreauthority"}) {
+		t.Errorf("the API must link SQLite only through the restore authority; imports from %v", from)
 	}
 }
 
@@ -167,7 +141,7 @@ func TestAPILinksNoRuntimeWorkerOrGuestCode(t *testing.T) {
 // VM.
 func TestWorkerLinksNoHarnessCode(t *testing.T) {
 	module := goModule(t)
-	denied := append(guestCode(t, module), corpusSourceReaders...)
+	denied := append(guestCode(t, module, slices.Concat(guestShared, workerGuestPackages)), corpusSourceReaders...)
 	linked := deps(t, module, "cmd/agentcapsule-worker")
 	if !slices.Contains(linked, "internal/worker") || !slices.Contains(linked, "internal/capsuleprotocol") {
 		t.Fatal("go list does not see the worker's own packages", linked)
