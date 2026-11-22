@@ -392,7 +392,6 @@ func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error
 	if err != nil {
 		return err
 	}
-	granted := false
 	for _, m := range migrations[applied:] {
 		if _, err = tx.Exec(ctx, m.sql); err != nil {
 			return fmt.Errorf("apply schema migration %d: %w", m.version, err)
@@ -402,17 +401,15 @@ func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error
             VALUES($1,$2,$3)`, m.version, m.name, checksum[:]); err != nil {
 			return err
 		}
-		granted = granted || m.name == "service-roles"
 	}
-	// The service roles' privileges (migration service-roles), again, unless
-	// that migration just stated them: a role created since the last run
-	// gets them now, and a table a later migration created gets the default
-	// ones.
-	grants := false
-	if !granted {
-		if err = tx.QueryRow(ctx, `SELECT to_regprocedure('agentcapsule_service_grants()') IS NOT NULL`).Scan(&grants); err != nil {
-			return err
-		}
+	// The service roles' privileges (migration service-roles), again, at the
+	// end of every run once the function exists: a role created since the
+	// last run gets them now, and a relation a migration of this run created
+	// gets the policy's, also when this run applied service-roles itself (a
+	// fresh install), whose own grants came before that relation existed.
+	var grants bool
+	if err = tx.QueryRow(ctx, `SELECT to_regprocedure('agentcapsule_service_grants()') IS NOT NULL`).Scan(&grants); err != nil {
+		return err
 	}
 	if grants {
 		if _, err = tx.Exec(ctx, `SELECT agentcapsule_service_grants()`); err != nil {
