@@ -387,6 +387,7 @@ def checks(spec=SPEC):
         tlc("barrier_capacity.qnt", "barrierCapacityOk", "progress", temporal=True),
         tlc("barrier_capacity.qnt", "barrierCapacityNoPriority", "progress", VIOLATION, temporal=True),
         tlc("barrier_capacity.qnt", "barrierCapacityNoReclaim", "progress", VIOLATION, temporal=True),
+        tlc("barrier_capacity.qnt", "barrierCapacityNoReservation", "progress", VIOLATION, temporal=True),
         tlc("credential_renewal.qnt", "credentialRenewalOk", "safety"),
         tlc("credential_renewal.qnt", "credentialRenewalOk", "progress", temporal=True),
         apalache("credential_renewal.qnt", "credentialRenewalEarlyCompletion", "wakeSurvives", 9, VIOLATION),
