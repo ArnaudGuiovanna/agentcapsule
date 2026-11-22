@@ -218,9 +218,10 @@ func (w *Placements) fence(ctx context.Context, target, subject string) (result 
 //
 // Each VM stopped is stopped under its own exclusive turn (WithEviction),
 // once the calls and the delivery already admitted on it are done; one that
-// started computing meanwhile is kept, and target tries again later. Other
-// boots run beside this one: host.lock counts the slots when target records
-// its intent, and a slot another boot took first is ErrCapacity, retried.
+// started computing meanwhile is kept, and target tries again later; the
+// slot a stop frees is reserved for target. Other boots run beside this one:
+// host.lock counts the slots when target records its intent, and a free slot
+// another boot took first is ErrCapacity, retried.
 func (w *Placements) bootForWork(ctx context.Context, target string) (_ runtime.VMRun, err error) {
 	ctx, span := wakeSpan.Start(ctx)
 	span.ID("agentcapsule.agent", target)
@@ -307,8 +308,7 @@ func (w *Placements) evict(ctx context.Context, victim string, forWork bool) err
 // computation is interrupted and must be replayable; SQLite transactions/WAL
 // and stable business keys provide that contract here, and the resume job
 // boots the stopped agent again once capacity returns if it held work in
-// progress. Another boot may take the freed slot first: target's boot then
-// fails with ErrCapacity and its job tries again.
+// progress. The freed slot is reserved for target's boot (evict).
 func (w *Placements) makeBarrierCapacity(ctx context.Context, target string) error {
 	runs, err := w.Reconcile(ctx)
 	if err != nil {
