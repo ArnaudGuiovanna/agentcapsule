@@ -5,5 +5,9 @@
 # api.sock 0660 (the API's account, a member of that group).
 d /run/agentcapsule-authority 2750 agentcapsule-authority agentcapsule-authority-clients -
 # init-restore-authority resolves the worker's data path during upgrades as
-# the authority user. Only allow it to traverse the parent, not the host root.
-d /var/lib/agentcapsule 0710 root agentcapsule-authority -
+# the authority user. The parent of the runtime root is root's and 0711, as
+# the installer creates it and an update's searchable_parent leaves it: every
+# account may traverse it, none but root may list it, and the runtime root
+# under it stays 0700 (the worker's StateDirectory=). Its only entry is that
+# root, whose name the configuration states anyway.
+d /var/lib/agentcapsule 0711 root root -

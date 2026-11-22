@@ -448,7 +448,7 @@ Files of [deploy/systemd](../deploy/systemd), the same on both hosts:
 | --- | --- | --- |
 | `agentcapsule-authority.service` | `/etc/systemd/system/` | The service, as `agentcapsule-authority`, `Restart=always` after 1 second, no core dump, no privilege; it writes only the authority directories and `/run/agentcapsule-authority` |
 | `agentcapsule-authority.sysusers` | `/usr/lib/sysusers.d/agentcapsule-authority.conf` | The account `agentcapsule-authority`, and the group `agentcapsule-authority-clients` for the API's socket |
-| `agentcapsule-authority.tmpfiles` | `/usr/lib/tmpfiles.d/agentcapsule-authority.conf` | `/run/agentcapsule-authority`, mode 2750: the sockets' directory |
+| `agentcapsule-authority.tmpfiles` | `/usr/lib/tmpfiles.d/agentcapsule-authority.conf` | `/run/agentcapsule-authority`, mode 2750: the sockets' directory; `/var/lib/agentcapsule`, root's, mode 0711: the authority's account traverses it to resolve the worker's runtime root |
 | `agentcapsule-authority-client.conf` | `/etc/systemd/system/agentcapsule-worker.service.d/authority.conf` and `/etc/systemd/system/agentcapsule-api.service.d/authority.conf` | The worker's and the API's units start after the service (`Wants=`, `After=`), and do not restart with it |
 
 **A new install**, on the primary, as root:

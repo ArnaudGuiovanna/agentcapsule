@@ -510,7 +510,9 @@ New files in `deploy/systemd`:
 - `agentcapsule-authority.sysusers`: the user `agentcapsule-authority` and the
   group `agentcapsule-authority-clients`.
 - `agentcapsule-authority.tmpfiles`: `d /run/agentcapsule-authority 2750
-  agentcapsule-authority agentcapsule-authority-clients`.
+  agentcapsule-authority agentcapsule-authority-clients`, and
+  `d /var/lib/agentcapsule 0711 root root` (the runtime root's parent, which
+  `init-restore-authority` traverses; FIX-2 below).
 
 The worker's and the API's units get `Wants=` and `After=` on
 `agentcapsule-authority.service`, not `Requires=`: a restart of the service
@@ -1657,3 +1659,17 @@ The models keep their meaning: a store's `reach` is what it can act on.
 `spec/store_enrollment.qnt` gains `forget`, the retention's deletion of the
 last kept request that joins a store to a subject, allowed only while the
 store is not acting on it (`FORGET_GUARD`; broken: `storeEnrollmentEagerForget`).
+
+### The runtime root's parent (FIX-2)
+
+`init-restore-authority` runs as `agentcapsule-authority` and resolves the
+worker's runtime root, `/var/lib/agentcapsule/host`, which needs search
+permission on `/var/lib/agentcapsule`. SEC-1B made the installer create it
+0711 and the update add o+x (`searchable_parent`), but the authority's
+tmpfiles line still set it 0710 `root:agentcapsule-authority` at every
+boot. One design now holds everywhere: root's, 0711. Every account may
+traverse it and none but root may list it; its only entry is the runtime
+root, which stays 0700 and root's. A group-only mode would also let the
+authority through, but it would make the parent depend on the authority's
+group, and the update's check (o+x) would undo it at each update while each
+boot restored it.

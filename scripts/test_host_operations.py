@@ -603,6 +603,32 @@ class HostOperationTests(unittest.TestCase):
             self.api["configure"]({"database_url_file":None},self.version,False)
         self.assertEqual(events,[("searchable_parent","/var/lib/agentcapsule/host"),("agentcapsule-authority","init-restore-authority")])
 
+    def test_the_runtime_roots_parent_has_one_mode(self):
+        # The installer, the tmpfiles line that every boot applies and the
+        # update's searchable_parent agree: /var/lib/agentcapsule is root's,
+        # 0711 (FIX-2). The tmpfiles line set 0710 root:agentcapsule-authority,
+        # and each boot undid the installer's mode.
+        lines=[l.split() for l in (ROOT/"deploy/systemd/agentcapsule-authority.tmpfiles").read_text().splitlines()
+               if l.split()[1:2]==["/var/lib/agentcapsule"]]
+        self.assertEqual(lines,[["d","/var/lib/agentcapsule","0711","root","root","-"]])
+        from unittest.mock import Mock
+        calls=[]
+        def run(*cmd,**kw):
+            calls.append(cmd)
+            return ""
+        etc=self.root/"etc"
+        etc.mkdir()
+        with patch.dict(self.api,ETC=etc,run=run,run_user=Mock(return_value=json.dumps(dict(authority_id="id"))),
+                        user_id=Mock(return_value=1000),write_file=Mock()):
+            self.api["authority"]()
+        self.assertIn(("install","-d","-m","0711","/var/lib/agentcapsule"),calls)
+        # A parent the update made searchable has the same execute bits.
+        parent=self.root/"lib-agentcapsule"
+        parent.mkdir()
+        os.chmod(parent,0o710)
+        self.assertTrue(self.api["searchable_parent"](str(parent/"host")))
+        self.assertEqual(parent.stat().st_mode&0o111,0o111)
+
     def test_external_database_names_a_role_per_service(self):
         with self.assertRaisesRegex(ValueError,"api_database_url_file and worker_database_url_file"):
             self.api["service_dsns"]({"database_url_file":"/root/db.url"})
