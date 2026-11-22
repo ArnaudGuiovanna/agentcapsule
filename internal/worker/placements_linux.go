@@ -234,42 +234,51 @@ func (w *Placements) reconcile(ctx context.Context, only string) (map[string]run
 		if p.State == "STARTING" && p.LeaseValid {
 			continue
 		}
-		var err error
-		if p.State == "RUNNING" {
-			var retired bool
-			retired, err = w.host.RetireMissing(ctx, p.AgentID, p.Generation, p.VMID)
-			if err == nil && !retired {
-				continue
-			}
-		} else {
-			err = w.host.Retire(ctx, p.AgentID, p.Generation)
-		}
-		if err != nil {
-			if errors.Is(err, runtime.ErrGeneration) {
-				continue
-			}
-			return nil, err
-		}
-		if p.State == "RUNNING" {
-			// The confirmed VMM went away without a stop: its guest crashed,
-			// which counts against the agent's restart budget (ADR 012).
-			err = w.observeGuestFailure(ctx, p.AgentID, p.Generation, controlplane.GuestCrashed)
-		} else {
-			err = w.store.ObservePlacementStopped(ctx, p.AgentID, w.hostID, p.Generation, true)
-		}
-		if err != nil {
-			if errors.Is(err, controlplane.ErrPlacement) {
-				continue
-			}
+		// An agent whose turn someone else holds is that caller's to settle:
+		// its stop or its boot is under way. It waits for the next census.
+		err := w.host.TryBarrier(ctx, p.AgentID, func(ctx context.Context) error { return w.settle(ctx, p) })
+		if err != nil && !errors.Is(err, runtime.ErrAgentBusy) {
 			return nil, err
 		}
 	}
 	return census(ctx)
 }
 
+// settle retires p's VM, which the census found missing or obsolete, and
+// records it stopped, or crashed if it was confirmed.
+func (w *Placements) settle(ctx context.Context, p controlplane.Placement) error {
+	var err error
+	if p.State == "RUNNING" {
+		var retired bool
+		retired, err = w.host.RetireMissing(ctx, p.AgentID, p.Generation, p.VMID)
+		if err == nil && !retired {
+			return nil
+		}
+	} else {
+		err = w.host.Retire(ctx, p.AgentID, p.Generation)
+	}
+	if err != nil {
+		if errors.Is(err, runtime.ErrGeneration) {
+			return nil
+		}
+		return err
+	}
+	if p.State == "RUNNING" {
+		// The confirmed VMM went away without a stop: its guest crashed,
+		// which counts against the agent's restart budget (ADR 012).
+		err = w.observeGuestFailure(ctx, p.AgentID, p.Generation, controlplane.GuestCrashed)
+	} else {
+		err = w.store.ObservePlacementStopped(ctx, p.AgentID, w.hostID, p.Generation, true)
+	}
+	if errors.Is(err, controlplane.ErrPlacement) {
+		return nil
+	}
+	return err
+}
+
 func (w *Placements) Start(ctx context.Context, id string) (runtime.VMRun, error) {
 	var run runtime.VMRun
-	err := w.withFreshApplication(ctx, func(ctx context.Context) error { var err error; run, err = w.start(ctx, id, false); return err })
+	err := w.withFreshApplication(ctx, id, func(ctx context.Context) error { var err error; run, err = w.start(ctx, id, false); return err })
 	return run, err
 }
 

@@ -49,7 +49,10 @@ type modelBootHost struct {
 	admitted atomic.Int64
 }
 
-func (h *modelBootHost) WithApplication(ctx context.Context, fn func(context.Context) error) error {
+func (h *modelBootHost) WithApplication(ctx context.Context, agent string, fn func(context.Context) error) error {
+	if agent != h.agentID {
+		return runtime.ErrAdmissionBusy
+	}
 	h.admitted.Add(1)
 	return fn(ctx)
 }

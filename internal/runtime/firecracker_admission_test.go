@@ -16,7 +16,10 @@ import (
 	"time"
 )
 
-func TestAdmissionRegistryMigrationKeepsLiveBarrier(t *testing.T) {
+// A registry of version 2 still held the host-wide admission queue. A live
+// waiter in it belongs to an older worker that still runs: the registry is
+// refused until that worker is gone, then migrates to version 3.
+func TestAnOlderWorkersLiveWaiterBlocksTheMigration(t *testing.T) {
 	h := admissionHost(t)
 	const id = "0123456789abcdef0123456789abcdef"
 	f, err := os.OpenFile(h.requestLock(id), os.O_CREATE|os.O_RDWR, 0600)
@@ -27,30 +30,40 @@ func TestAdmissionRegistryMigrationKeepsLiveBarrier(t *testing.T) {
 	if err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		t.Fatal(err)
 	}
-	if err = h.locked(t.Context(), func(r *hostRegistry) error {
-		r.Version = 1
-		r.LegacyBarriers = []admissionWaiter{{ID: id, Target: "a"}}
-		return h.save(r)
-	}); err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(t.Context(), 40*time.Millisecond)
-	defer cancel()
-	if err = h.WithApplication(ctx, func(context.Context) error { t.Error("migration discarded live barrier"); return nil }); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatal(err)
-	}
 	b, err := os.ReadFile(filepath.Join(h.root, "registry.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var r hostRegistry
-	if err = json.Unmarshal(b, &r); err != nil || r.Version != 2 || len(r.LegacyBarriers) != 0 || len(r.Admissions) != 1 || r.Admissions[0].ID != id {
-		t.Fatal(r, err)
+	var old map[string]any
+	if err = json.Unmarshal(b, &old); err != nil {
+		t.Fatal(err)
+	}
+	old["version"] = 2
+	old["admissions"] = []admissionWaiter{{ID: id, Target: "a"}}
+	if b, err = json.Marshal(old); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(h.root, "registry.json"), b, 0600); err != nil {
+		t.Fatal(err)
+	}
+	fresh := &FirecrackerHost{root: h.root}
+	if _, err = fresh.HarnessOf(t.Context(), "a"); !errors.Is(err, ErrOlderWorker) {
+		t.Fatal("an older worker's live waiter was dropped:", err)
 	}
 	if err = f.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err = h.WithApplication(t.Context(), func(context.Context) error { return nil }); err != nil {
+	if _, err = fresh.HarnessOf(t.Context(), "a"); err != nil {
+		t.Fatal(err)
+	}
+	if b, err = os.ReadFile(filepath.Join(h.root, "registry.json")); err != nil {
+		t.Fatal(err)
+	}
+	var r hostRegistry
+	if err = json.Unmarshal(b, &r); err != nil || r.Version != registryVersion || len(r.Admissions) != 0 || len(r.Agents) != 3 {
+		t.Fatal(r, err)
+	}
+	if err = fresh.WithBarrier(t.Context(), "a", func(context.Context) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -77,13 +90,13 @@ func admissionHost(t *testing.T) *FirecrackerHost {
 	return h
 }
 
-func holdApplication(t *testing.T, h *FirecrackerHost) func() {
+func holdApplication(t *testing.T, h *FirecrackerHost, agent string) func() {
 	t.Helper()
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
-		done <- h.WithApplication(t.Context(), func(ctx context.Context) error {
+		done <- h.WithApplication(t.Context(), agent, func(ctx context.Context) error {
 			close(entered)
 			select {
 			case <-release:
@@ -109,20 +122,20 @@ func holdApplication(t *testing.T, h *FirecrackerHost) func() {
 
 func TestBarrierAdmissionFIFOAndOrdinaryBackpressure(t *testing.T) {
 	h := admissionHost(t)
-	release := holdApplication(t, h)
+	release := holdApplication(t, h, "a")
 	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
 	defer cancel()
 	queued := make(chan string, 3)
 	finished := make(chan error, 3)
 	order := make(chan string, 3)
-	for _, id := range []string{"a", "b", "c"} {
+	for _, id := range []string{"first", "second", "third"} {
 		peer := &FirecrackerHost{root: h.root, admissionHook: func(stage, target string) {
 			if stage == "queued" {
-				queued <- target
+				queued <- id
 			}
 		}}
 		go func() {
-			finished <- peer.WithBarrier(ctx, id, func(ctx context.Context) error { order <- id; return nil })
+			finished <- peer.WithBarrier(ctx, "a", func(ctx context.Context) error { order <- id; return nil })
 		}()
 		if got := <-queued; got != id {
 			t.Fatal(got, id)
@@ -130,7 +143,7 @@ func TestBarrierAdmissionFIFOAndOrdinaryBackpressure(t *testing.T) {
 	}
 	probe, cancelProbe := context.WithTimeout(ctx, 40*time.Millisecond)
 	defer cancelProbe()
-	if err := h.WithApplication(probe, func(context.Context) error { t.Error("ordinary work overtook barrier"); return nil }); !errors.Is(err, context.DeadlineExceeded) {
+	if err := h.WithApplication(probe, "a", func(context.Context) error { t.Error("ordinary work overtook barrier"); return nil }); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatal(err)
 	}
 	select {
@@ -145,28 +158,28 @@ func TestBarrierAdmissionFIFOAndOrdinaryBackpressure(t *testing.T) {
 		}
 	}
 	got := []string{<-order, <-order, <-order}
-	if !reflect.DeepEqual(got, []string{"a", "b", "c"}) {
+	if !reflect.DeepEqual(got, []string{"first", "second", "third"}) {
 		t.Fatal("not FIFO:", got)
 	}
 	var escaped context.Context
-	if err := h.WithApplication(ctx, func(scoped context.Context) error { escaped = scoped; return nil }); err != nil {
+	if err := h.WithApplication(ctx, "a", func(scoped context.Context) error { escaped = scoped; return nil }); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.WithApplication(escaped, func(context.Context) error { return nil }); !errors.Is(err, ErrAdmissionLost) {
+	if err := h.WithApplication(escaped, "a", func(context.Context) error { return nil }); !errors.Is(err, ErrAdmissionLost) {
 		t.Fatal("expired scope reused:", err)
 	}
 }
 
 func TestCanceledBarrierDoesNotReserveCapacity(t *testing.T) {
 	h := admissionHost(t)
-	release := holdApplication(t, h)
+	release := holdApplication(t, h, "a")
 	defer release()
 	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
 	defer cancel()
 	if err := h.WithBarrier(ctx, "a", func(context.Context) error { t.Error("barrier ran through active application"); return nil }); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatal(err)
 	}
-	if err := h.WithApplication(t.Context(), func(context.Context) error { return nil }); err != nil {
+	if err := h.WithApplication(t.Context(), "a", func(context.Context) error { return nil }); err != nil {
 		t.Fatal("canceled request still blocks work:", err)
 	}
 }
@@ -177,7 +190,7 @@ func TestBarrierAdmissionWorkerSIGKILL(t *testing.T) {
 			h := admissionHost(t)
 			release := func() {}
 			if point == "queued" {
-				release = holdApplication(t, h)
+				release = holdApplication(t, h, "a")
 			}
 			ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
 			defer cancel()
@@ -205,13 +218,17 @@ func TestBarrierAdmissionWorkerSIGKILL(t *testing.T) {
 				}
 			}
 			probe, cancelProbe := context.WithTimeout(ctx, 40*time.Millisecond)
-			err = h.WithApplication(probe, func(context.Context) error { return nil })
+			err = h.WithApplication(probe, "a", func(context.Context) error { return nil })
 			cancelProbe()
 			if !errors.Is(err, context.DeadlineExceeded) {
 				t.Fatal("live owner's reservation ignored:", err)
 			}
+			// Another agent's work does not wait for that owner.
+			if err = h.WithBarrier(ctx, "b", func(context.Context) error { return nil }); err != nil {
+				t.Fatal(err)
+			}
 			next := make(chan error, 1)
-			go func() { next <- h.WithBarrier(ctx, "b", func(context.Context) error { return nil }) }()
+			go func() { next <- h.WithBarrier(ctx, "a", func(context.Context) error { return nil }) }()
 			if err = cmd.Process.Kill(); err != nil {
 				t.Fatal(err)
 			}
@@ -224,7 +241,7 @@ func TestBarrierAdmissionWorkerSIGKILL(t *testing.T) {
 			if err = <-next; err != nil {
 				t.Fatal("dead worker prevented next barrier:", err)
 			}
-			if err = h.WithApplication(ctx, func(context.Context) error { return nil }); err != nil {
+			if err = h.WithApplication(ctx, "a", func(context.Context) error { return nil }); err != nil {
 				t.Fatal(err)
 			}
 		})
@@ -233,17 +250,17 @@ func TestBarrierAdmissionWorkerSIGKILL(t *testing.T) {
 
 func TestCommonAdmissionQueueDoesNotLetLaterBarriersOvertakeWork(t *testing.T) {
 	h := admissionHost(t)
-	release := holdApplication(t, h)
+	release := holdApplication(t, h, "a")
 	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
 	defer cancel()
 	queued := make(chan string, 1)
 	order := make(chan string, 8)
 	done := make(chan error, 8)
 	for _, item := range []struct {
-		name, target string
-		shared       bool
+		name   string
+		shared bool
 	}{
-		{"barrier-before", "a", false}, {"ordinary", "", true}, {"barrier-after-1", "b", false}, {"barrier-after-2", "c", false},
+		{"barrier-before", false}, {"ordinary", true}, {"barrier-after-1", false}, {"barrier-after-2", false},
 	} {
 		peer := &FirecrackerHost{root: h.root, admissionHook: func(stage, target string) {
 			if stage == "queued" {
@@ -253,9 +270,9 @@ func TestCommonAdmissionQueueDoesNotLetLaterBarriersOvertakeWork(t *testing.T) {
 		go func() {
 			fn := func(context.Context) error { order <- item.name; return nil }
 			if item.shared {
-				done <- peer.WithApplication(ctx, fn)
+				done <- peer.WithApplication(ctx, "a", fn)
 			} else {
-				done <- peer.WithBarrier(ctx, item.target, fn)
+				done <- peer.WithBarrier(ctx, "a", fn)
 			}
 		}()
 		if got := <-queued; got != item.name {
@@ -274,9 +291,9 @@ func TestCommonAdmissionQueueDoesNotLetLaterBarriersOvertakeWork(t *testing.T) {
 	}
 	// Two leading shared callbacks can coexist, but neither may upgrade to an
 	// exclusive scope while retaining its shared kernel lock.
-	release = holdApplication(t, h)
+	release = holdApplication(t, h, "a")
 	defer release()
-	if err := h.WithApplication(ctx, func(scoped context.Context) error {
+	if err := h.WithApplication(ctx, "a", func(scoped context.Context) error {
 		return h.WithBarrier(scoped, "a", func(context.Context) error { return nil })
 	}); !errors.Is(err, ErrAdmissionBusy) {
 		t.Fatal("shared scope upgraded:", err)

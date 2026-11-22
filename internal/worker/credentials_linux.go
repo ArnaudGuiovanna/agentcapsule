@@ -131,23 +131,41 @@ func (w *Placements) retireDueCredentials(ctx context.Context, id string) (runti
 	return run, true, nil
 }
 
-// Check under shared admission BEFORE a delivery attempt or application callback
-// starts. Release it before rotation: never upgrade a shared kernel lock. The
-// callback executes at most once, even if it commits and returns an error.
-func (w *Placements) withFreshApplication(ctx context.Context, fn func(context.Context) error) error {
+// Check under agent's shared admission BEFORE a delivery attempt or
+// application callback starts: its boot's credentials, or, without an agent,
+// every boot's. Release it before rotation: never upgrade a shared kernel
+// lock. The callback executes at most once, even if it commits and returns an
+// error.
+func (w *Placements) withFreshApplication(ctx context.Context, agent string, fn func(context.Context) error) error {
 	for pass := 0; ; pass++ {
 		entered := false
-		err := w.host.WithApplication(ctx, func(ctx context.Context) error {
-			due, err := w.host.CredentialRotations(ctx, w.credentialTime())
-			if err != nil {
-				return err
+		fresh := func(ctx context.Context) error {
+			due := false
+			if agent == "" {
+				rotations, err := w.host.CredentialRotations(ctx, w.credentialTime())
+				if err != nil {
+					return err
+				}
+				due = len(rotations) != 0
+			} else {
+				_, d, err := w.host.CredentialRotation(ctx, agent, w.credentialTime())
+				if err != nil {
+					return err
+				}
+				due = d
 			}
-			if len(due) != 0 {
+			if due {
 				return runtime.ErrCredentialsDue
 			}
 			entered = true
 			return fn(ctx)
-		})
+		}
+		var err error
+		if agent == "" {
+			err = fresh(ctx)
+		} else {
+			err = w.host.WithApplication(ctx, agent, fresh)
+		}
 		if entered || !errors.Is(err, runtime.ErrCredentialsDue) || pass != 0 {
 			return err
 		}
