@@ -410,7 +410,7 @@ func (s *Store) retireDelivery(ctx context.Context, mailboxID string, runtime Re
 	if _, err := tx.Exec(ctx, "UPDATE agent_mailboxes SET closing=true WHERE id=$1", mailboxID); err != nil {
 		return err
 	}
-	if err := publishRevocation(ctx, tx, "event/"+mailboxID); err != nil {
+	if err := publishRevocation(ctx, tx, "event/"+mailboxID, m.Destination); err != nil {
 		return err
 	}
 	if err := commit(ctx, tx); err != nil {

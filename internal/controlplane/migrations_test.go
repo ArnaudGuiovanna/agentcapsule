@@ -380,6 +380,7 @@ func TestReadyChecksInstalledMigrationLedger(t *testing.T) {
 func revertTenantAgents(t *testing.T, s *Store) {
 	t.Helper()
 	if _, err := s.pool.Exec(t.Context(), `
+        ALTER TABLE revocation_catalogue DROP COLUMN IF EXISTS stores;
         DROP INDEX IF EXISTS platform_operations_finished, agent_requests_finished, agent_requests_mandate, agent_mailboxes_reference,
           idempotency_keys_response, inbox_items_reference, owner_messages_request, peer_wakes_request, tenant_agent_audit_request,
           corpus_builds_invocation, corpus_extensions_invocation;
