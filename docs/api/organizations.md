@@ -35,7 +35,7 @@ platform credential; later credential administration is covered by
 `agentcapsule-admin list-credentials` and `revoke-credential` (see the
 [README](README.md)). A revocation is audited too. In production
 `revoke-credential` needs the authority service's flags: it records the
-revocation there before it commits ([README](README.md#revocations-pending-and-confirmed)). So does
+revocation there once it has committed ([README](README.md#revocations-pending-and-confirmed)). So does
 `POST /v1/organizations/{id}/disable`, whose answer carries `revocations`.
 
 ## Available routes

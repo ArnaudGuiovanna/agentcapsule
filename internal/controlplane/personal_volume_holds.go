@@ -21,7 +21,7 @@ func (s *Store) recordPersonalVolume(ctx context.Context, tx pgx.Tx, tenant stri
 	// The authority rejects reuse of an ID for any other record. Even if
 	// PostgreSQL loses the commit, another member cannot consume this disk.
 	record := AccessRecord{ID: applicationStableID("arv", "personal_volume", hold[1]), Kind: authoritylog.AccessPersonalVolume, Organization: tenant, Objects: [][]string{hold}}
-	if err := journal.appendRecord(ctx, record); err != nil {
+	if err := journal.claim(ctx, record); err != nil {
 		return err
 	}
 	if journal.list[0].State != RevocationConfirmed {

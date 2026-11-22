@@ -98,7 +98,7 @@ agentcapsule-admin revoke-credential -kind platform -id ptok_... -confirm ptok_.
   -restore-authority-id restoreauth_... -key-authority-id keyauth_...
 ```
 
-A revocation is recorded with the authority service before it commits
+A revocation is recorded with the authority service once it has committed
 ([api/README.md](api/README.md#revocations-pending-and-confirmed)): in
 production `revoke-credential` refuses to run without these three flags
 (`authority_required_in_production`), the API's own. Run it as the API's

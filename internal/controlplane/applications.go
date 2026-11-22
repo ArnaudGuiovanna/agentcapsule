@@ -285,5 +285,5 @@ func (a *Accounts) ChangeApplication(ctx context.Context, p Principal, id, key s
 	if err != nil {
 		return APIReceipt{}, err
 	}
-	return out, commit(ctx, tx)
+	return a.store.settled(ctx, out, commit(ctx, tx))
 }

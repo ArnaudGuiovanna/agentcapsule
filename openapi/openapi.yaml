@@ -1115,9 +1115,11 @@ paths:
       summary: Read an access revocation and its state
       description: >-
         An access revocation that a revoking route, or agentcapsule-admin,
-        recorded with the authority service before its commit (ADR 006 wave
-        5). pending until the standby's replica holds its record, then
-        confirmed; reading a pending one asks the authority service again.
+        recorded with the authority service after its commit (ADR 006 wave
+        5, and its changes after the v0.1.0 audit). recording until the
+        service holds its record, pending until the standby's replica holds
+        it, then confirmed; reading a recording or a pending one asks the
+        authority service again.
         An organization's revocations: audit:read and current role
         org_owner, org_admin or auditor. The platform's own (an organization
         disabled, an operator's credential or delegation change): the
@@ -5146,12 +5148,16 @@ components:
           description: "A bearer token's (the first four), every bearer token issued before a failover that may have ended a degraded period (blanket, recorded by the promotion of the authorities, ADR 006 wave 7), or a standing grant's."
         state:
           type: string
-          enum: [pending, confirmed]
+          enum: [recording, pending, confirmed]
           description: >-
-            The revocation took effect at once in both states. confirmed: the
-            standby's replica holds its record, or no standby exists, or it is
-            a bearer token's and the authority service runs in degraded mode.
-            pending: a failover before the standby holds it could undo it.
+            The revocation took effect at once in every state. recording: the
+            authority service has not recorded it yet (it did not answer after
+            the commit); the API records it every 5 seconds, and a failover or
+            a restore of the database before then could undo it. confirmed:
+            the standby's replica holds its record, or no standby exists, or it
+            is a bearer token's and the authority service runs in degraded
+            mode. pending: a failover before the standby holds it could undo
+            it.
         recorded_at: {type: string, format: date-time}
         confirmed_at: {type: string, format: date-time}
     OwnerMessageView:

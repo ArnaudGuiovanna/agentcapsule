@@ -547,7 +547,7 @@ func (a *Accounts) SyncActivation(ctx context.Context, p Principal, appID, id, k
 	if err != nil {
 		return APIReceipt{}, err
 	}
-	return out, commit(ctx, tx)
+	return a.store.settled(ctx, out, commit(ctx, tx))
 }
 
 // RetryWaitingActivations continues durable waiting slots after a pool grows

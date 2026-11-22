@@ -22,7 +22,8 @@ const withoutAuthority = "development_mode_without_authority_service_never_use_i
 
 // accessFlags reach the authority service's API socket, as the API's flags
 // do (docs/adr/006-authority-service.md §6): a revoking command appends its
-// access revocation record there before it commits (wave 5).
+// access revocation record there once it has committed (wave 5, and the
+// changes after the v0.1.0 audit).
 type accessFlags struct {
 	socket, restoreID, keyID *string
 }

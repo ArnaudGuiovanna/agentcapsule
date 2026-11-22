@@ -230,6 +230,9 @@ var corpusFileProgressSearchPathSQL string
 //go:embed migrations/0065_service_roles.sql
 var serviceRolesSQL string
 
+//go:embed migrations/0066_access_revocation_recording.sql
+var accessRevocationRecordingSQL string
+
 // Append migrations; never edit an installed migration. The original schema
 // also upgrades pre-ledger installations, preserving its historical backfills.
 // Later calls validate its checksum without replaying DDL or those backfills.
@@ -299,6 +302,7 @@ var controlPlaneMigrations = []schemaMigration{
 	{version: 63, name: "corpus-build-streams", sql: corpusBuildStreamsSQL},
 	{version: 64, name: "corpus-file-progress-search-path", sql: corpusFileProgressSearchPathSQL},
 	{version: 65, name: "service-roles", sql: serviceRolesSQL},
+	{version: 66, name: "access-revocation-recording", sql: accessRevocationRecordingSQL},
 }
 
 func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error {

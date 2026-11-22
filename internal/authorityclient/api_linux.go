@@ -59,7 +59,7 @@ func (a *API) Wait(ctx context.Context, waiting func(error)) (svc.Status, error)
 }
 
 // The API's client is the control plane's access recorder: every revoking
-// transaction appends its record through it before its commit.
+// transaction appends its record through it once it has committed.
 var _ controlplane.AccessRecorder = (*API)(nil)
 
 // RecordAccess is AppendAccess, in the control plane's terms.

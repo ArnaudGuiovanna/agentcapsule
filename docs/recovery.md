@@ -745,6 +745,50 @@ of such failures. It also fires when the replica refuses the service, after
 a promotion for instance. Restarting the worker is harmless: degraded mode
 belongs to the service, and goes on.
 
+#### Revocations the authority service has not recorded
+
+An access revocation takes effect in PostgreSQL when its request commits,
+whatever the authority service does. The API then appends its record to the
+service, with no lock held, and the revocation is `recording` until the
+service holds it ([ADR 006](adr/006-authority-service.md), changes after
+the v0.1.0 audit). While the service does not answer (stopped, crashed,
+upgrading, or holding records back in the first 30 seconds of a standby's
+outage):
+
+- revocations keep working: members, tokens, assignments, providers and
+  organizations lose their access at once, and each answer lists its
+  revocation as `recording`;
+- the API records them every 5 seconds, oldest first, and again when one is
+  read (`GET /v1/access-revocations/{id}`); appending a record twice changes
+  nothing;
+- `agentcapsule_api_access_revocations_unrecorded` counts them, and
+  `AgentCapsuleAccessRevocationsUnrecorded` (critical) fires when the
+  oldest has waited 2 minutes.
+
+What to do:
+
+1. Bring the authority service back on the primary: `systemctl status
+   agentcapsule-authority`, its journal, then `systemctl start
+   agentcapsule-authority`. Within 5 seconds of its return the count falls
+   to 0, and the revocations become `pending` or `confirmed`.
+2. Until then, **do not restore the database and do not fail over**: a
+   database brought back to an earlier point, or a standby that lacks the
+   last commits, would bring back the access those revocations removed, and
+   the authorities do not hold them to replay. Rows the database still holds
+   are not lost: the reconciliation after a failover appends them to the
+   promoted authorities ([Reconcile the database](#reconcile-the-database)).
+3. If the primary is lost while revocations are recording, list the
+   revocations of the last minutes before the loss in the audit feed
+   (`agentcapsule-admin list-audit`, `GET /v1/audit`) and make again those
+   the promoted database lacks, as for the announced window of a degraded
+   period ([below](#announce-the-databases-loss)).
+
+A transaction that rolls back appends nothing: the service never holds a
+record of a revocation that PostgreSQL did not make. Only the claim of a
+personal volume is recorded before its commit, since the service's answer
+decides it; it fails with 503 `authority_unavailable` while the service is
+down, and the invitation's acceptance is tried again.
+
 ### The daily receipt keys
 
 The API encrypts each idempotency receipt, the secrets of the tokens it

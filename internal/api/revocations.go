@@ -55,17 +55,29 @@ func (s *Server) observeRevocations(registry *telemetry.Registry) {
 		"Access revocations recorded but not confirmed: the standby does not hold their record yet (ADR 006 wave 5).")
 	oldest := registry.Gauge("agentcapsule_api_access_revocation_oldest_pending_seconds",
 		"Seconds since the oldest pending access revocation was recorded; 0 when none is pending.")
+	unrecorded := registry.Gauge("agentcapsule_api_access_revocations_unrecorded",
+		"Access revocations that took effect and that the authority service has not recorded yet: it did not answer after their commit (ADR 006, changes after the v0.1.0 audit).")
+	oldestUnrecorded := registry.Gauge("agentcapsule_api_access_revocation_oldest_unrecorded_seconds",
+		"Seconds since the oldest unrecorded access revocation took effect; 0 when none.")
+	age := func(since time.Time) float64 {
+		if since.IsZero() {
+			return 0
+		}
+		return max(time.Since(since).Seconds(), 0)
+	}
 	registry.Collect(func(ctx context.Context) error {
 		count, since, err := s.store.PendingAccessRevocations(ctx)
 		if err != nil {
 			return err
 		}
 		pending.Set(float64(count))
-		age := 0.0
-		if !since.IsZero() {
-			age = max(time.Since(since).Seconds(), 0)
+		oldest.Set(age(since))
+		count, since, err = s.store.UnrecordedAccessRevocations(ctx)
+		if err != nil {
+			return err
 		}
-		oldest.Set(age)
+		unrecorded.Set(float64(count))
+		oldestUnrecorded.Set(age(since))
 		return nil
 	})
 }

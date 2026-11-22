@@ -105,7 +105,7 @@ func (a *Accounts) CreatePlatformSession(ctx context.Context, p Principal, enrol
 	if err != nil {
 		return APIReceipt{}, err
 	}
-	return out, commit(ctx, tx)
+	return a.store.settled(ctx, out, commit(ctx, tx))
 }
 
 func revokeSession(ctx context.Context, tx pgx.Tx, records *revocations, id string) error {
@@ -149,7 +149,7 @@ func (a *Accounts) RevokePlatformSession(ctx context.Context, p Principal, id, k
 	if err != nil {
 		return APIReceipt{}, err
 	}
-	return out, commit(ctx, tx)
+	return a.store.settled(ctx, out, commit(ctx, tx))
 }
 
 func (s *Store) PlatformSession(ctx context.Context, p Principal) (OperatorCredential, error) {

@@ -393,7 +393,7 @@ func (a *Accounts) DisableServiceAccount(ctx context.Context, p Principal, id, k
 	if err != nil {
 		return APIReceipt{}, err
 	}
-	return r, commit(ctx, tx)
+	return a.store.settled(ctx, r, commit(ctx, tx))
 }
 
 func validTokenScopes(requested, held []string) ([]string, bool) {
@@ -511,5 +511,5 @@ func (a *Accounts) RevokeServiceToken(ctx context.Context, p Principal, id, toke
 	if err != nil {
 		return APIReceipt{}, err
 	}
-	return r, commit(ctx, tx)
+	return a.store.settled(ctx, r, commit(ctx, tx))
 }
