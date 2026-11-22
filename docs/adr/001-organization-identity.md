@@ -246,6 +246,10 @@ Now three roles reach the database ([install.md](../install.md#postgresql)):
   such statement as each role. A change that writes a new table, or writes a
   table its process did not write, adds a migration that replaces
   `agentcapsule_service_privileges()`.
+- The worker locks a running VM's placement and submits its peer requests.
+  The HTTP API reads placements and updates existing requests for owner
+  consent. Only the worker needs UPDATE on `agent_placements` or INSERT
+  on `agent_requests`.
 - The worker no longer migrates (its `-migrate` flag is gone). Like the API,
   it refuses a schema whose ledger differs from its binary's.
 - The installer creates the roles, maps root to the owner and the worker's
