@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"sync/atomic"
 	"testing"
 
@@ -59,6 +60,19 @@ func TestLLMConfigAllowsOnlyTheOperatorsInternalProviders(t *testing.T) {
 	for _, bad := range []int{-1, 1, 513} {
 		if _, err := (&ServiceLLM{MaxIdleConnsPerHost: bad}).gatewayConfig(true); err == nil {
 			t.Fatal(bad, "idle connections per host accepted")
+		}
+	}
+	// Model calls in flight per agent (S-13): 8 by default, 1 to 64.
+	if n, err := (&ServiceLLM{}).callsPerAgent(); err != nil || n != 8 {
+		t.Fatal("calls per agent by default:", n, err)
+	}
+	if n, err := (&ServiceLLM{MaxCallsPerAgent: 3}).callsPerAgent(); err != nil || n != 3 {
+		t.Fatal("calls per agent:", n, err)
+	}
+	for _, bad := range []int{-1, 65} {
+		cfg := ServiceConfig{LLM: &ServiceLLM{ReceiptKey: "/nonexistent/receipt.key", MaxCallsPerAgent: bad}}
+		if _, err := cfg.OpenLLM(nil, true); err == nil || errors.Is(err, os.ErrNotExist) {
+			t.Fatal(bad, "calls per agent accepted:", err)
 		}
 	}
 	// An invalid entry stops the worker before it opens anything.

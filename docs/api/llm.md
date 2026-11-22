@@ -14,6 +14,7 @@ carry this scope.
 | `POST/GET /v1/llm/aliases`, `POST /v1/llm/aliases/{alias}/disable` | model policy: only an active alias is reachable |
 | `POST /v1/llm/aliases/{alias}/prices` | replaces both estimation prices (below) |
 | `POST /v1/llm/aliases/{alias}/access` | `organization` or `listed` (below) |
+| `POST /v1/llm/aliases/{alias}/request-policy` | the fields and tool types a forwarded request may use beside the plain ones, and the output cap of a call that declares none ([request policy](#request-policy)) |
 | `POST/GET /v1/llm/aliases/{alias}/grants`, `POST /v1/llm/aliases/{alias}/grants/{id}/revoke` | the agents and teams that may call a listed alias |
 
 ## Access per agent and team
@@ -46,7 +47,7 @@ to all. The defaults are those of
   tenant bound to the authenticated channel. Disabled organization, alias or
   provider: `ErrNotFound` from the next request.
 - Audit: `llm.provider.created|rotated|disabled`,
-  `llm.alias.created|disabled|access_set|prices_set|grant_created|grant_revoked`,
+  `llm.alias.created|disabled|access_set|prices_set|operations_set|request_policy_set|grant_created|grant_revoked`,
   `llm.budget.created|disabled`, `llm.usage.settled|released`. A grant's event
   targets its agent or team, with the alias as reference; a resolved call's
   targets its agent, with the call as reference.
@@ -159,28 +160,73 @@ are set at the alias's creation, or both replaced with `POST
 `priced`; zero prices set on purpose are a free model. An alias created without
 prices is not priced.
 
-Each call goes through `LLMService.Call`: alias resolution, access check,
-**reservation**, call, then a single outcome. The reservation counts a
-pessimistic estimate: about 1 token per 3 bytes of input plus the output cap,
-and their cost at the alias's current prices. The call keeps these prices until
-its settlement: a price change applies to calls reserved after it. Outcomes:
+Each call goes through `LLMService`: alias resolution, the alias's request
+policy (below), access check, **reservation**, call, then a single outcome.
+The provider's status and credential are read again in the reservation's
+transaction: a provider disabled since the route was resolved refuses the
+call, and a credential rotated since then is resolved again, so that a
+revoked credential is never used. The reservation counts:
+- the **output cap** the provider is held to: the one the request declares,
+  else the alias's `max_output_tokens`, else 4,096 tokens on the forward
+  routes and 1,024 on `/v1/llm/complete`. A cap the request does not declare
+  is written into the request sent to the provider, so the answer cannot be
+  longer;
+- an **input estimate**: one token per three ASCII bytes of the request and
+  one per other byte (text in other scripts has more tokens per byte), plus,
+  for each medium the provider fetches itself, 4,096 tokens per image and
+  300,000 per document (a PDF of up to 100 pages at about 3,000 tokens each)
+  given by URL or by a provider file id. An inline image or document is in
+  the request's bytes;
+- and their cost at the alias's current prices.
+
+The call keeps these prices until its settlement: a price change applies to
+calls reserved after it. Outcomes:
 - success: settlement with the usage reported by the provider, priced at the
-  reservation's prices;
-- refusal, 429, 5xx, unavailability: release, the provider billed nothing;
-- timeout after sending: `unknown`, the reservation (tokens and cost) **keeps
-  counting** and cannot be released as free (below).
+  reservation's prices; a count the answer leaves out (no `usage`, or only
+  part of it) is settled at the reservation's: the input estimate, the output
+  cap. It is never settled at zero;
+- refusal, 429, 5xx, a failure before any connection (nothing was sent):
+  release, the provider billed nothing;
+- a transport error once connected, or a timeout after sending: `unknown`,
+  the reservation (tokens and cost) **keeps counting** and cannot be
+  released as free (below);
+- a call reserved under a host admission that then fails never runs: its
+  reservation is released at once.
 
 A window counts settled calls at their reported tokens and estimated cost,
 calls in flight and of unknown outcome at their reservation, and nothing for
 released calls. A `hard` budget refuses before any call (`ErrBudgetExceeded`,
-code `quota_exceeded` on the VM channel), even under concurrent calls (the
-applicable budgets are locked in a fixed order). A hard **cost** budget also
-refuses a call to an alias that is not priced: its cost cannot be known. A
-`soft` budget lets the call through and reports the overrun: the answer's
+code `quota_exceeded` on the VM channel). A hard **cost** budget also refuses
+a call to an alias that is not priced: its cost cannot be known. A `soft`
+budget lets the call through and reports the overrun: the answer's
 `soft_budget_exceeded`, and the operator's metric and log line. A request key
 already used does not count again and never calls the provider again; a
 reservation left `reserved` after a shutdown is treated as unknown when its key
 comes back.
+
+**What a hard budget guarantees.** The applicable budgets are locked in a
+fixed order while a call reserves, so concurrent calls never admit more
+**reservations** than the limit: a call is admitted only if every call of
+the window, at its settlement or its reservation, plus its own reservation,
+fits. The window can still pass the limit when a call settles above its
+reservation, by that excess:
+- output: never above the cap the provider is held to, if the provider
+  honours the cap field (an `openai_compatible` server that ignores it, such
+  as Ollama with `max_completion_tokens`, is bounded only by its own limit;
+  set the alias's `max_output_tokens` to the model's maximum and its
+  `output_cap_field` to the field the server reads);
+- input: above the estimate when the text has more tokens per ASCII byte
+  than three (single characters split by spaces, for example), when an image
+  costs more than 4,096 tokens (some providers report an image as tens of
+  thousands of tokens, at a lower price per token), or a document more than
+  300,000.
+
+Such an excess is settled and counted; the next call is then refused. How
+many calls can exceed at once is bounded: an agent has at most 8 model calls
+in flight, every route counted (`llm.max_calls_per_agent` in the worker's
+configuration, 1 to 64), and the next one is refused before any reservation
+with the code `concurrency_limited`. A soft budget guarantees nothing; it
+reports.
 
 **Exact amounts.** Costs are integers in micro-units, computed exactly and
 rounded up once per call: an estimate never under-reports. A call's cost fits in
@@ -216,7 +262,8 @@ its creation only.
 
 The worker's metrics count, for the whole installation, settled tokens and
 estimated cost by provider kind, call outcomes, refusals by reason
-(`budget_tokens`, `budget_cost`, `unpriced`, `alias_access`), soft budgets
+(`budget_tokens`, `budget_cost`, `unpriced`, `alias_access`, `unsupported`,
+`feature_denied`, `concurrency_limited`), soft budgets
 passed by unit, and unresolved calls. A soft budget passed and a refused call
 are also logged (`llm_budget_soft_exceeded`, `llm_call_refused`) with the
 budget's unit, period and scope. They name no organization, agent, alias or
@@ -257,11 +304,15 @@ ledger's request key.
   extend the server's write deadline.
 - **Errors** (enumerated codes, never a provider message): `quota_exceeded` (a
   hard budget in tokens or cost, or a hard cost budget on an alias without
-  prices) and `rate_limited` (429), `rejected` (provider 4xx), `outcome_unknown`
-  (timeout after sending: the reservation keeps counting; **do not** retry with
-  the same key), `conflict` (key already processed: use a new key), `invalid`,
-  `unauthorized` (also a listed alias not granted to the agent),
-  `unavailable`.
+  prices) and `rate_limited` (429), `concurrency_limited` (429: the agent
+  already has its limit of model calls in flight; retry when one ends),
+  `rejected` (provider 4xx), `outcome_unknown` (a cut or a timeout once the
+  request may have been sent: the reservation keeps counting; **do not** retry
+  with the same key), `conflict` (key already processed: use a new key),
+  `invalid`, `feature_denied` (400, forwarded requests: a field or a tool type
+  the alias's request policy does not allow), `unauthorized` (also a listed
+  alias not granted to the agent), `unavailable`. An older `capsule-init`
+  answers `unavailable` for a code it does not know.
 - **Replay**: a settled key is never called again and the text is not kept; the
   guest repeats the request with a new key.
 - **Activation**: the worker offers the bridge only if its configuration contains
@@ -275,8 +326,9 @@ ledger's request key.
   first byte, per attempt, and between two of its events, `"60s"` each by
   default, from `"5s"` to `"290s"`. `max_idle_conns_per_host` is how many
   idle connections the gateway keeps to each provider address (32 by
-  default, 2 to 512). A value out of bounds stops the worker with
-  `llm_configuration_invalid`.
+  default, 2 to 512). `max_calls_per_agent` is how many model calls an agent
+  may have in flight at once, every route counted (8 by default, 1 to 64). A
+  value out of bounds stops the worker with `llm_configuration_invalid`.
 
 ## Native requests from the model endpoint
 
@@ -293,9 +345,11 @@ is `{"body": <the provider's JSON answer>, "input_tokens", "output_tokens",
 "soft_budget_exceeded"}`. Identity, policy, host lock, timeouts and replay are
 those of `/v1/llm/complete`. In addition:
 
-- **The body is the agent's.** Messages, tools, images and options reach the
-  provider unchanged. The gateway sets `model` to the alias's upstream model and
-  adds the credential.
+- **The body is the agent's.** Messages, client tools, images and plain
+  options reach the provider unchanged. The gateway sets `model` to the
+  alias's upstream model, adds the credential, and writes an output cap into
+  a request that declares none. What else the body may ask is the alias's
+  [request policy](#request-policy).
 - **Same API on both sides.** An `openai` body goes only to an
   `openai_compatible` provider, an `anthropic` body only to an `anthropic`
   provider. Otherwise the code is `dialect`, and the reservation is released.
@@ -306,12 +360,72 @@ those of `/v1/llm/complete`. In addition:
   - an Anthropic body without `max_tokens`;
   - a body that is not a JSON object with messages;
   - a body over 960 KiB.
-- **Accounting.** The reservation is the body's size / 3 plus its output cap
-  (`max_tokens` or `max_completion_tokens`, 4,096 when absent). Settlement uses
-  the provider-reported usage; Anthropic's cached input
-  (`cache_creation_input_tokens`, `cache_read_input_tokens`) counts as input. An
-  answer that cannot be read, or that exceeds 960 KiB, was still produced: its
-  outcome is `outcome_unknown`.
+- **Refused before any reservation** (`feature_denied`): a top-level field or
+  a tool type the alias's request policy does not allow.
+- **Accounting.** The reservation is the input estimate, media by reference
+  included, plus the output cap ([budgets](#budgets-and-consumption-llm-03)).
+  Settlement uses the provider-reported usage, and the reservation for what
+  the answer leaves out; Anthropic's cached input
+  (`cache_creation_input_tokens`, `cache_read_input_tokens`) counts as input.
+  An answer that cannot be read, or that exceeds 960 KiB, was still produced:
+  its outcome is `outcome_unknown`.
+
+### Request policy
+
+A forwarded request's top-level fields pass when they are its API's plain
+fields, and its tools when the agent runs them itself:
+- OpenAI Chat Completions: `messages`, `max_tokens`, `max_completion_tokens`,
+  `n` (1), `stream`, `stream_options`, `temperature`, `top_p`, `stop`, `seed`,
+  `frequency_penalty`, `presence_penalty`, `logit_bias`, `logprobs`,
+  `top_logprobs`, `response_format`, `tools`, `tool_choice`,
+  `parallel_tool_calls`, `functions`, `function_call`, `user`,
+  `reasoning_effort`, `verbosity`, `prompt_cache_key`, `safety_identifier`;
+  tools of type `function` or `custom`.
+- Anthropic Messages: `messages`, `max_tokens`, `system`, `stream`,
+  `temperature`, `top_p`, `top_k`, `stop_sequences`, `tools`, `tool_choice`,
+  `metadata`, `thinking`; tools without a type or of type `custom`.
+
+Anything else is refused before any reservation with `feature_denied`: a tool
+the provider runs itself (web search or fetch, code execution, file search,
+computer use, an MCP connector, an Anthropic-defined tool such as
+`bash_20250124`), and a field that changes the price of a call or keeps data
+at the provider (`service_tier`, `store`, `background`, `metadata` on OpenAI,
+`audio` and `modalities`, `prediction`, `web_search_options`, `mcp_servers`,
+`container`, a vendor extension such as `top_k` on OpenAI). Such a tool also
+fetches what the guest names from outside the VM, whose own network stays
+closed ([ADR 012](../adr/012-limits-restart-budgets-egress.md) §3). A field
+set to `null` is dropped; `store: false` and the default service tier
+(`"auto"`, and `"default"` on OpenAI, `"standard_only"` on Anthropic) pass,
+since they change nothing.
+
+The organization names what an alias allows, with `provider:manage`:
+
+```json
+POST /v1/llm/aliases/research/request-policy
+{"allowed_fields":["service_tier"],"allowed_tool_types":["web_search_20250305"],
+ "max_output_tokens":16000,"output_cap_field":"max_tokens"}
+```
+
+- `allowed_fields` and `allowed_tool_types`: at most 32 names each, of
+  lowercase letters, digits and underscores; a field the gateway rules on
+  itself (`model`, `messages`, `stream`, `stream_options`, `n`, `max_tokens`,
+  `max_completion_tokens`) is refused (400). A provider-executed tool is billed
+  by its provider beside the tokens (per search, per container hour): the
+  platform does not meter it; the tokens it adds are metered.
+- `max_output_tokens` (1 to 1,000,000): the cap of a call that declares none,
+  on every chat route; absent, 4,096 on the forward routes and 1,024 on
+  `/v1/llm/complete`. Set it to the model's maximum output when agents rely on
+  long answers.
+- `output_cap_field`: where that cap is written for an `openai_compatible`
+  provider, `max_tokens` (the default; local servers such as Ollama read only
+  it) or `max_completion_tokens` (OpenAI's reasoning models require it). An
+  `anthropic` provider reads `max_tokens` only.
+
+The body replaces the whole policy; the alias's answer lists it, and the
+creation of an alias takes the same fields. It applies from the next
+reservation, is audited (`llm.alias.request_policy_set`), and a disabled alias
+answers 409. An agent refused access to a listed alias gets `unauthorized`,
+whatever its request asks.
 
 On 2026-11-19, all seven gateway and PostgreSQL live tests passed through
 Ollama with local `forteim-ministral3-text-gpu-8k:20261030`. This is the

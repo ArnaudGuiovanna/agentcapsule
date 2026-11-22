@@ -55,6 +55,14 @@ type LLMAlias struct {
 	// that unit is unpriced.
 	AudioMicroPerMinute *int64 `json:"audio_micro_per_minute,omitempty"`
 	OCRMicroPerPage     *int64 `json:"ocr_micro_per_page,omitempty"`
+	// The request policy (llmgateway.RequestPolicy): the top-level fields
+	// and tool types a forwarded request may use beside the plain ones, in
+	// sorted order, and the output cap of a call that declares none
+	// (absent: the platform's default) with the field it is written in.
+	AllowedFields    []string `json:"allowed_fields"`
+	AllowedToolTypes []string `json:"allowed_tool_types"`
+	MaxOutputTokens  *int64   `json:"max_output_tokens,omitempty"`
+	OutputCapField   string   `json:"output_cap_field"`
 }
 
 type CreateLLMProviderInput struct {
@@ -81,6 +89,12 @@ type CreateLLMAliasInput struct {
 	// Optional prices of audio per minute and of OCR per page.
 	AudioMicroPerMinute *int64 `json:"audio_micro_per_minute,omitempty"`
 	OCRMicroPerPage     *int64 `json:"ocr_micro_per_page,omitempty"`
+	// The optional request policy; absent, the alias allows only the plain
+	// fields and the client's own tools, and keeps the default output cap.
+	AllowedFields    []string `json:"allowed_fields,omitempty"`
+	AllowedToolTypes []string `json:"allowed_tool_types,omitempty"`
+	MaxOutputTokens  *int64   `json:"max_output_tokens,omitempty"`
+	OutputCapField   string   `json:"output_cap_field,omitempty"`
 }
 
 // ErrProviderAddress: an https provider URL names an internal address
@@ -91,11 +105,16 @@ type CreateLLMAliasInput struct {
 var ErrProviderAddress = fmt.Errorf("%w: the provider URL names an internal address", ErrInput)
 
 // LLMRoute is what the gateway needs for one call. It holds a decrypted
-// credential and must stay in the gateway process memory.
+// credential and must stay in the gateway process memory. ProviderID and
+// Generation name the credential, so that the reservation can check that the
+// provider still serves it (ReserveLLM).
 type LLMRoute struct {
 	AuthMode                     string
 	Kind, BaseURL, UpstreamModel string
 	Secret                       string
+	ProviderID                   string
+	Generation                   int64
+	Policy                       llmgateway.RequestPolicy
 }
 
 // checkProviderURL accepts https to a host that is not an internal address
@@ -335,6 +354,11 @@ func (a *Accounts) CreateLLMAlias(ctx context.Context, p Principal, key string, 
 			return APIReceipt{}, err
 		}
 	}
+	policy, err := normalizeRequestPolicy(SetLLMAliasRequestPolicyInput{AllowedFields: in.AllowedFields, AllowedToolTypes: in.AllowedToolTypes,
+		MaxOutputTokens: in.MaxOutputTokens, OutputCapField: in.OutputCapField}, "")
+	if err != nil {
+		return APIReceipt{}, err
+	}
 	access := in.Access
 	if access == "" {
 		access = "organization"
@@ -368,6 +392,9 @@ func (a *Accounts) CreateLLMAlias(ctx context.Context, p Principal, key string, 
 		if _, err := normalizeOperations(operations, kind); err != nil {
 			return 0, nil, err
 		}
+		if _, err := normalizeRequestPolicy(policy, kind); err != nil {
+			return 0, nil, err
+		}
 		var taken bool
 		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM llm_model_aliases WHERE tenant_id=$1 AND alias=$2)`, p.TenantID, in.Alias).Scan(&taken); err != nil {
 			return 0, nil, err
@@ -376,9 +403,9 @@ func (a *Accounts) CreateLLMAlias(ctx context.Context, p Principal, key string, 
 			return 0, nil, ErrConflict
 		}
 		v, err := scanAlias(tx.QueryRow(ctx, `INSERT INTO llm_model_aliases(tenant_id,alias,provider_id,upstream_model,created_by,input_micro_per_mtok,output_micro_per_mtok,priced,access,
-            operations,audio_micro_per_minute,ocr_micro_per_page)
-            VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING `+aliasColumns, p.TenantID, in.Alias, in.ProviderID, in.UpstreamModel, p.ID, inputPrice, outputPrice, priced, access,
-			operations, in.AudioMicroPerMinute, in.OCRMicroPerPage))
+            operations,audio_micro_per_minute,ocr_micro_per_page,allowed_fields,allowed_tool_types,max_output_tokens,output_cap_field)
+            VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING `+aliasColumns, p.TenantID, in.Alias, in.ProviderID, in.UpstreamModel, p.ID, inputPrice, outputPrice, priced, access,
+			operations, in.AudioMicroPerMinute, in.OCRMicroPerPage, policy.AllowedFields, policy.AllowedToolTypes, policy.MaxOutputTokens, policy.OutputCapField))
 		if err != nil {
 			return 0, nil, err
 		}
@@ -393,12 +420,13 @@ func (a *Accounts) CreateLLMAlias(ctx context.Context, p Principal, key string, 
 	return r, commit(ctx, tx)
 }
 
-const aliasColumns = `alias,provider_id,upstream_model,status,created_at,input_micro_per_mtok,output_micro_per_mtok,priced,access,operations,audio_micro_per_minute,ocr_micro_per_page`
+const aliasColumns = `alias,provider_id,upstream_model,status,created_at,input_micro_per_mtok,output_micro_per_mtok,priced,access,operations,audio_micro_per_minute,ocr_micro_per_page,
+    allowed_fields,allowed_tool_types,max_output_tokens,output_cap_field`
 
 func scanAlias(row pgx.Row) (LLMAlias, error) {
 	var v LLMAlias
 	err := row.Scan(&v.Alias, &v.ProviderID, &v.UpstreamModel, &v.Status, &v.CreatedAt, &v.InputMicroPerMTok, &v.OutputMicroPerMTok, &v.Priced, &v.Access,
-		&v.Operations, &v.AudioMicroPerMinute, &v.OCRMicroPerPage)
+		&v.Operations, &v.AudioMicroPerMinute, &v.OCRMicroPerPage, &v.AllowedFields, &v.AllowedToolTypes, &v.MaxOutputTokens, &v.OutputCapField)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = ErrNotFound
 	}
@@ -522,22 +550,26 @@ func (a *Accounts) ResolveLLMRoute(ctx context.Context, tenantID, alias string) 
 	}
 	defer rollback(tx)
 	var r LLMRoute
-	var providerID string
-	var generation int64
 	var sealed []byte
-	err = tx.QueryRow(ctx, `SELECT p.id,p.kind,p.base_url,m.upstream_model,p.secret_generation,p.secret_ciphertext,p.auth_mode
+	var maxOutput *int64
+	err = tx.QueryRow(ctx, `SELECT p.id,p.kind,p.base_url,m.upstream_model,p.secret_generation,p.secret_ciphertext,p.auth_mode,
+        m.allowed_fields,m.allowed_tool_types,m.max_output_tokens,m.output_cap_field
         FROM organizations o JOIN llm_model_aliases m ON m.tenant_id=o.id
         JOIN llm_providers p ON (p.tenant_id,p.id)=(m.tenant_id,m.provider_id)
         WHERE o.id=$1 AND o.status='active' AND m.alias=$2 AND m.status='active' AND p.status='active' FOR SHARE OF m, p`, tenantID, alias).
-		Scan(&providerID, &r.Kind, &r.BaseURL, &r.UpstreamModel, &generation, &sealed, &r.AuthMode)
+		Scan(&r.ProviderID, &r.Kind, &r.BaseURL, &r.UpstreamModel, &r.Generation, &sealed, &r.AuthMode,
+			&r.Policy.AllowedFields, &r.Policy.AllowedToolTypes, &maxOutput, &r.Policy.OutputCapField)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return LLMRoute{}, ErrNotFound
 	}
 	if err != nil {
 		return LLMRoute{}, err
 	}
+	if maxOutput != nil {
+		r.Policy.MaxOutputTokens = int(*maxOutput)
+	}
 	if r.AuthMode == "secret" {
-		if r.Secret, err = a.openProviderSecret(tenantID, providerID, generation, sealed); err != nil {
+		if r.Secret, err = a.openProviderSecret(tenantID, r.ProviderID, r.Generation, sealed); err != nil {
 			return LLMRoute{}, err
 		}
 	}

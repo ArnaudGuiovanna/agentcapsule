@@ -174,6 +174,7 @@ only its own.
 | `POST /v1/llm/aliases/{alias}/access` (a disposable alias) | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
 | `POST /v1/llm/aliases/{alias}/prices` (a disposable alias) | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
 | `POST /v1/llm/aliases/{alias}/operations` (a disposable alias) | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
+| `POST /v1/llm/aliases/{alias}/request-policy` (a disposable alias) | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
 | `GET /v1/llm/aliases/{alias}/grants` | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
 | `POST /v1/llm/aliases/{alias}/grants` (a disposable alias, to the agent) | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |
 | `POST /v1/llm/aliases/{alias}/grants/{id}/revoke` (a disposable grant) | yes | yes | 403 | 403 | 403 | 403 | 403 | 403 | 403 | 404 | 401 | 401 | 403 |

@@ -1834,6 +1834,10 @@ paths:
                 operations: {$ref: '#/components/schemas/LlmOperations'}
                 audio_micro_per_minute: {type: integer, minimum: 0, maximum: 1000000000000, description: Estimated price per minute of audio transcribed}
                 ocr_micro_per_page: {type: integer, minimum: 0, maximum: 1000000000000, description: Estimated price per page of OCR}
+                allowed_fields: {$ref: '#/components/schemas/LlmPolicyNames'}
+                allowed_tool_types: {$ref: '#/components/schemas/LlmPolicyNames'}
+                max_output_tokens: {type: integer, minimum: 1, maximum: 1000000, description: "Output cap of a call that declares none; see POST /v1/llm/aliases/{alias}/request-policy"}
+                output_cap_field: {type: string, enum: [max_tokens, max_completion_tokens], default: max_tokens}
       responses:
         '201': {$ref: '#/components/responses/LlmAliasReceipt'}
         default: {$ref: '#/components/responses/Problem'}
@@ -1937,6 +1941,39 @@ paths:
               required: [operations]
               properties:
                 operations: {$ref: '#/components/schemas/LlmOperations'}
+      responses:
+        '200': {$ref: '#/components/responses/LlmAliasReceipt'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/llm/aliases/{alias}/request-policy:
+    post:
+      operationId: setLlmAliasRequestPolicy
+      summary: Replace what an alias lets a call ask of its provider
+      description: >-
+        Requires provider:manage and current role org_owner or org_admin.
+        A request forwarded from the model endpoint passes with its
+        dialect's plain fields and the client's own tools only (OpenAI
+        `function` and `custom` tools, Anthropic tools without a type or of
+        type `custom`). A tool the provider runs itself (web search or
+        fetch, code execution, file search, computer use, an MCP connector)
+        and a field that changes the price of a call or keeps data at the
+        provider (`service_tier`, `store`, `background`, audio output, a
+        vendor extension) are refused before any reservation, with the
+        channel code `feature_denied`, unless named here. A call that
+        declares no output cap is held to `max_output_tokens` (absent: 4,096
+        on the forward routes, 1,024 on /v1/llm/complete), written into the
+        request in `output_cap_field`, and reserved. The body replaces the
+        whole policy; a list left out is empty. An anthropic provider reads
+        `max_tokens` only (400 otherwise). Takes effect on the next
+        reservation. A disabled alias returns 409.
+      security: [{delegatedBearer: []}, {serviceBearer: []}]
+      parameters:
+        - {name: alias, in: path, required: true, schema: {type: string, minLength: 1, maxLength: 100}}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/LlmRequestPolicy'}
       responses:
         '200': {$ref: '#/components/responses/LlmAliasReceipt'}
         default: {$ref: '#/components/responses/Problem'}
@@ -4678,8 +4715,13 @@ components:
           description: The organization's sum of the lines, with the same fields except agent_id and alias.
     LlmAlias:
       type: object
-      required: [alias, provider_id, upstream_model, status, created_at, input_micro_per_mtok, output_micro_per_mtok, priced, access, operations]
+      required: [alias, provider_id, upstream_model, status, created_at, input_micro_per_mtok, output_micro_per_mtok, priced, access, operations,
+        allowed_fields, allowed_tool_types, output_cap_field]
       properties:
+        allowed_fields: {$ref: '#/components/schemas/LlmPolicyNames'}
+        allowed_tool_types: {$ref: '#/components/schemas/LlmPolicyNames'}
+        max_output_tokens: {type: integer, description: "Output cap of a call that declares none; absent, the platform's default"}
+        output_cap_field: {type: string, enum: [max_tokens, max_completion_tokens]}
         operations: {$ref: '#/components/schemas/LlmOperations'}
         audio_micro_per_minute: {type: integer, description: "Price per minute of audio; absent, transcription is unpriced"}
         ocr_micro_per_page: {type: integer, description: "Price per OCR page; absent, OCR is unpriced"}
@@ -4703,6 +4745,26 @@ components:
       maxItems: 5
       uniqueItems: true
       items: {type: string, enum: [chat, vision, embed, transcribe, ocr]}
+    LlmPolicyNames:
+      type: array
+      description: >-
+        Top-level fields, or tool types, a forwarded request may use beside
+        the plain ones (for example `service_tier`, `store`,
+        `web_search_options`, `mcp_servers`; `web_search_20250305`,
+        `code_interpreter`). Sorted in answers. A field the gateway rules on
+        itself (`model`, `messages`, `stream`, `stream_options`, `n`,
+        `max_tokens`, `max_completion_tokens`) is refused.
+      maxItems: 32
+      uniqueItems: true
+      items: {type: string, pattern: '^[a-z][a-z0-9_]{0,63}$'}
+    LlmRequestPolicy:
+      type: object
+      additionalProperties: false
+      properties:
+        allowed_fields: {$ref: '#/components/schemas/LlmPolicyNames'}
+        allowed_tool_types: {$ref: '#/components/schemas/LlmPolicyNames'}
+        max_output_tokens: {type: integer, minimum: 1, maximum: 1000000}
+        output_cap_field: {type: string, enum: [max_tokens, max_completion_tokens], default: max_tokens}
     ServiceAccount:
       type: object
       required: [id, name, role, status, created_at]

@@ -222,3 +222,56 @@ Each is a default the code applies until the product owner answers.
      days (counted as spent).
    - (c) Release it automatically (counted as free).
    - Recommendation: (a). (c) would read uncertainty as zero spend.
+
+## Changes after the v0.1.0 audit
+
+**Lot SEC-2 (findings S-11, S-12, S-13, L-06, L-07, L-08, and the gateway
+part of P-12).** What a reservation counts and what a hard budget promises
+changed:
+
+- **Request policy, per alias.** A forwarded request passed every field
+  except `stream`, `n` and the output caps: a guest could ask for a
+  provider's web search, code execution or MCP connector, or a priority
+  service tier, outside the VM's closed network and beyond any metered
+  token. A forwarded request now passes only its API's plain fields and the
+  client's own tools; anything else is refused before any reservation with
+  the channel code `feature_denied`, unless the alias's request policy names
+  it (`POST /v1/llm/aliases/{alias}/request-policy`, `provider:manage`,
+  audited `alias.request_policy_set`, migration 0065). The organization, not
+  the operator, decides, as for access and prices (§1, §2): the provider
+  account and its bills are the organization's, and an alias is
+  organization text the operator does not see. A provider-executed tool's
+  own fees (per search, per container hour) are not metered.
+- **Output cap.** A call that declares no output cap reserved 4,096 tokens
+  (1,024 on the text route) and the provider could write more. The cap is now
+  written into the request (`max_tokens`, or `max_completion_tokens` when the
+  alias's `output_cap_field` says so), at the alias's `max_output_tokens`,
+  or the old defaults, and reserved.
+- **Input estimate.** One token per three ASCII bytes and one per other
+  byte; each image the provider fetches itself counts 4,096 tokens and each
+  document 300,000.
+- **In flight.** An agent has at most 8 model calls in flight in its worker
+  (`llm.max_calls_per_agent`, 1 to 64), every route counted; the next is
+  refused before any reservation with `concurrency_limited`. Embeddings,
+  transcription and OCR now take the request key's guard of chat calls.
+- **What a hard budget guarantees** (§2, "Hard and soft"): the reservations
+  of a window never pass the limit, under any concurrency. Its settled spend
+  passes it only by what calls settle above their reservation: an input
+  estimate passed, or an output past a cap the provider ignored; at most
+  `max_calls_per_agent` calls of an agent can do so at once, and the next
+  call is then refused. [api/llm.md](../api/llm.md#budgets-and-consumption-llm-03)
+  states the cases.
+- **Unknown outcomes** (§3): only a failure before any connection to the
+  provider (DNS, refused connection, TLS handshake, refused address) is
+  retried and released. Any transport error once connected is an unknown
+  outcome; it used to be retried and released at zero unless it was a
+  timeout.
+- **Settlement.** A unary answer without usage, or with part of it, was
+  settled at zero for what it left out; it is now settled at the
+  reservation's input estimate and output cap. A call reserved under a host
+  admission that then fails is released at once, instead of staying
+  `reserved` until the organization resolves it. A credential rotated between
+  a route's resolution and its reservation is resolved again: the reservation
+  reads the provider again in its transaction. (A provider disabled in
+  between was already refused: disabling a provider disables its aliases in
+  the same transaction.)

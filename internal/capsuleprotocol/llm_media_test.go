@@ -18,6 +18,10 @@ func mediaFault(key string) error {
 		return &PlatformError{Code: "outcome_unknown"}
 	case "leak":
 		return errors.New("sk-live-provider-secret")
+	case "feature":
+		return &PlatformError{Code: "feature_denied"}
+	case "busy":
+		return &PlatformError{Code: "concurrency_limited"}
 	}
 	return nil
 }
@@ -76,7 +80,8 @@ func TestLLMMediaRoutesCarryTypedRequestsAndOutcomes(t *testing.T) {
 	if err != nil || o.PagesProcessed != 2 || o.Pages[0].Markdown != "# application/pdf" {
 		t.Fatal(o, err)
 	}
-	for key, code := range map[string]string{"unsupported": "unsupported", "unknown": "outcome_unknown", "leak": "unavailable"} {
+	for key, code := range map[string]string{"unsupported": "unsupported", "unknown": "outcome_unknown", "leak": "unavailable",
+		"feature": "feature_denied", "busy": "concurrency_limited"} {
 		_, err1 := c.EmbedLLM(t.Context(), key, mediaEmbed)
 		_, err2 := c.TranscribeLLM(t.Context(), key, mediaTranscribe)
 		_, err3 := c.OCRLLM(t.Context(), key, mediaOCR)

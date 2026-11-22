@@ -82,6 +82,7 @@ var auditedRoutes = map[string]auditedRoute{
 	"POST /v1/llm/aliases/{alias}/access":                       {"llm.alias.access_set", "alias", ""},
 	"POST /v1/llm/aliases/{alias}/prices":                       {"llm.alias.prices_set", "alias", ""},
 	"POST /v1/llm/aliases/{alias}/operations":                   {"llm.alias.operations_set", "alias", ""},
+	"POST /v1/llm/aliases/{alias}/request-policy":               {"llm.alias.request_policy_set", "alias", ""},
 	"POST /v1/llm/aliases/{alias}/grants":                       {"llm.alias.grant_created", "alias", ""},
 	"POST /v1/llm/aliases/{alias}/grants/{id}/revoke":           {"llm.alias.grant_revoked", "alias", "id"},
 	"POST /v1/llm/budgets":                                      {"llm.budget.created", "", ""},
