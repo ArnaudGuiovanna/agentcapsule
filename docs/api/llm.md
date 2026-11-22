@@ -168,9 +168,9 @@ call, and a credential rotated since then is resolved again, so that a
 revoked credential is never used. The reservation counts:
 - the **output cap** the provider is held to: the one the request declares,
   else the alias's `max_output_tokens`, else 4,096 tokens on the forward
-  routes and 1,024 on `/v1/llm/complete`. A cap the request does not declare
-  is written into the request sent to the provider, so the answer cannot be
-  longer;
+  routes and 1,024 on `/v1/llm/complete`. The cap is written into the request
+  sent to the provider, in the field the alias names (`output_cap_field`),
+  whichever field the agent's SDK used, so the answer cannot be longer;
 - an **input estimate**: one token per three ASCII bytes of the request and
   one per other byte (text in other scripts has more tokens per byte), plus,
   for each medium the provider fetches itself, 4,096 tokens per image and
@@ -210,11 +210,11 @@ fixed order while a call reserves, so concurrent calls never admit more
 the window, at its settlement or its reservation, plus its own reservation,
 fits. The window can still pass the limit when a call settles above its
 reservation, by that excess:
-- output: never above the cap the provider is held to, if the provider
-  honours the cap field (an `openai_compatible` server that ignores it, such
-  as Ollama with `max_completion_tokens`, is bounded only by its own limit;
-  set the alias's `max_output_tokens` to the model's maximum and its
-  `output_cap_field` to the field the server reads);
+- output: never above the cap the provider is held to, if the provider reads
+  the alias's `output_cap_field` (Ollama reads `max_tokens` only, OpenAI's
+  reasoning models `max_completion_tokens` only); a server that reads neither
+  is bounded only by its own limit, so set the alias's `max_output_tokens` to
+  the model's maximum;
 - input: above the estimate when the text has more tokens per ASCII byte
   than three (single characters split by spaces, for example), when an image
   costs more than 4,096 tokens (some providers report an image as tens of
@@ -347,8 +347,9 @@ those of `/v1/llm/complete`. In addition:
 
 - **The body is the agent's.** Messages, client tools, images and plain
   options reach the provider unchanged. The gateway sets `model` to the
-  alias's upstream model, adds the credential, and writes an output cap into
-  a request that declares none. What else the body may ask is the alias's
+  alias's upstream model, adds the credential, and writes the output cap in
+  the field the provider reads (the alias's cap when the request declares
+  none). What else the body may ask is the alias's
   [request policy](#request-policy).
 - **Same API on both sides.** An `openai` body goes only to an
   `openai_compatible` provider, an `anthropic` body only to an `anthropic`
@@ -383,7 +384,8 @@ fields, and its tools when the agent runs them itself:
   tools of type `function` or `custom`.
 - Anthropic Messages: `messages`, `max_tokens`, `system`, `stream`,
   `temperature`, `top_p`, `top_k`, `stop_sequences`, `tools`, `tool_choice`,
-  `metadata`, `thinking`; tools without a type or of type `custom`.
+  `metadata`, `thinking`, `output_config`; tools without a type or of type
+  `custom`.
 
 Anything else is refused before any reservation with `feature_denied`: a tool
 the provider runs itself (web search or fetch, code execution, file search,
@@ -391,7 +393,8 @@ computer use, an MCP connector, an Anthropic-defined tool such as
 `bash_20250124`), and a field that changes the price of a call or keeps data
 at the provider (`service_tier`, `store`, `background`, `metadata` on OpenAI,
 `audio` and `modalities`, `prediction`, `web_search_options`, `mcp_servers`,
-`container`, a vendor extension such as `top_k` on OpenAI). Such a tool also
+`container`, fallback models, a vendor extension such as `top_k` on OpenAI).
+Such a tool also
 fetches what the guest names from outside the VM, whose own network stays
 closed ([ADR 012](../adr/012-limits-restart-budgets-egress.md) §3). A field
 set to `null` is dropped; `store: false` and the default service tier
@@ -416,10 +419,11 @@ POST /v1/llm/aliases/research/request-policy
   on every chat route; absent, 4,096 on the forward routes and 1,024 on
   `/v1/llm/complete`. Set it to the model's maximum output when agents rely on
   long answers.
-- `output_cap_field`: where that cap is written for an `openai_compatible`
-  provider, `max_tokens` (the default; local servers such as Ollama read only
-  it) or `max_completion_tokens` (OpenAI's reasoning models require it). An
-  `anthropic` provider reads `max_tokens` only.
+- `output_cap_field`: where the cap of every call, declared or not, is
+  written for an `openai_compatible` provider: `max_tokens` (the default;
+  local servers such as Ollama read only it) or `max_completion_tokens`
+  (OpenAI's reasoning models require it). A cap the agent wrote in the other
+  field is moved there. An `anthropic` provider reads `max_tokens` only.
 
 The body replaces the whole policy; the alias's answer lists it, and the
 creation of an alias takes the same fields. It applies from the next

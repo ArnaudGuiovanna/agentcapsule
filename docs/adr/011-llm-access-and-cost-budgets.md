@@ -246,7 +246,9 @@ changed:
   (1,024 on the text route) and the provider could write more. The cap is now
   written into the request (`max_tokens`, or `max_completion_tokens` when the
   alias's `output_cap_field` says so), at the alias's `max_output_tokens`,
-  or the old defaults, and reserved.
+  or the old defaults, and reserved. A declared cap is moved to that field
+  too: Ollama, for one, ignores `max_completion_tokens`, which OpenAI's SDKs
+  write.
 - **Input estimate.** One token per three ASCII bytes and one per other
   byte; each image the provider fetches itself counts 4,096 tokens and each
   document 300,000.

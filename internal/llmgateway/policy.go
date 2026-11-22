@@ -80,7 +80,7 @@ var plainFields = map[string][]string{
 		"response_format", "tools", "tool_choice", "parallel_tool_calls", "functions", "function_call", "user", "reasoning_effort",
 		"verbosity", "prompt_cache_key", "safety_identifier"},
 	DialectAnthropic: {"model", "messages", "stream", "max_tokens", "system", "temperature", "top_p", "top_k", "stop_sequences",
-		"tools", "tool_choice", "metadata", "thinking"},
+		"tools", "tool_choice", "metadata", "thinking", "output_config"},
 }
 
 // neutralValues are the values of a denied field that change nothing: the
@@ -178,9 +178,12 @@ func PlanForward(p RequestPolicy, dialect string, body []byte, stream bool) (For
 	return plan, err
 }
 
-// prepareForward parses a forwarded request, applies the policy, and holds a
-// request that declares no output cap to the policy's (or the default),
-// written into its fields.
+// prepareForward parses a forwarded request, applies the policy, and holds the
+// request to the output cap it is reserved for: its own, else the policy's,
+// else the default. The cap is written in the one field the provider reads
+// (the policy's for an openai_compatible provider), whichever field the
+// agent's SDK used: a server that reads only max_tokens would otherwise
+// ignore a max_completion_tokens, and write past the reservation.
 func prepareForward(p RequestPolicy, dialect string, body []byte, stream bool) (map[string]json.RawMessage, ForwardPlan, error) {
 	fields, declared, err := forwardFields(dialect, body, stream)
 	if err != nil {
@@ -190,12 +193,13 @@ func prepareForward(p RequestPolicy, dialect string, body []byte, stream bool) (
 		return nil, ForwardPlan{}, err
 	}
 	output := p.outputCap(declared, DefaultForwardOutput)
-	if declared == 0 {
-		// Only an openai body can lack a cap; one set to null is replaced.
-		delete(fields, "max_tokens")
-		delete(fields, "max_completion_tokens")
-		fields[p.capField()] = mustMarshal(output)
+	field := "max_tokens"
+	if dialect == DialectOpenAI {
+		field = p.capField()
 	}
+	delete(fields, "max_tokens")
+	delete(fields, "max_completion_tokens")
+	fields[field] = mustMarshal(output)
 	images, documents := mediaReferences(fields)
 	return fields, ForwardPlan{Input: EstimateTokens(body) + images*ImageInputTokens + documents*DocumentInputTokens, Output: int64(output)}, nil
 }

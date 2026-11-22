@@ -75,6 +75,8 @@ func TestServerToolsAndCostOptionsAreRefusedUnlessTheAliasAllowsThem(t *testing.
 		{"anthropic mcp connector", DialectAnthropic, `{"max_tokens":9,` + msg + `,"mcp_servers":[{"type":"url","url":"https://mcp.example","name":"x"}]}`, RequestPolicy{AllowedFields: []string{"mcp_servers"}}},
 		{"anthropic container", DialectAnthropic, `{"max_tokens":9,` + msg + `,"container":"container_1"}`, RequestPolicy{AllowedFields: []string{"container"}}},
 		{"anthropic priority tier", DialectAnthropic, `{"max_tokens":9,` + msg + `,"service_tier":"priority"}`, RequestPolicy{AllowedFields: []string{"service_tier"}}},
+		{"anthropic fallback models", DialectAnthropic, `{"max_tokens":9,` + msg + `,"fallbacks":[{"model":"other"}]}`, RequestPolicy{AllowedFields: []string{"fallbacks"}}},
+		{"anthropic defined client tool", DialectAnthropic, `{"max_tokens":9,` + msg + `,"tools":[{"type":"bash_20250124","name":"bash"}]}`, RequestPolicy{AllowedToolTypes: []string{"bash_20250124"}}},
 	}
 	for _, tc := range denied {
 		route := openai
@@ -116,7 +118,8 @@ func TestServerToolsAndCostOptionsAreRefusedUnlessTheAliasAllowsThem(t *testing.
 			`"parallel_tool_calls":true,"temperature":0.2,"top_p":0.9,"stop":["x"],"seed":1,"response_format":{"type":"json_object"},"logprobs":true,"top_logprobs":2,` +
 			`"frequency_penalty":0,"presence_penalty":0,"logit_bias":{},"user":"u","reasoning_effort":"low","functions":[{"name":"h"}],"function_call":"auto","n":1,"stream_options":null}`},
 		{DialectAnthropic, `{"max_tokens":9,` + msg + `,"system":"be brief","tools":[{"name":"bash","input_schema":{}},{"type":"custom","name":"x","input_schema":{}}],` +
-			`"tool_choice":{"type":"auto"},"temperature":0.2,"top_p":0.9,"top_k":5,"stop_sequences":["x"],"metadata":{"user_id":"u"},"thinking":{"type":"enabled","budget_tokens":1024}}`},
+			`"tool_choice":{"type":"auto"},"temperature":0.2,"top_p":0.9,"top_k":5,"stop_sequences":["x"],"metadata":{"user_id":"u"},"thinking":{"type":"enabled","budget_tokens":1024},` +
+			`"output_config":{"effort":"low"}}`},
 	} {
 		route := openai
 		if c.dialect == DialectAnthropic {
@@ -186,7 +189,10 @@ func TestARequestWithoutAnOutputCapIsHeldToTheAliasMaximum(t *testing.T) {
 			t.Fatal("both caps sent", body.Load())
 		}
 	}
-	// A declared cap is kept and reserved, even above the alias's maximum.
+	// A declared cap is kept and reserved, even above the alias's maximum,
+	// and written in the field the provider reads, whichever the agent's SDK
+	// used: a server that reads max_tokens only (Ollama) would ignore a
+	// max_completion_tokens.
 	route.Policy = RequestPolicy{MaxOutputTokens: 100}
 	declared := []byte(`{"messages":[{"role":"user","content":"hi"}],"max_completion_tokens":300}`)
 	if plan, err := PlanForward(route.Policy, DialectOpenAI, declared, false); err != nil || plan.Output != 300 {
@@ -195,8 +201,26 @@ func TestARequestWithoutAnOutputCapIsHeldToTheAliasMaximum(t *testing.T) {
 	if _, err := g.Forward(t.Context(), route, DialectOpenAI, declared); err != nil {
 		t.Fatal(err)
 	}
-	if sent := sentFields(t, body); string(sent["max_completion_tokens"]) != "300" || sent["max_tokens"] != nil {
+	if sent := sentFields(t, body); string(sent["max_tokens"]) != "300" || sent["max_completion_tokens"] != nil {
 		t.Fatal("declared cap", body.Load())
+	}
+	route.Policy = RequestPolicy{OutputCapField: "max_completion_tokens"}
+	if _, err := g.Forward(t.Context(), route, DialectOpenAI, []byte(`{"messages":[{"role":"user","content":"hi"}],"max_tokens":70}`)); err != nil {
+		t.Fatal(err)
+	}
+	if sent := sentFields(t, body); string(sent["max_completion_tokens"]) != "70" || sent["max_tokens"] != nil {
+		t.Fatal("declared cap in the other field", body.Load())
+	}
+	// Both declared: the reserved one is the one sent.
+	both := []byte(`{"messages":[{"role":"user","content":"hi"}],"max_tokens":9000,"max_completion_tokens":40}`)
+	if plan, err := PlanForward(route.Policy, DialectOpenAI, both, false); err != nil || plan.Output != 40 {
+		t.Fatal(plan, err)
+	}
+	if _, err := g.Forward(t.Context(), route, DialectOpenAI, both); err != nil {
+		t.Fatal(err)
+	}
+	if sent := sentFields(t, body); string(sent["max_completion_tokens"]) != "40" || sent["max_tokens"] != nil {
+		t.Fatal("both caps", body.Load())
 	}
 	// The unary text route is held the same way: its default is 1,024.
 	ask := Request{Messages: []Message{{Role: "user", Content: "hi"}}}
