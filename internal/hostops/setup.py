@@ -40,9 +40,9 @@ def normalize_profile(raw):
             raise ValueError("invalid "+field)
     if any(type(p[k]) != int for k in ("api_port","oidc_port","storage_mib","max_active","first_uid","last_uid")):
         raise ValueError("expected integer capacity and port settings")
-    if p["oidc_port"] == p["api_port"] or not 1 <= p["oidc_port"] <= 65535 or p["oidc_port"] in (8443,9464,9465,9466,46357,55432):
+    if p["oidc_port"] == p["api_port"] or not 1 <= p["oidc_port"] <= 65535 or p["oidc_port"] in (8443,9445,9464,9465,9466,46357,55432):
         raise ValueError("invalid OIDC port")
-    if (p["api_port"] in (8443,9464,9465,9466,46357,55432) or not 1 <= p["api_port"] <= 65535
+    if (p["api_port"] in (8443,9445,9464,9465,9466,46357,55432) or not 1 <= p["api_port"] <= 65535
             or min(p["storage_mib"],p["max_active"]) < 1 or not 10000 <= p["first_uid"] <= p["last_uid"] < 2147483647
             or p["last_uid"]-p["first_uid"] > 1 << 20):
         raise ValueError("invalid profile capacity or listen port")
@@ -422,6 +422,8 @@ def configure(p,version,initial):
         if upgrade["authority_id"]!=cfg["restore_authority"]["identity"]:
             raise ValueError("authority identity changed during upgrade")
         renewed=renew_certificates(p)
+        if (ETC/"oidc.env").is_file():
+            oidc_listeners(p)
         setup_oidc_unit()
         setup_interop_images()
         run("systemctl","daemon-reload")
@@ -483,7 +485,7 @@ SUSPENDED_SERVICES = ("agentcapsule-oidc", "agentcapsule-interop", "agentcapsule
 def install_maintenance_gates():
     if (UNIT_DIR/"agentcapsule-oidc.service").is_file():
         setup_oidc_unit()
-    for unit in (*SUSPENDED_SERVICES, "agentcapsule-api"):
+    for unit in (*SUSPENDED_SERVICES, *oidc_edge(), "agentcapsule-api"):
         gates = [STATE / "maintenance"]
         if unit == "agentcapsule-api":
             gates.append(STATE / "admissions-paused")
@@ -509,7 +511,7 @@ def pause_admissions():
 
 def suspend_services():
     write_file(STATE / "maintenance", b"services suspended\n")
-    run("systemctl", "stop", *SUSPENDED_SERVICES)
+    run("systemctl", "stop", *oidc_edge(), *SUSPENDED_SERVICES)
 
 
 def start_services(p):
@@ -522,6 +524,8 @@ def start_services(p):
         if service=="agentcapsule-oidc" and output("systemctl","show","--value","-p","ActiveState",service+".service")=="failed":
             run("python3","-I","/usr/local/lib/agentcapsule-host/oidc-container.py","prepare")
             run("systemctl","reset-failed",service+".service")
+        run("systemctl", "enable", "--now", service+".service")
+    for service in oidc_edge():
         run("systemctl", "enable", "--now", service+".service")
     port=str(p["oidc_port"])
     realm=f"https://{p['oidc_name']}:{port}/realms/agentcapsule"
@@ -537,8 +541,9 @@ def start_services(p):
         time.sleep(2)
     else:
         raise ValueError("OIDC issuer discovery did not pass")
-    for service in SUSPENDED_SERVICES:
+    for service in (*SUSPENDED_SERVICES, *oidc_edge()):
         run("systemctl", "is-active", "--quiet", service)
+    bootstrap_admin=harden_oidc() if (ETC/"oidc.env").is_file() else None
     clear_gate("admissions-paused")
     try:
         run("systemctl", "enable", "--now", "agentcapsule-api.service")
@@ -554,7 +559,8 @@ def start_services(p):
     except Exception:
         pause_admissions()
         raise
-    return {"services_started":True, "url":f"https://{p['api_name']}:{p['api_port']}", "oidc_issuer":realm}
+    return {"services_started":True, "url":f"https://{p['api_name']}:{p['api_port']}", "oidc_issuer":realm,
+            **({"oidc_bootstrap_admin":bootstrap_admin} if bootstrap_admin else {})}
 
 
 def worker_exclusive(args, profile, checkpoint):
@@ -811,7 +817,7 @@ def drain(profile):
             # Also recover an interrupted older drain whose single marker
             # stopped the worker on reboot. The API retains its separate gate.
             clear_gate("maintenance")
-            run("systemctl", "start", *SUSPENDED_SERVICES)
+            run("systemctl", "start", *SUSPENDED_SERVICES, *oidc_edge())
             while pending_operations(profile):
                 time.sleep(2)
         suspend_services()
@@ -966,8 +972,7 @@ def setup_oidc(p):
     if not env.exists():
         data=dict(KC_DB="postgres",KC_DB_URL="jdbc:postgresql://127.0.0.1:55432/keycloak",KC_DB_USERNAME="keycloak",
                   KC_DB_PASSWORD=dbpass,KC_HOSTNAME="https://"+p["oidc_name"]+":"+str(p["oidc_port"]),
-                  KC_HTTPS_PORT=str(p["oidc_port"]),KC_HTTPS_CERTIFICATE_FILE="/keycloak-tls/tls.crt",
-                  KC_HTTPS_CERTIFICATE_KEY_FILE="/keycloak-tls/tls.key",KC_BOOTSTRAP_ADMIN_USERNAME="operator",
+                  KC_BOOTSTRAP_ADMIN_USERNAME="operator",
                   KC_BOOTSTRAP_ADMIN_PASSWORD=secrets.token_hex(32),MONAPP_REDIRECT_URI=p["monapp_redirect_uri"])
         if any("\n" in v or "\r" in v for v in data.values()):
             raise ValueError("invalid OIDC environment")
@@ -975,6 +980,7 @@ def setup_oidc(p):
     (ETC/"oidc").mkdir(exist_ok=True)
     (ETC/"oidc").chmod(0o755)
     install_file(ACTIVE/"oidc/realm.json",ETC/"oidc/realm.json")
+    oidc_listeners(p)
     setup_oidc_unit()
 
 
@@ -1011,3 +1017,116 @@ def setup_oidc_unit():
         template=template.replace(legacy_run,"/usr/bin/podman run --rm --cidfile=/var/lib/agentcapsule-oidc/container-id --name agentcapsule-oidc ")
         template=template.replace(legacy_stop,"ExecStop="+launch+" stop\nExecStopPost="+launch+" cleanup")
     write_file(UNIT_DIR/"agentcapsule-oidc.service",template.replace(image["ref"],image["tag"]).encode(),0o644)
+    edge=ACTIVE/"oidc"/(OIDC_EDGE+".service")
+    if edge.is_file():
+        install_file(edge,UNIT_DIR/edge.name)
+
+
+# The identity provider's listeners (S-19): Keycloak on loopback only, its
+# administration and management with it, one node (no JGroups port); the
+# edge (agentcapsule-oidc-edge, internal/oidcedge) on the public port, with
+# the identity provider's certificate, forwards only the realms' pages and
+# endpoints and the static files. Brute-force detection guards the master
+# realm and the platform's; the bootstrap administrator is deleted once a
+# permanent one exists.
+OIDC_EDGE="agentcapsule-oidc-edge"
+OIDC_LOOPBACK_PORT=9445
+OIDC_LOOPBACK="http://127.0.0.1:"+str(OIDC_LOOPBACK_PORT)
+OIDC_LISTENERS=dict(KC_HTTP_ENABLED="true",KC_HTTP_HOST="127.0.0.1",KC_HTTP_PORT=str(OIDC_LOOPBACK_PORT),
+                    KC_HOSTNAME_ADMIN="http://localhost:"+str(OIDC_LOOPBACK_PORT),KC_PROXY_HEADERS="xforwarded",
+                    KC_PROXY_TRUSTED_ADDRESSES="127.0.0.1/32",KC_CACHE="local",KC_HEALTH_ENABLED="false",
+                    KC_METRICS_ENABLED="false")
+# What an earlier release wrote: Keycloak served TLS on the public port.
+OIDC_RETIRED_KEYS=("KC_HTTPS_PORT","KC_HTTPS_CERTIFICATE_FILE","KC_HTTPS_CERTIFICATE_KEY_FILE","KC_HTTPS_HOST")
+BRUTE_FORCE=dict(bruteForceProtected=True,permanentLockout=False,failureFactor=5,waitIncrementSeconds=60,
+                 maxFailureWaitSeconds=900,maxDeltaTimeSeconds=43200,quickLoginCheckMilliSeconds=1000,
+                 minimumQuickLoginWaitSeconds=60)
+BOOTSTRAP_KEYS=("KC_BOOTSTRAP_ADMIN_USERNAME","KC_BOOTSTRAP_ADMIN_PASSWORD")
+
+
+def oidc_edge():
+    # The edge's unit, once installed (a release before it has none).
+    return (OIDC_EDGE,) if (UNIT_DIR/(OIDC_EDGE+".service")).is_file() else ()
+
+
+def read_oidc_env():
+    return dict(line.split("=",1) for line in (ETC/"oidc.env").read_text().splitlines() if "=" in line)
+
+
+def write_oidc_env(values):
+    # podman --env-file: one KEY=value per line, no quoting.
+    if any("\n" in v or "\r" in v for v in values.values()):
+        raise ValueError("invalid OIDC environment")
+    write_file(ETC/"oidc.env","".join(k+"="+v+"\n" for k,v in values.items()).encode())
+
+
+def oidc_listeners(p):
+    values={k:v for k,v in read_oidc_env().items() if k not in OIDC_RETIRED_KEYS}
+    values.update(OIDC_LISTENERS,KC_HOSTNAME="https://"+p["oidc_name"]+":"+str(p["oidc_port"]))
+    write_oidc_env(values)
+    environment_file(ETC/"oidc-edge.env",dict(OIDC_LISTEN="0.0.0.0:"+str(p["oidc_port"]),OIDC_NAME=p["oidc_name"]))
+
+
+def keycloak(method,path,token=None,form=None,body=None):
+    # Keycloak's loopback listener, never through a proxy.
+    import urllib.error
+    import urllib.request
+    headers={}
+    data=None
+    if form is not None:
+        data=urllib.parse.urlencode(form).encode()
+        headers["Content-Type"]="application/x-www-form-urlencoded"
+    elif body is not None:
+        data=json.dumps(body).encode()
+        headers["Content-Type"]="application/json"
+    if token:
+        headers["Authorization"]="Bearer "+token
+    opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    request=urllib.request.Request(OIDC_LOOPBACK+path,data=data,method=method,headers=headers)
+    try:
+        with opener.open(request,timeout=20) as reply:
+            raw=reply.read(4<<20)
+            return reply.status,(json.loads(raw) if raw else None)
+    except urllib.error.HTTPError as error:
+        error.close()
+        return error.code,None
+
+
+def harden_oidc(required=False):
+    # Brute-force protection on both realms, then the bootstrap administrator
+    # retired when another administrator exists. Returns "retired", "kept"
+    # (no other administrator yet) or "credentials_refused".
+    values=read_oidc_env()
+    user,password=values.get(BOOTSTRAP_KEYS[0]),values.get(BOOTSTRAP_KEYS[1])
+    if not user or not password:
+        return "retired"
+    status,grant=keycloak("POST","/realms/master/protocol/openid-connect/token",
+                          form=dict(grant_type="password",client_id="admin-cli",username=user,password=password))
+    if status in (400,401):
+        # Deleted or changed by hand, or locked out: keep the entries, which
+        # the operator removes after checking (deploy/oidc/README.md).
+        if required:
+            raise ValueError("the identity provider refused the bootstrap administrator's credentials")
+        return "credentials_refused"
+    if status!=200 or not isinstance(grant,dict) or not grant.get("access_token"):
+        raise ValueError("the identity provider's administration did not answer on loopback")
+    token=grant["access_token"]
+    for realm in ("master","agentcapsule"):
+        status,_=keycloak("PUT","/admin/realms/"+realm,token,body=BRUTE_FORCE)
+        if status not in (200,204):
+            raise ValueError("could not turn on brute-force protection for realm "+realm)
+    status,admins=keycloak("GET","/admin/realms/master/roles/admin/users?first=0&max=1000",token)
+    if status!=200 or not isinstance(admins,list):
+        raise ValueError("could not list the identity provider's administrators")
+    if not any(a.get("username")!=user and a.get("enabled") for a in admins):
+        if required:
+            raise ValueError("create a permanent administrator in the master realm, with its admin role, first")
+        return "kept"
+    status,found=keycloak("GET","/admin/realms/master/users?exact=true&username="+urllib.parse.quote(user),token)
+    for account in found if status==200 and isinstance(found,list) else []:
+        if account.get("username")==user:
+            status,_=keycloak("DELETE","/admin/realms/master/users/"+urllib.parse.quote(account["id"],safe=""),token)
+            if status not in (200,204):
+                raise ValueError("could not delete the bootstrap administrator")
+    write_oidc_env({k:v for k,v in values.items() if k not in BOOTSTRAP_KEYS})
+    return "retired"

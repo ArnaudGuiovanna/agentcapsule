@@ -92,8 +92,18 @@ The initial platform enrollment proof is in
 operator through a private channel. It expires after 15 minutes and can be
 redeemed once. Keep the API certificate or its CA with the CLI context.
 Keycloak bootstrap credentials are in `/etc/agentcapsule/oidc.env` (0600).
-The realm and discovery URL are described in the identity provider guide.
-[OIDC provider](../deploy/oidc/README.md)
+Keycloak listens on loopback only: its public port is served by
+`agentcapsule-oidc-edge`, which forwards the realms' pages and endpoints and
+nothing of the administration. Reach the administration console through SSH
+(`ssh -L 9445:127.0.0.1:9445 admin@host`, then `http://localhost:9445/admin/`),
+create a permanent administrator with the master realm's `admin` role, then
+run `agentcapsule host oidc retire-bootstrap-admin --ssh admin@host`: it
+deletes the bootstrap administrator and its two entries, and refuses while no
+other administrator exists. Each install and update does the same on its own
+once a permanent administrator exists, and turns on brute-force detection in
+the master realm and the platform's (the operation's `oidc_bootstrap_admin`
+says `kept` or `retired`). The realm and discovery URL are described in the
+identity provider guide. [OIDC provider](../deploy/oidc/README.md)
 
 See the backup guide for the two encrypted repositories, off-host credentials
 and volume shipping. Provide `pgbackrest_config` and `rclone_config` in the

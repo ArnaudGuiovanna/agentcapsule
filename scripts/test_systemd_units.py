@@ -74,6 +74,11 @@ REQUIRED = {
     "deploy/standby/agentcapsule-standby-metrics.service": dict(
         SWITCHING, CapabilityBoundingSet="CAP_SETUID CAP_SETGID CAP_DAC_OVERRIDE", PrivateNetwork="yes",
         ReadWritePaths="/var/lib/prometheus/node-exporter", RestrictAddressFamilies="AF_UNIX"),
+    "deploy/oidc/agentcapsule-oidc-edge.service": dict(
+        UNPRIVILEGED, DynamicUser="yes", LimitNOFILE="16384", MemoryMax="256M",
+        LoadCredential=["tls.crt:/etc/agentcapsule/oidc-tls/tls.crt", "tls.key:/etc/agentcapsule/oidc-tls/tls.key"]),
+    # Podman runs Keycloak as root; its exposure is checked by test_oidc_edge.py.
+    "deploy/oidc/agentcapsule-oidc.service": {"StateDirectoryMode": "0700", "Restart": "on-failure"},
     "deploy/backup/agentcapsule-pg-heartbeat.service": dict(
         SWITCHING, CapabilityBoundingSet="", PrivateNetwork="yes", SystemCallFilter=None,
         SystemCallErrorNumber=None, RestrictAddressFamilies="AF_UNIX"),
@@ -163,7 +168,7 @@ class UnitConfinementTests(unittest.TestCase):
                 self.assertTrue("`" + key + "`" in guide, "docs/worker.md explains why " + key + " is left out")
 
     def test_every_shipped_service_unit_is_checked(self):
-        shipped = {p.relative_to(ROOT).as_posix() for d in ("deploy/systemd", "deploy/backup", "deploy/standby")
+        shipped = {p.relative_to(ROOT).as_posix() for d in ("deploy/systemd", "deploy/backup", "deploy/standby", "deploy/oidc")
                    for p in (ROOT / d).glob("*.service")}
         self.assertEqual(shipped, set(REQUIRED), "a new unit needs its confinement checked here")
 

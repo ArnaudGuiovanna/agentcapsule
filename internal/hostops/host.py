@@ -751,6 +751,8 @@ def main(argv, cli_version):
         p.add_argument("--trusted-root", help="trusted Sigstore root on host")
     host = groups.add_parser("host").add_subparsers(dest="group", required=True)
     add_diagnostics(host)
+    host.add_parser("oidc").add_subparsers(dest="sub", required=True).add_parser(
+        "retire-bootstrap-admin", help="delete Keycloak's bootstrap administrator once a permanent one exists")
     operations = host.add_parser("operation").add_subparsers(dest="sub", required=True)
     for action in ("show", "wait", "resume"):
         p = operations.add_parser(action)
@@ -777,6 +779,9 @@ def main(argv, cli_version):
                 "highest_installed": floor, "older": bool(floor) and version_order(target) < version_order(floor)}
     if args.command == "host" and args.group == "diagnose":
         return diagnose(args)
+    if args.command == "host" and args.group == "oidc":
+        preflight()
+        return {"schema": SCHEMA, "oidc_bootstrap_admin": harden_oidc(required=True)}
     if args.command == "host":
         directory = opdir(args.id)
         if args.sub == "resume":

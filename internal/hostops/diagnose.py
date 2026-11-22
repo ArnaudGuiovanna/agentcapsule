@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import re
 
-DIAG_SERVICES = ("api", "worker", "authority", "interop", "slim-bridge", "oidc")
+DIAG_SERVICES = ("api", "worker", "authority", "interop", "slim-bridge", "oidc", "oidc-edge")
 METRIC_PORTS = {"api": 9464, "worker": 9465, "authority": 9466}
 
 
@@ -34,7 +34,7 @@ def service_observations():
                             "-p", "StateChangeTimestamp", timeout=10)
         entry = {"service": name}
         entry.update(line.split("=", 1) for line in properties.splitlines() if "=" in line)
-        if entry.get("LoadState") == "not-found" and name == "oidc":
+        if entry.get("LoadState") == "not-found" and name in ("oidc", "oidc-edge"):
             continue
         if entry.get("ActiveState") != "active":
             entry["next_check"] = "inspect_service_journal"

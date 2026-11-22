@@ -273,3 +273,28 @@ Each default below is in the code; the product owner can change it.
    worker, decides which addresses are reachable. **Default and
    recommendation: (a) until a customer needs (b).** Through a proxy, the
    worker's address check sees only the proxy.
+
+## Changes after the v0.1.0 audit
+
+### The identity provider behind an edge (SEC-4, finding S-19)
+
+Until v0.1.0 the bundled Keycloak ran with the host's network and served TLS
+on the public identity port itself, with its administration console, its
+admin REST API and its master realm on that same port. Keycloak cannot keep
+paths off a listener, so a third hop now stays in clear text inside the host:
+
+- Keycloak listens on `127.0.0.1:9445` only, over HTTP, with its
+  administration (`KC_HOSTNAME_ADMIN=http://localhost:9445`) and any
+  management interface; `KC_CACHE=local` opens no JGroups port.
+- `agentcapsule-oidc-edge` (`agentcapsule-api oidc-edge`,
+  `internal/oidcedge`) serves the identity provider's certificate on the
+  public port and forwards over loopback only `/realms/<realm>/` for realms
+  other than `master`, and `/resources/`. Any other path, or a path with an
+  escape, a parameter or a dot segment, gets 404. Keycloak trusts the edge's
+  `X-Forwarded-*` headers from loopback only.
+- Operators reach the console through SSH (`ssh -L 9445:127.0.0.1:9445`).
+  Reading the loopback hop takes root on the host, which already reads
+  Keycloak's database.
+
+Both realms have brute-force detection, and the host helper deletes the
+bootstrap administrator once a permanent one exists.

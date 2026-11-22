@@ -43,9 +43,12 @@ the worker runs the same host checks in both modes.
 | pgBackRest and the archive shipper → standby | SFTP over SSH, the standby's host key checked against a pinned `known_hosts`. The data is encrypted before it leaves the host. | [deploy/backup](../deploy/backup) |
 | Archive shipper → S3 | HTTPS, through an rclone crypt remote. | [rclone.conf.example](../deploy/backup/rclone.conf.example) |
 | Prometheus → `/metrics` | Plain HTTP, on loopback only, without authentication. It carries technical counters only: no content, token or identifier from a request. | `-metrics-listen`, `metrics_listen` |
+| Browsers, applications → bundled identity provider | HTTPS on the public identity port, served by `agentcapsule-oidc-edge` with the identity provider's certificate. It forwards only `/realms/<realm>/` (not `master`) and `/resources/`; the administration console and API answer 404. | `oidc_port`, `oidc_cert` ([deploy/oidc](../deploy/oidc/README.md)) |
+| Identity edge → Keycloak | Plain HTTP on `127.0.0.1:9445`, where Keycloak listens alone, with its administration. | Built in |
 
-Two hops stay in clear text, both inside the host: the Directory's internal
-network and the metrics endpoints. ADR 010 says why.
+Three hops stay in clear text, all inside the host: the Directory's internal
+network, the metrics endpoints and the identity edge's hop to Keycloak. ADR 010
+says why.
 
 ## API certificate
 
@@ -259,7 +262,7 @@ Every shipped unit confines its service with systemd (S-05, S-06), and
 
 | Unit | Confinement |
 |---|---|
-| `agentcapsule-authority`, `agentcapsule-slim-bridge`, `agentcapsule-api` | No capability, no device, read-only system, private `/tmp` and `/proc`, `@system-service` without `@privileged` and `@resources`, no namespace, no writable and executable memory. The API also has `LimitNOFILE=65536` and `MemoryMax=2G`; raise them with a drop-in on a large host. |
+| `agentcapsule-authority`, `agentcapsule-slim-bridge`, `agentcapsule-api`, `agentcapsule-oidc-edge` | No capability, no device, read-only system, private `/tmp` and `/proc`, `@system-service` without `@privileged` and `@resources`, no namespace, no writable and executable memory. The API also has `LimitNOFILE=65536` and `MemoryMax=2G`; raise them with a drop-in on a large host. |
 | `agentcapsule-worker` | Root, with ten capabilities, a read-only system but its state directories, a system call deny list, and no access to the authorities' directories. What it leaves out, and why: [worker.md](worker.md#confinement). |
 | `agentcapsule-interop` | The Docker CLI only: no capability, Unix sockets only, no IP traffic, and its own Docker configuration directory, so that root's registry credentials stay out of it. |
 | `agentcapsule-pg-backup@` | `postgres`, no capability, read-only system but `/tmp` (pgBackRest's locks, shared with its other processes), its log and its spool. |
