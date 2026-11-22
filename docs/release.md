@@ -458,3 +458,57 @@ Within an epoch the host helper separately checks the full SQL ledger,
 external dependencies, guest runtime and host configuration before it accepts
 a binary rollback. The build and its own signed version remain independently
 identifiable. [Host rollback procedure](cli-host.md#update-and-recovery)
+
+## Runtime images
+
+Three images carry the OpenSSL backports of
+[deploy/images/openssl](../deploy/images/openssl/README.md):
+`runtime:python-3.13-<date>` (the base of both example harnesses),
+`runtime:haproxy-3.2-<date>` (the Directory's edge) and
+`runtime:oasf-2.0.0-<date>` (the OASF schema server), all in
+`ghcr.io/arnaudguiovanna/agentcapsule/runtime`.
+
+**Build.** The
+[runtime-images workflow](../.github/workflows/runtime-images.yml) builds them
+for linux/amd64 from the Dockerfile and its build plan,
+[images.json](../deploy/images/openssl/images.json), with the upstream bases
+pinned by digest. It pushes each one under a new tag, attests its SLSA build
+provenance (`actions/attest-build-provenance`, the attestation stored by
+GitHub and in the registry), then verifies the pushed images as the release
+does. A maintainer runs it by hand, from `main` only:
+
+1. Actions, Runtime images, Run workflow, on `main`, with the build date
+   (`YYYYMMDD`) as tag suffix. A tag that exists already is refused.
+2. The job summary, and the `runtime-images` artifact, give each image's
+   reference `<tag>@sha256:<digest>`, the SHA-256 of its OpenSSL files and of
+   the APKs of the build stage.
+3. Pin the three references in `deploy/images/openssl/qualification.json`
+   (`registry_images`), `deploy/interop/compose.yml`,
+   `runtime/interop/profile.json`, `.dagger/main.go` and the Dockerfiles of
+   `examples/python-echo` and `examples/adapted-agent`. Update the file and
+   APK digests of the qualification's profiles from the summary, and the
+   allowlist entries that name the old tags. `scripts/test_runtime_images.py`
+   fails while one of these files names a reference that the qualification
+   does not pin.
+4. Rebuild the harnesses and run the interoperability and release checks.
+
+The workflow's token pushes to the package only if the package grants this
+repository write access (package settings, Manage Actions access).
+
+**Verification.** The release runs
+`scan-artifacts.py --verify-runtime-images`
+(`scripts/runtime_images.py verify`, which needs skopeo and gh). For each
+pinned image:
+
+- its configuration is its pinned upstream base plus exactly one layer, the
+  runtime stage's, with the base's entry point and command and the plan's
+  user (`skopeo inspect --config`);
+- it carries a SLSA provenance attestation signed for
+  `.github/workflows/runtime-images.yml` of this repository, on
+  `refs/heads/main`, by a GitHub-hosted runner (`gh attestation verify`).
+
+Any failure, or a missing tool, fails the release. The images pinned on
+21 November 2026 were built by hand on a workstation: they pass the first
+check and fail the second, so the next release needs the workflow's images.
+`python3 scripts/runtime_images.py verify` runs the same check locally, with
+a GitHub login for `gh`.

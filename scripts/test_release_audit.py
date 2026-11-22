@@ -312,6 +312,30 @@ class ScanTest(Temporary):
         self.assertTrue(keycloak["blocking"])
         self.assertEqual([f["id"] for f in keycloak["blocked"]], ["TEST-1"])
 
+    def test_runtime_image_verification_fails_the_release_scan_closed(self):
+        def status(args, **kwargs):
+            self.assertEqual(args[1:3], ["db", "status"])
+            return subprocess.CompletedProcess(args, 0, stdout="{}")
+
+        allowlist = self.write_json("allowlist.json", {"entries": []})
+        refused = ([{"name": "python-3.13", "ref": "r", "layers": "verified", "provenance": "refused"}],
+                   ["python-3.13: no build provenance"])
+
+        def broken():
+            raise ValueError("the qualification does not pin every runtime image")
+        for case, verify, code in (("refused", lambda: refused, 1), ("broken", broken, 1),
+                                   ("verified", lambda: (refused[0][:0], []), 0)):
+            with self.subTest(case=case):
+                out = self.dir / ("out-" + case)
+                with (patch.object(SCAN.RUNTIME, "verify", verify), patch.object(SCAN.TOOLS, "tool", return_value="grype"),
+                      patch.object(SCAN.subprocess, "run", status), patch("sys.stdout", new_callable=io.StringIO),
+                      patch("sys.stderr", new_callable=io.StringIO)):
+                    self.assertEqual(SCAN.main(["--verify-runtime-images", "--no-db-update", "--allowlist", str(allowlist),
+                                                "--output", str(out), "--cache", str(self.dir / "cache")]), code)
+                summary = json.loads((out / "summary.json").read_text())
+                self.assertEqual(summary["status"], "failed" if code else "passed")
+                self.assertEqual(bool(summary["runtime_images"]["problems"]), bool(code))
+
     def test_grype_matches_with_null_fields_are_normalized(self):
         report = {"matches": [{
             "vulnerability": {"id": "CVE-1", "severity": "Critical", "fix": None},

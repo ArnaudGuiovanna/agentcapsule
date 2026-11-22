@@ -50,6 +50,8 @@ jobs:
       checksum-index: ${{ steps.assets.outputs.checksum-index }}
     permissions:
       contents: read
+      # Read the runtime images' provenance (scan-artifacts.py --verify-runtime-images).
+      attestations: read
     steps:
       - name: Check out the tagged commit with its history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -152,7 +154,9 @@ jobs:
             --harness-package "$RUNNER_TEMP/release/harness-adapted/package" \
             --host-assets "$RUNNER_TEMP/release/assets"
 
-      - name: Vulnerability scan (SBOMs and deploy images)
+      - name: Vulnerability scan (SBOMs and deploy images) and the runtime images' provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           release="$RUNNER_TEMP/release"
@@ -161,7 +165,8 @@ jobs:
           python3 scripts/release_oci.py --assets "$release/assets" --sboms "$release/sbom"
           sboms=("$RUNNER_TEMP"/release/sbom/*.spdx.json)
           python3 scripts/scan-artifacts.py --output "$RUNNER_TEMP/release/scan" \
-            "${sboms[@]/#/--sbom=}" --offline-image-index "$release/assets/component-sources.json" --deploy-images
+            "${sboms[@]/#/--sbom=}" --offline-image-index "$release/assets/component-sources.json" --deploy-images \
+            --verify-runtime-images
 
       - name: Assemble the release files and their checksums
         id: assets
