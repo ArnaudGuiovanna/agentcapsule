@@ -149,9 +149,15 @@ func TestActivityMigrationFillsFromHistory(t *testing.T) {
 		t.Fatal("no open-state-indexes migration")
 	}
 	// The tables of the migrations before 0071 (no test of the package runs
-	// in parallel).
+	// in parallel): those of 0071 and every later migration are left out.
+	later := map[string]bool{}
+	for _, m := range controlPlaneMigrations[at:] {
+		for _, match := range createdTable.FindAllStringSubmatch(m.sql, -1) {
+			later[match[1]] = true
+		}
+	}
 	all := durableTables
-	durableTables = slices.DeleteFunc(slices.Clone(all), func(table string) bool { return table == "agent_activity" })
+	durableTables = slices.DeleteFunc(slices.Clone(all), func(table string) bool { return later[table] })
 	err := s.migrate(ctx, controlPlaneMigrations[:at])
 	durableTables = all
 	if err != nil {
