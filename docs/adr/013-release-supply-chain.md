@@ -336,3 +336,13 @@ stage, and carries a provenance attestation signed for
 `.github/workflows/runtime-images.yml` of this repository on
 `refs/heads/main` by a GitHub-hosted runner. The images pinned on 21
 November 2026 fail that check; the next release needs the workflow's images.
+
+### The allowlist (SEC-4, finding L-10)
+
+The four OpenSSL entries of the Alpine 3.24 targets (libssl3 and libcrypto3
+of the harness SBOMs and the HAProxy image) matched nothing: the v0.1.0
+release scan listed them as unused, and an offline rescan with the same
+database and the repository's matching logic agreed. They are removed; the
+"OpenSSL 3.5.9" section above describes the entries as they were. Each audit
+now warns 21 days before an entry expires; an expired entry still fails it,
+and no expiry goes beyond 90 days.
