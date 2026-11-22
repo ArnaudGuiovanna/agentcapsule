@@ -37,6 +37,12 @@ type ScopedImporter interface {
 	ImportScopes(ctx context.Context, scopes []RevocationScope) error
 }
 
+// agentScope is the scope of agent/$1: the agent's own store and the store
+// of every agent that shares a request with it. A deletion's census is this
+// scope (requestDeletion).
+const agentScope = `SELECT $1::text UNION SELECT recipient_agent_id FROM agent_requests WHERE sender_agent_id=$1
+                UNION SELECT sender_agent_id FROM agent_requests WHERE recipient_agent_id=$1`
+
 // RevocationScopes returns the scope of each subject, in its order.
 func (s *Store) RevocationScopes(ctx context.Context, subjects []string) ([]RevocationScope, error) {
 	out := make([]RevocationScope, 0, len(subjects))
@@ -46,8 +52,7 @@ func (s *Store) RevocationScopes(ctx context.Context, subjects []string) ([]Revo
 		var query string
 		switch kind {
 		case "agent":
-			query = `SELECT $1::text UNION SELECT recipient_agent_id FROM agent_requests WHERE sender_agent_id=$1
-                UNION SELECT sender_agent_id FROM agent_requests WHERE recipient_agent_id=$1`
+			query = agentScope
 		case "request":
 			query = `SELECT sender_agent_id FROM agent_requests WHERE id=$1 UNION SELECT recipient_agent_id FROM agent_requests WHERE id=$1`
 		case "event":

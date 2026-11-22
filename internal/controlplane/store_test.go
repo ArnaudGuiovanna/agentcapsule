@@ -561,7 +561,8 @@ func TestDurableDatabaseRestart(t *testing.T) {
         FROM deletion_operations WHERE agent_id='c'`).Scan(&phaseAfterCrash, &targets); err != nil {
 		t.Fatal(err)
 	}
-	if phaseAfterCrash != "FENCING" || targets != 3 {
+	// c shares no request: its deletion's census is its own store.
+	if phaseAfterCrash != "FENCING" || targets != 1 {
 		t.Fatalf("deletion intent lost: phase=%s targets=%d", phaseAfterCrash, targets)
 	}
 	if count(t, s, "request_closures") != 1 || count(t, s, "request_closure_targets") != 2 {

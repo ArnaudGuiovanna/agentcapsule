@@ -203,7 +203,8 @@ var workerStarts = map[string]struct {
 	why   string
 }{
 	"internal/sandbox/sandbox_linux.go": {1, "this executable again, as the sandbox's helper, in new namespaces: for debugfs -R stat, " +
-		"read-only, on a downloaded image before it is accepted (harnesspkg.InspectRootfs), and debugfs -V at start; " +
+		"read-only, on a downloaded image before it is accepted (harnesspkg.InspectRootfs), debugfs -f - (ls -p commands on its standard input) " +
+		"on a corpus image (corpuspkg.InspectImage), and debugfs -V at start; " +
 		"and for the restore test's LUKS2 key check, a program of this executable (sandbox.RunSelf, volumestore.CheckContainer)"},
 	"internal/sandbox/helper_linux.go":             {1, "the helper, confined, executes that debugfs, or this executable as that program"},
 	"internal/sandbox/seccomp_linux_amd64.go":      {1, "none: the filter a program of this executable adds refuses execve and execveat"},

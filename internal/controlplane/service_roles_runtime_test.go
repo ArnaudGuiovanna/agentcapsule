@@ -14,9 +14,13 @@ import (
 func roleStore(t *testing.T, s *Store, role string) *Store {
 	t.Helper()
 	cfg := s.pool.Config()
+	// The store's own hook (it prepares the durability check) runs after.
+	prepare := cfg.AfterConnect
 	cfg.AfterConnect = func(ctx context.Context, c *pgx.Conn) error {
-		_, err := c.Exec(ctx, "SET ROLE "+pgx.Identifier{role}.Sanitize())
-		return err
+		if _, err := c.Exec(ctx, "SET ROLE "+pgx.Identifier{role}.Sanitize()); err != nil || prepare == nil {
+			return err
+		}
+		return prepare(ctx, c)
 	}
 	pool, err := pgxpool.NewWithConfig(t.Context(), cfg)
 	if err != nil {

@@ -405,7 +405,8 @@ func (a *p1Replay) step(t *testing.T, op protocolAction) error {
 		subject := op.Args[1].(map[string]any)
 		switch subject["variant"] {
 		case "AgentSubject":
-			return a.s.recordFence(t.Context(), p1Agent(p1Int(subject["value"])), p1Agent(n(0)))
+			// A store outside the deletion's scope has no target (deletion_scope_test.go).
+			return recordDeletionFence(t, a.s, p1Agent(p1Int(subject["value"])), p1Agent(n(0)))
 		case "RequestSubject":
 			return a.s.recordRequestFence(t.Context(), a.requests[p1Int(subject["value"])], p1Agent(n(0)))
 		default:

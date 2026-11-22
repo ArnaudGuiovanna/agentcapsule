@@ -72,6 +72,10 @@ const (
 	selfAddressSpace = 4 << 30
 	// MaxInput bounds the standard input of a self run.
 	MaxInput = 4096
+	// MaxProgramInput bounds the standard input of a program's run
+	// (RunInput): half the 64 KiB a pipe holds on Linux, which takes it all
+	// before the program starts.
+	MaxProgramInput = 32 << 10
 )
 
 var (

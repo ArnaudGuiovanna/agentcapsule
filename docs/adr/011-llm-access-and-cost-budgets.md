@@ -277,3 +277,29 @@ changed:
   reads the provider again in its transaction. (A provider disabled in
   between was already refused: disabling a provider disables its aliases in
   the same transaction.)
+
+**Lot PERF-3B (finding P-05).** A reservation summed each applicable
+budget's window over `llm_usage` under the budgets' row locks: its cost grew
+with the window's calls, and the reservations of an organization waited for
+one another that long. Each budget now keeps a counter per UTC day or month
+(`llm_budget_windows`, migration `llm-budget-windows`, which counts the
+current windows from the calls already made). A reservation adds its amounts
+to the counters of the budgets it locked and refuses when one of them passes
+a hard limit; a settlement or a release (by the worker or by the organization)
+adds the change of its call's amounts, in the same transaction. A new budget
+counts its window from the calls already made, after it locked those still
+in flight, so that none settles uncounted; reservations wait for it on the
+organization's row. A counter is what the sum counted, exactly
+(`TestBudgetWindowsCountWhatTheCallsSum` compares them under concurrent
+reservations, settlements, releases, resolutions and new budgets), so the
+guarantees of §2 and SEC-2's paragraph above hold as they were. The
+reservations of one budget still take its row in turn: a hard limit needs
+it; each now costs a few rows whatever the window holds.
+
+The calls themselves are no longer kept forever: the worker deletes a settled
+or released call `model_call_retention` after its reservation (90 days by
+default, 35 days at least: longer than the month the usage report reads),
+unless it is in flight or of unknown outcome, an audit event names it, or a
+corpus build in progress counts it ([worker.md](../worker.md)), with the
+windows that started before the retention (migration
+`model-call-retention`).

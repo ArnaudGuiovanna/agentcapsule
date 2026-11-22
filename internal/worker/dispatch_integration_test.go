@@ -169,7 +169,8 @@ func TestDispatchServiceClosureExpirationAndDeletion(t *testing.T) {
 	if err := db.QueryRow(t.Context(), "SELECT count(*) FROM "+pgx.Identifier{schema, "request_closure_targets"}.Sanitize()+" WHERE acknowledged").Scan(&n); err != nil || n != 4 {
 		t.Fatal("closure barrier census", n, err)
 	}
-	if err := db.QueryRow(t.Context(), "SELECT count(*) FROM "+pgx.Identifier{schema, "deletion_targets"}.Sanitize()+" WHERE acknowledged").Scan(&n); err != nil || n != 3 {
+	// c shares no request: its deletion's census is its own store.
+	if err := db.QueryRow(t.Context(), "SELECT count(*) FROM "+pgx.Identifier{schema, "deletion_targets"}.Sanitize()+" WHERE acknowledged").Scan(&n); err != nil || n != 1 {
 		t.Fatal("deletion barrier census", n, err)
 	}
 }

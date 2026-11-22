@@ -40,6 +40,7 @@ func TestPollingQueriesUseIndexesOfOpenRows(t *testing.T) {
 		{"finished requests", finishedRequests, []any{now, "local", 64, int64(DefaultFinishedRetention / time.Microsecond)}},
 		{"finished lifecycle", finishedLifecycle, []any{now, "local", 64, int64(DefaultFinishedRetention / time.Microsecond)}},
 		{"finished invocations", finishedInvocations, []any{now, "local", 64, int64(DefaultFinishedRetention / time.Microsecond)}},
+		{"finished model calls", finishedModelCalls, []any{now, int64(DefaultModelCallRetention / time.Microsecond), 64}},
 	}
 	tx, err := il.s.pool.Begin(ctx)
 	if err != nil {

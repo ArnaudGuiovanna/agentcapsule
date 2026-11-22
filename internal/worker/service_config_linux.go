@@ -121,10 +121,31 @@ type ServiceConfig struct {
 	// worker deletes those that nothing needs any more (P-04): 45 days to 10
 	// years, 90 days when absent, and two weeks past the archives' horizon.
 	FinishedRetention string `json:"finished_retention,omitempty"`
+	// ModelCallRetention is how long settled and released model calls are
+	// kept before the worker deletes those that nothing needs any more: 35
+	// days to 10 years, 90 days when absent (docs/worker.md).
+	ModelCallRetention string `json:"model_call_retention,omitempty"`
 	// VMSerialConsole gives each guest a serial console whose output joins
 	// its VMM's bounded log: for debugging only (S-20). Development mode
 	// enables it too.
 	VMSerialConsole bool `json:"vm_serial_console,omitempty"`
+	// DatabaseMaxConnections bounds the worker's PostgreSQL connections
+	// (P-08): 1 to 1000, 16 when absent (controlplane.WorkerConnections).
+	DatabaseMaxConnections int32 `json:"database_max_connections,omitempty"`
+}
+
+// DatabaseConnections are the worker's PostgreSQL connections: its pool and
+// the bounds of its statements, lock waits and idle transactions
+// (controlplane.WorkerConnections), with the configured pool size.
+func (c ServiceConfig) DatabaseConnections() (controlplane.Connections, error) {
+	out := controlplane.WorkerConnections
+	if c.DatabaseMaxConnections != 0 {
+		if c.DatabaseMaxConnections < 1 || c.DatabaseMaxConnections > controlplane.MaxPoolConnections {
+			return out, errors.New("invalid database_max_connections")
+		}
+		out.MaxConns = c.DatabaseMaxConnections
+	}
+	return out, nil
 }
 
 // DefaultDispatchConcurrency is how many jobs of a pass run at once when the
@@ -386,7 +407,14 @@ func (c ServiceConfig) Settings() (runtime.FirecrackerOptions, time.Duration, Ma
 	if err != nil {
 		return r, 0, m, invalid
 	}
-	d := &DispatchOptions{Batch: batch, Concurrency: concurrency, Retention: retention}
+	if _, err = c.DatabaseConnections(); err != nil {
+		return r, 0, m, invalid
+	}
+	modelCalls, err := c.modelCallRetention()
+	if err != nil {
+		return r, 0, m, invalid
+	}
+	d := &DispatchOptions{Batch: batch, Concurrency: concurrency, Retention: retention, ModelCallRetention: modelCalls}
 	m.Dispatch = d
 	for _, value := range []struct {
 		text, fallback string

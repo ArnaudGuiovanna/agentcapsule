@@ -153,3 +153,19 @@ Defaults pending the product owner:
 - A sender who lost its assignment may still delete its own file not yet sent.
 - Roles that read agent metadata see the metadata of every member's files,
   their names included.
+
+## Changes after the v0.1.0 audit
+
+### The admission holds its organization's row FOR KEY SHARE (PERF-3B, finding P-07)
+
+The rule above is unchanged: every authority change takes the
+organization's row exclusively (`FOR UPDATE`); every admission, replay and
+result read holds it from its authorization to its commit. The admission now
+holds it `FOR KEY SHARE`, the weakest lock that conflicts with `FOR UPDATE`,
+instead of `FOR SHARE`, and no longer locks its principal, membership,
+issuer, trust, key or token: no revocation of those rows runs without the
+organization's row ([ADR 001](001-organization-identity.md#one-row-lock-per-admission-perf-3b-finding-p-07)).
+The replay of a revocation after a failover now takes that row too. The
+tests of this record still pass, and
+`TestEachRevocationWaitsForAnAdmissionAuthorizedBeforeIt` orders an
+admission and each kind of revocation.

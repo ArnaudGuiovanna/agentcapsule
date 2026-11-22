@@ -2,6 +2,8 @@ package ext4image
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -106,8 +108,101 @@ func List(ctx context.Context, sb sandbox.Options, debugfs, image, dir string) (
 	if len(out) >= sandbox.MaxOutput {
 		return nil, fmt.Errorf("%w: the listing of %s is too long", ErrUnreadable, dir)
 	}
+	return parseListing(strings.Split(strings.TrimSuffix(string(out), "\n"), "\n"))
+}
+
+// ListBatch bounds the directories one ListInodes run lists: their commands,
+// at most 57 bytes each, fit sandbox.MaxProgramInput.
+const ListBatch = 512
+
+// ListInodes lists the directories of inodes, each by its inode number
+// (debugfs's <N>, as a listing gave it), in as few confined debugfs runs as
+// their listings allow (v0.1.0 audit, P-12): one run reads its commands on
+// its standard input (debugfs -f -) and lists up to ListBatch directories,
+// as many as fit sandbox.MaxOutput. Before each command the run echoes a
+// comment line that holds a nonce drawn for the run: an image cannot forge
+// it, so a name cannot pass one directory's lines off as another's. Only a
+// listing followed by the next one's comment is complete; the listing the
+// output limit cut is listed again in the next run, and one that alone does
+// not fit is refused, as List refuses it. Each listing is List's, in order.
+func ListInodes(ctx context.Context, sb sandbox.Options, debugfs, image string, inodes []uint64) ([][]Entry, error) {
+	out := make([][]Entry, 0, len(inodes))
+	for len(out) < len(inodes) {
+		batch := inodes[len(out):min(len(inodes), len(out)+ListBatch)]
+		listings, err := listRun(ctx, sb, debugfs, image, batch)
+		if err != nil {
+			return nil, err
+		}
+		if len(listings) == 0 {
+			return nil, fmt.Errorf("%w: the listing of inode %d is too long", ErrUnreadable, batch[0])
+		}
+		out = append(out, listings...)
+	}
+	return out, nil
+}
+
+// listRun lists batch in one confined run and returns the complete listings,
+// in order: all of them, or those before the one the output limit cut.
+func listRun(ctx context.Context, sb sandbox.Options, debugfs, image string, batch []uint64) ([][]Entry, error) {
+	var nonce [16]byte
+	_, _ = rand.Read(nonce[:])
+	mark := "#" + hex.EncodeToString(nonce[:]) + " "
+	var commands strings.Builder
+	for i, inode := range batch {
+		fmt.Fprintf(&commands, "%s%d\nls -p <%d>\n", mark, i, inode)
+	}
+	raw, err := sb.RunInput(ctx, image, []byte(commands.String()), debugfs, "-f", "-", sandbox.ImagePath)
+	if err != nil {
+		return nil, fmt.Errorf("debugfs: %w", err)
+	}
+	cut := len(raw) >= sandbox.MaxOutput
+	lines := strings.Split(string(raw), "\n")
+	if cut {
+		lines = lines[:len(lines)-1] // the line the limit cut
+	}
+	// sections[i] holds the lines of batch[i]'s listing, its command's echo
+	// first.
+	var sections [][]string
+	for _, line := range lines {
+		if rest, ok := strings.CutPrefix(line, mark); ok {
+			if rest != strconv.Itoa(len(sections)) || len(sections) == len(batch) {
+				return nil, ErrUnreadable
+			}
+			sections = append(sections, nil)
+			continue
+		}
+		if len(sections) == 0 {
+			if line != "" {
+				return nil, ErrUnreadable
+			}
+			continue
+		}
+		sections[len(sections)-1] = append(sections[len(sections)-1], line)
+	}
+	if cut && len(sections) > 0 {
+		sections = sections[:len(sections)-1]
+	} else if !cut && len(sections) != len(batch) {
+		return nil, ErrUnreadable
+	}
+	listings := make([][]Entry, 0, len(sections))
+	for i, section := range sections {
+		if len(section) == 0 || section[0] != fmt.Sprintf("debugfs: ls -p <%d>", batch[i]) {
+			return nil, ErrUnreadable
+		}
+		entries, err := parseListing(section[1:])
+		if err != nil {
+			return nil, err
+		}
+		listings = append(listings, entries)
+	}
+	return listings, nil
+}
+
+// parseListing reads the lines of one ls -p.
+func parseListing(lines []string) ([]Entry, error) {
 	var entries []Entry
-	for _, line := range strings.Split(strings.TrimSuffix(string(out), "\n"), "\n") {
+	var err error
+	for _, line := range lines {
 		if line == "" {
 			continue
 		}

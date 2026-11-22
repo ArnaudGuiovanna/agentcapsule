@@ -26,7 +26,7 @@ func (a *p3Replay) deletionStep(t *testing.T, op protocolAction) (bool, error) {
 			if err := a.local.boots[store].client.Fence(t.Context(), "agent/"+p1Agent(0)); err != nil {
 				return true, err
 			}
-			if err := a.s.recordFence(t.Context(), p1Agent(0), p1Agent(store)); err != nil {
+			if err := recordDeletionFence(t, a.s, p1Agent(0), p1Agent(store)); err != nil {
 				return true, err
 			}
 		}
@@ -133,8 +133,10 @@ func TestDeletionOfARunningAgentPreservesOtherWork(t *testing.T) {
 	if err = a.s.pool.QueryRow(t.Context(), "SELECT phase FROM agents WHERE id='a'").Scan(&phase); err != nil || phase != "DELETING" {
 		t.Fatal("a is not deleted:", phase, err)
 	}
-	for store := range 3 {
-		if n := a.sqliteCount(t, store, "capsule_fences", "subject", "agent/a"); n != 1 {
+	// a shares a request with b, not with c: c is outside the deletion's
+	// scope, and needs no fence (deletion_scope_test.go).
+	for store, want := range []int{1, 1, 0} {
+		if n := a.sqliteCount(t, store, "capsule_fences", "subject", "agent/a"); n != want {
 			t.Fatalf("store %s has %d fences of agent/a", p1Agent(store), n)
 		}
 	}

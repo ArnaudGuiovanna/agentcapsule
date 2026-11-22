@@ -27,6 +27,9 @@ func TestBarrierCapacityOneSlotThreeStoresAndReplay(t *testing.T) {
 			}
 		})
 	}
+	// Each deletion below fences every store: each shares a request with the
+	// others (its census is its scope).
+	shareRequests(t, db, schema, "a", "b", "c")
 	event := harnessstore.Event{ID: "before-preemption", Subjects: []string{"agent/a", "event/before-preemption"}, Body: []byte("local effect")}
 	first, err := w.Send(t.Context(), "a", event)
 	if err != nil {

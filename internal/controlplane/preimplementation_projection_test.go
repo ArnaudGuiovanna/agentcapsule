@@ -224,6 +224,11 @@ func (a *p1Replay) compareP1(t *testing.T, w p1Observation, step int, transactio
 		if _, err := fmt.Sscanf(r.Subject, "request/%d", &n); err == nil && r.Store != p1Routes[n][0] && r.Store != p1Routes[n][1] {
 			continue
 		}
+		// So does a deletion's manifest: the stores of its agent's scope
+		// (deletion_scope_test.go, P1 deletionAcks).
+		if _, err := fmt.Sscanf(r.Subject, "agent/%d", &n); err == nil && !inDeletionScope(t, a.s, p1Agent(n), p1Agent(r.Store)) {
+			continue
+		}
 		wanted = append(wanted, p1Agent(r.Store)+":"+r.Subject)
 	}
 	sort.Strings(acks)

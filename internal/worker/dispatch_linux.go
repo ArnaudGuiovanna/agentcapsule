@@ -22,6 +22,9 @@ type DispatchOptions struct {
 	// Retention is how long finished records are kept (P-04); zero means
 	// controlplane.DefaultFinishedRetention.
 	Retention time.Duration
+	// ModelCallRetention is how long finished model calls are kept; zero
+	// means controlplane.DefaultModelCallRetention.
+	ModelCallRetention time.Duration
 }
 
 // MaxDispatchConcurrency bounds DispatchOptions.Concurrency.
@@ -29,7 +32,8 @@ const MaxDispatchConcurrency = 64
 
 func (o DispatchOptions) valid() bool {
 	return o.Batch >= 1 && o.Batch <= 256 && o.Concurrency >= 0 && o.Concurrency <= MaxDispatchConcurrency && o.WorkLease >= time.Microsecond && o.WorkLease <= 24*time.Hour && o.DeliveryLease >= time.Microsecond && o.DeliveryLease <= 24*time.Hour && o.RetryBase >= time.Microsecond && o.RetryMax >= o.RetryBase && o.RetryMax <= 24*time.Hour &&
-		(o.Retention == 0 || o.Retention >= controlplane.MinFinishedRetention && o.Retention <= controlplane.MaxFinishedRetention)
+		(o.Retention == 0 || o.Retention >= controlplane.MinFinishedRetention && o.Retention <= controlplane.MaxFinishedRetention) &&
+		(o.ModelCallRetention == 0 || o.ModelCallRetention >= controlplane.MinModelCallRetention && o.ModelCallRetention <= controlplane.MaxModelCallRetention)
 }
 func (o DispatchOptions) backoff(failures int) time.Duration {
 	d := o.RetryBase
@@ -108,6 +112,7 @@ func (w *Placements) dispatchPass(ctx context.Context, o DispatchOptions, attemp
 	}
 	result = errors.Join(result, w.purgeAudit(ctx, attemptTimeout))
 	result = errors.Join(result, w.purgeFinished(ctx, o, attemptTimeout))
+	result = errors.Join(result, w.purgeModelCalls(ctx, o, attemptTimeout))
 	if w.provisioning != nil {
 		step, cancel := context.WithTimeout(ctx, attemptTimeout)
 		result = errors.Join(result, w.rolloutPass(step))

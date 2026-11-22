@@ -156,7 +156,7 @@ func (a *protocolReplay) step(t *testing.T, op protocolAction) {
 	case "fenceStore":
 		err = a.m.Fence(t.Context(), op.Args[0].(string), op.Args[1].(string))
 	case "recordFence":
-		err = a.s.recordFence(t.Context(), "b", op.Args[0].(string))
+		err = recordDeletionFence(t, a.s, "b", op.Args[0].(string))
 	case "commitDelete":
 		err = a.s.commitRevocation(t.Context(), "b")
 	default:
@@ -221,7 +221,7 @@ func (a *protocolReplay) compare(t *testing.T, model map[string]any, step int) {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	wantAcks := model["deleteAcks"].([]any)
+	wantAcks := scopedAcks(t, a.s, "b", model["deleteAcks"].([]any))
 	sort.Slice(wantAcks, func(i, j int) bool { return wantAcks[i].(string) < wantAcks[j].(string) })
 	equal("deleteAcks", acks, wantAcks)
 	ids := map[string]string{}

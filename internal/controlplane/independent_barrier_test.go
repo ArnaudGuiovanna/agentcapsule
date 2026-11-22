@@ -57,7 +57,8 @@ func (r *independentBarrierRuntime) CommitBarrier(ctx context.Context, subject s
 }
 
 func TestRevocationRechecksIndependentReceiptsAfterSQLAcknowledgment(t *testing.T) {
-	// A deletion fences every store; a request's closure its two parties,
+	// A deletion fences the stores that share a request with its agent, here
+	// every store (a asks b, c asks a); a request's closure its two parties,
 	// a and b (ADR 007 §7).
 	for kind, targets := range map[string]int{"agent": 3, "request": 2} {
 		t.Run(kind, func(t *testing.T) {
@@ -78,6 +79,10 @@ func TestRevocationRechecksIndependentReceiptsAfterSQLAcknowledgment(t *testing.
 			var reconcile func() error
 			var pending func() bool
 			if kind == "agent" {
+				incoming(t, s)
+				if _, err = s.Submit(t.Context(), "a", "outgoing", submission()); err != nil {
+					t.Fatal(err)
+				}
 				if err = s.RequestDeletion(t.Context(), "user-a", "a"); err != nil {
 					t.Fatal(err)
 				}

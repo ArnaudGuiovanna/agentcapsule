@@ -34,7 +34,7 @@ func bootstrapPlatform(args []string) int {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	s, err := controlplane.Open(ctx, dsn)
+	s, err := controlplane.OpenWith(ctx, dsn, controlplane.AdminConnections)
 	if err != nil {
 		return fail("database_initialization_failed")
 	}

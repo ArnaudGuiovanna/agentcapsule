@@ -121,6 +121,8 @@ func TestBudgetPeriodsRollOver(t *testing.T) {
 		if err != nil || tag.RowsAffected() != 1 {
 			t.Fatal("move back", key, err)
 		}
+		// Its budgets' windows count it where it now is (P-05).
+		recountBudgets(t, b.s, b.owner.TenantID)
 	}
 	usage := func(period string) LLMUsageTotals {
 		t.Helper()

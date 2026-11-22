@@ -121,11 +121,19 @@ func requestDeletion(ctx context.Context, tx pgx.Tx, a agent, requestedBy string
 	if err := publishRevocation(ctx, tx, "agent/"+a.ID); err != nil {
 		return err
 	}
-	// New PROVISIONING stores have no ordinary authority and must catch up with
-	// this permanent catalogue before activation. Their absence cannot hold an
-	// existing deletion hostage. Activation excludes this intent/census commit.
+	// The census is the subject's scope (revocation_scopes.go): the agent's
+	// own store and the stores that share a request with it, the only ones
+	// PostgreSQL can address an event that names the agent to. A request
+	// joins two LIVE agents, whose rows it locks, and this transaction ends
+	// the agent's LIVE phase under its row's lock: no store joins the scope
+	// later. Every other store, of this organization or another, can never
+	// act on the subject: it costs no fence and no row (v0.1.0 audit, the
+	// leftover of PERF-2). New PROVISIONING stores have no ordinary authority
+	// and must catch up with this permanent catalogue before activation. Their
+	// absence cannot hold an existing deletion hostage. Activation excludes
+	// this intent/census commit.
 	if _, err := tx.Exec(ctx, `INSERT INTO deletion_targets(agent_id,store_agent_id)
-        SELECT $1,id FROM agents WHERE phase<>'PROVISIONING'`, a.ID); err != nil {
+        SELECT $1,id FROM agents WHERE phase<>'PROVISIONING' AND id IN (`+agentScope+`)`, a.ID); err != nil {
 		return err
 	}
 	return nil

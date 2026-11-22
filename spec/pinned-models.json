@@ -14,7 +14,8 @@
     {
       "copy": "internal/controlplane/testdata/protocol-itf/protocol_composition.qnt",
       "model": "spec/protocol_composition.qnt",
-      "status": "current"
+      "status": "frozen",
+      "reason": "The P2 composition schedules, kept with their traces. The model has since gained the deletion's scope (v0.1.0 audit, PERF-3B; ADR 006): with WAIT_ALL a deletion waits for the acknowledgements of deletionScope instead of every store, and the invariant gains deletionScopeCovers. The guard is weaker, so every pinned schedule is still a behaviour of the current model, and deletion_scope_test.go replays the traces on the scope."
     },
     {
       "copy": "internal/controlplane/testdata/preimplementation-concurrency/sources/concurrent_protocol.qnt",

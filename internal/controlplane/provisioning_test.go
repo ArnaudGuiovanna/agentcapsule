@@ -191,7 +191,10 @@ func TestEnrollmentHistoricalAndConcurrentRevocations(t *testing.T) {
 	if err = s.pool.QueryRow(t.Context(), "SELECT count(*) FROM store_enrollment_receipts WHERE agent_id=$1 AND subject='agent/a'", e.AgentID).Scan(&receipts); err != nil || receipts != 0 {
 		t.Fatal("another agent's deletion reached the new store", receipts, err)
 	}
-	// A deletion starting AFTER activation must include the new store instead.
+	// A deletion starting AFTER activation must include the new store
+	// instead, once it shares a request with the deleted agent: its census is
+	// the agent's scope.
+	partner(t, s, "c", e.AgentID)
 	if err = s.RequestDeletion(t.Context(), "user-c", "c"); err != nil {
 		t.Fatal(err)
 	}

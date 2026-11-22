@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"os"
 	"path"
@@ -13,8 +14,10 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/sandbox"
 )
 
-// MaxDirectories bounds the directories InspectImage lists: each costs one
-// confined debugfs run (about 15 ms).
+// MaxDirectories bounds the directories InspectImage lists. One confined
+// debugfs run (about 15 ms to start) lists up to ext4image.ListBatch of them
+// (v0.1.0 audit, P-12): 100,000 directories take about 200 runs, no longer
+// 100,000.
 const MaxDirectories = 100000
 
 // CheckImage reads only the superblock of an image of size bytes: an ext4
@@ -66,50 +69,75 @@ func inspectImage(ctx context.Context, image string, sb sandbox.Options, base bo
 	if err != nil {
 		return err
 	}
+	type directory struct {
+		path  string
+		inode uint64
+	}
+	// The required files, as the walk finds them.
+	required := map[string]*ext4image.Entry{}
 	if base {
 		for _, f := range corpusmeta.RequiredFiles {
-			e, found, err := ext4image.Stat(ctx, sb, debugfs, image, "/"+f)
-			if err != nil {
-				return err
+			required["/"+f] = nil
+		}
+	}
+	queue := []directory{{"/", 2}} // the root directory's inode
+	seen := map[uint64]bool{2: true}
+	for listed := 0; len(queue) > 0; {
+		// One level of the walk at a time, a run per ListBatch directories.
+		level := queue
+		queue = nil
+		if listed += len(level); listed > MaxDirectories {
+			return corpusmeta.Invalid("corpus.ext4 has more than %d directories", MaxDirectories)
+		}
+		inodes := make([]uint64, len(level))
+		for i, d := range level {
+			inodes[i] = d.inode
+		}
+		listings, err := ext4image.ListInodes(ctx, sb, debugfs, image, inodes)
+		if err != nil {
+			return fmt.Errorf("%w: corpus.ext4 has a directory debugfs cannot list: %w", corpusmeta.ErrInvalid, err)
+		}
+		for i, entries := range listings {
+			dir := level[i].path
+			if base && dir == "/"+corpusmeta.ExtDir && len(entries) > 0 {
+				return corpusmeta.Invalid("ext/ is reserved for enrichers and must be empty")
 			}
-			if !found || !e.IsRegular() {
-				return corpusmeta.Invalid("corpus.ext4 lacks %s", f)
-			}
-			if f == corpusmeta.IndexFile && e.Size > corpusmeta.MaxIndexBytes {
-				return corpusmeta.Invalid("INDEX.md is larger than %d bytes", corpusmeta.MaxIndexBytes)
+			names := make(map[string]bool, len(entries))
+			for _, e := range entries {
+				switch {
+				case len(e.Name) > MaxNameBytes:
+					return corpusmeta.Invalid("corpus.ext4 has a name longer than %d bytes", MaxNameBytes)
+				case names[e.Name]:
+					// The kernel would find one of them: two are a crafted image.
+					return corpusmeta.Invalid("corpus.ext4 has two entries of one name in a directory")
+				case e.Mode&ext4image.SetID != 0:
+					return corpusmeta.Invalid("corpus.ext4 has a setuid or setgid file")
+				case e.IsDir():
+					if seen[e.Inode] {
+						return corpusmeta.Invalid("corpus.ext4 reaches a directory twice")
+					}
+					seen[e.Inode] = true
+					queue = append(queue, directory{path.Join(dir, e.Name), e.Inode})
+				case !e.IsRegular():
+					return corpusmeta.Invalid("corpus.ext4 holds a symbolic link or a special file")
+				}
+				names[e.Name] = true
+				if _, wanted := required[path.Join(dir, e.Name)]; wanted {
+					required[path.Join(dir, e.Name)] = &e
+				}
 			}
 		}
 	}
-	queue := []string{"/"}
-	seen := map[uint64]bool{2: true} // the root directory's inode
-	for listed := 0; len(queue) > 0; listed++ {
-		if listed == MaxDirectories {
-			return corpusmeta.Invalid("corpus.ext4 has more than %d directories", MaxDirectories)
+	for _, f := range corpusmeta.RequiredFiles {
+		e, wanted := required["/"+f]
+		if !wanted {
+			continue
 		}
-		dir := queue[0]
-		queue = queue[1:]
-		entries, err := ext4image.List(ctx, sb, debugfs, image, dir)
-		if err != nil {
-			return corpusmeta.Invalid("corpus.ext4 has a directory debugfs cannot list: %v", err)
+		if e == nil || !e.IsRegular() {
+			return corpusmeta.Invalid("corpus.ext4 lacks %s", f)
 		}
-		if base && dir == "/"+corpusmeta.ExtDir && len(entries) > 0 {
-			return corpusmeta.Invalid("ext/ is reserved for enrichers and must be empty")
-		}
-		for _, e := range entries {
-			switch {
-			case len(e.Name) > MaxNameBytes:
-				return corpusmeta.Invalid("corpus.ext4 has a name longer than %d bytes", MaxNameBytes)
-			case e.Mode&ext4image.SetID != 0:
-				return corpusmeta.Invalid("corpus.ext4 has a setuid or setgid file")
-			case e.IsDir():
-				if seen[e.Inode] {
-					return corpusmeta.Invalid("corpus.ext4 reaches a directory twice")
-				}
-				seen[e.Inode] = true
-				queue = append(queue, path.Join(dir, e.Name))
-			case !e.IsRegular():
-				return corpusmeta.Invalid("corpus.ext4 holds a symbolic link or a special file")
-			}
+		if f == corpusmeta.IndexFile && e.Size > corpusmeta.MaxIndexBytes {
+			return corpusmeta.Invalid("INDEX.md is larger than %d bytes", corpusmeta.MaxIndexBytes)
 		}
 	}
 	return nil
