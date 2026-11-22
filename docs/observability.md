@@ -41,6 +41,7 @@ volume archives and, on the standby host, its replay.
 | `agentcapsule_api_requests_total` | counter | `route`, `method`, `status_class` | API requests, by route pattern (`/v1/agents/{id}`), never by the IDs in the path |
 | `agentcapsule_api_request_duration_seconds` | histogram | `route` | API latency, excluding invocation and corpus build event subscriptions |
 | `agentcapsule_api_streams_active` | gauge | — | Open invocation and corpus build event subscriptions. Each events route counts once in `agentcapsule_api_requests_total` and the request log when the subscription closes |
+| `agentcapsule_api_limited_requests_total` | counter | `limit` (`principal_rate`, `organization_rate`, `authentication_failures`, `invocation_streams`, `principal_streams`, `organization_streams`, `process_streams`, `principal_uploads`, `process_uploads`) | API requests a limit refused ([api/README.md](api/README.md), request limits): it says which limit, never whose. Every series is served from zero |
 | `agentcapsule_api_access_revocations_pending` | gauge | — | Access revocations recorded with the authority service but not confirmed: the standby does not hold their record yet ([ADR 006](adr/006-authority-service.md) wave 5). Above 0 in degraded mode; it falls once the standby catches up and the API confirms them (every 5 seconds) |
 | `agentcapsule_api_access_revocations_unrecorded` | gauge | — | Access revocations that took effect and that the authority service has not recorded yet: it did not answer after their commit ([ADR 006](adr/006-authority-service.md), changes after the v0.1.0 audit). The API records them every 5 seconds; 0 while the service answers |
 | `agentcapsule_api_access_revocation_oldest_unrecorded_seconds` | gauge | — | How long the oldest unrecorded revocation has waited; 0 when none ([recovery.md](recovery.md#revocations-the-authority-service-has-not-recorded)) |
@@ -179,6 +180,7 @@ Each process writes one JSON object per line, with `time` and `event` first:
 | --- | --- | --- |
 | API | `http_request` | `request_id`, `route`, `method`, `status`, `problem` (the problem code, if any), `duration` |
 | API | `audit_refusal_unrecorded` (standard output) | — : a refused administrative attempt that its organization's trail could not record ([ADR 014 §10](adr/014-operations-capacity-diagnostics-audit.md#10-refused-attempts-in-the-organizations-trail)); its answer went out |
+| API | `authentication_failed` (standard output) | `request_id`, `route`, `source`: a request whose authentication failed (401, or the 404 of a download link), or that its source's failures refused (`authentication_rate_limited`). `source` is a pseudonym of the source address, never the address (below) |
 | Worker | `maintenance_started`, `maintenance_complete` | — |
 | Worker | `maintenance_retry` | `reason` (as above) |
 | Worker | `wake_budget_exhausted`, `harness_import_retry`, `directory_publish_retry`, `slim_callback_stopped` | — |
@@ -214,6 +216,18 @@ work:
 So a person's report ("my call failed, request ID …") leads from the API's
 log to every job it caused, on the other agents' side included. Work that no
 API request started (an agent's own schedule, an expiry) carries no ID.
+
+**Sources of failed authentications** (v0.1.0 audit, L-19). An address is
+personal data, so no event holds one. `authentication_failed` names its
+source, an IPv4 address or an IPv6 /64, by its pseudonym: the first 64 bits
+of HMAC-SHA256 of the source's text (`198.51.100.7`, `2001:db8:1:2::/64`)
+under a key. By default each API process draws its key at start and keeps it
+in memory only: its pseudonyms link its own events, and say nothing once it
+stops. With `-source-pseudonym-key-file <private 32-byte file>`, every
+process that reads the file gives a source the same pseudonym, across
+restarts. Whoever holds that file can compute a suspected address's
+pseudonym, and can recover any IPv4 source by trying every address: protect
+it as the addresses themselves. Behind a proxy, the source is the proxy.
 
 ## Traces
 

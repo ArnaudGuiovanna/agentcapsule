@@ -60,7 +60,10 @@ With `-tls-server-name api.example.net`, the API also refuses a certificate
 that does not cover that name. Give the name clients use.
 
 The API serves TLS 1.2 and 1.3 only, with Go's default cipher suites. A plain
-HTTP request gets `400` and reaches no route.
+HTTP request gets `400` and reaches no route. Every answer over HTTPS carries
+`Strict-Transport-Security: max-age=31536000`: a browser that reached the API
+once uses HTTPS only for a year. It names no subdomain and asks for no
+preload list.
 
 **Renewal.** Replace both files (write new files and rename them into place),
 then send `SIGHUP` to the API. New connections get the new certificate, and
