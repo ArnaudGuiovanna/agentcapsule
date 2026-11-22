@@ -49,7 +49,11 @@ CONTROL_TESTS = {"TestBarrierCapacityOneSlotThreeStoresAndReplay", "TestControlV
                  "TestMaintenanceDefersAtCapacityAndResumesWithoutDemand", "TestMaintenanceDoesNotReviveCanceledOrDeletedAgent",
                  "TestPlatformListenerOwnerSIGKILL", "TestPlatformAdmittedTransactionAcrossPhysicalDeath",
                  "TestPlatformVMIdentityMandatesRepliesAndWorkerHandover", "TestSealedStoreAllowsLaterRevocationAndClosure",
-                 "TestStoreSealWorkerCrashBeforeDatabaseReceipt"}
+                 "TestStoreSealWorkerCrashBeforeDatabaseReceipt",
+                 # Per-agent admission and locks, bounded VMM logs (S-02, S-03, P-09, S-20).
+                 "TestKVMSlowDeliveryDoesNotDelayAnotherAgent", "TestKVMLongBootDoesNotFailAnotherAgentsPlatformCalls",
+                 "TestKVMVolumeCopyDoesNotBlockAnotherAgent", "TestKVMUsingARunningVMDoesNotRewriteTheRegistry",
+                 "TestKVMVMMLogIsBoundedAndGoesWithItsRun"}
 CONTROL_HELPERS = {"TestDispatchWorkerChild", "TestCredentialRotationChild", "TestPlatformListenerChild",
                    "TestStoreSealWorkerChild"}
 # The tags the toolchain sets on this host; any other tag is false unless the
