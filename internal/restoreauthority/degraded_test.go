@@ -84,10 +84,13 @@ func within(t *testing.T, d time.Duration) context.Context {
 
 // degrade stops the standby. A write finds it unreachable and fails at its
 // deadline, as every write does within the delay; then the delay passes.
+// The deadline leaves a loaded host the time to commit the write and try
+// the standby at least once: a write that gives up before (100 ms did, under
+// load) records no failure, and the delay never starts.
 func degrade(t *testing.T, p *pair, k *clock, b Binding) {
 	t.Helper()
 	p.link.set(true)
-	err := p.catalog.RecordOutcome(within(t, 100*time.Millisecond), b, Outcome{ID: "event-probe", Digest: digest("probe")})
+	err := p.catalog.RecordOutcome(within(t, time.Second), b, Outcome{ID: "event-probe", Digest: digest("probe")})
 	if !errors.Is(err, ErrUnavailable) || errors.Is(err, ErrWaitsForReplica) {
 		t.Fatal("a write returned without the replica within the delay", err)
 	}

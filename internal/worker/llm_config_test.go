@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"sync/atomic"
 	"testing"
 
@@ -47,6 +48,32 @@ func TestLLMConfigAllowsOnlyTheOperatorsInternalProviders(t *testing.T) {
 	c, err := (&ServiceLLM{}).gatewayConfig(true)
 	if err != nil || !c.RequireHTTPS {
 		t.Fatal("production must require HTTPS", err)
+	}
+	// Idle connections per provider (P-12): 32 by default, the operator's
+	// number otherwise, within its bounds.
+	if c.MaxIdleConnsPerHost != llmgateway.DefaultMaxIdleConnsPerHost {
+		t.Fatal("idle connections per host by default:", c.MaxIdleConnsPerHost)
+	}
+	if c, err = (&ServiceLLM{MaxIdleConnsPerHost: 100}).gatewayConfig(true); err != nil || c.MaxIdleConnsPerHost != 100 {
+		t.Fatal("idle connections per host:", c.MaxIdleConnsPerHost, err)
+	}
+	for _, bad := range []int{-1, 1, 513} {
+		if _, err := (&ServiceLLM{MaxIdleConnsPerHost: bad}).gatewayConfig(true); err == nil {
+			t.Fatal(bad, "idle connections per host accepted")
+		}
+	}
+	// Model calls in flight per agent (S-13): 8 by default, 1 to 64.
+	if n, err := (&ServiceLLM{}).callsPerAgent(); err != nil || n != 8 {
+		t.Fatal("calls per agent by default:", n, err)
+	}
+	if n, err := (&ServiceLLM{MaxCallsPerAgent: 3}).callsPerAgent(); err != nil || n != 3 {
+		t.Fatal("calls per agent:", n, err)
+	}
+	for _, bad := range []int{-1, 65} {
+		cfg := ServiceConfig{LLM: &ServiceLLM{ReceiptKey: "/nonexistent/receipt.key", MaxCallsPerAgent: bad}}
+		if _, err := cfg.OpenLLM(nil, true); err == nil || errors.Is(err, os.ErrNotExist) {
+			t.Fatal(bad, "calls per agent accepted:", err)
+		}
 	}
 	// An invalid entry stops the worker before it opens anything.
 	for _, bad := range [][]string{{"8.8.8.8:443"}, {"0.0.0.0/0"}, {"169.254.169.254:80"}, {"models.internal"}} {

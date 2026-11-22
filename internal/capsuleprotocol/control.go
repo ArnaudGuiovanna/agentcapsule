@@ -297,7 +297,19 @@ func (c *Client) endpoint(path string) string {
 
 // NewClient accepts a boot-bound dialer. Neither endpoint nor identity may come
 // from a user envelope; the host must derive both from its current placement.
+// It is the host's client of the guest's control channel, whose connections
+// stay open between calls (P-09). Each new connection is the boot's own
+// channel and passes the full mTLS check (VerifyConnection) at its handshake;
+// each response is refused once the server's certificate has expired (call).
+// An idle connection is closed well before the server's own 5-second idle
+// timeout, so a call never meets one the server closes.
 func NewClient(c Credentials, dial func(context.Context) (net.Conn, error)) (*Client, error) {
+	return newClient(c, dial, true)
+}
+
+// newClient without keepAlive opens one connection per call: the guest's
+// platform client, whose output streams end their requests early.
+func newClient(c Credentials, dial func(context.Context) (net.Conn, error), keepAlive bool) (*Client, error) {
 	cfg, err := c.TLS(false)
 	if err != nil {
 		return nil, err
@@ -305,7 +317,7 @@ func NewClient(c Credentials, dial func(context.Context) (net.Conn, error)) (*Cl
 	if dial == nil {
 		return nil, ErrProtocol
 	}
-	transport := &http.Transport{DisableKeepAlives: true, MaxResponseHeaderBytes: 4096, TLSHandshakeTimeout: 5 * time.Second,
+	transport := &http.Transport{DisableKeepAlives: !keepAlive, MaxIdleConns: 2, MaxIdleConnsPerHost: 2, IdleConnTimeout: ClientIdleTimeout, MaxResponseHeaderBytes: 4096, TLSHandshakeTimeout: 5 * time.Second,
 		DialTLSContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			conn, err := dial(ctx)
 			if err != nil {
@@ -320,6 +332,26 @@ func NewClient(c Credentials, dial func(context.Context) (net.Conn, error)) (*Cl
 		}}
 	return &Client{identity: c.Identity, serverName: cfg.ServerName, http: &http.Client{Transport: transport, Timeout: 20 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, nil
+}
+
+// ClientIdleTimeout is how long a client keeps an idle connection.
+const ClientIdleTimeout = 2 * time.Second
+
+// CloseIdleConnections closes the client's kept connections: its boot ended.
+func (c *Client) CloseIdleConnections() { c.http.CloseIdleConnections() }
+
+// currentPeer refuses a response over a connection whose server certificate
+// has expired since its handshake: TLS checks validity only then.
+func currentPeer(state *tls.ConnectionState, now time.Time) bool {
+	if state == nil || len(state.VerifiedChains) == 0 {
+		return false
+	}
+	for _, cert := range state.VerifiedChains[0] {
+		if now.Before(cert.NotBefore) || !now.Before(cert.NotAfter) {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *Client) call(ctx context.Context, path string, in *request) (response, error) {
@@ -345,6 +377,9 @@ func (c *Client) call(ctx context.Context, path string, in *request) (response, 
 		return response{}, errors.Join(ErrTransport, err)
 	}
 	defer resp.Body.Close()
+	if c.scheme == "" && !currentPeer(resp.TLS, time.Now()) {
+		return response{}, ErrIdentity
+	}
 	var out response
 	b, err := io.ReadAll(io.LimitReader(resp.Body, MaxMessageBytes+1))
 	if err != nil || len(b) > MaxMessageBytes {

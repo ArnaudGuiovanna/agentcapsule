@@ -126,9 +126,9 @@ the active assignment then creates its replacement for the same target (person
 or team). There is no instant without rights and no double set of active rights.
 An already revoked assignment answers 409; the target must remain active. The
 audit records `assignment.revoked` then `assignment.created`. The revoked
-assignment is recorded with the authority service before the commit, as for
-`revoke` and `reassign`: the answer's `revocations` says `pending` or
-`confirmed`, and a 503 `authority_unavailable` means that nothing changed
+assignment is recorded with the authority service after the commit, as for
+`revoke` and `reassign`: the answer's `revocations` says `recording`,
+`pending` or `confirmed`
 ([README](README.md#revocations-pending-and-confirmed)). As with any
 authority decision, content already produced is not transferred: only the
 original requester re-reads it, while they hold `read_content`.
@@ -469,7 +469,7 @@ Media type parameters (`charset`, ...) are not kept. Results remain text: an
 agent cannot return a file yet.
 
 The guest reads its files **after** acknowledging "working" (next section):
-during delivery, its platform calls wait for the host's exclusive turn.
+during delivery, its platform calls wait for its agent's exclusive turn.
 
 ### Temporary download links
 
@@ -552,8 +552,9 @@ streams; an organization may refuse the PostgreSQL writes it costs.
 ## Deferred result: the `working` state
 
 The worker delivers an instruction under an **exclusive admission turn** of the
-host: nothing else is interleaved (stop, deletion, another delivery) between the
-send and the acknowledgment. The guest's platform calls (reading a file, calling
+agent: nothing else is interleaved for that agent (its stop, its deletion,
+another delivery to it) between the send and the acknowledgment; other agents'
+deliveries run meanwhile. The guest's platform calls (reading a file, calling
 the model, writing to another agent) wait for the end of this turn. An agent
 that needs them to answer therefore cannot answer *within* the delivery.
 

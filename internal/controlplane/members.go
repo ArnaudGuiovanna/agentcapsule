@@ -272,7 +272,7 @@ func (a *Accounts) changeMember(ctx context.Context, p Principal, id, key string
 			if err != nil {
 				return 0, nil, err
 			}
-			// The records, before the commit: the membership (and with it
+			// The records, after the commit: the membership (and with it
 			// its team memberships) on offboarding, and the tokens.
 			if role == nil {
 				if err = revoked.add(ctx, authoritylog.AccessMember, p.TenantID, [][]string{{id}}); err != nil {
@@ -292,5 +292,5 @@ func (a *Accounts) changeMember(ctx context.Context, p Principal, id, key string
 	if err != nil {
 		return APIReceipt{}, err
 	}
-	return r, commit(ctx, tx)
+	return a.store.settled(ctx, r, commit(ctx, tx))
 }

@@ -26,7 +26,8 @@ go build -trimpath -o bin/agentcapsule-api ./cmd/agentcapsule-api
 ```
 
 Provide `AGENTCAPSULE_DATABASE_URL` through the service's protected
-environment. The installation commands are local; they are not HTTP
+environment, naming the API's own role, `agentcapsule_api`
+([install.md](../install.md#postgresql)). The installation commands are local; they are not HTTP
 endpoints. First create a private directory owned by the account that will run
 the API:
 
@@ -167,6 +168,14 @@ closed before delivery, a reply that died before ADR 007) on its first pass
 after the closure or the death, and purges on the same pass once a deadline
 has passed.
 
+**Finished records.** Once its content is gone, a finished invocation, wake,
+sleep or request between agents is deleted 90 days after its end
+(`finished_retention` of the worker, 45 days to 10 years), with its mailbox
+entries, idempotency key, inbox items and closure; it then reads as `404
+not_found`. One that something still needs stays: an unread result, a delivery
+still queued, an audit event that names it, a restore's record
+([worker.md](../worker.md#maintenance-and-delivery-worker)).
+
 **Credential rotation and revocation.** `agentcapsule-admin list-credentials`
 prints, without secrets or fingerprints, the platform credentials (and the
 legacy service credentials of a test database): type, identifier, account,
@@ -271,12 +280,12 @@ flags: `-authority-socket`, `-restore-authority-id` and `-key-authority-id`.
   until `agentcapsule-admin reconcile` has brought the database up to the
   promoted authorities, for their epoch, and the probe answers 503
   `authority_not_reconciled` meanwhile ([recovery.md](../recovery.md#reconcile-the-database)).
-  `reconcile` runs as the API's account, with the API's database and its
+  `reconcile` runs as root, with the owner's database role and the API's
   three flags. The authorities of an installation never promoted are at
   their first epoch, which the migrations record as reconciled.
 - `-preflight` asks the service once (the `authority` check).
 - Every route that revokes access records the revocation with the service
-  before it commits ([below](#revocations-pending-and-confirmed)).
+  once it has committed ([below](#revocations-pending-and-confirmed)).
 
 The API takes the daily receipt keys from the same socket
 ([above](#the-daily-receipt-keys)), and `reconcile` reads the access
@@ -287,24 +296,27 @@ revocation records, the revocation subjects and the stores there (ADR 006
 
 A restore never revives an access revoked since the backup
 ([product.md](../product.md) §3). So every transaction that revokes access
-appends an **access revocation record** to the authority service before it
-commits in PostgreSQL ([ADR 006](../adr/006-authority-service.md) §7, wave
-5). The service replicates it to the standby, as every authority write.
+also writes an **access revocation record**, which the API appends to the
+authority service once the transaction has committed
+([ADR 006](../adr/006-authority-service.md) §7, wave 5, and "Changes after
+the v0.1.0 audit"). The service replicates it to the standby, as every
+authority write. The API waits for the service with no lock held: a slow or
+absent service holds up no other request of the organization.
 
-- **The service did not record it.** The service does not answer, or the
-  standby holds the record back before degraded mode begins (the first 30
-  seconds of a standby's outage). Nothing is committed. The route answers
-  503 `authority_unavailable` with `Retry-After: 5`: try again in a moment.
-  The same `Idempotency-Key` may be used again: no answer was stored.
-- **It recorded it.** The revocation takes effect at once: the next call of
-  the revoked member, token or assignment fails. The answer carries
-  `revocations`, one entry per record:
+- **The revocation takes effect at once**, whatever the service does: the
+  next call of the revoked member, token or assignment fails. The answer
+  carries `revocations`, one entry per record:
 
   ```json
   {"principal_id":"prn_…","status":"revoked",…,
    "revocations":[{"id":"arv_…","kind":"member","state":"pending","recorded_at":"…"}]}
   ```
 
+  `recording`: the service has not recorded it yet. It did not answer, or
+  the standby held the record back before degraded mode began (the first
+  30 seconds of a standby's outage). The API records it every 5 seconds
+  until the service answers; a restore of the database or a failover before
+  it does could undo the revocation ([recovery.md](../recovery.md#revocations-the-authority-service-has-not-recorded)).
   `confirmed`: the standby's replica holds the record (or no standby
   exists). `pending`: it does not yet. A failover before it does could
   undo the revocation; the announcement after a disaster lists the window
@@ -322,16 +334,19 @@ commits in PostgreSQL ([ADR 006](../adr/006-authority-service.md) §7, wave
   operator): every API token, service token and platform credential issued
   before the failover is revoked, and every delegated token issued before
   it is refused.
-- **Later.** The API asks the service about pending revocations every 5
-  seconds, and confirms them once the standby holds their record.
-  `GET /v1/access-revocations/{id}` reads one, with its `state` and
-  `confirmed_at`; reading a pending one asks the service again. An
+- **Later.** Every 5 seconds the API records the recording revocations,
+  then asks the service about the pending ones, and confirms them once the
+  standby holds their record. `GET /v1/access-revocations/{id}` reads one,
+  with its `state` and `confirmed_at`; reading a recording or a pending one
+  asks the service again. An
   organization's revocations are read with the rights of `GET /v1/audit`;
   the platform's own (an organization disabled, an operator's credential
   or delegation change) with the platform credential. A replay of the
   revoking request gives each revocation's current state.
-- **Metrics.** `agentcapsule_api_access_revocations_pending` and
-  `agentcapsule_api_access_revocation_oldest_pending_seconds`
+- **Metrics.** `agentcapsule_api_access_revocations_pending`,
+  `agentcapsule_api_access_revocation_oldest_pending_seconds`,
+  `agentcapsule_api_access_revocations_unrecorded` and
+  `agentcapsule_api_access_revocation_oldest_unrecorded_seconds`
   ([observability.md](../observability.md)).
 
 The routes that revoke, and the record each appends:
@@ -347,7 +362,7 @@ The routes that revoke, and the record each appends:
 | `POST /v1/agents/{id}/assignments/{assignment_id}/revoke`, `/replace`, `/reassign` | `assignment` | the revoked or replaced assignment |
 | `POST /v1/llm/providers/{id}/rotate` | `llm_provider` | the provider, `generation`, the previous credential's generation |
 | `POST /v1/llm/providers/{id}/disable` | `llm_provider` | the provider |
-| Personal volume allocation during invitation acceptance or retry | `personal_volume` | agent ID, immutable volume ID, member ID. Allocation requires confirmation. |
+| Personal volume allocation during invitation acceptance or retry | `personal_volume` | agent ID, immutable volume ID, member ID. Allocation requires confirmation: this claim alone is recorded before the commit, since the service's answer decides it, and fails with 503 `authority_unavailable` when the service does not record it. |
 | `POST /v1/organizations/{id}/disable` (platform) | `organization` | the organization |
 | `agentcapsule-admin revoke-credential` | `platform_credential`, or `api_token` for a legacy service credential | the credential |
 | `agentcapsule-admin configure-delegation` | `delegated_token` (`revoke-token`); `delegation_trust` (`revoke-trust`; `rotate`: `generation` and the new one; `retire-key`: `key`, the key and its end) | the issuer, then the token ID or the audience |
@@ -358,9 +373,8 @@ authority service, nothing is recorded outside PostgreSQL and no answer
 carries `revocations`. `agentcapsule-admin` takes the same three flags as
 the API for `revoke-credential` and the revoking actions of
 `configure-delegation`; in production it refuses them without the flags
-(`authority_required_in_production`), and answers
-`authority_unavailable_try_again` when the service did not record the
-revocation.
+(`authority_required_in_production`). Its answer gives each revocation's
+state, `recording` included.
 
 ## Private instructions
 

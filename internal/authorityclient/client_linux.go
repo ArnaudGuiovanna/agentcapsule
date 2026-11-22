@@ -512,6 +512,20 @@ func (c *Client) BeginRevocation(ctx context.Context, subject string) (uint64, e
 	return r.Revision, err
 }
 
+// BeginRevocations sends restoreauthority.MaxScopes subjects per request:
+// one round trip, and one transaction of the service, for each.
+func (c *Client) BeginRevocations(ctx context.Context, scopes []restoreauthority.Scope) error {
+	if len(scopes) == 0 {
+		return restoreauthority.ErrInput
+	}
+	for chunk := range slices.Chunk(scopes, restoreauthority.MaxScopes) {
+		if err := c.call(ctx, svc.OpBeginRevocations, svc.ScopesArgs{Scopes: chunk}, nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (c *Client) Scan(ctx context.Context, b restoreauthority.Binding) (restoreauthority.Receipt, error) {
 	var r svc.ReceiptResult
 	err := c.call(ctx, svc.OpScan, svc.BindingArgs{Binding: b}, &r)

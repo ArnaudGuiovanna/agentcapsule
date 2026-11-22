@@ -49,12 +49,22 @@ CONTROL_TESTS = {"TestBarrierCapacityOneSlotThreeStoresAndReplay", "TestControlV
                  "TestMaintenanceDefersAtCapacityAndResumesWithoutDemand", "TestMaintenanceDoesNotReviveCanceledOrDeletedAgent",
                  "TestPlatformListenerOwnerSIGKILL", "TestPlatformAdmittedTransactionAcrossPhysicalDeath",
                  "TestPlatformVMIdentityMandatesRepliesAndWorkerHandover", "TestSealedStoreAllowsLaterRevocationAndClosure",
-                 "TestStoreSealWorkerCrashBeforeDatabaseReceipt"}
+                 "TestStoreSealWorkerCrashBeforeDatabaseReceipt",
+                 # Per-agent admission and locks, bounded VMM logs (S-02, S-03, P-09, S-20).
+                 "TestKVMSlowDeliveryDoesNotDelayAnotherAgent", "TestKVMLongBootDoesNotFailAnotherAgentsPlatformCalls",
+                 "TestKVMVolumeCopyDoesNotBlockAnotherAgent", "TestKVMUsingARunningVMDoesNotRewriteTheRegistry",
+                 "TestKVMVMMLogIsBoundedAndGoesWithItsRun"}
 CONTROL_HELPERS = {"TestDispatchWorkerChild", "TestCredentialRotationChild", "TestPlatformListenerChild",
                    "TestStoreSealWorkerChild"}
 # The tags the toolchain sets on this host; any other tag is false unless the
 # build sets it.
 BASE_TAGS = {"linux", "unix", "amd64", "cgo", "gc"}
+
+
+def require(condition, message):
+    """Stop unless condition holds; unlike assert, python -O keeps the check."""
+    if not condition:
+        raise RuntimeError(message)
 
 
 def sha(path):
@@ -178,10 +188,10 @@ def main():
     if a.pg_user and pwd.getpwnam(a.pg_user).pw_uid == 0:
         p.error("PostgreSQL must run as a non-root user")
     manifest = json.loads((a.firecracker_build / "artifacts.json").read_text())
-    assert manifest["variant"] == "agentcapsule-volume-lock-v1"
-    assert all(r["passed"] for r in json.loads((a.firecracker_build / "summary.json").read_text()))
+    require(manifest["variant"] == "agentcapsule-volume-lock-v1", "the Firecracker build is not the volume-lock variant")
+    require(all(r["passed"] for r in json.loads((a.firecracker_build / "summary.json").read_text())), "the Firecracker build has a failed phase")
     for name, expected in manifest["sha256"].items():
-        assert sha(a.firecracker_build / name) == expected, name
+        require(sha(a.firecracker_build / name) == expected, name)
     out = a.output
     out.mkdir(parents=True, exist_ok=False, mode=0o700)
     try:
@@ -299,9 +309,9 @@ def campaign(a, manifest, out):
         run("integration", [a.go, "tool", "test2json", "-p", "github.com/ArnaudGuiovanna/agentcapsule/internal/runtime",
                             out / "runtime.test", "-test.v", "-test.timeout=240s"], 270)
         events = [json.loads(line) for line in (out / "integration.log").read_text().splitlines()]
-        assert not any(e["Action"] in ("skip", "fail") for e in events), "skipped or failed checks"
+        require(not any(e["Action"] in ("skip", "fail") for e in events), "skipped or failed checks")
         passed = [e["Test"] for e in events if e["Action"] == "pass" and "Test" in e]
-        assert len(passed) >= 9, "incomplete test evidence"
+        require(len(passed) >= 9, "incomplete test evidence")
         (out / "tests.json").write_text(json.dumps(passed, indent=2) + "\n")
         if a.pg_bin:
             tags = ["kvm_integration"] + (["kvm_control_integration"] if a.control_guest else [])
@@ -323,15 +333,15 @@ def campaign(a, manifest, out):
             env["AGENTCAPSULE_VM_PG_RECOVERY"] = "verify"
             run("worker-recovery-verify", worker + ["-test.run=^TestPostgresKVMDatabaseRecovery$"], 90)
             env.pop("AGENTCAPSULE_VM_PG_RECOVERY")
-            assert "automatic recovery in progress" in (pgroot / "server.log").read_text(), "no PostgreSQL crash recovery evidence"
+            require("automatic recovery in progress" in (pgroot / "server.log").read_text(), "no PostgreSQL crash recovery evidence")
             worker_passes = {}
             for label, required in (("worker-integration", selected), ("worker-recovery-prepare", {"TestPostgresKVMDatabaseRecovery"}),
                                     ("worker-recovery-verify", {"TestPostgresKVMDatabaseRecovery"})):
                 events = [json.loads(line) for line in (out / (label + ".log")).read_text().splitlines()]
-                assert not any(e["Action"] in ("skip", "fail") for e in events), "skipped or failed worker checks"
+                require(not any(e["Action"] in ("skip", "fail") for e in events), "skipped or failed worker checks")
                 worker_passes[label] = [e["Test"] for e in events if e["Action"] == "pass" and "Test" in e]
                 missing = sorted(required - set(worker_passes[label]))
-                assert not missing, "missing KVM worker tests: " + ", ".join(missing)
+                require(not missing, "missing KVM worker tests: " + ", ".join(missing))
             (out / "worker-tests.json").write_text(json.dumps(worker_passes, indent=2) + "\n")
     finally:
         if pgroot is not None:

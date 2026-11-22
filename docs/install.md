@@ -43,9 +43,12 @@ the worker runs the same host checks in both modes.
 | pgBackRest and the archive shipper → standby | SFTP over SSH, the standby's host key checked against a pinned `known_hosts`. The data is encrypted before it leaves the host. | [deploy/backup](../deploy/backup) |
 | Archive shipper → S3 | HTTPS, through an rclone crypt remote. | [rclone.conf.example](../deploy/backup/rclone.conf.example) |
 | Prometheus → `/metrics` | Plain HTTP, on loopback only, without authentication. It carries technical counters only: no content, token or identifier from a request. | `-metrics-listen`, `metrics_listen` |
+| Browsers, applications → bundled identity provider | HTTPS on the public identity port, served by `agentcapsule-oidc-edge` with the identity provider's certificate. It forwards only `/realms/<realm>/` (not `master`) and `/resources/`; the administration console and API answer 404. | `oidc_port`, `oidc_cert` ([deploy/oidc](../deploy/oidc/README.md)) |
+| Identity edge → Keycloak | Plain HTTP on `127.0.0.1:9445`, where Keycloak listens alone, with its administration. | Built in |
 
-Two hops stay in clear text, both inside the host: the Directory's internal
-network and the metrics endpoints. ADR 010 says why.
+Three hops stay in clear text, all inside the host: the Directory's internal
+network, the metrics endpoints and the identity edge's hop to Keycloak. ADR 010
+says why.
 
 ## API certificate
 
@@ -77,16 +80,51 @@ Start failures print one code: `tls_required_in_production`,
 
 ## PostgreSQL
 
-On a single host, use the Unix socket: there is no network hop.
+Three roles reach the database:
+
+| Role | Used by | Can |
+|---|---|---|
+| `agentcapsule` | `agentcapsule-admin` | owns the database and every object; alone runs `agentcapsule-admin migrate` |
+| `agentcapsule_api` | the API | reads every table; writes the rows the API writes |
+| `agentcapsule_worker` | the worker | reads every table; writes the rows the worker writes |
+
+The API's and the worker's roles own nothing. They cannot truncate a table,
+alter or drop it, disable or drop a trigger (the guards that keep revocations,
+seals and access revocations permanent), create an object, or run the
+migrations. The migration `service-roles` grants their privileges, and
+`agentcapsule-admin migrate` grants them again at each run: create the roles
+before you migrate, or migrate again after you create them. A role that does
+not exist is skipped. Neither the API nor the worker migrates: each refuses to
+start on a schema that is behind, ahead of or different from its binary
+(`database_schema_unavailable`).
 
 ```sh
-AGENTCAPSULE_DATABASE_URL='host=/run/postgresql dbname=agentcapsule user=agentcapsule'
+psql -c 'CREATE ROLE agentcapsule LOGIN' -c 'CREATE DATABASE agentcapsule OWNER agentcapsule' \
+     -c 'CREATE ROLE agentcapsule_api LOGIN' -c 'CREATE ROLE agentcapsule_worker LOGIN'
 ```
+
+On a single host, use the Unix socket: there is no network hop. Give each
+process its own role:
+
+```sh
+# agentcapsule-admin
+AGENTCAPSULE_DATABASE_URL='host=/run/postgresql dbname=agentcapsule user=agentcapsule'
+# the API (/etc/agentcapsule/api.env)
+AGENTCAPSULE_DATABASE_URL='host=/run/postgresql dbname=agentcapsule user=agentcapsule_api'
+# the worker (/etc/agentcapsule/worker.env)
+AGENTCAPSULE_DATABASE_URL='host=/run/postgresql dbname=agentcapsule user=agentcapsule_worker'
+```
+
+With peer authentication, map each account to its role only, in
+`pg_ident.conf`: root to `agentcapsule` and `agentcapsule_worker`, the API's
+account to `agentcapsule_api`. The installer does this for its own cluster
+([cli-host.md](cli-host.md#profile)) and writes the owner's connection
+string to `/etc/agentcapsule/admin.env` (root, 0600).
 
 For a server on another host, use TLS that checks the server:
 
 ```sh
-AGENTCAPSULE_DATABASE_URL='host=db.example.net dbname=agentcapsule user=agentcapsule sslmode=verify-full sslrootcert=/etc/agentcapsule/postgres-ca.pem'
+AGENTCAPSULE_DATABASE_URL='host=db.example.net dbname=agentcapsule user=agentcapsule_api sslmode=verify-full sslrootcert=/etc/agentcapsule/postgres-ca.pem'
 ```
 
 On the server, set `ssl = on` with its certificate and key, and use only
@@ -121,7 +159,9 @@ connects, after DNS resolution, so a public name that resolves to an
 internal address is refused too. A refused call is `rejected`, and nothing is
 sent. This holds in both modes.
 - Refused unless you allow them: loopback, private (RFC 1918, RFC 4193),
-  carrier-grade NAT (`100.64.0.0/10`) and the other reserved ranges.
+  site-local (`fec0::/10`), carrier-grade NAT (`100.64.0.0/10`) and the
+  other reserved ranges. A 6to4 (`2002::/16`) or Teredo (`2001::/32`)
+  address counts as the IPv4 address it carries.
 - Always refused: unspecified, multicast and link-local addresses,
   `0.0.0.0/8`, and the cloud metadata addresses (`169.254.169.254` and the
   rest of `169.254.0.0/16`, `100.100.100.200`, `168.63.129.16`,
@@ -189,6 +229,7 @@ AGENTCAPSULE_DATABASE_URL=... /opt/agentcapsule/agentcapsule-worker -config /etc
 | `metrics_listen` | The address is not loopback, or is in use. |
 | `directory_certificate`, `directory_ca`, `directory_edge` | The client certificate is unusable, expired, not for `clientAuth`, or not named `agentcapsule-control-plane`; the CA file holds no certificate; the edge refuses the client or presents another CA's or another name's certificate. An edge that does not answer is a warning. |
 | `registry` | A rule is `local` (production). |
+| `registry_signatures` | With the `registry` section: a rule lists no publisher key and does not say `allow_unsigned` (production, or `require_signatures`), or says `allow_unsigned` beside publisher keys. A rule that imports unsigned packages is a warning ([registry.md](registry.md#publisher-signatures)). |
 | `registry_inspection` | With the `registry` section: `debugfs` cannot run in its sandbox (no e2fsprogs, a kernel without `mount_setattr`, no user namespaces for a worker that is not root, a worker that is root of a user namespace other than the host's, as in a container), or, as root, `inspection_uid` is not reserved: missing, 0, 65535, from 2147483647 up, in the provisioning range, the SLIM bridge's, or an account's or a group's ([registry.md](registry.md#image-inspection-sandbox)). |
 | `postgresql` | The connection string may use clear text (production), or the server cannot be reached. The check confirms TLS with the server (`pg_stat_ssl`). |
 
@@ -216,6 +257,25 @@ the service does not answer on the socket, when this account may not open it
 (not in `agentcapsule-authority-clients`), or when the service holds other
 authorities than the pinned ones. A service in degraded mode, or waiting for
 its standby, is a warning.
+
+## Service confinement
+
+Every shipped unit confines its service with systemd (S-05, S-06), and
+`scripts/test_systemd_units.py` fails when a unit loses a directive.
+
+| Unit | Confinement |
+|---|---|
+| `agentcapsule-authority`, `agentcapsule-slim-bridge`, `agentcapsule-api`, `agentcapsule-oidc-edge` | No capability, no device, read-only system, private `/tmp` and `/proc`, `@system-service` without `@privileged` and `@resources`, no namespace, no writable and executable memory. The API also has `LimitNOFILE=65536` and `MemoryMax=2G`; raise them with a drop-in on a large host. |
+| `agentcapsule-worker` | Root, with ten capabilities, a read-only system but its state directories, a system call deny list, and no access to the authorities' directories. What it leaves out, and why: [worker.md](worker.md#confinement). |
+| `agentcapsule-interop` | The Docker CLI only: no capability, Unix sockets only, no IP traffic, and its own Docker configuration directory, so that root's registry credentials stay out of it. |
+| `agentcapsule-pg-backup@` | `postgres`, no capability, read-only system but `/tmp` (pgBackRest's locks, shared with its other processes), its log and its spool. |
+| `agentcapsule-backup-metrics`, `agentcapsule-archive-ship`, `agentcapsule-standby-metrics` | Root with `CAP_SETUID`, `CAP_SETGID` and `CAP_DAC_OVERRIDE` only, to run pgBackRest, rclone or psql as their accounts and write node_exporter's directory; read-only system, private `/tmp`, `@system-service`. |
+| `agentcapsule-host@` | The host operations install packages, configure the host and run the worker binary: they keep root, writable file systems and devices. They get `NoNewPrivileges`, `ProtectKernelLogs`, `ProtectClock`, `ProtectHostname`, `LockPersonality`, `RestrictRealtime`, native system calls and the address families they use. |
+
+A directory a service must write that the unit does not name (another
+runtime root, archive root or trace file) needs a drop-in with
+`ReadWritePaths=`. Check an installed host with `systemd-analyze security
+<unit>`.
 
 ## Operator steps
 
@@ -276,7 +336,7 @@ the items listed after the table.
 | Guest image and harnesses | SHA-256 in the worker's configuration; harnesses by OCI digest |
 | Go modules | `go.sum` (and each module of `runtime/`) |
 | SLIM native library | SHA-256 in [profile.json](../runtime/interop/profile.json) |
-| pgBackRest 2.58 and rclone 1.60.1 (CI) | SHA-256 in `scripts/fetch-backup-tools.py`, from a fixed Ubuntu snapshot |
+| pgBackRest 2.50, the server bundle's, and rclone 1.60.1 (CI) | SHA-256 in `scripts/fetch-backup-tools.py`, from the bundle's fixed Ubuntu snapshot |
 | SeaweedFS, OpenSSH (sftp) and Prometheus images (CI) | Digest |
 | GitHub Actions | Commit SHA |
 | Dagger CLI and Gitleaks (CI) | SHA-256 in the [CI workflow](../.github/workflows/ci.yml) and [Gitleaks action](../.github/actions/scan-secrets/action.yml), respectively |

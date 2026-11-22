@@ -32,7 +32,9 @@ corpora uses them, and so may any harness: query embeddings, for example.
   the units below.
 - **Idempotency**: the request's `idempotency_key` (at most 200 characters)
   is the ledger's key. A settled key never calls the provider again: the
-  guest repeats the request with a new key. A cut after sending is
+  guest repeats the request with a new key. A key replayed while its call
+  still runs answers `outcome_unknown` and leaves the reservation to the
+  running call, as for chat. A cut once the request may have been sent is
   `outcome_unknown`: the reservation keeps counting, do not retry with the
   same key.
 - **Timeouts**: 300 s in total, as `complete`.
@@ -52,7 +54,9 @@ corpora uses them, and so may any harness: query embeddings, for example.
 
 - `input`: 1 to 64 strings, each 1 to 32 KiB of UTF-8.
 - The gateway asks for `encoding_format: "base64"`, so vectors stay compact.
-- Reservation: the body's size / 3 tokens; settlement: `usage.prompt_tokens`.
+- Reservation: one token per three ASCII bytes of the inputs and one per
+  other byte; settlement: `usage.prompt_tokens`, or the reservation when the
+  provider reports none.
 
 ```json
 {"embeddings": ["<base64 of little-endian float32>", "..."],
@@ -118,6 +122,7 @@ and one more:
 | Code | HTTP | When |
 |---|---|---|
 | `unsupported` | 400 | the alias does not declare the route's operation; refused before any reservation |
+| `concurrency_limited` | 429 | the agent already has its limit of model calls in flight, every route counted ([api/llm.md](../api/llm.md#budgets-and-consumption-llm-03)); refused before any reservation |
 
 An older `capsule-init` maps a code it does not know to `unavailable`, as for
 `capability_denied` (ADR 016).

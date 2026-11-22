@@ -5,6 +5,7 @@ package worker
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
@@ -12,12 +13,23 @@ import (
 )
 
 type DispatchOptions struct {
-	Batch                                         int
+	Batch int
+	// Concurrency bounds the jobs of a pass that run at once (S-02): jobs of
+	// different agents run side by side, each agent's own jobs one after the
+	// other in the order they were claimed. Zero means one at a time.
+	Concurrency                                   int
 	WorkLease, DeliveryLease, RetryBase, RetryMax time.Duration
+	// Retention is how long finished records are kept (P-04); zero means
+	// controlplane.DefaultFinishedRetention.
+	Retention time.Duration
 }
 
+// MaxDispatchConcurrency bounds DispatchOptions.Concurrency.
+const MaxDispatchConcurrency = 64
+
 func (o DispatchOptions) valid() bool {
-	return o.Batch >= 1 && o.Batch <= 256 && o.WorkLease >= time.Microsecond && o.WorkLease <= 24*time.Hour && o.DeliveryLease >= time.Microsecond && o.DeliveryLease <= 24*time.Hour && o.RetryBase >= time.Microsecond && o.RetryMax >= o.RetryBase && o.RetryMax <= 24*time.Hour
+	return o.Batch >= 1 && o.Batch <= 256 && o.Concurrency >= 0 && o.Concurrency <= MaxDispatchConcurrency && o.WorkLease >= time.Microsecond && o.WorkLease <= 24*time.Hour && o.DeliveryLease >= time.Microsecond && o.DeliveryLease <= 24*time.Hour && o.RetryBase >= time.Microsecond && o.RetryMax >= o.RetryBase && o.RetryMax <= 24*time.Hour &&
+		(o.Retention == 0 || o.Retention >= controlplane.MinFinishedRetention && o.Retention <= controlplane.MaxFinishedRetention)
 }
 func (o DispatchOptions) backoff(failures int) time.Duration {
 	d := o.RetryBase
@@ -34,8 +46,15 @@ func (o DispatchOptions) backoff(failures int) time.Duration {
 // business leases, immutable envelopes and SQL/host fences remain authoritative.
 // ClaimWork moves a job to the tail, so new work and retries cannot monopolize it.
 func (w *Placements) DispatchPass(ctx context.Context, o DispatchOptions, attemptTimeout time.Duration) error {
+	_, err := w.dispatchPass(ctx, o, attemptTimeout)
+	return err
+}
+
+// dispatchPass is DispatchPass, and reports whether it claimed a full batch
+// of jobs: more work may wait, and the next pass may start at once (P-01).
+func (w *Placements) dispatchPass(ctx context.Context, o DispatchOptions, attemptTimeout time.Duration) (bool, error) {
 	if !o.valid() || attemptTimeout <= 0 {
-		return errors.New("invalid dispatch options")
+		return false, errors.New("invalid dispatch options")
 	}
 	// Scheduling runs first so what it produces is discovered in this same pass.
 	// Both steps use the database clock and are safe to repeat after a crash.
@@ -44,6 +63,9 @@ func (w *Placements) DispatchPass(ctx context.Context, o DispatchOptions, attemp
 		step, cancel := context.WithTimeout(ctx, attemptTimeout)
 		_, releaseErr := w.store.ReleaseDueInstructions(step, nil, o.Batch)
 		_, idleErr := w.store.ScheduleIdleSleeps(step, w.hostID, nil, o.Batch)
+		// A disabled organization's VMs go to sleep (docs/api/organizations.md).
+		_, suspendErr := w.store.ScheduleSuspensionSleeps(step, w.hostID, o.Batch)
+		idleErr = errors.Join(idleErr, suspendErr)
 		_, workErr := w.store.ExpireWorkingInvocations(step, nil, o.Batch)
 		// A slot freed by a sleep, a deletion or a crash goes to the oldest
 		// work waiting for capacity (ADR 017).
@@ -55,7 +77,7 @@ func (w *Placements) DispatchPass(ctx context.Context, o DispatchOptions, attemp
 	err := w.store.DiscoverWork(step, w.hostID, o.Batch*4)
 	cancel()
 	if err != nil {
-		return errors.Join(result, err)
+		return false, errors.Join(result, err)
 	}
 	{
 		purge, cancel := context.WithTimeout(ctx, attemptTimeout)
@@ -85,52 +107,142 @@ func (w *Placements) DispatchPass(ctx context.Context, o DispatchOptions, attemp
 		cancel()
 	}
 	result = errors.Join(result, w.purgeAudit(ctx, attemptTimeout))
+	result = errors.Join(result, w.purgeFinished(ctx, o, attemptTimeout))
 	if w.provisioning != nil {
 		step, cancel := context.WithTimeout(ctx, attemptTimeout)
 		result = errors.Join(result, w.rolloutPass(step))
 		cancel()
 	}
+	claimed, err := w.runJobs(ctx, o, attemptTimeout)
+	return claimed == o.Batch, errors.Join(result, err)
+}
+
+// runJobs claims at most o.Batch jobs and runs up to o.Concurrency of them
+// at once. A job of an agent that already has one running joins that agent's
+// chain and runs after it, in the same slot: an agent's jobs keep their
+// order, a delivery's FIFO and leases stay PostgreSQL's (ADR 007, 017), and
+// a slow guest on one agent holds one slot, never the others (S-02). It
+// returns how many jobs it claimed.
+func (w *Placements) runJobs(ctx context.Context, o DispatchOptions, attemptTimeout time.Duration) (int, error) {
+	slots := make(chan struct{}, max(o.Concurrency, 1))
+	var (
+		mu     sync.Mutex
+		result error
+		wg     sync.WaitGroup
+		count  int
+	)
+	chains := map[string][]claimedJob{}
+	report := func(err error) {
+		mu.Lock()
+		result = errors.Join(result, err)
+		mu.Unlock()
+	}
+	// next takes agent's next job, or ends its chain.
+	next := func(agent string) (claimedJob, bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		chain := chains[agent]
+		if len(chain) == 0 {
+			delete(chains, agent)
+			return claimedJob{}, false
+		}
+		chains[agent] = chain[1:]
+		return chain[0], true
+	}
 	for range o.Batch {
 		if ctx.Err() != nil {
-			return errors.Join(result, ctx.Err())
-		}
-		attempt, cancel := context.WithTimeout(ctx, attemptTimeout)
-		job, err := w.store.ClaimWork(attempt, w.hostID, o.WorkLease)
-		if errors.Is(err, controlplane.ErrNoWork) {
-			if w.provisioning != nil {
-				result = errors.Join(result, w.warmDeployment(attempt))
-			}
-			cancel()
+			report(ctx.Err())
 			break
 		}
-		if err != nil {
-			cancel()
-			return errors.Join(result, err)
+		select {
+		case slots <- struct{}{}:
+		case <-ctx.Done():
+			report(ctx.Err())
 		}
+		if ctx.Err() != nil {
+			break
+		}
+		claim, cancel := context.WithTimeout(ctx, attemptTimeout)
+		job, err := w.store.ClaimWork(claim, w.hostID, o.WorkLease)
+		if errors.Is(err, controlplane.ErrNoWork) {
+			if w.provisioning != nil {
+				report(w.warmDeployment(claim))
+			}
+			cancel()
+			<-slots
+			break
+		}
+		cancel()
+		if err != nil {
+			report(err)
+			<-slots
+			break
+		}
+		count++
 		if w.afterWorkClaim != nil {
 			w.afterWorkClaim(job)
 		}
-		// The API request behind the job, for its event and its span.
-		origin := w.jobOrigin(attempt, job)
-		traced, span := w.startJob(attempt, job, origin)
-		err = w.executeWork(traced, job, o.DeliveryLease)
-		endJob(span, err)
-		w.countJob(job.Kind, err)
-		w.logJob(job, origin, err)
-		if err == nil && w.afterWork != nil {
-			w.afterWork(job)
+		claimed := claimedJob{job: job, at: time.Now()}
+		mu.Lock()
+		chain, running := chains[job.AgentID]
+		claimed.chained = running
+		chains[job.AgentID] = append(chain, claimed)
+		mu.Unlock()
+		if running {
+			<-slots // the agent's running chain takes it in its own slot
+			continue
 		}
-		cancel()
-		finish, finishCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		if err == nil {
-			err = w.store.CompleteWork(finish, job)
-		} else {
-			err = errors.Join(err, w.store.RetryWorkWithCapacity(finish, job, o.backoff(job.Failures), errors.Is(err, runtime.ErrCapacity)))
-		}
-		finishCancel()
-		result = errors.Join(result, err)
+		wg.Add(1)
+		go func(agent string) {
+			defer wg.Done()
+			defer func() { <-slots }()
+			for {
+				c, ok := next(agent)
+				if !ok {
+					return
+				}
+				report(w.runJob(ctx, c, o, attemptTimeout))
+			}
+		}(job.AgentID)
 	}
-	return result
+	wg.Wait()
+	return count, result
+}
+
+// claimedJob is a job, when this process claimed it, and whether it waited
+// behind its agent's earlier jobs.
+type claimedJob struct {
+	job     controlplane.WorkerJob
+	at      time.Time
+	chained bool
+}
+
+// runJob executes one claimed job and completes or retries it. A job that
+// waited behind its agent's earlier jobs until its work lease could end
+// before its attempt is left for that lease to expire and its next claim.
+func (w *Placements) runJob(ctx context.Context, c claimedJob, o DispatchOptions, attemptTimeout time.Duration) error {
+	job := c.job
+	if c.chained && time.Since(c.at)+attemptTimeout > o.WorkLease {
+		return nil
+	}
+	attempt, cancel := context.WithTimeout(ctx, attemptTimeout)
+	// The API request behind the job, for its event and its span.
+	origin := w.jobOrigin(attempt, job)
+	traced, span := w.startJob(attempt, job, origin)
+	err := w.executeWork(traced, job, o.DeliveryLease)
+	endJob(span, err)
+	w.countJob(job.Kind, err)
+	w.logJob(job, origin, err)
+	if err == nil && w.afterWork != nil {
+		w.afterWork(job)
+	}
+	cancel()
+	finish, finishCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer finishCancel()
+	if err == nil {
+		return w.store.CompleteWork(finish, job)
+	}
+	return errors.Join(err, w.store.RetryWorkWithCapacity(finish, job, o.backoff(job.Failures), errors.Is(err, runtime.ErrCapacity)))
 }
 
 // Replenish at most one VM after ordinary work. A warm boot may use a free

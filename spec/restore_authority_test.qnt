@@ -203,11 +203,13 @@ module restoreAuthorityReplicaTests {
   run oldPrimaryCannotResendAfterPromotionTest = init.then(failover).then(beginRevocation(0))
     .then(oldPrimaryReturns).expect(safety and s.oldEpoch == 1 and s.epoch == 2 and root != s.oldRoot)
     .then(oldPrimaryResends.fail())
-  // A restoring image rescans under the new epoch and fences what the promoted root knows.
+  // A restoring image rescans under the new epoch and fences what the promoted root knows
+  // in its scope: the degraded revocation of 0 was lost with the primary and is begun again.
+  // Subject 1 is outside store 1's scope (no event of subject 1 goes to store 1).
   run restoredImageRescansUnderNewEpochTest = init.then(restoreImage(1)).then(degrade).then(beginRevocation(0))
-    .then(scan(1)).then(synchronize(1)).then(failover).then(launchRestore(1)).then(beginRevocation(1))
-    .then(reconcile(1)).then(activate(1))
-    .expect(safety and s.stores.get(1).fences == Set(0,1) and root.acks.get(1).epoch == 2)
+    .then(scan(1)).then(synchronize(1)).then(failover).then(launchRestore(1)).then(beginRevocation(0))
+    .then(beginRevocation(1)).then(reconcile(1)).then(activate(1))
+    .expect(safety and s.stores.get(1).fences == Set(0) and root.acks.get(1).epoch == 2 and root.acks.get(1).subjects == Set(0))
 
   // Degraded mode. A token revocation continues and is lost with the primary;
   // the blanket revocation at the failover covers it.

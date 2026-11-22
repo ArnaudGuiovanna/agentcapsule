@@ -98,7 +98,8 @@ func configureDelegation(args []string) int {
 		return fail("database_migration_failed")
 	}
 	// A change that revokes access appends its record to the authority
-	// service before it commits (ADR 006 wave 5); a dry run records nothing.
+	// service once it has committed (ADR 006 wave 5, changes after the
+	// v0.1.0 audit); a dry run records nothing.
 	switch *action {
 	case "rotate", "revoke-trust", "revoke-token", "retire-key":
 		if !*g.dryRun {

@@ -14,7 +14,7 @@ import (
 var (
 	llmProviders = []string{"openai_compatible", "anthropic"}
 	llmOutcomes  = []string{"settled", "released", "unknown"}
-	llmRefusals  = []string{"budget_tokens", "budget_cost", "unpriced", "alias_access", "unsupported"}
+	llmRefusals  = []string{"budget_tokens", "budget_cost", "unpriced", "alias_access", "unsupported", "feature_denied", "concurrency_limited"}
 	llmUnits     = []string{"tokens", "cost"}
 	llmPeriods   = []string{"day", "month"}
 	llmScopes    = []string{"organization", "agent", "alias", "agent_alias"}
@@ -45,7 +45,7 @@ func NewLLMTelemetry(registry *telemetry.Registry, problems *telemetry.Logger, u
 			provider, telemetry.Label{Name: "direction", Values: []string{"input", "output"}}),
 		cost: registry.Counter("agentcapsule_llm_estimated_cost_micro_total", "Estimated cost of settled model calls, in micro-units of each organization's own currency, by provider kind.",
 			provider),
-		refusals: registry.Counter("agentcapsule_llm_refusals_total", "Model calls refused before any reservation, by reason (budget_tokens, budget_cost, unpriced, alias_access, unsupported).",
+		refusals: registry.Counter("agentcapsule_llm_refusals_total", "Model calls refused before any reservation, by reason (budget_tokens, budget_cost, unpriced, alias_access, unsupported, feature_denied, concurrency_limited).",
 			telemetry.Label{Name: "reason", Values: llmRefusals}),
 		soft: registry.Counter("agentcapsule_llm_budget_soft_exceeded_total", "Model calls that went past a soft budget, by its unit (tokens, cost); a call past two counts twice.",
 			telemetry.Label{Name: "unit", Values: llmUnits}),

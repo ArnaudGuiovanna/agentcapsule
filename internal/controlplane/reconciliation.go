@@ -265,6 +265,13 @@ func (s *Store) keepOwnRecords(ctx context.Context, a ReconciliationAuthority, h
 	for _, r := range missing {
 		wait, cancel := context.WithTimeout(ctx, recordTimeoutReconciling)
 		receipt, err := a.RecordAccess(wait, r)
+		if err == nil && receipt.Known {
+			// A revocation whose recording did not succeed after its
+			// commit is recorded now.
+			if _, _, ok := s.settle(wait, r.ID, r.Kind, receipt); !ok {
+				err = errors.New("the revocation's row could not be updated")
+			}
+		}
 		cancel()
 		if err != nil || !receipt.Known {
 			return 0, errors.Join(ErrAuthorityUnavailable, err)
@@ -286,8 +293,19 @@ func (s *Store) keepOwnSubjects(ctx context.Context, a ReconciliationAuthority, 
 			missing = append(missing, subject)
 		}
 	}
+	scoped, ok := a.(ScopedImporter)
 	for chunk := range slices.Chunk(missing, 500) {
-		if err = a.ImportSubjects(ctx, chunk); err != nil {
+		if ok {
+			// Each in its scope (revocation_scopes.go), not every store's.
+			var scopes []RevocationScope
+			if scopes, err = s.RevocationScopes(ctx, chunk); err != nil {
+				return 0, err
+			}
+			err = scoped.ImportScopes(ctx, scopes)
+		} else {
+			err = a.ImportSubjects(ctx, chunk)
+		}
+		if err != nil {
 			return 0, errors.Join(ErrAuthorityUnavailable, err)
 		}
 	}

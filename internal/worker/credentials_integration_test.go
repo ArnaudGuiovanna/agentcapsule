@@ -146,7 +146,7 @@ func TestConcurrentCredentialRotationDrainsAdmittedWork(t *testing.T) {
 	release, entered := make(chan struct{}), make(chan struct{})
 	appDone, rotations := make(chan error, 1), make(chan error, 2)
 	go func() {
-		appDone <- w.host.WithApplication(ctx, func(context.Context) error {
+		appDone <- w.host.WithApplication(ctx, "a", func(context.Context) error {
 			close(entered)
 			select {
 			case <-release:
@@ -160,14 +160,15 @@ func TestConcurrentCredentialRotationDrainsAdmittedWork(t *testing.T) {
 	go func() { rotations <- w.RefreshCredentials(ctx) }()
 	go func() { rotations <- other.RefreshCredentials(ctx) }()
 	for {
-		b, err := os.ReadFile(filepath.Join(options.Root, "registry.json"))
+		// The agent's admission queue: the admitted call and both renewers.
+		b, err := os.ReadFile(filepath.Join(options.Root, "admission", "queue.json"))
 		var r struct {
-			Admissions []json.RawMessage `json:"admissions"`
+			Waiters []json.RawMessage `json:"waiters"`
 		}
 		if err != nil || json.Unmarshal(b, &r) != nil {
 			t.Fatal("cannot inspect admission queue")
 		}
-		if len(r.Admissions) == 3 {
+		if len(r.Waiters) == 3 {
 			break
 		}
 		select {

@@ -112,7 +112,24 @@ type ServiceConfig struct {
 	StoragePressure float64 `json:"storage_pressure,omitempty"`
 	// Corpus enables corpus builds on this host (ADR 023 §3.2).
 	Corpus *ServiceCorpus `json:"corpus,omitempty"`
+	// DispatchConcurrency bounds the jobs of a pass that run at once, each
+	// agent's own jobs in order (S-02): 1 to 64, DefaultDispatchConcurrency
+	// when absent.
+	DispatchConcurrency int `json:"dispatch_concurrency,omitempty"`
+	// FinishedRetention is how long finished invocations, wakes, sleeps and
+	// requests between agents, and what hangs on them, are kept before the
+	// worker deletes those that nothing needs any more (P-04): 45 days to 10
+	// years, 90 days when absent, and two weeks past the archives' horizon.
+	FinishedRetention string `json:"finished_retention,omitempty"`
+	// VMSerialConsole gives each guest a serial console whose output joins
+	// its VMM's bounded log: for debugging only (S-20). Development mode
+	// enables it too.
+	VMSerialConsole bool `json:"vm_serial_console,omitempty"`
 }
+
+// DefaultDispatchConcurrency is how many jobs of a pass run at once when the
+// configuration does not say.
+const DefaultDispatchConcurrency = 4
 
 // Pressure watches the root's file system, which holds the volumes, and the
 // one of the harness images: the registry's cache, <root>/releases by
@@ -358,7 +375,18 @@ func (c ServiceConfig) Settings() (runtime.FirecrackerOptions, time.Duration, Ma
 	if batch == 0 {
 		batch = 16
 	}
-	d := &DispatchOptions{Batch: batch}
+	concurrency := c.DispatchConcurrency
+	if concurrency == 0 {
+		concurrency = DefaultDispatchConcurrency
+	}
+	if concurrency < 1 {
+		return r, 0, m, invalid
+	}
+	retention, err := c.finishedRetention()
+	if err != nil {
+		return r, 0, m, invalid
+	}
+	d := &DispatchOptions{Batch: batch, Concurrency: concurrency, Retention: retention}
 	m.Dispatch = d
 	for _, value := range []struct {
 		text, fallback string
@@ -381,7 +409,8 @@ func (c ServiceConfig) Settings() (runtime.FirecrackerOptions, time.Duration, Ma
 	}
 	r = runtime.FirecrackerOptions{Root: c.Root, Firecracker: c.Firecracker.Path, FirecrackerSHA256: c.Firecracker.SHA256,
 		Jailer: c.Jailer.Path, JailerSHA256: c.Jailer.SHA256, Kernel: c.Kernel.Path, KernelSHA256: c.Kernel.SHA256,
-		SystemImages: c.bootImages(), Initrd: c.Initrd.Path, InitrdSHA256: c.Initrd.SHA256, MaxActive: c.MaxActive, BootTimeout: boot, DriveLimits: drives, AuthenticatedControl: true}
+		SystemImages: c.bootImages(), Initrd: c.Initrd.Path, InitrdSHA256: c.Initrd.SHA256, MaxActive: c.MaxActive, BootTimeout: boot, DriveLimits: drives, AuthenticatedControl: true,
+		SerialConsole: c.VMSerialConsole}
 	return r, lease, m, nil
 }
 

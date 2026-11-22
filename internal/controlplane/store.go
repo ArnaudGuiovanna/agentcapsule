@@ -82,15 +82,20 @@ func Open(ctx context.Context, connectionString string) (*Store, error) {
 func (s *Store) Close() { s.pool.Close() }
 
 func rollback(tx pgx.Tx) {
+	forgetRecords(tx)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = tx.Rollback(ctx)
 }
 
+// commit commits tx, then appends the access revocation records it
+// inserted to the authority service, with no lock held (access_revocations.go).
 func commit(ctx context.Context, tx pgx.Tx) error {
 	if err := tx.Commit(ctx); err != nil {
+		forgetRecords(tx)
 		return errors.Join(ErrCommitUnknown, err)
 	}
+	recordCommitted(ctx, tx)
 	return nil
 }
 
@@ -166,7 +171,7 @@ var durableTables = []string{"harness_audit", "harness_imports", "attachment_seg
 	"authority_reconciliations", "tenant_refusal_audit", "trace_pseudonym_key", "organization_quotas",
 	"source_credentials", "corpus_audit", "corpora", "corpus_builds", "corpus_releases",
 	"agent_corpora", "corpus_review_files", "corpus_review_segments", "corpus_extensions", "corpus_enrichers",
-	"invocation_streams", "invocation_stream_chunks"}
+	"invocation_streams", "invocation_stream_chunks", "agent_activity"}
 
 // Migrate is explicit; opening a store never changes an existing schema.
 func (s *Store) Migrate(ctx context.Context) error {

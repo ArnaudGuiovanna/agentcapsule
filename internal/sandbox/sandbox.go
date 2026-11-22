@@ -24,6 +24,20 @@
 // capability on the host, and the program keeps the caller's account. Root
 // of a user namespace that is not the host's (a container's root) is
 // refused: it can take no reserved UID.
+//
+// RunSelf runs this executable itself as the program, under a name a package
+// registered with Self: Go code that hands untrusted input to a C library
+// (libcryptsetup, for the LUKS2 header a guest could write, S-21). The
+// confinement is the same, but for what a Go program and its C libraries
+// need: the self filter also allows threads (a clone that shares the
+// address space, never a new process or namespace) and the runtime's signal
+// and scheduling calls; 256 MiB of private writable memory (RLIMIT_DATA)
+// bound it, since the Go runtime reserves more address space than debugfs
+// maps (RLIMIT_AS is 4 GiB there); /dev holds two empty regular files,
+// random and urandom, which libcryptsetup opens at start and the check never
+// reads. Its standard input carries a secret, through a pipe, never an
+// argument or the environment. Once started, the program adds a filter of
+// its own that refuses to execute any program.
 package sandbox
 
 import (
@@ -50,6 +64,14 @@ const (
 	// addressSpace bounds the program's virtual memory (RLIMIT_AS): debugfs
 	// needs about 24 MiB on the images measured; a mapping past it fails.
 	addressSpace = 256 << 20
+	// selfData bounds a self run's private writable memory (RLIMIT_DATA):
+	// what it uses, as the Go runtime maps it. selfAddressSpace bounds its
+	// virtual memory: the runtime reserves about 1.1 GiB that it never uses
+	// (its page summaries), which RLIMIT_DATA does not count.
+	selfData         = 256 << 20
+	selfAddressSpace = 4 << 30
+	// MaxInput bounds the standard input of a self run.
+	MaxInput = 4096
 )
 
 var (

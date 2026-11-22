@@ -227,6 +227,42 @@ class HostOperationTests(unittest.TestCase):
             chown.assert_any_call(target,0,32)
             self.api["run_user"].assert_called_once_with("postgres","test","-r",target/"pgbackrest.conf")
 
+    def test_update_opts_unsigned_registry_rules_out_explicitly(self):
+        # L-16: a production worker refuses a registry rule without publisher
+        # keys unless it says allow_unsigned. An update keeps the rules of a
+        # host installed before as they worked: it writes the opt-out, and
+        # names the rules it opted out; a signed or opted-out rule, and the
+        # file's mode, stay as they were.
+        path=self.root/"worker.json"
+        rules=[{"host":"ghcr.io","repositories":["a/"]},
+               {"host":"registry.example","repositories":["b/"],"publisher_keys":["/etc/agentcapsule/b.pub"]},
+               {"host":"lab.example","repositories":["c/"],"allow_unsigned":True}]
+        path.write_text(json.dumps({"root":"/var/lib/agentcapsule/host","registry":{"inspection_uid":61999,"rules":rules}}))
+        path.chmod(0o640)
+        self.assertEqual(self.api["opt_out_unsigned_registry_rules"](path),["ghcr.io"])
+        cfg=json.loads(path.read_text())
+        self.assertEqual([r.get("allow_unsigned") for r in cfg["registry"]["rules"]],[True,None,True])
+        self.assertEqual(cfg["registry"]["inspection_uid"],61999)
+        self.assertEqual(cfg["root"],"/var/lib/agentcapsule/host")
+        self.assertEqual(path.stat().st_mode&0o777,0o640)
+        self.assertEqual(self.api["opt_out_unsigned_registry_rules"](path),[])
+        path.write_text(json.dumps({"root":"/var/lib/agentcapsule/host"}))
+        self.assertEqual(self.api["opt_out_unsigned_registry_rules"](path),[])
+
+    def test_profile_registry_rules_trust_a_key_or_opt_out(self):
+        # L-16: an installation profile's registry rule trusts publisher keys
+        # or says allow_unsigned: a production worker refuses any other.
+        normalize=self.api["normalize_profile"]
+        for rule in ({"host":"ghcr.io","repositories":["a/"]},{"host":"ghcr.io","repositories":["a/"],"publisher_keys":[]},
+                     {"host":"ghcr.io","repositories":["a/"],"allow_unsigned":False},"ghcr.io"):
+            with self.assertRaisesRegex(ValueError,"publisher_keys or allow_unsigned"):
+                normalize({"registry_rules":[rule]})
+        for rule in ({"host":"ghcr.io","repositories":["a/"],"allow_unsigned":True},
+                     {"host":"ghcr.io","repositories":["a/"],"publisher_keys":["/etc/agentcapsule/a.pub"]}):
+            self.assertEqual(normalize({"registry_rules":[rule]})["registry_rules"],[rule])
+        with self.assertRaisesRegex(ValueError,"publisher_keys or allow_unsigned"):
+            normalize({"registry_rules":{"host":"ghcr.io"}})
+
     def test_restore_restarts_the_worker_even_after_failure(self):
         from unittest.mock import Mock
         for previously_active in (True,False):
@@ -463,6 +499,77 @@ class HostOperationTests(unittest.TestCase):
         self.api["execute"](op)
         self.assertEqual(len(calls),2)
         self.assertEqual(self.api["read"](op/"status.json")["completed"],["restore-apply"])
+
+    def test_database_roles_map_each_account_to_its_own_role(self):
+        # An installation of an earlier release mapped the API's account to
+        # the owner of the database. The update maps root to the owner and to
+        # the worker's role, the API's account to the API's role only, and
+        # creates the roles, owning nothing and with no cluster privilege.
+        from unittest.mock import Mock
+        folder=self.root/"cluster"
+        folder.mkdir()
+        (folder/"pg_ident.conf").write_text("agentcapsule root agentcapsule\nagentcapsule agentcapsule-api agentcapsule\n"
+                                            "# MAPNAME SYSTEM-USERNAME PG-USERNAME\nother alice bob\n")
+        (folder/"pg_hba.conf").write_text("local agentcapsule agentcapsule peer map=agentcapsule\n"
+                                          "host all all 127.0.0.1/32 scram-sha-256\nhost all all ::1/128 scram-sha-256\n"
+                                          "local all postgres peer\n")
+        statements=[]
+        def run_user(user,*cmd,env=None,capture=False):
+            self.assertEqual(user,"postgres")
+            statements.append(cmd[-1])
+            return "" if capture else None
+        run=Mock()
+        with patch.dict(self.api,run=run,run_user=run_user,user_id=lambda _:0), patch("os.chown"), \
+             patch("pwd.getpwnam",return_value=Mock(pw_gid=0)):
+            self.api["database_roles"](folder)
+            ident=(folder/"pg_ident.conf").read_text()
+            hba=(folder/"pg_hba.conf").read_text()
+            self.assertEqual(ident,"agentcapsule root agentcapsule\nagentcapsule root agentcapsule_worker\n"
+                                   "agentcapsule agentcapsule-api agentcapsule_api\n"
+                                   "# MAPNAME SYSTEM-USERNAME PG-USERNAME\nother alice bob\n")
+            self.assertEqual(hba,"local agentcapsule agentcapsule,agentcapsule_api,agentcapsule_worker peer map=agentcapsule\n"
+                                 "host all all 127.0.0.1/32 scram-sha-256\nhost all all ::1/128 scram-sha-256\n"
+                                 "local all postgres peer\n")
+            for role in ("agentcapsule","agentcapsule_api","agentcapsule_worker"):
+                self.assertIn("CREATE ROLE "+role+" LOGIN",statements)
+                self.assertIn("ALTER ROLE "+role+" NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS",statements)
+            run.assert_called_with("pg_ctlcluster","16","agentcapsule","reload")
+            # Again: the files are already as they should be.
+            before=(folder/"pg_ident.conf").stat().st_mtime_ns,(folder/"pg_hba.conf").stat().st_mtime_ns
+            self.api["database_roles"](folder)
+            self.assertEqual(((folder/"pg_ident.conf").stat().st_mtime_ns,(folder/"pg_hba.conf").stat().st_mtime_ns),before)
+            self.assertEqual((folder/"pg_ident.conf").read_text(),ident)
+
+    def test_each_unit_connects_as_its_own_role(self):
+        # The update rewrites the connection string of each unit's file,
+        # which an earlier release set to the owner's, and keeps the rest.
+        etc=self.root/"etc"
+        etc.mkdir()
+        owner='AGENTCAPSULE_DATABASE_URL="host=/run/postgresql port=55432 dbname=agentcapsule user=agentcapsule"\n'
+        (etc/"api.env").write_text(owner+'API_LISTEN="0.0.0.0:9443"\nHOST_ID="local"\n')
+        (etc/"worker.env").write_text(owner)
+        with patch.dict(self.api,ETC=etc):
+            self.api["service_environment"]({"database_url_file":None})
+        local="host=/run/postgresql port=55432 dbname=agentcapsule user="
+        self.assertEqual((etc/"api.env").read_text(),'AGENTCAPSULE_DATABASE_URL="'+local+'agentcapsule_api"\n'
+                                                     'API_LISTEN="0.0.0.0:9443"\nHOST_ID="local"\n')
+        self.assertEqual((etc/"worker.env").read_text(),'AGENTCAPSULE_DATABASE_URL="'+local+'agentcapsule_worker"\n')
+        self.assertEqual((etc/"admin.env").read_text(),'AGENTCAPSULE_DATABASE_URL="'+local+'agentcapsule"\n')
+        for name in ("api.env","worker.env","admin.env"):
+            self.assertEqual((etc/name).stat().st_mode&0o777,0o600)
+        # The worker's operator modes run as the worker's role too.
+        self.assertEqual(self.api["worker_env"]({"database_url_file":None})["AGENTCAPSULE_DATABASE_URL"],local+"agentcapsule_worker")
+
+    def test_external_database_names_a_role_per_service(self):
+        with self.assertRaisesRegex(ValueError,"api_database_url_file and worker_database_url_file"):
+            self.api["service_dsns"]({"database_url_file":"/root/db.url"})
+        with self.assertRaisesRegex(ValueError,"needs database_url_file"):
+            self.api["normalize_profile"]({"api_database_url_file":"/root/api.url"})
+        files={"/root/api.url":"host=db.example user=capsule_api","/root/worker.url":"host=db.example user=capsule_worker"}
+        with patch.dict(self.api,database_url=lambda path:files[path]):
+            dsns=self.api["service_dsns"]({"database_url_file":"/root/db.url","api_database_url_file":"/root/api.url",
+                                           "worker_database_url_file":"/root/worker.url"})
+        self.assertEqual(dsns,{"api":"host=db.example user=capsule_api","worker":"host=db.example user=capsule_worker"})
 
 
 if __name__=="__main__":

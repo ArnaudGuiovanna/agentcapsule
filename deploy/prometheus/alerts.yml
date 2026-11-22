@@ -394,6 +394,18 @@ groups:
           severity: critical
         annotations:
           summary: The authority service keeps failing to reach the replica outside degraded mode; every authority operation waits or fails.
+
+      # An access revocation takes effect at once; the API records it in the
+      # authority service after its commit, and again every 5 seconds until
+      # the service answers (ADR 006, changes after the v0.1.0 audit). Until
+      # then a failover or a restore of the database could undo it
+      # (docs/recovery.md, Revocations the authority service has not recorded).
+      - alert: AgentCapsuleAccessRevocationsUnrecorded
+        expr: agentcapsule_api_access_revocation_oldest_unrecorded_seconds > 120
+        labels:
+          severity: critical
+        annotations:
+          summary: Access revocations took effect, but the authority service has not recorded them for over two minutes; a failover or a restore of the database now could undo them.
       # The daily receipt keys (ADR 006 wave 6, docs/recovery.md).
       - alert: AgentCapsuleReceiptKeyMissing
         expr: agentcapsule_authority_receipt_key_ready{day="today"} == 0

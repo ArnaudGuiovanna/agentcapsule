@@ -35,11 +35,11 @@ Agent Capsule is a self-hosted platform as a service (PaaS) for running persiste
 
 ## Installation
 
-The following commands install the CLI on an administration workstation and request an installation plan for a test server. Use a POSIX shell, `curl` and a trusted installation of `cosign` 2.4 or later. Replace `admin@host.example.org` with an SSH account that can run `sudo -n` on the server. The plan reports host compatibility before installation. [Manual installation and signature verification](docs/release.md#verify-a-release)
+The following commands install the CLI on an administration workstation and request an installation plan for a test server. Use a POSIX shell, `curl`, `openssl` and a trusted installation of `cosign` 2.4 or later: the installer refuses to continue without them. Replace `admin@host.example.org` with an SSH account that can run `sudo -n` on the server. The plan reports host compatibility before installation. [Manual installation and signature verification](docs/release.md#verify-a-release)
 
 ```sh
 curl -fsSLo install-agentcapsule.sh https://github.com/ArnaudGuiovanna/agentcapsule/releases/latest/download/install.sh
-sh install-agentcapsule.sh --require-signature --dir "$HOME/.local/bin"
+sh install-agentcapsule.sh --dir "$HOME/.local/bin"
 export PATH="$HOME/.local/bin:$PATH"
 agentcapsule version
 agentcapsule install --ssh admin@host.example.org --plan-only

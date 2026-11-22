@@ -36,6 +36,7 @@ here: `full` or `partial` with its Go tests, or another status with a reason.
 
 Several tests need more than PostgreSQL: the KVM build tags
 (`TestBarrierCapacityOneSlotThreeStoresAndReplay`,
+`TestKVMSlowDeliveryDoesNotDelayAnotherAgent`,
 `TestLostGuestFenceACKDoesNotBecomeIndependentReceipt`,
 `TestMaintenanceServiceRecoversRenewalCrashesWithoutIncomingWork`,
 `TestPreimplementationP1HostSealITF`, `TestStoreSealWorkerCrashBeforeDatabaseReceipt`).
@@ -47,8 +48,11 @@ in the ordinary unit tests.
 
 | Run or witness | Status | Go projection | Notes |
 |---|---|---|---|
-| `barrierCapacityOk.priorityTest` | full | `TestBarrierAdmissionFIFOAndOrdinaryBackpressure` | New ordinary work waits behind queued barriers; the barriers run in queue order. |
-| `barrierCapacityOk.threeStoresOneSlotTest` | partial | `TestBarrierCapacityOneSlotThreeStoresAndReplay` | KVM campaign: one VM slot, barriers on the stopped agents boot temporary fence-only guests and give the slot back. |
+| `barrierCapacityOk.priorityTest` | full | `TestBarrierAdmissionFIFOAndOrdinaryBackpressure` | New ordinary work on an agent waits behind the barriers queued on that agent; the barriers run in queue order. Since the v0.1.0 audit each agent has its own queue (S-02). |
+| `barrierCapacityOk.threeStoresOneSlotTest` | partial | `TestBarrierCapacityOneSlotThreeStoresAndReplay` | KVM campaign: one VM slot, barriers on the stopped agents boot temporary fence-only guests and give the slot back. Each eviction takes its victim's turn (`WithEviction`) and reserves its slot (`ReserveSlot`). |
+| `barrierCapacityOk.concurrentBarriersTest` | full | `TestAnAgentsExclusiveTurnDoesNotBlockAnotherAgent`, `TestKVMSlowDeliveryDoesNotDelayAnotherAgent` | An exclusive turn of one agent leaves another agent's turn free. The KVM test runs on real VMs (KVM build tags). |
+| `barrierCapacityOk.evictionWaitsForAdmittedCallsTest` | full | `TestAnEvictionWaitsInItsVictimsQueue` | The eviction waits for the call admitted on its victim; a later call on the victim waits behind it; another agent never waits. |
+| `barrierCapacityOk.evictedSlotStaysTheEvictorsTest` | partial | `TestAnEvictionKeepsTheFreedSlotForItsBoot` | Go checks the capacity count under host.lock: once the victim is stopped, only the evicting agent's boot has room, a second eviction of the same victim is refused, and the slot is free again when the evicting turn ends. Ordinary work booting the victim is that count's refusal. |
 
 ### `composition.qnt`
 
@@ -177,8 +181,8 @@ in the ordinary unit tests.
 
 | Run or witness | Status | Go projection | Notes |
 |---|---|---|---|
-| `fairAdmissionShared.noOvertakeTest` | full | `TestNoOvertake`, `TestCommonAdmissionQueueDoesNotLetLaterBarriersOvertakeWork` |  |
-| `fairAdmissionExclusive.deadOwnerTest` | full | `TestDeadOwner`, `TestBarrierAdmissionWorkerSIGKILL` |  |
+| `fairAdmissionShared.noOvertakeTest` | full | `TestNoOvertake`, `TestCommonAdmissionQueueDoesNotLetLaterBarriersOvertakeWork` | On one agent's queue: since the v0.1.0 audit each agent has its own (S-02). |
+| `fairAdmissionExclusive.deadOwnerTest` | full | `TestDeadOwner`, `TestBarrierAdmissionWorkerSIGKILL` | On one agent's queue; `TestBarrierAdmissionWorkerSIGKILL` also checks that another agent's barrier does not wait for the dead owner. |
 
 ### `fencing.qnt`
 
@@ -190,7 +194,7 @@ in the ordinary unit tests.
 
 ### `invocation_completion.qnt`
 
-The runs of the output stream ([ADR 022](../docs/adr/022-native-streaming.md)) are projected on PostgreSQL by lot 3 of the streaming plan (`invocation_streams_test.go`): the model's `openStream` is `OpenOutputStreamFromVM`, `appendDelta` one chunk's transaction (`AppendOutputStreamFromVM`), `resetAttempt` a rerun's `newAttempt`, and `closeStream` the end of the stream in the worker's memory, which stores nothing.
+The runs of the output stream ([ADR 022](../docs/adr/022-native-streaming.md)) are projected on PostgreSQL by lot 3 of the streaming plan (`invocation_streams_test.go`): the model's `openStream` is `OpenOutputStreamFromVM`, `appendDelta` one chunk's transaction (`AppendOutputStreamFromVM`), `resetAttempt` a rerun's `newAttempt`, and `closeStream` the end of the stream in the worker's memory, which stores nothing. Since the v0.1.0 audit (P-11), `appendDelta`'s atomic step rests on the locks every end of a stream takes, the placement's and the invocation's rows, not on the agent's row: `TestAStreamChunkDoesNotWaitForItsAgentsLock` and `TestADeletionPurgesAChunkCommittedDuringIt` (`invocation_stream_locks_test.go`) check that a chunk commits while its agent is locked and that a deletion under way still purges it; the model is unchanged.
 
 | Run or witness | Status | Go projection | Notes |
 |---|---|---|---|
@@ -277,7 +281,7 @@ The runs of the output stream ([ADR 022](../docs/adr/022-native-streaming.md)) a
 | `restoreAuthorityTests.declaredLossSurvivesControlBackupRestoreTest` | full | `TestDeclaredLossSurvivesControlBackupRestore` |  |
 | `restoreAuthorityTests.oldImageDoesNotReviveOffboardedJobTest` | full | `TestOldImageDoesNotReviveOffboardedJob` |  |
 | `restoreAuthorityTests.oldImageDoesNotReviveDestroyedKeyTest` | full | `TestOldImageDoesNotReviveDestroyedKey` |  |
-| `restoreAuthorityTests.activationRechecksNewRevocationTest` | full | `TestReceiptRevisionAndForgeryCannotPublish`, `TestPublicationSerializesConcurrentRevocation` |  |
+| `restoreAuthorityTests.activationRechecksNewRevocationTest` | full | `TestReceiptRevisionAndForgeryCannotPublish`, `TestPublicationSerializesConcurrentRevocation`, `TestOnlyARevocationInTheScopeMakesABootStale`, `TestFencesHoldExcludesOnlyItsOwnScope` | The recheck covers the store's scope (`reach`). |
 | `restoreAuthorityTests.rescanAfterConcurrentRevocationTest` | full | `TestReceiptRevisionAndForgeryCannotPublish`, `TestPublicationSerializesConcurrentRevocation` |  |
 | `restoreAuthorityTests.oldReceiptCannotBindToNewImageTest` | full | `TestConcurrentReservationAndOldReceiptCannotRebind` |  |
 | `restoreAuthorityTests.lostReceiptIsRetriedFromDurableFenceTest` | full | `TestLostGuestFenceACKDoesNotBecomeIndependentReceipt` | KVM build tags, with PostgreSQL. |
@@ -305,7 +309,7 @@ The runs of the output stream ([ADR 022](../docs/adr/022-native-streaming.md)) a
 | `restoreAuthorityReplicaTests.destroyedKeyNeverReturnsAfterFailoverTest` | full | `TestAcknowledgedWritesSurviveTheFailover` |  |
 | `restoreAuthorityReplicaTests.destructionResumesAfterResyncTest` | full | `TestDestructionResumesAfterResync` |  |
 | `restoreAuthorityReplicaTests.oldPrimaryCannotResendAfterPromotionTest` | full | `TestOldPrimaryCannotResendAfterPromotion` |  |
-| `restoreAuthorityReplicaTests.restoredImageRescansUnderNewEpochTest` | partial | `TestReceiptOfTheOldEpochCannotBindAfterPromotion` | The rescan without its degraded period (ADR 005). |
+| `restoreAuthorityReplicaTests.restoredImageRescansUnderNewEpochTest` | partial | `TestReceiptOfTheOldEpochCannotBindAfterPromotion` | The rescan without its degraded period (ADR 005). It fences the promoted root's subjects of the store's scope. |
 | `restoreAuthorityReplicaTests.tokenRevocationCoveredByBlanketTest` | full | `TestTokenRevocationCoveredByBlanket`, `TestPromotionAnnouncesADegradedPeriodBeyondTheDelay` | ADR 006 wave 7: a service token revoked in degraded mode, its record and PostgreSQL's commit lost with the primary; the promotion, later than the degraded delay after the standby's last contact, writes the blanket record, and the reconciliation revokes every bearer token issued before the failover and moves the delegation trusts' `minimum_iat` past it. |
 | `restoreAuthorityReplicaTests.grantRevocationWaitsForReplicaTest` | full | `TestGrantRevocationWaitsForReplica`, `TestAccessRecordContinuesInDegradedMode` | The authority service with its replica, degraded mode and the API on PostgreSQL (ADR 006 wave 5): the model's acknowledged access revocation is the API's confirmed one. In degraded mode a member's revocation takes effect at once and stays `pending`; its record is not on the replica, and no later question confirms it. |
 | `restoreAuthorityReplicaTests.grantRevocationResumesAfterResyncTest` | full | `TestGrantRevocationResumesAfterResync` | After the resync the replica holds the record and the API confirms the revocation; the one left pending in degraded mode is confirmed too. |
@@ -422,8 +426,8 @@ The runs of the output stream ([ADR 022](../docs/adr/022-native-streaming.md)) a
 
 | Run or witness | Status | Go projection | Notes |
 |---|---|---|---|
-| `storeEnrollmentOk.newlyCreatedStoreCatchesCompletedRevocationTest` | partial | `TestEnrollmentHistoricalAndConcurrentRevocations` | A new store must fence revocations completed before it. |
-| `storeEnrollmentOk.activationRechecksConcurrentRevocationTest` | partial | `TestEnrollmentActivationWaitsForConcurrentIntentCommit` |  |
+| `storeEnrollmentOk.newlyCreatedStoreCatchesCompletedRevocationTest` | partial | `TestEnrollmentHistoricalAndConcurrentRevocations`, `TestScanNamesOnlyTheStoresScope` | Since the v0.1.0 audit: a new store fences the completed revocations of its scope only; another agent's deletion never reaches it, and no store joins a revoked subject's scope (`relate`, `RELATE_GUARD`). |
+| `storeEnrollmentOk.activationRechecksConcurrentRevocationTest` | partial | `TestEnrollmentActivationWaitsForConcurrentIntentCommit`, `TestOnlyARevocationInTheScopeMakesABootStale` | A restored store rechecks its own scope. |
 | `storeEnrollmentOk.oldReceiptCannotAuthorizeRestoredImageTest` | full | `TestConcurrentReservationAndOldReceiptCannotRebind` |  |
 | `storeEnrollmentOk.restorationCatchesCompletedAndConcurrentRevocationsTest` | partial | `TestReceiptRevisionAndForgeryCannotPublish`, `TestPublicationSerializesConcurrentRevocation` |  |
 | `storeEnrollmentOk.retirementWaitsForPhysicalStopTest` | partial | `TestInstallVolumeRequiresRetiredRegisteredInodeAndExactImage` |  |

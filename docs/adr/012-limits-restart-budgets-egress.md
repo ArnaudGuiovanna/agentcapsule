@@ -552,3 +552,26 @@ its 1 process; the invocation never filed failed 27 ms after its
    work timeout; (c) a default idle timeout for every agent.
    Recommendation: (a) for the MVP, with the CPU ceiling bounding its cost;
    (c) later.
+
+## Changes after the v0.1.0 audit
+
+**Lot SEC-2 (finding S-11).** The guest's model calls went through the
+platform, but a forwarded request could ask the organization's provider to
+run a tool of its own (web search or fetch, code execution, an MCP
+connector): the provider then reached addresses the guest chose, outside
+§3's closed profile. The gateway now refuses such tools, and the options that
+change a call's price, before any reservation, unless the organization allows
+them on an alias ([ADR 011](011-llm-access-and-cost-budgets.md#changes-after-the-v010-audit),
+[api/llm.md](../api/llm.md#request-policy)). An organization that allows one
+accepts that its provider fetches on its agents' behalf.
+
+**PERF-1 (S-20).** The VMM's standard output and error went to
+`<root>/logs/<run>.log` with the guest's serial console, unbounded and never
+removed. The host now cuts that log once it passes 1 MiB (within a second),
+removes it with its run, and the census and `-collect-garbage` remove the
+logs of runs that are gone. In production the guest has no serial console
+(`8250.nr_uarts=0`, no `console=ttyS0`): nothing it prints reaches the host.
+`vm_serial_console`, or development mode, gives it one for debugging, and the
+host then keeps the logs of the 16 runs that ended last. The KVM campaigns
+enable it, since the tests above read what a guest printed; the jail test
+runs as production.

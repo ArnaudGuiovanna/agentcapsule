@@ -16,8 +16,11 @@ Nice=10
 # Switch to postgres for pgBackRest, and write into a directory node_exporter owns.
 CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_DAC_OVERRIDE
 NoNewPrivileges=yes
-ProtectSystem=full
+# pgbackrest info writes its log; it takes no lock.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/prometheus/node-exporter -/var/log/pgbackrest
 ProtectHome=yes
+PrivateTmp=yes
 PrivateDevices=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
@@ -30,4 +33,9 @@ RestrictNamespaces=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
+MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
+# setuid and setgroups switch to postgres: @system-service has them,
+# ~@privileged would remove them.
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM

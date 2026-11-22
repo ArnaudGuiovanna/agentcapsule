@@ -261,7 +261,8 @@ type inbound struct {
 
 func (s *Server) serveConn(ctx context.Context, conn *net.UnixConn, role string) {
 	defer conn.Close()
-	if !s.hello(conn, role) {
+	protocol, ok := s.hello(conn, role)
+	if !ok {
 		return
 	}
 	ctx, cancel := context.WithCancel(ctx)
@@ -299,7 +300,7 @@ func (s *Server) serveConn(ctx context.Context, conn *net.UnixConn, role string)
 			}
 			return
 		}
-		if !s.handle(ctx, conn, role, in.req, frames) {
+		if !s.handle(ctx, conn, role, protocol, in.req, frames) {
 			return
 		}
 	}
@@ -309,14 +310,14 @@ func (s *Server) serveConn(ctx context.Context, conn *net.UnixConn, role string)
 // against the socket, the identities it pins against the service's. A
 // mismatch ends the connection: a worker never talks to another
 // installation's authorities.
-func (s *Server) hello(conn *net.UnixConn, role string) bool {
+func (s *Server) hello(conn *net.UnixConn, role string) (int, bool) {
 	conn.SetDeadline(time.Now().Add(helloTimeout))
 	var h Hello
 	if err := readFrame(conn, &h, MaxRequest); err != nil {
 		if errors.Is(err, authoritylog.ErrProtocol) {
 			writeFrame(conn, Response{Error: CodeProtocol})
 		}
-		return false
+		return 0, false
 	}
 	code := ""
 	switch {
@@ -329,13 +330,13 @@ func (s *Server) hello(conn *net.UnixConn, role string) bool {
 	}
 	if code != "" {
 		writeFrame(conn, Response{Error: code})
-		return false
+		return 0, false
 	}
 	result, err := json.Marshal(s.Status())
 	if err != nil || writeFrame(conn, Response{Result: result}) != nil {
-		return false
+		return 0, false
 	}
-	return conn.SetDeadline(time.Time{}) == nil
+	return h.Protocol, conn.SetDeadline(time.Time{}) == nil
 }
 
 func (s *Server) respond(conn *net.UnixConn, r Response) bool {
@@ -349,7 +350,7 @@ type outcome struct {
 }
 
 // handle runs one request. It returns false when the connection must end.
-func (s *Server) handle(ctx context.Context, conn *net.UnixConn, role string, req Request, frames <-chan inbound) bool {
+func (s *Server) handle(ctx context.Context, conn *net.UnixConn, role string, protocol int, req Request, frames <-chan inbound) bool {
 	op, ok := operations[req.Op]
 	timeout := time.Duration(req.TimeoutMS) * time.Millisecond
 	switch {
@@ -367,7 +368,7 @@ func (s *Server) handle(ctx context.Context, conn *net.UnixConn, role string, re
 	defer cancelTimeout()
 	ctx, lose := context.WithCancelCause(ctx)
 	defer lose(nil)
-	h := &hold{kind: op.hold, cap: s.c.PublishCap, conn: conn, release: make(chan struct{})}
+	h := &hold{protocol: protocol, kind: op.hold, cap: s.c.PublishCap, conn: conn, release: make(chan struct{})}
 	if op.hold == HoldKey {
 		h.cap = s.c.MaxKeyHold
 	}

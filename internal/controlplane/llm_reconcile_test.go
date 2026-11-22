@@ -54,7 +54,14 @@ func TestUnknownOutcomesAreListedThenSettledOrReleasedByTheOrganization(t *testi
 			t.Fatal("item", it)
 		}
 	}
-	if _, err = b.reserveSplit(b.agent, "fast", "full", 1, 0); !errors.Is(err, ErrBudgetExceeded) {
+	// The window counts the two unknown outcomes and the fresh reservation (700
+	// tokens), and the stale one unless the hour it was moved back took it into
+	// the previous UTC day: the test may run in the first hour of a day.
+	budgets, err := b.a.ListLLMBudgets(t.Context(), b.owner, "", 10)
+	if err != nil || len(budgets) != 1 || budgets[0].Used == nil || *budgets[0].Used < 700 {
+		t.Fatal("unknown outcomes stopped counting", budgets, err)
+	}
+	if _, err = b.reserveSplit(b.agent, "fast", "full", 800-*budgets[0].Used+1, 0); !errors.Is(err, ErrBudgetExceeded) {
 		t.Fatal("unknown outcomes stopped counting", err)
 	}
 	r, err := b.a.SettleLLMOutcome(t.Context(), b.owner, lost.ID, "s1", SettleLLMOutcomeInput{InputTokens: 10, OutputTokens: 5})

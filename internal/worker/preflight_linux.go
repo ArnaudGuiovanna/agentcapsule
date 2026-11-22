@@ -107,7 +107,7 @@ func (c ServiceConfig) Preflight(ctx context.Context, h preflight.Host, mode ope
 			out = append(out, preflight.Result{Check: "registry", Status: preflight.Warn, Detail: "a registry rule is local: plain HTTP (development)",
 				Fix: "drop \"local\" in production"})
 		}
-		out = append(out, c.inspectionCheck(ctx, sandbox.AsRoot()))
+		out = append(out, c.inspectionCheck(ctx, sandbox.AsRoot()), c.registrySignatures(mode))
 	}
 	if c.Corpus != nil {
 		out = append(out, c.corpusCheck(mode))
@@ -188,6 +188,38 @@ func (c ServiceConfig) directoryChecks(ctx context.Context, h preflight.Host) []
 	// The client of internal/directory: the edge's name is the address's host.
 	config := &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: pool, Certificates: []tls.Certificate{pair}, NextProtos: []string{"h2"}}
 	return append(out, preflight.MutualTLS(ctx, "directory_edge", d.Address, config))
+}
+
+// registrySignatures: in production, every registry rule trusts publisher
+// keys or opts out with allow_unsigned (L-16); a rule that imports unsigned
+// packages is a warning, named; strict mode allows none.
+func (c ServiceConfig) registrySignatures(mode operatorconfig.Mode) preflight.Result {
+	const check = "registry_signatures"
+	var refused, unsigned, contradictory []string
+	for _, r := range c.Registry.Rules {
+		switch signed := len(r.PublisherKeys) > 0; {
+		case signed && r.AllowUnsigned:
+			contradictory = append(contradictory, r.Host)
+		case signed:
+		case c.Registry.RequireSignatures || mode == operatorconfig.Production && !r.AllowUnsigned:
+			refused = append(refused, r.Host)
+		default:
+			unsigned = append(unsigned, r.Host)
+		}
+	}
+	switch {
+	case len(contradictory) > 0:
+		return preflight.Result{Check: check, Status: preflight.Fail, Detail: "rules say allow_unsigned beside publisher keys: " + strings.Join(contradictory, ", "),
+			Fix: "drop allow_unsigned, or the publisher keys"}
+	case len(refused) > 0:
+		return preflight.Result{Check: check, Status: preflight.Fail,
+			Detail: "rules trust no publisher key, which production requires: " + strings.Join(refused, ", "),
+			Fix:    "list the publishers' keys in publisher_keys, or write \"allow_unsigned\": true in the rule to import its unsigned packages"}
+	case len(unsigned) > 0:
+		return preflight.Result{Check: check, Status: preflight.Warn, Detail: "rules import unsigned packages: " + strings.Join(unsigned, ", "),
+			Fix: "list the publishers' keys in publisher_keys and drop allow_unsigned"}
+	}
+	return preflight.Result{Check: check, Status: preflight.OK, Detail: "every registry rule trusts publisher keys"}
 }
 
 // inspectionCheck: debugfs, which inspects each downloaded image, runs

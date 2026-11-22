@@ -51,7 +51,8 @@ func (s *Files) checkIdentity() error {
 }
 
 // Open requires an existing authority and an independently configured expected
-// identity. It never creates directories, identities or keys on startup.
+// identity. It never creates directories, identities or keys on startup. It
+// removes the lock files that revocations left before L-18 (retireLocks).
 func Open(root, expectedIdentity string) (*Files, error) {
 	if !valid(expectedIdentity, "keyauth_") {
 		return nil, ErrInput
@@ -62,6 +63,9 @@ func Open(root, expectedIdentity string) (*Files, error) {
 	}
 	s.identity = expectedIdentity
 	if err = s.checkIdentity(); err != nil {
+		return nil, err
+	}
+	if err = s.retireLocks(); err != nil {
 		return nil, err
 	}
 	return s, nil

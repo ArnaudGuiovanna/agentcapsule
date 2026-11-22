@@ -37,6 +37,9 @@ type GarbageCollection struct {
 	// section. InUse lists the images this host's agents may boot from.
 	ImageCache string
 	InUse      func(context.Context) (map[string]bool, error)
+	// LogsRoot is the runtime root whose VMM logs of runs that are gone go
+	// (S-20); empty for none.
+	LogsRoot string
 }
 
 // ArchiveGarbage is what a collection removed from the archive root, or
@@ -55,13 +58,15 @@ type GarbageReport struct {
 	Corpora  *ImageGarbage   `json:"corpora,omitempty"`
 	Archives *ArchiveGarbage `json:"archives,omitempty"`
 	Images   *ImageGarbage   `json:"images,omitempty"`
+	// VMMLogs counts the logs of VM runs that are gone.
+	VMMLogs int `json:"vmm_logs,omitempty"`
 }
 
 // Found reports whether the collection removed, or would remove, anything.
 func (r GarbageReport) Found() bool {
 	a, i := r.Archives, r.Images
 	return r.Corpora != nil && (len(r.Corpora.Unused) > 0 || r.Corpora.Leftovers > 0) || a != nil && (len(a.Retention) > 0 || len(a.Deleted) > 0 || a.Leftovers > 0) ||
-		i != nil && (len(i.Unused) > 0 || i.Leftovers > 0)
+		i != nil && (len(i.Unused) > 0 || i.Leftovers > 0) || r.VMMLogs > 0
 }
 
 // leftoverAge is how long a leftover stays untouched before a collection
@@ -97,6 +102,13 @@ func (g GarbageCollection) Run(ctx context.Context, dryRun bool) (GarbageReport,
 			return r, err
 		}
 		if err = g.cleanCorpusStaging(ctx, dryRun, &v); err != nil {
+			return r, err
+		}
+	}
+	if g.LogsRoot != "" {
+		n, err := runtime.CollectStaleLogsAt(ctx, g.LogsRoot, dryRun)
+		r.VMMLogs = n
+		if err != nil {
 			return r, err
 		}
 	}
@@ -158,7 +170,7 @@ func (g GarbageCollection) collectArchives(ctx context.Context, a *ArchiveGarbag
 // archive root and image cache. A root that does not exist holds nothing to
 // collect, and is not created.
 func (c ServiceConfig) GarbageCollection(s *controlplane.Store) (GarbageCollection, error) {
-	g := GarbageCollection{Store: s, HostID: c.HostID}
+	g := GarbageCollection{Store: s, HostID: c.HostID, LogsRoot: c.Root}
 	a, err := c.archives()
 	if err != nil {
 		return g, err

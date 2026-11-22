@@ -88,12 +88,10 @@ const computing = `((` + workInProgress + `
     OR EXISTS(SELECT 1 FROM llm_usage cu WHERE cu.agent_id=a.id AND cu.state='reserved'))`
 
 // lastActivity is the latest time agent a did or received something the
-// platform tracks; the least recently active idle VM is stopped first.
+// platform tracks; the least recently active idle VM is stopped first. Its
+// operations, requests and model calls keep agent_activity (migration 0071).
 const lastActivity = `greatest(coalesce(x.created_at,'-infinity'::timestamptz),
-        coalesce((SELECT max(greatest(o.created_at,coalesce(o.completed_at,o.created_at))) FROM platform_operations o WHERE o.agent_id=a.id),'-infinity'::timestamptz),
-        coalesce((SELECT max(greatest(r.created_at,coalesce(r.decided_at,r.created_at))) FROM agent_requests r
-                   WHERE r.sender_agent_id=a.id OR r.recipient_agent_id=a.id),'-infinity'::timestamptz),
-        coalesce((SELECT max(coalesce(u.settled_at,u.created_at)) FROM llm_usage u WHERE u.agent_id=a.id),'-infinity'::timestamptz))`
+        coalesce((SELECT v.at FROM agent_activity v WHERE v.agent_id=a.id),'-infinity'::timestamptz))`
 
 // AdmitToSlot decides whether agent may boot now on host. The caller holds the
 // host's exclusive admission turn and passes its census: the other agents
@@ -391,9 +389,16 @@ func (s *Store) QuotaWaits(ctx context.Context, host string) (int, error) {
 func (s *Store) ResumeDue(ctx context.Context, agent string) (bool, error) {
 	var due bool
 	err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM agents a WHERE a.id=$1 AND `+resumeDue+`
-        AND NOT EXISTS(SELECT 1 FROM agent_placements sp WHERE sp.agent_id=a.id AND sp.state='RUNNING' AND NOT sp.fence_only))`, agent).Scan(&due)
+        AND NOT EXISTS(SELECT 1 FROM agent_placements sp WHERE sp.agent_id=a.id AND sp.state='RUNNING' AND NOT sp.fence_only)
+        AND NOT EXISTS(SELECT 1 FROM organizations o WHERE o.id=a.tenant_id AND o.status='disabled'))`, agent).Scan(&due)
 	return due, err
 }
+
+// evictionOrderQuery orders the agents $1 for stopping, leaving out those
+// computing when $2 (evictionOrder).
+var evictionOrderQuery = `SELECT a.id FROM agents a LEFT JOIN agent_specs x ON x.agent_id=a.id
+        WHERE a.id=ANY($1) AND (NOT $2 OR NOT ` + computing + `)
+        ORDER BY ` + computing + `,` + owesWork("clock_timestamp()") + `,` + lastActivity + `,a.id`
 
 // evictionOrder orders running agents for stopping: idle first, then those
 // that only wait, then those computing, unless forWork leaves those out.
@@ -401,9 +406,7 @@ func evictionOrder(ctx context.Context, tx pgx.Tx, running []string, forWork boo
 	if len(running) == 0 {
 		return nil, nil
 	}
-	rows, err := tx.Query(ctx, `SELECT a.id FROM agents a LEFT JOIN agent_specs x ON x.agent_id=a.id
-        WHERE a.id=ANY($1) AND (NOT $2 OR NOT `+computing+`)
-        ORDER BY `+computing+`,`+owesWork("clock_timestamp()")+`,`+lastActivity+`,a.id`, running, forWork)
+	rows, err := tx.Query(ctx, evictionOrderQuery, running, forWork)
 	if err != nil {
 		return nil, err
 	}

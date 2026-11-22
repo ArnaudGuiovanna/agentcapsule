@@ -59,14 +59,14 @@ func (q EmbedRequest) Valid() bool {
 	return total <= MaxForwardBytes
 }
 
-// ReservedTokens is the reservation of an embedding call: about one token per
-// three bytes of input, as for a completion.
+// ReservedTokens is the reservation of an embedding call: the estimate of
+// its inputs, as for a completion (EstimateTokens).
 func (q EmbedRequest) ReservedTokens() int64 {
-	var n int64
+	var c tokenCount
 	for _, s := range q.Input {
-		n += int64(len(s))
+		c.add(s)
 	}
-	return n/3 + 1
+	return c.estimate()
 }
 
 // TranscribeRequest is one audio segment and its declared duration.

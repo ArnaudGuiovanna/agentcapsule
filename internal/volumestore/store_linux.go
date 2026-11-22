@@ -6,7 +6,10 @@ package volumestore
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -41,12 +44,67 @@ type Container struct {
 	Device, Inode uint64
 }
 
+// journal is a volume's state, in the data domain: archives and backups copy
+// it, and it outlives the key's destruction (L-18). Version 2 identifies the
+// key by HMAC-SHA256 under a random salt of the volume, KeySalt and KeyMAC:
+// they bind retries to the same key, reveal nothing else of it, and differ
+// for two volumes of one key. Version 1, before, held the key's SHA-256 in
+// KeyHash; Prepare replaces it with version 2's identifier. A removal clears
+// the identifier: the key was revoked before.
 type journal struct {
 	Version       int    `json:"version"`
 	Spec          Spec   `json:"spec"`
-	KeyHash       string `json:"key_hash"`
+	KeyHash       string `json:"key_hash,omitempty"`
+	KeySalt       string `json:"key_salt,omitempty"`
+	KeyMAC        string `json:"key_mac,omitempty"`
 	Stage         string `json:"stage"`
 	Device, Inode uint64
+}
+
+// identify sets the version 2 identifier of key, under a new salt.
+func (j *journal) identify(key []byte) {
+	salt := make([]byte, 32)
+	_, _ = rand.Read(salt)
+	j.Version, j.KeyHash, j.KeySalt, j.KeyMAC = 2, "", hex.EncodeToString(salt), hex.EncodeToString(keyMAC(salt, key))
+}
+
+// forget clears the identifier of the key, of either version.
+func (j *journal) forget() {
+	j.Version, j.KeyHash, j.KeySalt, j.KeyMAC = 2, "", "", ""
+}
+
+// identifies reports whether key is the journal's.
+func (j journal) identifies(key []byte) bool {
+	switch j.Version {
+	case 1:
+		sum := sha256.Sum256(key)
+		return subtle.ConstantTimeCompare([]byte(hex.EncodeToString(sum[:])), []byte(j.KeyHash)) == 1
+	case 2:
+		salt, err1 := hex.DecodeString(j.KeySalt)
+		mac, err2 := hex.DecodeString(j.KeyMAC)
+		return err1 == nil && err2 == nil && len(salt) == 32 && hmac.Equal(mac, keyMAC(salt, key))
+	}
+	return false
+}
+
+func keyMAC(salt, key []byte) []byte {
+	m := hmac.New(sha256.New, salt)
+	m.Write(key)
+	return m.Sum(nil)
+}
+
+// identified: the journal holds a well-formed identifier of its version, or,
+// once its volume is removed, none (version 2).
+func (j journal) identified() bool {
+	hex64 := func(s string) bool { b, err := hex.DecodeString(s); return err == nil && len(b) == 32 }
+	removed := j.Stage == "REMOVING" || j.Stage == "REMOVED"
+	switch j.Version {
+	case 1:
+		return hex64(j.KeyHash) && j.KeySalt == "" && j.KeyMAC == ""
+	case 2:
+		return j.KeyHash == "" && (hex64(j.KeySalt) && hex64(j.KeyMAC) || removed && j.KeySalt == "" && j.KeyMAC == "")
+	}
+	return false
 }
 
 type Store struct {
@@ -165,7 +223,7 @@ func load(path string) (journal, error) {
 		return j, ErrState
 	}
 	var extra any
-	if d.Decode(&extra) != io.EOF || j.Version != 1 || (j.Stage != "PREPARING" && j.Stage != "READY" && j.Stage != "REMOVING" && j.Stage != "REMOVED") {
+	if d.Decode(&extra) != io.EOF || !j.identified() || (j.Stage != "PREPARING" && j.Stage != "READY" && j.Stage != "REMOVING" && j.Stage != "REMOVED") {
 		return j, ErrState
 	}
 	return j, nil
@@ -232,24 +290,34 @@ func (s *Store) Prepare(ctx context.Context, spec Spec, key []byte) (Container, 
 	}
 	path := filepath.Join(s.root, "volumes", spec.VolumeID+".luks")
 	pending := filepath.Join(s.root, "volumes", spec.VolumeID+".pending")
-	hash := sha256.Sum256(key)
-	keyHash := hex.EncodeToString(hash[:])
 	j, err := load(base + ".json")
 	if errors.Is(err, os.ErrNotExist) {
 		if !absence(path) || !absence(pending) {
 			return result, ErrState
 		}
-		j = journal{Version: 1, Spec: spec, KeyHash: keyHash, Stage: "PREPARING"}
+		j = journal{Spec: spec, Stage: "PREPARING"}
+		j.identify(key)
 		err = save(base+".json", j)
 	}
 	if err != nil {
 		return result, err
 	}
-	if j.Spec != spec || j.KeyHash != keyHash {
+	if j.Spec != spec {
 		return result, ErrConflict
 	}
+	// A removed volume's journal no longer identifies its key.
 	if j.Stage == "REMOVING" || j.Stage == "REMOVED" {
 		return result, ErrRemoved
+	}
+	if !j.identifies(key) {
+		return result, ErrConflict
+	}
+	if j.Version == 1 {
+		// A journal written before the audit: the key's SHA-256 goes.
+		j.identify(key)
+		if err = save(base+".json", j); err != nil {
+			return result, err
+		}
 	}
 	s.boundary("reserved")
 	// Publication may have reached disk before its final journal commit. Check
@@ -307,6 +375,13 @@ func (s *Store) Prepare(ctx context.Context, spec Spec, key []byte) (Container, 
 		return result, err
 	}
 	s.boundary("allocated")
+	// A committed container was checked before its publication; since then
+	// its guest may have rewritten its header, or a restore installed an
+	// archive's. libcryptsetup never reads that header in this process
+	// (S-21): the journal, the inode and the key's identifier adopt it.
+	if final && j.Stage == "READY" {
+		return Container{Spec: spec, Path: path, UUID: spec.uuid(), Device: j.Device, Inode: j.Inode}, nil
+	}
 	if err = luks(activePath, spec.uuid(), key, false, nil); err != nil {
 		if final {
 			return result, err
@@ -364,27 +439,6 @@ func (s *Store) Prepare(ctx context.Context, spec Spec, key []byte) (Container, 
 	}
 	s.boundary("committed")
 	return Container{Spec: spec, Path: path, UUID: spec.uuid(), Device: j.Device, Inode: j.Inode}, nil
-}
-
-// CheckContainer checks that the file at path is the LUKS2 container of
-// volumeID and that key opens one of its key slots: the header's UUID,
-// cipher, key size and sector size, then the key (a restore test, OPR-5). It
-// maps nothing and never unlocks the payload: the volume opens only in its
-// guest (product.md). libcryptsetup may repair a damaged copy of the header
-// while it loads it, so path must be a scratch copy, never an archive or a
-// volume in use.
-func CheckContainer(path, volumeID string, key []byte) error {
-	if !identifier(volumeID, "vol_") || len(key) != 32 {
-		return ErrInput
-	}
-	st, err := os.Lstat(path)
-	if err != nil {
-		return err
-	}
-	if !st.Mode().IsRegular() {
-		return ErrState
-	}
-	return luks(path, Spec{VolumeID: volumeID}.uuid(), key, false, nil)
 }
 
 // Grow verifies the published inode and extends its reservation without changing

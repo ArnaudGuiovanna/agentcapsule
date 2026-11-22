@@ -21,13 +21,14 @@
   "max_active": 2,
   "boot_timeout": "30s",
   "boot_lease": "2m",
-  "poll_interval": "30s",
+  "poll_interval": "5s",
   "attempt_timeout": "45s",
   "dispatch_batch": 16,
   "work_lease": "2m",
   "delivery_lease": "30s",
   "retry_base": "1s",
   "retry_max": "30s",
+  "finished_retention": "2160h",
   "drive_limits": {
     "volume": { "bandwidth_mib_per_second": 64, "iops": 2000 },
     "harness": { "bandwidth_mib_per_second": 128, "iops": 4000 }
@@ -56,7 +57,8 @@
         ],
         "blob_hosts": [
           "pkg-containers.githubusercontent.com"
-        ]
+        ],
+        "allow_unsigned": true
       }
     ]
   }

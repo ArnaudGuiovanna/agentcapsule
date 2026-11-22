@@ -303,7 +303,7 @@ func (s *Store) ChangeDelegationAuthority(ctx context.Context, in DelegationChan
 	if in.DryRun {
 		return out, nil
 	}
-	// The access this change revokes: its record, before the commit. The
+	// The access this change revokes: its record, recorded after the commit. The
 	// platform's own revocation: its operator reads it.
 	if changed {
 		var object []string

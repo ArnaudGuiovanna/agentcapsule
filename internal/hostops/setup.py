@@ -21,6 +21,7 @@ def normalize_profile(raw):
     defaults = dict(schema="agentcapsule.install/v1", api_name=socket.getfqdn(), api_port=9443,
                     platform_account="sysadmin", host_id="local", storage_mib=8192, max_active=2,
                     first_uid=62100, last_uid=63123, allow_internal_providers=[], database_url_file=None,
+                    api_database_url_file=None, worker_database_url_file=None,
                     tls_certificate=None, tls_key=None, tls_ca=None, interop_certs=None, pgbackrest_config=None,
                     registry_rules=None, oidc_port=9444, oidc_name=None, oidc_cert=None, oidc_key=None,
                     oidc_ca=None, monapp_redirect_uri=None, rclone_config=None)
@@ -39,20 +40,43 @@ def normalize_profile(raw):
             raise ValueError("invalid "+field)
     if any(type(p[k]) != int for k in ("api_port","oidc_port","storage_mib","max_active","first_uid","last_uid")):
         raise ValueError("expected integer capacity and port settings")
-    if p["oidc_port"] == p["api_port"] or not 1 <= p["oidc_port"] <= 65535 or p["oidc_port"] in (8443,9464,9465,9466,46357,55432):
+    if p["oidc_port"] == p["api_port"] or not 1 <= p["oidc_port"] <= 65535 or p["oidc_port"] in (8443,9445,9464,9465,9466,46357,55432):
         raise ValueError("invalid OIDC port")
-    if (p["api_port"] in (8443,9464,9465,9466,46357,55432) or not 1 <= p["api_port"] <= 65535
+    if (p["api_port"] in (8443,9445,9464,9465,9466,46357,55432) or not 1 <= p["api_port"] <= 65535
             or min(p["storage_mib"],p["max_active"]) < 1 or not 10000 <= p["first_uid"] <= p["last_uid"] < 2147483647
             or p["last_uid"]-p["first_uid"] > 1 << 20):
         raise ValueError("invalid profile capacity or listen port")
-    for key in ("database_url_file","tls_certificate","tls_key","tls_ca","interop_certs","pgbackrest_config","oidc_cert","oidc_key","oidc_ca","rclone_config"):
+    for key in ("database_url_file","api_database_url_file","worker_database_url_file","tls_certificate","tls_key","tls_ca","interop_certs","pgbackrest_config","oidc_cert","oidc_key","oidc_ca","rclone_config"):
         if p[key] is not None and (not isinstance(p[key],str) or not Path(p[key]).is_absolute()):
             raise ValueError("expected absolute host path for "+key)
+    if (p["api_database_url_file"] or p["worker_database_url_file"]) and not p["database_url_file"]:
+        raise ValueError("a service's database URL file needs database_url_file")
     if bool(p["oidc_cert"]) != bool(p["oidc_key"]):
         raise ValueError("provide both OIDC TLS certificate and key")
     if bool(p["tls_key"]) != bool(p["tls_certificate"]):
         raise ValueError("provide both TLS certificate and private key")
+    # A production worker imports through a rule that trusts publisher keys,
+    # or that opts out explicitly (L-16, docs/registry.md).
+    if p["registry_rules"] is not None and (not isinstance(p["registry_rules"],list) or not all(
+            isinstance(r,dict) and (bool(r.get("publisher_keys")) or r.get("allow_unsigned") is True) for r in p["registry_rules"])):
+        raise ValueError("each registry rule needs publisher_keys or allow_unsigned")
     return p
+
+
+def opt_out_unsigned_registry_rules(path):
+    """Write "allow_unsigned": true in each registry rule of the worker
+    configuration at path that trusts no publisher key and says nothing: a
+    worker before L-16 imported unsigned packages through it, and a
+    production worker now refuses it. Return the rules' hosts."""
+    cfg=read(path)
+    opted=[]
+    for rule in (cfg.get("registry") or {}).get("rules") or []:
+        if not rule.get("publisher_keys") and "allow_unsigned" not in rule:
+            rule["allow_unsigned"]=True
+            opted.append(rule.get("host"))
+    if opted:
+        write_file(path,(json.dumps(cfg,sort_keys=True,indent=2)+"\n").encode(),path.stat().st_mode&0o777)
+    return opted
 
 
 def user_id(name):
@@ -154,42 +178,94 @@ def configure_system():
     ETC.chmod(0o755)
 
 
-def db_env(profile):
-    path = profile["database_url_file"]
-    if path:
-        f=Path(path)
-        if f.stat().st_uid != 0 or f.stat().st_mode & 0o077:
-            raise ValueError("the database URL must be in a root-owned private file")
-        dsn=f.read_text().strip()
-    else:
-        dsn="host=/run/postgresql port=55432 dbname=agentcapsule user=agentcapsule"
+def database_url(path):
+    f=Path(path)
+    if f.stat().st_uid != 0 or f.stat().st_mode & 0o077:
+        raise ValueError("the database URL must be in a root-owned private file")
+    dsn=f.read_text().strip()
     if not dsn or any(ord(c)<32 for c in dsn):
         raise ValueError("invalid database URL file")
+    return dsn
+
+
+# The bundled cluster's roles (ADR 001, "Changes after the v0.1.0 audit"):
+# agentcapsule owns the database and every object and runs the migrations
+# (agentcapsule-admin, as root); the API and the worker connect as roles that
+# own nothing and write only what they write.
+LOCAL_DSN="host=/run/postgresql port=55432 dbname=agentcapsule user="
+SERVICE_ROLES=("agentcapsule_api","agentcapsule_worker")
+
+
+def db_env(profile):
+    # The owner's connection: migrations and agentcapsule-admin.
+    path = profile["database_url_file"]
+    dsn = database_url(path) if path else LOCAL_DSN+"agentcapsule"
     return dict(os.environ,AGENTCAPSULE_DATABASE_URL=dsn)
+
+
+def service_dsns(profile):
+    # The API's and the worker's connections, each as its own role.
+    if not profile.get("database_url_file"):
+        return {"api":LOCAL_DSN+"agentcapsule_api","worker":LOCAL_DSN+"agentcapsule_worker"}
+    files={"api":profile.get("api_database_url_file"),"worker":profile.get("worker_database_url_file")}
+    if not all(files.values()):
+        raise ValueError("an external database needs api_database_url_file and worker_database_url_file: "
+                         "the API and the worker connect as roles that do not own the schema")
+    return {name:database_url(path) for name,path in files.items()}
+
+
+def worker_env(profile):
+    return dict(os.environ,AGENTCAPSULE_DATABASE_URL=service_dsns(profile)["worker"])
+
+
+# pg_ident.conf: root runs agentcapsule-admin as the owner and the worker as
+# its role; the API's account reaches only the API's role. pg_hba.conf admits
+# those three roles by peer authentication on the socket.
+PEER_MAP=("agentcapsule root agentcapsule\nagentcapsule root agentcapsule_worker\n"
+          "agentcapsule agentcapsule-api agentcapsule_api\n")
+PEER_HBA=("local agentcapsule agentcapsule,agentcapsule_api,agentcapsule_worker peer map=agentcapsule\n"
+          "host all all 127.0.0.1/32 scram-sha-256\nhost all all ::1/128 scram-sha-256\n")
+# What an earlier release wrote, which mapped the API's account to the owner.
+OLD_PEER_HBA=("local agentcapsule agentcapsule peer map=agentcapsule",)
+
+
+def peer_entries(text, entries, ours):
+    # Our block first, once; every line it replaces removed.
+    kept=[line for line in text.splitlines(keepends=True) if not ours(line.strip())]
+    return entries+"".join(kept)
+
+
+def database_roles(folder=Path("/etc/postgresql/16/agentcapsule")):
+    hba = folder/"pg_hba.conf"
+    ident = folder/"pg_ident.conf"
+    block=set(PEER_HBA.splitlines())|set(OLD_PEER_HBA)
+    for file,entries,ours in [(ident,PEER_MAP,lambda line:line.split()[:1]==["agentcapsule"]),
+                              (hba,PEER_HBA,lambda line:line in block)]:
+        text=file.read_text()
+        updated=peer_entries(text,entries,ours)
+        if updated!=text:
+            write_file(file,updated.encode(),0o640)
+            os.chown(file,user_id("postgres"),pwd.getpwnam("postgres").pw_gid)
+    cmd=["psql","-XAt","-v","ON_ERROR_STOP=1","-h","/run/postgresql","-p","55432","-d","postgres","-c"]
+    for role in ("agentcapsule",*SERVICE_ROLES):
+        if not run_user("postgres",*cmd,"SELECT 1 FROM pg_roles WHERE rolname='"+role+"'",capture=True):
+            run_user("postgres",*cmd,"CREATE ROLE "+role+" LOGIN")
+        run_user("postgres",*cmd,"ALTER ROLE "+role+" NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS")
+    run("pg_ctlcluster","16","agentcapsule","reload")
 
 
 def database():
     # A dedicated cluster avoids modifying pg_hba.conf or WAL retention on an
-    # operator's other databases. The API's role has no cluster privileges.
+    # operator's other databases. The services' roles have no cluster privileges.
     folder=Path("/etc/postgresql/16/agentcapsule")
     if not folder.exists():
         run("pg_createcluster","16","agentcapsule","--port","55432","--","--auth-local=peer","--auth-host=scram-sha-256")
-    hba = folder/"pg_hba.conf"
-    ident = folder/"pg_ident.conf"
-    for file,entries in [(ident,"agentcapsule root agentcapsule\nagentcapsule agentcapsule-api agentcapsule\n"),
-                         (hba,"local agentcapsule agentcapsule peer map=agentcapsule\n"
-                              "host all all 127.0.0.1/32 scram-sha-256\nhost all all ::1/128 scram-sha-256\n")]:
-        if not file.read_text().startswith(entries):
-            write_file(file,(entries+file.read_text()).encode(),0o640)
-            os.chown(file,user_id("postgres"),pwd.getpwnam("postgres").pw_gid)
     write_file(folder/"conf.d"/"agentcapsule.conf",b"listen_addresses = '127.0.0.1'\n",0o644)
     run("systemctl","enable","--now","postgresql@16-agentcapsule.service")
-    run("pg_ctlcluster","16","agentcapsule","reload")
+    database_roles(folder)
     cmd=["psql","-XAt","-v","ON_ERROR_STOP=1","-h","/run/postgresql","-p","55432","-d","postgres","-c"]
-    for query,statement in [("SELECT 1 FROM pg_roles WHERE rolname='agentcapsule'","CREATE ROLE agentcapsule LOGIN"),
-                            ("SELECT 1 FROM pg_database WHERE datname='agentcapsule'","CREATE DATABASE agentcapsule OWNER agentcapsule")]:
-        if not run_user("postgres",*cmd,query,capture=True):
-            run_user("postgres",*cmd,statement)
+    if not run_user("postgres",*cmd,"SELECT 1 FROM pg_database WHERE datname='agentcapsule'",capture=True):
+        run_user("postgres",*cmd,"CREATE DATABASE agentcapsule OWNER agentcapsule")
 
 
 def create_key(path,data):
@@ -210,12 +286,60 @@ def api_tls(p):
                 tmpkey=Path(tmp)/"api.key"
                 run("openssl","genpkey","-algorithm","EC","-pkeyopt","ec_paramgen_curve:P-256","-out",tmpkey)
                 install_file(tmpkey,key,0o600,user_id("agentcapsule-api"))
-        with tempfile.TemporaryDirectory(dir=STATE) as tmp:
-            generated=Path(tmp)/"api.crt"
-            run("openssl","req","-new","-x509","-key",key,"-days","365","-subj","/CN="+p["api_name"],
-                "-addext","subjectAltName=DNS:"+p["api_name"],"-addext","extendedKeyUsage=serverAuth",
-                "-addext","basicConstraints=critical,CA:FALSE","-out",generated)
-            install_file(generated,cert)
+        issue_api_certificate(p)
+
+
+def issue_api_certificate(p):
+    with tempfile.TemporaryDirectory(dir=STATE) as tmp:
+        generated=Path(tmp)/"api.crt"
+        run("openssl","req","-new","-x509","-key",ETC/"api.key","-days","365","-subj","/CN="+p["api_name"],
+            "-addext","subjectAltName=DNS:"+p["api_name"],"-addext","extendedKeyUsage=serverAuth",
+            "-addext","basicConstraints=critical,CA:FALSE","-out",generated)
+        install_file(generated,ETC/"api.crt")
+
+
+# The certificates the installer generates last 365 days (L-14). Each update
+# renews those that expire within RENEW_BEFORE_DAYS, with the same keys for the
+# API and the identity provider, and new authorities for the private services.
+# An operator's certificates are the operator's to renew. `host diagnose
+# certificates` reports every one.
+RENEW_BEFORE_DAYS=30
+INTEROP_CERTIFICATES=("ca/directory-ca.pem","ca/slim-ca.pem","directory-edge/edge.pem","control-plane/directory.crt",
+                      "slim/server.pem","slim-bridge/client.crt")
+
+
+def host_certificates(p):
+    # (name, certificate, generated by the installer)
+    found=[("api",ETC/"api.crt",not p["tls_certificate"]),("oidc",ETC/"oidc-tls"/"tls.crt",not p["oidc_cert"])]
+    found+=[("interop/"+name,ETC/"interop"/name,not p["interop_certs"]) for name in INTEROP_CERTIFICATES]
+    return [entry for entry in found if entry[1].is_file()]
+
+
+def expires_within(path,days):
+    return subprocess.run(["openssl","x509","-noout","-checkend",str(days*86400),"-in",str(path)],
+                          stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode!=0
+
+
+def renew_certificates(p):
+    due={name for name,path,generated in host_certificates(p) if generated and expires_within(path,RENEW_BEFORE_DAYS)}
+    if "api" in due:
+        issue_api_certificate(p)
+    if "oidc" in due:
+        issue_oidc_certificate(p,ETC/"oidc-tls")
+    if any(name.startswith("interop/") for name in due):
+        links=ETC/"interop"
+        if links.is_symlink():
+            raise ValueError("the private services' certificates are the operator's: renew them")
+        old=ETC/(".interop-expiring-"+secrets.token_hex(8))
+        links.rename(old)
+        try:
+            setup_interop(p)
+        except Exception:
+            if not links.exists():
+                old.rename(links)
+            raise
+        shutil.rmtree(old)
+    return sorted(due)
 
 
 def setup_interop(profile):
@@ -275,15 +399,31 @@ def authority():
     return config
 
 
+def environment_quote(s):
+    if any(ord(c)<32 for c in s):
+        raise ValueError("unsupported environment value")
+    return '"'+s.replace("\\","\\\\").replace('"','\\"')+'"'
+
+
 def environment_file(path, settings):
-    def quote(s):
-        if any(ord(c)<32 for c in s):
-            raise ValueError("unsupported environment value")
-        return '"'+s.replace("\\","\\\\").replace('"','\\"')+'"'
-    write_file(path,"".join(k+"="+quote(v)+"\n" for k,v in settings.items()).encode())
+    write_file(path,"".join(k+"="+environment_quote(v)+"\n" for k,v in settings.items()).encode())
+
+
+def service_environment(p):
+    # Each unit's own connection string, also on an installation whose
+    # files still name the owner for every service; the other settings stay.
+    dsns=service_dsns(p)
+    for unit in ("api","worker"):
+        path=ETC/(unit+".env")
+        lines=path.read_text().splitlines() if path.exists() else []
+        lines=[l for l in lines if not l.startswith("AGENTCAPSULE_DATABASE_URL=")]
+        lines.insert(0,"AGENTCAPSULE_DATABASE_URL="+environment_quote(dsns[unit]))
+        write_file(path,("\n".join(lines)+"\n").encode())
+    environment_file(ETC/"admin.env",dict(AGENTCAPSULE_DATABASE_URL=db_env(p)["AGENTCAPSULE_DATABASE_URL"]))
 
 
 def configure(p,version,initial):
+    service_dsns(p)  # an external database names each service's role, or nothing changes
     configure_system()
     if not initial:
         # A release transition preserves the operator's current credentials,
@@ -294,16 +434,25 @@ def configure(p,version,initial):
         env=db_env(p)
         if not p["database_url_file"]:
             run("systemctl", "start", "postgresql@16-agentcapsule.service")
+            database_roles()
         run(admin,"migrate",env=env)
+        service_environment(p)
         upgrade=json.loads(run_user("agentcapsule-authority",admin,"init-restore-authority",
                            "-root",cfg["restore_authority"]["root"],"-data-root",read(ETC/"worker.json")["root"],
                            "-key-authority-root",cfg["key_authority"]["root"],"-key-authority-id",cfg["key_authority"]["identity"],capture=True))
         if upgrade["authority_id"]!=cfg["restore_authority"]["identity"]:
             raise ValueError("authority identity changed during upgrade")
+        renewed=renew_certificates(p)
+        if (ETC/"oidc.env").is_file():
+            oidc_listeners(p)
         setup_oidc_unit()
         setup_interop_images()
         run("systemctl","daemon-reload")
-        return
+        opted=opt_out_unsigned_registry_rules(ETC/"worker.json")
+        result={"renewed_certificates":renewed}
+        if opted:
+            result["registry_rules_allowing_unsigned"]=opted
+        return result
     database()  # Dedicated local cluster also owns the bundled OIDC realm.
     api_tls(p)
     setup_interop(p)
@@ -319,10 +468,9 @@ def configure(p,version,initial):
         install_file(ETC/(name+".key"),ETC/("api-"+name+".key"),0o600,user_id("agentcapsule-api"))
     run(admin,"activate-transit-keys","-active-key","initial","-key","initial="+str(ETC/"transit.key"),env=env)
     pins=dict(restore_authority_id=auth["restore_authority"]["identity"],key_authority_id=auth["key_authority"]["identity"])
-    values=dict(AGENTCAPSULE_DATABASE_URL=env["AGENTCAPSULE_DATABASE_URL"])
-    environment_file(ETC/"worker.env",values)
-    environment_file(ETC/"api.env",dict(values,API_LISTEN="0.0.0.0:"+str(p["api_port"]),API_NAME=p["api_name"],
+    environment_file(ETC/"api.env",dict(API_LISTEN="0.0.0.0:"+str(p["api_port"]),API_NAME=p["api_name"],
                                         HOST_ID=p["host_id"],RESTORE_AUTHORITY=pins["restore_authority_id"],KEY_AUTHORITY=pins["key_authority_id"]))
+    service_environment(p)
     config_path=ETC/"worker.json"
     if initial and not config_path.exists():
         cfg=read(ACTIVE/"config/worker.json")
@@ -362,7 +510,7 @@ SUSPENDED_SERVICES = ("agentcapsule-oidc", "agentcapsule-interop", "agentcapsule
 def install_maintenance_gates():
     if (UNIT_DIR/"agentcapsule-oidc.service").is_file():
         setup_oidc_unit()
-    for unit in (*SUSPENDED_SERVICES, "agentcapsule-api"):
+    for unit in (*SUSPENDED_SERVICES, *oidc_edge(), "agentcapsule-api"):
         gates = [STATE / "maintenance"]
         if unit == "agentcapsule-api":
             gates.append(STATE / "admissions-paused")
@@ -388,7 +536,7 @@ def pause_admissions():
 
 def suspend_services():
     write_file(STATE / "maintenance", b"services suspended\n")
-    run("systemctl", "stop", *SUSPENDED_SERVICES)
+    run("systemctl", "stop", *oidc_edge(), *SUSPENDED_SERVICES)
 
 
 def start_services(p):
@@ -401,6 +549,8 @@ def start_services(p):
         if service=="agentcapsule-oidc" and output("systemctl","show","--value","-p","ActiveState",service+".service")=="failed":
             run("python3","-I","/usr/local/lib/agentcapsule-host/oidc-container.py","prepare")
             run("systemctl","reset-failed",service+".service")
+        run("systemctl", "enable", "--now", service+".service")
+    for service in oidc_edge():
         run("systemctl", "enable", "--now", service+".service")
     port=str(p["oidc_port"])
     realm=f"https://{p['oidc_name']}:{port}/realms/agentcapsule"
@@ -416,8 +566,9 @@ def start_services(p):
         time.sleep(2)
     else:
         raise ValueError("OIDC issuer discovery did not pass")
-    for service in SUSPENDED_SERVICES:
+    for service in (*SUSPENDED_SERVICES, *oidc_edge()):
         run("systemctl", "is-active", "--quiet", service)
+    bootstrap_admin=harden_oidc() if (ETC/"oidc.env").is_file() else None
     clear_gate("admissions-paused")
     try:
         run("systemctl", "enable", "--now", "agentcapsule-api.service")
@@ -433,7 +584,8 @@ def start_services(p):
     except Exception:
         pause_admissions()
         raise
-    return {"services_started":True, "url":f"https://{p['api_name']}:{p['api_port']}", "oidc_issuer":realm}
+    return {"services_started":True, "url":f"https://{p['api_name']}:{p['api_port']}", "oidc_issuer":realm,
+            **({"oidc_bootstrap_admin":bootstrap_admin} if bootstrap_admin else {})}
 
 
 def worker_exclusive(args, profile, checkpoint):
@@ -447,7 +599,7 @@ def worker_exclusive(args, profile, checkpoint):
     restart=read(checkpoint)["restart"]
     run("systemctl","stop","agentcapsule-worker")
     try:
-        return output(*args,env=db_env(profile))
+        return output(*args,env=worker_env(profile))
     finally:
         if restart:
             run("systemctl","start","agentcapsule-worker")
@@ -550,7 +702,7 @@ def verify_volume_copies(profile, agent, archive, directory, conf):
             run("python3","-I",ACTIVE/"agentcapsule-archive-ship.py","--rclone-config",conf,
                 "--archive-root",root,"fetch","--store",store,"--archive",archive)
             result=json.loads(output(ACTIVE/"agentcapsule-worker","-config",ETC/"worker.json","-test-restore",agent,
-                                     "-archive-id",archive,"-archive-root",root,"-scratch",scratch,env=db_env(profile)))
+                                     "-archive-id",archive,"-archive-root",root,"-scratch",scratch,env=worker_env(profile)))
             if (result.get("archive_id")!=archive or result.get("agent_id")!=agent or result.get("archive_store")!="local"
                     or not {"manifest","digest","volume","copy","key"}<=set(result.get("checked",[]))):
                 raise ValueError("restore test did not confirm the fetched probe archive")
@@ -690,7 +842,7 @@ def drain(profile):
             # Also recover an interrupted older drain whose single marker
             # stopped the worker on reboot. The API retains its separate gate.
             clear_gate("maintenance")
-            run("systemctl", "start", *SUSPENDED_SERVICES)
+            run("systemctl", "start", *SUSPENDED_SERVICES, *oidc_edge())
             while pending_operations(profile):
                 time.sleep(2)
         suspend_services()
@@ -713,7 +865,7 @@ def run_storage(request,directory):
         scratch.mkdir(parents=True,exist_ok=True)
         args+=["-scratch",scratch]
     if action=="restore-test":
-        result=output(*args,env=db_env(profile))
+        result=output(*args,env=worker_env(profile))
     else:
         result=worker_exclusive(args,profile,directory/"worker-state.json")
     return {"storage_result":json.loads(result.splitlines()[-1])}
@@ -832,14 +984,7 @@ def setup_oidc(p):
         install_file(Path(p["oidc_cert"]),certs/"tls.crt")
         install_file(Path(p["oidc_key"]),certs/"tls.key",0o600,1000)
     elif not (certs/"tls.crt").exists():
-        with tempfile.TemporaryDirectory(dir=STATE) as tmp:
-            key=Path(tmp)/"tls.key"
-            crt=Path(tmp)/"tls.crt"
-            run("openssl","req","-new","-x509","-nodes","-newkey","ec","-pkeyopt","ec_paramgen_curve:P-256","-days","365",
-                "-subj","/CN="+p["oidc_name"],"-addext","subjectAltName=DNS:"+p["oidc_name"],
-                "-addext","extendedKeyUsage=serverAuth","-keyout",key,"-out",crt)
-            install_file(key,certs/"tls.key",0o600,1000)
-            install_file(crt,certs/"tls.crt")
+        issue_oidc_certificate(p,certs)
     # Keep the password in root-only files and stdin, out of psql arguments.
     secret=STATE/"oidc-db.password"
     create_key(secret,secrets.token_hex(32).encode())
@@ -852,8 +997,7 @@ def setup_oidc(p):
     if not env.exists():
         data=dict(KC_DB="postgres",KC_DB_URL="jdbc:postgresql://127.0.0.1:55432/keycloak",KC_DB_USERNAME="keycloak",
                   KC_DB_PASSWORD=dbpass,KC_HOSTNAME="https://"+p["oidc_name"]+":"+str(p["oidc_port"]),
-                  KC_HTTPS_PORT=str(p["oidc_port"]),KC_HTTPS_CERTIFICATE_FILE="/keycloak-tls/tls.crt",
-                  KC_HTTPS_CERTIFICATE_KEY_FILE="/keycloak-tls/tls.key",KC_BOOTSTRAP_ADMIN_USERNAME="operator",
+                  KC_BOOTSTRAP_ADMIN_USERNAME="operator",
                   KC_BOOTSTRAP_ADMIN_PASSWORD=secrets.token_hex(32),MONAPP_REDIRECT_URI=p["monapp_redirect_uri"])
         if any("\n" in v or "\r" in v for v in data.values()):
             raise ValueError("invalid OIDC environment")
@@ -861,7 +1005,24 @@ def setup_oidc(p):
     (ETC/"oidc").mkdir(exist_ok=True)
     (ETC/"oidc").chmod(0o755)
     install_file(ACTIVE/"oidc/realm.json",ETC/"oidc/realm.json")
+    oidc_listeners(p)
     setup_oidc_unit()
+
+
+def issue_oidc_certificate(p,certs):
+    # A new key on the first install; a renewal keeps it.
+    with tempfile.TemporaryDirectory(dir=STATE) as tmp:
+        crt=Path(tmp)/"tls.crt"
+        if (certs/"tls.key").is_file():
+            key=["-key",certs/"tls.key"]
+        else:
+            key=["-nodes","-newkey","ec","-pkeyopt","ec_paramgen_curve:P-256","-keyout",Path(tmp)/"tls.key"]
+        run("openssl","req","-new","-x509",*key,"-days","365",
+            "-subj","/CN="+p["oidc_name"],"-addext","subjectAltName=DNS:"+p["oidc_name"],
+            "-addext","extendedKeyUsage=serverAuth","-out",crt)
+        if (Path(tmp)/"tls.key").is_file():
+            install_file(Path(tmp)/"tls.key",certs/"tls.key",0o600,1000)
+        install_file(crt,certs/"tls.crt")
 
 
 def setup_oidc_unit():
@@ -881,3 +1042,116 @@ def setup_oidc_unit():
         template=template.replace(legacy_run,"/usr/bin/podman run --rm --cidfile=/var/lib/agentcapsule-oidc/container-id --name agentcapsule-oidc ")
         template=template.replace(legacy_stop,"ExecStop="+launch+" stop\nExecStopPost="+launch+" cleanup")
     write_file(UNIT_DIR/"agentcapsule-oidc.service",template.replace(image["ref"],image["tag"]).encode(),0o644)
+    edge=ACTIVE/"oidc"/(OIDC_EDGE+".service")
+    if edge.is_file():
+        install_file(edge,UNIT_DIR/edge.name)
+
+
+# The identity provider's listeners (S-19): Keycloak on loopback only, its
+# administration and management with it, one node (no JGroups port); the
+# edge (agentcapsule-oidc-edge, internal/oidcedge) on the public port, with
+# the identity provider's certificate, forwards only the realms' pages and
+# endpoints and the static files. Brute-force detection guards the master
+# realm and the platform's; the bootstrap administrator is deleted once a
+# permanent one exists.
+OIDC_EDGE="agentcapsule-oidc-edge"
+OIDC_LOOPBACK_PORT=9445
+OIDC_LOOPBACK="http://127.0.0.1:"+str(OIDC_LOOPBACK_PORT)
+OIDC_LISTENERS=dict(KC_HTTP_ENABLED="true",KC_HTTP_HOST="127.0.0.1",KC_HTTP_PORT=str(OIDC_LOOPBACK_PORT),
+                    KC_HOSTNAME_ADMIN="http://localhost:"+str(OIDC_LOOPBACK_PORT),KC_PROXY_HEADERS="xforwarded",
+                    KC_PROXY_TRUSTED_ADDRESSES="127.0.0.1/32",KC_CACHE="local",KC_HEALTH_ENABLED="false",
+                    KC_METRICS_ENABLED="false")
+# What an earlier release wrote: Keycloak served TLS on the public port.
+OIDC_RETIRED_KEYS=("KC_HTTPS_PORT","KC_HTTPS_CERTIFICATE_FILE","KC_HTTPS_CERTIFICATE_KEY_FILE","KC_HTTPS_HOST")
+BRUTE_FORCE=dict(bruteForceProtected=True,permanentLockout=False,failureFactor=5,waitIncrementSeconds=60,
+                 maxFailureWaitSeconds=900,maxDeltaTimeSeconds=43200,quickLoginCheckMilliSeconds=1000,
+                 minimumQuickLoginWaitSeconds=60)
+BOOTSTRAP_KEYS=("KC_BOOTSTRAP_ADMIN_USERNAME","KC_BOOTSTRAP_ADMIN_PASSWORD")
+
+
+def oidc_edge():
+    # The edge's unit, once installed (a release before it has none).
+    return (OIDC_EDGE,) if (UNIT_DIR/(OIDC_EDGE+".service")).is_file() else ()
+
+
+def read_oidc_env():
+    return dict(line.split("=",1) for line in (ETC/"oidc.env").read_text().splitlines() if "=" in line)
+
+
+def write_oidc_env(values):
+    # podman --env-file: one KEY=value per line, no quoting.
+    if any("\n" in v or "\r" in v for v in values.values()):
+        raise ValueError("invalid OIDC environment")
+    write_file(ETC/"oidc.env","".join(k+"="+v+"\n" for k,v in values.items()).encode())
+
+
+def oidc_listeners(p):
+    values={k:v for k,v in read_oidc_env().items() if k not in OIDC_RETIRED_KEYS}
+    values.update(OIDC_LISTENERS,KC_HOSTNAME="https://"+p["oidc_name"]+":"+str(p["oidc_port"]))
+    write_oidc_env(values)
+    environment_file(ETC/"oidc-edge.env",dict(OIDC_LISTEN="0.0.0.0:"+str(p["oidc_port"]),OIDC_NAME=p["oidc_name"]))
+
+
+def keycloak(method,path,token=None,form=None,body=None):
+    # Keycloak's loopback listener, never through a proxy.
+    import urllib.error
+    import urllib.request
+    headers={}
+    data=None
+    if form is not None:
+        data=urllib.parse.urlencode(form).encode()
+        headers["Content-Type"]="application/x-www-form-urlencoded"
+    elif body is not None:
+        data=json.dumps(body).encode()
+        headers["Content-Type"]="application/json"
+    if token:
+        headers["Authorization"]="Bearer "+token
+    opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    request=urllib.request.Request(OIDC_LOOPBACK+path,data=data,method=method,headers=headers)
+    try:
+        with opener.open(request,timeout=20) as reply:
+            raw=reply.read(4<<20)
+            return reply.status,(json.loads(raw) if raw else None)
+    except urllib.error.HTTPError as error:
+        error.close()
+        return error.code,None
+
+
+def harden_oidc(required=False):
+    # Brute-force protection on both realms, then the bootstrap administrator
+    # retired when another administrator exists. Returns "retired", "kept"
+    # (no other administrator yet) or "credentials_refused".
+    values=read_oidc_env()
+    user,password=values.get(BOOTSTRAP_KEYS[0]),values.get(BOOTSTRAP_KEYS[1])
+    if not user or not password:
+        return "retired"
+    status,grant=keycloak("POST","/realms/master/protocol/openid-connect/token",
+                          form=dict(grant_type="password",client_id="admin-cli",username=user,password=password))
+    if status in (400,401):
+        # Deleted or changed by hand, or locked out: keep the entries, which
+        # the operator removes after checking (deploy/oidc/README.md).
+        if required:
+            raise ValueError("the identity provider refused the bootstrap administrator's credentials")
+        return "credentials_refused"
+    if status!=200 or not isinstance(grant,dict) or not grant.get("access_token"):
+        raise ValueError("the identity provider's administration did not answer on loopback")
+    token=grant["access_token"]
+    for realm in ("master","agentcapsule"):
+        status,_=keycloak("PUT","/admin/realms/"+realm,token,body=BRUTE_FORCE)
+        if status not in (200,204):
+            raise ValueError("could not turn on brute-force protection for realm "+realm)
+    status,admins=keycloak("GET","/admin/realms/master/roles/admin/users?first=0&max=1000",token)
+    if status!=200 or not isinstance(admins,list):
+        raise ValueError("could not list the identity provider's administrators")
+    if not any(a.get("username")!=user and a.get("enabled") for a in admins):
+        if required:
+            raise ValueError("create a permanent administrator in the master realm, with its admin role, first")
+        return "kept"
+    status,found=keycloak("GET","/admin/realms/master/users?exact=true&username="+urllib.parse.quote(user),token)
+    for account in found if status==200 and isinstance(found,list) else []:
+        if account.get("username")==user:
+            status,_=keycloak("DELETE","/admin/realms/master/users/"+urllib.parse.quote(account["id"],safe=""),token)
+            if status not in (200,204):
+                raise ValueError("could not delete the bootstrap administrator")
+    write_oidc_env({k:v for k,v in values.items() if k not in BOOTSTRAP_KEYS})
+    return "retired"

@@ -67,6 +67,26 @@ func retireEnrollmentBoot(t *testing.T, s *Store, p Placement) {
 	}
 }
 
+// partner records a request from sender to recipient directly: it puts each
+// in the other's revocation scope (revocation_scopes.go). It returns the
+// request's ID.
+func partner(t *testing.T, s *Store, sender, recipient string) string {
+	t.Helper()
+	id, mandate := newID("arq"), newID("mnd")
+	if _, err := s.pool.Exec(t.Context(), `INSERT INTO mandates(id,agent_id,origin_event_id,max_requests,remaining,expires_at)
+        VALUES ($1,$2,'evt-partner',10,10,clock_timestamp()+interval '1 hour')`, mandate, sender); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.pool.Exec(t.Context(), `INSERT INTO agent_requests(id,sender_agent_id,recipient_agent_id,mandate_id,state,via_auto,payload_ref,expires_at)
+        VALUES($1,$2,$3,$4,'DELIVERING',true,'opaque',clock_timestamp()+interval '1 hour')`, id, sender, recipient, mandate); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// A new store fences the revocations of its scope completed before it, and
+// one that arrives during its enrollment; another agent's deletion, outside
+// its scope, never reaches it (S-01, after the v0.1.0 audit).
 func TestEnrollmentHistoricalAndConcurrentRevocations(t *testing.T) {
 	s, _, c, _, _, owner := catalogLab(t)
 	m := mockStores(t, t.TempDir(), "a", "b", "c")
@@ -77,6 +97,12 @@ func TestEnrollmentHistoricalAndConcurrentRevocations(t *testing.T) {
 		t.Fatal(err)
 	}
 	e := reserveEnrollment(t, s, c, owner, false)
+	// A request between b and the new store puts both in each other's
+	// scope; its closure revokes it before the store is enrolled.
+	request := partner(t, s, "b", e.AgentID)
+	if err := s.RequestCancellation(t.Context(), "user-b", request); err != nil {
+		t.Fatal(err)
+	}
 	proof := observeTestVolume(t, s, e)
 	if err := s.RecordProvisionedVolume(t.Context(), proof); err != nil {
 		t.Fatal("lost registration ACK cannot be retried", err)
@@ -102,10 +128,10 @@ func TestEnrollmentHistoricalAndConcurrentRevocations(t *testing.T) {
 	}
 	defer local.Close()
 	pending, err := s.EnrollmentPendingFences(t.Context(), e.AgentID, e.HostID, e.VolumeID)
-	if err != nil || !slices.Equal(pending, []string{"agent/a"}) {
-		t.Fatal("historical catalogue scan", pending, err)
+	if err != nil || !slices.Equal(pending, []string{"request/" + request}) {
+		t.Fatal("historical catalogue scan: only the store's scope", pending, err)
 	}
-	ack := EnrollmentFence{Incarnation: 1, AgentID: e.AgentID, VolumeID: e.VolumeID, HostID: e.HostID, Generation: p.Generation, VMID: p.VMID, Subject: "agent/a"}
+	ack := EnrollmentFence{Incarnation: 1, AgentID: e.AgentID, VolumeID: e.VolumeID, HostID: e.HostID, Generation: p.Generation, VMID: p.VMID, Subject: "request/" + request}
 	if err = local.Fence(t.Context(), ack.Subject); err != nil {
 		t.Fatal(err)
 	}
@@ -153,11 +179,17 @@ func TestEnrollmentHistoricalAndConcurrentRevocations(t *testing.T) {
 	if err != nil || view.State != "STOPPED" {
 		t.Fatal("activation state", view, err)
 	}
-	for _, subject := range []string{"agent/a", "agent/b"} {
+	for _, subject := range []string{"request/" + request, "agent/b"} {
 		_, err := local.Apply(t.Context(), harnessstore.Event{ID: "late-" + subject, Subjects: []string{subject}}, localEffect)
 		if !errors.Is(err, harnessstore.ErrFenced) {
 			t.Fatal("new store accepts revoked work", subject, err)
 		}
+	}
+	// a never shared a request with the new store: its subject was never
+	// sent there, and no event of the new store can name it.
+	var receipts int
+	if err = s.pool.QueryRow(t.Context(), "SELECT count(*) FROM store_enrollment_receipts WHERE agent_id=$1 AND subject='agent/a'", e.AgentID).Scan(&receipts); err != nil || receipts != 0 {
+		t.Fatal("another agent's deletion reached the new store", receipts, err)
 	}
 	// A deletion starting AFTER activation must include the new store instead.
 	if err = s.RequestDeletion(t.Context(), "user-c", "c"); err != nil {
@@ -172,6 +204,9 @@ func TestEnrollmentHistoricalAndConcurrentRevocations(t *testing.T) {
 func TestEnrollmentActivationWaitsForConcurrentIntentCommit(t *testing.T) {
 	s, _, c, _, _, owner := catalogLab(t)
 	e := reserveEnrollment(t, s, c, owner, false)
+	// a's deletion is in the new store's scope only through a request they
+	// share: another agent's deletion would not concern it.
+	partner(t, s, "a", e.AgentID)
 	observeTestVolume(t, s, e)
 	retireEnrollmentBoot(t, s, enrollmentBoot(t, s, e))
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)

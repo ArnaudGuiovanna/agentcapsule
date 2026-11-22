@@ -211,7 +211,9 @@ While it waits, what held in the worker's process now holds in the service:
 the catalogue's write transaction (`BEGIN IMMEDIATE` on its single SQLite
 connection), and for a key the shared lock on the key's lock file. So the
 exclusions are exactly today's. Holds need no change in the authority
-packages: no new lock, no new state.
+packages: no new lock, no new state. (Since the v0.1.0 audit a hold keeps
+locks of its own store instead: see
+[Changes after the v0.1.0 audit](#changes-after-the-v010-audit).)
 
 The client runs its own callback with a **hold context**. It is canceled when
 the connection ends, and 5 seconds before the hold's end (a fifth of a hold
@@ -320,7 +322,8 @@ should have preceded. For each hold, what still protects:
   `QUIESCING`, before the authority's reservation or seal, and the host
   retires or seals the VM under its barrier first.
 - **Revocations.** A target restored meanwhile is fenced with every subject
-  before its activation (`synchronizeAuthority`).
+  before its activation (`synchronizeAuthority`; since the v0.1.0 audit,
+  every subject of its scope).
 
 The root's hold is the guard that does not depend on PostgreSQL being
 current, which matters after a failover. The window is the same class as
@@ -722,7 +725,8 @@ single write transaction, as today, so one agent's boot or platform call waits
 for another's. Once one process owns the catalogue, a hold could take a lock
 per store, and the revocation's revision a lock of its own. That changes which
 operations exclude each other, so it needs its own argument against the model
-and its own tests. It is not needed for D-05.
+and its own tests. It is not needed for D-05. Built after the v0.1.0 audit:
+see [Changes after the v0.1.0 audit](#changes-after-the-v010-audit).
 
 ## Implementation status
 
@@ -1390,3 +1394,177 @@ are open; their recommended or safest options are built as the defaults.
      reconciliation (wave 7) replays them.
 
    Built: (a). Recommended: (b), with wave 7.
+
+## Changes after the v0.1.0 audit
+
+### Access revocations recorded after their commit (SEC-3, finding S-14)
+
+As built in wave 5, every revoking transaction appended its record to the
+service inside the transaction, before its commit, for up to 5 seconds. It
+held meanwhile the organization's row lock (`FOR UPDATE`) and the shared
+gate that every transaction takes first (`store.go`), which store
+activation takes exclusively: a slow service stalled every request of the
+organization, and a waiting activation every transaction of the
+installation. No revocation could commit while the service did not answer.
+And a transaction that rolled back after the service committed its record
+left a record of a revocation PostgreSQL never made, which a later
+reconciliation would have replayed, undoing a later grant.
+
+Now the record is an outbox row:
+
+1. The revoking transaction writes its effect and its record's row in
+   `access_revocations`, in a new state `recording`, without epoch or
+   sequence number (migration `access-revocation-recording`), and commits.
+   Its answer is stored with its receipt.
+2. Once it has committed, with no lock held, the API appends the record to
+   the service (`commit` in `store.go`, `recordCommitted` in
+   `access_revocations.go`), for up to 5 seconds, even past the request's
+   end. The row takes the stream record's epoch and sequence number and
+   becomes `pending` or `confirmed`, by the same rule as before, and the
+   answer gives that state.
+3. A record the service did not commit leaves its row `recording`. The API
+   records the recording rows every 5 seconds, oldest first, before it asks
+   about the pending ones (`ConfirmAccessRevocations`), and when one is
+   read. The reconciliation after a failover appends them too, as every
+   row the promoted authorities lack. `append_access` of the same record
+   again changes nothing, so two passes may race.
+4. A transaction that rolls back appends nothing: `rollback` forgets its
+   records. The service never holds a record of a revocation PostgreSQL did
+   not make, and a record PostgreSQL lacks is one it lost with every later
+   commit, as the reconciliation assumes.
+
+Revocation stays fail closed: the revocation takes effect at once, also
+while the service is down, which before refused it and left the access in
+place. What waits for the service is the record that keeps the revocation
+across a restore or a failover. A `recording` revocation is an
+unacknowledged write, like a `pending` one: the model's acknowledged access
+revocation is still the confirmed one, which waits for the replica as
+before, so `spec/restore_authority.qnt` and its projections need no change
+(`grantRevocationWaitsForReplicaTest` and
+`grantRevocationResumesAfterResyncTest` keep their tests). What widens is
+the window in which a revocation is not yet in the authorities: a restore
+of the database on the same host, or a failover, before the service records
+it could undo it. `agentcapsule_api_access_revocations_unrecorded` counts
+such revocations, `AgentCapsuleAccessRevocationsUnrecorded` fires after 2
+minutes, and [recovery.md](../recovery.md#revocations-the-authority-service-has-not-recorded)
+says what to do while the service is down: bring it back, and neither
+restore the database nor fail over meanwhile.
+
+One record stays inside its transaction: the claim of a personal volume
+(`personal_volume`, `personal_volume_holds.go`). It is not a revocation but
+an allocation that the service decides, since it refuses another record
+under the same ID; the transaction needs the answer before it commits, and
+fails with 503 `authority_unavailable` without it.
+
+Tests: `TestRevocationRecordsItsRecordAfterItsCommitWithNoLockHeld` (the
+member is revoked, the organization's row and the shared gate are free
+while the service records), `TestRevocationTakesEffectWhileTheAuthorityServiceIsDown`
+and `TestRolledBackRevocationLeavesNoRecord` (`internal/api`), each failing
+on the code of wave 5; `TestLongRevocationGoesInSeveralRecords` now checks
+that nothing reaches the service before the commit.
+
+This replaces, in the decision above, "An access revocation fails while the
+service is down: nothing is committed in PostgreSQL before its record", and
+in §7, "The API commits in PostgreSQL once the record is committed" and "A
+record that the service did not commit fails the request".
+
+### Revocation scopes and holds per store (PERF-2, findings S-01, P-03, S-15, P-10, A-05)
+
+November 22, 2026. The audit of v0.1.0 found that every boot cost one call
+per revocation ever recorded on the platform, sent other organizations'
+subject IDs to every guest (S-01, P-03), and that one agent's hold stopped
+the authority for all the others (S-15, P-10, A-05). Lot PERF-2 changes:
+
+**Revocation scopes.** A store acts only on the events addressed to it, and
+each event names its subjects. So a subject has a scope: the stores that can
+act on it. `agent/<id>`: the agent's store and every agent that shares a
+request with it; `request/<id>`: its two parties; `event/<id>`: its
+destination (`internal/controlplane/revocation_scopes.go`). A request joins
+two LIVE agents of one organization only, so no store joins a subject's
+scope once the subject is committed in PostgreSQL. The worker names the
+scope when it begins a subject (`begin_revocations`, protocol 2: up to 1000
+subjects in one round trip and one transaction). The catalogue's schema
+version 5 records one row per store of a scope, with the revision that
+added it (`revocation_scopes`, statement 13). A subject begun without a
+scope, and every subject begun before version 5, is in every store's scope.
+
+- A store's acknowledged revision now means: it holds a durable fence of
+  every subject of its scope added at or below it. A scan returns the
+  subjects of the store's scope above that revision, in pages of at most
+  4096 subjects and 2 MiB (`Receipt.Base`, `Receipt.More`). A new
+  incarnation acknowledges nothing and fences its whole scope again.
+- The recheck of a boot, an enrollment or an activation (`RECHECK`) looks
+  at the store's scope only: another organization's revocation no longer
+  makes a boot stale.
+- A barrier counts a target outside the subject's scope as acknowledged
+  without a fence: none of its events can name the subject. The worker no
+  longer boots such a target to fence it (`acknowledged`,
+  `internal/worker/authority_linux.go`).
+- A boot no longer begins PostgreSQL's whole `revocation_catalogue` in the
+  authority. A subject only PostgreSQL holds has its barrier still to run:
+  the barrier begins it in its scope, which makes an unconfirmed boot of a
+  target stale, and fences each target before the revocation completes. A
+  new store fences the PostgreSQL subjects of its own scope only
+  (`EnrollmentPendingFences`, `ActivateProvisionedAgent`).
+- A request frame now holds the largest response (8 MiB both), so a receipt
+  always goes back in `record_fence`, `hold_fences` and the activation's
+  steps. A worker of protocol 1 receives its store's whole scope in one
+  receipt of the earlier format.
+- One local check is weaker: the agent adapter fences a request it is about
+  to send to another agent with that agent's subject. A deleted agent that
+  never shared a request with the sender is no longer fenced in the
+  sender's guest; the platform refuses the request itself, as its recipient
+  is not LIVE.
+
+**Holds per store.** A hold no longer keeps the catalogue's SQLite write
+transaction while its callback runs. It checks its preconditions in a short
+transaction, then keeps in-memory locks of its own store
+(`internal/restoreauthority/holds_linux.go`): the store's binding, shared by
+every hold that uses it and taken exclusively by a reservation, a seal and
+an activation; and the store's scope, shared by a fences hold and an
+activation and taken exclusively by a new subject in that scope (every
+store's for a subject without a scope). Other stores' operations go on. The
+exclusions that the models need stay: no reservation or seal of a store
+while a hold uses its binding, no new subject of its scope while a fences
+hold or an activation publishes, no outcome of a store during its
+activation. A key's destruction still waits for its holds: it needs the
+store's seal, which waits for them. The locks are in the service's memory:
+they exclude holds of one process only, and the service is the only process
+that opens the catalogue (§1). Operations of different stores touch
+different rows, and a recheck compares scope rows, not the global revision,
+so the models' atomic steps for one store keep their meaning; the models
+gain the scopes only (`reach` in `spec/restore_authority.qnt`, `relate` and
+`RELATE_GUARD` in `spec/store_enrollment.qnt`).
+
+**What stops while the authority service is down** (A-05). Running VMs keep
+running. No VM boots, no agent is provisioned or restored and no archive is
+captured: each needs a key hold or a binding check. Platform calls from VMs
+fail with an error the guest retries. A delivery is not acknowledged: its
+outcome cannot be recorded, and it is tried again with the same digest. No
+revocation subject can be begun, so request closures, agent deletions and
+dead deliveries wait at their barrier; an access revocation takes effect, and
+its record waits in state `recording` (SEC-3 above), and the API's readiness
+probe answers 503. Key destruction
+waits. With the standby away (degraded mode) outcomes, fences, the start of
+a revocation, reads and token revocations go on; reservations, seals, key
+creation and destruction, declared losses, the completion of a revocation
+and grant revocations wait (§5, ADR 005).
+
+**Measured cost** (`internal/restoreauthority/bench_test.go`, five runs, one
+WSL2 host, Intel i7-9750H, standalone authority, SQLite `synchronous=EXTRA`;
+evidence in `quint/results/audit/audit-perf-2/`):
+
+| Operation | Before (8cc1307) | After |
+| --- | --- | --- |
+| A boot's synchronization, catalogue part, with 0 / 1 000 / 10 000 / 50 000 subjects of other organizations | 31 ms / 524 ms / 4.2 s / 21.6 s; N+3 authority calls; N+1 guest fences | 17 to 28 ms for every N; 2 calls; 1 guest fence |
+| Eight binding holds of 0.5 ms on eight stores at once | 13.2 ms (one at a time) | 3.1 ms |
+| One outcome of store B during a 100 ms key hold of store A | 119 ms (waits for the hold, up to `max_key_hold` in production) | 17.6 ms |
+| A delivery's two calls (binding check, outcome) | 19 ms | 14 to 26 ms |
+
+Each guest fence is also a guest RPC and a durable commit in the guest, not
+counted above. The service's capacity is now bound by its writes: they still
+run one at a time on one connection, each a durable commit (10 to 20 ms on
+this disk), plus a round trip to the standby in synchronous mode. A boot
+writes once per page of fences; a delivery once. The first scan after the
+service starts reads every subject once, to find those begun before version
+5.

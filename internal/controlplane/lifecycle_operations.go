@@ -129,12 +129,27 @@ func (s *Store) BeginLifecycleOperation(ctx context.Context, id, agentID, host s
 	if op.Status != "PENDING" && op.Status != "RUNNING" {
 		return op, nil
 	}
-	if a.Phase != "LIVE" {
+	// A disabled organization's agent does not wake; it still goes to sleep
+	// (organization_suspension.go).
+	disabled := false
+	if op.Kind == "wake" && a.Phase == "LIVE" {
+		if disabled, err = organizationDisabled(ctx, tx, a.Tenant); err != nil {
+			return op, err
+		}
+	}
+	switch {
+	case a.Phase != "LIVE":
 		if err = cancelLifecycle(ctx, tx, id); err != nil {
 			return op, err
 		}
 		op.Status = "CANCELED"
-	} else {
+	case disabled:
+		if _, err = tx.Exec(ctx, `UPDATE platform_operations SET status='CANCELED',error_code=$2,completed_at=clock_timestamp()
+            WHERE id=$1 AND status IN ('PENDING','RUNNING')`, id, CauseOrganizationDisabled); err != nil {
+			return op, err
+		}
+		op.Status = "CANCELED"
+	default:
 		if _, err = tx.Exec(ctx, "UPDATE platform_operations SET status='RUNNING' WHERE id=$1", id); err != nil {
 			return op, err
 		}

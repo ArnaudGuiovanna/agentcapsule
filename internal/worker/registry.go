@@ -26,7 +26,9 @@ type ServiceRegistry struct {
 	MaxHarnessMiB int            `json:"max_harness_mib,omitempty"`
 	Rules         []RegistryRule `json:"rules"`
 	// RequireSignatures is strict mode: every rule must list publisher keys,
-	// so no unsigned package can be imported.
+	// so no unsigned package can be imported, and none may say
+	// allow_unsigned. In production, without it, a rule must list publisher
+	// keys or say "allow_unsigned": true (L-16).
 	RequireSignatures bool `json:"require_signatures,omitempty"`
 	// InspectionUID is the UID, and the GID of the same number, that debugfs
 	// runs as when it inspects a downloaded image (package sandbox):
@@ -46,6 +48,12 @@ var (
 	// ErrInspection: debugfs cannot run confined on this host.
 	ErrInspection = errors.New("image inspection cannot run confined on this host")
 )
+
+// Inspection returns the sandbox of this host's inspections (inspection):
+// the restore test's key check runs there too (RestoreTest.Sandbox).
+func (c ServiceConfig) Inspection() (sandbox.Options, error) {
+	return c.inspection(sandbox.AsRoot())
+}
 
 // inspection returns the sandbox of image inspections: as root, the
 // configured inspection UID and GID, checked against the values setresuid
@@ -121,8 +129,27 @@ type HarnessImporter struct {
 	host  string
 }
 
-// OpenRegistry returns nil when the host does not import harnesses.
-func (c ServiceConfig) OpenRegistry(s *controlplane.Store, workerID string) (*HarnessImporter, error) {
+// UnsignedRegistryRules returns the hosts of the registry rules that trust
+// no publisher key, through which unsigned packages are imported: in
+// production, only rules that say allow_unsigned (OpenRegistry refuses the
+// others). The worker logs their number at start (registry_unsigned_rules).
+func (c ServiceConfig) UnsignedRegistryRules() []string {
+	if c.Registry == nil {
+		return nil
+	}
+	var hosts []string
+	for _, r := range c.Registry.Rules {
+		if len(r.PublisherKeys) == 0 {
+			hosts = append(hosts, r.Host)
+		}
+	}
+	return hosts
+}
+
+// OpenRegistry returns nil when the host does not import harnesses. In
+// production, a rule must trust publisher keys or say allow_unsigned
+// (ociregistry.ErrUnsigned otherwise, L-16).
+func (c ServiceConfig) OpenRegistry(s *controlplane.Store, workerID string, production bool) (*HarnessImporter, error) {
 	if c.Registry == nil {
 		return nil, nil
 	}
@@ -137,7 +164,7 @@ func (c ServiceConfig) OpenRegistry(s *controlplane.Store, workerID string) (*Ha
 	if !filepath.IsAbs(cache) || maxMiB < 1 || maxMiB > 64<<10 {
 		return nil, errors.New("invalid registry configuration")
 	}
-	policy := ociregistry.Policy{RequireSignatures: c.Registry.RequireSignatures}
+	policy := ociregistry.Policy{RequireSignatures: c.Registry.RequireSignatures, SignaturesByDefault: production}
 	for _, r := range c.Registry.Rules {
 		rule := r.Rule
 		if r.CredentialsFile != "" {

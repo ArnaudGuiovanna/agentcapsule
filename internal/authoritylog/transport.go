@@ -18,6 +18,7 @@ import (
 	"io"
 	"math/big"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"slices"
@@ -399,10 +400,97 @@ type Server struct {
 	Observe func(error)
 }
 
-// maxConnections bounds the primary's concurrent processes.
-const maxConnections = 32
+// The listener's bounds (L-17). A connection takes a handshake slot until
+// its mutual TLS handshake ends, then, authenticated, a slot of its own: an
+// established connection of the primary never competes with connections
+// that have not authenticated.
+const (
+	// maxConnections bounds the primary's concurrent processes, once
+	// authenticated.
+	maxConnections = 32
+	// maxHandshakes bounds the connections not authenticated yet, from all
+	// sources; reservedHandshakes of them are kept for the addresses the
+	// primary authenticated from (knownPeers), which no other source takes.
+	maxHandshakes      = 32
+	reservedHandshakes = 8
+	// maxHandshakesPerSource bounds them from one address that has not
+	// authenticated.
+	maxHandshakesPerSource = 4
+	// handshakeTimeout bounds a handshake: the primary's takes milliseconds.
+	handshakeTimeout = 3 * time.Second
+	// maxKnownPeers bounds the addresses remembered.
+	maxKnownPeers = 16
+)
 
-// Serve accepts connections until ctx ends or the listener fails.
+// admission counts the connections of a listener by state and source.
+type admission struct {
+	mu          sync.Mutex
+	handshakes  int
+	bySource    map[netip.Addr]int
+	known       map[netip.Addr]bool
+	established int
+}
+
+// source is the address a connection comes from, IPv4-mapped addresses as
+// IPv4.
+func source(c net.Conn) netip.Addr {
+	if a, ok := c.RemoteAddr().(*net.TCPAddr); ok {
+		if addr, ok := netip.AddrFromSlice(a.IP); ok {
+			return addr.Unmap()
+		}
+	}
+	return netip.Addr{}
+}
+
+// startHandshake takes a handshake slot for a connection from addr, or
+// refuses it.
+func (a *admission) startHandshake(addr netip.Addr) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	switch {
+	case a.known[addr]:
+		if a.handshakes >= maxHandshakes {
+			return false
+		}
+	case a.handshakes >= maxHandshakes-reservedHandshakes || a.bySource[addr] >= maxHandshakesPerSource:
+		return false
+	}
+	a.handshakes++
+	a.bySource[addr]++
+	return true
+}
+
+// endHandshake gives the handshake slot back. An authenticated connection
+// then takes a slot among maxConnections, or is refused, and its address
+// becomes known.
+func (a *admission) endHandshake(addr netip.Addr, authenticated bool) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.handshakes--
+	if a.bySource[addr]--; a.bySource[addr] == 0 {
+		delete(a.bySource, addr)
+	}
+	if !authenticated || a.established >= maxConnections {
+		return false
+	}
+	a.established++
+	if !a.known[addr] && len(a.known) < maxKnownPeers {
+		a.known[addr] = true
+	}
+	return true
+}
+
+func (a *admission) close() {
+	a.mu.Lock()
+	a.established--
+	a.mu.Unlock()
+}
+
+// Serve accepts connections until ctx ends or the listener fails. A
+// connection must complete its mutual TLS handshake, with the pinned
+// certificate, within handshakeTimeout; until then it holds one of the
+// handshake slots, at most maxHandshakesPerSource per address that has not
+// authenticated before (L-17).
 func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 	if s.Replica == nil || s.Config == nil || s.Config.ClientAuth != tls.RequireAndVerifyClientCert {
 		return ErrProtocol
@@ -415,7 +503,7 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 	defer wg.Wait()
 	stop := context.AfterFunc(ctx, func() { listener.Close() })
 	defer stop()
-	slots := make(chan struct{}, maxConnections)
+	a := &admission{bySource: map[netip.Addr]int{}, known: map[netip.Addr]bool{}}
 	for {
 		raw, err := listener.Accept()
 		if err != nil {
@@ -424,15 +512,19 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 			}
 			return err
 		}
-		select {
-		case slots <- struct{}{}:
-		default:
+		addr := source(raw)
+		if !a.startHandshake(addr) {
 			raw.Close()
 			continue
 		}
 		wg.Go(func() {
-			defer func() { <-slots }()
-			s.serve(ctx, tls.Server(raw, s.Config), idle)
+			conn := tls.Server(raw, s.Config)
+			defer conn.Close()
+			if !a.endHandshake(addr, s.handshake(ctx, conn)) {
+				return
+			}
+			defer a.close()
+			s.serve(ctx, conn, idle)
 		})
 	}
 }
@@ -443,15 +535,20 @@ func (s *Server) observe(err error) {
 	}
 }
 
-func (s *Server) serve(ctx context.Context, conn *tls.Conn, idle time.Duration) {
-	defer conn.Close()
-	stop := context.AfterFunc(ctx, func() { conn.SetDeadline(time.Now()) })
-	defer stop()
-	conn.SetDeadline(time.Now().Add(10 * time.Second))
+// handshake runs conn's mutual TLS handshake within handshakeTimeout, and
+// reports whether the peer authenticated.
+func (s *Server) handshake(ctx context.Context, conn *tls.Conn) bool {
+	conn.SetDeadline(time.Now().Add(handshakeTimeout))
 	if err := conn.HandshakeContext(ctx); err != nil {
 		s.observe(fmt.Errorf("%w: handshake", ErrProtocol))
-		return
+		return false
 	}
+	return true
+}
+
+func (s *Server) serve(ctx context.Context, conn *tls.Conn, idle time.Duration) {
+	stop := context.AfterFunc(ctx, func() { conn.SetDeadline(time.Now()) })
+	defer stop()
 	for {
 		var r Request
 		conn.SetDeadline(time.Now().Add(idle))

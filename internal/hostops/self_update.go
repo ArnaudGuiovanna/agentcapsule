@@ -27,14 +27,23 @@ var releaseVersion = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+
 
 func selfUpdate(ctx context.Context, args []string, out, errOut io.Writer) error {
 	if len(args) == 0 || args[0] != "update" {
-		return errors.New("usage: agentcapsule self update [--to VERSION] [--offline RELEASE_DIRECTORY]")
+		return errors.New("usage: agentcapsule self update [--to VERSION] [--offline RELEASE_DIRECTORY] [--allow-older]")
 	}
 	flags := flag.NewFlagSet("self update", flag.ContinueOnError)
 	flags.SetOutput(errOut)
 	version := flags.String("to", "", "release tag (defaults to the latest stable release)")
 	offline := flags.String("offline", "", "directory of downloaded release assets")
 	trust := flags.String("trusted-root", "", "locally trusted Sigstore trust root for offline use")
+	allowOlder := flags.Bool("allow-older", false, "install a release older than the highest this CLI has been")
 	if err := flags.Parse(args[1:]); err != nil {
+		return err
+	}
+	record, err := highestRecord()
+	if err != nil {
+		return err
+	}
+	floor, err := releaseFloor(Version, record)
+	if err != nil {
 		return err
 	}
 	if flags.NArg() != 0 {
@@ -57,6 +66,13 @@ func selfUpdate(ctx context.Context, args []string, out, errOut io.Writer) error
 	}
 	if !releaseVersion.MatchString(*version) {
 		return errors.New("a release tag such as v0.1.0-rc.1 is required")
+	}
+	// The latest release comes from an unauthenticated answer: neither it nor
+	// --to may go below the highest release this CLI has been (L-13).
+	if older, err := olderThan(*version, floor); err != nil {
+		return err
+	} else if older && !*allowOlder {
+		return fmt.Errorf("release %s is older than %s, the highest release of this CLI; pass --allow-older to install it anyway", *version, floor)
 	}
 	name := "agentcapsule-" + runtime.GOOS + "-" + runtime.GOARCH
 	if runtime.GOOS == "windows" {
@@ -104,7 +120,8 @@ func selfUpdate(ctx context.Context, args []string, out, errOut io.Writer) error
 			return err
 		}
 	}
-	verify := []string{"verify-blob", "--bundle", filepath.Join(staging, "SHA256SUMS.sigstore.json"), "--certificate-identity", "https://github.com/" + repository + "/.github/workflows/release.yml@refs/tags/" + *version, "--certificate-oidc-issuer", issuer}
+	bundle := filepath.Join(staging, "SHA256SUMS.sigstore.json")
+	verify := cosignVerification(bundle, *version)
 	if *trust != "" {
 		verify = append(verify, "--trusted-root", *trust, "--offline")
 	}
@@ -113,6 +130,9 @@ func selfUpdate(ctx context.Context, args []string, out, errOut io.Writer) error
 	cmd.Stdout, cmd.Stderr = errOut, errOut
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("verifying the release signature with cosign: %w", err)
+	}
+	if err := checkSigningEnvironment(bundle, checksums, *version); err != nil {
+		return err
 	}
 	digest, err := assetDigest(checksums, name)
 	if err != nil {
@@ -128,6 +148,9 @@ func selfUpdate(ctx context.Context, args []string, out, errOut io.Writer) error
 	}
 	if err = installCLI(exe, digest, func(dst *os.File) error { return fetch(name, dst, 256<<20) }); err != nil {
 		return err
+	}
+	if err := recordHighest(*version, floor); err != nil {
+		return fmt.Errorf("installed %s, but could not record it as the highest release: %w", *version, err)
 	}
 	return json.NewEncoder(out).Encode(map[string]string{"schema": "agentcapsule.host/v1", "version": *version, "path": exe, "sha256": digest})
 }

@@ -204,3 +204,116 @@ token signed by another key or for a non-member is refused
 - A retired key, like every revocation held in PostgreSQL, comes back with
   an older database backup: D-05's revocation records
   ([ADR 005](005-keys-outside-restored-domain.md)).
+
+## Changes after the v0.1.0 audit
+
+### Database roles (SEC-3, finding S-04)
+
+Until v0.1.0 the API, the worker and `agentcapsule-admin` connected as one
+role, `agentcapsule`, which owns the database. Tenant isolation rested on the
+`tenant_id` predicates alone, and the guard triggers that keep revocations,
+seals and access revocations permanent belonged to the role every service
+used: `TRUNCATE` skips them, and that role could drop or disable them.
+
+Now three roles reach the database ([install.md](../install.md#postgresql)):
+
+- `agentcapsule` owns the database and every object. It alone runs the
+  migrations (`agentcapsule-admin migrate`); only `agentcapsule-admin` uses
+  it, as root.
+- `agentcapsule_api` (the API) and `agentcapsule_worker` (the worker) are
+  login roles with no cluster privilege. They own nothing and cannot create
+  in the schema. Each reads every table, and holds `INSERT`, `UPDATE` and
+  `DELETE` exactly where the code its process runs writes (a row lock counts
+  as `UPDATE` on the tables it locks, as PostgreSQL requires: every table
+  its statement reads, or the tables its `OF` names). Neither holds `TRUNCATE`,
+  `REFERENCES` or `TRIGGER`, nor any right on `schema_migrations` but read.
+- The migration `service-roles` states the policy in two functions:
+  `agentcapsule_service_privileges()` lists each role's privileges per
+  table, and `agentcapsule_service_grants()` applies it, again each time
+  `agentcapsule-admin migrate` runs: a role created after the migration gets
+  its privileges at the next run. A table a later migration creates gets the
+  default privileges (read and write rows) until a migration lists it, so a
+  new table never fails in production for want of a grant. A role that does
+  not exist is skipped.
+- `service_roles_analysis_test.go` derives each role's writes from the
+  sources: the packages each command imports, the functions of
+  `internal/controlplane` they name, the statements of those functions, and
+  the triggers of the tables they write with the functions those call (no
+  function is `SECURITY DEFINER`: a trigger runs with the privileges of the
+  role that fired it). `TestServiceRolesHoldWhatTheirProcessWrites`
+  fails when the database grants more or less than that;
+  `TestServiceRolesCannotTruncateAlterDropOrDisableTheGuards` tries every
+  such statement as each role. A change that writes a new table, or writes a
+  table its process did not write, adds a migration that replaces
+  `agentcapsule_service_privileges()`.
+- The worker no longer migrates (its `-migrate` flag is gone). Like the API,
+  it refuses a schema whose ledger differs from its binary's.
+- The installer creates the roles, maps root to the owner and the worker's
+  role and the API's account to the API's role only (`pg_ident.conf`), and
+  writes each unit's connection string (`api.env`, `worker.env`, and
+  `admin.env` for the owner). An update of an installation that used one
+  role does the same before it migrates. An external database names the
+  three roles' connections (`database_url_file`, `api_database_url_file`,
+  `worker_database_url_file`).
+
+What it gives: a compromised or faulty API cannot erase the revocation
+history, a seal or an access revocation, change the schema or a guard, nor
+write the worker's tables (placements, seals, store enrollments,
+restores...). It does not contain root: the worker runs as root, which can
+reach the database as any role (S-05 and A-03 confine the worker).
+
+**Integration with the performance fixes.** Migration 0073
+(`service-privileges-activity-retention`) replaces
+`agentcapsule_service_privileges()` for the code of both domains. Both roles
+insert and update `agent_activity`, which the triggers of
+`platform_operations`, `agent_requests` and `llm_usage` keep (PERF-3A). The
+worker deletes the finished records its retention removes (PERF-3A): finished
+operations, requests, invocations and what hangs on them. The analysis now
+follows the functions a trigger calls (`agent_activity_upsert`), and counts
+a lock that names its tables (`FOR UPDATE OF r`) as `UPDATE` on those tables
+only. That removes eight grants nothing used: the API's `UPDATE` on
+`corpus_review_segments` and `volume_restore_losses`, and the worker's on
+`agent_deployments`, `agent_template_revisions`, `attachment_segments`,
+`corpora`, `transit_parties` and `volume_restore_losses`. Without that rule,
+the retention's `FOR UPDATE OF` locks would have given the worker `UPDATE`
+on `instruction_replays`, `owner_messages`, `peer_redeliveries` and
+`tenant_agent_audit`.
+
+### Row-level security: considered, not adopted
+
+The audit asked to consider policies on the tenant tables keyed by a
+`SET LOCAL` tenant setting: on each table with a `tenant_id`,
+`tenant_id = current_setting('agentcapsule.tenant_id')`, the setting set
+once the transaction has authenticated the tenant. It is not adopted:
+
+1. **It does not contain the API.** The API's role would set the setting
+   itself, and any role can set a custom setting (`set_config` is open to
+   all). A compromised API sets any tenant, or none. PostgreSQL has no
+   session state that a role cannot forge, without an extension or one role
+   per organization.
+2. **The platform paths read every organization**: the worker (dispatch,
+   scheduling, deliveries, idle sleeps across organizations), the platform
+   operator's routes, the reconciliation and the retention purges. The API
+   itself reads across organizations before it knows the tenant, in the
+   same transaction as the tenant's work: a credential is looked up by its
+   hash, an application by its issuer and client ID, an invitation finds its
+   organization through its application. A policy that does not break these
+   paths needs "no setting, every row", which a path that forgets to set the
+   tenant also gets. What would remain is the case of a statement that
+   forgets its tenant predicate after the tenant is set.
+3. **That case is tested route by route**: `TestRBACMatrix`, and the tests
+   that ask for another organization's objects
+   (`TestAnotherOrganizationsNumbersStayOutOfEveryAnswer`,
+   `TestLLMRoutesDoNotCrossTenantsAndAliasDisableIsImmediate`,
+   `TestCorpusOfAnotherOrganizationCannotBeMounted`, among others).
+4. **Its cost is not small for what it would add**: one more statement in
+   each tenant transaction, whose preamble the performance work is cutting
+   down (P-06); policies to keep right on the 70 or so tables with a
+   `tenant_id`; and the PostgreSQL campaign runs as a superuser, which
+   bypasses every policy, so the tests would not exercise them unless the
+   API's tests ran as its role.
+
+To contain a compromised API per organization, the next step is not a
+policy on a setting but a check the database makes itself: one role per
+organization, or a `SECURITY DEFINER` function that verifies a signed
+tenant claim before it sets the tenant.

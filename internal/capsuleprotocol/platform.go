@@ -63,7 +63,8 @@ func safePlatformCode(err error) string {
 	if errors.As(err, &remote) {
 		switch remote.Code {
 		case "unauthorized", "not_found", "unavailable", "mandate", "conflict", "expired", "transition", "commit_unknown", "invalid",
-			"quota_exceeded", "rate_limited", "rejected", "outcome_unknown", "dialect", "capability_denied", "unsupported":
+			"quota_exceeded", "rate_limited", "rejected", "outcome_unknown", "dialect", "capability_denied", "unsupported",
+			"feature_denied", "concurrency_limited":
 			return remote.Code
 		}
 	}
@@ -387,9 +388,9 @@ func (p *platformHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusNotFound
 		case "unavailable", "commit_unknown":
 			status = http.StatusServiceUnavailable
-		case "quota_exceeded", "rate_limited":
+		case "quota_exceeded", "rate_limited", "concurrency_limited":
 			status = http.StatusTooManyRequests
-		case "invalid", "dialect", "unsupported":
+		case "invalid", "dialect", "unsupported", "feature_denied":
 			status = http.StatusBadRequest
 		}
 		write(status, code)
@@ -404,7 +405,7 @@ func NewPlatformClient(credentials Credentials, dial func(context.Context) (net.
 	if credentials.Channel != "platform" || credentials.Identity.FenceOnly {
 		return nil, ErrIdentity
 	}
-	c, err := NewClient(credentials, dial)
+	c, err := newClient(credentials, dial, false)
 	if err != nil {
 		return nil, err
 	}

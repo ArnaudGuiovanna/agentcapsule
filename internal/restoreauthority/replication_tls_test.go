@@ -187,10 +187,12 @@ func TestTwoProcessesOverMutualTLS(t *testing.T) {
 		mean(standaloneWrites), percentile(standaloneWrites, 0.5), percentile(standaloneWrites, 0.95), mean(trips), percentile(trips, 0.5))
 	p.same(t)
 
-	// The standby stops: a write commits locally, then waits and fails.
+	// The standby stops: a write commits locally, then waits and fails. Its
+	// deadline leaves a loaded host the time to dial the dead standby at
+	// least once after the old connection's end.
 	server.Process.Kill()
 	server.Wait()
-	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
 	err = c.RecordOutcome(ctx, b, Outcome{ID: "while-down", Digest: sha256.Sum256([]byte("down"))})
 	cancel()
 	if !errors.Is(err, ErrUnavailable) {

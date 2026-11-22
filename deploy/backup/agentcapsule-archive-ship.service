@@ -44,4 +44,9 @@ RestrictNamespaces=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
+MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
+# setuid and setgroups switch to agentcapsule-ship for rclone: @system-service has them,
+# ~@privileged would remove them.
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM

@@ -26,6 +26,44 @@ func TestAddressClasses(t *testing.T) {
 	}
 }
 
+// IPv6 forms that reach or carry an IPv4 address take the class of that
+// address: a 6to4 address (2002::/16) and both IPv4 addresses of a Teredo
+// address (2001::/32: the server's, and the client's, stored inverted). The
+// deprecated site-local range fec0::/10 is internal, as unique local
+// addresses are.
+func TestIPv6FormsWithAnEmbeddedIPv4TakeItsClass(t *testing.T) {
+	for want, addrs := range map[Class][]string{
+		// 6to4 of 8.8.8.8; Teredo with server 65.54.227.120 and client 8.8.8.8.
+		Public: {"2002:808:808::1", "2002:808:808:1:2:3:4:5", "2001:0:4136:e378:8000:63bf:f7f7:f7f7"},
+		Internal: {"fec0::1", "fec0:1:2:3::4", "feff:ffff::1",
+			"2002:a00:1::1", "2002:7f00:1::", "2002:c0a8:101::1", "2002:6440:1::1", // 10.0.0.1, 127.0.0.1, 192.168.1.1, 100.64.0.1
+			"2001:0:4136:e378:8000:63bf:f5ff:fffe", // client 10.0.0.1
+			"2001:0:a00:1:8000:63bf:f7f7:f7f7",     // server 10.0.0.1
+			"2001:0:4136:e378:8000:63bf:80ff:fffe", // client 127.0.0.1
+		},
+		Never: {"2002:a9fe:a9fe::1", "2002::1", "2002:e000:1::1", // 169.254.169.254, 0.0.0.0, 224.0.0.1
+			"2001:0:4136:e378:8000:63bf:5601:5601", // client 169.254.169.254
+			"2001:0:a9fe:a9fe::f7f7:f7f7",          // server 169.254.169.254
+		},
+	} {
+		for _, text := range addrs {
+			if got := Classify(netip.MustParseAddr(text)); got != want {
+				t.Errorf("%s: class %d, want %d", text, got, want)
+			}
+		}
+	}
+	// A prefix over such forms is never inside an internal range: an operator
+	// allows one only by its exact address.
+	for _, p := range []string{"2002::/16", "2002:a00::/24", "2001::/32"} {
+		if InsideInternal(netip.MustParsePrefix(p)) {
+			t.Error(p, "seen inside an internal range")
+		}
+	}
+	if !InsideInternal(netip.MustParsePrefix("fec0::/10")) {
+		t.Error("fec0::/10 not seen inside an internal range")
+	}
+}
+
 var errRefused = errors.New("refused")
 
 // The dialer resolves the name, skips the refused addresses and connects to

@@ -67,9 +67,9 @@ func (w *Placements) deliver(ctx context.Context, target string, event harnessst
 	var err error
 	if prepared, _ := ctx.Value(preparedDeliveryKey{}).(string); prepared == target {
 		// Still validate the host scope; an escaped callback context must fail.
-		err = w.host.WithApplication(ctx, send)
+		err = w.host.WithApplication(ctx, target, send)
 	} else {
-		err = w.withFreshApplication(ctx, send)
+		err = w.withFreshApplication(ctx, target, send)
 	}
 	endDelivery(span, slim, err)
 	return result, err
@@ -77,11 +77,15 @@ func (w *Placements) deliver(ctx context.Context, target string, event harnessst
 
 type preparedDeliveryKey struct{}
 
-// WithPreparedDelivery owns a FIFO exclusive turn through preparation and the
-// synchronous SQL-only control callback. Slow boot/capacity/health failures occur
-// before ClaimDelivery spends an RPC attempt. A stopped recipient boots in the
-// order of its host's capacity queue (bootForWork). Guest-initiated platform work is
-// asynchronous and joins the common shared queue after this turn.
+// WithPreparedDelivery owns the recipient's FIFO exclusive turn through
+// preparation and the synchronous SQL-only control callback, which carries
+// the guest RPC. The turn is the recipient's own (S-02): deliveries to other
+// agents, and their guests' platform calls, run meanwhile; the host's
+// capacity is counted under host.lock only when a boot records its intent.
+// Slow boot/capacity/health failures occur before ClaimDelivery spends an RPC
+// attempt. A stopped recipient boots in the order of its host's capacity queue
+// (bootForWork). The recipient's own guest-initiated platform work is
+// asynchronous and joins the recipient's shared queue after this turn.
 func (w *Placements) WithPreparedDelivery(ctx context.Context, target string, fn func(context.Context) error) error {
 	return w.host.WithBarrier(ctx, target, func(ctx context.Context) error {
 		// The recipient's VM alone: a stopped recipient boots below
@@ -134,10 +138,11 @@ func (w *Placements) WithPreparedDelivery(ctx context.Context, target string, fn
 	})
 }
 
-// DispatchOne acquires this scope before consuming a delivery attempt. A queued
-// barrier is backpressure, not a failed application delivery.
+// DispatchOne checks every boot's credentials before consuming a delivery
+// attempt; the delivery itself takes its recipient's turn (deliver). A
+// queued barrier is backpressure, not a failed application delivery.
 func (w *Placements) WithDeliveryAdmission(ctx context.Context, fn func(context.Context) error) error {
-	return w.withFreshApplication(ctx, fn)
+	return w.withFreshApplication(ctx, "", fn)
 }
 
 // Fence requires a committed SQL barrier or a revalidated permanent host seal.
@@ -145,8 +150,11 @@ func (w *Placements) WithDeliveryAdmission(ctx context.Context, fn func(context.
 // every manifest; it is acknowledged only after managed execution is sealed.
 func (w *Placements) Fence(ctx context.Context, target, subject string) error {
 	if w.authority != nil {
-		if _, err := w.authority.BeginRevocation(ctx, subject); err != nil {
+		if err := w.beginRevocation(ctx, subject); err != nil {
 			return err
+		}
+		if w.acknowledged(ctx, target, subject) {
+			return nil // authority_linux.go: no boot for a fence the store holds
 		}
 	}
 	return w.host.WithBarrier(ctx, target, func(ctx context.Context) error { return w.fence(ctx, target, subject) })
@@ -203,13 +211,20 @@ func (w *Placements) fence(ctx context.Context, target, subject string) (result 
 }
 
 // bootForWork boots target for work (a delivery, a wake, a resume) in the
-// order of its host's capacity queue (ADR 017). The caller holds the host's
+// order of its host's capacity queue (ADR 017). The caller holds target's
 // exclusive admission turn and stopped any fence-only VM of target. A full
 // host stops a VM that is not computing for it, an idle one first; with none,
 // target waits in the queue and ErrCapacity makes its job try again later.
 // Past its organization's quotas (ADR 021), target stops its organization's
 // own VMs here that are not computing, or waits in the same queue, and an
 // OrganizationQuotaError makes its job try again later.
+//
+// Each VM stopped is stopped under its own exclusive turn (WithEviction),
+// once the calls and the delivery already admitted on it are done; one that
+// started computing meanwhile is kept, and target tries again later; the
+// slot a stop frees is reserved for target. Other boots run beside this one:
+// host.lock counts the slots when target records its intent, and a free slot
+// another boot took first is ErrCapacity, retried.
 func (w *Placements) bootForWork(ctx context.Context, target string) (_ runtime.VMRun, err error) {
 	ctx, span := wakeSpan.Start(ctx)
 	span.ID("agentcapsule.agent", target)
@@ -240,15 +255,13 @@ func (w *Placements) bootForWork(ctx context.Context, target string) (_ runtime.
 		}
 		return runtime.VMRun{}, runtime.ErrCapacity
 	}
-	for _, id := range d.EvictForQuota {
-		evicted = true
-		if err = w.stop(ctx, id, runs[id].Generation, true); err != nil {
-			return runtime.VMRun{}, err
-		}
-	}
+	victims := d.EvictForQuota
 	if d.Evict != "" {
+		victims = append(victims, d.Evict)
+	}
+	for _, id := range victims {
 		evicted = true
-		if err = w.stop(ctx, d.Evict, runs[d.Evict].Generation, true); err != nil {
+		if err = w.evict(ctx, id, true); err != nil {
 			return runtime.VMRun{}, err
 		}
 	}
@@ -259,13 +272,46 @@ func (w *Placements) bootForWork(ctx context.Context, target string) (_ runtime.
 	return run, w.store.SlotTaken(ctx, w.hostID, target)
 }
 
-// The exclusive admission scope prevents another worker from filling the slot
-// between retirement and target boot. Existing control/platform calls have
-// finished. A barrier may stop any VM: an idle one first, the least recently
-// active first (ADR 017). Background guest computation is interrupted and must
-// be replayable; SQLite transactions/WAL and stable business keys provide that
-// contract here, and the resume job boots the stopped agent again once
-// capacity returns if it held work in progress.
+// evict stops victim's VM for capacity under victim's own exclusive turn,
+// after the calls and the delivery already admitted on it. Its run and its
+// generation are read again under that turn: a VM gone meanwhile needs no
+// stop. For work (forWork), a VM that started computing meanwhile is not
+// stopped (ADR 017 §2.1): ErrCapacity, and the work tries again later. The
+// slot the stop frees is reserved for the evicting agent's boot, which no
+// other boot can take while the evicting turn lasts.
+func (w *Placements) evict(ctx context.Context, victim string, forWork bool) error {
+	return w.host.WithEviction(ctx, victim, func(ctx context.Context) error {
+		runs, err := w.reconcileAgent(ctx, victim)
+		if err != nil {
+			return err
+		}
+		run, ok := runs[victim]
+		if !ok {
+			return nil
+		}
+		if forWork {
+			stoppable, err := w.store.EvictableForWork(ctx, []string{victim})
+			if err != nil {
+				return err
+			}
+			if len(stoppable) == 0 {
+				return runtime.ErrCapacity
+			}
+		}
+		if err = w.host.ReserveSlot(ctx, victim); err != nil {
+			return err
+		}
+		return w.stop(ctx, victim, run.Generation, true)
+	})
+}
+
+// A barrier may stop any VM: an idle one first, the least recently active
+// first (ADR 017), under that VM's own exclusive turn (evict). Existing
+// control/platform calls of that VM have finished. Background guest
+// computation is interrupted and must be replayable; SQLite transactions/WAL
+// and stable business keys provide that contract here, and the resume job
+// boots the stopped agent again once capacity returns if it held work in
+// progress. The freed slot is reserved for target's boot (evict).
 func (w *Placements) makeBarrierCapacity(ctx context.Context, target string) error {
 	runs, err := w.Reconcile(ctx)
 	if err != nil {
@@ -285,8 +331,7 @@ func (w *Placements) makeBarrierCapacity(ctx context.Context, target string) err
 	if err != nil {
 		return err
 	}
-	id := order[0]
-	return w.stop(ctx, id, runs[id].Generation, true)
+	return w.evict(ctx, order[0], false)
 }
 
 // releaseWake gives a reserved wake back when the boot it paid for failed,

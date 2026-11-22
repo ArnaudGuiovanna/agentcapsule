@@ -27,7 +27,8 @@ writable by group or others. Boot keys are not parameters of this file.
 
 The process requires root for the jailer, namespaces and cgroups; the VMMs use
 their dedicated UIDs. Provide `AGENTCAPSULE_DATABASE_URL` through the service
-manager's protected environment, then run:
+manager's protected environment, naming the worker's own role,
+`agentcapsule_worker` ([install.md](install.md#postgresql)), then run:
 
 ```sh
 /opt/agentcapsule/agentcapsule-worker -config /etc/agentcapsule/worker.json
@@ -45,8 +46,11 @@ registry rule and does not call a model provider on plain HTTP
 calls a provider at an internal address only if `allowed_internal_providers`,
 in its `llm` section, allows it ([install.md](install.md#model-providers-on-internal-addresses)).
 
-The schema must be migrated. `-migrate` explicitly applies the migration before
-starting; a normal launch does not modify the schema. The `host_id`, the
+The schema must be migrated with `agentcapsule-admin migrate`, as the role
+that owns it ([install.md](install.md#postgresql)). The worker connects as
+`agentcapsule_worker`, which owns nothing and cannot migrate; it refuses to
+start on a schema behind, ahead of or different from its binary
+(`database_schema_unavailable`). The `host_id`, the
 registry, the images and the capacity must be consistent across all workers of
 the same host. Stop older versions before migrating.
 
@@ -142,7 +146,8 @@ and does not re-run a finished command. The success of wake follows the durable
 publication of the boot; that of sleep follows the physical removal. A deletion
 cancels the open commands.
 For sleep, the worker keeps the authenticated client of the current boot before
-committing `STOPPING`, then requests quiescence under exclusive host admission.
+committing `STOPPING`, then requests quiescence under the agent's exclusive
+admission.
 It then removes the VMM and verifies its absence before publishing `STOPPED`.
 Only a clean acknowledgment allows `unclean_stop=false`; a lost response, an
 error or an exceeded timeout lead to a forced removal reported as unclean. A
@@ -150,8 +155,20 @@ recovery after a crash may conservatively classify the stop as unclean. The
 forced recovery paths remain available. This wiring is tested in SQL/mTLS and in
 the product path on KVM.
 
-The loop performs one pass immediately, then waits `poll_interval` after each
-pass. Each attempt has its own `attempt_timeout`; a failure keeps the SQL job
+The loop performs one pass immediately, then one every `poll_interval` (5 s
+in the shipped configuration, 1 min at most). In between, the work queue gets
+passes of its own (since the v0.1.0 audit, P-01): at once after a pass that
+claimed a full batch, and when PostgreSQL notifies new work for this host. A
+transaction that queues a delivery, ends a mailbox head (its successor becomes
+the head), records a platform operation, ends a wake or a sleep, records a
+request's closure or an agent's deletion, or stops a VM, notifies
+`agentcapsule_work` with the host's ID, and nothing else. The worker listens on
+its one dedicated connection (`pgnotify`), which its output streams share. A
+lost notification, or a connection down, only delays the work until the next
+pass; while the connection is down the hub wakes the loop every second. An
+update keeps a host's `/etc/agentcapsule/worker.json`: a host installed with
+`"poll_interval": "30s"` keeps it until its operator sets `"5s"`. Each
+attempt has its own `attempt_timeout`; a failure keeps the SQL job
 and the other jobs in the list are still attempted. The logs are JSON events
 from a closed vocabulary (`maintenance_started`, `maintenance_complete`,
 `maintenance_retry` with its reason, …), with no DSN, raw SQL error,
@@ -177,7 +194,9 @@ an availability bound: outages, contention, clock drift and the number of jobs
 influence the effective time.
 
 After the renewals, a pass discovers business intents and processes at most
-`dispatch_batch` jobs. `worker_hosts` assigns tickets in the same transaction as
+`dispatch_batch` jobs; a pass that claimed `dispatch_batch` jobs is followed by
+another at once. The queries that find work read indexes of the open rows only
+(migration 0071), never a table's history. `worker_hosts` assigns tickets in the same transaction as
 the mutations of `worker_jobs`. A claim moves the job to the end of the queue
 before its execution; a crash or an error therefore does not reserve the first
 place indefinitely. The `work_lease` lease and the exponential backoff
@@ -185,10 +204,34 @@ place indefinitely. The `work_lease` lease and the exponential backoff
 refuse an expired or replaced lease. This coordination lease replaces neither
 the delivery lease nor the barriers that neutralize delayed effects.
 
-The dispatcher prepares the recipient under exclusive admission before
-consuming a delivery attempt: wake, capacity, certificates and channel health.
-The control callback must finish its
+The dispatcher prepares the recipient under the recipient's exclusive
+admission before consuming a delivery attempt: wake, capacity, certificates and
+channel health. The control callback must finish its
 local SQL transaction without waiting for a platform call.
+
+**Agents do not wait for one another** (since the v0.1.0 audit, S-02, S-03).
+Each agent has its own admission queue: its platform calls share it, a
+delivery to it, a fence, a stop or an archive take it alone, in arrival
+order. A slow harness holds its own agent's turn, never another's. A pass runs
+up to `dispatch_concurrency` jobs at once (4 by default, 1 to 64); an agent's
+own jobs run one after the other, in the order they were claimed, and the
+delivery FIFO stays PostgreSQL's. A boot, a stop, a volume copy or install
+holds the agent's own lock, never the host registry's: `host.lock` guards
+only short state changes, among them the host-wide count of slots, vCPUs and
+memory when a boot records its intent. A VM stopped for capacity is stopped
+under its own turn, after the calls already admitted on it, and its slot is
+reserved for the boot that stopped it. The registry stays in memory and is
+written only when it changes; the platform channel's accept check reads it
+without `host.lock`. The host's connections to each guest's control channel
+stay open between calls.
+
+**The VMM's log** (`<root>/logs/<run>.log`, the host's alone) holds what
+Firecracker prints. The host cuts it once it passes 1 MiB (within a second)
+and removes it with its run; the census and `-collect-garbage` remove the logs
+of runs that are gone. In production the guest has no serial console: its
+kernel registers no serial port. `"vm_serial_console": true`, or development
+mode, gives it one, whose output joins the log, for debugging; the host then
+keeps the logs of the 16 runs that ended last.
 
 **Work that waits for capacity** ([ADR 017](adr/017-capacity-queue-and-dead-letter-replay.md)).
 A delivery, a wake or a resume that needs a VM for a stopped agent takes a
@@ -229,10 +272,12 @@ from its SQLite intents. It is not resumed once that work ended or passed its
 deadline, when it is `FAILED`, or when someone asked it to sleep after the work
 began (default pending the product owner). A crash spends its restart budget,
 so a guest that keeps crashing is not booted again and again. The guest's outgoing
-tasks are asynchronous. The host registry v2 uses a common queue for shared and
-exclusive calls; only consecutive readers at the head coexist. Migration from v1
-keeps the barriers present; stop the old workers before upgrading, as they
-cannot read v2.
+tasks are asynchronous. The host registry v3 keeps one queue per agent, in
+`<root>/admission/queue.json`, for shared and exclusive calls; only
+consecutive readers at the head of an agent's queue coexist. A v2 registry
+migrates once no worker of the older version holds a place in its queue; a
+worker that finds one still running refuses to start. Stop the old workers
+before upgrading, as they cannot read v3.
 
 This first coordination assumes that all manifest stores are on the same host.
 It does not prove a real delay or the success of each request: an expiration or
@@ -317,6 +362,34 @@ activates no key. During a rotation, also provide all the keys needed for the
 contents still retained. Each pass purges at most
 `min(dispatch_batch * 4, 1000)` expired contents.
 
+**Finished records** (since the v0.1.0 audit, P-04). Once its content is gone,
+a finished invocation, wake, sleep or request between agents, and what hangs on
+it (its mailbox entries, idempotency key, inbox items, closure, mandate and
+content tombstones), is deleted `finished_retention` after its end: 90 days by
+default, 45 days to 10 years (`"finished_retention": "2160h"`). The worker of
+the agent's host deletes them every ten minutes, at most
+`min(dispatch_batch * 4, 1000)` of each kind at a time, and at once again after
+a full batch. A record stays while something needs it:
+- content still held: an unread result is never purged, so neither is its
+  invocation; nor is one whose input is still held;
+- a delivery still queued, or a closure still fencing;
+- an audit event that names it (an invocation's replay, a request's
+  decision): it goes once the audit's retention removed the event;
+- a restore's record of a loss, a rerun or a redelivery, or an owner's message
+  bound to a request: these are permanent;
+- a corpus build or extension that ran it; for an invocation, a request it
+  sent that is still kept.
+
+The retention must exceed the life of every archive a restore could start
+from, so that a restore still finds every event it lost: the worker refuses a
+`finished_retention` shorter than `archives.keep` times `archives.every` plus
+two weeks, and the 45-day floor covers the 30 days the archive stores keep.
+An idempotency key of a request goes with its request: a retry or a rerun
+after a restore within that time gets the first receipt back. An invocation
+deleted this way answers `404 not_found`, like one that never existed. Each
+agent's last activity, which the idle policy and the eviction order compare,
+is kept apart (`agent_activity`) and survives the deletion.
+
 The instruction shares the events FIFO. Boot preparation precedes the
 consumption of an attempt; the first authorized send creates a stable mandate.
 The encrypted result, the success of the operation and the removal of the queue
@@ -381,6 +454,68 @@ lease, the dispatch authorization and the parties that are still active. The
 outgoing channel is used in the background by the harness, after the commit of
 the SQLite intent: no platform call blocks the callback that must first return
 its delivery acknowledgment.
+
+## Confinement
+
+The worker stays root: it creates each VM's cgroup under `/sys/fs/cgroup`,
+starts the jailer into it, and the jailer builds the VM's chroot and drops to
+the VM's UID. Its unit,
+[agentcapsule-worker.service](../deploy/systemd/agentcapsule-worker.service),
+confines it as far as that allows (S-05). Each directive also binds the
+jailer, Firecracker and the sandboxed `debugfs` and `mke2fs`, which inherit
+it. `scripts/test_systemd_units.py` fails when a unit loses a directive, or
+when the worker gains one of those below that would break it.
+
+What the unit keeps:
+
+| Directive | Why the worker needs it |
+|---|---|
+| `CapabilityBoundingSet=` ten capabilities | `CAP_SYS_ADMIN`: mount, PID and network namespaces, the jailer's `pivot_root`, the image sandbox's mounts. `CAP_MKNOD`: `/dev/kvm`, `/dev/net/tun`, `/dev/urandom` and `/dev/userfaultfd` in each jail. `CAP_CHOWN`, `CAP_FOWNER`, `CAP_DAC_OVERRIDE`: the files of the VMs' UIDs (jails and the kernel hard-linked into them, platform sockets bound and given away through `O_PATH` descriptors). `CAP_SETUID`, `CAP_SETGID`: the jailer and the sandbox change UID. `CAP_SETPCAP`: the sandbox empties its bounding set. `CAP_KILL`: a sandboxed program that overruns its time runs under another UID. `CAP_SYS_PTRACE`: adoption reads `/proc/<pid>/root`, `exe`, `fd` and `fdinfo` of VMMs under other UIDs. |
+| `ProtectSystem=strict` | Writes only to `/var/lib/agentcapsule` (the runtime root: registry, per-agent locks, admission queue, jails, cached boot images, VMM logs, and its caches), `/var/lib/agentcapsule-archives` (both `StateDirectory=`, root and 0700) and `/run/agentcapsule-worker`. |
+| `InaccessiblePaths=` | The authorities' directories: the worker reaches them through the authority service only. |
+| `SystemCallFilter=~...` | A deny list (clock, CPU emulation, debugging, modules, obsolete calls, raw I/O, reboot, swap, `bpf`, `open_by_handle_at`): the jailer needs `mount`, `pivot_root`, `mknod`, `chown`, `setuid`, `setgroups` and `setrlimit`, which `@system-service` refuses. |
+| `RestrictAddressFamilies=` | `AF_UNIX`, `AF_INET`, `AF_INET6`; `AF_ALG` for libcryptsetup, which encrypts and checks LUKS2 key slots with the kernel's crypto API; `AF_NETLINK` for glibc's resolver, which this cgo binary uses when `nsswitch.conf` names more than files and DNS. |
+| `NoNewPrivileges`, `ProtectHome`, `PrivateTmp`, `ProtectKernelTunables`, `ProtectKernelModules`, `ProtectKernelLogs`, `ProtectClock`, `ProtectHostname`, `RestrictRealtime`, `RestrictSUIDSGID`, `LockPersonality`, `MemoryDenyWriteExecute`, `SystemCallArchitectures=native` | Nothing the worker or its children do needs what these remove. `ProtectKernelTunables` keeps `/sys/fs/cgroup` writable. Firecracker maps no executable memory. |
+| `Delegate=yes`, `KillMode=process` | A restart of the worker keeps the running VMs, and the next worker adopts them. |
+
+What the unit leaves out, and why:
+
+| Directive | Why it would break the worker |
+|---|---|
+| `PrivateDevices` | It drops `CAP_MKNOD` and hides `/dev/kvm`, which the start checks open. |
+| `DevicePolicy` | The same devices, and libcryptsetup opens `/dev/mapper/control` and loop devices when the kernel's crypto API is missing. |
+| `ProtectControlGroups` | It makes `/sys/fs/cgroup` read-only; the worker creates and kills the VMs' cgroups there. |
+| `RestrictNamespaces` | The jailer needs mount, PID and network namespaces, the sandbox IPC and UTS ones. systemd's filter also makes `clone3` fail with `ENOSYS`, and Go starts the jailer only with `clone3` (`CLONE_INTO_CGROUP`). |
+| `ProtectProc`, `ProcSubset` | Adoption reads the VMMs' `/proc/<pid>`, which `CAP_SYS_PTRACE` allows anyway; provisioning reads `/proc/meminfo`. |
+| `PrivateNetwork`, `IPAddressDeny` | The worker calls registries, forges, model providers and the Directory. |
+| `PrivateUsers`, `User` | The jailer must run as root of the host. |
+| `PrivateIPC` | libdevmapper waits on udev through System V semaphores. |
+| `MemoryMax` | The VMs run in their own cgroups, outside the unit; their limits are the worker's ([ADR 012](adr/012-limits-restart-budgets-egress.md)). |
+
+With `CAP_SYS_ADMIN`, code that takes over the worker can undo the mount
+directives. They stop mistakes and path tricks, not such code. Moving the
+network-facing work out of the root process is A-03.
+
+**Paths elsewhere.** A runtime root, an archive root, a cache or a
+`trace_file` outside those directories needs a drop-in, for example
+`/etc/systemd/system/agentcapsule-worker.service.d/paths.conf` with
+`[Service]` and `ReadWritePaths=/srv/agentcapsule`. Run `-preflight` and the
+operator modes (`-archive-agent`, `-restore-agent`, `-test-restore`) from a
+root shell, outside the unit, as the host operations do: under the unit's
+`ProtectClock`, the `clock` check could not read the kernel's clock state.
+
+**Checks on a KVM host.** The confinement is checked statically here; it needs
+a run as root on a KVM host:
+1. `systemd-analyze security agentcapsule-worker.service`, and
+   `systemd-analyze verify` of the installed unit.
+2. A worker campaign under the installed unit: `systemctl restart
+   agentcapsule-worker`, then `scripts/verify-product-guest.py` (provisioning,
+   encrypted wake, deliveries), a registry import (the `debugfs` sandbox), an
+   archive and a restore test, and a restart of the worker with VMs running:
+   they must be adopted, not killed.
+3. `journalctl -u agentcapsule-worker` without `Operation not permitted` or
+   `Function not implemented`, and `audit` or `seccomp` denials in
+   `journalctl -k`.
 
 ## Replaying a dead letter
 
@@ -914,9 +1049,10 @@ whose volume is provisioned and initialized:
   captured: a capture needs a clean stop. It is captured after its next clean
   sleep.
 
-**Cost for the host.** A capture holds the agent's barrier, which is the host's
-exclusive admission, and the host registry while it copies the volume.
-Deliveries and boots on this host wait for it. A capture takes about the
+**Cost for the host.** A capture holds the agent's barrier, which is that
+agent's exclusive admission, and that agent's lock while it copies the volume.
+The agent's own deliveries wait for it; other agents' deliveries, boots and
+platform calls do not. A capture takes about the
 volume's size divided by the disk's speed: a few seconds for a small volume.
 This is why a pass takes `per_pass` captures at most (1 by default), after its
 deliveries. A pass with nothing due costs one query.
@@ -1091,7 +1227,13 @@ authorities, with room for one volume. What it checks, in order:
 2. the archive is of the agent's current volume, and of its size;
 3. a copy in a new private directory under `-scratch` has the same digest;
 4. the key the key authority lends for the agent opens the copy's key slot.
-   The payload is never unlocked: a volume opens only in its guest.
+   The payload is never unlocked: a volume opens only in its guest. The
+   copy's header may be the guest's, so libcryptsetup reads it confined, as
+   `registry.inspection_uid` when the worker is root, and refuses a header
+   that is not of the platform's shape before any key derivation
+   ([registry.md](registry.md#the-key-check-of-a-restore-test)). A worker run
+   as root without `inspection_uid` refuses the test
+   (`inspection_uid_required`).
 
 It prints what it checked, then removes its directory:
 
@@ -1102,7 +1244,8 @@ It prints what it checked, then removes its directory:
 On failure, it prints `restore_test_failed_<reason>` and exits 1:
 `no_archive` (PostgreSQL records none), `archive_unavailable` (not in the
 archive root, and not fetched), `archive` (incomplete, altered, unsigned or of
-another volume), `key` (the agent's key does not open it), `authority` (a
+another volume), `key` (the agent's key does not open it, or its header is
+not of the platform's shape), `authority` (a
 refusal: a deleted agent's store is sealed), `state` (the agent has no volume
 on this host), `error`.
 
@@ -1115,7 +1258,7 @@ authorities' records; it asks the authorities to validate the manifest and to
 lend the key, which reserves nothing and records nothing. It takes no barrier
 and starts no VM, so the agent keeps running and its deliveries go on. While
 it holds the key, a restore or a deletion of that agent waits for it, for the
-time of one key check (about 0.1 s). It skips the mandatory preflight: it
+time of one key check (about 0.5 s, at most 30 s). It skips the mandatory preflight: it
 runs on a host without KVM, or with a full runtime disk. What it does not
 prove: that the guest's file system inside is sound, or that the harness
 boots; a restore proves those
@@ -1148,7 +1291,9 @@ newest of their agent on this host (`retention`), the archives of deleted
 agents whose key is destroyed (`deleted_agents`), the leftovers, and their
 bytes; under `images`, the digests of the packages no agent can boot
 (`unused`), the leftovers of downloads, and their bytes. A part is absent
-when its section (`archives`, `registry`) is not configured.
+when its section (`archives`, `registry`) is not configured. `vmm_logs`
+counts the VMM logs of runs that are gone, which it removes too (absent
+when none).
 
 ```json
 {"action":"garbage.collected","target":"host-1","outcome":"done","dry_run":false,"archives":{"retention":["arc_…"],"deleted_agents":[],"leftovers":0,"bytes":134221824},"images":{"unused":["sha256:…"],"leftovers":1,"bytes":52428800}}

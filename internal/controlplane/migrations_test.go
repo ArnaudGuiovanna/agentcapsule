@@ -372,10 +372,26 @@ func TestReadyChecksInstalledMigrationLedger(t *testing.T) {
 
 // revertTenantAgents removes migration 0010 from an isolated test schema so that
 // fixtures simulating an older installation can replay it. Test-only: a ledger
-// row is never removed to repair a production database.
+// row is never removed to repair a production database. The objects a later
+// migration creates and could not create again come first, newest first
+// (0072 to 0069, then 0065; 0073 only replaces a function); those of 0066
+// to 0068 go with the table, column and tables they change, dropped below
+// (access_revocations, platform_operations.cause, the llm tables).
 func revertTenantAgents(t *testing.T, s *Store) {
 	t.Helper()
 	if _, err := s.pool.Exec(t.Context(), `
+        DROP INDEX IF EXISTS platform_operations_finished, agent_requests_finished, agent_requests_mandate, agent_mailboxes_reference,
+          idempotency_keys_response, inbox_items_reference, owner_messages_request, peer_wakes_request, tenant_agent_audit_request,
+          corpus_builds_invocation, corpus_extensions_invocation;
+        DROP TABLE IF EXISTS agent_activity;
+        DROP FUNCTION IF EXISTS agent_activity_from_operations(), agent_activity_from_requests(), agent_activity_from_model_calls() CASCADE;
+        DROP FUNCTION IF EXISTS agent_activity_upsert(text[], timestamptz[], timestamptz[]);
+        DROP INDEX IF EXISTS agent_placements_host, platform_operations_open, platform_operations_open_host, platform_operations_sleeps,
+          agent_requests_open_sender, agent_requests_open_recipient, request_closures_fencing, transit_payloads_purge_due;
+        DROP FUNCTION IF EXISTS work_notify_outbox(), work_notify_mailbox(), work_notify_operation(), work_notify_closure(),
+          work_notify_deletion(), work_notify_placement() CASCADE;
+        DROP FUNCTION IF EXISTS work_notify_agent(text), work_notify_host(text);
+        DROP FUNCTION IF EXISTS agentcapsule_service_grants(), agentcapsule_service_privileges();
         ALTER TABLE agents DROP COLUMN IF EXISTS enricher_id CASCADE;
         DROP FUNCTION IF EXISTS corpus_remember_conversion(), corpus_notify_build(), corpus_notify_file_progress() CASCADE;
         ALTER TABLE IF EXISTS corpus_builds DROP COLUMN IF EXISTS conversion_invocation_id;

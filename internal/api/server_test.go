@@ -193,6 +193,7 @@ func TestHTTPRejectsAmbiguousCredentialsAndPaths(t *testing.T) {
 }
 
 func TestAPIBinariesBootstrapServeAndShutdown(t *testing.T) {
+	serviceRoles(t)
 	_, _, _, dsn := apiLab(t)
 	dir := t.TempDir()
 	root, err := filepath.Abs("../..")
@@ -284,7 +285,9 @@ func TestAPIBinariesBootstrapServeAndShutdown(t *testing.T) {
 		"-transit-active-key", "v1", "-transit-key", "v1="+transitKey, "-metrics-listen", metricsAddress,
 		"-tls-cert", certFile, "-tls-key", certKeyFile, "-tls-server-name", "127.0.0.1",
 		"-authority-socket", authority.socket, "-restore-authority-id", authority.restoreID, "-key-authority-id", authority.keyID)
-	cmd.Env = append(env, "AGENTCAPSULE_MODE=")
+	// The API connects as its own role, which owns nothing (migration
+	// service-roles); agentcapsule-admin, above, as the schema's owner.
+	cmd.Env = append(os.Environ(), "AGENTCAPSULE_DATABASE_URL="+dsn+" user=agentcapsule_api", "AGENTCAPSULE_MODE=")
 	cmd.Stdout = log
 	cmd.Stderr = log
 	if err = cmd.Start(); err != nil {

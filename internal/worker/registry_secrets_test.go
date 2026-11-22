@@ -75,7 +75,7 @@ func TestRejectedImportLeaksNoRegistrySecret(t *testing.T) {
 	}
 	c := ServiceConfig{Root: t.TempDir(), Registry: &ServiceRegistry{Cache: l.cache, MaxHarnessMiB: 64,
 		Rules: []RegistryRule{{Rule: rule, CredentialsFile: credentials}}}}
-	importer, err := c.OpenRegistry(l.store, "importer-hostile")
+	importer, err := c.OpenRegistry(l.store, "importer-hostile", false)
 	if err != nil {
 		t.Fatal(err)
 	}

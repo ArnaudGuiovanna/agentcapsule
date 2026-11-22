@@ -4,6 +4,11 @@
  * kernel lock; an exclusive turn needs an empty active set. A dead owner's
  * released kernel lock is abstracted by alive=false, never by a timeout.
  * Finite three-client component, NOT a parametric proof or Go refinement.
+ *
+ * Since the v0.1.0 audit (S-02) this is the queue of ONE agent: each agent
+ * has its own queue and its own kernel lock, which share no state, so the
+ * properties hold for each of them alone. The host-wide parts (one slot, an
+ * eviction taking its victim's turn) are barrier_capacity.qnt's.
  */
 module fairAdmission {
   const WATCHED_SHARED: bool
