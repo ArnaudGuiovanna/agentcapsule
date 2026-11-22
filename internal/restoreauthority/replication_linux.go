@@ -123,6 +123,9 @@ const (
 	// not know them, and refuses the first record that carries one.
 	stmtAccess
 	stmtOutcomeEvent
+	// Schema version 5 (holds per store and scoped revocations, after the
+	// v0.1.0 audit): a replica of an older release refuses it.
+	stmtScope
 )
 
 var statements = map[statement]string{
@@ -138,6 +141,7 @@ var statements = map[statement]string{
 	stmtRerun:         "INSERT INTO reruns VALUES(?,?,?) ON CONFLICT DO NOTHING",
 	stmtAccess:        "INSERT INTO access_revocations VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING",
 	stmtOutcomeEvent:  "INSERT INTO outcome_events VALUES(?,?) ON CONFLICT(outcome) DO NOTHING",
+	stmtScope:         "INSERT INTO revocation_scopes VALUES(?,?,?) ON CONFLICT DO NOTHING",
 }
 
 // statementKinds classifies every statement for degraded mode
@@ -157,6 +161,7 @@ var statementKinds = map[statement]string{
 	stmtRerun:         authoritylog.WriteRerun,
 	stmtAccess:        authoritylog.WriteAccess,
 	stmtOutcomeEvent:  authoritylog.WriteOutcome,
+	stmtScope:         authoritylog.WriteRevocationStart,
 }
 
 // allows reports whether an operation of kind may run statement s: one of its

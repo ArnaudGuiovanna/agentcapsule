@@ -4,7 +4,6 @@ package authorityclient
 
 import (
 	"context"
-	"slices"
 	"time"
 
 	svc "github.com/ArnaudGuiovanna/agentcapsule/internal/authorityservice"
@@ -46,10 +45,21 @@ func (c *Client) Announcement(ctx context.Context) (restoreauthority.Announcemen
 // ImportSubjects begins, in the authority, each subject it does not hold.
 // It returns how many were new.
 func (c *Client) ImportSubjects(ctx context.Context, subjects []string) (int, error) {
+	return c.importSubjects(ctx, subjects, nil)
+}
+
+// importSubjects is ImportSubjects with the scopes of the subjects, in the
+// order of subjects; nil when none is known.
+func (c *Client) importSubjects(ctx context.Context, subjects []string, scopes []restoreauthority.Scope) (int, error) {
 	begun := 0
-	for chunk := range slices.Chunk(subjects, svc.MaxImportSubjects) {
+	for i := 0; i < len(subjects); i += svc.MaxImportSubjects {
+		end := min(i+svc.MaxImportSubjects, len(subjects))
+		args := svc.SubjectsArgs{Subjects: subjects[i:end]}
+		if scopes != nil {
+			args.Scopes = scopes[i:end]
+		}
 		var res svc.ImportResult
-		if err := c.call(ctx, svc.OpImportSubjects, svc.SubjectsArgs{Subjects: chunk}, &res); err != nil {
+		if err := c.call(ctx, svc.OpImportSubjects, args, &res); err != nil {
 			return begun, err
 		}
 		begun += res.Begun
@@ -138,5 +148,18 @@ func (a *API) AuthorityAnnouncement(ctx context.Context) (controlplane.FailoverA
 // ImportSubjects begins, in the authority, the subjects it lacks.
 func (a *API) ImportSubjects(ctx context.Context, subjects []string) error {
 	_, err := a.c.ImportSubjects(ctx, subjects)
+	return err
+}
+
+// ImportScopes begins, in the authority, the subjects it lacks, each in
+// the scope PostgreSQL names for it (controlplane.ScopedImporter).
+func (a *API) ImportScopes(ctx context.Context, scopes []controlplane.RevocationScope) error {
+	subjects := make([]string, len(scopes))
+	named := make([]restoreauthority.Scope, len(scopes))
+	for i, s := range scopes {
+		subjects[i] = s.Subject
+		named[i] = restoreauthority.Scope{Subject: s.Subject, Stores: s.Stores}
+	}
+	_, err := a.c.importSubjects(ctx, subjects, named)
 	return err
 }

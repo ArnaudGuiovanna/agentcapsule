@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -53,6 +54,16 @@ type Catalog struct {
 	repl      *replicator
 	recMu     sync.Mutex
 	recording map[*sql.Tx]*txRecord
+
+	// locks are the holds per store (holds_linux.go), shared by every
+	// handle of this file in this process.
+	locks      *lockTable
+	closeLocks sync.Once
+	// legacy is the highest revision of a subject begun before schema
+	// version 5, once legacyKnown (scopes_linux.go).
+	legacyOnce  sync.Mutex
+	legacyKnown bool
+	legacy      uint64
 }
 
 type Binding struct {
@@ -70,6 +81,14 @@ type Binding struct {
 // the promoted authority refuses every receipt of the old primary, and the
 // worker scans again. A receipt never leaves the worker's memory, so no
 // stored receipt has to keep verifying across this format (receiptTag).
+//
+// Since the v0.1.0 audit a receipt names only the subjects of the store's
+// scope that its acknowledged revision did not cover (scopes_linux.go):
+// those added from Base up to Revision. Base is the store's acknowledged
+// revision plus one at the scan, 0 for a store that acknowledged nothing.
+// More means that the scope goes on past Revision: the worker records this
+// receipt, then scans again. Both are left out of the MAC's input when zero,
+// so a receipt of the whole scope in one page has the earlier format.
 type Receipt struct {
 	Authority   string
 	Epoch       uint64
@@ -77,6 +96,8 @@ type Receipt struct {
 	Incarnation uint64
 	Revision    uint64
 	Subjects    []string
+	Base        uint64 `json:",omitempty"`
+	More        bool   `json:",omitempty"`
 	MAC         []byte
 }
 
@@ -122,8 +143,13 @@ CREATE INDEX outcomes_by_store ON outcomes(store);
 // keeps working in standalone mode. Version 4 adds the access revocation
 // records and the event ID of each outcome (access_linux.go): an older
 // catalogue refuses to record an access revocation, and the authority service
-// refuses to start on it (CheckSchema).
-const schemaVersion = 4
+// refuses to start on it (CheckSchema). Version 5 adds the scope of each
+// revocation subject (scopes_linux.go); before it every subject is in every
+// store's scope.
+const schemaVersion = 5
+
+// accessVersion is the schema version of the access revocation records.
+const accessVersion = 4
 
 // lossSchema is version 2: the declared losses and reruns of D-03 option B
 // (docs/adr/003-restore-rpo.md). Triggers refuse any update or delete, so a
@@ -154,7 +180,7 @@ func version(ctx context.Context, tx *sql.Tx) (int, error) {
 	switch v {
 	case 0:
 		return 1, nil
-	case 2, 3, schemaVersion:
+	case 2, 3, accessVersion, schemaVersion:
 		return v, nil
 	}
 	return 0, ErrUnavailable
@@ -173,6 +199,10 @@ func upgrade(ctx context.Context, tx *sql.Tx) error {
 	}
 	if err == nil && v == 3 {
 		_, err = tx.ExecContext(ctx, accessSchema)
+		v = accessVersion
+	}
+	if err == nil && v == accessVersion {
+		_, err = tx.ExecContext(ctx, scopeSchema)
 	}
 	return err
 }
@@ -305,7 +335,8 @@ func openDatabase(root string, create bool) (*Catalog, error) {
 	}
 	db.SetMaxOpenConns(1)
 	id := st.Sys().(*syscall.Stat_t)
-	return &Catalog{db: db, root: abs, device: uint64(id.Dev), inode: id.Ino, recording: map[*sql.Tx]*txRecord{}}, nil
+	return &Catalog{db: db, root: abs, device: uint64(id.Dev), inode: id.Ino, recording: map[*sql.Tx]*txRecord{},
+		locks: openLocks(uint64(id.Dev), id.Ino)}, nil
 }
 
 // sqliteOptions are those of every authority database. secure_delete
@@ -424,6 +455,7 @@ func (c *Catalog) KeyAuthorityIdentity() string { return c.keyIdentity }
 // Close stops the link to the replica, if any, then closes the catalogue.
 func (c *Catalog) Close() error {
 	c.repl.close()
+	c.closeLocks.Do(c.locks.close)
 	return c.db.Close()
 }
 
@@ -444,9 +476,10 @@ func (c *Catalog) checkFile() error {
 	return err
 }
 
-// Every operation obtains SQLite's cross-process write reservation. Activation
-// keeps it through inspection/publication, excluding concurrent revocations and
-// incarnation reservations. Callbacks must never re-enter this catalogue.
+// Every operation obtains SQLite's cross-process write reservation, for a short
+// transaction. A hold keeps only its store's locks while its callback runs
+// (holds_linux.go): the reservation and the single connection stay free for
+// other stores. Callbacks must still not re-enter this catalogue.
 // In synchronous mode, the operation returns only once the replica holds its
 // record, and it never runs on state the replica lacks, except what degraded
 // mode lets through (replication_linux.go).
@@ -572,14 +605,19 @@ func (c *Catalog) attempt(ctx context.Context, replicated bool, kind string, fn 
 	if err = c.checkFile(); err != nil {
 		return false, done, err
 	}
-	if c.hook != nil {
-		c.hook("before_commit")
+	// The tests interrupt an operation's write, not the reads before it.
+	hook := c.hook
+	if kind == authoritylog.WriteRead {
+		hook = nil
+	}
+	if hook != nil {
+		hook("before_commit")
 	}
 	if err = tx.Commit(); err != nil {
 		return false, done, err // outcome may be unknown: callers retry the stable operation ID
 	}
-	if c.hook != nil {
-		c.hook("after_commit")
+	if hook != nil {
+		hook("after_commit")
 	}
 	if record.Seq == 0 {
 		return false, done, nil
@@ -667,12 +705,16 @@ func (c *Catalog) Lookup(ctx context.Context, store string) (Binding, error) {
 // permanent sealing. The callback must not re-enter this catalogue or acquire a
 // host lifecycle lock: host -> catalogue -> keys/SQL is the integration order.
 // This is an identity gate, not a guest fence or a restoration activation proof.
+//
+// The callback runs with the store's binding lock held, outside any SQLite
+// transaction: a reservation or a seal of this store waits for it, and every
+// other store's operations go on.
 func (c *Catalog) WithBinding(ctx context.Context, b Binding, use func() error) error {
 	if b.Incarnation == 0 || !validName(b.Store) || !validName(b.Volume) || use == nil {
 		return ErrInput
 	}
-	return c.transaction(ctx, func(tx *sql.Tx) error {
-		if err := current(ctx, tx, b); err != nil {
+	return c.holding(ctx, []lockRequest{usesBinding(b.Store)}, func() error {
+		if err := c.transaction(ctx, func(tx *sql.Tx) error { return current(ctx, tx, b) }); err != nil {
 			return err
 		}
 		return use()
@@ -687,7 +729,14 @@ func (c *Catalog) ReserveIncarnation(ctx context.Context, old Binding, operation
 	if !validName(operation) || old.Incarnation == 0 || old.Incarnation >= 1<<63-1 {
 		return next, ErrInput
 	}
-	err := c.operate(ctx, authoritylog.WriteReservation, func(tx *sql.Tx) error {
+	// A hold of the store's binding excludes it, and every other store's
+	// operations go on.
+	err := c.holding(ctx, []lockRequest{changesBinding(old.Store)}, func() error { return c.reserve(ctx, old, &next, operation) })
+	return next, err
+}
+
+func (c *Catalog) reserve(ctx context.Context, old Binding, next *Binding, operation string) error {
+	return c.operate(ctx, authoritylog.WriteReservation, func(tx *sql.Tx) error {
 		var store string
 		var previous, reserved uint64
 		err := tx.QueryRowContext(ctx, "SELECT store,previous,current FROM reservations WHERE operation=?", operation).Scan(&store, &previous, &reserved)
@@ -696,7 +745,7 @@ func (c *Catalog) ReserveIncarnation(ctx context.Context, old Binding, operation
 			if store != old.Store || previous != old.Incarnation {
 				return ErrConflict
 			}
-			return current(ctx, tx, next)
+			return current(ctx, tx, *next)
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
@@ -711,36 +760,31 @@ func (c *Catalog) ReserveIncarnation(ctx context.Context, old Binding, operation
 		_, err = c.exec(ctx, tx, stmtReserveInsert, operation, old.Store, old.Incarnation, next.Incarnation)
 		return err
 	})
-	return next, err
 }
 
+// BeginRevocation begins subject in every store's scope, unless it is begun
+// already: its scope is unknown. A subject begun in a scope keeps it, so a
+// worker of the previous protocol, which begins PostgreSQL's whole catalogue
+// at each boot, widens no scope. The worker names the scope with
+// BeginRevocations instead.
 func (c *Catalog) BeginRevocation(ctx context.Context, subject string) (uint64, error) {
 	var revision uint64
 	if !validName(subject) {
 		return 0, ErrInput
 	}
-	err := c.operate(ctx, authoritylog.WriteRevocationStart, func(tx *sql.Tx) error {
-		err := tx.QueryRowContext(ctx, "SELECT revision FROM revocations WHERE subject=?", subject).Scan(&revision)
-		if err == nil {
-			return nil
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-		result, err := c.exec(ctx, tx, stmtRevision)
-		if err != nil {
-			return err
-		}
-		if n, err := result.RowsAffected(); err != nil || n != 1 {
-			return errors.Join(ErrUnavailable, err)
-		}
-		if err = tx.QueryRowContext(ctx, "SELECT revision FROM authority WHERE singleton=1").Scan(&revision); err != nil {
-			return err
-		}
-		_, err = c.exec(ctx, tx, stmtRevocation, subject, revision)
-		return err
-	})
-	return revision, err
+	read := func() error {
+		return c.transaction(ctx, func(tx *sql.Tx) error {
+			return tx.QueryRowContext(ctx, "SELECT revision FROM revocations WHERE subject=?", subject).Scan(&revision)
+		})
+	}
+	err := read()
+	if !errors.Is(err, sql.ErrNoRows) {
+		return revision, err
+	}
+	if err = c.BeginRevocations(ctx, []Scope{{Subject: subject}}); err != nil {
+		return 0, err
+	}
+	return revision, read()
 }
 
 // receiptTag versions the receipt's MAC and separates it from the archive's.
@@ -774,7 +818,20 @@ func writerEpoch(ctx context.Context, tx *sql.Tx) (uint64, error) {
 	return r.epoch, nil
 }
 
+// Scan returns the subjects of b's scope that its store has not acknowledged,
+// one page at a time (Receipt).
 func (c *Catalog) Scan(ctx context.Context, b Binding) (Receipt, error) {
+	return c.scan(ctx, b, false)
+}
+
+// ScanAll is Scan from the store's first revision, in one receipt: the
+// receipt for a client of the previous protocol, which knows neither Base nor
+// More. Its size grows with the store's scope.
+func (c *Catalog) ScanAll(ctx context.Context, b Binding) (Receipt, error) {
+	return c.scan(ctx, b, true)
+}
+
+func (c *Catalog) scan(ctx context.Context, b Binding, all bool) (Receipt, error) {
 	r := Receipt{Authority: c.identity, Store: b.Store, Incarnation: b.Incarnation, Subjects: []string{}}
 	err := c.transaction(ctx, func(tx *sql.Tx) error {
 		if err := current(ctx, tx, b); err != nil {
@@ -785,25 +842,34 @@ func (c *Catalog) Scan(ctx context.Context, b Binding) (Receipt, error) {
 			return err
 		}
 		var secret []byte
-		if err := tx.QueryRowContext(ctx, "SELECT revision,secret FROM authority WHERE singleton=1").Scan(&r.Revision, &secret); err != nil {
+		var revision uint64
+		if err := tx.QueryRowContext(ctx, "SELECT revision,secret FROM authority WHERE singleton=1").Scan(&revision, &secret); err != nil {
 			return err
 		}
 		defer clear(secret)
-		rows, err := tx.QueryContext(ctx, "SELECT subject FROM revocations ORDER BY subject")
+		var ack int64
+		if err = tx.QueryRowContext(ctx, "SELECT ack_revision FROM stores WHERE id=?", b.Store).Scan(&ack); err != nil {
+			return err
+		}
+		limit := ScanPage + 1
+		if all {
+			ack, limit = -1, -1
+		}
+		rows, err := c.scopeRows(ctx, tx, b.Store, ack, revision, limit)
 		if err != nil {
 			return err
 		}
-		defer rows.Close()
-		for rows.Next() {
-			var subject string
-			if err = rows.Scan(&subject); err != nil {
-				return err
+		r.Base, r.Revision = uint64(ack+1), revision
+		if !all {
+			if rows, r.More = pageOf(rows); r.More {
+				r.Revision = rows[len(rows)-1].revision
 			}
-			r.Subjects = append(r.Subjects, subject)
 		}
-		if err = rows.Err(); err != nil {
-			return err
+		for _, row := range rows {
+			r.Subjects = append(r.Subjects, row.subject)
 		}
+		slices.Sort(r.Subjects)
+		r.Subjects = slices.Compact(r.Subjects)
 		r.MAC = signReceipt(r, secret)
 		return nil
 	})
@@ -824,7 +890,7 @@ func (c *Catalog) validateReceipt(ctx context.Context, tx *sql.Tx, r Receipt) (u
 		return 0, err
 	}
 	defer clear(secret)
-	if r.Authority != c.identity || r.Epoch != epoch || r.Revision > revision || !hmac.Equal(r.MAC, signReceipt(r, secret)) {
+	if r.Authority != c.identity || r.Epoch != epoch || r.Revision > revision || r.Base > r.Revision+1 || !hmac.Equal(r.MAC, signReceipt(r, secret)) {
 		return 0, ErrStale
 	}
 	b, sealed, err := binding(ctx, tx, r.Store)
@@ -845,6 +911,15 @@ func (c *Catalog) RecordVerifiedFence(ctx context.Context, r Receipt) error {
 		if _, err := c.validateReceipt(ctx, tx, r); err != nil {
 			return err
 		}
+		// The receipt covers the scope from Base only: the store must have
+		// acknowledged everything below it, in this incarnation.
+		var ack int64
+		if err := tx.QueryRowContext(ctx, "SELECT ack_revision FROM stores WHERE id=?", r.Store).Scan(&ack); err != nil {
+			return err
+		}
+		if ack+1 < int64(r.Base) {
+			return ErrStale
+		}
 		result, err := c.exec(ctx, tx, stmtFence, r.Revision, r.Store, r.Revision)
 		if err != nil {
 			return err
@@ -857,6 +932,9 @@ func (c *Catalog) RecordVerifiedFence(ctx context.Context, r Receipt) error {
 	})
 }
 
+// currentFences is the model's RECHECK: the store acknowledged r, and no
+// subject entered its scope since. A revocation outside the store's scope no
+// longer makes its boot or its activation stale.
 func (c *Catalog) currentFences(ctx context.Context, tx *sql.Tx, r Receipt) error {
 	revision, err := c.validateReceipt(ctx, tx, r)
 	if err != nil {
@@ -866,7 +944,14 @@ func (c *Catalog) currentFences(ctx context.Context, tx *sql.Tx, r Receipt) erro
 	if err = tx.QueryRowContext(ctx, "SELECT ack_revision FROM stores WHERE id=?", r.Store).Scan(&ack); err != nil {
 		return err
 	}
-	if revision != r.Revision || ack < 0 || uint64(ack) != revision {
+	if ack < 0 || uint64(ack) != r.Revision {
+		return ErrStale
+	}
+	highest, err := c.scopeMax(ctx, tx, r.Store, revision)
+	if err != nil {
+		return err
+	}
+	if highest > r.Revision {
 		return ErrStale
 	}
 	return nil
@@ -875,18 +960,25 @@ func (c *Catalog) currentFences(ctx context.Context, tx *sql.Tx, r Receipt) erro
 // WithCurrentFences publishes a normal boot or new enrollment after current
 // guest fences. Restored activation additionally requires actual history
 // inspection through Activate. Callbacks must not re-enter this catalogue.
+//
+// publish runs with the store's locks held, outside any SQLite transaction:
+// no subject enters the store's scope, and no reservation or seal of the
+// store happens, until it returns.
 func (c *Catalog) WithCurrentFences(ctx context.Context, r Receipt, publish func() error) error {
-	if publish == nil {
+	if publish == nil || !validName(r.Store) {
 		return ErrInput
 	}
-	return c.transaction(ctx, func(tx *sql.Tx) error {
-		if err := c.currentFences(ctx, tx, r); err != nil {
+	return c.holding(ctx, append(readsScope(r.Store), usesBinding(r.Store)), func() error {
+		if err := c.transaction(ctx, func(tx *sql.Tx) error { return c.currentFences(ctx, tx, r) }); err != nil {
 			return err
 		}
 		return publish()
 	})
 }
 
+// subjectBarrier reports whether b's store acknowledged subject: it holds the
+// subject's fence, it is sealed, or the subject is outside its scope, where
+// no event of the store can name it.
 func subjectBarrier(ctx context.Context, tx *sql.Tx, b Binding, subject string) (acknowledged, sealed bool, err error) {
 	got, sealed, err := binding(ctx, tx, b.Store)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -898,12 +990,12 @@ func subjectBarrier(ctx context.Context, tx *sql.Tx, b Binding, subject string) 
 	if got != b {
 		return false, false, ErrStale
 	}
-	var revision uint64
-	if err = tx.QueryRowContext(ctx, "SELECT revision FROM revocations WHERE subject=?", subject).Scan(&revision); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return false, sealed, ErrStale
-		}
+	revision, in, err := subjectInScope(ctx, tx, b.Store, subject)
+	if err != nil {
 		return false, sealed, err
+	}
+	if !in {
+		return true, sealed, nil
 	}
 	var ack int64
 	if err = tx.QueryRowContext(ctx, "SELECT ack_revision FROM stores WHERE id=?", b.Store).Scan(&ack); err != nil {
@@ -932,15 +1024,26 @@ func (c *Catalog) WithRevocation(ctx context.Context, subject string, targets []
 	if !validName(subject) || len(targets) == 0 || publish == nil {
 		return ErrInput
 	}
-	return c.operate(ctx, authoritylog.WriteRevocationDone, func(tx *sql.Tx) error {
-		for _, b := range targets {
-			ack, _, err := subjectBarrier(ctx, tx, b, subject)
-			if err != nil {
-				return err
+	// publish runs with the targets' binding locks held: no reservation and
+	// no seal of a target until it returns.
+	locks := make([]lockRequest, 0, len(targets))
+	for _, b := range targets {
+		locks = append(locks, usesBinding(b.Store))
+	}
+	return c.holding(ctx, locks, func() error {
+		if err := c.operate(ctx, authoritylog.WriteRevocationDone, func(tx *sql.Tx) error {
+			for _, b := range targets {
+				ack, _, err := subjectBarrier(ctx, tx, b, subject)
+				if err != nil {
+					return err
+				}
+				if !ack {
+					return ErrStale
+				}
 			}
-			if !ack {
-				return ErrStale
-			}
+			return nil
+		}); err != nil {
+			return err
 		}
 		return publish()
 	})
@@ -953,9 +1056,14 @@ func (c *Catalog) WithRevocation(ctx context.Context, subject string, targets []
 // incarnation, this delivery is its rerun and is recorded as one (RecordRerun).
 // The delivery path thus needs no separate call.
 func (c *Catalog) RecordOutcome(ctx context.Context, b Binding, outcome Outcome) error {
-	if !validName(outcome.ID) || (outcome.Event != "" && !validName(outcome.Event)) {
+	if !validName(outcome.ID) || (outcome.Event != "" && !validName(outcome.Event)) || !validName(b.Store) {
 		return ErrInput
 	}
+	// An activation of the store excludes it; no other hold does.
+	return c.holding(ctx, []lockRequest{usesBinding(b.Store)}, func() error { return c.recordOutcome(ctx, b, outcome) })
+}
+
+func (c *Catalog) recordOutcome(ctx context.Context, b Binding, outcome Outcome) error {
 	return c.operate(ctx, authoritylog.WriteOutcome, func(tx *sql.Tx) error {
 		if err := current(ctx, tx, b); err != nil {
 			return err
@@ -993,16 +1101,23 @@ func (c *Catalog) RecordOutcome(ctx context.Context, b Binding, outcome Outcome)
 // outcome whose loss is not declared for this incarnation. It never declares
 // a loss itself: the restore path is Activate. publish must still enforce
 // physical/phase preconditions. No callback may re-enter this catalogue.
+//
+// publish runs with the store's locks held, its binding's exclusively,
+// outside any SQLite transaction: no outcome is recorded for the store, no
+// subject enters its scope, and no reservation or seal of it happens, until
+// it returns.
 func (c *Catalog) WithActivation(ctx context.Context, r Receipt, inspect Inspection, publish func() error) error {
-	if inspect == nil || publish == nil {
+	if inspect == nil || publish == nil || !validName(r.Store) {
 		return ErrInput
 	}
-	return c.operate(ctx, authoritylog.WriteActivation, func(tx *sql.Tx) error {
-		missing, err := c.missingOutcomes(ctx, tx, r, inspect)
-		if err != nil {
-			return err
-		}
-		if err = accounted(ctx, tx, missing, r.Incarnation); err != nil {
+	return c.holding(ctx, append(readsScope(r.Store), changesBinding(r.Store)), func() error {
+		if err := c.operate(ctx, authoritylog.WriteActivation, func(tx *sql.Tx) error {
+			missing, err := c.missingOutcomes(ctx, tx, r, inspect)
+			if err != nil {
+				return err
+			}
+			return accounted(ctx, tx, missing, r.Incarnation)
+		}); err != nil {
 			return err
 		}
 		return publish()
@@ -1013,13 +1128,19 @@ func (c *Catalog) WithActivation(ctx context.Context, r Receipt, inspect Inspect
 // It neither proves retirement nor deletes keys/data; the runtime must supply
 // that evidence before calling it. A sealed identity can never reserve again.
 func (c *Catalog) RecordRetiredSeal(ctx context.Context, b Binding) error {
-	return c.operate(ctx, authoritylog.WriteSeal, func(tx *sql.Tx) error {
-		got, _, err := binding(ctx, tx, b.Store)
-		if err != nil || got != b {
-			return ErrStale
-		}
-		_, err = c.exec(ctx, tx, stmtSeal, b.Store)
-		return err
+	if !validName(b.Store) {
+		return ErrStale
+	}
+	// A hold of the store's binding excludes it.
+	return c.holding(ctx, []lockRequest{changesBinding(b.Store)}, func() error {
+		return c.operate(ctx, authoritylog.WriteSeal, func(tx *sql.Tx) error {
+			got, _, err := binding(ctx, tx, b.Store)
+			if err != nil || got != b {
+				return ErrStale
+			}
+			_, err = c.exec(ctx, tx, stmtSeal, b.Store)
+			return err
+		})
 	})
 }
 

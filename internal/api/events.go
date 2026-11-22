@@ -152,8 +152,16 @@ type subscriber struct {
 	state                string
 	truncated            bool
 	missingResultAttempt int
+	// authorized is when the rights were last checked; recheck asks for a
+	// check at the next read (a policy notification).
+	authorized time.Time
+	recheck    bool
 }
 
+// read reads the subscription's state and new frames. An invocation's
+// subscriber checks its rights with them every eventRightsInterval and when
+// its organization's policy changes; in between, it reads only what is new,
+// in one statement (P-11).
 func (s *subscriber) read(ctx context.Context) (controlplane.OutputStreamView, error) {
 	ctx, cancel := context.WithTimeout(ctx, eventReadTimeout)
 	defer cancel()
@@ -164,7 +172,15 @@ func (s *subscriber) read(ctx context.Context) (controlplane.OutputStreamView, e
 	if s.build {
 		return s.catalog.ReadCorpusBuildStream(ctx, s.principal, s.op, s.pos.attempt, after, 64)
 	}
-	return s.catalog.ReadOutputStreamPage(ctx, s.principal, s.op, s.pos.attempt, after, 64)
+	if !s.recheck && !s.authorized.IsZero() && time.Since(s.authorized) < eventRightsInterval {
+		return s.catalog.ReadOutputStreamNews(ctx, s.principal, s.op, s.pos.attempt, after, 64)
+	}
+	checked := time.Now()
+	v, err := s.catalog.ReadOutputStreamPage(ctx, s.principal, s.op, s.pos.attempt, after, 64)
+	if err == nil {
+		s.authorized, s.recheck = checked, false
+	}
+	return v, err
 }
 func lostRights(err error) bool {
 	return errors.Is(err, controlplane.ErrForbidden) || errors.Is(err, controlplane.ErrNotFound) || errors.Is(err, controlplane.ErrAuthentication)
@@ -199,6 +215,7 @@ func (s *subscriber) page(ctx context.Context, v controlplane.OutputStreamView, 
 			case <-ctx.Done():
 				return false, false, ctx.Err()
 			case <-policy:
+				s.recheck = true
 				return true, false, nil
 			default:
 			}
@@ -357,8 +374,10 @@ func (s *Server) followEvents(ctx context.Context, w http.ResponseWriter, sub *s
 					return
 				}
 			case <-rights.C:
+				sub.recheck = true
 			case <-wake:
 			case <-policy:
+				sub.recheck = true
 			case <-poll:
 			}
 		}

@@ -265,3 +265,36 @@ operator's feed (`internal/controlplane`).
    times an hour. Should each refusal be an event (a, the default), or one
    event per actor, action and reason each minute, with a count (b)?
    Recommended: (a) now, (b) if trails grow too fast.
+
+## Changes after the v0.1.0 audit
+
+**PERF-1 (S-02, S-03, P-02, P-09, A-04, S-20, L-15, P-12).** §5 measured
+one dispatch loop that ran its jobs one after the other, every delivery under
+the host's exclusive admission turn and boots and volume copies under the
+host registry's lock. Delivering to several agents at once is now built: each
+agent has its own admission queue, a delivery holds its recipient's turn only,
+and a pass runs up to `dispatch_concurrency` jobs at once (4 by default, 1 to
+64), each agent's own jobs in claim order. A boot, a stop, a volume copy or
+install holds its agent's lock; `host.lock` guards only short registry
+changes, the host-wide capacity count among them. The registry is kept in
+memory and written only when it changes, the host keeps its control
+connections to each guest open, and one monitor per host replaces a ticker per
+VM. The figures of §5 predate this and were not measured again; the load test
+still runs one job at a time per loop. The VMM's log is bounded and removed
+with its run, and the guest has no serial console in production (S-20).
+Details: [worker.md](../worker.md), [ADR 017](017-capacity-queue-and-dead-letter-replay.md#changes-after-the-v010-audit).
+
+**PERF-3A (P-01, P-04).** §5 also found that one loop waited its interval
+after every pass. The loop now passes again at once after a full batch, and
+PostgreSQL wakes it when new work arrives for its host (`agentcapsule_work`,
+the host's ID as the only payload); the shipped `poll_interval` is 5 s, a
+fallback that bounds what a lost notification costs. The queries that find
+work read partial indexes of the open rows and `agent_activity`, each agent's
+last activity kept by triggers, instead of the tables' history (migration
+0067); on a seeded schema of 100,000 finished invocations their slowest
+statement went from up to 1.2 s to under 5 ms (evidence
+`quint/results/audit/audit-perf-3a/explain-*`). Finished invocations, wakes,
+sleeps and requests are deleted `finished_retention` after their end (90 days
+by default) when nothing needs them; an event of the audit trail that names
+one keeps it until §8's retention removes the event, so the audit's retention
+still decides alone how long the trail lasts.

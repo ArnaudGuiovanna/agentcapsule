@@ -69,7 +69,7 @@ func (c *Catalog) ExportAccess(ctx context.Context, after int64, limit int) ([]E
 	err := c.transaction(ctx, func(tx *sql.Tx) error {
 		out, next = out[:0], 0
 		cursor := after
-		if v, err := version(ctx, tx); err != nil || v < schemaVersion {
+		if v, err := version(ctx, tx); err != nil || v < accessVersion {
 			return errors.Join(ErrUpgradeRequired, err)
 		}
 		rows, err := tx.QueryContext(ctx, "SELECT rowid,id,kind,organization,objects,recorded_at,epoch,seq FROM access_revocations WHERE rowid>? ORDER BY rowid LIMIT ?", cursor, limit+1)

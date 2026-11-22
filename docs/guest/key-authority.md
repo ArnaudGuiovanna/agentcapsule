@@ -28,7 +28,8 @@ worker socket, which admits root only, and pins both authorities' identities
 (its `authority` section, [worker.md](../worker.md)). To format a new volume
 or unlock it at boot, it asks for a key hold under the volume's binding
 {agent, volume, incarnation}: the service holds the restore authority's
-binding, then the key's shared lock, and sends the key as 32 raw bytes after
+binding (a lock of that store only: other agents' boots and calls go on),
+then the key's shared lock, and sends the key as 32 raw bytes after
 its `held` frame, never inside JSON. The worker uses the key, clears its
 buffer, and releases the hold; the end of its connection releases it too. A
 hold lasts at most `max_key_hold` (2 minutes by default). The service refuses

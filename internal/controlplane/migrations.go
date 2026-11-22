@@ -239,6 +239,18 @@ var organizationSuspensionSQL string
 //go:embed migrations/0068_llm_request_policy.sql
 var llmRequestPolicySQL string
 
+//go:embed migrations/0069_revocation_scope_indexes.sql
+var revocationScopeIndexesSQL string
+
+//go:embed migrations/0070_work_notifications.sql
+var workNotificationsSQL string
+
+//go:embed migrations/0071_open_state_indexes.sql
+var openStateIndexesSQL string
+
+//go:embed migrations/0072_finished_record_retention.sql
+var finishedRecordRetentionSQL string
+
 // Append migrations; never edit an installed migration. The original schema
 // also upgrades pre-ledger installations, preserving its historical backfills.
 // Later calls validate its checksum without replaying DDL or those backfills.
@@ -311,6 +323,10 @@ var controlPlaneMigrations = []schemaMigration{
 	{version: 66, name: "access-revocation-recording", sql: accessRevocationRecordingSQL},
 	{version: 67, name: "organization-suspension", sql: organizationSuspensionSQL},
 	{version: 68, name: "llm-request-policy", sql: llmRequestPolicySQL},
+	{version: 69, name: "revocation-scope-indexes", sql: revocationScopeIndexesSQL},
+	{version: 70, name: "work-notifications", sql: workNotificationsSQL},
+	{version: 71, name: "open-state-indexes", sql: openStateIndexesSQL},
+	{version: 72, name: "finished-record-retention", sql: finishedRecordRetentionSQL},
 }
 
 func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error {

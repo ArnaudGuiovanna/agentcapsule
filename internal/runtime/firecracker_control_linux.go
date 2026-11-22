@@ -91,6 +91,9 @@ func credentialsDue(c capsuleprotocol.Credentials, now time.Time) (bool, error) 
 	return now.Before(before) || !now.Add(CredentialRenewalMargin).Before(after), err
 }
 
+// controlClient returns the boot's control client. One client per boot is
+// kept while the boot lasts, so that its connections, each authenticated at
+// its own mTLS handshake, serve the next calls (P-09); cleanup closes them.
 func (h *FirecrackerHost) controlClient(a *HostAgent) (*capsuleprotocol.Client, error) {
 	credentials, err := h.controlCredentials(a)
 	if err != nil {
@@ -101,8 +104,42 @@ func (h *FirecrackerHost) controlClient(a *HostAgent) (*capsuleprotocol.Client, 
 	} else if due {
 		return nil, ErrCredentialsDue
 	}
+	vmID := a.Run.ID
+	h.platformMu.Lock()
+	c := h.clients[vmID]
+	h.platformMu.Unlock()
+	if c != nil && c.Identity() == credentials.Identity {
+		return c, nil
+	}
 	socket := a.Run.Socket
-	return capsuleprotocol.NewClient(credentials, func(ctx context.Context) (net.Conn, error) { return capsuleprotocol.DialControl(ctx, socket) })
+	c, err = capsuleprotocol.NewClient(credentials, func(ctx context.Context) (net.Conn, error) { return capsuleprotocol.DialControl(ctx, socket) })
+	if err != nil {
+		return nil, err
+	}
+	h.platformMu.Lock()
+	defer h.platformMu.Unlock()
+	if h.platformClosed {
+		return c, nil
+	}
+	if h.clients == nil {
+		h.clients = map[string]*capsuleprotocol.Client{}
+	}
+	if old := h.clients[vmID]; old != nil && old.Identity() == credentials.Identity {
+		return old, nil
+	}
+	h.clients[vmID] = c
+	return c, nil
+}
+
+// dropClient closes the kept connections of a boot that ends.
+func (h *FirecrackerHost) dropClient(vmID string) {
+	h.platformMu.Lock()
+	c := h.clients[vmID]
+	delete(h.clients, vmID)
+	h.platformMu.Unlock()
+	if c != nil {
+		c.CloseIdleConnections()
+	}
 }
 
 // CredentialRotations observes verified running boots. now is the trusted host
@@ -113,52 +150,56 @@ func (h *FirecrackerHost) CredentialRotations(ctx context.Context, now time.Time
 	if !h.opts.AuthenticatedControl {
 		return due, nil
 	}
-	err := h.locked(ctx, func(r *hostRegistry) error {
-		if err := h.recover(ctx, r); err != nil {
-			return err
+	if err := h.recover(ctx); err != nil {
+		return due, err
+	}
+	r, err := h.view()
+	if err != nil {
+		return due, err
+	}
+	for id, a := range r.Agents {
+		needs, err := h.credentialDue(a, now)
+		if err != nil {
+			return due, err
 		}
-		for id, a := range r.Agents {
-			needs, err := h.credentialDue(a, now)
-			if err != nil {
-				return err
-			}
-			if needs {
-				due[id] = *a.Run
-			}
+		if needs {
+			due[id] = *a.Run
 		}
-		return nil
-	})
-	return due, err
+	}
+	return due, nil
 }
 
 // CredentialRotation is CredentialRotations for one agent: its VM alone is
 // recovered, then checked.
 func (h *FirecrackerHost) CredentialRotation(ctx context.Context, id string, now time.Time) (VMRun, bool, error) {
 	var run VMRun
-	due := false
 	if !h.opts.AuthenticatedControl {
-		return run, due, nil
+		return run, false, nil
 	}
-	err := h.locked(ctx, func(r *hostRegistry) error {
-		if err := h.recoverOne(ctx, r, id); err != nil {
-			return err
-		}
-		a := r.Agents[id]
-		if a == nil {
-			return nil
-		}
-		var err error
-		if due, err = h.credentialDue(a, now); due {
-			run = *a.Run
-		}
-		return err
-	})
+	unlock, err := h.lockAgent(ctx, id)
+	if err != nil {
+		return run, false, err
+	}
+	defer unlock()
+	if err = h.recoverOne(ctx, id); err != nil {
+		return run, false, err
+	}
+	a, err := h.agent(ctx, id)
+	if err != nil || a == nil {
+		return run, false, err
+	}
+	due, err := h.credentialDue(a, now)
+	if due {
+		run = *a.Run
+	}
 	return run, due, err
 }
 
 // credentialDue tells whether a's VM, if it runs, needs new credentials by now.
+// A boot still starting, which another caller holds, got its credentials
+// just now.
 func (h *FirecrackerHost) credentialDue(a *HostAgent, now time.Time) (bool, error) {
-	if a.Run == nil {
+	if a.Run == nil || a.Run.Phase != "RUNNING" {
 		return false, nil
 	}
 	credentials, err := h.controlCredentials(a)
@@ -239,22 +280,27 @@ func (h *FirecrackerHost) ControlForRetirement(ctx context.Context, id string) (
 	return client, nil
 }
 
+// controlSession adopts the agent's VM under the agent's lock, never under
+// host.lock, then returns its boot's client.
 func (h *FirecrackerHost) controlSession(ctx context.Context, id string) (*capsuleprotocol.Client, VMRun, error) {
-	var client *capsuleprotocol.Client
 	var run VMRun
-	err := h.locked(ctx, func(r *hostRegistry) error {
-		if err := h.recoverOne(ctx, r, id); err != nil {
-			return err
-		}
-		a := r.Agents[id]
-		if a == nil || a.Run == nil {
-			return ErrNoVM
-		}
-		run = *a.Run
-		var err error
-		client, err = h.controlClient(a)
-		return err
-	})
+	unlock, err := h.lockAgent(ctx, id)
+	if err != nil {
+		return nil, run, err
+	}
+	defer unlock()
+	if err = h.recoverOne(ctx, id); err != nil {
+		return nil, run, err
+	}
+	a, err := h.agent(ctx, id)
+	if err != nil {
+		return nil, run, err
+	}
+	if a == nil || a.Run == nil {
+		return nil, run, ErrNoVM
+	}
+	run = *a.Run
+	client, err := h.controlClient(a)
 	return client, run, err
 }
 

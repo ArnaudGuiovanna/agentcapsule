@@ -29,8 +29,9 @@ func (r contextReader) Read(b []byte) (int, error) {
 }
 
 // InstallVolume writes a restored image into the registered ciphertext inode,
-// in place, under physical exclusion and the host registry lock (REC-02). The
-// caller has retired the agent's VMs under exclusive admission. image must
+// in place, under physical exclusion and the agent's lock (REC-02, S-03): the
+// copy holds that agent's volume alone, never the host registry. The caller
+// has retired the agent's VMs under exclusive admission. image must
 // yield exactly size bytes, the size of the registered container, whose
 // SHA-256 is digest. Otherwise ErrVolumeImage: the volume holds a partial
 // image, and the caller keeps the agent out of service until an install
@@ -49,124 +50,142 @@ func (h *FirecrackerHost) InstallGrownVolume(ctx context.Context, id string, gen
 	return h.installVolume(ctx, id, generation, device, inode, image, size, digest, targetMiB)
 }
 
+// stoppedVolume checks, under the agent's lock, that the registered volume of
+// id at generation has no VM, and returns the agent.
+func (h *FirecrackerHost) stoppedVolume(ctx context.Context, id string, generation, device, inode uint64) (*HostAgent, error) {
+	a, err := h.agent(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if a == nil || a.Run != nil {
+		return nil, ErrVolumeBusy
+	}
+	if a.Fenced || a.SealID != "" || a.VolumeRemoved {
+		return nil, ErrHostFenced
+	}
+	if a.Generation != generation {
+		return nil, ErrGeneration
+	}
+	if a.Device != device || a.Inode != inode || inode == 0 {
+		return nil, errors.New("volume identity changed")
+	}
+	return a, nil
+}
+
 func (h *FirecrackerHost) installVolume(ctx context.Context, id string, generation, device, inode uint64, image io.Reader, size int64, digest [32]byte, targetMiB int) error {
 	if image == nil || size <= 0 {
 		return ErrVolumeImage
 	}
+	unlock, err := h.lockAgent(ctx, id)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	a, err := h.stoppedVolume(ctx, id, generation, device, inode)
+	if err != nil {
+		return err
+	}
+	fd, err := syscall.Open(a.Volume, syscall.O_WRONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return err
+	}
+	f := os.NewFile(uintptr(fd), a.Volume)
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	s := st.Sys().(*syscall.Stat_t)
+	if !st.Mode().IsRegular() || st.Mode().Perm() != 0600 || uint64(s.Dev) != device || s.Ino != inode || s.Nlink != 1 {
+		return errors.New("restored volume inode is inconsistent")
+	}
+	expected := size
+	if targetMiB != 0 {
+		expected = int64(targetMiB) << 20
+	}
+	if targetMiB != 0 && a.Resources.VolumeMiB != targetMiB && int64(a.Resources.VolumeMiB)<<20 != size {
+		return ErrVolumeImage
+	}
+	if st.Size() != expected && !(targetMiB != 0 && st.Size() == size) {
+		return ErrVolumeImage
+	}
+	if err = syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		return errors.Join(ErrVolumeBusy, err)
+	}
+	hash := sha256.New()
+	n, err := io.Copy(io.MultiWriter(f, hash), io.LimitReader(contextReader{ctx, image}, size))
+	if err != nil {
+		return err
+	}
+	if n != size {
+		return ErrVolumeImage
+	}
+	var extra [1]byte
+	if n, _ := image.Read(extra[:]); n != 0 {
+		return ErrVolumeImage
+	}
+	if !bytes.Equal(hash.Sum(nil), digest[:]) {
+		return ErrVolumeImage
+	}
+	if targetMiB != 0 {
+		if err = f.Truncate(size); err != nil {
+			return err
+		}
+		if err = f.Truncate(expected); err != nil {
+			return err
+		}
+	}
+	if err = f.Sync(); err != nil {
+		return err
+	}
+	if targetMiB == 0 {
+		return nil
+	}
 	return h.locked(ctx, func(r *hostRegistry) error {
-		a := r.Agents[id]
-		if a == nil || a.Run != nil {
+		current := r.Agents[id]
+		if current == nil || current.Run != nil || current.Generation != generation || current.Device != device || current.Inode != inode {
 			return ErrVolumeBusy
 		}
-		if a.Fenced || a.SealID != "" || a.VolumeRemoved {
-			return ErrHostFenced
-		}
-		if a.Generation != generation {
-			return ErrGeneration
-		}
-		if a.Device != device || a.Inode != inode || inode == 0 {
-			return errors.New("restored volume identity changed")
-		}
-		fd, err := syscall.Open(a.Volume, syscall.O_WRONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
-		if err != nil {
-			return err
-		}
-		f := os.NewFile(uintptr(fd), a.Volume)
-		defer f.Close()
-		st, err := f.Stat()
-		if err != nil {
-			return err
-		}
-		s := st.Sys().(*syscall.Stat_t)
-		if !st.Mode().IsRegular() || st.Mode().Perm() != 0600 || uint64(s.Dev) != device || s.Ino != inode || s.Nlink != 1 {
-			return errors.New("restored volume inode is inconsistent")
-		}
-		expected := size
-		if targetMiB != 0 {
-			expected = int64(targetMiB) << 20
-		}
-		if targetMiB != 0 && a.Resources.VolumeMiB != targetMiB && int64(a.Resources.VolumeMiB)<<20 != size {
-			return ErrVolumeImage
-		}
-		if st.Size() != expected && !(targetMiB != 0 && st.Size() == size) {
-			return ErrVolumeImage
-		}
-		if err = syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-			return errors.Join(ErrVolumeBusy, err)
-		}
-		hash := sha256.New()
-		n, err := io.Copy(io.MultiWriter(f, hash), io.LimitReader(contextReader{ctx, image}, size))
-		if err != nil {
-			return err
-		}
-		if n != size {
-			return ErrVolumeImage
-		}
-		var extra [1]byte
-		if n, _ := image.Read(extra[:]); n != 0 {
-			return ErrVolumeImage
-		}
-		if !bytes.Equal(hash.Sum(nil), digest[:]) {
-			return ErrVolumeImage
-		}
-		if targetMiB != 0 {
-			if err = f.Truncate(size); err != nil {
-				return err
-			}
-			if err = f.Truncate(expected); err != nil {
-				return err
-			}
-		}
-		if err = f.Sync(); err != nil {
-			return err
-		}
-		if targetMiB != 0 {
-			a.Resources.VolumeMiB = targetMiB
-			return h.save(r)
-		}
-		return nil
+		current.Resources.VolumeMiB = targetMiB
+		return h.save(r)
 	})
 }
 
 // WithStoppedVolume reads the registered ciphertext inode under physical
-// exclusion and the host registry lock. It never infers retirement from SQL.
+// exclusion and the agent's lock (S-03): the copy holds that agent's volume
+// alone, never the host registry. It never infers retirement from SQL.
 // The caller must have quiesced/retired the VM under exclusive admission. The
-// callback may enter the independent authority, but must not re-enter the host.
+// callback may enter the independent authority, but must not re-enter the host
+// for this agent.
 func (h *FirecrackerHost) WithStoppedVolume(ctx context.Context, id string, generation, device, inode uint64, use func(io.Reader) error) error {
 	if use == nil {
 		return errors.New("archive reader required")
 	}
-	return h.locked(ctx, func(r *hostRegistry) error {
-		a := r.Agents[id]
-		if a == nil || a.Run != nil {
-			return ErrVolumeBusy
-		}
-		if a.Fenced || a.SealID != "" || a.VolumeRemoved {
-			return ErrHostFenced
-		}
-		if a.Generation != generation {
-			return ErrGeneration
-		}
-		if a.Device != device || a.Inode != inode || inode == 0 {
-			return errors.New("archive volume identity changed")
-		}
-		fd, err := syscall.Open(a.Volume, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
-		if err != nil {
-			return err
-		}
-		f := os.NewFile(uintptr(fd), a.Volume)
-		defer f.Close()
-		st, err := f.Stat()
-		if err != nil {
-			return err
-		}
-		s := st.Sys().(*syscall.Stat_t)
-		if !st.Mode().IsRegular() || st.Mode().Perm() != 0600 || uint64(s.Dev) != device || s.Ino != inode || s.Nlink != 1 {
-			return errors.New("archive volume inode is inconsistent")
-		}
-		if err = syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-			return errors.Join(ErrVolumeBusy, err)
-		}
-		return use(f)
-	})
+	unlock, err := h.lockAgent(ctx, id)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	a, err := h.stoppedVolume(ctx, id, generation, device, inode)
+	if err != nil {
+		return err
+	}
+	fd, err := syscall.Open(a.Volume, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return err
+	}
+	f := os.NewFile(uintptr(fd), a.Volume)
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	s := st.Sys().(*syscall.Stat_t)
+	if !st.Mode().IsRegular() || st.Mode().Perm() != 0600 || uint64(s.Dev) != device || s.Ino != inode || s.Nlink != 1 {
+		return errors.New("archive volume inode is inconsistent")
+	}
+	if err = syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		return errors.Join(ErrVolumeBusy, err)
+	}
+	return use(f)
 }

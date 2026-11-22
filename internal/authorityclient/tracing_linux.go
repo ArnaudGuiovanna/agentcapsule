@@ -13,7 +13,7 @@ var operations = []string{svc.OpStatus, svc.OpLookup, svc.OpCheckBinding, svc.Op
 	svc.OpSubjectBarrier, svc.OpHoldRevocation, svc.OpRecordOutcome, svc.OpRecordRerun, svc.OpRecordSeal, svc.OpLosses,
 	svc.OpOutcomeStatus, svc.OpSignArchive, svc.OpValidateArchive, svc.OpRecordedOutcomes, svc.OpDeclareLosses, svc.OpHoldActivation,
 	svc.OpAppendAccess, svc.OpOnReplica, svc.OpExportAccess, svc.OpExportSubjects, svc.OpExportStores, svc.OpAnnouncement,
-	svc.OpImportSubjects, svc.OpReceiptKey}
+	svc.OpImportSubjects, svc.OpReceiptKey, svc.OpBeginRevocations}
 
 // callSpan is one call to the authority service (OPR-3): its operation and
 // outcome, the service's error code or "outage" when the connection failed,

@@ -35,9 +35,20 @@ func (h *FirecrackerHost) Close() {
 		services = append(services, s)
 		s.cancel()
 	}
+	m := h.monitor
+	h.monitor = nil
+	clients := h.clients
+	h.clients = nil
 	h.platformMu.Unlock()
 	for _, s := range services {
 		<-s.done
+	}
+	if m != nil {
+		close(m.stop)
+		<-m.done
+	}
+	for _, c := range clients {
+		c.CloseIdleConnections()
 	}
 }
 func (h *FirecrackerHost) closePlatform(vmID string) {
@@ -94,9 +105,44 @@ func (l *verifiedListener) Accept() (net.Conn, error) {
 	}
 }
 
-// ensurePlatform runs under host.lock. A second kernel lock elects ONE listener
-// owner across live worker processes. Worker death releases that lock; stale
-// socket files are removed only by its next owner. No secret enters the jail log.
+// platformCheck accepts a connection on the platform channel of boot vmID
+// of agentID only from that boot's VMM, while the boot is RUNNING. It reads
+// the registry without host.lock: another agent's boot or volume copy, or a
+// state change of this one, never makes it wait (S-03). Each call the
+// connection carries is admitted again (WithApplication, Control).
+func (h *FirecrackerHost) platformCheck(agentID, vmID string, generation uint64) func(context.Context, *syscall.Ucred) error {
+	return func(ctx context.Context, peer *syscall.Ucred) error {
+		r, err := h.view()
+		if err != nil {
+			return err
+		}
+		current := r.Agents[agentID]
+		if current == nil || current.Fenced || current.Run == nil || current.Run.ID != vmID || current.Run.Generation != generation || current.Run.FenceOnly || current.Run.Phase != "RUNNING" {
+			return ErrGeneration
+		}
+		if peer.Uid != current.UID || peer.Gid != current.UID || int(peer.Pid) != current.Run.PID {
+			return ErrGeneration
+		}
+		return h.platformPeer(current.clone(), peer)
+	}
+}
+
+// platformPeer checks that the peer is the boot's identified VMM, which still
+// owns the agent's volume.
+func (h *FirecrackerHost) platformPeer(a *HostAgent, peer *syscall.Ucred) error {
+	if h.peer != nil {
+		return h.peer(a, peer)
+	}
+	if _, _, err := h.identify(a); err != nil {
+		return err
+	}
+	return ownedVolumeLock(a.Run.PID, a.Volume)
+}
+
+// ensurePlatform runs under the agent's lock. A second kernel lock elects ONE
+// listener owner across live worker processes. Worker death releases that
+// lock; stale socket files are removed only by its next owner. No secret
+// enters the jail log.
 func (h *FirecrackerHost) ensurePlatform(a *HostAgent) error {
 	if h.opts.PlatformHandler == nil || a.Run.FenceOnly {
 		return nil
@@ -144,19 +190,10 @@ func (h *FirecrackerHost) ensurePlatform(a *HostAgent) error {
 	if err != nil {
 		return err
 	}
-	socket := fmt.Sprintf("%s_%d", a.Run.Socket, capsuleprotocol.PlatformPort)
-	if err = os.Remove(socket); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: socket, Net: "unix"})
+	// The socket is <jail>/vsock_<port>, beside the VMM's own vsock socket,
+	// in the jail its user owns (L-15).
+	listener, err := listenInJail(filepath.Dir(a.Run.Socket), fmt.Sprintf("%s_%d", filepath.Base(a.Run.Socket), capsuleprotocol.PlatformPort), int(a.UID))
 	if err != nil {
-		return err
-	}
-	if err = os.Chown(socket, int(a.UID), int(a.UID)); err == nil {
-		err = os.Chmod(socket, 0600)
-	}
-	if err != nil {
-		listener.Close()
 		return err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -173,21 +210,6 @@ func (h *FirecrackerHost) ensurePlatform(a *HostAgent) error {
 	}
 	h.platform[vmID] = service
 	h.platformMu.Unlock()
-	check := func(ctx context.Context, peer *syscall.Ucred) error {
-		return h.locked(ctx, func(r *hostRegistry) error {
-			current := r.Agents[agentID]
-			if current == nil || current.Fenced || current.Run == nil || current.Run.ID != vmID || current.Run.Generation != generation || current.Run.FenceOnly || current.Run.Phase != "RUNNING" {
-				return ErrGeneration
-			}
-			if peer.Uid != current.UID || peer.Gid != current.UID || int(peer.Pid) != current.Run.PID {
-				return ErrGeneration
-			}
-			if _, _, err := h.identify(current); err != nil {
-				return err
-			}
-			return ownedVolumeLock(current.Run.PID, current.Volume)
-		})
-	}
 	owned = true
 	go func() {
 		defer close(service.done)
@@ -200,30 +222,11 @@ func (h *FirecrackerHost) ensurePlatform(a *HostAgent) error {
 			}
 			h.platformMu.Unlock()
 		}()
-		_ = capsuleprotocol.ServeAuthenticated(ctx, &verifiedListener{Listener: listener, ctx: ctx, check: check}, *credentials.Platform, handler)
+		_ = capsuleprotocol.ServeAuthenticated(ctx, &verifiedListener{Listener: listener, ctx: ctx, check: h.platformCheck(agentID, vmID, generation)}, *credentials.Platform, handler)
 	}()
-	// Another worker may retire the boot and unlink its jail. Relinquish this
-	// process's listener too; do not keep a deleted socket/goroutine indefinitely.
-	go func() {
-		ticker := time.NewTicker(200 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				alive := false
-				err := h.locked(ctx, func(r *hostRegistry) error {
-					a := r.Agents[agentID]
-					alive = a != nil && !a.Fenced && a.Run != nil && a.Run.ID == vmID
-					return nil
-				})
-				if err != nil || !alive {
-					cancel()
-					return
-				}
-			}
-		}
-	}()
+	// Another worker may retire the boot and unlink its jail: the host's
+	// monitor then relinquishes this process's listener too, rather than keep a
+	// deleted socket and its goroutine indefinitely.
+	h.watch()
 	return nil
 }

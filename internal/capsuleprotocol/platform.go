@@ -405,7 +405,7 @@ func NewPlatformClient(credentials Credentials, dial func(context.Context) (net.
 	if credentials.Channel != "platform" || credentials.Identity.FenceOnly {
 		return nil, ErrIdentity
 	}
-	c, err := NewClient(credentials, dial)
+	c, err := newClient(credentials, dial, false)
 	if err != nil {
 		return nil, err
 	}

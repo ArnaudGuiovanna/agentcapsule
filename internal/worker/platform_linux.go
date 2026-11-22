@@ -15,10 +15,11 @@ import (
 )
 
 // applicationHost is what the platform channel needs of the host driver
-// (runtime.FirecrackerHost): its shared admission, and the control session of
-// the agent's current boot, whose identity the caller must have.
+// (runtime.FirecrackerHost): the shared admission of the calling agent, and
+// the control session of the agent's current boot, whose identity the caller
+// must have.
 type applicationHost interface {
-	WithApplication(context.Context, func(context.Context) error) error
+	WithApplication(context.Context, string, func(context.Context) error) error
 	Control(context.Context, string) (*capsuleprotocol.Client, error)
 }
 
@@ -40,14 +41,15 @@ type platformAPI struct {
 	streamTelemetry func() *streamTelemetry
 }
 
-// withApplication checks the current boot's negotiated contract under host
-// admission before entering the authority/SQL gates for the effect. Control's
+// withApplication checks the current boot's negotiated contract under the
+// agent's shared admission before entering the authority/SQL gates for the
+// effect: another agent's delivery or barrier never delays it. Control's
 // physical census may first read authority/SQL; no such lock remains held when
 // the probe starts, and no effect transaction has begun.
 // The callback only touches PostgreSQL and never reacquires a host/root lock.
 // These remote effects are not entries in the guest's recoverable data history.
 func (a platformAPI) withApplication(ctx context.Context, fn func(context.Context) error) error {
-	return a.host.WithApplication(ctx, func(ctx context.Context) error {
+	return a.host.WithApplication(ctx, a.caller.AgentID, func(ctx context.Context) error {
 		client, err := a.host.Control(ctx, a.caller.AgentID)
 		if err != nil {
 			return err

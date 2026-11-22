@@ -643,7 +643,7 @@ func TestReplicaCreatedFromASnapshotCatchesUp(t *testing.T) {
 func TestSnapshotNeedsVersionThreeBeforeArming(t *testing.T) {
 	dir := t.TempDir()
 	keys, c := primary(t, dir)
-	if _, err := c.db.Exec("DROP TABLE outcome_events; DROP TABLE access_revocations; DROP TABLE replication_log; DROP TABLE replication; PRAGMA user_version=2"); err != nil {
+	if _, err := c.db.Exec("DROP TABLE revocation_scopes; DROP TABLE outcome_events; DROP TABLE access_revocations; DROP TABLE replication_log; DROP TABLE replication; PRAGMA user_version=2"); err != nil {
 		t.Fatal(err)
 	}
 	_, recipient := newUnlockKey(t)

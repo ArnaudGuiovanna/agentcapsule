@@ -524,7 +524,7 @@ func TestVersionOneCatalogueUpgradesOnInitialize(t *testing.T) {
 	if err := c.RecordOutcome(t.Context(), b, Outcome{ID: "event-0", Digest: digest("first")}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.db.Exec("DROP TABLE outcome_events; DROP TABLE access_revocations; DROP TABLE replication_log; DROP TABLE replication; DROP TABLE reruns; DROP TABLE losses; DROP INDEX outcomes_by_identity; PRAGMA user_version=0"); err != nil {
+	if _, err := c.db.Exec("DROP TABLE revocation_scopes; DROP TABLE outcome_events; DROP TABLE access_revocations; DROP TABLE replication_log; DROP TABLE replication; DROP TABLE reruns; DROP TABLE losses; DROP INDEX outcomes_by_identity; PRAGMA user_version=0"); err != nil {
 		t.Fatal(err)
 	}
 	old := reopen(t, c)

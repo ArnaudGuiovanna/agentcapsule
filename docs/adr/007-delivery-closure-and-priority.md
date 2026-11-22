@@ -739,3 +739,16 @@ the upgrade.
   `TestDispatchServiceClosureExpirationAndDeletion`, whose closure counts
   changed, with the other dispatch tests listed in §6. These KVM tests
   passed on November 18, 2026, in `scripts/verify-runtime.py` at 1b4a7c3.
+
+## Changes after the v0.1.0 audit
+
+**PERF-3A (P-04).** A request's record no longer stays forever. Once its
+content is purged (§7), nothing of it is still queued and its closure has
+committed, the worker of its sender's host deletes it `finished_retention`
+after its deadline (90 days by default), with its mailbox entries,
+idempotency key, inbox items, closure and content tombstones; its status
+then reads as not found. Its subject stays in the permanent revocation
+catalogue, so no fence changes. A request an owner's message, a restore's
+redelivery or an audit event names stays. A result that was never read keeps
+its invocation: it is never purged. Details:
+[worker.md](../worker.md#maintenance-and-delivery-worker).

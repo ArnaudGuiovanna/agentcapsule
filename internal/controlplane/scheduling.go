@@ -281,7 +281,9 @@ func owesWork(now string) string {
 
 // idleCandidates selects running tenant agents whose idle clock has elapsed and
 // that owe no work (owesWork), nor a scheduled instruction due before the idle
-// window would end. $1 now, $2 host, $3 agent filter (” for all).
+// window would end. The clock starts at the boot's observation or at the
+// agent's last wake, invocation, request or model call (agent_activity).
+// $1 now, $2 host, $3 agent filter (” for all).
 var idleCandidates = `
 SELECT a.id,x.idle_policy_by FROM agents a
   JOIN agent_specs x ON x.agent_id=a.id
@@ -289,12 +291,7 @@ SELECT a.id,x.idle_policy_by FROM agents a
   JOIN agent_idle_watch w ON w.agent_id=a.id AND w.generation=p.generation
  WHERE a.tenant_id IS NOT NULL AND a.phase='LIVE' AND x.idle_timeout_seconds IS NOT NULL AND p.host_id=$2
    AND p.state='RUNNING' AND NOT p.fence_only AND ($3='' OR a.id=$3)
-   AND greatest(w.observed_at,
-        coalesce((SELECT max(greatest(o.created_at,coalesce(o.completed_at,o.created_at))) FROM platform_operations o
-                   WHERE o.agent_id=a.id AND o.kind IN ('wake','instruction')),w.observed_at),
-        coalesce((SELECT max(greatest(r.created_at,coalesce(r.decided_at,r.created_at))) FROM agent_requests r
-                   WHERE r.sender_agent_id=a.id OR r.recipient_agent_id=a.id),w.observed_at),
-        coalesce((SELECT max(coalesce(u.settled_at,u.created_at)) FROM llm_usage u WHERE u.agent_id=a.id),w.observed_at))
+   AND greatest(w.observed_at, coalesce((SELECT v.idle_at FROM agent_activity v WHERE v.agent_id=a.id),w.observed_at))
        + x.idle_timeout_seconds*interval '1 second' <= ` + dbNow + `
    AND NOT ` + owesWork(dbNow) + `
    AND NOT EXISTS(SELECT 1 FROM owner_instructions i JOIN platform_operations o ON o.id=i.operation_id
