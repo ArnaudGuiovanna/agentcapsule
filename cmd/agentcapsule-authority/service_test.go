@@ -198,6 +198,10 @@ func TestServeConfigurationNamesItsRole(t *testing.T) {
 		`{"version":2,"role":"replica",` + replica + `}`: "replica",
 		primary(`,"api_uid":990`):                        "primary",
 		primary(`,"api_uid":990,"max_key_hold":"10m"`):   "primary",
+		// The worker's own account (ADR 024): never root's nor the API's.
+		primary(`,"api_uid":990,"worker_uid":991`): "primary",
+		primary(`,"api_uid":990,"worker_uid":0`):   "",
+		primary(`,"api_uid":990,"worker_uid":990`): "",
 		primary(`,"api_uid":990,"metrics_listen":"127.0.0.1:9466","authority_replica":{"address":"standby:7443",` +
 			`"certificate":"/etc/p.crt","key":"/etc/p.key","replica_certificate":"/etc/r.crt","degraded_after":"1m"}`): "primary",
 		`{"version":1,"role":"replica",` + replica + `}`: "",

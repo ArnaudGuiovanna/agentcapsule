@@ -55,8 +55,7 @@ func (o Options) Run(ctx context.Context, image, program string, args ...string)
 }
 
 // RunInput is Run with input, at most MaxProgramInput bytes, as the
-// program's standard input, through a pipe that holds it all before the
-// program starts: commands for it (debugfs -f -), never a secret. The
+// program's standard input, through a pipe: commands for it (debugfs -f -), never a secret. The
 // confinement is Run's.
 func (o Options) RunInput(ctx context.Context, image string, input []byte, program string, args ...string) ([]byte, error) {
 	if !filepath.IsAbs(program) {
@@ -69,14 +68,65 @@ func (o Options) RunInput(ctx context.Context, image string, input []byte, progr
 	if o.TestTools {
 		filter = testToolsFilter
 	}
-	return o.run(ctx, image, input, filter, program, args)
+	if o.Delegate != nil {
+		return o.delegate(ctx, image, Delegated{Program: program, Args: args, Input: input})
+	}
+	return o.run(ctx, image, input, filter, program, "", args)
+}
+
+// delegate runs through o.Delegate, with the image opened by this process.
+func (o Options) delegate(ctx context.Context, image string, d Delegated) ([]byte, error) {
+	if o.Unconfined || o.TestTools {
+		return nil, fmt.Errorf("%w: a delegated run is confined, under the strict or the self filter", ErrUnavailable)
+	}
+	o = o.withDefaults()
+	d.Timeout, d.CPU = o.Timeout, o.CPU
+	if image != "" {
+		abs, err := filepath.Abs(image)
+		if err != nil {
+			return nil, err
+		}
+		f, err := os.Open(abs)
+		if err != nil {
+			return nil, err
+		}
+		defer f.Close()
+		d.Image, d.ImagePath = f, abs
+	}
+	return o.Delegate.RunConfined(ctx, d)
+}
+
+// RunFile is Run on an image already open, at path: for the worker's
+// helper, which runs what a worker that is not root asked (ADR 024). It is
+// never unconfined.
+func (o Options) RunFile(ctx context.Context, image *os.File, path string, input []byte, program string, args ...string) ([]byte, error) {
+	if !filepath.IsAbs(program) || o.Unconfined || o.Delegate != nil || len(input) > MaxProgramInput {
+		return nil, fmt.Errorf("%w: an open image runs confined, with an absolute program", ErrUnavailable)
+	}
+	filter := strictFilter
+	if o.TestTools {
+		filter = testToolsFilter
+	}
+	return o.runOpen(ctx, image, path, input, filter, program, "", args)
+}
+
+// RunExecutable is RunSelf for the program name of another executable,
+// executable, an absolute path: the worker's own, for its helper (ADR 024).
+// The image is open already, at path.
+func (o Options) RunExecutable(ctx context.Context, image *os.File, path string, input []byte, executable, name string, args ...string) ([]byte, error) {
+	if !selfName(name) || !filepath.IsAbs(executable) {
+		return nil, fmt.Errorf("sandbox: %q is not a program of %q", name, executable)
+	}
+	if o.Unconfined || o.TestTools || o.Delegate != nil || len(input) > MaxInput {
+		return nil, fmt.Errorf("%w: a program of an executable runs only confined, with at most %d bytes of input", ErrUnavailable, MaxInput)
+	}
+	return o.runOpen(ctx, image, path, input, selfExecutableFilter, name, executable, args)
 }
 
 // RunSelf runs this executable again, confined, as the program that a
 // package registered under name (see Self), with args, and returns its
 // standard output, at most 1 MiB of it. image is open for it as for Run.
-// input, at most MaxInput bytes, is its standard input, through a pipe that
-// holds it all: a secret goes there, never in args or the environment. The
+// input, at most MaxInput bytes, is its standard input, through a pipe: a secret goes there, never in args or the environment. The
 // confinement is Run's, with the self filter and limits (see the package
 // documentation). It is never unconfined, nor under the test tools' filter.
 func (o Options) RunSelf(ctx context.Context, image string, input []byte, name string, args ...string) ([]byte, error) {
@@ -86,7 +136,10 @@ func (o Options) RunSelf(ctx context.Context, image string, input []byte, name s
 	if o.Unconfined || o.TestTools || len(input) > MaxInput {
 		return nil, fmt.Errorf("%w: a program of this executable runs only confined, with at most %d bytes of input", ErrUnavailable, MaxInput)
 	}
-	return o.run(ctx, image, input, selfFilter, name, args)
+	if o.Delegate != nil {
+		return o.delegate(ctx, image, Delegated{Self: name, Args: args, Input: input})
+	}
+	return o.run(ctx, image, input, selfFilter, name, "", args)
 }
 
 // selfName: the name of a program of this executable, as RunSelf and Self
@@ -100,7 +153,27 @@ func selfName(name string) bool {
 	return strings.Trim(rest, "abcdefghijklmnopqrstuvwxyz-") == ""
 }
 
-func (o Options) run(ctx context.Context, image string, input []byte, filter, program string, args []string) ([]byte, error) {
+func (o Options) run(ctx context.Context, image string, input []byte, filter, program, executable string, args []string) ([]byte, error) {
+	path := "-"
+	if image != "" {
+		abs, err := filepath.Abs(image)
+		if err != nil {
+			return nil, err
+		}
+		path = abs
+	}
+	in, err := os.Open(cmp.Or(image, os.DevNull))
+	if err != nil {
+		return nil, err
+	}
+	defer in.Close()
+	return o.runOpen(ctx, in, path, input, filter, program, executable, args)
+}
+
+// runOpen runs program confined on in, the image at path ("-": none, in is
+// then /dev/null). executable, for the self-executable filter, is the
+// executable whose program runs.
+func (o Options) runOpen(ctx context.Context, in *os.File, path string, input []byte, filter, program, executable string, args []string) ([]byte, error) {
 	o = o.withDefaults()
 	root := AsRoot()
 	if o.Unconfined && os.Geteuid() == 0 {
@@ -118,19 +191,9 @@ func (o Options) run(ctx context.Context, image string, input []byte, filter, pr
 	if o.TestTools && !testing.Testing() {
 		return nil, fmt.Errorf("%w: the test tools' filter outside a test binary", ErrUnavailable)
 	}
-	path := "-"
-	if image != "" {
-		abs, err := filepath.Abs(image)
-		if err != nil {
-			return nil, err
-		}
-		path = abs
+	if in == nil || path != "-" && !filepath.IsAbs(path) {
+		return nil, fmt.Errorf("sandbox: an image needs its absolute path")
 	}
-	in, err := os.Open(cmp.Or(image, os.DevNull))
-	if err != nil {
-		return nil, err
-	}
-	defer in.Close()
 	status, report, err := os.Pipe()
 	if err != nil {
 		return nil, err
@@ -147,20 +210,6 @@ func (o Options) run(ctx context.Context, image string, input []byte, filter, pr
 	defer lifeline.Close()
 	limited, cancel := context.WithTimeout(ctx, o.Timeout)
 	defer cancel()
-	var stdin *os.File
-	if input != nil {
-		// The pipe holds the whole input before the program starts: it
-		// never waits for this process, and the input is never on disk.
-		var feed *os.File
-		if stdin, feed, err = os.Pipe(); err != nil {
-			return nil, err
-		}
-		defer stdin.Close()
-		_, err = feed.Write(input)
-		if err = errors.Join(err, feed.Close()); err != nil {
-			return nil, err
-		}
-	}
 
 	name, argv, files := program, args, []*os.File{in}
 	var attributes *syscall.SysProcAttr
@@ -170,8 +219,12 @@ func (o Options) run(ctx context.Context, image string, input []byte, filter, pr
 			uid, gid = 0, 0 // root of the helper's own user namespace: the caller
 		}
 		name = helperPath
-		argv = append([]string{strconv.FormatUint(uint64(uid), 10), strconv.FormatUint(uint64(gid), 10),
-			strconv.FormatUint(o.cpuSeconds(), 10), filter, path, program}, args...)
+		argv = []string{strconv.FormatUint(uint64(uid), 10), strconv.FormatUint(uint64(gid), 10),
+			strconv.FormatUint(o.cpuSeconds(), 10), filter, path, program}
+		if filter == selfExecutableFilter {
+			argv = append(argv, executable)
+		}
+		argv = append(argv, args...)
 		files = append(files, report, life)
 		attributes = namespaces(root)
 	}
@@ -181,8 +234,9 @@ func (o Options) run(ctx context.Context, image string, input []byte, filter, pr
 	}
 	cmd.SysProcAttr = attributes
 	cmd.Env = []string{"LC_ALL=C"}
-	if stdin != nil {
-		cmd.Stdin = stdin
+	if input != nil {
+		// Some hosts have pipes smaller than a batch. Feed it while the child reads.
+		cmd.Stdin = bytes.NewReader(input)
 	}
 	cmd.ExtraFiles = files
 	var out bounded

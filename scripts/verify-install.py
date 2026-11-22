@@ -41,11 +41,16 @@ docs/bootstrap.md and docs/install.md step by step, without root:
     refuses root of a user namespace); when a mandatory check fails, the worker refuses
     to start (RUN-012) and creates no runtime root; then the garbage
     collection on demand (`-collect-garbage`, OPR-5): refused without
-    `-confirm`, a dry run, a run, audited, and still no runtime root;
+    `-confirm`, a dry run, a run, audited, and still no runtime root; then,
+    with a `helper` section (ADR 024), the preflight's `worker_helper` check
+    in place of `kvm`, and the worker's refusal to run as root;
 12. ends with an authenticated call to the API as the organization's owner.
 
 Without root: the worker refuses a configuration that root does not own,
-and the authority service admits only root on the worker's socket. The run
+and the authority service admits only root on the worker's socket without
+worker_uid. The installed worker runs as its own account with a root helper
+(ADR 024), which needs root and KVM: this run checks the worker without a
+helper, as a laboratory runs it, and its refusals with one. The run
 starts both in a user namespace where this account is root (`unshare -r`),
 which changes no permission on the host: the KVM device, cgroups and mounts
 are seen as this account sees them. Everything else runs as this account.
@@ -853,6 +858,27 @@ def main():
                    f"list-audit holds {len(collected)} garbage collections, not the one that ran")
         run.checked("-collect-garbage: refused without -confirm, a dry run and a run print their outcome, the run alone is "
                     "audited (garbage.collected, unchanged); the runtime root not created")
+        # The installed worker runs as its own account with its root helper
+        # (ADR 024): with a helper section, its preflight asks the helper,
+        # which does not run here, in place of opening /dev/kvm, and the
+        # worker refuses to start as root.
+        separated = dict(worker, helper={"socket": str(sockets / "helper.sock")})
+        (etc / "worker-separated.json").write_text(json.dumps(separated, indent=2) + "\n")
+        (etc / "worker-separated.json").chmod(0o644)
+        r = run.run("worker-separated-preflight", ["unshare", "-r", opt / "agentcapsule-worker", "-config",
+                                                   etc / "worker-separated.json", "-preflight"], worker_env, check=False, timeout=180)
+        results, last = parse_preflight(r.stdout)
+        seen = {c: s for s, c, _ in results}
+        run.expect(seen.get("worker_helper") == "fail" and "kvm" not in seen and last == "preflight_failed",
+                   "with a helper section, the preflight does not ask the helper in place of /dev/kvm; "
+                   "see logs/worker-separated-preflight.log")
+        r = run.run("worker-separated-start", ["unshare", "-r", opt / "agentcapsule-worker", "-config", etc / "worker-separated.json"],
+                    worker_env, check=False, timeout=120)
+        run.expect(r.returncode == 1 and r.stderr.strip() == "worker_runs_as_its_account_not_root",
+                   "a worker with a helper started as root; see logs/worker-separated-start.log")
+        run.expect(not host_root.exists(), "the worker with a helper created the runtime root")
+        run.checked("with its helper (ADR 024): the preflight checks worker_helper in place of kvm, and the worker refuses "
+                    "to run as root (worker_runs_as_its_account_not_root)")
         run.done()
 
         # ---- 12. The end: an authenticated call as the organization's owner.

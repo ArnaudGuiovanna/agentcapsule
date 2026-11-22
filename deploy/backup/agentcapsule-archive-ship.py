@@ -36,6 +36,8 @@ input. rclone runs as --user (agentcapsule-ship by default): it reads its own
 configuration and can open no file of the archive root. `fetch` works the other
 way: rclone writes each file to its standard output, into a file root created
 in a hidden directory of the archive root, renamed into place once checked.
+Run by the worker's helper with `fetch --owner agentcapsule-worker`, every
+operation on the archive root runs as that account (ADR 024).
 
 Metric labels take declared values only: store is "s3" or "standby". The file
 holds counts and times: no archive ID, path, host or message. It is replaced
@@ -430,20 +432,49 @@ def ship_locked(a, rc):
     return status
 
 
+@contextlib.contextmanager
+def as_account(account):
+    """File operations as account (seteuid), root kept to come back: a fetch
+    for the worker's helper writes the worker's archive root as the worker
+    (ADR 024), so a root swapped for a link reaches only what it can write.
+    Nothing changes without an account."""
+    if account is None:
+        yield
+        return
+    groups = os.getgroups()
+    os.setgroups([account.pw_gid])
+    os.setegid(account.pw_gid)
+    os.seteuid(account.pw_uid)
+    try:
+        yield
+    finally:
+        os.seteuid(0)
+        os.setegid(0)
+        os.setgroups(groups)
+
+
 def fetch(a, rc):
     """Copy one archive from a store into the archive root, checked, then renamed into place."""
     if not ARCHIVE_ID.fullmatch(a.archive):
         raise SystemExit("not an archive ID: arc_ and 32 lowercase hexadecimal digits")
-    try:
-        a.archive_root.mkdir(mode=0o700, exist_ok=True)
-        st = a.archive_root.lstat()
-    except OSError as error:
-        raise SystemExit(f"the archive root cannot be used: {error.strerror}") from error
-    if not a.archive_root.is_dir() or a.archive_root.is_symlink() or st.st_uid != os.geteuid() or st.st_mode & 0o777 != 0o700:
-        raise SystemExit("the archive root must be a directory of this user, mode 0700")
-    final = a.archive_root / a.archive
-    if os.path.lexists(final):
-        raise SystemExit(f"{a.archive} is already in the archive root")
+    owner = None
+    if a.owner:
+        if os.geteuid() != 0:
+            raise SystemExit("--owner needs root")
+        owner = pwd.getpwnam(a.owner)
+        if owner.pw_uid == 0:
+            raise SystemExit("--owner must not be root")
+    with as_account(owner):
+        try:
+            a.archive_root.mkdir(mode=0o700, exist_ok=True)
+            st = a.archive_root.lstat()
+        except OSError as error:
+            raise SystemExit(f"the archive root cannot be used: {error.strerror}") from error
+        if not a.archive_root.is_dir() or a.archive_root.is_symlink() or st.st_uid != os.geteuid() or st.st_mode & 0o777 != 0o700:
+            raise SystemExit("the archive root must be a directory of this user, mode 0700")
+        final = a.archive_root / a.archive
+        if os.path.lexists(final):
+            raise SystemExit(f"{a.archive} is already in the archive root")
     try:
         listing = rc.list(a.store, a.archive)
     except StoreUnreadable as error:
@@ -455,39 +486,44 @@ def fetch(a, rc):
     # A hidden staging directory, as the worker's own captures use: a crash
     # leaves no archive, and the worker sweeps what is left.
     stage = a.archive_root / (".pending-" + secrets.token_hex(16))
-    stage.mkdir(mode=0o700)
+    with as_account(owner):
+        stage.mkdir(mode=0o700)
     try:
-        fd = os.open(stage / MANIFEST, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(fd, "wb") as f:
-            f.write(manifest)
-            f.flush()
-            os.fsync(f.fileno())
-        fd = os.open(stage / DATA, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with as_account(owner):
+            fd = os.open(stage / MANIFEST, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "wb") as f:
+                f.write(manifest)
+                f.flush()
+                os.fsync(f.fileno())
+            fd = os.open(stage / DATA, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        # rclone starts as its own account, which only root can switch to.
         with os.fdopen(fd, "wb") as f:
             rc.run("cat", f"{a.store}:{a.archive}/{DATA}", stdout=f)
             f.flush()
             os.fsync(f.fileno())
-        digest, h, size = manifest_digest(manifest), hashlib.sha256(), 0
-        with open(stage / DATA, "rb") as f:
-            for block in iter(lambda: f.read(1 << 20), b""):
-                h.update(block)
-                size += len(block)
-        if size != manifest_size(manifest, a.archive) or digest is None or h.digest() != digest:
-            raise SystemExit(f"the copy of {a.archive} on {a.store} does not match its manifest (size or digest)")
-        for name in FILES:
-            # The store's times: a fetched archive is not "written after its
-            # upload" if this host ships it to the same store.
-            os.utime(stage / name, (files[name][1], files[name][1]))
-        fsync_directory(stage)
-        try:
-            os.rename(stage, final)  # cannot replace a complete (nonempty) archive directory
-        except OSError as error:
-            if error.errno in (errno.EEXIST, errno.ENOTEMPTY):
-                raise SystemExit(f"{a.archive} appeared in the archive root meanwhile") from error
-            raise
-        fsync_directory(a.archive_root)
+        with as_account(owner):
+            digest, h, size = manifest_digest(manifest), hashlib.sha256(), 0
+            with open(stage / DATA, "rb") as f:
+                for block in iter(lambda: f.read(1 << 20), b""):
+                    h.update(block)
+                    size += len(block)
+            if size != manifest_size(manifest, a.archive) or digest is None or h.digest() != digest:
+                raise SystemExit(f"the copy of {a.archive} on {a.store} does not match its manifest (size or digest)")
+            for name in FILES:
+                # The store's times: a fetched archive is not "written after its
+                # upload" if this host ships it to the same store.
+                os.utime(stage / name, (files[name][1], files[name][1]))
+            fsync_directory(stage)
+            try:
+                os.rename(stage, final)  # cannot replace a complete (nonempty) archive directory
+            except OSError as error:
+                if error.errno in (errno.EEXIST, errno.ENOTEMPTY):
+                    raise SystemExit(f"{a.archive} appeared in the archive root meanwhile") from error
+                raise
+            fsync_directory(a.archive_root)
     except BaseException:
-        shutil.rmtree(stage, ignore_errors=True)
+        with as_account(owner):
+            shutil.rmtree(stage, ignore_errors=True)
         raise
     print(json.dumps({"archive": a.archive, "store": a.store, "bytes": size}), flush=True)
     return 0
@@ -514,6 +550,7 @@ def main(argv=None):
     f = sub.add_parser("fetch", help="copy one archive from one store into the archive root")
     f.add_argument("--store", choices=STORES, required=True)
     f.add_argument("--archive", required=True, help="archive ID (arc_...)")
+    f.add_argument("--owner", help="as root, write the archive root as this account: the worker's, for its helper (ADR 024)")
     a = p.parse_args(argv)
     if a.command == "ship":
         keep = dict(DEFAULT_KEEP)

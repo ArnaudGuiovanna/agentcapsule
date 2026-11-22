@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -58,10 +59,10 @@ func (h *FirecrackerHost) prepareControl(a *HostAgent) (capsuleprotocol.Credenti
 	return guest, syncDir(filepath.Dir(h.credentialPath(a.Run)))
 }
 
-// appendControlConfig appends the boot's files to its initrd: credentials,
-// the launch of a registry harness, and corpora.json when the VM has
-// corpora or build drives.
-func appendControlConfig(f *os.File, guest capsuleprotocol.Credentials, harness *HarnessImage, corpora *capsuleprotocol.GuestCorpora) error {
+// appendControlConfig writes the files a boot appends to its initrd:
+// credentials, the launch of a registry harness, and corpora.json when the
+// VM has corpora or build drives.
+func appendControlConfig(f io.WriteSeeker, guest capsuleprotocol.Credentials, harness *HarnessImage, corpora *capsuleprotocol.GuestCorpora) error {
 	if harness == nil {
 		return capsuleprotocol.AppendBootConfig(f, guest, nil, corpora)
 	}
@@ -111,8 +112,10 @@ func (h *FirecrackerHost) controlClient(a *HostAgent) (*capsuleprotocol.Client, 
 	if c != nil && c.Identity() == credentials.Identity {
 		return c, nil
 	}
-	socket := a.Run.Socket
-	c, err = capsuleprotocol.NewClient(credentials, func(ctx context.Context) (net.Conn, error) { return capsuleprotocol.DialControl(ctx, socket) })
+	// Each connection reaches the VMM's socket, which belongs to its UID,
+	// through root (ADR 024).
+	boot := a.clone()
+	c, err = capsuleprotocol.NewClient(credentials, func(ctx context.Context) (net.Conn, error) { return h.privileged().Dial(ctx, boot) })
 	if err != nil {
 		return nil, err
 	}

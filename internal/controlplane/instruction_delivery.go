@@ -375,7 +375,7 @@ func (t *Transit) RetireInstruction(ctx context.Context, id string, runtime Revo
 	if _, err = tx.Exec(ctx, "UPDATE mandates SET valid=false WHERE id=$1", i.Mandate); err != nil {
 		return err
 	}
-	if err = publishRevocation(ctx, tx, "event/"+id); err != nil {
+	if err = publishRevocation(ctx, tx, "event/"+id, i.Destination); err != nil {
 		return err
 	}
 	if err = commit(ctx, tx); err != nil {

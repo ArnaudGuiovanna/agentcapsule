@@ -374,7 +374,7 @@ func TestReadyChecksInstalledMigrationLedger(t *testing.T) {
 // fixtures simulating an older installation can replay it. Test-only: a ledger
 // row is never removed to repair a production database. The objects a later
 // migration creates and could not create again come first, newest first
-// (0079 and 0078, 0077 to 0075, 0072 to 0069, then 0065; 0073 and 0080 only
+// (0081, 0079 and 0078, 0077 to 0075, 0072 to 0069, then 0065; 0073 and 0080 only
 // replace a function);
 // those of 0066 to 0068 and 0074 go with the table, column and tables they
 // change, dropped below (access_revocations, platform_operations.cause, the
@@ -382,6 +382,7 @@ func TestReadyChecksInstalledMigrationLedger(t *testing.T) {
 func revertTenantAgents(t *testing.T, s *Store) {
 	t.Helper()
 	if _, err := s.pool.Exec(t.Context(), `
+        ALTER TABLE revocation_catalogue DROP COLUMN IF EXISTS stores;
         DROP INDEX IF EXISTS llm_usage_finished, llm_audit_usage;
         DROP TABLE IF EXISTS llm_budget_windows;
         DROP FUNCTION IF EXISTS preserve_audit_event(), stamp_audit_event(), preserve_audit_retention() CASCADE;

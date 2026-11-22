@@ -14,6 +14,7 @@ import (
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authoritylog"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/keyauthority"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/keymem"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/restoreauthority"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/telemetry"
 )
@@ -44,8 +45,9 @@ const (
 type Config struct {
 	Catalog *restoreauthority.Catalog
 	Keys    *keyauthority.Files
-	// WorkerUID is the only account the worker socket admits: root. Tests
-	// set their own.
+	// WorkerUID is the worker's account, which the worker socket admits
+	// with root: root itself when the worker is (0), its own account with
+	// the worker helper (ADR 024). Tests set their own.
 	WorkerUID uint32
 	// APIUID is the API's account; the API socket admits it and root.
 	APIUID uint32
@@ -240,16 +242,16 @@ func peerUID(conn *net.UnixConn) (uint32, bool) {
 }
 
 // admits checks the peer at accept: the socket gives the role. The worker
-// socket admits root only, the API socket the API's account and root.
-// Root can read the directories anyway: the roles protect against the
-// API's account, not against root.
+// socket admits the worker's account and root, the API socket the API's
+// account and root. Root can read the directories anyway: the roles protect
+// against the API's account, not against root.
 func (s *Server) admits(conn *net.UnixConn, role string) bool {
 	uid, ok := peerUID(conn)
 	if !ok {
 		return false
 	}
 	if role == RoleWorker {
-		return uid == s.c.WorkerUID
+		return uid == s.c.WorkerUID || uid == 0
 	}
 	return uid == s.c.APIUID || uid == 0
 }
@@ -394,7 +396,7 @@ func (s *Server) handle(ctx context.Context, conn *net.UnixConn, role string, pr
 			}
 			// A key goes after its frame, once the operation has ended.
 			if a, ok := out.result.(keyAnswer); ok {
-				defer clear(a.key)
+				defer keymem.Release(a.key)
 				return sendKey(conn, a.result, a.key)
 			}
 			if out.result == nil {
@@ -415,7 +417,9 @@ func (s *Server) handle(ctx context.Context, conn *net.UnixConn, role string, pr
 			// The client went away, or broke the protocol: a hold ends with
 			// its connection, as it ended with the worker's process.
 			lose(ErrHoldLost)
-			<-done
+			if a, ok := (<-done).result.(keyAnswer); ok {
+				keymem.Release(a.key) // never sent
+			}
 			return false
 		}
 	}

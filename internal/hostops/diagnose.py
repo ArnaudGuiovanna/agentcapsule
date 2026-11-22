@@ -181,8 +181,9 @@ def diagnose(args):
     elif args.sub == "llm":
         if not re.fullmatch(r"org_[0-9a-f]{32}", args.organization) or not 1 <= len(args.alias) <= 100:
             raise ValueError("invalid organization or alias")
-        raw = output(ACTIVE / "agentcapsule-worker", "-config", ETC / "worker.json",
-                     "-probe-organization", args.organization, "-probe-llm-alias", args.alias,
+        # As the worker's account, whose role PostgreSQL maps it to (ADR 024).
+        raw = output("runuser", "--preserve-environment", "-u", WORKER_USER, "--", ACTIVE / "agentcapsule-worker",
+                     "-config", ETC / "worker.json", "-probe-organization", args.organization, "-probe-llm-alias", args.alias,
                      env=worker_env(read(STATE / "profile.json")), timeout=20)
         report["provider"] = json.loads(raw)
     return report

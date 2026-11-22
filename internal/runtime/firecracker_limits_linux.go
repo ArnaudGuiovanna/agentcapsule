@@ -5,12 +5,6 @@ package runtime
 import (
 	"context"
 	"errors"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"strconv"
-	"strings"
-	"syscall"
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
@@ -87,19 +81,12 @@ func (r DriveRate) rateLimiter(burst int64) map[string]any {
 	return map[string]any{"bandwidth": bandwidth, "ops": ops}
 }
 
-// jailerCommand starts the VMM of one boot under the jailer: its own UID and
-// GID, chroot, PID namespace and attempt cgroup, with Firecracker's default
-// seccomp filters. CLONE_NEWNET gives it a network namespace of its own with
-// no interface but loopback, and the VM gets no network device (prepare): the
-// guest's only way out is the vsock to this host, through the platform.
-func (h *FirecrackerHost) jailerCommand(run *VMRun, uid uint32, group *os.File) *exec.Cmd {
-	cmd := exec.Command(filepath.Join(h.root, "bin", "jailer"), "--id", run.ID, "--exec-file", filepath.Join(h.root, "bin", "firecracker"),
-		"--uid", strconv.Itoa(int(uid)), "--gid", strconv.Itoa(int(uid)), "--chroot-base-dir", filepath.Join(h.root, "jails"),
-		"--new-pid-ns", "--cgroup-version", "2", "--parent-cgroup", strings.TrimPrefix(h.group(run), "/sys/fs/cgroup/"),
-		"--resource-limit", "no-file=256", "--", "--no-api", "--config-file", "/config.json")
-	cmd.SysProcAttr = &syscall.SysProcAttr{UseCgroupFD: true, CgroupFD: int(group.Fd()), Cloneflags: syscall.CLONE_NEWNET}
-	return cmd
-}
+// The jailer starts the VMM of one boot (workerhelper.JailerArgs): its own
+// UID and GID, chroot, PID namespace and attempt cgroup, with Firecracker's
+// default seccomp filters. CLONE_NEWNET gives it a network namespace of its
+// own with no interface but loopback, and the VM gets no network device
+// (prepare): the guest's only way out is the vsock to this host, through the
+// platform.
 
 // ErrBootFailed marks a boot that the guest failed (ADR 012): its VMM ran,
 // holding the agent's volume, then exited or stopped answering on its control
@@ -157,9 +144,8 @@ func (h *FirecrackerHost) bootFailure(ctx context.Context, a *HostAgent, cause e
 	if a.Run == nil || a.Run.PID == 0 {
 		return cause
 	}
-	group := h.group(a.Run)
 	exited := func() bool {
-		busy, err := populated(group)
+		busy, err := h.privileged().Populated(ctx, a)
 		return err == nil && !busy
 	}
 	var answers func(context.Context) bool

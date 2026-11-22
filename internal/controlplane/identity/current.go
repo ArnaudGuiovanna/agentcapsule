@@ -44,7 +44,9 @@ type Application struct {
 	Scopes                      []string
 }
 
-// SnapshotTx marks a read-only repeatable read of authority and content at one snapshot.
+// SnapshotTx reads authority without row locks. Content projections use a read-only
+// REPEATABLE READ snapshot. The early audit rights check uses it before the
+// horizon wait and rechecks rights with locks before returning any events.
 type SnapshotTx struct{ pgx.Tx }
 
 // activeOrganization serializes admissions with revocations at the organization row.

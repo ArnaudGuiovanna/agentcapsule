@@ -72,6 +72,15 @@ func NewProvisioningPlacements(store *controlplane.Store, hostID, workerID strin
 		w.Close()
 		return nil, err
 	}
+	if helper := opts.Helper; helper != nil {
+		// A registered volume is its VM's user's: the helper opens it for
+		// a resize or a removal (ADR 024).
+		volumes.SetVolumeOpener(func(path string) (*os.File, error) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			return helper.OpenVolume(ctx, path, true)
+		})
+	}
 	w.provisioning = &provisioner{keys: keys, volumes: volumes, digest: "sha256:" + opts.InitrdSHA256, config: config, runtimeRoot: opts.Root}
 	budget := controlplane.HostProvisioningBudget{VCPUs: cpus, MemoryMiB: memory, UIDSlots: int(config.LastUID-config.FirstUID) + 1, MaxActive: opts.MaxActive}
 	images := []controlplane.ImageDigests{{Kernel: "sha256:" + opts.KernelSHA256, Initrd: "sha256:" + opts.InitrdSHA256}}

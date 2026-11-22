@@ -575,3 +575,12 @@ logs of runs that are gone. In production the guest has no serial console
 host then keeps the logs of the 16 runs that ended last. The KVM campaigns
 enable it, since the tests above read what a guest printed; the jail test
 runs as production.
+
+**Lot ARCH-3 (finding A-03).** The VMs' limits are unchanged, but root sets
+them: the worker's helper ([ADR 024](024-worker-privilege-separation.md))
+creates each run's cgroup with `memory.max` (the VM's memory and 256 MiB of
+VMM headroom), `pids.max` 32, `cpu.max` (its vCPUs) and `memory.swap.max` 0,
+from the registry's resources, and starts the jailer into it. The drives'
+I/O ceilings stay in `config.json`, which the worker writes. New runs get
+their jail under the helper's `/var/lib/agentcapsule/vmm/jails`; a run that a
+root worker started keeps its jail under the runtime root until it ends.

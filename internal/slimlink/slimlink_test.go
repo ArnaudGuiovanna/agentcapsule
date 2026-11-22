@@ -311,6 +311,19 @@ func TestSocketsCheckThePeersUser(t *testing.T) {
 	if _, err := Listen(plain, uint32(os.Getuid())); err == nil {
 		t.Fatal("replaced a regular file")
 	}
+	// A worker that is not root gives its socket to another peer only
+	// through the peer's group, which the socket's directory gives it
+	// (ADR 024): in a plain directory, it refuses.
+	if os.Geteuid() != 0 {
+		other := filepath.Join(filepath.Dir(workerSocket), "other.sock")
+		if l, err := Listen(other, 0); err == nil {
+			l.Close()
+			t.Fatal("a socket was opened to root's group from a plain directory")
+		}
+		if _, err := os.Lstat(other); !errors.Is(err, os.ErrNotExist) {
+			t.Fatal("a refused socket stayed", err)
+		}
+	}
 }
 
 func TestNames(t *testing.T) {

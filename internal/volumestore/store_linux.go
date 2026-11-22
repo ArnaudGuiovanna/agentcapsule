@@ -111,6 +111,32 @@ type Store struct {
 	root string
 	// Tests interrupt the real process after durable boundaries.
 	hook func(string)
+	// open opens, read-write, a published volume this process may not open
+	// itself: once registered, a volume is its VM's user's, and a worker
+	// that is not root asks its helper (ADR 024). Nil: none.
+	open func(path string) (*os.File, error)
+}
+
+// SetVolumeOpener gives the store the opener of the volumes this process may
+// not open itself (ADR 024): the worker helper's.
+func (s *Store) SetVolumeOpener(open func(path string) (*os.File, error)) { s.open = open }
+
+// volume opens a volume, through the opener when this process may not: the
+// same checks as file's.
+func (s *Store) volume(path string) (*os.File, error) {
+	f, err := file(path, false)
+	if s.open == nil || !errors.Is(err, os.ErrPermission) {
+		return f, err
+	}
+	if f, err = s.open(path); err != nil {
+		return nil, err
+	}
+	st, err := f.Stat()
+	if err != nil || !st.Mode().IsRegular() || st.Mode().Perm() != 0600 {
+		f.Close()
+		return nil, ErrState
+	}
+	return f, nil
 }
 
 // New requires a trusted parent hierarchy. The root and its managed directories
@@ -330,7 +356,7 @@ func (s *Store) Prepare(ctx context.Context, spec Spec, key []byte) (Container, 
 	if final {
 		activePath = path
 	}
-	f, err := file(activePath, false)
+	f, err := s.volume(activePath)
 	if errors.Is(err, os.ErrNotExist) && !final && j.Inode == 0 {
 		f, err = file(activePath, true)
 	}
@@ -463,7 +489,7 @@ func (s *Store) Grow(ctx context.Context, spec Spec, target int64, device, inode
 	if j.Stage != "READY" || j.Spec.AgentID != spec.AgentID || j.Spec.VolumeID != spec.VolumeID || (j.Spec.SizeMiB != spec.SizeMiB && j.Spec.SizeMiB != target) || j.Device != device || j.Inode != inode {
 		return ErrState
 	}
-	f, err := file(filepath.Join(s.root, "volumes", spec.VolumeID+".luks"), false)
+	f, err := s.volume(filepath.Join(s.root, "volumes", spec.VolumeID+".luks"))
 	if err != nil {
 		return err
 	}

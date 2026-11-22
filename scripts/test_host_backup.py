@@ -1,6 +1,7 @@
 """The host may report a remote backup only after validating each independent copy."""
 import configparser
 import json
+import os
 from pathlib import Path
 import runpy
 import tempfile
@@ -80,10 +81,16 @@ class BackupEvidenceTest(unittest.TestCase):
         evidence = {"archive_id": archive, "agent_id": agent, "size": 123, "archive_store": "local",
                     "checked": ["manifest", "digest", "volume", "copy", "key"]}
         run, output = Mock(), Mock(return_value=json.dumps(evidence))
-        with patch.dict(self.api, run=run, output=output, db_env=lambda _: {}):
+        with patch.dict(self.api, run=run, output=output, db_env=lambda _: {}, RESTORE_TESTS=self.root,
+                        worker_ids=lambda: (os.getuid(), os.getgid()), worker_env=lambda _: {}):
             result = self.api["verify_volume_copies"]({}, agent, archive, self.root, "/etc/rclone.conf")
             self.assertEqual(set(result), {"s3", "standby"})
             self.assertEqual([call.args[call.args.index("--store") + 1] for call in run.call_args_list], ["s3", "standby"])
+            # The shipper writes the copy as the worker, whose account runs
+            # the restore test (ADR 024).
+            self.assertTrue(all(call.args[-2:] == ("--owner", "agentcapsule-worker") for call in run.call_args_list))
+            self.assertTrue(all(call.args[:5] == ("runuser", "--preserve-environment", "-u", "agentcapsule-worker", "--")
+                                for call in output.call_args_list))
             roots = [call.args[call.args.index("-archive-root") + 1] for call in output.call_args_list]
             self.assertNotEqual(roots[0], roots[1])
             output.side_effect = [json.dumps(evidence), json.dumps(dict(evidence, checked=["digest"]))]

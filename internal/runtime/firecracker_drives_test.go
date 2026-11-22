@@ -284,7 +284,7 @@ func TestACorpusImageIsNeverCopied(t *testing.T) {
 	}
 	image := corpusImage(t, other, "finance.ext4", financeUUID, 64<<10)
 	a.Corpora = []CorpusImage{image}
-	if err = h.prepare(a); !errors.Is(err, ErrCorpusFilesystem) {
+	if err = h.prepare(t.Context(), a); !errors.Is(err, ErrCorpusFilesystem) {
 		t.Fatal("a corpus image on another file system", err)
 	}
 	if _, err = os.Stat(filepath.Join(h.jail(a.Run), "corpus0.ext4")); !errors.Is(err, os.ErrNotExist) {

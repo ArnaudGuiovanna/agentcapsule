@@ -248,6 +248,16 @@ func (s *Store) InstallRolloutSpec(ctx context.Context, st RolloutStep) error {
 		return err
 	}
 	defer rollback(tx)
+	// A template's install revokes the agent's previous template grant
+	// (installRolloutTemplate). As every revocation of a row an admission
+	// reads (P-07), it holds the organization's row FOR UPDATE, which a model
+	// call's reservation holds FOR KEY SHARE before it reads the grant
+	// (reserveLLM). Taken first, as the organization's administrators take it.
+	if !st.Resize {
+		if _, err = tx.Exec(ctx, `SELECT 1 FROM organizations WHERE id=$1 FOR UPDATE`, st.Tenant); err != nil {
+			return err
+		}
+	}
 	a, p, err := placementLock(ctx, tx, st.Agent, st.Host)
 	if err != nil {
 		return err

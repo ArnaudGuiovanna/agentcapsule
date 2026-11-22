@@ -8,7 +8,6 @@ import (
 	"crypto/sha256"
 	"errors"
 	"io"
-	"os"
 	"syscall"
 )
 
@@ -85,12 +84,13 @@ func (h *FirecrackerHost) installVolume(ctx context.Context, id string, generati
 	if err != nil {
 		return err
 	}
-	fd, err := syscall.Open(a.Volume, syscall.O_WRONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
+	// Root opens the VM's user's volume for this process (ADR 024).
+	f, err := h.privileged().OpenVolume(ctx, a.Volume, true)
 	if err != nil {
 		return err
 	}
-	f := os.NewFile(uintptr(fd), a.Volume)
 	defer f.Close()
+	fd := int(f.Fd())
 	st, err := f.Stat()
 	if err != nil {
 		return err
@@ -170,12 +170,12 @@ func (h *FirecrackerHost) WithStoppedVolume(ctx context.Context, id string, gene
 	if err != nil {
 		return err
 	}
-	fd, err := syscall.Open(a.Volume, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
+	f, err := h.privileged().OpenVolume(ctx, a.Volume, false)
 	if err != nil {
 		return err
 	}
-	f := os.NewFile(uintptr(fd), a.Volume)
 	defer f.Close()
+	fd := int(f.Fd())
 	st, err := f.Stat()
 	if err != nil {
 		return err

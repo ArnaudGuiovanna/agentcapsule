@@ -4,6 +4,7 @@ package worker
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -12,7 +13,19 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/corpuspkg"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/ext4image"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/sandbox"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/workerhelper"
 )
+
+// imageInspection runs the helper's real sandbox operation with the image
+// descriptor and command batch supplied by the worker.
+type imageInspection struct{}
+
+func (imageInspection) RunConfined(ctx context.Context, d sandbox.Delegated) ([]byte, error) {
+	return (workerhelper.System{}).Sandbox(ctx, workerhelper.SandboxPlan{
+		UID: 61999, Image: d.Image, ImagePath: d.ImagePath, Program: d.Program,
+		Args: d.Args, Input: d.Input, Timeout: d.Timeout, CPU: d.CPU,
+	})
+}
 
 // Run the actual debugfs cat under the image-inspection filter. The review
 // reader must return the original bytes and must never accept a prefix.
@@ -39,6 +52,10 @@ func TestCorpusReviewReadsCompleteFilesWithConfinedDebugfs(t *testing.T) {
 	var sb sandbox.Options
 	if sandbox.AsRoot() {
 		sb = sandbox.Options{UID: 61999, GID: 61999}
+	}
+	delegated := sandbox.Options{Delegate: imageInspection{}}
+	if err := corpuspkg.InspectImage(t.Context(), image, delegated); err != nil {
+		t.Fatal("delegated directory inspection", err)
 	}
 	got, err := catCorpusFile(t.Context(), sb, debugfs, image, "INDEX.md", len(want))
 	if err != nil || !bytes.Equal(got, want) {
