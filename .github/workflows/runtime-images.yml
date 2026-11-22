@@ -1,0 +1,115 @@
+name: Runtime images
+
+# Builds the three runtime images that carry the OpenSSL backports
+# (deploy/images/openssl: Python 3.13, HAProxy 3.2, OASF 2.0.0) from the
+# pinned Dockerfile and build plan (images.json), pushes them to GHCR under
+# new tags <name>-<date>, and attests their SLSA build provenance. A
+# maintainer runs it by hand, from main only (docs/release.md, "Runtime
+# images"), then pins the references of the job summary. The release refuses
+# a pinned runtime image that this workflow did not build
+# (scan-artifacts.py --verify-runtime-images).
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag-suffix:
+        description: 'Date of the build, YYYYMMDD: the images are tagged <name>-<date>'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runtime-images
+  cancel-in-progress: false
+
+jobs:
+  images:
+    name: Build, push and attest the runtime images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Check out the commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check the branch and the tag suffix
+        env:
+          SUFFIX: ${{ inputs.tag-suffix }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          python3 -c 'import re, sys; sys.exit(not re.fullmatch(r"[0-9]{8}", sys.argv[1]))' "$SUFFIX"
+
+      - name: Install skopeo
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends skopeo
+
+      - name: Log in to GHCR
+        env:
+          TOKEN: ${{ github.token }}
+        run: printf '%s' "$TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+
+      - name: Build and push the images (new tags only)
+        id: build
+        env:
+          SUFFIX: ${{ inputs.tag-suffix }}
+        run: |
+          python3 scripts/runtime_images.py build --tag-suffix "$SUFFIX" \
+            --record "$RUNNER_TEMP/runtime-images.json" --github-output "$GITHUB_OUTPUT"
+
+      - name: Attest the provenance of python-3.13
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/arnaudguiovanna/agentcapsule/runtime
+          subject-digest: ${{ steps.build.outputs.digest-python }}
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Attest the provenance of haproxy-3.2
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/arnaudguiovanna/agentcapsule/runtime
+          subject-digest: ${{ steps.build.outputs.digest-haproxy }}
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Attest the provenance of oasf-2.0.0
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ghcr.io/arnaudguiovanna/agentcapsule/runtime
+          subject-digest: ${{ steps.build.outputs.digest-oasf }}
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Verify the pushed images as the release does
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/runtime_images.py verify --record "$RUNNER_TEMP/runtime-images.json" \
+            --output "$RUNNER_TEMP/runtime-images-verification.json"
+
+      - name: Write the references to pin
+        run: python3 scripts/runtime_images.py summary --record "$RUNNER_TEMP/runtime-images.json" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the build record
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: runtime-images
+          retention-days: 90
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/runtime-images.json
+            ${{ runner.temp }}/runtime-images-verification.json
+
+      - name: Log out of GHCR
+        if: always()
+        run: docker logout ghcr.io

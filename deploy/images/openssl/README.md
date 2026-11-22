@@ -10,9 +10,15 @@ The Dockerfile builds the Alpine OpenSSL 3.5.9 package with Agent Capsule revisi
 | CVE-2026-107494 | Downstream backport from proposed change [33544](https://github.com/openssl/openssl/pull/33544), pinned to [cc6ddac](https://github.com/openssl/openssl/commit/cc6ddac0e961798d351f86919d488d53be16960e). |
 | CVE-2026-84786 | Downstream backport from proposed change [33634](https://github.com/openssl/openssl/pull/33634), pinned to [d54155a](https://github.com/openssl/openssl/commit/d54155a80a4fa8d2ebc2a5a850e7ea8270818217). |
 
-## Build the candidates
+## Build the images
 
-Run the commands from the root of the Agent Capsule repository on a machine with Docker BuildKit. The Python runtime supplies the base filesystem for both example harnesses. HAProxy and OASF keep the users and entry points of their upstream images. OASF needs the build for Alpine 3.23.
+The [runtime-images workflow](../../../.github/workflows/runtime-images.yml) builds the three shipped images in CI, pushes them to `ghcr.io/arnaudguiovanna/agentcapsule/runtime` and attests their SLSA build provenance. [images.json](images.json) is its build plan: for each image, the Dockerfile's three arguments and its qualification profile. A maintainer runs it by hand from `main` (Actions, Runtime images, Run workflow), with the build date `YYYYMMDD` as tag suffix. It refuses a tag that exists already. Its job summary lists the references to pin and the digests of the OpenSSL files and APKs for `qualification.json`. [Runtime images](../../../docs/release.md#runtime-images)
+
+The Python runtime supplies the base filesystem for both example harnesses. HAProxy and OASF keep the users and entry points of their upstream images. OASF needs the build for Alpine 3.23.
+
+### Reproduce a build locally
+
+These commands build the same images on a machine with Docker BuildKit, from the root of the Agent Capsule repository. They serve to test a change of the Dockerfile. An image built this way is never pinned: the release refuses an image without the workflow's provenance.
 
 ```sh
 docker build --platform linux/amd64 -t agentcapsule-local/python:openssl-backport deploy/images/openssl
@@ -29,10 +35,12 @@ docker build --platform linux/amd64 \
   -t agentcapsule-local/oasf:openssl-backport deploy/images/openssl
 ```
 
-After an upstream update, compare its fixes to all five source revisions, rebuild the two harnesses and run the interoperability and release checks before updating deployment digests. [Release qualification](../../../docs/release.md)
+After an upstream update, compare its fixes to all five source revisions, update the bases in the Dockerfile, `images.json` and these commands, run the workflow, rebuild the two harnesses and run the interoperability and release checks before updating deployment digests. [Release qualification](../../../docs/release.md)
 
 ## Release verification
 
 The release includes `openssl-qualification.json`, the original Grype reports in `vulnerability-reports.tar.gz`, and the decisions in `vulnerability-scan.json`. Their checksums are signed with the release. The qualification records the Git revision of each fix, the digest of each runtime image, and the SHA-256 of the installed binaries and their Alpine packages.
+
+The release also checks each pinned runtime image itself (`scan-artifacts.py --verify-runtime-images`, which runs `scripts/runtime_images.py verify`). The image must be its pinned upstream base plus the one layer of the runtime stage, with the base's entry point and command and the plan's user. It must carry a SLSA provenance attestation signed for the runtime-images workflow of this repository on `main`. Either failure blocks the release.
 
 Grype can report the five advisories against the upstream version number after these changes. The release scanner records a match under `verified_backports` only when the target, advisory, Alpine package identity, file ownership and file checksum match the qualification. Both reference harnesses also undergo a direct checksum comparison on files extracted from their guest filesystem. The scanner preserves the original severity and every other finding. [Qualification manifest](qualification.json)
