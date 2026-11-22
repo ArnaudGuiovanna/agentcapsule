@@ -314,7 +314,7 @@ func TestTheBootAppendixKeepsTheInitrdsOffsets(t *testing.T) {
 	if _, err := b.Seek(2, io.SeekStart); err == nil {
 		t.Fatal("seek into the initrd")
 	}
-	f, err := memfile(b.buf)
+	f, err := memfile(t.TempDir(), b.buf)
 	if err != nil {
 		t.Fatal(err)
 	}

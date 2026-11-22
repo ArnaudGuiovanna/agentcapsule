@@ -379,12 +379,14 @@ func connectControl(ctx context.Context, conn net.Conn) (net.Conn, error) {
 	return conn, nil
 }
 
-// memfile is a sealed-size anonymous file holding b: the appendix a boot
-// hands over, never on disk.
-func memfile(b []byte) (*os.File, error) {
-	fd, err := unix.MemfdCreate("agentcapsule-boot", unix.MFD_CLOEXEC)
+// memfile is an unnamed file of dir (O_TMPFILE) holding b: the appendix a
+// boot hands over, which no name ever reaches and which goes with its last
+// descriptor. Only openat is needed, which every system call filter of the
+// worker's unit allows.
+func memfile(dir string, b []byte) (*os.File, error) {
+	fd, err := unix.Open(dir, unix.O_TMPFILE|unix.O_RDWR|unix.O_CLOEXEC, 0o600)
 	if err != nil {
-		return nil, err
+		return nil, &os.PathError{Op: "open", Path: dir, Err: err}
 	}
 	f := os.NewFile(uintptr(fd), "agentcapsule-boot")
 	if _, err = f.Write(b); err == nil {

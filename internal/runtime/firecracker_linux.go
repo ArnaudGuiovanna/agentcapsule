@@ -940,7 +940,7 @@ func (h *FirecrackerHost) prepare(ctx context.Context, a *HostAgent) error {
 		if err = appendControlConfig(b, guest, a.Harness, corpora); err != nil {
 			return err
 		}
-		if appendix, err = memfile(b.buf); err != nil {
+		if appendix, err = memfile(filepath.Dir(h.credentialPath(a.Run)), b.buf); err != nil {
 			return err
 		}
 		defer appendix.Close()
