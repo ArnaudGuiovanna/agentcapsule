@@ -395,6 +395,25 @@ deleted this way answers `404 not_found`, like one that never existed. Each
 agent's last activity, which the idle policy and the eviction order compare,
 is kept apart (`agent_activity`) and survives the deletion.
 
+**Finished model calls** (since the v0.1.0 audit, P-05). A settled or
+released model call (`llm_usage`) is deleted `model_call_retention` after its
+reservation: 90 days by default, 35 days to 10 years
+(`"model_call_retention": "2160h"`). The budgets no longer read the calls,
+only their counters, and the usage report reads the current UTC day or
+month, which the 35-day floor covers. Every worker deletes them for the whole
+installation every ten minutes, at most `min(dispatch_batch * 4, 1000)` at a
+time, and at once again after a full batch; two workers skip each other's
+rows. A call stays while something needs it:
+- a call in flight or of unknown outcome: it counts in its budgets' windows
+  until it is settled or released, and the organization reconciles it;
+- an audit event that names it (an organization's resolution): it goes once
+  the audit's retention removed the event;
+- a corpus build not yet in review, whose costs sum its builder's calls.
+
+The budget windows that started before the retention go with the calls. A
+request key is idempotent for as long as its call is kept. Each agent's last
+activity is kept apart (`agent_activity`) and survives the deletion.
+
 The instruction shares the events FIFO. Boot preparation precedes the
 consumption of an attempt; the first authorized send creates a stable mandate.
 The encrypted result, the success of the operation and the removal of the queue

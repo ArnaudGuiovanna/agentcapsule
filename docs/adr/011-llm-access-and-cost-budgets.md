@@ -295,3 +295,11 @@ reservations, settlements, releases, resolutions and new budgets), so the
 guarantees of §2 and SEC-2's paragraph above hold as they were. The
 reservations of one budget still take its row in turn: a hard limit needs
 it; each now costs a few rows whatever the window holds.
+
+The calls themselves are no longer kept forever: the worker deletes a settled
+or released call `model_call_retention` after its reservation (90 days by
+default, 35 days at least: longer than the month the usage report reads),
+unless it is in flight or of unknown outcome, an audit event names it, or a
+corpus build in progress counts it ([worker.md](../worker.md)), with the
+windows that started before the retention (migration
+`model-call-retention`).

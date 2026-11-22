@@ -297,7 +297,9 @@ statement went from up to 1.2 s to under 5 ms (evidence
 sleeps and requests are deleted `finished_retention` after their end (90 days
 by default) when nothing needs them; an event of the audit trail that names
 one keeps it until §8's retention removes the event, so the audit's retention
-still decides alone how long the trail lasts.
+still decides alone how long the trail lasts. Settled and released model
+calls are deleted `model_call_retention` after their reservation (90 days by
+default, PERF-3B), under the same rule: one an audit event names stays.
 
 **Lot SEC-1A (findings S-07, S-09, L-04).**
 

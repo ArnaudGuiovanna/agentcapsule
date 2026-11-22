@@ -121,6 +121,10 @@ type ServiceConfig struct {
 	// worker deletes those that nothing needs any more (P-04): 45 days to 10
 	// years, 90 days when absent, and two weeks past the archives' horizon.
 	FinishedRetention string `json:"finished_retention,omitempty"`
+	// ModelCallRetention is how long settled and released model calls are
+	// kept before the worker deletes those that nothing needs any more: 35
+	// days to 10 years, 90 days when absent (docs/worker.md).
+	ModelCallRetention string `json:"model_call_retention,omitempty"`
 	// VMSerialConsole gives each guest a serial console whose output joins
 	// its VMM's bounded log: for debugging only (S-20). Development mode
 	// enables it too.
@@ -406,7 +410,11 @@ func (c ServiceConfig) Settings() (runtime.FirecrackerOptions, time.Duration, Ma
 	if _, err = c.DatabaseConnections(); err != nil {
 		return r, 0, m, invalid
 	}
-	d := &DispatchOptions{Batch: batch, Concurrency: concurrency, Retention: retention}
+	modelCalls, err := c.modelCallRetention()
+	if err != nil {
+		return r, 0, m, invalid
+	}
+	d := &DispatchOptions{Batch: batch, Concurrency: concurrency, Retention: retention, ModelCallRetention: modelCalls}
 	m.Dispatch = d
 	for _, value := range []struct {
 		text, fallback string

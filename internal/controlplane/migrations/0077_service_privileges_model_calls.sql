@@ -1,12 +1,14 @@
--- The service roles' privileges after the budgets' counters (v0.1.0 audit,
--- P-05; ADR 001, "Changes after the v0.1.0 audit"; the policy is migration
--- 0065's agentcapsule_service_grants(), unchanged). From migration 0073's
--- list:
+-- The service roles' privileges after the budgets' counters and the
+-- retention of finished model calls (v0.1.0 audit, P-05; ADR 001, "Changes
+-- after the v0.1.0 audit"; the policy is migration 0065's
+-- agentcapsule_service_grants(), unchanged). From migration 0073's list:
 --
 -- - llm_budget_windows (migration llm-budget-windows): a reservation, a
 --   settlement and a release write it in the API (an organization's
 --   resolution of a call, a new budget) and in the worker (its model
---   gateway); neither deletes from it.
+--   gateway); the worker deletes the windows its retention removes.
+-- - llm_usage: the worker deletes the finished calls its retention removes
+--   (migration model-call-retention).
 -- - application_clients, as the security fixes give it (SEC-1B): the API
 --   inserts, updates and deletes it, the worker writes nothing. A table
 --   this schema does not hold yet is skipped.
@@ -158,7 +160,7 @@ LANGUAGE sql IMMUTABLE SET search_path FROM CURRENT AS $$
       ('agentcapsule_api','llm_audit','INSERT'),
       ('agentcapsule_worker','llm_audit','DELETE'),
       ('agentcapsule_api','llm_budget_windows','INSERT,UPDATE'),
-      ('agentcapsule_worker','llm_budget_windows','INSERT,UPDATE'),
+      ('agentcapsule_worker','llm_budget_windows','INSERT,UPDATE,DELETE'),
       ('agentcapsule_api','llm_budgets','INSERT,UPDATE'),
       ('agentcapsule_worker','llm_budgets','UPDATE'),
       ('agentcapsule_api','llm_model_aliases','INSERT,UPDATE'),
@@ -166,7 +168,7 @@ LANGUAGE sql IMMUTABLE SET search_path FROM CURRENT AS $$
       ('agentcapsule_api','llm_providers','INSERT,UPDATE'),
       ('agentcapsule_worker','llm_providers','UPDATE'),
       ('agentcapsule_api','llm_usage','INSERT,UPDATE'),
-      ('agentcapsule_worker','llm_usage','INSERT,UPDATE'),
+      ('agentcapsule_worker','llm_usage','INSERT,UPDATE,DELETE'),
       ('agentcapsule_api','mandates','UPDATE'),
       ('agentcapsule_worker','mandates','INSERT,UPDATE,DELETE'),
       ('agentcapsule_api','memberships','INSERT,UPDATE'),

@@ -227,7 +227,10 @@ of its call's, in the transaction that changes the call. A reservation reads
 that count, never the window's calls, so its cost does not grow with them;
 the count is the sum described above, exactly, under any concurrency. A
 budget created during a window counts the calls its scope already made in
-it.
+it. The worker deletes a settled or released call `model_call_retention`
+after its reservation (90 days by default, at least 35:
+[worker.md](../worker.md), "Finished model
+calls"); a request key is idempotent for as long as its call is kept.
 
 Such an excess is settled and counted; the next call is then refused. How
 many calls can exceed at once is bounded: an agent has at most 8 model calls

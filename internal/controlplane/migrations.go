@@ -260,8 +260,11 @@ var refusalAttemptsSQL string
 //go:embed migrations/0075_llm_budget_windows.sql
 var llmBudgetWindowsSQL string
 
-//go:embed migrations/0076_service_privileges_budget_windows.sql
-var servicePrivilegesBudgetWindowsSQL string
+//go:embed migrations/0076_model_call_retention.sql
+var modelCallRetentionSQL string
+
+//go:embed migrations/0077_service_privileges_model_calls.sql
+var servicePrivilegesModelCallsSQL string
 
 // Append migrations; never edit an installed migration. The original schema
 // also upgrades pre-ledger installations, preserving its historical backfills.
@@ -342,7 +345,8 @@ var controlPlaneMigrations = []schemaMigration{
 	{version: 73, name: "service-privileges-activity-retention", sql: servicePrivilegesActivityRetentionSQL},
 	{version: 74, name: "refusal-attempts", sql: refusalAttemptsSQL},
 	{version: 75, name: "llm-budget-windows", sql: llmBudgetWindowsSQL},
-	{version: 76, name: "service-privileges-budget-windows", sql: servicePrivilegesBudgetWindowsSQL},
+	{version: 76, name: "model-call-retention", sql: modelCallRetentionSQL},
+	{version: 77, name: "service-privileges-model-calls", sql: servicePrivilegesModelCallsSQL},
 }
 
 func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error {
