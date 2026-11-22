@@ -227,6 +227,42 @@ class HostOperationTests(unittest.TestCase):
             chown.assert_any_call(target,0,32)
             self.api["run_user"].assert_called_once_with("postgres","test","-r",target/"pgbackrest.conf")
 
+    def test_update_opts_unsigned_registry_rules_out_explicitly(self):
+        # L-16: a production worker refuses a registry rule without publisher
+        # keys unless it says allow_unsigned. An update keeps the rules of a
+        # host installed before as they worked: it writes the opt-out, and
+        # names the rules it opted out; a signed or opted-out rule, and the
+        # file's mode, stay as they were.
+        path=self.root/"worker.json"
+        rules=[{"host":"ghcr.io","repositories":["a/"]},
+               {"host":"registry.example","repositories":["b/"],"publisher_keys":["/etc/agentcapsule/b.pub"]},
+               {"host":"lab.example","repositories":["c/"],"allow_unsigned":True}]
+        path.write_text(json.dumps({"root":"/var/lib/agentcapsule/host","registry":{"inspection_uid":61999,"rules":rules}}))
+        path.chmod(0o640)
+        self.assertEqual(self.api["opt_out_unsigned_registry_rules"](path),["ghcr.io"])
+        cfg=json.loads(path.read_text())
+        self.assertEqual([r.get("allow_unsigned") for r in cfg["registry"]["rules"]],[True,None,True])
+        self.assertEqual(cfg["registry"]["inspection_uid"],61999)
+        self.assertEqual(cfg["root"],"/var/lib/agentcapsule/host")
+        self.assertEqual(path.stat().st_mode&0o777,0o640)
+        self.assertEqual(self.api["opt_out_unsigned_registry_rules"](path),[])
+        path.write_text(json.dumps({"root":"/var/lib/agentcapsule/host"}))
+        self.assertEqual(self.api["opt_out_unsigned_registry_rules"](path),[])
+
+    def test_profile_registry_rules_trust_a_key_or_opt_out(self):
+        # L-16: an installation profile's registry rule trusts publisher keys
+        # or says allow_unsigned: a production worker refuses any other.
+        normalize=self.api["normalize_profile"]
+        for rule in ({"host":"ghcr.io","repositories":["a/"]},{"host":"ghcr.io","repositories":["a/"],"publisher_keys":[]},
+                     {"host":"ghcr.io","repositories":["a/"],"allow_unsigned":False},"ghcr.io"):
+            with self.assertRaisesRegex(ValueError,"publisher_keys or allow_unsigned"):
+                normalize({"registry_rules":[rule]})
+        for rule in ({"host":"ghcr.io","repositories":["a/"],"allow_unsigned":True},
+                     {"host":"ghcr.io","repositories":["a/"],"publisher_keys":["/etc/agentcapsule/a.pub"]}):
+            self.assertEqual(normalize({"registry_rules":[rule]})["registry_rules"],[rule])
+        with self.assertRaisesRegex(ValueError,"publisher_keys or allow_unsigned"):
+            normalize({"registry_rules":{"host":"ghcr.io"}})
+
     def test_restore_restarts_the_worker_even_after_failure(self):
         from unittest.mock import Mock
         for previously_active in (True,False):

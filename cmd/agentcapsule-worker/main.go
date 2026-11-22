@@ -26,6 +26,7 @@ import (
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/directory"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/ociregistry"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/operatorconfig"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/pgnotify"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/preflight"
@@ -228,7 +229,7 @@ func run() int {
 	// Events, one JSON object per line, from a closed vocabulary (OPS-02):
 	// progress on standard output, retries and failures on standard error.
 	vocabulary := map[string][]string{"event": {"maintenance_started", "maintenance_complete", "maintenance_retry", "wake_budget_exhausted",
-		"harness_import_retry", "corpus_fetch_retry", "corpus_build_retry", "directory_publish_retry", "slim_callback_stopped", "job_done", "job_retried",
+		"harness_import_retry", "registry_unsigned_rules", "corpus_fetch_retry", "corpus_build_retry", "directory_publish_retry", "slim_callback_stopped", "job_done", "job_retried",
 		"volume_archive_captured", "volume_archive_retry", "volume_archive_purged", "delivery_dead", "agent_failed"},
 		"reason": append(append(append(worker.RetryReasons(), worker.ArchiveRetryReasons()...), worker.DeadDeliveryReasons()...), worker.AgentFailureReasons()...),
 		"kind":   append(worker.JobKinds(), worker.DeadDeliveryKinds()...), "vm": worker.ArchiveVMs()}
@@ -361,12 +362,20 @@ func run() int {
 			})
 		}()
 	}
-	importer, err := c.OpenRegistry(s, workerID)
+	importer, err := c.OpenRegistry(s, workerID, mode == operatorconfig.Production)
 	if errors.Is(err, worker.ErrInspection) {
 		return fail("registry_inspection_unavailable")
 	}
+	if errors.Is(err, ociregistry.ErrUnsigned) {
+		return fail("registry_signatures_required_in_production")
+	}
 	if err != nil {
 		return fail("registry_configuration_invalid")
+	}
+	if n := len(c.UnsignedRegistryRules()); importer != nil && n > 0 {
+		// Each rule that imports unsigned packages, as its configuration
+		// allows (L-16); the preflight names them.
+		problems.Event("registry_unsigned_rules", telemetry.Int("rules", int64(n)))
 	}
 	if importer != nil {
 		if err = w.EnableRegistry(importer); err != nil {

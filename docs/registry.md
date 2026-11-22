@@ -343,11 +343,15 @@ In the worker configuration ([example](../runtime/worker/config.example.json)):
   "inspection_uid": 61999,
   "rules": [
     {"host": "ghcr.io", "repositories": ["acme/"],
-     "blob_hosts": ["pkg-containers.githubusercontent.com"]}
+     "blob_hosts": ["pkg-containers.githubusercontent.com"],
+     "allow_unsigned": true}
   ]
 }
 ```
 
+- `allow_unsigned`: this rule imports packages that no trusted publisher signed; in
+  production, a rule without `publisher_keys` must say so
+  ([below](#publisher-signatures)).
 - `inspection_uid`: the UID, and the GID of the same number, that `debugfs` runs as
   when it inspects a downloaded image ([below](#image-inspection-sandbox)). Reserve it
   for this use, as the provisioning range is reserved: no account or group uses it, it
@@ -400,8 +404,27 @@ otherwise the import is rejected as `signature`.
 }
 ```
 
+- In production (the default mode, [ADR 010](adr/010-transport-security-and-preflight.md)),
+  signatures are required by default: a rule that lists no publisher key must say
+  `"allow_unsigned": true`, an explicit opt-out for that rule, or the worker refuses to
+  start (`registry_signatures_required_in_production`). A rule that says
+  `allow_unsigned` beside publisher keys is refused. In development
+  (`AGENTCAPSULE_MODE=development`), a rule without keys imports unsigned packages, as
+  before.
+- Every rule that imports unsigned packages is reported: the worker logs
+  `registry_unsigned_rules` with their number at each start, the preflight's
+  `registry_signatures` check warns and names them, and each release imported through
+  one records no `signer`.
+- The shipped example (`runtime/worker/config.example.json`), which the installer
+  writes for a new host, says `allow_unsigned` for its GHCR rule: the project's
+  packages are not signed yet. An update of a host installed before writes
+  `"allow_unsigned": true` in each rule that lists no key and says nothing, so that its
+  imports keep working, and names those rules in the operation's status
+  (`registry_rules_allowing_unsigned`). To require signatures, list the publishers'
+  keys and drop `allow_unsigned`.
 - `require_signatures` is strict mode: the worker refuses to start if a rule lists no
-  publisher key, so no unsigned package can be imported. Recommended in production.
+  publisher key, or says `allow_unsigned`, so no unsigned package can be imported.
+  Recommended in production.
 - Key files must be regular files (not symlinks) owned by root or the worker's user and
   writable only by their owner. The worker reads them at startup.
 - The release records the key that signed it: `signer` is `sha256:` and the SHA-256 of
@@ -528,6 +551,55 @@ tests compare `debugfs`'s output confined and direct on images of each kind abov
 
 `pack` runs `mkfs.ext4` and `debugfs -w` unconfined: it builds the publisher's own
 package, on the publisher's machine.
+
+### The key check of a restore test
+
+A restore test ([worker.md](worker.md#testing-a-restore)) checks that the agent's key
+opens a copy of an archive. The copy's LUKS2 header comes from the guest: the guest
+holds its volume open and may rewrite its header, and the archive keeps it. So
+libcryptsetup never reads it in the worker (S-21). The worker starts its own executable
+again in the sandbox above, as the program `agentcapsule-luks-check`
+(`internal/volumestore`), with the same namespaces, mounts, `inspection_uid`, dropped
+capabilities, `no_new_privs`, processor, limits and closed descriptors. The key reaches
+it on its standard input, through a pipe, never in its arguments or environment. It
+answers one word: the key opens the key slot, it does not, or the header is not of the
+platform's shape. The worker reads nothing else from it.
+
+Before any key derivation, the program refuses a header that is not the platform's: one
+key slot with Argon2id over at most 64 MiB and one thread, at most 16 passes (the
+platform asks for 100 ms, at least 4 passes), one segment in `aes-xts-plain64` with
+512-byte sectors, one PBKDF2-SHA256 digest of at most 2 000 000 iterations, no token
+and no requirement. The test then fails as `key`. The sandbox bounds the rest: 10
+seconds of processor time, 30 seconds in all, 256 MiB of writable memory.
+
+A Go program needs more than `debugfs`, so this program runs under the self filter:
+`debugfs`'s list, and what the program called when it was traced (a filter that logs
+or traps any other call, on a key that opens, another key, another volume and a damaged
+header, from the worker's executable, with Go 1.27, glibc 2.43, libcryptsetup 2.8.4 and
+OpenSSL 3.5; the same checks pass under the filter with Ubuntu 24.04's glibc 2.39,
+libcryptsetup 2.7.0 and OpenSSL 3.0):
+
+- the Go runtime: `rt_sigprocmask`, `sigaltstack`, `rt_sigreturn`, `getpid`, `gettid`,
+  `tgkill` (preemption of its own threads), `nanosleep`, `sched_yield`, and `clone` for
+  a thread only (`CLONE_THREAD`, without any new namespace); `clone3` gets `ENOSYS`, so
+  that the C library falls back to `clone`;
+- the start of the worker's packages: protobuf reads the executable to seed its
+  output, through the runtime's poller: `readlinkat`, `epoll_create1`, `epoll_ctl`,
+  `epoll_pwait`, `eventfd2`;
+- libcryptsetup and its libraries: `statfs`, `fstatfs`, `uname`, `sysinfo`, `mlock`,
+  `munlock` (its key buffers), `umask`; `mkdir` and `mkdirat` get `EROFS` (its lock
+  directory), `request_key` gets `ENOSYS` (no kernel keyring);
+- `seccomp`: once started, the program adds a filter of its own that kills it at
+  `execve` or `execveat`, so it starts no other program.
+
+Any other call kills it. A program of the worker's executable runs only confined:
+started under its name otherwise, it exits. `/dev` holds only two empty regular files,
+`random` and `urandom`, which libcryptsetup opens when it starts (the check creates no
+key or salt). The address space is 4 GiB: the Go runtime reserves about 1.1 GiB it
+never uses, which the writable-memory limit (`RLIMIT_DATA`) does not count.
+`TestTheWorkerExecutableChecksAContainerConfined` (`cmd/agentcapsule-worker`) runs the
+check from a binary that links every package of the worker, so a package whose start
+calls outside the list fails there.
 
 ## Limits
 

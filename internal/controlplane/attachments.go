@@ -82,6 +82,19 @@ func newAttachmentID() string {
 	return "att_" + hex.EncodeToString(b[:])
 }
 
+// attachmentTTL is how long an unattached file waits: the default, or 60 s to
+// MaxAttachmentTTL.
+func attachmentTTL(seconds int) (time.Duration, error) {
+	if seconds == 0 {
+		return DefaultAttachmentTTL, nil
+	}
+	ttl := time.Duration(seconds) * time.Second
+	if seconds < 0 || ttl < time.Minute || ttl > MaxAttachmentTTL {
+		return 0, ErrInput
+	}
+	return ttl, nil
+}
+
 // UploadAttachment stores a file for one agent. Only a principal who may invoke
 // that agent may upload for it; the file is then usable only by that principal,
 // only for that agent, and only until it expires unattached.
@@ -92,12 +105,9 @@ func (c *AgentCatalog) UploadAttachment(ctx context.Context, p Principal, agentI
 	if len(body) > capsuleprotocol.MaxAttachmentBytes {
 		return APIReceipt{}, ErrTooLarge
 	}
-	ttl := DefaultAttachmentTTL
-	if in.TTLSeconds != 0 {
-		ttl = time.Duration(in.TTLSeconds) * time.Second
-		if in.TTLSeconds < 0 || ttl < time.Minute || ttl > MaxAttachmentTTL {
-			return APIReceipt{}, ErrInput
-		}
+	ttl, err := attachmentTTL(in.TTLSeconds)
+	if err != nil {
+		return APIReceipt{}, err
 	}
 	if len(body) == 0 || !capsuleprotocol.ValidAttachmentName(in.Name) || !capsuleprotocol.ValidAttachmentType(in.MediaType) {
 		return APIReceipt{}, ErrInput

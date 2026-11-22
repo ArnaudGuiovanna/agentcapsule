@@ -25,9 +25,11 @@ const attachmentReadTimeout = 2 * time.Minute
 //	X-Attachment-Name: <percent-encoded UTF-8 file name>
 //	X-Content-SHA256: <optional lowercase hex digest, checked before storing>
 //
-// The principal is authenticated before the body is read. The body is held in
-// memory (at most capsuleprotocol.MaxAttachmentBytes) and encrypted before it
-// reaches PostgreSQL.
+// The principal is authenticated, and its rights and its organization's room
+// checked, before the body is read (v0.1.0 audit, S-09). The body is held in
+// memory (at most capsuleprotocol.MaxAttachmentBytes), by a bounded number of
+// uploads at once (upload_slots.go), and encrypted before it reaches
+// PostgreSQL.
 func (s *Server) attachments(w http.ResponseWriter, r *http.Request) {
 	if !method(w, r, "POST") {
 		return
@@ -66,6 +68,23 @@ func (s *Server) attachments(w http.ResponseWriter, r *http.Request) {
 		failure(w, controlplane.ErrTooLarge)
 		return
 	}
+	upload := controlplane.AttachmentUpload{Name: name, MediaType: media, DeclaredSHA256: r.Header.Get("X-Content-SHA256"), TTLSeconds: ttl}
+	if err = s.catalog.CheckAttachmentUpload(r.Context(), p, r.PathValue("id"), key, upload, r.ContentLength); err != nil {
+		failure(w, err)
+		return
+	}
+	release, refused := s.guards.uploads.acquire(principalKey(p))
+	if release == nil {
+		s.countLimited(refused)
+		w.Header().Set("Retry-After", "5")
+		if refused == "principal_uploads" {
+			problem(w, 429, "too_many_uploads")
+		} else {
+			problem(w, 503, "upload_capacity")
+		}
+		return
+	}
+	defer release()
 	rc := http.NewResponseController(w)
 	_ = rc.SetReadDeadline(time.Now().Add(attachmentReadTimeout))
 	_ = rc.SetWriteDeadline(time.Now().Add(attachmentReadTimeout + 15*time.Second))
@@ -84,8 +103,7 @@ func (s *Server) attachments(w http.ResponseWriter, r *http.Request) {
 	// passed while a large body arrived; the database work gets its own bound.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 10*time.Second)
 	defer cancel()
-	out, err := s.catalog.UploadAttachment(ctx, p, r.PathValue("id"), key, controlplane.AttachmentUpload{
-		Name: name, MediaType: media, DeclaredSHA256: r.Header.Get("X-Content-SHA256"), TTLSeconds: ttl}, body)
+	out, err := s.catalog.UploadAttachment(ctx, p, r.PathValue("id"), key, upload, body)
 	receipt(w, out, err)
 }
 

@@ -13,8 +13,10 @@ import (
 // Remove retires an already published container after the trusted caller has
 // permanently sealed execution and revoked its key. It establishes local name
 // removal, not erasure of copied keys, backups, open external descriptors or raw
-// storage blocks. The journal and reservation lock are deliberately retained.
-// Only a prior REMOVING intent allows a missing file during crash recovery.
+// storage blocks. The journal and reservation lock are deliberately retained:
+// they refuse a new volume of the same ID (ErrRemoved). The journal no longer
+// identifies the key. Only a prior REMOVING intent allows a missing file
+// during crash recovery.
 func (s *Store) Remove(ctx context.Context, spec Spec, device, inode uint64) error {
 	if !identifier(spec.AgentID, "agt_") || !identifier(spec.VolumeID, "vol_") || spec.SizeMiB < 64 || spec.SizeMiB > 32768 || inode == 0 {
 		return ErrInput
@@ -67,7 +69,10 @@ func (s *Store) Remove(ctx context.Context, spec Spec, device, inode uint64) err
 			return ErrState
 		}
 		if j.Stage == "READY" {
+			// The key was revoked before: its identifier goes with the
+			// intent (L-18).
 			j.Stage = "REMOVING"
+			j.forget()
 			if err = save(base+".json", j); err != nil {
 				return err
 			}
@@ -86,6 +91,7 @@ func (s *Store) Remove(ctx context.Context, spec Spec, device, inode uint64) err
 	}
 	s.boundary("removal_synced")
 	j.Stage = "REMOVED"
+	j.forget()
 	if err = save(base+".json", j); err != nil {
 		return err
 	}

@@ -112,7 +112,7 @@ func TestPublisherKeysComeFromProtectedFiles(t *testing.T) {
 	// Strict mode: a rule that trusts no key makes the configuration invalid.
 	c := ServiceConfig{Root: t.TempDir(), Registry: &ServiceRegistry{RequireSignatures: true,
 		Rules: []RegistryRule{{Rule: ociregistry.Rule{Host: "ghcr.io", Repositories: []string{"acme/"}}}}}}
-	if _, err = c.OpenRegistry(nil, "w"); err == nil {
+	if _, err = c.OpenRegistry(nil, "w", false); err == nil {
 		t.Fatal("strict mode accepted a rule without publisher keys")
 	}
 }

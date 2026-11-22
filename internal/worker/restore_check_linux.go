@@ -18,6 +18,7 @@ import (
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/restoreauthority"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/sandbox"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/volumearchive"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/volumestore"
 )
@@ -50,6 +51,9 @@ type RestoreTest struct {
 	// Fetch, when set, returns the fetcher that copies an archive missing
 	// from Archives from the off-host stores into root (ScriptFetcher).
 	Fetch func(root string) ArchiveFetcher
+	// Sandbox confines the key check, which parses the copy's LUKS2 header
+	// (ServiceConfig.Inspection): as root, the inspection UID.
+	Sandbox sandbox.Options
 }
 
 // RestoreTestReport is what a passed restore test checked.
@@ -161,8 +165,10 @@ func (t RestoreTest) Run(ctx context.Context, agentID, archiveID string) (Restor
 	if b.Store != agentID || b.Volume != e.VolumeID {
 		return report, restoreauthority.ErrStale
 	}
-	err = t.Authority.HoldKey(ctx, b, func(_ context.Context, key []byte) error {
-		return volumestore.CheckContainer(scratch, e.VolumeID, key)
+	// The copy's header may be the guest's: libcryptsetup reads it confined
+	// (S-21), and the key reaches it through a pipe.
+	err = t.Authority.HoldKey(ctx, b, func(ctx context.Context, key []byte) error {
+		return volumestore.CheckContainer(ctx, t.Sandbox, scratch, e.VolumeID, key)
 	})
 	if errors.Is(err, volumestore.ErrLUKS) {
 		return report, errors.Join(ErrArchiveKey, err)

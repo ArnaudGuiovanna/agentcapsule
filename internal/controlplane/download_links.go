@@ -279,6 +279,15 @@ func (c *AgentCatalog) OpenDownload(ctx context.Context, token string) (Download
 	return out, err
 }
 
+// DownloadHolder is the principal a link was minted for, read from the link's
+// seal alone: no database work. A link that does not open, or has expired, is
+// ErrNotFound. The API charges a link's downloads to that principal's limits
+// (v0.1.0 audit, S-07); OpenDownload still checks its rights.
+func (c *AgentCatalog) DownloadHolder(token string) (Principal, error) {
+	p, _, err := c.accounts.open(token, time.Now())
+	return p, err
+}
+
 // attachmentDownload decrypts a whole file for its sender and checks it
 // against its size and digest.
 func (t *Transit) attachmentDownload(ctx context.Context, p Principal, id string) (Download, error) {

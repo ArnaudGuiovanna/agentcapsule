@@ -66,6 +66,9 @@ func (s *Server) createPlatformSession(w http.ResponseWriter, r *http.Request) {
 	var enrollment string
 	fields := strings.Fields(r.Header.Get("Authorization"))
 	if len(r.Header.Values("Authorization")) == 1 && len(fields) == 2 && strings.EqualFold(fields[0], "Bearer") && strings.HasPrefix(fields[1], "acpe_") && len(fields[1]) == 48 {
+		if !s.admitAttempt(w, r) {
+			return
+		}
 		enrollment = fields[1]
 	} else {
 		var ok bool
