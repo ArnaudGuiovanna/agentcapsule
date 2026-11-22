@@ -189,11 +189,17 @@ def matching_sources(sources,guest,src):
     return {f.name:f for f in src.iterdir() if f.is_file()}
 
 
+# One Debian package name, with its architecture if any: never a list
+# ("a, b: path") nor a diversion ("diversion by a from: path",
+# "local diversion to: path"), which dpkg-query -S prints in the same form.
+OWNER=re.compile(r"[a-z0-9][a-z0-9+.-]+(:[a-z0-9-]+)?")
+
+
 def run_owner(candidate):
     p=subprocess.run(["dpkg-query","-S",candidate],capture_output=True,text=True)
     for line in p.stdout.splitlines():
         package,sep,path=line.partition(": ")
-        if sep and path==candidate and "," not in package:
+        if sep and path==candidate and OWNER.fullmatch(package):
             return package
     return None
 
