@@ -29,7 +29,7 @@ PG_SKIP_MESSAGES = {
     "run scripts/verify-postgres.py",
     "run scripts/verify-postgres.py for real PostgreSQL integration checks",
 }
-PG_PACKAGES = ("internal/api", "internal/controlplane", "internal/worker")
+PG_PACKAGES = ("internal/api", "internal/controlplane", "internal/llmservice", "internal/worker")
 
 
 def source_files(root):

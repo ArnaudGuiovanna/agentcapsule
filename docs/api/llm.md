@@ -108,8 +108,8 @@ certificate covers: `https://models.corp.example:11434/v1`, not
 ### Tests against a real provider
 
 The `TestLive*` tests (`internal/llmgateway/live_test.go` and
-`live_stream_test.go`, `internal/controlplane/llm_live_test.go` and
-`llm_live_stream_test.go`) are compiled only with the `llmlive` tag, hence
+`live_stream_test.go`, `internal/llmservice/live_test.go` and
+`live_stream_test.go`) are compiled only with the `llmlive` tag, hence
 never by the default campaigns. They target a real `openai_compatible`
 endpoint, in practice a local Ollama, with no paid credential, and the same
 server's Anthropic API (`AGENTCAPSULE_TEST_LLM_ANTHROPIC_BASE_URL`, by default
