@@ -145,8 +145,11 @@ func (w *Placements) WithDeliveryAdmission(ctx context.Context, fn func(context.
 // every manifest; it is acknowledged only after managed execution is sealed.
 func (w *Placements) Fence(ctx context.Context, target, subject string) error {
 	if w.authority != nil {
-		if _, err := w.authority.BeginRevocation(ctx, subject); err != nil {
+		if err := w.beginRevocation(ctx, subject); err != nil {
 			return err
+		}
+		if w.acknowledged(ctx, target, subject) {
+			return nil // authority_linux.go: no boot for a fence the store holds
 		}
 	}
 	return w.host.WithBarrier(ctx, target, func(ctx context.Context) error { return w.fence(ctx, target, subject) })

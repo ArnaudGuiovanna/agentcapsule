@@ -75,44 +75,76 @@ func (w *Placements) deliverToGuest(ctx context.Context, target string, client *
 // synchronizeAuthority records a snapshot only after every authenticated guest
 // fence succeeds. Its MAC alone is not a guest receipt. Sequential fence calls
 // remain durable and idempotent across a partial/lost response.
+//
+// Since the v0.1.0 audit a snapshot names only the subjects of the store's
+// scope that it has not acknowledged yet (restoreauthority, scopes_linux.go),
+// one page at a time: a boot costs what was revoked for this store since its
+// last boot, and no other organization's subject reaches its guest. The
+// boot no longer begins PostgreSQL's whole catalogue in the authority: a
+// subject PostgreSQL holds and the authority lacks has a barrier still to
+// run, and that barrier begins it in its scope, then fences each target
+// before the revocation completes (CommitBarrier).
 func (w *Placements) synchronizeAuthority(ctx context.Context, e controlplane.Enrollment, client *capsuleprotocol.Client) (restoreauthority.Receipt, error) {
 	var r restoreauthority.Receipt
 	if w.authority == nil || client == nil || client.Identity().AgentID != e.AgentID || client.Identity().Incarnation != e.Incarnation {
 		return r, restoreauthority.ErrStale
 	}
-	subjects, err := w.store.RevocationSubjects(ctx)
-	if err != nil {
-		return r, err
-	}
-	for _, subject := range subjects {
-		if _, err = w.authority.BeginRevocation(ctx, subject); err != nil {
+	for page := 0; ; page++ {
+		var err error
+		if r, err = w.authority.Scan(ctx, enrollmentBinding(e)); err != nil {
+			return r, err
+		}
+		if page == 0 {
+			// Authenticate even an empty snapshot; it must still describe this live boot.
+			if err = client.Health(ctx); err != nil {
+				return r, err
+			}
+		}
+		for _, subject := range r.Subjects {
+			if err = client.Fence(ctx, subject); err != nil {
+				return r, err
+			}
+		}
+		if err = w.authority.RecordVerifiedFence(ctx, r); err != nil || !r.More {
 			return r, err
 		}
 	}
-	r, err = w.authority.Scan(ctx, enrollmentBinding(e))
+}
+
+// beginRevocation begins subject in the authority, in the scope PostgreSQL
+// names for it: the stores that can act on it.
+func (w *Placements) beginRevocation(ctx context.Context, subject string) error {
+	scopes, err := w.store.RevocationScopes(ctx, []string{subject})
 	if err != nil {
-		return r, err
+		return err
 	}
-	// Authenticate even an empty snapshot; it must still describe this live boot.
-	if err = client.Health(ctx); err != nil {
-		return r, err
+	return w.authority.BeginRevocations(ctx, []restoreauthority.Scope{{Subject: subject, Stores: scopes[0].Stores}})
+}
+
+// acknowledged reports whether target's current store already acknowledged
+// subject in the authority, unsealed: it holds the subject's durable fence in
+// this incarnation, or the subject is outside its scope. A fence then needs
+// no boot and no guest call. Any doubt, an outage included, is false: the
+// caller fences as before.
+func (w *Placements) acknowledged(ctx context.Context, target, subject string) bool {
+	e, err := w.store.VolumeEnrollment(ctx, target, w.hostID)
+	if err != nil {
+		return false
 	}
-	for _, subject := range r.Subjects {
-		if err = client.Fence(ctx, subject); err != nil {
-			return r, err
-		}
-	}
-	return r, w.authority.RecordVerifiedFence(ctx, r)
+	ack, sealed, err := w.authority.SubjectBarrier(ctx, enrollmentBinding(e), subject)
+	return err == nil && ack && !sealed
 }
 
 // CommitBarrier is called without SQL locks. A previously acknowledged SQL row
 // can be stale after restoration, so all targets are checked in the independent
 // catalogue. Physical host operations precede, never nest inside, its SQL gate.
+// A target outside the subject's scope is acknowledged by the authority
+// without a fence: none of its events can name the subject.
 func (w *Placements) CommitBarrier(ctx context.Context, subject string, targets []string, publish func() error) error {
 	if w.authority == nil {
 		return publish()
 	} // explicit legacy/probe runtime
-	if _, err := w.authority.BeginRevocation(ctx, subject); err != nil {
+	if err := w.beginRevocation(ctx, subject); err != nil {
 		return err
 	}
 	bindings := make([]restoreauthority.Binding, 0, len(targets))

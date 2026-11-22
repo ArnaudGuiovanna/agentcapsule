@@ -144,6 +144,8 @@ func publishRevocation(ctx context.Context, tx pgx.Tx, subject string) error {
 
 // RevocationSubjects returns durable, already-authorized intents. No SQL lock
 // crosses the worker's subsequent independent-authority or guest RPC operation.
+// It reads the platform's whole history: the reconciliation uses it; a boot
+// no longer does (RevocationScopes).
 func (s *Store) RevocationSubjects(ctx context.Context) ([]string, error) {
 	rows, err := s.pool.Query(ctx, "SELECT subject FROM revocation_catalogue ORDER BY subject")
 	if err != nil {
@@ -326,7 +328,9 @@ func (s *Store) EnrollmentPendingFences(ctx context.Context, id, host, volume st
 	if agents[id].Phase != "PROVISIONING" || e.Stage != "FENCING" || e.VolumeID != volume {
 		return nil, ErrStoreEnrollment
 	}
-	rows, err := tx.Query(ctx, `SELECT c.subject FROM revocation_catalogue c WHERE NOT EXISTS
+	// Only the subjects in the new store's scope (revocation_scopes.go): no
+	// other organization's subject reaches its guest.
+	rows, err := tx.Query(ctx, scopedSubjects+` WHERE NOT EXISTS
         (SELECT 1 FROM store_enrollment_receipts r WHERE r.agent_id=$1 AND r.volume_id=$2 AND r.incarnation=$3 AND r.subject=c.subject)
         ORDER BY c.subject`, id, volume, e.Incarnation)
 	if err != nil {
@@ -468,7 +472,7 @@ func (s *Store) ActivateProvisionedAgent(ctx context.Context, wanted Enrollment)
 		return ErrStoreEnrollment
 	}
 	var pending bool
-	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM revocation_catalogue c WHERE NOT EXISTS
+	if err = tx.QueryRow(ctx, `SELECT EXISTS(`+scopedSubjects+` WHERE NOT EXISTS
         (SELECT 1 FROM store_enrollment_receipts r WHERE r.agent_id=$1 AND r.volume_id=$2 AND r.incarnation=$3 AND r.subject=c.subject))`,
 		e.AgentID, e.VolumeID, e.Incarnation).Scan(&pending); err != nil {
 		return err
