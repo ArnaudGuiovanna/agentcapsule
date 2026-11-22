@@ -245,8 +245,13 @@ holds the reviewed exceptions to both gates. An entry names:
 - `reason`: why the finding is accepted, and what will remove it;
 - `expires`: a date at most 90 days ahead.
 
-An expired or malformed entry fails the audit. An entry no scan used is
-listed in the reports, so that it can be removed. Add an entry only after
+An expired or malformed entry fails the audit. From 21 days before an entry
+expires (`ALLOWLIST_WARNING_DAYS` in `scripts/release_tools.py`), the CI
+checks job (`release_tools.py --check-allowlist`), the scans and the
+dependency audit each print a warning annotation for it, without failing:
+review it again, or fix the finding, before the expiry fails them. Never move
+an expiry beyond 90 days. An entry no scan used is listed in the reports, so
+that it can be removed. Add an entry only after
 reading the advisory: a finding with a fixed version is fixed, not
 allowlisted, unless the fix needs its own change (a new guest, a new upstream
 image). A release refuses a vulnerability the code calls even when an entry

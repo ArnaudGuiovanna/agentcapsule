@@ -82,7 +82,7 @@ Do not run `go test ./...` at the repository root with sources outside
 | `release-sbom.py` | One SPDX SBOM per binary, guest image or harness package (syft, pinned); the guest's native files attributed to their Debian packages |
 | `scan-artifacts.py` | grype (pinned) on SBOMs, the deploy images (by digest) and lock files: fails on High or Critical unless `vulnerability-allowlist.json` covers it; with `--verify-runtime-images`, also the runtime images' check of `runtime_images.py` |
 | `runtime_images.py`, `test_runtime_images.py` | The three runtime images with the OpenSSL backports: `build` (run by the runtime-images workflow: build, push under a new tag, record the digests), `verify` (each pinned image is its upstream base plus one layer and carries the workflow's provenance), and their unit tests without Docker or network; see [docs/release.md](../docs/release.md#runtime-images) |
-| `release_tools.py`, `release-tools.json`, `tools/` | The audit's tools, pinned by SHA-256 (syft, grype, cosign, actionlint) or `go.sum` (govulncheck), fetched into `~/.cache/agentcapsule-release-tools` |
+| `release_tools.py`, `release-tools.json`, `tools/` | The audit's tools, pinned by SHA-256 (syft, grype, cosign, actionlint) or `go.sum` (govulncheck), fetched into `~/.cache/agentcapsule-release-tools`; `--check-allowlist` warns 21 days before an allowlist entry expires and fails once it has |
 | `vulnerability-allowlist.json`, `license-policy.json` | Reviewed exceptions of the vulnerability gates (each expires within 90 days), and the allowed licenses |
 | `test_release_audit.py` | Unit tests of the release audit's rules, without network or tools |
 | `openapi-requirements.txt` | Python requirements for validating the OpenAPI specification |

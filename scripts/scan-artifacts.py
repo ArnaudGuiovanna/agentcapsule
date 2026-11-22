@@ -26,7 +26,8 @@ grype, pinned by scripts/release-tools.json, scans:
 A High or Critical finding fails the scan unless an entry of
 scripts/vulnerability-allowlist.json covers it (same ID or alias, same
 package, a target pattern that matches). An expired or malformed entry also
-fails it. Lower severities are reported. Go findings carry no severity in the
+fails it; an entry that expires within release_tools.ALLOWLIST_WARNING_DAYS
+gets a warning annotation. Lower severities are reported. Go findings carry no severity in the
 Go vulnerability database: audit-dependencies.py gates them by reachability.
 
 The vulnerability database is updated once per run (grype checks its
@@ -256,6 +257,7 @@ def main(argv=None):
         "database": json.loads(status),
         "allowlist": str(a.allowlist.relative_to(ROOT) if a.allowlist.resolve().is_relative_to(ROOT) else a.allowlist),
         "allowlist_problems": problems,
+        "allowlist_warnings": TOOLS.allowlist_warnings(entries),
         "unpinned_images": unpinned,
         "targets": [],
     }
@@ -305,6 +307,7 @@ def main(argv=None):
     (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     for problem in problems:
         print("ALLOWLIST " + problem, file=sys.stderr)
+    TOOLS.annotate("warning", summary["allowlist_warnings"])
     for image in unpinned:
         print("NOT PINNED BY DIGEST " + image, file=sys.stderr)
     print(f"{summary['status']}: {out / 'summary.json'}")

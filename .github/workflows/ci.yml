@@ -78,6 +78,9 @@ jobs:
       - name: Repository hygiene (no personal paths, no committed evidence sources)
         run: python3 scripts/check-repo-hygiene.py
 
+      - name: Vulnerability allowlist (a warning 21 days before an entry expires, a failure once it has)
+        run: python3 scripts/release_tools.py --check-allowlist
+
       - name: Alert rules (promtool check and unit tests, metrics registered by the code)
         run: |
           # Prometheus v3.5.0, pinned by digest.
