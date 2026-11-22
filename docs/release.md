@@ -170,7 +170,10 @@ finish. The two bounded P1 checks, `concurrentProtocolDepth8` and
 many promotions. Record the TLC verdict, depth, distinct states and remaining
 queue when its time budget expires. Record the separate `certificate.json`
 from `python3 scripts/check-restore-authority-induction.py` for unbounded
-safety of this instance. [P2 certificate and scope](../spec/proofs/restore-authority-induction.md)
+safety of this instance. On 2026-11-22 the 7,200-second TLC attempt timed
+out at reported depth 19, with 144,950,532 distinct states and 67,067,889
+queued. The induction certificate established all 21 safety conjuncts over
+all 45 action alternatives. [P2 certificate and scope](../spec/proofs/restore-authority-induction.md)
 
 Releasing with these outstanding checks listed is the default
 pending the product owner. [Formal check scopes](../spec/README.md#bounded-and-exhaustive-checks)
