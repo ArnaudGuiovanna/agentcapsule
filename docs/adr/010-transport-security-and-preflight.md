@@ -288,6 +288,15 @@ prefix over these forms counts as internal, so an operator allows one only by
 its exact address. The model gateway, the registry client and the corpus
 source client share the change (`internal/addrpolicy`).
 
+**Lot SEC-1A (finding L-19).** The API sent no `Strict-Transport-Security`.
+Every answer over HTTPS now carries `max-age=31536000` (a year). It sets
+neither `includeSubDomains`, since other services may share the API's
+domain, nor `preload`. An answer over plain HTTP, in development on
+loopback, carries none, as RFC 6797 requires. Failed authentications are
+now logged with a pseudonym of their source address, never the address
+([observability.md](../observability.md#events)). Test:
+`TestAnswersOverTLSCarryHSTS` (unit).
+
 ### The identity provider behind an edge (SEC-4, finding S-19)
 
 Until v0.1.0 the bundled Keycloak ran with the host's network and served TLS

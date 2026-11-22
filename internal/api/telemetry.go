@@ -17,7 +17,9 @@ var problemCodes = []string{"agent_already_exists", "agent_unavailable", "attach
 	"harness_unavailable", "idempotency_key_in_progress", "idempotency_key_required", "idempotency_key_reused", "idempotency_receipt_unreadable", "incomplete_body", "input_purged", "invalid_json",
 	"invalid_path", "invalid_request", "invalid_transition", "json_required", "media_type_required", "method_not_allowed", "not_found",
 	"organization_name_taken", "organization_quota_exceeded", "outcome_unknown", "pool_exhausted", "provider_address_not_allowed", "queue_full", "quota_below_agent", "request_too_large", "requester_revoked", "source_credential_name_taken", "corpus_name_taken", "corpus_incompatible", "corpus_unavailable", "version_conflict", "source_credential_unavailable", "storage_capacity_unavailable",
-	"storage_pressure", "stream_capacity", "temporarily_unavailable", "too_many_streams"}
+	"storage_pressure", "stream_capacity", "temporarily_unavailable", "too_many_streams",
+	"rate_limited", "organization_rate_limited", "authentication_rate_limited", "too_many_principal_streams", "too_many_organization_streams",
+	"too_many_uploads", "upload_capacity"}
 
 var (
 	httpMethods   = []string{"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}
@@ -31,6 +33,8 @@ type apiTelemetry struct {
 	requests *telemetry.Counter
 	latency  *telemetry.Histogram
 	log      *telemetry.Logger
+	// limited counts the requests a limit refused, by limit (v0.1.0 audit).
+	limited *telemetry.Counter
 }
 
 // EnableTelemetry counts and times every request by route pattern (never the
@@ -45,8 +49,13 @@ func (s *Server) EnableTelemetry(registry *telemetry.Registry, events io.Writer)
 			route, telemetry.Label{Name: "method", Values: httpMethods}, telemetry.Label{Name: "status_class", Values: statusClasses}),
 		latency: registry.Histogram("agentcapsule_api_request_duration_seconds", "API request latency by route pattern.",
 			[]float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10}, route),
-		log: telemetry.NewLogger(events, map[string][]string{"event": {"http_request", "audit_refusal_unrecorded"}, "route": routes, "method": httpMethods,
+		log: telemetry.NewLogger(events, map[string][]string{"event": {"http_request", "audit_refusal_unrecorded", "authentication_failed"}, "route": routes, "method": httpMethods,
 			"problem": problemCodes}),
+		limited: registry.Counter("agentcapsule_api_limited_requests_total", "API requests refused by a limit, by limit.",
+			telemetry.Label{Name: "limit", Values: limitKinds}),
+	}
+	for _, limit := range limitKinds {
+		s.telemetry.limited.Add(0, limit)
 	}
 	s.events.gauge = registry.Gauge("agentcapsule_api_streams_active", "Open invocation and corpus build event subscriptions.")
 	s.events.gauge.Set(0)

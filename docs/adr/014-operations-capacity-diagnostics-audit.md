@@ -265,3 +265,73 @@ operator's feed (`internal/controlplane`).
    times an hour. Should each refusal be an event (a, the default), or one
    event per actor, action and reason each minute, with a count (b)?
    Recommended: (a) now, (b) if trails grow too fast.
+
+## Changes after the v0.1.0 audit
+
+**Lot SEC-1A (findings S-07, S-09, L-04).**
+
+*Request limits (S-07).* An authenticated request costs about twenty SQL
+round trips before its handler's work, and a refused audited one a third
+transaction: one noisy caller could starve the others, and nothing but the
+API's capacity bounded it. Each API process now keeps token buckets in
+memory ([api/README.md](../api/README.md), request limits):
+- per principal, 200 requests at once then 20 a second; per organization,
+  all its principals together, 1,000 then 100 a second. Past either, `429
+  rate_limited` or `429 organization_rate_limited` with `Retry-After`.
+  Several principals are needed to spend an organization's bucket;
+- per source address (an IPv4 address, an IPv6 /64), 60 failed
+  authentications a minute. Past them, an unknown credential from that
+  source is refused before its lookup (`429 authentication_rate_limited`);
+  a credential that authenticated in the last 15 minutes still passes, so
+  an attack from a shared address does not lock out its known callers.
+- The limits run before the database work as far as authentication allows.
+  What is known before the lookup is the credential and the source: a
+  credential that authenticated recently is known by its keyed fingerprint,
+  with its principal and organization, and is charged to their buckets
+  before any SQL. A credential's first request is charged after its
+  lookup, before its handler's work. Knowing a credential never admits a
+  request: the database authenticates every request the limits let through,
+  so revocation stays fail-closed (ADR 001, ADR 002).
+- A rate of 0 turns its limit off. N API processes behind a load balancer
+  admit up to N times each rate; behind a proxy the source is the proxy's,
+  where the failure limit is turned off and the proxy limits.
+- `agentcapsule_api_limited_requests_total{limit}` counts every refusal of a
+  limit, by limit; `authentication_failed` events name the source by a
+  pseudonym ([observability.md](../observability.md#events), L-19).
+
+*Uploads (S-09).* An upload read its 8 MiB body into memory after
+authentication alone, with no bound on uploads at once. The API now checks
+an upload's headers, its rights (scope, `invoke` assignment, live agent) and,
+unless its key replays a stored answer, the room under the organization's
+`max_attachment_bytes` for its declared `Content-Length`, before it reads the
+body; the upload checks everything again when it stores the file. It reads
+at most 16 bodies at once in the process (`-max-uploads`, `503
+upload_capacity`) and 2 per principal (`-max-principal-uploads`, `429
+too_many_uploads`). The API's memory bound itself is the unit's (SEC-4).
+
+*Refused attempts (L-04; §10, question 7).* Question 7 is answered (b),
+with one refinement. A window opens at an actor's refused attempt at an
+action, for one reason, and lasts a minute. In it, the first attempt at each
+target is an event in full, up to ten targets; every other attempt is
+counted, and at the window's end one event records their number
+(`attempts`), with the actor, the action, the reason and the organization as
+target. Each refusal carries `attempts`, 1 for an event in full (migration
+0069). The refinement keeps §10's isolation: an attempt at another
+organization's agent stays recorded exactly as one at an unknown agent (each
+is the first at its target), and whether an attempt is recorded in full or
+counted depends only on the actor's own earlier attempts. Per actor, action
+and reason, a minute adds at most eleven events. The windows live in the
+API process's memory: a process that stops abruptly loses the counts of its
+open windows; one that stops normally records them first. §10's "Not done"
+item is done.
+
+Tests: `TestRequestBucketsAdmitABurstThenTheirRate`,
+`TestFailedAuthenticationsLimitTheirSourceBeforeTheDatabase`,
+`TestUploadSlotsBoundTheProcessAndEachPrincipal`,
+`TestRefusalWindowsCountRepeatedAttempts` (unit);
+`TestRequestLimitsRefuseBeforeTheDatabase`,
+`TestUploadRightsAndRoomAreCheckedBeforeTheBody`,
+`TestRepeatedRefusalsAreCountedInTheTrail`,
+`TestRefusalAttemptsMigrationKeepsExistingRefusals`,
+`TestASlowDownloadOutlivesTheServerWriteTimeout` (PG; the last one for L-05:
+a download now moves its write deadline, as an upload does).

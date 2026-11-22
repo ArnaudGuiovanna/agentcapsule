@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 )
@@ -47,13 +48,30 @@ func (s *Server) resultLink(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// downloadWriteTimeout bounds how long one download may take to leave: 8 MiB
+// at 70 KB/s. The server-wide write timeout is sized for small answers
+// (v0.1.0 audit, L-05).
+const downloadWriteTimeout = 2 * time.Minute
+
 // downloadLink serves what a link opens. It needs no Authorization header:
 // the link carries the identity it was minted for, checked again now. Every
 // refusal is the same 404. The request log records the route pattern, never
-// the link.
+// the link. Its downloads are charged to that identity's limits, read from
+// the link's seal before any database work.
 func (s *Server) downloadLink(w http.ResponseWriter, r *http.Request) {
 	if !method(w, r, "GET") {
 		return
+	}
+	if l := s.guards.requests; l != nil {
+		holder, err := s.catalog.DownloadHolder(r.PathValue("token"))
+		if err != nil {
+			failure(w, err)
+			return
+		}
+		if limit, wait := l.admit(holder); limit != "" {
+			s.refuseLimited(w, limit, wait)
+			return
+		}
 	}
 	out, err := s.catalog.OpenDownload(r.Context(), r.PathValue("token"))
 	if err != nil {
@@ -67,6 +85,9 @@ func (s *Server) downloadLink(w http.ResponseWriter, r *http.Request) {
 	h.Set("Content-Length", strconv.Itoa(len(out.Body)))
 	h.Set("X-Content-SHA256", out.SHA256)
 	h.Set("Referrer-Policy", "no-referrer")
+	// The body may take longer than the server's write timeout to reach a
+	// slow client: the deadline moves, as an upload's does.
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(downloadWriteTimeout))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(out.Body)
 }
