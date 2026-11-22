@@ -131,14 +131,14 @@ func (c *AgentCatalog) Inbox(ctx context.Context, p Principal, after, state stri
 }
 
 type RequestView struct {
-	ID               string                       `json:"id"`
-	SenderAgentID    string                       `json:"sender_agent_id"`
-	RecipientAgentID string                       `json:"recipient_agent_id"`
-	State            string                       `json:"state"`
-	ClosureState     string                       `json:"closure_state,omitempty"`
-	ExpiresAt        time.Time                    `json:"expires_at"`
-	Subject          string                       `json:"subject,omitempty"`
-	CorrelationID    string                       `json:"correlation_id,omitempty"`
+	ID               string            `json:"id"`
+	SenderAgentID    string            `json:"sender_agent_id"`
+	RecipientAgentID string            `json:"recipient_agent_id"`
+	State            string            `json:"state"`
+	ClosureState     string            `json:"closure_state,omitempty"`
+	ExpiresAt        time.Time         `json:"expires_at"`
+	Subject          string            `json:"subject,omitempty"`
+	CorrelationID    string            `json:"correlation_id,omitempty"`
 	Payload          *wire.PeerPayload `json:"payload,omitempty"`
 	Reply            *wire.PeerPayload `json:"reply,omitempty"`
 	// LostAt is the time a restore last lost one of the request's events

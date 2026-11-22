@@ -82,11 +82,11 @@ func (t *Transit) PostOwnerFromVM(ctx context.Context, caller VMCaller, key stri
 }
 
 type OwnerMessageView struct {
-	ID        string                        `json:"id"`
-	AgentID   string                        `json:"agent_id"`
-	RequestID string                        `json:"request_id,omitempty"`
+	ID        string             `json:"id"`
+	AgentID   string             `json:"agent_id"`
+	RequestID string             `json:"request_id,omitempty"`
 	Content   []wire.TextContent `json:"content"`
-	CreatedAt time.Time                     `json:"created_at"`
+	CreatedAt time.Time          `json:"created_at"`
 }
 
 // OwnerMessage intentionally does not share Request's two-owner read access.
