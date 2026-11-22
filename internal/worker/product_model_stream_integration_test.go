@@ -126,6 +126,9 @@ func TestProductWorkerBoundsModelStreamsAtSixteen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The VM's 16 slots are under test, not the service's limit of calls in
+	// flight per agent (8 by default).
+	svc.LimitCallsPerAgent(16)
 	if err = l.worker.EnableLLM(svc); err != nil {
 		t.Fatal(err)
 	}
