@@ -1,6 +1,7 @@
 -- The worker's polling queries (P-04) read open work only: the open
--- operations, requests and closures of a host's agents, the model calls in
--- flight, the content due for purge. These partial indexes hold those rows
+-- operations, requests and closures of a host's agents, the content due for
+-- purge (the model calls in flight have llm_usage_unresolved, and the
+-- requests' scopes the indexes of 0065). These partial indexes hold those rows
 -- alone, so that the queries no longer scan the whole history of the tables
 -- under the worker_hosts row lock. Each CREATE INDEX takes its table's SHARE
 -- lock, which blocks writes to it (not reads) while it builds; the migration
@@ -17,10 +18,7 @@ CREATE INDEX agent_requests_open_sender ON agent_requests(sender_agent_id, expir
 CREATE INDEX agent_requests_open_recipient ON agent_requests(recipient_agent_id, expires_at)
   WHERE state IN ('PENDING_APPROVAL','DELIVERING','PROCESSING');
 CREATE INDEX request_closures_fencing ON request_closures(request_id) WHERE phase = 'FENCING';
-CREATE INDEX llm_usage_reserved ON llm_usage(agent_id) WHERE state = 'reserved';
 CREATE INDEX transit_payloads_purge_due ON transit_payloads(purge_after, id) WHERE purged_at IS NULL;
-CREATE INDEX transit_payloads_unstarted ON transit_payloads(id)
-  WHERE purged_at IS NULL AND purge_after IS NULL AND kind IN ('request','reply');
 
 -- The latest activity of each agent (P-04): what the idle policy and the
 -- eviction order compare, kept in the transaction of the activity itself

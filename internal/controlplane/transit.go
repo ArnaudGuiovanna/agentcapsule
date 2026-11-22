@@ -518,14 +518,20 @@ func (t *Transit) delivered(ctx context.Context, tx pgx.Tx, id string) error {
 
 // transitRetentionStart starts, for at most $1 payloads, the retention ($2
 // microseconds) of request content that ended without one (PurgeExpired).
+// Its two cases are two branches, each a join the planner runs from the
+// payloads not yet delivered (transit_payloads_purge_due), never a scan of
+// every reply's mailbox entry.
 const transitRetentionStart = `UPDATE transit_payloads SET delivered_at=clock_timestamp(),
         purge_after=clock_timestamp()+$2::bigint*interval '1 microsecond' WHERE id IN
-        (SELECT p.id FROM transit_payloads p JOIN agent_requests r ON r.id=p.ref_id
-          WHERE p.purged_at IS NULL AND p.purge_after IS NULL AND p.kind IN ('request','reply')
-            AND (p.kind='reply' AND r.reply_ref=p.id AND EXISTS(SELECT 1 FROM agent_mailboxes m
-                  WHERE m.ref_id=r.id AND m.kind='reply' AND m.delivery_state='DEAD')
-              OR p.kind='request' AND r.payload_ref=p.id AND r.state IN ('DECLINED','EXPIRED','CANCELED','FAILED'))
-          ORDER BY p.id LIMIT $1 FOR UPDATE OF p SKIP LOCKED)`
+        (SELECT t.id FROM transit_payloads t WHERE t.purged_at IS NULL AND t.purge_after IS NULL AND t.id IN (
+            SELECT p.id FROM transit_payloads p JOIN agent_requests r ON r.id=p.ref_id AND r.reply_ref=p.id
+              WHERE p.purged_at IS NULL AND p.purge_after IS NULL AND p.kind='reply'
+                AND EXISTS(SELECT 1 FROM agent_mailboxes m WHERE m.ref_id=r.id AND m.kind='reply' AND m.delivery_state='DEAD')
+            UNION ALL
+            SELECT p.id FROM transit_payloads p JOIN agent_requests r ON r.id=p.ref_id AND r.payload_ref=p.id
+              WHERE p.purged_at IS NULL AND p.purge_after IS NULL AND p.kind='request'
+                AND r.state IN ('DECLINED','EXPIRED','CANCELED','FAILED'))
+          ORDER BY t.id LIMIT $1 FOR UPDATE SKIP LOCKED)`
 
 // transitPurgeDue clears the ciphertext of at most $1 payloads past their
 // purge date, the oldest first (PurgeExpired).

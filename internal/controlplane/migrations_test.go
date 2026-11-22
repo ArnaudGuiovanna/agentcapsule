@@ -383,8 +383,7 @@ func revertTenantAgents(t *testing.T, s *Store) {
         DROP FUNCTION IF EXISTS agent_activity_from_operations(), agent_activity_from_requests(), agent_activity_from_model_calls() CASCADE;
         DROP FUNCTION IF EXISTS agent_activity_upsert(text[], timestamptz[], timestamptz[]);
         DROP INDEX IF EXISTS agent_placements_host, platform_operations_open, platform_operations_open_host, platform_operations_sleeps,
-          agent_requests_open_sender, agent_requests_open_recipient, request_closures_fencing, llm_usage_reserved,
-          transit_payloads_purge_due, transit_payloads_unstarted;
+          agent_requests_open_sender, agent_requests_open_recipient, request_closures_fencing, transit_payloads_purge_due;
         DROP FUNCTION IF EXISTS work_notify_outbox(), work_notify_mailbox(), work_notify_operation(), work_notify_closure(),
           work_notify_deletion(), work_notify_placement() CASCADE;
         DROP FUNCTION IF EXISTS work_notify_agent(text), work_notify_host(text);
