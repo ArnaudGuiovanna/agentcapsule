@@ -384,9 +384,11 @@ func TestReplayingAStreamKeyInFlightNeverReachesTheProvider(t *testing.T) {
 	}
 }
 
-// A call reserved under a host admission that then fails never runs: its key
-// is given back, so that its replay finds no running call and makes the
-// orphan reservation unknown.
+// A call reserved under a host admission that then fails never runs: nothing
+// reached the provider, so its reservation is released at once rather than
+// left "reserved" until the organization resolves it (audit finding L-08),
+// and its key is given back, so that its replay finds no running call. Every
+// route behaves so.
 func TestAFailedAdmissionGivesTheKeyBack(t *testing.T) {
 	s := newStreamLab(t, 1)
 	lost := errors.New("the hold was lost")
@@ -397,13 +399,39 @@ func TestAFailedAdmissionGivesTheKeyBack(t *testing.T) {
 		return lost
 	}
 	body := []byte(`{"messages":[{"role":"user","content":"hi"}],"stream":true,"max_tokens":32}`)
-	if _, err := s.svc.ForwardStreamFromVM(t.Context(), s.caller, "adm", "fast", "openai", body, admission, func(llmgateway.Event) error { return nil }); !errors.Is(err, lost) {
-		t.Fatal(err)
+	q := llmgateway.Request{Messages: []llmgateway.Message{{Role: "user", Content: "hi"}}, MaxTokens: 8}
+	for key, call := range map[string]func(admission func(context.Context, func(context.Context) error) error) error{
+		"adm-stream": func(a func(context.Context, func(context.Context) error) error) error {
+			_, err := s.svc.ForwardStreamFromVM(t.Context(), s.caller, "adm-stream", "fast", "openai", body, a, func(llmgateway.Event) error { return nil })
+			return err
+		},
+		"adm-forward": func(a func(context.Context, func(context.Context) error) error) error {
+			_, err := s.svc.ForwardFromVM(t.Context(), s.caller, "adm-forward", "fast", "openai", []byte(`{"messages":[{"role":"user","content":"hi"}]}`), a)
+			return err
+		},
+		"adm-call": func(a func(context.Context, func(context.Context) error) error) error {
+			_, err := s.svc.CallFromVM(t.Context(), s.caller, "adm-call", "claude", q, a)
+			return err
+		},
+	} {
+		if err := call(admission); !errors.Is(err, lost) {
+			t.Fatal(key, err)
+		}
+		if _, state, _, _ := s.usage(t, key); state != "released" {
+			t.Fatal(key, "a reservation whose admission failed is", state)
+		}
+		if err := call(nil); !errors.Is(err, ErrLLMAlreadyProcessed) {
+			t.Fatal(key, "replay:", err)
+		}
 	}
-	if _, err := s.svc.ForwardStreamFromVM(t.Context(), s.caller, "adm", "fast", "openai", body, nil, func(llmgateway.Event) error { return nil }); !errors.Is(err, llmgateway.ErrOutcomeUnknown) {
-		t.Fatal(err)
+	if s.calls.Load() != 0 {
+		t.Fatal("a call whose admission failed reached the provider", s.calls.Load())
 	}
-	if _, state, _, _ := s.usage(t, "adm"); state != "unknown" || s.calls.Load() != 0 {
-		t.Fatal("the key stayed held after a failed admission", state, s.calls.Load())
+	rep, err := s.a.LLMUsage(t.Context(), s.owner, "day")
+	if err != nil || rep.Totals.PendingTokens != 0 || rep.Totals.UnknownTokens != 0 || rep.Totals.Calls != 0 {
+		t.Fatal("a failed admission still counts", rep.Totals, err)
+	}
+	if calls, err := s.a.ListLLMUnresolved(t.Context(), s.owner, "", 10); err != nil || len(calls) != 0 {
+		t.Fatal("a failed admission waits for the organization", calls, err)
 	}
 }

@@ -83,8 +83,10 @@ func streamRefusalStatus(code string) int {
 		return http.StatusForbidden
 	case "not_found":
 		return http.StatusNotFound
-	case "invalid":
+	case "invalid", "feature_denied":
 		return http.StatusBadRequest
+	case "concurrency_limited":
+		return http.StatusTooManyRequests
 	case "transition", "expired", "conflict":
 		return http.StatusConflict
 	}

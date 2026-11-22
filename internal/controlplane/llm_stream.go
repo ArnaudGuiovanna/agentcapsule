@@ -37,8 +37,9 @@ type LLMStreamObserver interface {
 
 // ForwardStreamFromVM serves an agent's native model request as a stream
 // (ADR 022 §3): its body holds "stream": true. It is admitted as
-// ForwardFromVM is (placement, alias access, budgets, reservation from the
-// request's size and output cap, request key), then sink receives each
+// ForwardFromVM is (placement, alias access, the alias's request policy,
+// budgets, reservation from llmgateway.PlanForward, request key, the agent's
+// calls in flight), then sink receives each
 // provider event, in order, as the provider sent it, then the call is settled
 // once.
 //
@@ -50,14 +51,10 @@ type LLMStreamObserver interface {
 // outcome is unknown.
 func (s *LLMService) ForwardStreamFromVM(ctx context.Context, caller VMCaller, requestKey, alias, dialect string, body []byte,
 	admission func(context.Context, func(context.Context) error) error, sink func(llmgateway.Event) error) (LLMStreamEnd, error) {
-	max, err := llmgateway.ForwardStreamOutputCap(dialect, body)
-	if err != nil {
+	if _, err := llmgateway.ForwardStreamOutputCap(dialect, body); err != nil {
 		return LLMStreamEnd{}, err
 	}
-	if max == 0 {
-		max = forwardDefaultOutput
-	}
-	hold, err := s.admitFromVM(ctx, caller, requestKey, alias, int64(len(body))/3+1, int64(max), admission)
+	hold, err := s.admitFromVM(ctx, caller, requestKey, alias, forwardCall(dialect, body, true), admission)
 	if err != nil {
 		return LLMStreamEnd{}, err
 	}
@@ -76,8 +73,7 @@ func (s *LLMService) ForwardStreamFromVM(ctx context.Context, caller VMCaller, r
 // bytes). Admission, errors and the end are ForwardStreamFromVM's.
 func (s *LLMService) CompleteStreamFromVM(ctx context.Context, caller VMCaller, requestKey, alias string, q llmgateway.Request,
 	admission func(context.Context, func(context.Context) error) error, sink func(text string) error) (LLMStreamEnd, error) {
-	input, output := estimateTokens(q)
-	hold, err := s.admitFromVM(ctx, caller, requestKey, alias, input, output, admission)
+	hold, err := s.admitFromVM(ctx, caller, requestKey, alias, textCall(q), admission)
 	if err != nil {
 		return LLMStreamEnd{}, err
 	}
@@ -96,10 +92,12 @@ func (s *LLMService) CompleteStreamFromVM(ctx context.Context, caller VMCaller, 
 // after a cut, or released after a refusal before the first byte.
 func (s *LLMService) settleStream(ctx context.Context, h llmHold, call func(llmgateway.Route) (llmgateway.StreamResult, error)) (llmgateway.StreamResult, error) {
 	var out llmgateway.StreamResult
-	err := s.settle(ctx, h, func(route llmgateway.Route) (llmgateway.Usage, error) {
+	// A stream without its final usage is a cut (ErrOutcomeUnknown): its
+	// usage is always reported.
+	_, err := s.settle(ctx, h, func(route llmgateway.Route) (llmgateway.Usage, llmgateway.Unreported, error) {
 		var err error
 		out, err = call(route)
-		return out.Usage, err
+		return out.Usage, llmgateway.Unreported{}, err
 	})
 	if o := s.observer.Load(); o != nil && out.FirstEvent > 0 {
 		if timed, ok := o.LLMObserver.(LLMStreamObserver); ok {

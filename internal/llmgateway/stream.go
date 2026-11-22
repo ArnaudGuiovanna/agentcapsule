@@ -86,7 +86,7 @@ func (g *Gateway) ForwardStream(ctx context.Context, route Route, dialect string
 	if !route.validAuth() || route.UpstreamModel == "" || sink == nil {
 		return StreamResult{}, ErrInvalid
 	}
-	fields, _, err := forwardFields(dialect, body, true)
+	fields, _, err := prepareForward(route.Policy, dialect, body, true)
 	if err != nil {
 		return StreamResult{}, err
 	}
@@ -106,7 +106,7 @@ func (g *Gateway) ForwardStream(ctx context.Context, route Route, dialect string
 	fields["model"] = model
 	streamFields(fields, dialect)
 	prepared, err := json.Marshal(fields)
-	if err != nil || len(prepared) > MaxForwardBytes+len(model)+64 {
+	if err != nil || len(prepared) > MaxForwardBytes+len(model)+128 {
 		return StreamResult{}, ErrInvalid
 	}
 	state := streamState{dialect: dialect}
@@ -260,6 +260,7 @@ func (g *Gateway) stream(ctx context.Context, breakerKey, target string, body []
 // function that cancels its reading, or whether the error may be retried.
 func (g *Gateway) open(ctx context.Context, target string, body []byte, headers map[string]string) (*http.Response, context.CancelCauseFunc, bool, error) {
 	ctx, cancel := context.WithCancelCause(ctx)
+	ctx, conn := traceConnection(ctx)
 	hr, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(body))
 	if err != nil {
 		cancel(nil)
@@ -279,14 +280,10 @@ func (g *Gateway) open(ctx context.Context, target string, body []byte, headers 
 	}
 	if err != nil {
 		cancel(nil)
-		if errors.Is(err, ErrAddressRefused) {
-			return nil, nil, false, ErrAddressRefused // nothing was sent
-		}
-		if ctx.Err() != nil || isTimeout(err) {
-			// Sent, answer never seen: do not retry, do not claim zero cost.
-			return nil, nil, false, ErrOutcomeUnknown
-		}
-		return nil, nil, true, ErrUnavailable // could not connect; nothing was accepted
+		// As for a unary call (sendFailure): retried only before any
+		// connection, an unknown outcome after it.
+		retry, err := sendFailure(err, conn.got.Load())
+		return nil, nil, retry, err
 	}
 	if resp.StatusCode >= 300 {
 		resp.Body.Close()

@@ -328,17 +328,25 @@ func costMicro(input, output, inputPrice, outputPrice int64) (int64, bool) {
 // applicable budget rows in a fixed order, so concurrent reservations never
 // overshoot a hard limit, in tokens or in cost. The call keeps the alias's
 // current prices. A repeated request key returns the existing reservation and
-// never counts twice.
+// never counts twice. The alias's provider must still be active.
 func (a *Accounts) ReserveLLM(ctx context.Context, tenantID, agentID, alias, requestKey string, input, output int64) (LLMReservation, error) {
-	return a.reserveLLM(ctx, tenantID, agentID, alias, requestKey, llmAmounts{Operation: LLMChat, Input: input, Output: output})
+	return a.reserveLLM(ctx, tenantID, agentID, alias, requestKey, llmAmounts{Operation: LLMChat, Input: input, Output: output}, nil)
 }
+
+// errLLMRouteChanged: the provider's credential changed between the route's
+// resolution and its reservation. Nothing was reserved; resolve again.
+var errLLMRouteChanged = errors.New("llm route changed before its reservation")
 
 // reserveLLM is ReserveLLM for any operation: the alias must declare it
 // (refused with reason unsupported otherwise), token budgets count its tokens
 // (none for a transcription or OCR call) and cost budgets its cost at the
 // price of its unit. A request key that names a call of another operation is
-// refused with ErrLLMAlreadyProcessed.
-func (a *Accounts) reserveLLM(ctx context.Context, tenantID, agentID, alias, requestKey string, q llmAmounts) (LLMReservation, error) {
+// refused with ErrLLMAlreadyProcessed. The alias's provider is read again in
+// the reservation's transaction (audit finding L-08): a provider disabled
+// since via was resolved refuses the call (ErrNotFound), and a credential
+// rotated since then gives errLLMRouteChanged, so that a route resolved
+// before either change is never used.
+func (a *Accounts) reserveLLM(ctx context.Context, tenantID, agentID, alias, requestKey string, q llmAmounts, via *LLMRoute) (LLMReservation, error) {
 	if !validOrganizationText(tenantID, 100) || !validOrganizationText(agentID, 100) || !validOrganizationText(alias, 100) ||
 		!validOrganizationText(requestKey, 200) || !q.valid(true) {
 		return LLMReservation{}, ErrInput
@@ -363,14 +371,24 @@ func (a *Accounts) reserveLLM(ctx context.Context, tenantID, agentID, alias, req
 	var inputPrice, outputPrice int64
 	var operations []string
 	var audioPrice, pagePrice *int64
-	err = tx.QueryRow(ctx, `SELECT access,priced,input_micro_per_mtok,output_micro_per_mtok,operations,audio_micro_per_minute,ocr_micro_per_page
-        FROM llm_model_aliases WHERE tenant_id=$1 AND alias=$2 AND status='active'`,
-		tenantID, alias).Scan(&access, &tokensPriced, &inputPrice, &outputPrice, &operations, &audioPrice, &pagePrice)
-	if errors.Is(err, pgx.ErrNoRows) || (err == nil && !agentOK) {
+	var providerID string
+	var generation int64
+	// The organization's row lock above serializes this read with every
+	// change of a provider or an alias, which takes that row FOR UPDATE first
+	// (authorizeTenantAdminMutation): a change committed before it is seen,
+	// one after it waits for this reservation.
+	err = tx.QueryRow(ctx, `SELECT m.access,m.priced,m.input_micro_per_mtok,m.output_micro_per_mtok,m.operations,m.audio_micro_per_minute,m.ocr_micro_per_page,
+        p.id,p.secret_generation FROM llm_model_aliases m JOIN llm_providers p ON (p.tenant_id,p.id)=(m.tenant_id,m.provider_id)
+        WHERE m.tenant_id=$1 AND m.alias=$2 AND m.status='active' AND p.status='active'`,
+		tenantID, alias).Scan(&access, &tokensPriced, &inputPrice, &outputPrice, &operations, &audioPrice, &pagePrice, &providerID, &generation)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && !agentOK) || (err == nil && via != nil && via.ProviderID != providerID) {
 		return LLMReservation{}, ErrNotFound
 	}
 	if err != nil {
 		return LLMReservation{}, err
+	}
+	if via != nil && via.Generation != generation {
+		return LLMReservation{}, errLLMRouteChanged
 	}
 	// Access is checked before the request key: a revoked grant also refuses
 	// the replay of a key, and nothing is reserved.

@@ -119,6 +119,11 @@ func platformError(err error) error {
 	case errors.Is(err, llmgateway.ErrUnsupported):
 		// The alias does not declare the route's operation (ADR 023 §12).
 		code = "unsupported"
+	case errors.Is(err, llmgateway.ErrFeatureDenied):
+		// The alias's request policy refuses a field or a tool type.
+		code = "feature_denied"
+	case errors.Is(err, controlplane.ErrLLMConcurrency):
+		code = "concurrency_limited"
 	}
 	return &capsuleprotocol.PlatformError{Code: code}
 }

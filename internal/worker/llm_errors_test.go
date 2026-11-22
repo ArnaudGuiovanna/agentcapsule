@@ -23,6 +23,10 @@ func TestModelBridgeErrorsCrossAsEnumeratedCodesOnly(t *testing.T) {
 		"unauthorized":    controlplane.ErrForbidden,
 		"not_found":       controlplane.ErrNotFound,
 		"unavailable":     llmgateway.ErrUnavailable,
+		// The alias's request policy and the agent's calls in flight (v0.1.0
+		// audit, S-11 and S-13).
+		"feature_denied":      llmgateway.ErrFeatureDenied,
+		"concurrency_limited": controlplane.ErrLLMConcurrency,
 	} {
 		wrapped := fmt.Errorf("provider said sk-live-secret: %w", err)
 		var pe *capsuleprotocol.PlatformError

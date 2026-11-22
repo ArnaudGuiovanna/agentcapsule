@@ -115,64 +115,21 @@ func (s *LLMService) OCRFromVM(ctx context.Context, caller VMCaller, requestKey,
 	return OCRResult{OCRResponse: out, SoftBudgetExceeded: hold.res.SoftExceeded}, nil
 }
 
-// admitOperationFromVM is admitFromVM for any operation: the placement check
-// and the reservation in one guarded section.
+// admitOperationFromVM is admitFromVM for an operation whose amounts do not
+// depend on the alias: the placement check, the request key's guard, the
+// agent's calls in flight and the reservation, as for a chat call (audit
+// finding L-07).
 func (s *LLMService) admitOperationFromVM(ctx context.Context, caller VMCaller, requestKey, alias string, q llmAmounts,
 	admission func(context.Context, func(context.Context) error) error) (llmHold, error) {
-	if requireIdentity(caller.AgentID, requestKey) != nil || len(requestKey) > 200 {
-		return llmHold{}, ErrInput
-	}
-	var hold llmHold
-	step := func(ctx context.Context) error {
-		tenant, err := s.accounts.store.vmTenant(ctx, caller)
-		if err != nil {
-			return err
-		}
-		hold, err = s.admitOperation(ctx, tenant, caller.AgentID, alias, requestKey, q)
-		return err
-	}
-	var err error
-	if admission == nil {
-		err = step(ctx)
-	} else {
-		err = admission(ctx, step)
-	}
-	return hold, err
-}
-
-// admitOperation is admit for any operation: it resolves the alias and
-// reserves. A refusal by policy (alias access, operation, hard budget) is
-// observed; a replayed key is never sent again.
-func (s *LLMService) admitOperation(ctx context.Context, tenantID, agentID, alias, requestKey string, q llmAmounts) (llmHold, error) {
-	route, err := s.accounts.ResolveLLMRoute(ctx, tenantID, alias)
-	if err != nil {
-		return llmHold{}, err
-	}
-	res, err := s.accounts.reserveLLM(ctx, tenantID, agentID, alias, requestKey, q)
-	var refused *LLMRefusal
-	if errors.As(err, &refused) {
-		s.observe(LLMCallEvent{Provider: route.Kind, Outcome: "refused", Reason: refused.Reason, Period: refused.Period, Scope: refused.Scope})
-	}
-	if err != nil {
-		return llmHold{}, err
-	}
-	if res.Replayed {
-		// As for a chat call: a reservation still "reserved" may have been sent
-		// by an attempt that died, so it is uncertain, never free.
-		if res.State == "reserved" {
-			_ = s.accounts.MarkLLMUnknown(ctx, tenantID, res.ID)
-			return llmHold{}, llmgateway.ErrOutcomeUnknown
-		}
-		return llmHold{}, ErrLLMAlreadyProcessed
-	}
-	return llmHold{tenantID: tenantID, alias: alias, route: route, res: res}, nil
+	return s.admitFromVM(ctx, caller, requestKey, alias, func(LLMRoute) (llmAmounts, error) { return q, nil }, admission)
 }
 
 // settleOperation is settle for any operation: one provider call and its
 // single outcome, recorded in the call's units.
 func (s *LLMService) settleOperation(ctx context.Context, h llmHold, reserved llmAmounts, call func(llmgateway.Route) (llmAmounts, error)) error {
+	defer h.release()
 	route := h.route
-	used, callErr := call(llmgateway.Route{AuthMode: route.AuthMode, Kind: route.Kind, BaseURL: route.BaseURL, UpstreamModel: route.UpstreamModel, Secret: route.Secret, Key: h.tenantID + "/" + h.alias})
+	used, callErr := call(h.gatewayRoute())
 	bk := context.WithoutCancel(ctx)
 	event := LLMCallEvent{Provider: route.Kind, Operation: reserved.Operation, SoftBudgets: h.res.SoftBudgets}
 	switch {

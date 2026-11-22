@@ -552,3 +552,15 @@ its 1 process; the invocation never filed failed 27 ms after its
    work timeout; (c) a default idle timeout for every agent.
    Recommendation: (a) for the MVP, with the CPU ceiling bounding its cost;
    (c) later.
+
+## Changes after the v0.1.0 audit
+
+**Lot SEC-2 (finding S-11).** The guest's model calls went through the
+platform, but a forwarded request could ask the organization's provider to
+run a tool of its own (web search or fetch, code execution, an MCP
+connector): the provider then reached addresses the guest chose, outside
+§3's closed profile. The gateway now refuses such tools, and the options that
+change a call's price, before any reservation, unless the organization allows
+them on an alias ([ADR 011](011-llm-access-and-cost-budgets.md#changes-after-the-v010-audit),
+[api/llm.md](../api/llm.md#request-policy)). An organization that allows one
+accepts that its provider fetches on its agents' behalf.
