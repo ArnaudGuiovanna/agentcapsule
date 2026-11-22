@@ -233,6 +233,9 @@ var workNotificationsSQL string
 //go:embed migrations/0066_open_state_indexes.sql
 var openStateIndexesSQL string
 
+//go:embed migrations/0067_finished_record_retention.sql
+var finishedRecordRetentionSQL string
+
 // Append migrations; never edit an installed migration. The original schema
 // also upgrades pre-ledger installations, preserving its historical backfills.
 // Later calls validate its checksum without replaying DDL or those backfills.
@@ -303,6 +306,7 @@ var controlPlaneMigrations = []schemaMigration{
 	{version: 64, name: "corpus-file-progress-search-path", sql: corpusFileProgressSearchPathSQL},
 	{version: 65, name: "work-notifications", sql: workNotificationsSQL},
 	{version: 66, name: "open-state-indexes", sql: openStateIndexesSQL},
+	{version: 67, name: "finished-record-retention", sql: finishedRecordRetentionSQL},
 }
 
 func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error {
