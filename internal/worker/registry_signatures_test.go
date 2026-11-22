@@ -107,9 +107,11 @@ func TestProductionRegistryRequiresSignaturesByDefault(t *testing.T) {
 			t.Errorf("%s: %s %q", c.name, r.Status, r.Detail)
 		}
 		// The worker refuses to open what the preflight fails; past the
-		// policy, a missing store is the next refusal.
+		// policy, the next refusal is the inspection's (no debugfs here) or
+		// the missing store's.
 		_, err := cfg.OpenRegistry(nil, "w", c.mode == operatorconfig.Production)
-		if c.want == preflight.Fail && !errors.Is(err, ociregistry.ErrUnsigned) || c.want != preflight.Fail && !errors.Is(err, controlplane.ErrInput) {
+		if c.want == preflight.Fail && !errors.Is(err, ociregistry.ErrUnsigned) ||
+			c.want != preflight.Fail && !errors.Is(err, controlplane.ErrInput) && !errors.Is(err, ErrInspection) {
 			t.Errorf("%s: OpenRegistry: %v", c.name, err)
 		}
 		if got := cfg.UnsignedRegistryRules(); (c.names == "") != (len(got) == 0) || c.names != "" && !slices.Contains(got, c.names) {
