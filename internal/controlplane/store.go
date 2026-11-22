@@ -17,7 +17,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/ArnaudGuiovanna/agentcapsule/internal/telemetry"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -64,19 +63,10 @@ type Store struct {
 //go:embed schema.sql
 var schemaSQL string
 
+// Open opens the store with pgx's pool and PostgreSQL's defaults; a process
+// opens it with its own bounds (OpenWith, connections.go).
 func Open(ctx context.Context, connectionString string) (*Store, error) {
-	pool, err := pgxpool.New(ctx, connectionString)
-	if err != nil {
-		return nil, err
-	}
-	s := &Store{pool: pool}
-	tx, err := s.begin(ctx)
-	if err != nil {
-		pool.Close()
-		return nil, err
-	}
-	rollback(tx)
-	return s, nil
+	return OpenWith(ctx, connectionString, Connections{})
 }
 
 func (s *Store) Close() { s.pool.Close() }
@@ -110,53 +100,13 @@ func (s *Store) beginCensus(ctx context.Context, exclusive bool) (pgx.Tx, error)
 	return s.beginWithOptions(ctx, exclusive, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 }
 
+// The preamble (the gate, the request ID, synchronous commit, the durability
+// check) is one round trip (connections.go). A caller reopening an existing
+// installation must not accidentally use UNLOGGED tables. Missing tables may be
+// added by an explicit migration; operations requiring them fail closed until
+// that migration has run.
 func (s *Store) beginWithOptions(ctx context.Context, exclusive bool, options pgx.TxOptions) (pgx.Tx, error) {
-	tx, err := s.pool.BeginTx(ctx, options)
-	if err != nil {
-		return nil, err
-	}
-	lock := "pg_advisory_xact_lock_shared"
-	if exclusive {
-		lock = "pg_advisory_xact_lock"
-	}
-	if _, err = tx.Exec(ctx, "SELECT "+lock+"(hashtextextended(current_schema()::text,756610045))"); err != nil {
-		rollback(tx)
-		return nil, err
-	}
-	// An API request's ID, for the operations this transaction creates
-	// (migration 0027). Local to the transaction; validated by telemetry.
-	if id := telemetry.RequestIDFrom(ctx); id != "" {
-		if _, err = tx.Exec(ctx, "SELECT set_config('agentcapsule.request_id', $1, true)", id); err != nil {
-			rollback(tx)
-			return nil, err
-		}
-	}
-	if _, err = tx.Exec(ctx, "SET LOCAL synchronous_commit = on"); err == nil {
-		var safe bool
-		err = tx.QueryRow(ctx, `SELECT current_setting('fsync') = 'on'
-            AND current_setting('full_page_writes') = 'on'`).Scan(&safe)
-		if err == nil && !safe {
-			err = ErrUnsafeDatabase
-		}
-	}
-	if err == nil {
-		// A caller reopening an existing installation must not accidentally use
-		// UNLOGGED tables. Missing tables may be added by an explicit migration;
-		// operations requiring them fail closed until that migration has run.
-		var count int
-		var durable bool
-		err = tx.QueryRow(ctx, `SELECT count(*), coalesce(bool_and(relpersistence='p'),true)
-            FROM pg_class WHERE relnamespace=current_schema()::regnamespace
-            AND relname=ANY($1)`, durableTables).Scan(&count, &durable)
-		if err == nil && !durable {
-			err = ErrUnsafeDatabase
-		}
-	}
-	if err != nil {
-		rollback(tx)
-		return nil, err
-	}
-	return tx, nil
+	return s.beginPreamble(ctx, exclusive, options)
 }
 
 // durableTables are every table of the control plane: each holds state that
