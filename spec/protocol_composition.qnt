@@ -58,6 +58,11 @@ module protocolComposition {
   val sqlFree = not(Set("AUTH_A","AUTH_B").contains(s.api))
   def authorityFree(a: str): bool = sqlFree or a == "c"
   val activeRequest = Set("DELIVERING","PROCESSING").contains(s.request)
+  // The scope of agent/b's deletion (v0.1.0 audit, PERF-3B; ADR 006): b's
+  // store, and a's once request 0 joins them. A request joins two LIVE agents
+  // only: none joins b's scope once its deletion is requested. Store c shares
+  // no request with b; no event carrying agent/b goes there.
+  val deletionScope = if (s.request == "ABSENT") Set("b") else Set("a","b")
   def busy(a: str): bool = WORKERS.exists(w => s.rpc.get(w).stage == "EXECUTING" and dest(s.rpc.get(w).event) == a)
   def allowed(e: int): bool = subjects(e).intersect(s.fences.get(dest(e))) == Set()
   def isHead(e: int): bool = EVENTS.forall(i => (i < e and dest(i) == dest(e)) implies s.events.get(i).state != "PENDING")
@@ -192,7 +197,7 @@ module protocolComposition {
   action commitDelete = {
     val fallback = (activeRequest or (s.request == "REPLIED" and not(s.notified))) and s.events.get(2).state == "ABSENT"
     all {
-      s.up, sqlFree, s.phase == "QUIESCING", if (WAIT_ALL) s.deleteAcks == STORES else true,
+      s.up, sqlFree, s.phase == "QUIESCING", if (WAIT_ALL) deletionScope.subseteq(s.deleteAcks) else true,
       s' = { ...s, phase: "DELETING", request: if (activeRequest) "CANCELED" else s.request,
         final: if (activeRequest) "CANCELED" else s.final,
         events: EVENTS.mapBy(e => if (e == 2 and fallback) pendingEvent
@@ -308,7 +313,11 @@ module protocolComposition {
   val acksSound = s.deleteAcks.forall(a => durableBarrier(a,"agent/b"))
     and s.closeAcks.forall(a => durableBarrier(a,"request/0"))
     and s.retireAcks.forall(e => durableBarrier(dest(e),eventSubject(e)))
-  val tombstoneSafe = s.phase == "DELETING" implies STORES.forall(a => durableBarrier(a,"agent/b"))
+  val tombstoneSafe = s.phase == "DELETING" implies deletionScope.forall(a => durableBarrier(a,"agent/b"))
+  // Where tombstoneSafe looks: an event that exists and carries agent/b goes
+  // to a store of the deletion's scope.
+  val deletionScopeCovers = EVENTS.forall(e => (s.events.get(e).state != "ABSENT" and subjects(e).contains("agent/b"))
+    implies deletionScope.contains(dest(e)))
   val terminalStable = s.final != "" implies s.request == s.final
   val terminalOutbox = s.final != "" implies s.events.get(1).state != "ABSENT" or s.events.get(2).state != "ABSENT"
   val statusIndependent = s.events.get(2).state != "ABSENT" implies subjects(2).intersect(Set("agent/b","request/0")) == Set()
@@ -319,7 +328,7 @@ module protocolComposition {
   val lockedAuthority = (s.api == "AUTH_A" implies currentCaller("a")) and
     (s.api == "AUTH_B" implies currentCaller("b"))
   val safety = noStaleEffect and effectOnce and noConflictingEnvelope and callerAuthorized and acksSound
-    and tombstoneSafe and terminalStable and terminalOutbox and statusIndependent and noVMSealed
+    and tombstoneSafe and deletionScopeCovers and terminalStable and terminalOutbox and statusIndependent and noVMSealed
     and publicationConfirmed and retirementBeforeStopped and lockedAuthority
 }
 module protocolCompositionOk {

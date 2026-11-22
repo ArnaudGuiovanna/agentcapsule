@@ -39,6 +39,9 @@ func sealLab(t *testing.T) (*Placements, string, runtime.FirecrackerOptions) {
 func TestSealedStoreAllowsLaterRevocationAndClosure(t *testing.T) {
 	w, schema, options := sealLab(t)
 	_, db := database(t, schema, false)
+	// Each deletion fences every store, a's sealed one included: each shares
+	// a request with the others (its census is its scope).
+	shareRequests(t, db, schema, "a", "b", "c")
 	if err := w.SealDeletedStore(t.Context(), "a"); !errors.Is(err, controlplane.ErrPendingFences) {
 		t.Fatal(err)
 	}

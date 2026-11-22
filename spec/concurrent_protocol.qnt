@@ -299,6 +299,17 @@ module concurrentProtocol {
       s' = { ...s, acks: s.acks.union(Set(receipt)), receipts: s.receipts.exclude(Set(receipt)) } }
   }
   pure def allAcks(x: State, subject: Subject): bool = AGENTS.forall(a => x.acks.contains({ store: a, subject: subject }))
+  // A deletion waits for the fences of its agent's scope only (v0.1.0 audit,
+  // PERF-3B; ADR 006): the agent's store and the stores of the requests it
+  // took part in. An event carrying the agent's subject goes to one of them
+  // (deletionScopeCovers), so no other store can hold an effect of it. A
+  // request joins two Active agents only: none joins the scope once the
+  // deletion is requested, and the scope the deletion's census takes then is
+  // the one it commits with.
+  pure def deletionScope(x: State, a: AgentId): Set[AgentId] = AGENTS.filter(b => b == a or
+    REQUESTS.exists(r => x.requests.get(r).phase != AbsentRequest and peers(r).contains(a) and peers(r).contains(b)))
+  pure def deletionAcks(x: State, a: AgentId): bool =
+    deletionScope(x,a).forall(b => x.acks.contains({ store: b, subject: AgentSubject(a) }))
   // A request's closure waits for the fences of its two parties only (ADR 007
   // §7): an event carrying its subject goes to one of them (closureScope), so
   // no other store can hold an effect of it. Within this model even the
@@ -318,7 +329,7 @@ module concurrentProtocol {
   }
   action commitClose(r: RequestId): bool = all { canCommitClose(s,r), s' = closeCommitted(s,r) }
   pure def canCommitDelete(x: State, a: AgentId): bool = x.up and freeAgents(x,AGENTS) and
-    x.agents.get(a).phase == Quiescing and (not(WAIT_ALL) or allAcks(x,AgentSubject(a)))
+    x.agents.get(a).phase == Quiescing and (not(WAIT_ALL) or deletionAcks(x,a))
   pure def deleteCommitted(x: State, a: AgentId): State = {
     val y = { ...x, agents: x.agents.set(a,{ ...x.agents.get(a), phase: Deleting }),
       events: EVENTS.mapBy(e => if (subjects(e).contains(AgentSubject(a)) and x.events.get(e).phase == PendingEvent)
@@ -435,7 +446,12 @@ module concurrentProtocol {
     implies currentCaller(s,s.calls.get(i)))
   val effectOnce = EVENTS.forall(e => s.effects.get(e) <= 1)
   val acksSound = s.acks.forall(r => barrier(s,r.store,r.subject))
-  val tombstoneSafe = AGENTS.forall(a => s.agents.get(a).phase == Deleting implies AGENTS.forall(b => barrier(s,b,AgentSubject(a))))
+  val tombstoneSafe = AGENTS.forall(a => s.agents.get(a).phase == Deleting implies
+    deletionScope(s,a).forall(b => barrier(s,b,AgentSubject(a))))
+  // Where tombstoneSafe looks: every event that exists and carries an
+  // agent's subject goes to a store of that agent's deletion scope.
+  val deletionScopeCovers = EVENTS.forall(e => s.events.get(e).phase != AbsentEvent implies
+    AGENTS.forall(a => subjects(e).contains(AgentSubject(a)) implies deletionScope(s,a).contains(dest(e))))
   // Every store that can hold an effect of an expired or failed request has
   // its barrier: its parties' (closureScope). noStaleEffect is what it keeps.
   val closedSafe = REQUESTS.forall(r => Set(Expired,Failed).contains(s.requests.get(r).phase) implies
@@ -466,7 +482,7 @@ module concurrentProtocol {
   val noStaleEffect = not(s.staleEffect)
   val fifo = not(s.badOrder)
   val safety = quotaConserved and terminalStable and lockedAuthority and effectOnce and not(s.badCaller)
-    and not(s.staleEffect) and not(s.badOrder) and acksSound and tombstoneSafe and closedSafe
+    and not(s.staleEffect) and not(s.badOrder) and acksSound and tombstoneSafe and deletionScopeCovers and closedSafe
     and noLiveRequestForDeleted and terminalOutbox and noVMSealed and publicationConfirmed and retirementBeforeStopped
     and unsentInert and noLateEffect and closedNeverReplied
   action step = any {

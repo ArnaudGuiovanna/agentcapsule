@@ -1568,3 +1568,21 @@ this disk), plus a round trip to the standby in synchronous mode. A boot
 writes once per page of fences; a delivery once. The first scan after the
 service starts reads every subject once, to find those begun before version
 5.
+
+### A deletion's census is its subject's scope (PERF-3B, the rest of S-01)
+
+PERF-2 scoped the subjects a store fences at its boot; a deletion's census
+(`deletion_targets`) still named every store but a provisioning one, on the
+platform: each deletion wrote a row and made a fence call per store, of every
+organization, and its tombstone locked every agent's row. The census is now
+the subject's scope (`RevocationScopes`): the agent's own store and the stores
+that share a request with it. A request joins two LIVE agents, whose rows it
+locks, and the deletion's transaction ends the agent's LIVE phase under its
+row's lock: no store joins the scope afterwards. PostgreSQL addresses an event
+naming the agent only to a store of that scope, so the guarantee of the
+barrier holds: no store can act on the agent once its tombstone commits. The
+models say the same: `deletionScope` and `deletionScopeCovers` in
+`spec/concurrent_protocol.qnt` and `spec/protocol_composition.qnt`; the
+pinned traces, which fence every store, are replayed on the scope
+([projections.md](../../spec/projections.md)). A store that activates later
+still fences the catalogue of its own scope before it serves.

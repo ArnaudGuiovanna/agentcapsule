@@ -187,8 +187,9 @@ func TestRevocationLostAckSurvivesReopenAndConcurrentRetry(t *testing.T) {
 	root := t.TempDir()
 	m := mockStores(t, root, "a", "b", "c")
 	lost := errors.New("injected lost fence ACK")
+	// c, a's sender, is in the deletion's scope.
 	m.SetFenceHook(func(stage, target, _ string) error {
-		if stage == "after_commit" && target == "b" {
+		if stage == "after_commit" && target == "c" {
 			return lost
 		}
 		return nil
@@ -201,7 +202,7 @@ func TestRevocationLostAckSurvivesReopenAndConcurrentRetry(t *testing.T) {
 	}
 	assertPhase(t, s, "a", "QUIESCING")
 	var ack bool
-	if err := s.pool.QueryRow(t.Context(), "SELECT acknowledged FROM deletion_targets WHERE agent_id='a' AND store_agent_id='b'").Scan(&ack); err != nil || ack {
+	if err := s.pool.QueryRow(t.Context(), "SELECT acknowledged FROM deletion_targets WHERE agent_id='a' AND store_agent_id='c'").Scan(&ack); err != nil || ack {
 		t.Fatalf("unreceived fence recorded: %v %v", ack, err)
 	}
 	m.Close()
@@ -212,7 +213,7 @@ func TestRevocationLostAckSurvivesReopenAndConcurrentRetry(t *testing.T) {
 	}
 	defer peer.Close()
 	m = mockStores(t, root, "a", "b", "c")
-	if _, err := m.Deliver(t.Context(), "b", harnessstore.Event{ID: "after-reopen", Subjects: []string{"agent/a", "agent/b"}}, localEffect); !errors.Is(err, harnessstore.ErrFenced) {
+	if _, err := m.Deliver(t.Context(), "c", harnessstore.Event{ID: "after-reopen", Subjects: []string{"agent/a", "agent/c"}}, localEffect); !errors.Is(err, harnessstore.ErrFenced) {
 		t.Fatalf("local fence lost after reopen: %v", err)
 	}
 	if err := peer.RequestDeletion(t.Context(), "user-a", "a"); err != nil {
@@ -328,6 +329,10 @@ func TestConcurrentDeletionAndAdmission(t *testing.T) {
 
 func TestDeletionManifestsAllowForeignKeyLocks(t *testing.T) {
 	s, _ := freshStore(t, "auto", 3)
+	// a asks b: each deletion's census names the other's store.
+	if _, err := s.Submit(t.Context(), "a", "shared", submission()); err != nil {
+		t.Fatal(err)
+	}
 	gate, err := s.pool.Acquire(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -373,7 +378,8 @@ func TestDeletionManifestsAllowForeignKeyLocks(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if n := count(t, s, "deletion_targets"); n != 6 {
+	// Each census is its subject's scope, {a, b}; c shares no request.
+	if n := count(t, s, "deletion_targets"); n != 4 {
 		t.Fatalf("incomplete manifests: %d targets", n)
 	}
 }

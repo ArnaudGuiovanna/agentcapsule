@@ -137,6 +137,9 @@ module protocolInductive {
     s.request == "CANCELED" implies s.phase == "DELETING" or s.closeAcks == STORES,
     s.request == "REPLIED" implies s.events.get(1).state != "ABSENT",
     s.request == "CANCELED" implies s.events.get(2).state != "ABSENT",
+    // An event exists only once request 0 does: the scope of agent/b's
+    // deletion holds every store an event carrying agent/b goes to (PERF-3B).
+    EVENTS.forall(e => s.events.get(e).state != "ABSENT" implies s.request != "ABSENT"),
   }
   // Only the INPUT state is restricted to the candidate invariant.
   action inductionStep = all { protocolInvariant, step, probe' = true }
@@ -206,6 +209,7 @@ module protocolInductive {
     probe implies (s.request == "CANCELED" implies s.phase == "DELETING" or s.closeAcks == STORES),
     probe implies (s.request == "REPLIED" implies s.events.get(1).state != "ABSENT"),
     probe implies (s.request == "CANCELED" implies s.events.get(2).state != "ABSENT"),
+    probe implies (EVENTS.forall(e => s.events.get(e).state != "ABSENT" implies s.request != "ABSENT")),
   }
   val implied = protocolInvariant implies safety
 

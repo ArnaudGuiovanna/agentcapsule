@@ -14,6 +14,15 @@ replays a fixed schedule of a pinned copy of the model, under
 `internal/controlplane/testdata/`; the table names the run it matches. Other
 tests were written for the same behaviour before the run existed.
 
+Since the v0.1.0 audit (PERF-3B), a deletion waits for the fences of its
+agent's scope only: its store and the stores that share a request with it
+(`deletionScope` and `deletionScopeCovers` in `concurrent_protocol.qnt` and
+`protocol_composition.qnt`; `requestDeletion` takes that census). The pinned
+traces still fence and record every store. The replays make every fence, and
+record it, and compare a deletion's acknowledgments, on the stores of the
+scope only (`internal/controlplane/deletion_scope_test.go`), as they compare
+a closure's on its request's two parties (ADR 007 §7).
+
 Status:
 
 - **full**: the Go tests drive the run's steps, or a finer schedule of them,
