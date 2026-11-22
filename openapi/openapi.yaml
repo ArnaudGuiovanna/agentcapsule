@@ -1166,6 +1166,10 @@ paths:
         secret, prompt or content. An administrative attempt the organization's
         member or technical account was refused (403, 404, 400, 409, 413, 415,
         422) is an event with outcome refused and the problem code as reason.
+        A page ends before the events of the organization's audited
+        transactions still open when it was asked for, so that an event that
+        commits late is never behind a cursor; it waits up to five seconds for
+        them, then answers 503 temporarily_unavailable with Retry-After.
       security: [{delegatedBearer: []}, {serviceBearer: []}]
       parameters:
         - {name: after, in: query, schema: {type: string, maxLength: 200}, description: "`next` cursor of the previous page."}

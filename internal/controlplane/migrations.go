@@ -245,6 +245,9 @@ var applicationClientsSQL string
 //go:embed migrations/0070_platform_session_chains.sql
 var platformSessionChainsSQL string
 
+//go:embed migrations/0071_append_only_audit.sql
+var appendOnlyAuditSQL string
+
 // Append migrations; never edit an installed migration. The original schema
 // also upgrades pre-ledger installations, preserving its historical backfills.
 // Later calls validate its checksum without replaying DDL or those backfills.
@@ -319,6 +322,7 @@ var controlPlaneMigrations = []schemaMigration{
 	{version: 68, name: "llm-request-policy", sql: llmRequestPolicySQL},
 	{version: 69, name: "application-clients", sql: applicationClientsSQL},
 	{version: 70, name: "platform-session-chains", sql: platformSessionChainsSQL},
+	{version: 71, name: "append-only-audit", sql: appendOnlyAuditSQL},
 }
 
 func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error {

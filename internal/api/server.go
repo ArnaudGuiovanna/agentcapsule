@@ -382,6 +382,11 @@ func failure(w http.ResponseWriter, err error) {
 		problem(w, 503, "storage_pressure")
 	case errors.Is(err, controlplane.ErrAuditExportTooLarge):
 		problem(w, 413, "audit_export_too_large")
+	case errors.Is(err, controlplane.ErrAuditBusy):
+		// An audited transaction of the organization is still open: the
+		// page would end before its event (audit_horizon.go).
+		w.Header().Set("Retry-After", "1")
+		problem(w, 503, "temporarily_unavailable")
 	default:
 		problem(w, 503, "temporarily_unavailable")
 	}
