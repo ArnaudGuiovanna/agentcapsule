@@ -8,6 +8,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
@@ -30,9 +32,13 @@ func migrate(args []string) int {
 	if err := f.Parse(args); err != nil || f.NArg() != 0 {
 		return fail("configuration_required")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	// Large concurrent index builds can outlast connection startup. The
+	// operator can interrupt the migration; its next run resumes the ledger.
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	s, code := openOperatorStore(ctx, fail)
+	startup, stop := context.WithTimeout(ctx, time.Minute)
+	s, code := openOperatorStore(startup, fail)
+	stop()
 	if s == nil {
 		return code
 	}

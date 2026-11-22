@@ -225,6 +225,8 @@ take the exclusive gate. Keep the historical SQL and its checksum intact.
 For a large existing table, put a plain B-tree index in its own migration.
 Use the first line `-- agentcapsule:expand-index`, followed by one statement
 such as `CREATE INDEX CONCURRENTLY jobs_by_state ON jobs (state, id);`.
+The admin waits for active writers and the entire build. Interrupting the
+command releases its session and leaves the ledger at the last committed step.
 This form accepts ordinary lowercase identifiers and named columns in default
 order. A retry checks PostgreSQL's index definition, keeps a completed build
 and rebuilds an interrupted one. More complex index definitions require
