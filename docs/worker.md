@@ -142,7 +142,8 @@ and does not re-run a finished command. The success of wake follows the durable
 publication of the boot; that of sleep follows the physical removal. A deletion
 cancels the open commands.
 For sleep, the worker keeps the authenticated client of the current boot before
-committing `STOPPING`, then requests quiescence under exclusive host admission.
+committing `STOPPING`, then requests quiescence under the agent's exclusive
+admission.
 It then removes the VMM and verifies its absence before publishing `STOPPED`.
 Only a clean acknowledgment allows `unclean_stop=false`; a lost response, an
 error or an exceeded timeout lead to a forced removal reported as unclean. A
@@ -185,10 +186,34 @@ place indefinitely. The `work_lease` lease and the exponential backoff
 refuse an expired or replaced lease. This coordination lease replaces neither
 the delivery lease nor the barriers that neutralize delayed effects.
 
-The dispatcher prepares the recipient under exclusive admission before
-consuming a delivery attempt: wake, capacity, certificates and channel health.
-The control callback must finish its
+The dispatcher prepares the recipient under the recipient's exclusive
+admission before consuming a delivery attempt: wake, capacity, certificates and
+channel health. The control callback must finish its
 local SQL transaction without waiting for a platform call.
+
+**Agents do not wait for one another** (since the v0.1.0 audit, S-02, S-03).
+Each agent has its own admission queue: its platform calls share it, a
+delivery to it, a fence, a stop or an archive take it alone, in arrival
+order. A slow harness holds its own agent's turn, never another's. A pass runs
+up to `dispatch_concurrency` jobs at once (4 by default, 1 to 64); an agent's
+own jobs run one after the other, in the order they were claimed, and the
+delivery FIFO stays PostgreSQL's. A boot, a stop, a volume copy or install
+holds the agent's own lock, never the host registry's: `host.lock` guards
+only short state changes, among them the host-wide count of slots, vCPUs and
+memory when a boot records its intent. A VM stopped for capacity is stopped
+under its own turn, after the calls already admitted on it, and its slot is
+reserved for the boot that stopped it. The registry stays in memory and is
+written only when it changes; the platform channel's accept check reads it
+without `host.lock`. The host's connections to each guest's control channel
+stay open between calls.
+
+**The VMM's log** (`<root>/logs/<run>.log`, the host's alone) holds what
+Firecracker prints. The host cuts it once it passes 1 MiB (within a second)
+and removes it with its run; the census and `-collect-garbage` remove the logs
+of runs that are gone. In production the guest has no serial console: its
+kernel registers no serial port. `"vm_serial_console": true`, or development
+mode, gives it one, whose output joins the log, for debugging; the host then
+keeps the logs of the 16 runs that ended last.
 
 **Work that waits for capacity** ([ADR 017](adr/017-capacity-queue-and-dead-letter-replay.md)).
 A delivery, a wake or a resume that needs a VM for a stopped agent takes a
@@ -229,10 +254,12 @@ from its SQLite intents. It is not resumed once that work ended or passed its
 deadline, when it is `FAILED`, or when someone asked it to sleep after the work
 began (default pending the product owner). A crash spends its restart budget,
 so a guest that keeps crashing is not booted again and again. The guest's outgoing
-tasks are asynchronous. The host registry v2 uses a common queue for shared and
-exclusive calls; only consecutive readers at the head coexist. Migration from v1
-keeps the barriers present; stop the old workers before upgrading, as they
-cannot read v2.
+tasks are asynchronous. The host registry v3 keeps one queue per agent, in
+`<root>/admission/queue.json`, for shared and exclusive calls; only
+consecutive readers at the head of an agent's queue coexist. A v2 registry
+migrates once no worker of the older version holds a place in its queue; a
+worker that finds one still running refuses to start. Stop the old workers
+before upgrading, as they cannot read v3.
 
 This first coordination assumes that all manifest stores are on the same host.
 It does not prove a real delay or the success of each request: an expiration or
@@ -914,9 +941,10 @@ whose volume is provisioned and initialized:
   captured: a capture needs a clean stop. It is captured after its next clean
   sleep.
 
-**Cost for the host.** A capture holds the agent's barrier, which is the host's
-exclusive admission, and the host registry while it copies the volume.
-Deliveries and boots on this host wait for it. A capture takes about the
+**Cost for the host.** A capture holds the agent's barrier, which is that
+agent's exclusive admission, and that agent's lock while it copies the volume.
+The agent's own deliveries wait for it; other agents' deliveries, boots and
+platform calls do not. A capture takes about the
 volume's size divided by the disk's speed: a few seconds for a small volume.
 This is why a pass takes `per_pass` captures at most (1 by default), after its
 deliveries. A pass with nothing due costs one query.
@@ -1148,7 +1176,9 @@ newest of their agent on this host (`retention`), the archives of deleted
 agents whose key is destroyed (`deleted_agents`), the leftovers, and their
 bytes; under `images`, the digests of the packages no agent can boot
 (`unused`), the leftovers of downloads, and their bytes. A part is absent
-when its section (`archives`, `registry`) is not configured.
+when its section (`archives`, `registry`) is not configured. `vmm_logs`
+counts the VMM logs of runs that are gone, which it removes too (absent
+when none).
 
 ```json
 {"action":"garbage.collected","target":"host-1","outcome":"done","dry_run":false,"archives":{"retention":["arc_…"],"deleted_agents":[],"leftovers":0,"bytes":134221824},"images":{"unused":["sha256:…"],"leftovers":1,"bytes":52428800}}
