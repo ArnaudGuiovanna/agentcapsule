@@ -39,11 +39,16 @@ func init() {
 	os.Exit(125)
 }
 
-// The filters the helper is asked for, by name.
+// The filters the helper is asked for, by name. The self filter executes
+// this executable as the program, under its own limits (RunSelf).
 const (
 	strictFilter    = "strict"
 	testToolsFilter = "test-tools"
+	selfFilter      = "self"
 )
+
+// limits are the memory limits set last, once no Go code runs (execFiltered).
+type limits struct{ space, data uint64 }
 
 // confine sets the sandbox up and executes the program; it returns only on
 // failure. args: UID, GID, processor seconds, the filter, the image's
@@ -61,6 +66,7 @@ func confine(args []string) error {
 		return errors.New("invalid UID, GID or processor seconds")
 	}
 	var filter policy
+	memory, self := limits{space: addressSpace}, false
 	switch args[3] {
 	case strictFilter:
 		filter = strict()
@@ -69,10 +75,24 @@ func confine(args []string) error {
 			return errors.New("the test tools' filter outside a test binary")
 		}
 		filter = testTools()
+	case selfFilter:
+		filter, memory, self = selfPolicy(), limits{space: selfAddressSpace, data: selfData}, true
+		if raceBuild {
+			// The race detector's shadow memory: about four times the
+			// program's (a test binary built with -race only).
+			memory = limits{space: 4 * selfAddressSpace, data: 8 * selfData}
+		}
 	default:
 		return errors.New("unknown filter")
 	}
 	image, program, argv := args[4], args[5], args[5:]
+	if self {
+		// This executable, under the name its program has: argv[0].
+		if !selfName(program) {
+			return errors.New("not a program of this executable")
+		}
+		program = helperPath
+	}
 	unix.CloseOnExec(statusFD)
 	unix.CloseOnExec(lifelineFD)
 	if err := alone(); err != nil {
@@ -93,6 +113,11 @@ func confine(args []string) error {
 	}
 	if err := unix.Mount("none", "/sys", "tmpfs", unix.MS_RDONLY|unix.MS_NOSUID|unix.MS_NODEV|unix.MS_NOEXEC, "size=4k,mode=0555"); err != nil {
 		return fmt.Errorf("hide /sys: %w", err)
+	}
+	if self {
+		if err := emptyDevices(); err != nil {
+			return err
+		}
 	}
 	// Under memory pressure, the kernel kills the program first.
 	if err := os.WriteFile("/proc/self/oom_score_adj", []byte("1000"), 0); err != nil {
@@ -191,7 +216,25 @@ func confine(args []string) error {
 	if err := unix.CloseRange(4, ^uint(0), unix.CLOSE_RANGE_CLOEXEC); err != nil {
 		return fmt.Errorf("close-on-exec: %w", err)
 	}
-	return fmt.Errorf("exec %s: %w", program, execFiltered(filter, program, argv, os.Environ()))
+	return fmt.Errorf("exec %s: %w", program, execFiltered(filter, memory, program, argv, os.Environ()))
+}
+
+// emptyDevices replaces /dev with a file system of two empty regular files,
+// random and urandom: libcryptsetup opens both when it starts, and fails
+// without them, but a check never reads them (it creates no key or salt).
+// No device node is left, and nodev would refuse one anyway.
+func emptyDevices() error {
+	if err := unix.Mount("none", "/dev", "tmpfs", unix.MS_NOSUID|unix.MS_NODEV|unix.MS_NOEXEC, "size=4k,nr_inodes=4,mode=0555"); err != nil {
+		return fmt.Errorf("empty /dev: %w", err)
+	}
+	for _, name := range []string{"/dev/random", "/dev/urandom"} {
+		fd, err := unix.Open(name, unix.O_CREAT|unix.O_EXCL|unix.O_WRONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0o444)
+		if err != nil {
+			return fmt.Errorf("empty %s: %w", name, err)
+		}
+		unix.Close(fd)
+	}
+	return nil
 }
 
 // execve is the system call that executes the program: the helper's only
@@ -207,7 +250,7 @@ const execve = unix.SYS_EXECVE
 // blocked: SIGKILL and its own faults still reach it. A raw system call keeps
 // the helper's one processor (GOMAXPROCS 1): no other goroutine runs from the
 // address-space limit, which applies to every thread, to the program.
-func execFiltered(p policy, program string, argv, env []string) error {
+func execFiltered(p policy, memory limits, program string, argv, env []string) error {
 	prog, err := filterProgram(p)
 	if err != nil {
 		return fmt.Errorf("seccomp: %w", err)
@@ -232,9 +275,15 @@ func execFiltered(p policy, program string, argv, env []string) error {
 	// The address space is limited here, once no Go code runs any more on
 	// this thread: this Go process already maps more, and could not grow its
 	// heap past the limit.
-	space := unix.Rlimit{Cur: addressSpace, Max: addressSpace}
+	space := unix.Rlimit{Cur: memory.space, Max: memory.space}
 	if _, _, e := unix.RawSyscall6(unix.SYS_PRLIMIT64, 0, unix.RLIMIT_AS, uintptr(unsafe.Pointer(&space)), 0, 0, 0); e != 0 {
 		return fmt.Errorf("address space: %w", e)
+	}
+	if memory.data != 0 {
+		data := unix.Rlimit{Cur: memory.data, Max: memory.data}
+		if _, _, e := unix.RawSyscall6(unix.SYS_PRLIMIT64, 0, unix.RLIMIT_DATA, uintptr(unsafe.Pointer(&data)), 0, 0, 0); e != 0 {
+			return fmt.Errorf("data: %w", e)
+		}
 	}
 	if _, _, e := unix.RawSyscall(unix.SYS_PRCTL, unix.PR_SET_SECCOMP, unix.SECCOMP_MODE_FILTER, uintptr(unsafe.Pointer(&fprog))); e != 0 {
 		return fmt.Errorf("seccomp: %w", e)

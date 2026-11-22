@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -21,6 +22,7 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/restoreauthority"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/volumearchive"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/volumestore"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/volumestore/lukstest"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -152,6 +154,23 @@ func testRestoreTestChecksTheNewestArchiveAndChangesNothing(t *testing.T, implem
 		t.Fatal(err)
 	}
 	forged := l.captureFile(c.Path, "arc_"+strings.Repeat("4", 32))
+	// The agent's own container, whose guest rewrote the header's key
+	// derivation (Argon2id over 1 GiB), archived as the agent's: the check,
+	// confined, refuses it before any derivation (S-21).
+	data, err := os.ReadFile(volume)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rewritten := filepath.Join(t.TempDir(), "rewritten.luks")
+	if err = os.WriteFile(rewritten, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err = lukstest.RewriteMetadata(rewritten, func(m map[string]any) {
+		lukstest.Object(m, "keyslots", "0", "kdf")["memory"] = json.Number("1048576")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	hostile := l.captureFile(rewritten, "arc_"+strings.Repeat("5", 32))
 
 	scratch := t.TempDir()
 	test := RestoreTest{Store: l.store, HostID: "local", Authority: l.authority, RuntimeRoot: runtimeRoot, Archives: l.archives, Scratch: scratch}
@@ -199,6 +218,9 @@ func testRestoreTestChecksTheNewestArchiveAndChangesNothing(t *testing.T, implem
 	if _, err = test.Run(ctx, l.e.AgentID, forged.ID); RestoreTestFailure(err) != "key" {
 		t.Fatal("another key's container passed", err)
 	}
+	if _, err = test.Run(ctx, l.e.AgentID, hostile.ID); RestoreTestFailure(err) != "key" || !errors.Is(err, volumestore.ErrHeader) {
+		t.Fatal("a header the guest rewrote passed", err)
+	}
 	unchanged("the failures")
 
 	// Missing here: fetched from a store into the test's own directory.
@@ -216,7 +238,7 @@ func testRestoreTestChecksTheNewestArchiveAndChangesNothing(t *testing.T, implem
 	}
 	unchanged("a fetched archive")
 	// The fetched copy is checked too: a damaged copy on both stores fails.
-	data, err := os.ReadFile(filepath.Join(stores["standby"], newest.ID, "volume.luks"))
+	data, err = os.ReadFile(filepath.Join(stores["standby"], newest.ID, "volume.luks"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -231,8 +231,10 @@ func TestReplicaSIGKILLMidApply(t *testing.T) {
 				}
 				before, _ := p.replica.Position(t.Context())
 				// The standby is unreachable: the record waits in the log.
+				// The deadline leaves a loaded host the time to reach the
+				// key authority's lock and the log (100 ms did not).
 				p.link.set(true)
-				ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+				ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 				err := streamOperation(ctx, p.keys, p.catalog, operation)
 				cancel()
 				if !errors.Is(err, ErrUnavailable) {
