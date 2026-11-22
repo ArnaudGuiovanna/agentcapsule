@@ -166,14 +166,18 @@ var (
 	onConflict    = regexp.MustCompile(`(?is)\bON\s+CONFLICT\b.*?\bDO\s+UPDATE\b`)
 	updateSet     = regexp.MustCompile(`(?is)\bUPDATE\s+(?:ONLY\s+)?` + sqlIdentifier + `(?:\s+(?:AS\s+)?[a-z_][a-z0-9_]*)?\s+SET\b`)
 	deleteFrom    = regexp.MustCompile(`(?is)\bDELETE\s+FROM\s+(?:ONLY\s+)?` + sqlIdentifier)
-	readsFrom     = regexp.MustCompile(`(?is)\b(?:FROM|JOIN)\s+(?:ONLY\s+)?` + sqlIdentifier)
-	rowLock       = regexp.MustCompile(`(?is)\bFOR\s+(?:NO\s+KEY\s+UPDATE|UPDATE|KEY\s+SHARE|SHARE)\b`)
+	readsFrom     = regexp.MustCompile(`(?is)\b(?:FROM|JOIN)\s+(?:ONLY\s+)?` + sqlIdentifier + `(?:\s+(?:AS\s+)?` + sqlIdentifier + `)?`)
+	rowLock       = regexp.MustCompile(`(?is)\bFOR\s+(?:NO\s+KEY\s+UPDATE|UPDATE|KEY\s+SHARE|SHARE)\b(?:\s+OF\s+(` + sqlIdentifier + `(?:\s*,\s*[a-z_][a-z0-9_]*)*))?`)
 	dynamicTable  = regexp.MustCompile(`(?is)(?:^|[^a-z0-9_])(INSERT\s+INTO|(?:([a-z_]+)\s+)?UPDATE|DELETE\s+FROM)\s*$`)
 )
 
 // sqlWrites adds to need what the statements in literals write: table ->
 // privileges. A row lock anywhere in them needs UPDATE on every table they
-// read. It reports whether a statement names its table in a variable.
+// read, or, for a lock that names its tables (FOR UPDATE OF r), on the tables
+// those names stand for in them (PostgreSQL locks, and checks UPDATE on, the
+// named tables only); a name that stands for no table they read falls back to
+// every table they read. It reports whether a statement names its table in a
+// variable.
 func sqlWrites(literals []string, tables map[string]bool, need map[string]map[string]bool) (dynamic bool) {
 	add := func(table, privilege string) {
 		if !tables[table] {
@@ -185,7 +189,8 @@ func sqlWrites(literals []string, tables map[string]bool, need map[string]map[st
 		need[table][privilege] = true
 	}
 	locks := false
-	var read []string
+	var read, lockedNames []string
+	aliases := map[string][]string{}
 	for _, text := range literals {
 		for _, m := range insertInto.FindAllStringSubmatchIndex(text, -1) {
 			table := text[m[2]:m[3]]
@@ -206,12 +211,31 @@ func sqlWrites(literals []string, tables map[string]bool, need map[string]map[st
 		}
 		for _, m := range readsFrom.FindAllStringSubmatch(text, -1) {
 			read = append(read, m[1])
+			for _, name := range []string{m[1], m[2]} {
+				if name = strings.ToLower(name); name != "" && !slices.Contains(aliases[name], m[1]) {
+					aliases[name] = append(aliases[name], m[1])
+				}
+			}
 		}
-		if rowLock.MatchString(text) {
-			locks = true
+		for _, m := range rowLock.FindAllStringSubmatch(text, -1) {
+			if m[1] == "" {
+				locks = true
+				continue
+			}
+			for name := range strings.SplitSeq(m[1], ",") {
+				lockedNames = append(lockedNames, strings.ToLower(strings.TrimSpace(name)))
+			}
 		}
 		if m := dynamicTable.FindStringSubmatch(text); m != nil && !strings.EqualFold(m[2], "FOR") && !strings.EqualFold(m[2], "KEY") {
 			dynamic = true
+		}
+	}
+	for _, name := range lockedNames {
+		if len(aliases[name]) == 0 {
+			locks = true
+		}
+		for _, table := range aliases[name] {
+			add(table, "UPDATE")
 		}
 	}
 	if locks {
@@ -220,6 +244,26 @@ func sqlWrites(literals []string, tables map[string]bool, need map[string]map[st
 		}
 	}
 	return dynamic
+}
+
+// functionWrites adds to need what the function of the migrations named fn
+// writes, with the functions it calls: they run with its caller's
+// privileges (none is SECURITY DEFINER).
+func functionWrites(fn string, bodies map[string]string, tables map[string]bool, need map[string]map[string]bool, seen map[string]bool) {
+	if seen[fn] {
+		return
+	}
+	seen[fn] = true
+	body, ok := bodies[fn]
+	if !ok {
+		return
+	}
+	sqlWrites([]string{body}, tables, need)
+	for name := range bodies {
+		if strings.Contains(body, name+"(") {
+			functionWrites(name, bodies, tables, need, seen)
+		}
+	}
 }
 
 // sqlFunctions are the functions the migrations define, by name, with the
@@ -304,22 +348,22 @@ func serviceRoleWrites(t *testing.T) map[string]map[string]map[string]bool {
 				// A statement may call a function of the migrations: it runs
 				// with the caller's privileges.
 				for _, text := range n.literals {
-					for name, body := range bodies {
+					for name := range bodies {
 						if strings.Contains(text, name+"(") {
-							sqlWrites([]string{body}, tables, need)
+							functionWrites(name, bodies, tables, need, map[string]bool{})
 						}
 					}
 				}
 			}
 		}
 		// A write to a table runs its triggers, with the writer's privileges,
-		// and their writes run theirs.
+		// and the functions they call, and their writes run theirs.
 		for changed := true; changed; {
 			changed = false
 			for table := range need {
 				for _, fn := range triggers[table] {
 					before := len(flatten(need))
-					sqlWrites([]string{bodies[fn]}, tables, need)
+					functionWrites(fn, bodies, tables, need, map[string]bool{})
 					changed = changed || len(flatten(need)) != before
 				}
 			}

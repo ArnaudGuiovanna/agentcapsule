@@ -22,9 +22,12 @@ func (il *invocationLab) rows(t *testing.T, query string, args ...any) int {
 // deleted past their retention, with their instruction, mailbox entry,
 // content tombstones and mandate (P-04). Nothing goes before the retention;
 // an unread result is never purged, so its invocation stays (ADR 007, 022);
-// nor does one an audit event names (ADR 014).
+// nor does one an audit event names (ADR 014). The purge runs as the
+// worker's service role, as on a host (migration 0073).
 func TestFinishedInvocationsGoAfterTheirRetention(t *testing.T) {
+	serviceRoles(t)
 	il := newInvocationLab(t)
+	worker := roleStore(t, il.s, "agentcapsule_worker")
 	ctx := t.Context()
 	alice := il.invoker(t, "alice")
 	invocation := func(key string) string {
@@ -60,13 +63,13 @@ func TestFinishedInvocationsGoAfterTheirRetention(t *testing.T) {
 	if err := il.s.pool.QueryRow(ctx, "SELECT coalesce(mandate_id,''),input_payload_id FROM owner_instructions WHERE operation_id=$1", read).Scan(&mandate, &inputPayload); err != nil {
 		t.Fatal(err)
 	}
-	if n, err := il.s.PurgeFinished(ctx, "local", nil, MinFinishedRetention, 100); err != nil || n.Total() != 0 {
+	if n, err := worker.PurgeFinished(ctx, "local", nil, MinFinishedRetention, 100); err != nil || n.Total() != 0 {
 		t.Fatal("a purge before the retention", n, err)
 	}
-	if n, err := il.s.PurgeFinished(ctx, "other-host", pastRetention(), MinFinishedRetention, 100); err != nil || n.Total() != 0 {
+	if n, err := worker.PurgeFinished(ctx, "other-host", pastRetention(), MinFinishedRetention, 100); err != nil || n.Total() != 0 {
 		t.Fatal("another host's purge", n, err)
 	}
-	n, err := il.s.PurgeFinished(ctx, "local", pastRetention(), MinFinishedRetention, 100)
+	n, err := worker.PurgeFinished(ctx, "local", pastRetention(), MinFinishedRetention, 100)
 	if err != nil || n.Invocations != 1 || n.Lifecycle != 1 {
 		t.Fatal("the purge past the retention", n, err)
 	}
@@ -94,7 +97,7 @@ func TestFinishedInvocationsGoAfterTheirRetention(t *testing.T) {
 	if _, err = il.c.GetInvocation(ctx, alice, read); !errors.Is(err, ErrNotFound) {
 		t.Fatal("a purged invocation", err)
 	}
-	if _, err = il.s.PurgeFinished(ctx, "local", nil, MinFinishedRetention-time.Hour, 100); !errors.Is(err, ErrInput) {
+	if _, err = worker.PurgeFinished(ctx, "local", nil, MinFinishedRetention-time.Hour, 100); !errors.Is(err, ErrInput) {
 		t.Fatal("a retention under the minimum", err)
 	}
 }
@@ -103,8 +106,11 @@ func TestFinishedInvocationsGoAfterTheirRetention(t *testing.T) {
 // idempotency key, mailbox entries and closure (P-04), once nothing is left
 // to deliver; the revocation of their subject stays, as it is permanent. One
 // an owner's message is bound to stays: the message's receipt is permanent.
+// The purge runs as the worker's service role, as on a host (migration 0073).
 func TestFinishedRequestsGoAfterTheirRetention(t *testing.T) {
+	serviceRoles(t)
 	s, _ := freshStore(t, "auto", 5)
+	worker := roleStore(t, s, "agentcapsule_worker")
 	ctx := t.Context()
 	exec := func(sql string, args ...any) {
 		t.Helper()
@@ -147,11 +153,11 @@ func TestFinishedRequestsGoAfterTheirRetention(t *testing.T) {
 	}
 	// The cancellation's status to the sender is still queued: a delivery
 	// still to make keeps its request.
-	if n, err := s.PurgeFinished(ctx, "local", pastRetention(), MinFinishedRetention, 100); err != nil || n.Requests != 0 {
+	if n, err := worker.PurgeFinished(ctx, "local", pastRetention(), MinFinishedRetention, 100); err != nil || n.Requests != 0 {
 		t.Fatal("a request with a queued delivery was purged", n, err)
 	}
 	exec(`UPDATE agent_mailboxes SET delivery_state='DELIVERED' WHERE kind='status' AND ref_id IN ($1,$2)`, gone, bound)
-	n, err := s.PurgeFinished(ctx, "local", pastRetention(), MinFinishedRetention, 100)
+	n, err := worker.PurgeFinished(ctx, "local", pastRetention(), MinFinishedRetention, 100)
 	if err != nil || n.Requests != 1 {
 		t.Fatal("the purge past the retention", n, err)
 	}

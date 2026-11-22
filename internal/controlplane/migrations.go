@@ -251,6 +251,9 @@ var openStateIndexesSQL string
 //go:embed migrations/0072_finished_record_retention.sql
 var finishedRecordRetentionSQL string
 
+//go:embed migrations/0073_service_privileges_activity_retention.sql
+var servicePrivilegesActivityRetentionSQL string
+
 // Append migrations; never edit an installed migration. The original schema
 // also upgrades pre-ledger installations, preserving its historical backfills.
 // Later calls validate its checksum without replaying DDL or those backfills.
@@ -327,6 +330,7 @@ var controlPlaneMigrations = []schemaMigration{
 	{version: 70, name: "work-notifications", sql: workNotificationsSQL},
 	{version: 71, name: "open-state-indexes", sql: openStateIndexesSQL},
 	{version: 72, name: "finished-record-retention", sql: finishedRecordRetentionSQL},
+	{version: 73, name: "service-privileges-activity-retention", sql: servicePrivilegesActivityRetentionSQL},
 }
 
 func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error {

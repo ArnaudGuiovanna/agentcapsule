@@ -224,7 +224,8 @@ Now three roles reach the database ([install.md](../install.md#postgresql)):
   login roles with no cluster privilege. They own nothing and cannot create
   in the schema. Each reads every table, and holds `INSERT`, `UPDATE` and
   `DELETE` exactly where the code its process runs writes (a row lock counts
-  as `UPDATE`, as PostgreSQL requires). Neither holds `TRUNCATE`,
+  as `UPDATE` on the tables it locks, as PostgreSQL requires: every table
+  its statement reads, or the tables its `OF` names). Neither holds `TRUNCATE`,
   `REFERENCES` or `TRIGGER`, nor any right on `schema_migrations` but read.
 - The migration `service-roles` states the policy in two functions:
   `agentcapsule_service_privileges()` lists each role's privileges per
@@ -237,7 +238,9 @@ Now three roles reach the database ([install.md](../install.md#postgresql)):
 - `service_roles_analysis_test.go` derives each role's writes from the
   sources: the packages each command imports, the functions of
   `internal/controlplane` they name, the statements of those functions, and
-  the triggers of the tables they write. `TestServiceRolesHoldWhatTheirProcessWrites`
+  the triggers of the tables they write with the functions those call (no
+  function is `SECURITY DEFINER`: a trigger runs with the privileges of the
+  role that fired it). `TestServiceRolesHoldWhatTheirProcessWrites`
   fails when the database grants more or less than that;
   `TestServiceRolesCannotTruncateAlterDropOrDisableTheGuards` tries every
   such statement as each role. A change that writes a new table, or writes a
@@ -258,6 +261,23 @@ history, a seal or an access revocation, change the schema or a guard, nor
 write the worker's tables (placements, seals, store enrollments,
 restores...). It does not contain root: the worker runs as root, which can
 reach the database as any role (S-05 and A-03 confine the worker).
+
+**Integration with the performance fixes.** Migration 0073
+(`service-privileges-activity-retention`) replaces
+`agentcapsule_service_privileges()` for the code of both domains. Both roles
+insert and update `agent_activity`, which the triggers of
+`platform_operations`, `agent_requests` and `llm_usage` keep (PERF-3A). The
+worker deletes the finished records its retention removes (PERF-3A): finished
+operations, requests, invocations and what hangs on them. The analysis now
+follows the functions a trigger calls (`agent_activity_upsert`), and counts
+a lock that names its tables (`FOR UPDATE OF r`) as `UPDATE` on those tables
+only. That removes eight grants nothing used: the API's `UPDATE` on
+`corpus_review_segments` and `volume_restore_losses`, and the worker's on
+`agent_deployments`, `agent_template_revisions`, `attachment_segments`,
+`corpora`, `transit_parties` and `volume_restore_losses`. Without that rule,
+the retention's `FOR UPDATE OF` locks would have given the worker `UPDATE`
+on `instruction_replays`, `owner_messages`, `peer_redeliveries` and
+`tenant_agent_audit`.
 
 ### Row-level security: considered, not adopted
 
