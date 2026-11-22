@@ -96,6 +96,27 @@ func TestFreeTextNeverReachesMetricsOrLogs(t *testing.T) {
 	}
 }
 
+// A pseudonym field takes only what Pseudonym computes: an address, a token or
+// any other text becomes "invalid" (v0.1.0 audit, L-19).
+func TestAPseudonymFieldHoldsOnlyAPseudonym(t *testing.T) {
+	var logs bytes.Buffer
+	l := NewLogger(&logs, map[string][]string{"event": {"test_event"}})
+	good := Pseudonym([]byte("test key"), "192.0.2.7")
+	for _, v := range []string{"192.0.2.7", "2001:db8::/64", "acps_" + strings.Repeat("a", 43), strings.ToUpper(good), good + "0", `"},{"x":"`} {
+		l.Event("test_event", PseudonymField("source", v))
+	}
+	l.Event("test_event", PseudonymField("source", good))
+	lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
+	for _, line := range lines[:len(lines)-1] {
+		if !strings.HasSuffix(line, `"source":"invalid"}`) {
+			t.Fatal("not a pseudonym, written as is:", line)
+		}
+	}
+	if !strings.HasSuffix(lines[len(lines)-1], `"source":"`+good+`"}`) {
+		t.Fatal("the pseudonym is not written", lines[len(lines)-1])
+	}
+}
+
 func TestTheNumberOfSeriesIsBounded(t *testing.T) {
 	r := NewRegistry()
 	values := make([]string, maxSeries+10)

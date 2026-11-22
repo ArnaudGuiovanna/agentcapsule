@@ -52,6 +52,17 @@ func run(args []string) int {
 	tlsKey := f.String("tls-key", "", "TLS private key (PEM, mode 0600), reloaded on SIGHUP")
 	tlsName := f.String("tls-server-name", "", "name clients use to reach the API; the certificate must cover it")
 	maxStreams := f.Int("max-event-streams", api.DefaultMaxEventStreams, "Maximum simultaneous invocation and corpus build event subscriptions (1 to 100000)")
+	maxPrincipalStreams := f.Int("max-principal-event-streams", api.DefaultMaxPrincipalEventStreams, "maximum simultaneous event subscriptions of one principal (1 to 100000)")
+	maxOrganizationStreams := f.Int("max-organization-event-streams", api.DefaultMaxOrganizationEventStreams, "maximum simultaneous event subscriptions of one organization (1 to 100000)")
+	limits := api.DefaultRequestLimits
+	f.IntVar(&limits.PrincipalRate, "principal-rate", limits.PrincipalRate, "requests per second one principal may send once its burst is spent (0: no limit)")
+	f.IntVar(&limits.PrincipalBurst, "principal-burst", limits.PrincipalBurst, "requests one principal may send at once")
+	f.IntVar(&limits.OrganizationRate, "organization-rate", limits.OrganizationRate, "requests per second the principals of one organization may send together once their burst is spent (0: no limit)")
+	f.IntVar(&limits.OrganizationBurst, "organization-burst", limits.OrganizationBurst, "requests the principals of one organization may send at once")
+	f.IntVar(&limits.FailuresPerMinute, "authentication-failures-per-minute", limits.FailuresPerMinute, "failed authentications one source address (IPv4, or IPv6 /64) may make before it is refused (0: no limit)")
+	maxUploads := f.Int("max-uploads", api.DefaultMaxUploads, "attachment bodies the process reads at once (1 to 1024)")
+	maxPrincipalUploads := f.Int("max-principal-uploads", api.DefaultMaxPrincipalUploads, "attachment bodies one principal may send at once (1 to -max-uploads)")
+	sourceKeyPath := f.String("source-pseudonym-key-file", "", "private 32-byte key of the sources' pseudonyms in authentication_failed events (a key drawn at start when empty)")
 	metricsListen := f.String("metrics-listen", "", "loopback address serving Prometheus metrics at /metrics (none when empty)")
 	traceFile := f.String("trace-file", "", "absolute path of a file receiving the spans as OTLP/JSON lines (none when empty)")
 	preflightOnly := f.Bool("preflight", false, "check this configuration (TLS files, ports, PostgreSQL, the authority service), print what to fix, then exit")
@@ -65,6 +76,9 @@ func run(args []string) int {
 	fail := func(code string) int { fmt.Fprintln(os.Stderr, code); return 1 }
 	if *maxStreams < 1 || *maxStreams > 100000 {
 		return fail("invalid_event_stream_limit")
+	}
+	if limits.Validate() != nil {
+		return fail("invalid_request_limit")
 	}
 	if f.NArg() != 0 || *keyPath == "" || *hostID == "" || (*cert == "") != (*tlsKey == "") || (*tlsName != "" && *cert == "") || !authority.complete() {
 		return fail("configuration_required")
@@ -218,6 +232,24 @@ func run(args []string) int {
 	}
 	if err != nil {
 		return fail("api_initialization_failed")
+	}
+	// Request, subscription and upload limits (v0.1.0 audit, S-07, S-08,
+	// S-09), each process with its own.
+	if handler.LimitRequests(limits) != nil {
+		return fail("invalid_request_limit")
+	}
+	if handler.LimitEventStreams(*maxPrincipalStreams, *maxOrganizationStreams) != nil {
+		return fail("invalid_event_stream_limit")
+	}
+	if handler.LimitUploads(*maxUploads, *maxPrincipalUploads) != nil {
+		return fail("invalid_upload_limit")
+	}
+	if *sourceKeyPath != "" {
+		sourceKey, err := operatorconfig.ReadPrivate(*sourceKeyPath, 32)
+		if err != nil || handler.UseSourcePseudonymKey(sourceKey) != nil {
+			return fail("source_pseudonym_key_file_invalid")
+		}
+		clear(sourceKey)
 	}
 	if authorities != nil {
 		handler.ReportAuthority(api.ReconciledAuthority(s, func(ctx context.Context) (string, uint64, error) {

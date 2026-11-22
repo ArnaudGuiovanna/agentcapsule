@@ -37,6 +37,8 @@ type Server struct {
 	// authority reports the authority service to the readiness probe; nil
 	// without the service (development mode only).
 	authority AuthorityStatus
+	// guards holds the request and upload limits (limits.go).
+	guards guards
 }
 
 // AuthorityStatus gives the authority service's mode: standalone,
@@ -254,6 +256,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	served = r.WithContext(ctx)
 	s.mux.ServeHTTP(w, served)
+	s.authenticationOutcome(served, route, recorder, requestID)
 	// A refused administrative attempt joins its organization's trail
 	// (TEN-009); the mux has set the route and its path values on served.
 	s.recordRefusal(served, recorder, attempt)
@@ -459,6 +462,18 @@ func (s *Server) principal(w http.ResponseWriter, r *http.Request) (controlplane
 		failure(w, controlplane.ErrAuthentication)
 		return controlplane.Principal{}, false
 	}
+	// The limits apply before the database looks the credential up, as far
+	// as what is known allows (limits.go).
+	limits := s.guards.requests
+	var known bool
+	if limits != nil {
+		var limit string
+		var wait time.Duration
+		if known, limit, wait = limits.before(fields[1], sourceOf(r)); limit != "" {
+			s.refuseLimited(w, limit, wait)
+			return controlplane.Principal{}, false
+		}
+	}
 	var p controlplane.Principal
 	var err error
 	if strings.HasPrefix(fields[1], "acp_") || strings.HasPrefix(fields[1], "acpp_") || strings.HasPrefix(fields[1], "acps_") {
@@ -469,6 +484,12 @@ func (s *Server) principal(w http.ResponseWriter, r *http.Request) (controlplane
 	if err != nil {
 		failure(w, err)
 		return p, false
+	}
+	if limits != nil {
+		if limit, wait := limits.authenticated(fields[1], p, known); limit != "" {
+			s.refuseLimited(w, limit, wait)
+			return controlplane.Principal{}, false
+		}
 	}
 	noteAttempt(r, p)
 	identify(r.Context(), p)

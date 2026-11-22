@@ -50,10 +50,22 @@ func (s *Server) resultLink(w http.ResponseWriter, r *http.Request) {
 // downloadLink serves what a link opens. It needs no Authorization header:
 // the link carries the identity it was minted for, checked again now. Every
 // refusal is the same 404. The request log records the route pattern, never
-// the link.
+// the link. Its downloads are charged to that identity's limits, read from
+// the link's seal before any database work.
 func (s *Server) downloadLink(w http.ResponseWriter, r *http.Request) {
 	if !method(w, r, "GET") {
 		return
+	}
+	if l := s.guards.requests; l != nil {
+		holder, err := s.catalog.DownloadHolder(r.PathValue("token"))
+		if err != nil {
+			failure(w, err)
+			return
+		}
+		if limit, wait := l.admit(holder); limit != "" {
+			s.refuseLimited(w, limit, wait)
+			return
+		}
 	}
 	out, err := s.catalog.OpenDownload(r.Context(), r.PathValue("token"))
 	if err != nil {
