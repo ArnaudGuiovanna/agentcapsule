@@ -156,7 +156,11 @@ func (s *Store) authenticateApp(ctx context.Context, raw string, c appClaims) (P
 		return Principal{}, err
 	}
 	defer rollback(tx)
-	v, err := scanApp(tx.QueryRow(ctx, appSelect+" WHERE a.issuer=$1 AND a.client_id=$2", c.Issuer, c.client()))
+	// The client's approval names the one organization its tokens reach
+	// (application_clients.go): an issuer and client ID are registered once
+	// per organization, and approved for one organization at most.
+	v, err := scanApp(tx.QueryRow(ctx, appSelect+`JOIN application_clients c ON (c.tenant_id,c.issuer,c.client_id)=(a.tenant_id,a.issuer,a.client_id)
+        WHERE c.issuer=$1 AND c.client_id=$2`, c.Issuer, c.client()))
 	if errors.Is(err, ErrNotFound) {
 		return Principal{}, ErrAuthentication
 	}

@@ -50,6 +50,15 @@ func TestModelBridgeRefusalsCrossAsKnownCodes(t *testing.T) {
 	}
 }
 
+// A disabled organization's agent may not call models: the guest's code for
+// it (unauthorized), not an unknown alias (not_found).
+func TestDisabledOrganizationsModelCallIsUnauthorized(t *testing.T) {
+	var pe *capsuleprotocol.PlatformError
+	if got := platformError(errors.Join(controlplane.ErrForbidden, controlplane.ErrOrganizationDisabled)); !errors.As(got, &pe) || pe.Code != "unauthorized" {
+		t.Fatal(got)
+	}
+}
+
 func TestModelBridgeIsUnavailableUntilEnabled(t *testing.T) {
 	api := platformAPI{}
 	_, err := api.CompleteLLM(t.Context(), "k", capsuleprotocol.LLMRequest{Alias: "fast", Messages: []capsuleprotocol.LLMMessage{{Role: "user", Content: "x"}}})

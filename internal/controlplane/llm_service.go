@@ -175,6 +175,17 @@ func (s *LLMService) admit(ctx context.Context, tenantID, agentID, alias, reques
 		return llmHold{}, ErrLLMConcurrency
 	}
 	done := func() { s.inflight.release(key, agent) }
+	// A disabled organization's agents call no model (organization_suspension.go):
+	// its VM, still running until the worker puts it to sleep, is refused
+	// before any route or reservation, with the guest's code for a call it
+	// may not make (unauthorized).
+	if disabled, err := organizationDisabled(ctx, s.accounts.store.pool, tenantID); err != nil || disabled {
+		done()
+		if err == nil {
+			err = errors.Join(ErrForbidden, ErrOrganizationDisabled)
+		}
+		return llmHold{}, err
+	}
 	route, q, err := s.plan(ctx, tenantID, agentID, alias, plan)
 	if err != nil {
 		done()

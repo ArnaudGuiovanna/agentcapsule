@@ -6,6 +6,9 @@ import (
 	"testing"
 )
 
+// createdTable finds the tables a migration creates.
+var createdTable = regexp.MustCompile(`(?i)CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([a-z_][a-z0-9_]*)`)
+
 // Every table the migrations create is in durableTables, the list each
 // transaction checks for UNLOGGED tables and each migration checks for
 // missing ones; and the list names no table that no migration creates.
@@ -13,9 +16,8 @@ import (
 // were missing: an UNLOGGED copy of them went unnoticed.
 func TestEveryTableIsDurable(t *testing.T) {
 	created := map[string]bool{"schema_migrations": true} // created by migrate itself
-	pattern := regexp.MustCompile(`(?i)CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([a-z_][a-z0-9_]*)`)
 	for _, m := range controlPlaneMigrations {
-		for _, match := range pattern.FindAllStringSubmatch(m.sql, -1) {
+		for _, match := range createdTable.FindAllStringSubmatch(m.sql, -1) {
 			created[match[1]] = true
 		}
 	}
