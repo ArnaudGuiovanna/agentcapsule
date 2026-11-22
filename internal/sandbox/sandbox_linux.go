@@ -51,14 +51,25 @@ func AsRoot() bool {
 // standard error discarded. A sandbox that cannot be set up fails with
 // ErrUnavailable, a program killed at its limits with ErrLimit.
 func (o Options) Run(ctx context.Context, image, program string, args ...string) ([]byte, error) {
+	return o.RunInput(ctx, image, nil, program, args...)
+}
+
+// RunInput is Run with input, at most MaxProgramInput bytes, as the
+// program's standard input, through a pipe that holds it all before the
+// program starts: commands for it (debugfs -f -), never a secret. The
+// confinement is Run's.
+func (o Options) RunInput(ctx context.Context, image string, input []byte, program string, args ...string) ([]byte, error) {
 	if !filepath.IsAbs(program) {
 		return nil, fmt.Errorf("sandbox: %s is not an absolute path", program)
+	}
+	if len(input) > MaxProgramInput {
+		return nil, fmt.Errorf("sandbox: %d bytes of input, at most %d", len(input), MaxProgramInput)
 	}
 	filter := strictFilter
 	if o.TestTools {
 		filter = testToolsFilter
 	}
-	return o.run(ctx, image, nil, filter, program, args)
+	return o.run(ctx, image, input, filter, program, args)
 }
 
 // RunSelf runs this executable again, confined, as the program that a

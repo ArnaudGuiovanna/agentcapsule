@@ -314,9 +314,14 @@ Before the host accepts an image, it checks, without mounting it:
 2. the layout, with `debugfs` confined as for harness images
    ([registry.md](registry.md#image-inspection-sandbox)): the required files
    are regular files, `INDEX.md` is at most 64 KiB, `ext/` is empty, and
-   every directory, listed one by one (`debugfs ls -p`), holds only
-   directories and regular files without setuid or setgid bits, each
-   directory reached once. Each listing costs one confined run, about 15 ms.
+   every directory (`debugfs ls -p`) holds only directories and regular
+   files without setuid or setgid bits, no two entries of one name, each
+   directory reached once. Since the v0.1.0 audit (P-12), one confined run
+   lists up to 512 directories by their inodes (`debugfs -f -`, its commands
+   on its standard input), as many as its 1 MiB of output holds: 600
+   directories take 67 ms instead of 11 s, 100,000 about 200 runs. A comment
+   line with a nonce drawn for the run opens each listing, so a file name
+   cannot pass for another directory's listing.
 
 The worker then keeps the image in its cache, in
 `<corpus.cache>/sha256/<hex>/`, where `<hex>` is the image's sha256:

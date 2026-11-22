@@ -482,7 +482,9 @@ reach the host. So every `debugfs` run on a downloaded image is confined
   image is opened read-only, then reopened through those read-only mounts, and
   `debugfs` reads it as its descriptor 3 (`/proc/self/fd/3`). It inherits no other
   descriptor than 0 to 3: every other one is closed when it starts, whatever the
-  worker's C code left open.
+  worker's C code left open. Its standard input is empty, or, when it lists a
+  corpus image's directories (since the v0.1.0 audit, P-12), a pipe that holds
+  its commands (`debugfs -f -`, at most 32 KiB) before it starts.
 - `debugfs` runs as `inspection_uid` and its GID, without supplementary groups or
   capabilities, with `no_new_privs`; the helper checks its UIDs, GIDs and groups
   before it starts `debugfs`. It runs on one processor, with every signal blocked.

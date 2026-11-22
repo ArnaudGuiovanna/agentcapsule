@@ -17,7 +17,7 @@ import (
 
 // images builds images of several layouts and features with mke2fs, and
 // derives special files from one with debugfs -w.
-func images(t *testing.T) map[string]string {
+func images(t testing.TB) map[string]string {
 	t.Helper()
 	src := t.TempDir()
 	write := func(name, data string) {

@@ -12,6 +12,11 @@ func (o Options) Run(ctx context.Context, image, program string, args ...string)
 	return nil, ErrUnavailable
 }
 
+// RunInput: as Run.
+func (o Options) RunInput(ctx context.Context, image string, input []byte, program string, args ...string) ([]byte, error) {
+	return nil, ErrUnavailable
+}
+
 // RunSelf: as Run.
 func (o Options) RunSelf(ctx context.Context, image string, input []byte, name string, args ...string) ([]byte, error) {
 	return nil, ErrUnavailable
