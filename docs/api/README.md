@@ -26,7 +26,8 @@ go build -trimpath -o bin/agentcapsule-api ./cmd/agentcapsule-api
 ```
 
 Provide `AGENTCAPSULE_DATABASE_URL` through the service's protected
-environment. The installation commands are local; they are not HTTP
+environment, naming the API's own role, `agentcapsule_api`
+([install.md](../install.md#postgresql)). The installation commands are local; they are not HTTP
 endpoints. First create a private directory owned by the account that will run
 the API:
 

@@ -27,7 +27,8 @@ writable by group or others. Boot keys are not parameters of this file.
 
 The process requires root for the jailer, namespaces and cgroups; the VMMs use
 their dedicated UIDs. Provide `AGENTCAPSULE_DATABASE_URL` through the service
-manager's protected environment, then run:
+manager's protected environment, naming the worker's own role,
+`agentcapsule_worker` ([install.md](install.md#postgresql)), then run:
 
 ```sh
 /opt/agentcapsule/agentcapsule-worker -config /etc/agentcapsule/worker.json
