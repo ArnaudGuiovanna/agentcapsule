@@ -1,7 +1,8 @@
-"""The confinement of every shipped systemd unit (S-05, S-06).
+"""The confinement of every shipped systemd unit (S-05, S-06, A-03).
 
-Each unit must keep the directives its confinement relies on, and the worker,
-which must stay root for the jailer, must not gain one that breaks it. A
+Each unit must keep the directives its confinement relies on. The worker
+runs as its own account with no capability; its helper, which must stay
+root for the jailer, must not gain a directive that breaks it (ADR 024). A
 directive that is left out stays explained in the unit. See
 docs/worker.md#confinement and docs/install.md#service-confinement.
 """
@@ -23,9 +24,12 @@ UNPRIVILEGED = {
     "SystemCallFilter": ["@system-service", "~@privileged @resources"], "SystemCallErrorNumber": "EPERM",
     "RestrictAddressFamilies": "AF_UNIX AF_INET AF_INET6",
 }
-# Every capability the worker and its children use (deploy/systemd/agentcapsule-worker.service).
-WORKER_CAPABILITIES = {"CAP_SYS_ADMIN", "CAP_MKNOD", "CAP_CHOWN", "CAP_FOWNER", "CAP_DAC_OVERRIDE",
+# Every capability the worker's helper and its children use
+# (deploy/systemd/agentcapsule-worker-helper.service); the worker has none (ADR 024).
+HELPER_CAPABILITIES = {"CAP_SYS_ADMIN", "CAP_MKNOD", "CAP_CHOWN", "CAP_FOWNER", "CAP_DAC_OVERRIDE",
                        "CAP_SETUID", "CAP_SETGID", "CAP_SETPCAP", "CAP_KILL", "CAP_SYS_PTRACE"}
+WORKER = "deploy/systemd/agentcapsule-worker.service"
+HELPER = "deploy/systemd/agentcapsule-worker-helper.service"
 # Root services that switch to another account: setuid is in @privileged.
 SWITCHING = {
     "NoNewPrivileges": "yes", "ProtectSystem": "strict", "ProtectHome": "yes", "PrivateTmp": "yes",
@@ -40,11 +44,23 @@ REQUIRED = {
     "deploy/systemd/agentcapsule-authority.service": UNPRIVILEGED,
     "deploy/systemd/agentcapsule-slim-bridge.service": UNPRIVILEGED,
     "deploy/systemd/agentcapsule-api.service": dict(UNPRIVILEGED, LimitNOFILE="65536", MemoryMax="2G"),
-    "deploy/systemd/agentcapsule-worker.service": {
+    # The worker: the unprivileged profile, as its own account; it reads
+    # /proc/meminfo (no ProcSubset), resolves names through glibc
+    # (AF_NETLINK) and formats LUKS2 key slots (AF_ALG).
+    WORKER: dict(
+        UNPRIVILEGED, User="agentcapsule-worker", Group="agentcapsule-worker", ProcSubset=None,
+        ReadWritePaths="-/var/lib/agentcapsule/host -/var/lib/agentcapsule-archives -/var/lib/agentcapsule-restore-tests "
+                       "-/run/agentcapsule-worker",
+        InaccessiblePaths="-/var/lib/agentcapsule-key-authority -/var/lib/agentcapsule-restore-authority "
+                          "-/var/lib/agentcapsule-authority-replica",
+        RestrictAddressFamilies="AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_ALG", UMask="0077", LimitCORE="0",
+        StateDirectory=None, Delegate=None, KillMode=None),
+    HELPER: {
         "Delegate": "yes", "KillMode": "process", "NoNewPrivileges": "yes",
-        "CapabilityBoundingSet": " ".join(sorted(WORKER_CAPABILITIES)), "AmbientCapabilities": "",
-        "ProtectSystem": "strict", "StateDirectory": "agentcapsule/host agentcapsule-archives",
-        "StateDirectoryMode": "0700", "ReadWritePaths": "-/run/agentcapsule-worker",
+        "CapabilityBoundingSet": " ".join(sorted(HELPER_CAPABILITIES)), "AmbientCapabilities": "",
+        "ProtectSystem": "strict", "StateDirectory": None,
+        "ReadWritePaths": "/var/lib/agentcapsule -/var/lib/agentcapsule-archives -/var/lib/agentcapsule-restore-tests "
+                          "/run/agentcapsule-worker-helper",
         "InaccessiblePaths": "-/var/lib/agentcapsule-key-authority -/var/lib/agentcapsule-restore-authority "
                              "-/var/lib/agentcapsule-authority-replica",
         "ProtectHome": "yes", "PrivateTmp": "yes", "ProtectKernelTunables": "yes", "ProtectKernelModules": "yes",
@@ -83,9 +99,12 @@ REQUIRED = {
         SWITCHING, CapabilityBoundingSet="", PrivateNetwork="yes", SystemCallFilter=None,
         SystemCallErrorNumber=None, RestrictAddressFamilies="AF_UNIX"),
 }
-# What would break the worker (see its unit): each stays out, and explained.
-WORKER_FORBIDDEN = ("PrivateDevices", "DevicePolicy", "ProtectControlGroups", "RestrictNamespaces", "ProtectProc",
-                    "ProcSubset", "PrivateNetwork", "IPAddressDeny", "PrivateUsers", "User", "PrivateIPC", "MemoryMax")
+# What would break the helper (see its unit): each stays out, and explained.
+HELPER_FORBIDDEN = ("PrivateDevices", "DevicePolicy", "ProtectControlGroups", "RestrictNamespaces", "ProtectProc",
+                    "ProcSubset", "PrivateNetwork", "IPAddressDeny", "PrivateUsers", "User", "MemoryMax")
+# What the worker leaves out (see its unit): each explained there and in docs/worker.md.
+WORKER_LEFT_OUT = ("ProcSubset", "PrivateNetwork", "IPAddressDeny", "PrivateUsers", "MemoryMax", "StateDirectory",
+                   "Delegate", "KillMode")
 # The host operation: what it keeps and what it must not get.
 HOST_OPERATION = {"NoNewPrivileges": "yes", "ProtectKernelLogs": "yes", "ProtectClock": "yes", "ProtectHostname": "yes",
                   "LockPersonality": "yes", "RestrictRealtime": "yes", "SystemCallArchitectures": "native",
@@ -148,24 +167,37 @@ class UnitConfinementTests(unittest.TestCase):
             with self.subTest(unit=name):
                 self.check(name, (ROOT / name).read_text(), required)
 
-    def test_worker_capabilities_are_the_documented_ones(self):
-        text = (ROOT / "deploy/systemd/agentcapsule-worker.service").read_text()
+    def test_helper_capabilities_are_the_documented_ones(self):
+        text = (ROOT / HELPER).read_text()
         granted = set(service(text)["CapabilityBoundingSet"][0].split())
-        self.assertEqual(granted, WORKER_CAPABILITIES)
+        self.assertEqual(granted, HELPER_CAPABILITIES)
         notes = comments(text)
         for capability in granted:
-            self.assertIn(capability, notes, "each capability says why the worker needs it")
+            self.assertIn(capability, notes, "each capability says why the helper needs it")
 
-    def test_worker_leaves_out_what_breaks_it_and_says_why(self):
-        text = (ROOT / "deploy/systemd/agentcapsule-worker.service").read_text()
+    def test_the_worker_has_no_capability_and_is_not_root(self):
+        directives = service((ROOT / WORKER).read_text())
+        self.assertEqual(directives["CapabilityBoundingSet"], [""])
+        self.assertEqual(directives["AmbientCapabilities"], [""])
+        self.assertEqual(directives["User"], ["agentcapsule-worker"])
+        self.assertIn("agentcapsule-worker-helper.service", (ROOT / WORKER).read_text().split("[Service]")[0])
+
+    def left_out(self, unit, keys):
+        text = (ROOT / unit).read_text()
         directives = service(text)
         notes = comments(text)
         guide = (ROOT / "docs/worker.md").read_text()
-        for key in WORKER_FORBIDDEN:
-            with self.subTest(directive=key):
+        for key in keys:
+            with self.subTest(unit=unit, directive=key):
                 self.assertNotIn(key, directives)
                 self.assertTrue(re.search(r"\b" + re.escape(key) + r"\b", notes), "the unit explains why it is left out")
                 self.assertTrue("`" + key + "`" in guide, "docs/worker.md explains why " + key + " is left out")
+
+    def test_helper_leaves_out_what_breaks_it_and_says_why(self):
+        self.left_out(HELPER, HELPER_FORBIDDEN)
+
+    def test_worker_leaves_out_what_it_cannot_take_and_says_why(self):
+        self.left_out(WORKER, WORKER_LEFT_OUT)
 
     def test_every_shipped_service_unit_is_checked(self):
         shipped = {p.relative_to(ROOT).as_posix() for d in ("deploy/systemd", "deploy/backup", "deploy/standby", "deploy/oidc")
