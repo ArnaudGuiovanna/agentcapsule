@@ -1668,8 +1668,8 @@ permission on `/var/lib/agentcapsule`. SEC-1B made the installer create it
 0711 and the update add o+x (`searchable_parent`), but the authority's
 tmpfiles line still set it 0710 `root:agentcapsule-authority` at every
 boot. One design now holds everywhere: root's, 0711. Every account may
-traverse it and none but root may list it; its only entry is the runtime
-root, which stays 0700 and root's. A group-only mode would also let the
+traverse it and none but root may list it; what it holds keeps its own
+modes (the runtime root 0700). A group-only mode would also let the
 authority through, but it would make the parent depend on the authority's
 group, and the update's check (o+x) would undo it at each update while each
-boot restored it.
+boot restored it. ARCH-3's worker account traverses it the same way.
