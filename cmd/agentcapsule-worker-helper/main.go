@@ -26,6 +26,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/sandbox"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/workerhelper"
 )
 
@@ -72,10 +73,16 @@ func run() int {
 		paths.Executable = *executable
 	}
 	if *fetch != "" {
-		if err = rootsOnly(*fetch); err != nil {
+		// The shipper is a Python script, run isolated (-I) by root's
+		// interpreter, as the host operations run it.
+		python, err := exec.LookPath("python3")
+		if err == nil {
+			err = errors.Join(rootsOnly(python), rootsOnly(*fetch))
+		}
+		if err != nil {
 			return fail("archive_fetch_invalid", err)
 		}
-		paths.ArchiveFetch = []string{*fetch}
+		paths.ArchiveFetch = []string{python, "-I", *fetch}
 	}
 	if p, err := exec.LookPath("debugfs"); err == nil && rootsOnly(p) == nil {
 		paths.Debugfs = p
@@ -83,6 +90,9 @@ func run() int {
 	c, err := w.Config(paths, uint32(uid), uint32(gid), *account)
 	if err != nil {
 		return fail("configuration_invalid", err)
+	}
+	if err = inspectionUID(c); err != nil {
+		return fail("inspection_uid_invalid", err)
 	}
 	if err = prepare(c, w); err != nil {
 		return fail("helper_state_unavailable", err)
@@ -136,6 +146,29 @@ func prepare(c workerhelper.Config, w workerhelper.WorkerConfig) error {
 		}
 	}
 	return workerhelper.SetupCgroup(c.Layout.Cgroup)
+}
+
+// inspectionUID checks the UID the confined programs run as, as the worker
+// does (registry.inspection_uid): one setresuid takes as itself, outside the
+// provisioning range, not the worker's, no account's and no group's.
+func inspectionUID(c workerhelper.Config) error {
+	uid := c.InspectionUID
+	if uid == 0 {
+		return nil // no confined program runs
+	}
+	if !sandbox.Reservable(uid) || uid >= c.FirstUID && uid <= c.LastUID || uid == c.WorkerUID || uid == c.WorkerGID {
+		return fmt.Errorf("%d is not reserved for the inspections", uid)
+	}
+	id := strconv.FormatUint(uint64(uid), 10)
+	var account user.UnknownUserIdError
+	var group user.UnknownGroupIdError
+	if _, err := user.LookupId(id); !errors.As(err, &account) {
+		return fmt.Errorf("%d is an account's, or the accounts cannot be read: %v", uid, err)
+	}
+	if _, err := user.LookupGroupId(id); !errors.As(err, &group) {
+		return fmt.Errorf("%d is a group's, or the groups cannot be read: %v", uid, err)
+	}
+	return nil
 }
 
 // rootsOnly: an executable of root's that neither its group nor others can
