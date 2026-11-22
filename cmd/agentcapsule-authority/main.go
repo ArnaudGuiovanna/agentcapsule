@@ -256,6 +256,10 @@ type primaryConfig struct {
 	WorkerSocket     string              `json:"worker_socket"`
 	APISocket        string              `json:"api_socket"`
 	APIUID           *uint32             `json:"api_uid"`
+	// WorkerUID is the worker's account when it is not root (ADR 024): the
+	// worker socket, then 0660 for the clients' group, admits it and root.
+	// Absent: root alone, at 0600.
+	WorkerUID *uint32 `json:"worker_uid,omitempty"`
 	// MaxKeyHold caps a hold of a key in use: 2m when empty, from 30s to 10m.
 	MaxKeyHold string `json:"max_key_hold,omitempty"`
 	// AuthorityReplica is the section the worker had before the service,
@@ -352,7 +356,7 @@ func parseConfig(b []byte) (config, error) {
 		!authoritylog.ValidID(p.KeyAuthority.Identity, "keyauth_") || !authoritylog.ValidID(p.RestoreAuthority.Identity, "restoreauth_") ||
 		restoreauthority.CheckSeparation(p.KeyAuthority.Root, p.RestoreAuthority.Root) != nil ||
 		!cleanPath(p.WorkerSocket) || !cleanPath(p.APISocket) || p.WorkerSocket == p.APISocket ||
-		len(p.WorkerSocket) > 100 || len(p.APISocket) > 100 {
+		len(p.WorkerSocket) > 100 || len(p.APISocket) > 100 || p.WorkerUID != nil && (*p.WorkerUID == 0 || *p.WorkerUID == *p.APIUID) {
 		return c, invalid
 	}
 	c.maxKeyHold = authorityservice.DefaultMaxKeyHold
@@ -517,12 +521,16 @@ func servePrimary(c config) int {
 	defer catalog.Close()
 	registry := telemetry.NewRegistry()
 	catalog.ObserveReplication(authoritylog.NewMetrics(registry))
-	server, err := authorityservice.New(ctx, authorityservice.Config{Catalog: catalog, Keys: keys, APIUID: *p.APIUID,
+	workerUID, workerMode := uint32(0), os.FileMode(0600)
+	if p.WorkerUID != nil {
+		workerUID, workerMode = *p.WorkerUID, 0660
+	}
+	server, err := authorityservice.New(ctx, authorityservice.Config{Catalog: catalog, Keys: keys, APIUID: *p.APIUID, WorkerUID: workerUID,
 		MaxKeyHold: c.maxKeyHold, Metrics: authorityservice.NewMetrics(registry), Logger: problems, Events: events})
 	if err != nil {
 		return fail("restore_authority_unavailable")
 	}
-	worker, err := authorityservice.Listen(p.WorkerSocket, 0600)
+	worker, err := authorityservice.Listen(p.WorkerSocket, workerMode)
 	if err != nil {
 		return fail("worker_socket_unavailable")
 	}

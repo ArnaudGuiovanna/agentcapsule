@@ -93,7 +93,7 @@ func testRestore(c worker.ServiceConfig, mode operatorconfig.Mode, agent, archiv
 	t := worker.RestoreTest{Store: s, HostID: c.HostID, Authority: authority, RuntimeRoot: opts.Root, Archives: archives, Scratch: scratch,
 		Sandbox: confined}
 	if fetchScript != "" {
-		t.Fetch = func(root string) worker.ArchiveFetcher { return worker.ScriptFetcher([]string{fetchScript}, root) }
+		t.Fetch = func(root string) worker.ArchiveFetcher { return c.Fetcher(fetchScript, root) }
 	}
 	report, err := t.Run(ctx, agent, archiveID)
 	if err != nil {

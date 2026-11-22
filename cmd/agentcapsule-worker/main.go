@@ -97,6 +97,9 @@ func run() int {
 		if err != nil {
 			return fail("configuration_invalid")
 		}
+		if c.CheckAccount() != nil {
+			return fail("worker_runs_as_its_account_not_root")
+		}
 		if *collect {
 			return collectGarbage(c, mode, *dryRun, *confirm)
 		}
@@ -117,6 +120,11 @@ func run() int {
 	c, err := worker.LoadServiceConfig(*path)
 	if err != nil {
 		return fail("configuration_invalid")
+	}
+	// With its helper, the worker runs as its own account, with no
+	// capability, and never as root (ADR 024).
+	if c.CheckAccount() != nil {
+		return fail("worker_runs_as_its_account_not_root")
 	}
 	opts, lease, maintenance, err := c.Settings()
 	if errors.Is(err, worker.ErrAuthorityServiceRequired) {
@@ -487,7 +495,7 @@ func run() int {
 	paused := func(err error) { pauses.Event("restore_paused", telemetry.Code("reason", worker.RestorePause(err))) }
 	var fetch worker.ArchiveFetcher
 	if *archiveFetch != "" {
-		fetch = worker.ScriptFetcher([]string{*archiveFetch}, *archiveRoot)
+		fetch = c.Fetcher(*archiveFetch, *archiveRoot)
 	}
 	if hostRestoreRequested {
 		archives, err := volumearchive.New(*archiveRoot)

@@ -18,6 +18,7 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/preflight"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/restoreauthority"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/sandbox"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/workerhelper"
 )
 
 // DirectoryClientName is the client certificate's common name that the
@@ -71,7 +72,17 @@ func (c ServiceConfig) PreflightArtifacts() []preflight.Artifact {
 // (DEP-3: a failure from 95% used), and the pinned artifacts. It does not open
 // the database or the network.
 func (c ServiceConfig) MandatoryPreflight(ctx context.Context, h preflight.Host) []preflight.Result {
-	return preflight.Mandatory(ctx, h, c.Root, c.PreflightArtifacts())
+	out := preflight.Mandatory(ctx, h, c.Root, c.PreflightArtifacts())
+	if c.Helper == nil {
+		return out
+	}
+	// A worker with a helper has no device: the helper checks KVM (ADR 024).
+	for i, r := range out {
+		if r.Check == "kvm" {
+			out[i] = c.helperCheck(ctx)
+		}
+	}
+	return out
 }
 
 // Preflight runs every check of this configuration on h, for an operator
@@ -243,8 +254,31 @@ func (c ServiceConfig) inspectionCheck(ctx context.Context, asRoot bool) preflig
 				"run the worker as root of the host, not of a container's user namespace"}
 	}
 	detail := "debugfs runs confined as this account, in a user namespace (not root)"
-	if asRoot {
+	switch {
+	case c.Helper != nil:
+		detail = "debugfs runs confined through the worker helper, as UID and GID " + strconv.FormatUint(uint64(c.Registry.InspectionUID), 10)
+	case asRoot:
 		detail = "debugfs runs confined as UID and GID " + strconv.FormatUint(uint64(sb.UID), 10)
 	}
 	return preflight.Result{Check: check, Status: preflight.OK, Detail: detail}
+}
+
+// helperCheck: the worker's root helper answers on its socket, as root,
+// for this runtime root (ADR 024). It opened /dev/kvm, checked the cgroups
+// and the jails' file system at its start, which the worker, without any
+// capability, cannot.
+func (c ServiceConfig) helperCheck(ctx context.Context) preflight.Result {
+	const check = "worker_helper"
+	probe, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	resp, err := c.HelperClient().Hello(probe)
+	switch {
+	case err != nil:
+		return preflight.Result{Check: check, Status: preflight.Fail, Detail: "the worker helper does not answer on " + c.Helper.Socket,
+			Fix: "start agentcapsule-worker-helper (docs/worker.md#privilege-separation); its journal says why it refuses to start"}
+	case resp.Cgroup != workerhelper.CgroupFor(c.Root):
+		return preflight.Result{Check: check, Status: preflight.Fail, Detail: "the worker helper serves another runtime root than " + c.Root,
+			Fix: "give the helper the worker's configuration (-config)"}
+	}
+	return preflight.Result{Check: check, Status: preflight.OK, Detail: "the worker helper answers; KVM, the cgroups and the jails (" + resp.Jails + ") are its"}
 }

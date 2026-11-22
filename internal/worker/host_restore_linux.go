@@ -18,6 +18,7 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/restoreauthority"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/volumearchive"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/workerhelper"
 )
 
 var (
@@ -57,6 +58,31 @@ func ScriptFetcher(command []string, root string) ArchiveFetcher {
 		}
 		return nil
 	}
+}
+
+// HelperFetcher is ScriptFetcher for a worker that is not root (ADR 024):
+// its helper runs the shipper it was given (agentcapsule-worker-helper
+// -archive-fetch), rclone as the shipper's account, and the archive is
+// written into root as the worker's account.
+func HelperFetcher(helper *workerhelper.Client, root string) ArchiveFetcher {
+	return func(ctx context.Context, store, archiveID string) error {
+		if helper == nil || !volumearchive.ValidID(archiveID) || !slices.Contains(ArchiveStores, store) {
+			return controlplane.ErrInput
+		}
+		if err := helper.FetchArchive(ctx, root, store, archiveID); err != nil {
+			return fmt.Errorf("fetch from %s: %w", store, err)
+		}
+		return nil
+	}
+}
+
+// Fetcher is the archive fetcher of this configuration: through the helper
+// when the worker has one, the shipper at command otherwise.
+func (c ServiceConfig) Fetcher(command, root string) ArchiveFetcher {
+	if c.Helper != nil {
+		return HelperFetcher(c.HelperClient(), root)
+	}
+	return ScriptFetcher([]string{command}, root)
 }
 
 // FetchArchive makes archiveID available in the archive root and verifies
