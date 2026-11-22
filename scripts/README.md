@@ -71,6 +71,7 @@ Do not run `go test ./...` at the repository root with sources outside
 | `verify-interop.py` | Qualifies the pinned A2A/OASF/Directory/SLIM profile: the libraries, and with `--services` the private services of `deploy/interop` (Docker Compose) and the platform's SLIM bridge (`runtime/slimbridge`) against them; see [docs/interop.md](../docs/interop.md) |
 | `build-firecracker.py` | Builds the pinned Firecracker variant with VMM-owned file locks |
 | `build-guest-kernel.py` | Builds the pinned guest kernel with device-mapper/dm-crypt, without root |
+| `test_build_inputs.py` | Unit tests of the input checks of `build-firecracker.py` and `build-guest-kernel.py`, also under `python -O`, and that no script checks with `assert` (which `python -O` drops) |
 | `build-product-guest.py` | Builds capsule-init and the echo harness into a pinned initramfs |
 | `build-control-guest.py` | Builds the disposable authenticated SQL harness fixture |
 | `build-python-harness.py` | Builds the python-echo harness package with plain Docker (pinned base image, then `pack`); the reference build is the Dagger module (`dagger call python-echo`). Its `package/` directory is required by `verify-product-guest.py --python-harness` |
