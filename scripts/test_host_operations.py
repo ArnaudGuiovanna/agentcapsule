@@ -567,6 +567,32 @@ class HostOperationTests(unittest.TestCase):
         # The worker's operator modes run as the worker's role too.
         self.assertEqual(self.api["worker_env"]({"database_url_file":None})["AGENTCAPSULE_DATABASE_URL"],local+"agentcapsule_worker")
 
+    def test_the_runtime_roots_parent_has_one_mode(self):
+        # The installer, the tmpfiles line that every boot applies and the
+        # update's searchable_parent agree: /var/lib/agentcapsule is root's,
+        # 0711 (FIX-2). The tmpfiles line set 0710 root:agentcapsule-authority,
+        # and each boot undid the installer's mode.
+        lines=[l.split() for l in (ROOT/"deploy/systemd/agentcapsule-authority.tmpfiles").read_text().splitlines()
+               if l.split()[1:2]==["/var/lib/agentcapsule"]]
+        self.assertEqual(lines,[["d","/var/lib/agentcapsule","0711","root","root","-"]])
+        from unittest.mock import Mock
+        calls=[]
+        def run(*cmd,**kw):
+            calls.append(cmd)
+            return ""
+        etc=self.root/"etc"
+        etc.mkdir()
+        with patch.dict(self.api,ETC=etc,run=run,run_user=Mock(return_value=json.dumps(dict(authority_id="id"))),
+                        user_id=Mock(return_value=1000),write_file=Mock()):
+            self.api["authority"]()
+        self.assertIn(("install","-d","-m","0711","/var/lib/agentcapsule"),calls)
+        # A parent the update made searchable has the same execute bits.
+        parent=self.root/"lib-agentcapsule"
+        parent.mkdir()
+        os.chmod(parent,0o710)
+        self.assertTrue(self.api["searchable_parent"](str(parent/"host")))
+        self.assertEqual(parent.stat().st_mode&0o111,0o111)
+
     def test_update_lets_the_authority_traverse_the_runtime_roots_parent(self):
         # A v0.1.0 worker left /var/lib/agentcapsule 0700: the authority's
         # account could not resolve the runtime root under it, and the

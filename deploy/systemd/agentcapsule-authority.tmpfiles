@@ -5,7 +5,6 @@
 # account (worker_uid, a member of that group, ADR 024), or 0600 (root only)
 # without it; api.sock 0660 (the API's account, a member of that group).
 d /run/agentcapsule-authority 2750 agentcapsule-authority agentcapsule-authority-clients -
-# init-restore-authority resolves the worker's data path during upgrades as
-# the authority user, and the worker's account reaches its runtime root under
-# it (ADR 024): both traverse the parent, neither lists it.
+# The authority and worker accounts traverse the runtime root's parent during
+# upgrades and operation. Only root can list it (ADR 024).
 d /var/lib/agentcapsule 0711 root root -

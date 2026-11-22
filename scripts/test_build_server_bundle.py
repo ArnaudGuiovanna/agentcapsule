@@ -304,6 +304,16 @@ class SourcesTest(Temporary):
             self.assertIsNone(BUNDLE.run_owner("/missing"))
         self.assertEqual(calls[0], ["dpkg-query", "-S", "/usr/lib/x86_64-linux-gnu/libc.so.6"])
 
+    def test_run_owner_skips_diversion_lines(self):
+        # dpkg-query -S lists a path's diversions before its owner, in the
+        # same "<left>: <path>" form (FIX-2): their left part is no package.
+        answers = {"/usr/bin/sh": "diversion by dash from: /usr/bin/sh\ndiversion by dash to: /usr/bin/sh.distrib\n"
+                                  "dash: /usr/bin/sh\n",
+                   "/usr/bin/local": "local diversion from: /usr/bin/local\nlocal diversion to: /usr/bin/local.orig\n"}
+        with patch.object(BUNDLE.subprocess, "run", lambda argv, **kw: Mock(stdout=answers.get(argv[2], ""))):
+            self.assertEqual(BUNDLE.run_owner("/usr/bin/sh"), "dash")
+            self.assertIsNone(BUNDLE.run_owner("/usr/bin/local"))
+
     def test_matching_sources_follows_merged_usr_and_fetches_each_source_once(self):
         owners = {"/usr/lib/libz.so.1": "zlib1g", "/usr/bin/busybox": "busybox-static"}
         guest = {"native_files": {"a": {"source": "/lib/libz.so.1"}, "b": {"source": "/usr/bin/busybox"}}}

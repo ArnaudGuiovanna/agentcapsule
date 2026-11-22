@@ -14,6 +14,7 @@ import (
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/authoritylog"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/keyauthority"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/keymem"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/restoreauthority"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/telemetry"
 )
@@ -395,7 +396,7 @@ func (s *Server) handle(ctx context.Context, conn *net.UnixConn, role string, pr
 			}
 			// A key goes after its frame, once the operation has ended.
 			if a, ok := out.result.(keyAnswer); ok {
-				defer clear(a.key)
+				defer keymem.Release(a.key)
 				return sendKey(conn, a.result, a.key)
 			}
 			if out.result == nil {
@@ -416,7 +417,9 @@ func (s *Server) handle(ctx context.Context, conn *net.UnixConn, role string, pr
 			// The client went away, or broke the protocol: a hold ends with
 			// its connection, as it ended with the worker's process.
 			lose(ErrHoldLost)
-			<-done
+			if a, ok := (<-done).result.(keyAnswer); ok {
+				keymem.Release(a.key) // never sent
+			}
 			return false
 		}
 	}

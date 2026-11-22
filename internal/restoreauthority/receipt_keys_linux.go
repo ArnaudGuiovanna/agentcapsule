@@ -3,11 +3,11 @@
 package restoreauthority
 
 import (
-	"bytes"
 	"context"
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/keyauthority"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/keymem"
 )
 
 // The daily receipt keys (docs/adr/006-authority-service.md §7, wave 6;
@@ -29,22 +29,27 @@ func (l Local) EnsureReceiptKey(ctx context.Context, day time.Time) error {
 	return l.Keys.Ensure(ctx, keyauthority.ReceiptKeyAgent, keyauthority.ReceiptKeyVolume(day))
 }
 
-// ReceiptKey returns a copy of day's receipt key; the caller clears it. It
-// reads the key authority only, under the key's shared lock, and opens no
-// catalogue transaction: reading a key that exists changes nothing, so it
-// does not wait for the standby. keyauthority.ErrRevoked once the key is
-// destroyed; keyauthority.ErrUnavailable while it does not exist.
+// ReceiptKey returns a copy of day's receipt key, in a locked page outside
+// the Go heap (internal/keymem) that the caller releases with
+// keymem.Release. It reads the key authority only, under the key's shared
+// lock, and opens no catalogue transaction: reading a key that exists
+// changes nothing, so it does not wait for the standby.
+// keyauthority.ErrRevoked once the key is destroyed;
+// keyauthority.ErrUnavailable while it does not exist.
 func (l Local) ReceiptKey(ctx context.Context, day time.Time) ([]byte, error) {
 	if l.Keys == nil {
 		return nil, keyauthority.ErrInput
 	}
 	var key []byte
 	err := l.Keys.WithKey(ctx, keyauthority.ReceiptKeyAgent, keyauthority.ReceiptKeyVolume(day), func(k []byte) error {
-		key = bytes.Clone(k)
+		var err error
+		if key, err = keymem.Copy(k); err != nil {
+			return keyauthority.ErrUnavailable
+		}
 		return nil
 	})
 	if err != nil {
-		clear(key)
+		keymem.Release(key)
 		return nil, err
 	}
 	return key, nil

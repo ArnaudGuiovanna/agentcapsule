@@ -399,7 +399,11 @@ An idempotency key of a request goes with its request: a retry or a rerun
 after a restore within that time gets the first receipt back. An invocation
 deleted this way answers `404 not_found`, like one that never existed. Each
 agent's last activity, which the idle policy and the eviction order compare,
-is kept apart (`agent_activity`) and survives the deletion.
+is kept apart (`agent_activity`) and survives the deletion. So do the stores
+of a closed request's and a dead delivery's revocation subjects, recorded
+with the subject: their scope does not change. An agent's deletion fences the
+agents that share a kept request with it; a deleted request joins it to no
+one ([ADR 006](adr/006-authority-service.md#leftovers-of-the-audits-fixes-fix-1)).
 
 **Finished model calls** (since the v0.1.0 audit, P-05). A settled or
 released model call (`llm_usage`) is deleted `model_call_retention` after its

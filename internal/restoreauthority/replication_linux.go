@@ -448,7 +448,23 @@ func (r *replicator) sync(ctx context.Context, c *Catalog, epoch, upTo uint64, k
 		return false
 	}
 	var last error
+	r.mu.Lock()
+	start := r.now()
+	r.mu.Unlock()
+	// tried is set once this wait held the link: it then ran an exchange,
+	// which recorded its own failure, or it was done.
+	tried := false
 	gaveUp := func() error {
+		if !tried {
+			// The caller gave up before this wait reached the standby once,
+			// for instance during the commit of the record it waits for: it
+			// counts as a failed exchange, so the degraded delay starts and
+			// the monitor sends the record. It says nothing of the standby:
+			// the metrics keep the last kind, as in exchange.
+			r.mu.Lock()
+			r.failed(ctx.Err(), start)
+			r.mu.Unlock()
+		}
 		if waiting {
 			r.metrics.Load().GaveUp(kind)
 			return errors.Join(ErrUnavailable, ErrWaitsForReplica, last, ctx.Err())
@@ -463,6 +479,7 @@ func (r *replicator) sync(ctx context.Context, c *Catalog, epoch, upTo uint64, k
 		select {
 		case r.lock <- struct{}{}:
 			poll.Stop()
+			tried = true
 			err := r.syncHolding(ctx, c, epoch, upTo, done)
 			<-r.lock
 			if err == nil {

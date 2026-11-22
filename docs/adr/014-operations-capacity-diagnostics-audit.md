@@ -405,3 +405,19 @@ Now (migration `append-only-audit`):
 
 The export (`GET /v1/audit/export`) reads a closed range at one snapshot, as
 before: an event that commits later is in a later export of the same range.
+
+**Lot FIX-2: the feed lock of one schema, and rights before the wait.**
+
+- The feed lock's key named the organization only. Several schemas of one
+  database (the tests do this; so would two installations sharing a
+  server) shared it: a page waited for another schema's audited
+  transactions of an organization with the same ID, then answered 503. The
+  key now names the schema with the organization, as the store's gate
+  does: the table's schema in the trigger, the store's schema in the
+  reader. Migration `append-only-audit` was corrected in place, since no
+  release has shipped it.
+- A page waited for the horizon before it checked the caller's rights, so
+  a caller without audit rights could hold an API connection for five
+  seconds. It now checks them first, without a row lock; the wait still
+  holds no row lock, and the rights are checked again under the
+  organization's row lock before the page is read.

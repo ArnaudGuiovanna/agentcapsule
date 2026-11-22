@@ -60,7 +60,7 @@ func beginClosure(ctx context.Context, tx pgx.Tx, r requestRow, final, reason st
 	if _, err := tx.Exec(ctx, "INSERT INTO request_closures(request_id,final_state,reason) VALUES ($1,$2,$3)", r.ID, final, reason); err != nil {
 		return err
 	}
-	if err := publishRevocation(ctx, tx, "request/"+r.ID); err != nil {
+	if err := publishRevocation(ctx, tx, "request/"+r.ID, r.Sender, r.Recipient); err != nil {
 		return err
 	}
 	// The fence targets are the request's two parties, stopped or sealed
