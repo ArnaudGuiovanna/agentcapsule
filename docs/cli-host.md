@@ -217,6 +217,17 @@ refuses a release older than the running CLI or than the highest release it
 has installed, recorded in `self-update.json` of the CLI's configuration
 directory, unless `--allow-older` is given.
 
+**Certificates (L-14).** The certificates the installer generates (the API's,
+the identity provider's when no `oidc_cert` is given, and the private
+services' when no `interop_certs` is given) last 365 days. Each update renews
+those that expire within 30 days: the API's and the identity provider's keep
+their keys, the private services get new authorities. The configure phase
+lists them in `renewed_certificates`. A renewed self-signed API certificate
+must be given again to the clients that pin it (`context add --ca`).
+`agentcapsule host diagnose certificates` reports, for every certificate,
+its expiry, the days left, `ok`, `renewal_due` or `expired`, and whether an
+update renews it (`update`) or the operator does (`operator`).
+
 The archive and restore-apply commands stop the maintenance worker while the
 one-shot operator process owns its listeners. They resume it when it was
 previously running. A restore test runs beside the worker and reports its
