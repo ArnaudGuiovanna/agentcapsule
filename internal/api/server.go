@@ -210,6 +210,7 @@ func New(store *controlplane.Store, accounts *controlplane.Accounts) (*Server, e
 	s.handle("/v1/organizations/{id}", s.organization)
 	s.handle("/v1/organizations/{id}/disable", s.disableOrganization)
 	s.handle("/v1/organizations/{id}/quotas", s.organizationQuotas)
+	s.applicationClientRoutes()
 	s.handle("/v1/organizations/current/quotas", s.currentOrganizationQuotas)
 	s.handle("/v1/organizations/current/capabilities", s.organizationCapabilities)
 	s.handle("/v1/harness-imports", s.harnessImports)
@@ -303,6 +304,8 @@ func failure(w http.ResponseWriter, err error) {
 		quotaProblem(w, 409, "quota_below_agent", below.Quota)
 	case errors.Is(err, controlplane.ErrAuthentication):
 		problem(w, 401, "authentication_required")
+	case errors.Is(err, controlplane.ErrClientNotApproved):
+		problem(w, 403, "application_client_not_approved")
 	case errors.Is(err, controlplane.ErrForbidden):
 		problem(w, 403, "forbidden")
 	case errors.Is(err, controlplane.ErrNotFound):

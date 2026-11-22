@@ -376,6 +376,7 @@ func TestReadyChecksInstalledMigrationLedger(t *testing.T) {
 func revertTenantAgents(t *testing.T, s *Store) {
 	t.Helper()
 	if _, err := s.pool.Exec(t.Context(), `
+        DROP TABLE IF EXISTS application_clients;
         DROP FUNCTION IF EXISTS agentcapsule_service_grants(), agentcapsule_service_privileges();
         ALTER TABLE agents DROP COLUMN IF EXISTS enricher_id CASCADE;
         DROP FUNCTION IF EXISTS corpus_remember_conversion(), corpus_notify_build(), corpus_notify_file_progress() CASCADE;

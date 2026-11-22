@@ -612,6 +612,102 @@ paths:
         '404': {$ref: '#/components/responses/Problem'}
         '409': {$ref: '#/components/responses/Problem'}  # quota_below_agent
         default: {$ref: '#/components/responses/Problem'}
+  /v1/organizations/{id}/application-clients:
+    get:
+      operationId: listApplicationClients
+      summary: List the OIDC clients approved for an organization
+      description: >-
+        Platform credential with scope platform:admin. An application's client
+        (issuer and client ID) serves the one organization it is approved for
+        (ADR 001, "Changes after the v0.1.0 audit"). approved_by is the
+        platform account, or migration for a client an application registered
+        before approvals existed.
+      security: [{platformBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/ResourceID'}
+        - {name: after, in: query, schema: {type: string, maxLength: 100}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 100}}
+      responses:
+        '200':
+          description: Approved clients, by ID
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/ApplicationClient'}}
+        '404': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
+    post:
+      operationId: approveApplicationClient
+      summary: Approve an OIDC client for an organization
+      description: >-
+        Platform credential with scope platform:admin. The organization's
+        administrators can then register an application for this issuer and
+        client ID; without the approval they get 403
+        application_client_not_approved, whether another organization holds
+        the client or none does. A client approved for this organization
+        already is confirmed (200). One approved for another organization is
+        refused (409 invalid_transition): withdraw that approval first. A
+        disabled organization is refused (409 invalid_transition). Audited in
+        the organization's trail (application_client.approved).
+      security: [{platformBearer: []}]
+      parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ApplicationClientInput'}
+            example: {issuer: "https://identity.acme.test/realms/agentcapsule", client_id: monapp}
+      responses:
+        '201':
+          description: Client approved
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApplicationClient'}
+        '200':
+          description: Client already approved for this organization, or initial response replayed
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApplicationClient'}
+        '404': {$ref: '#/components/responses/Problem'}
+        '409': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
+  /v1/organizations/{id}/application-clients/{approval_id}/withdraw:
+    post:
+      operationId: withdrawApplicationClient
+      summary: Withdraw an organization's approval of an OIDC client
+      description: >-
+        Platform credential with scope platform:admin. The organization's
+        application registered for the client, if any, is disabled in the same
+        transaction: its members' tokens and its backend's token stop at once
+        (revocations names the application's principal). The client may then
+        be approved for another organization, which registers its own
+        application. Audited in the organization's trail
+        (application_client.withdrawn).
+      security: [{platformBearer: []}]
+      parameters:
+        - {$ref: '#/components/parameters/ResourceID'}
+        - {name: approval_id, in: path, required: true, schema: {type: string}}
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, additionalProperties: false}}}
+      responses:
+        '200':
+          description: Approval withdrawn
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, status]
+                properties:
+                  id: {type: string}
+                  status: {const: withdrawn}
+                  revocations: {$ref: '#/components/schemas/AccessRevocations'}
+        '404': {$ref: '#/components/responses/Problem'}
+        default: {$ref: '#/components/responses/Problem'}
   /v1/organizations/current/quotas:
     get:
       description: >-
@@ -745,7 +841,7 @@ paths:
         default: {$ref: '#/components/responses/Problem'}
     post:
       operationId: registerApplication
-      description: "Register a single OIDC client in this tenant. Requires identity:manage. The 90-day backend token carries only application:sync for this application."
+      description: "Register a single OIDC client in this tenant. Requires identity:manage. The platform operator approves the issuer and client ID for this organization first (POST /v1/organizations/{id}/application-clients); otherwise 403 application_client_not_approved, the same answer whether another organization holds the client or none does. 409 invalid_transition: this organization already registered the client, or the name. The 90-day backend token carries only application:sync for this application."
       security: [{delegatedBearer: []}]
       parameters:
         - {$ref: '#/components/parameters/IdempotencyKey'}
@@ -4216,6 +4312,23 @@ components:
       required: [items]
       properties:
         items: {type: array, items: {$ref: '#/components/schemas/Application'}}
+    ApplicationClientInput:
+      type: object
+      additionalProperties: false
+      required: [issuer, client_id]
+      properties:
+        issuer: {type: string, format: uri, maxLength: 2048, description: "HTTPS issuer, exactly as the application's registration names it."}
+        client_id: {type: string, maxLength: 200}
+    ApplicationClient:
+      type: object
+      required: [id, organization_id, issuer, client_id, approved_by, approved_at]
+      properties:
+        id: {type: string, pattern: '^apc_[0-9a-f]{32}$'}
+        organization_id: {type: string}
+        issuer: {type: string, format: uri}
+        client_id: {type: string}
+        approved_by: {type: string, description: "The platform account, or migration."}
+        approved_at: {type: string, format: date-time}
     RotateApplication:
       type: object
       properties:

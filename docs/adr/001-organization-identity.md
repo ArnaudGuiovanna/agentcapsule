@@ -297,3 +297,63 @@ To contain a compromised API per organization, the next step is not a
 policy on a setting but a check the database makes itself: one role per
 organization, or a `SECURITY DEFINER` function that verifies a signed
 tenant claim before it sets the tenant.
+
+### Application clients approved by the platform operator (SEC-1B, finding S-10)
+
+Until v0.1.0 the first organization to register an application for an
+issuer and client ID held them (`UNIQUE (issuer, client_id)`), and a
+member's token found its application by those two values alone. Another
+organization could register a client it did not own: the owner's
+registration then got 409, which also told it that the client was
+registered elsewhere, and the owner's members' tokens reached the other
+organization's application. The bundled Keycloak is one issuer for the
+whole installation, so every organization's clients share its namespace.
+
+Two designs were weighed:
+
+- **Proof of control**: the organization shows a token of the client, or
+  its secret. A public client (authorization code with PKCE, as MonApp)
+  has no secret, and any user of the issuer can get a token that names it:
+  in the bundled realm, any user of any organization. A secret would make
+  the platform hold client secrets and call the issuer's token endpoint.
+  Neither proves which organization the client serves.
+- **Approval by the platform operator**, chosen. The operator creates the
+  clients of the bundled realm, or agrees with an organization on the
+  clients of its own issuer, and is the one party that knows which
+  organization a client serves.
+
+Decisions (migration `application-clients`):
+
+1. `POST /v1/organizations/{id}/application-clients` (platform credential)
+   approves an issuer and client ID for one organization;
+   `GET` lists an organization's approvals; `POST .../{approval_id}/withdraw`
+   withdraws one. A client is approved for one organization at most: an
+   approval for another is refused (409 `invalid_transition`), and the
+   operator withdraws the first one. Approvals and withdrawals are audited in
+   the organization's trail (`application_client.approved`,
+   `application_client.withdrawn`).
+2. An organization registers an application only for a client approved for
+   it; otherwise 403 `application_client_not_approved`. The answer is the
+   same whether another organization holds the client, registered it, or
+   none did: no code tells an organization anything of another's. The 409
+   `invalid_transition` that remains concerns the organization's own
+   applications (the name, or the client registered twice). The
+   registration holds the approval's row lock until it commits.
+3. Routing: a token's issuer and client ID name at most one approval, and
+   the approval names the organization whose application serves it (an
+   issuer and client ID are now unique per organization). The lookup joins
+   the approval, so that it is unambiguous also once a client has moved.
+4. Withdrawing an approval disables the application registered for it in
+   the same transaction, as `app revoke` does for its principal (the
+   revocation is recorded; the members' and the backend's tokens stop at
+   once), and frees the client: the operator can approve it for another
+   organization, which registers its own application. The first
+   organization cannot register it again.
+5. The migration approves each existing registration's client for its
+   organization (`approved_by` `migration`): every application keeps
+   working. The operator reviews those approvals after the update and
+   withdraws one that an organization should not hold.
+
+A client ID of the bundled realm is a client the operator created there for
+one organization; the operator approves it for that organization when
+creating it. Two organizations never share a client.

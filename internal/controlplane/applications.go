@@ -165,6 +165,19 @@ func (a *Accounts) RegisterApplication(ctx context.Context, p Principal, key str
 		return APIReceipt{}, ErrInput
 	}
 	out, err := a.withTenantReceipt(ctx, tx, p, "application.register", key, in, func() (int, any, error) {
+		// Only a client the platform operator approved for this organization
+		// (application_clients.go). The answer is the same whether another
+		// organization holds the client or none does; the lock holds the
+		// approval until this registration commits.
+		var approval string
+		err := tx.QueryRow(ctx, `SELECT id FROM application_clients WHERE tenant_id=$1 AND issuer=$2 AND client_id=$3 FOR KEY SHARE`,
+			p.TenantID, in.Issuer, in.ClientID).Scan(&approval)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, nil, ErrClientNotApproved
+		}
+		if err != nil {
+			return 0, nil, err
+		}
 		id := newID("app")
 		if _, err := tx.Exec(ctx, `INSERT INTO principals(id,tenant_id,kind,display_name) VALUES($1,$2,'service',$3)`, id, p.TenantID, in.Name); err != nil {
 			return 0, nil, err
@@ -176,6 +189,8 @@ func (a *Accounts) RegisterApplication(ctx context.Context, p Principal, key str
 		if err != nil {
 			return 0, nil, err
 		}
+		// A conflict is with this organization's own applications: their
+		// names, or this client already registered.
 		tag, err := tx.Exec(ctx, `INSERT INTO applications(id,tenant_id,name,issuer,audience,client_id,redirect_uris,verification_keys,signing_principal)
         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING`, id, p.TenantID, in.Name, in.Issuer, in.Audience, in.ClientID, in.RedirectURIs, in.VerificationKeys, signer)
 		if err != nil {
