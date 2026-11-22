@@ -1,7 +1,6 @@
 package controlplane
 
 import (
-	"net/url"
 	"slices"
 	"strings"
 	"testing"
@@ -32,28 +31,6 @@ func ageAudit(t *testing.T, s *Store, table, change string, args ...any) {
 	if err = tx.Commit(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-}
-
-// roleStore opens s's schema as a service role, as its process does.
-func roleStore(t *testing.T, s *Store, role string) *Store {
-	t.Helper()
-	var schema string
-	if err := s.pool.QueryRow(t.Context(), "SELECT current_schema()").Scan(&schema); err != nil {
-		t.Fatal(err)
-	}
-	dsn := databaseURL(t)
-	if u, err := url.Parse(dsn); err == nil && (u.Scheme == "postgres" || u.Scheme == "postgresql") {
-		u.User = url.User(role)
-		dsn = u.String()
-	} else {
-		dsn += " user=" + role
-	}
-	r, err := Open(t.Context(), scopedURL(t, dsn, schema))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(r.Close)
-	return r
 }
 
 // Every audit table is append-only (finding L-03): no role changes or
