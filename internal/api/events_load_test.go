@@ -140,6 +140,11 @@ func TestInvocationEventsLoad(t *testing.T) {
 	if err := f.server.StartEventStreams(ctx, streams); err != nil {
 		t.Fatal(err)
 	}
+	// One principal holds every subscription: the test measures the
+	// process, so the principal's and organization's ceilings are its.
+	if err := f.server.LimitEventStreams(streams, streams); err != nil {
+		t.Fatal(err)
+	}
 	server := httptest.NewServer(f.server)
 	defer server.Close()
 	defer cancel()

@@ -79,9 +79,23 @@ func TestHTTPTelemetry(t *testing.T) {
 			t.Fatalf("missing %s in\n%s", want, metrics)
 		}
 	}
-	lines := strings.Split(strings.TrimSpace(events.String()), "\n")
-	if len(lines) != 4 {
-		t.Fatal("one event per request", len(lines), events.String())
+	var lines []string
+	failed := 0
+	for _, line := range strings.Split(strings.TrimSpace(events.String()), "\n") {
+		// The stranger's failed authentication also writes its event, with
+		// its request's ID and a pseudonym of its source (L-19).
+		if strings.Contains(line, `"event":"authentication_failed"`) {
+			failed++
+			if refused.Code != 401 || !strings.Contains(line, `"request_id":"`+refused.Header().Get("X-Request-ID")+`"`) ||
+				!strings.Contains(line, `"source":"`+l.server.sourcePseudonym("192.0.2.1")+`"`) {
+				t.Fatal("authentication_failed", line)
+			}
+			continue
+		}
+		lines = append(lines, line)
+	}
+	if len(lines) != 4 || failed != 1 {
+		t.Fatal("one event per request", len(lines), failed, events.String())
 	}
 	for i, w := range []struct {
 		requestID, route, problem string
@@ -107,7 +121,7 @@ func TestHTTPTelemetry(t *testing.T) {
 		}
 	}
 	out := metrics + events.String()
-	for _, secret := range []string{owner, stranger, id, "agt_does_not_exist", "QZXW-PKVM", "nobody"} {
+	for _, secret := range []string{owner, stranger, id, "agt_does_not_exist", "QZXW-PKVM", "nobody", "192.0.2.1"} {
 		if strings.Contains(out, secret) {
 			t.Fatalf("%.12s… reached the telemetry", secret)
 		}

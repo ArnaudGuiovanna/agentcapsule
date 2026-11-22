@@ -31,6 +31,14 @@ const (
 	eventHeartbeat         = 15 * time.Second
 )
 
+// DefaultMaxPrincipalEventStreams and DefaultMaxOrganizationEventStreams
+// bound one principal's and one organization's subscriptions in the process,
+// well under DefaultMaxEventStreams (v0.1.0 audit, S-08).
+const (
+	DefaultMaxPrincipalEventStreams    = 32
+	DefaultMaxOrganizationEventStreams = 200
+)
+
 func isEventRoute(route string) bool {
 	return route == invocationEventsPath || route == operationEventsPath || route == buildEventsPath
 }
@@ -42,6 +50,24 @@ type eventStreams struct {
 	counts        map[subscriptionKey]int
 	hub           pgnotify.Hub
 	gauge         *telemetry.Gauge
+
+	// principal and organization bound one principal's and one
+	// organization's subscriptions (0: the defaults); principals and
+	// organizations count them.
+	principal, organization   int
+	principals, organizations map[string]int
+}
+
+// LimitEventStreams sets how many subscriptions one principal and one
+// organization may hold in the process, each from 1 to 100,000. The
+// smallest bound that applies refuses first; -max-event-streams still bounds
+// them all. Call it before serving.
+func (s *Server) LimitEventStreams(principal, organization int) error {
+	if principal < 1 || principal > 100000 || organization < 1 || organization > 100000 {
+		return controlplane.ErrInput
+	}
+	s.events.principal, s.events.organization = principal, organization
+	return nil
 }
 
 // StartEventStreams starts the API's one shared LISTEN connection. Call it
@@ -59,16 +85,33 @@ func (s *Server) StartEventStreams(ctx context.Context, limit int) error {
 	return nil
 }
 
-func (e *eventStreams) acquire(key subscriptionKey) (release func(), perPrincipal bool) {
+// acquire takes a subscription slot, or names the limit that refused:
+// invocation_streams (4 to one invocation), principal_streams,
+// organization_streams or process_streams.
+func (e *eventStreams) acquire(key subscriptionKey) (release func(), refused string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.counts[key] >= 4 {
-		return nil, true
+	principal := key.tenant + "\x00" + key.principal
+	perPrincipal, perOrganization := e.principal, e.organization
+	if perPrincipal == 0 {
+		perPrincipal, perOrganization = DefaultMaxPrincipalEventStreams, DefaultMaxOrganizationEventStreams
 	}
-	if e.active >= e.limit {
-		return nil, false
+	switch {
+	case e.counts[key] >= 4:
+		return nil, "invocation_streams"
+	case e.principals[principal] >= perPrincipal:
+		return nil, "principal_streams"
+	case e.organizations[key.tenant] >= perOrganization:
+		return nil, "organization_streams"
+	case e.active >= e.limit:
+		return nil, "process_streams"
+	}
+	if e.principals == nil {
+		e.principals, e.organizations = map[string]int{}, map[string]int{}
 	}
 	e.counts[key]++
+	e.principals[principal]++
+	e.organizations[key.tenant]++
 	e.active++
 	if e.gauge != nil {
 		e.gauge.Set(float64(e.active))
@@ -80,11 +123,17 @@ func (e *eventStreams) acquire(key subscriptionKey) (release func(), perPrincipa
 		if e.counts[key] == 0 {
 			delete(e.counts, key)
 		}
+		if e.principals[principal]--; e.principals[principal] == 0 {
+			delete(e.principals, principal)
+		}
+		if e.organizations[key.tenant]--; e.organizations[key.tenant] == 0 {
+			delete(e.organizations, key.tenant)
+		}
 		e.active--
 		if e.gauge != nil {
 			e.gauge.Set(float64(e.active))
 		}
-	}, false
+	}, ""
 }
 
 var eventIDFormat = regexp.MustCompile(`^[0-9]{1,9}:[0-9]{1,18}$`)
@@ -337,11 +386,17 @@ func (s *Server) followEvents(ctx context.Context, w http.ResponseWriter, sub *s
 		failure(w, err)
 		return
 	}
-	release, personal := s.events.acquire(subscriptionKey{sub.principal.TenantID, sub.principal.ID, sub.op})
+	release, refused := s.events.acquire(subscriptionKey{sub.principal.TenantID, sub.principal.ID, sub.op})
 	if release == nil {
-		if personal {
+		s.countLimited(refused)
+		switch refused {
+		case "invocation_streams":
 			problem(w, 429, "too_many_streams")
-		} else {
+		case "principal_streams":
+			problem(w, 429, "too_many_principal_streams")
+		case "organization_streams":
+			problem(w, 429, "too_many_organization_streams")
+		default:
 			problem(w, 503, "stream_capacity")
 		}
 		return

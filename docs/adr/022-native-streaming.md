@@ -1168,3 +1168,26 @@ still reads only the requester's own invocation of a live agent of the
 organization, and checks each chunk's binding. A revocation thus cuts a
 subscriber off within 10 s, at once when it changes the policy, as before.
 Corpus build streams keep the full read.
+
+**Lot SEC-1A (finding S-08).** §6.7 bounded subscriptions per principal
+and invocation (4) and per process (`-max-event-streams`, 1,000) only: one
+organization with 250 invocations and 4 subscriptions to each took every
+slot of a process for 15 minutes, and could renew them. Two ceilings now
+apply in each API process, under `-max-event-streams`:
+
+| Limit | Default | Flag of `agentcapsule-api` | Refusal, before the first event |
+|---|---|---|---|
+| Subscriptions of one principal | 32 | `-max-principal-event-streams` (1 to 100,000) | 429 `too_many_principal_streams` |
+| Subscriptions of one organization | 200 | `-max-organization-event-streams` (1 to 100,000) | 429 `too_many_organization_streams` |
+
+A subscription is checked against 4 to one invocation (`too_many_streams`),
+then its principal's ceiling, its organization's, and the process's
+(`stream_capacity`); the first one reached refuses. The corpus build events
+route shares the ceilings. `agentcapsule_api_limited_requests_total` counts
+each refusal by its limit (`invocation_streams`, `principal_streams`,
+`organization_streams`, `process_streams`). Opening a subscription is also
+one request of its principal's and its organization's request buckets
+([ADR 014](014-operations-capacity-diagnostics-audit.md#changes-after-the-v010-audit)).
+As every other count of §6.7, the ceilings are per process: behind a load
+balancer, each API process keeps its own. Test:
+`TestEventStreamCeilingsPerPrincipalAndOrganization` (unit).

@@ -374,6 +374,18 @@ func RequestID(v string) Field {
 	return field("request_id", strconv.Quote(v))
 }
 
+var pseudonymPattern = regexp.MustCompile(`^[0-9a-f]{16}$`)
+
+// PseudonymField is a pseudonym that Pseudonym computed (16 lowercase hex
+// digits); anything else is written "invalid". It says that two events
+// concern the same source or person without saying which.
+func PseudonymField(key, pseudonym string) Field {
+	if !pseudonymPattern.MatchString(pseudonym) {
+		pseudonym = Invalid
+	}
+	return field(key, strconv.Quote(pseudonym))
+}
+
 // Logger writes one JSON object per line: time, event, then the fields in
 // order. It is safe for concurrent use; a write error is dropped.
 type Logger struct {

@@ -125,6 +125,9 @@ func (s *Server) acceptInvitation(w http.ResponseWriter, r *http.Request) {
 		failure(w, controlplane.ErrAuthentication)
 		return
 	}
+	if !s.admitAttempt(w, r) {
+		return
+	}
 	key, ok := idempotency(w, r)
 	if !ok {
 		return

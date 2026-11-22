@@ -102,6 +102,43 @@ Delegation changes stay audited in the organization's trail
 agent and requesting a harness import are refused with `503
 storage_pressure` and `Retry-After`, before any reservation.
 
+**Request limits** (v0.1.0 audit, [ADR 014](../adr/014-operations-capacity-diagnostics-audit.md#changes-after-the-v010-audit)).
+One caller must not starve the others:
+
+| Limit | Default | Flag of `agentcapsule-api` | Refusal |
+|---|---|---|---|
+| One principal's requests | 200 at once, then 20 a second | `-principal-burst`, `-principal-rate` | `429 rate_limited` |
+| One organization's requests, all its principals together | 1,000 at once, then 100 a second | `-organization-burst`, `-organization-rate` | `429 organization_rate_limited` |
+| Failed authentications of one source address (an IPv4 address, or an IPv6 /64) | 60 a minute | `-authentication-failures-per-minute` | `429 authentication_rate_limited` |
+| Attachment bodies read at once, in the process and per principal | 16, and 2 | `-max-uploads`, `-max-principal-uploads` | `503 upload_capacity`, `429 too_many_uploads` |
+| Event subscriptions per principal and per organization | 32, and 200, under `-max-event-streams` (1,000) | `-max-principal-event-streams`, `-max-organization-event-streams` | `429 too_many_principal_streams`, `429 too_many_organization_streams` ([ADR 022](../adr/022-native-streaming.md#changes-after-the-v010-audit)) |
+
+- Each request limit is a token bucket. A refusal carries `Retry-After`: the
+  seconds until the bucket holds a request again. A rate of `0` turns its
+  limit off. The health probes and `/v1/version` are never limited.
+- The limits apply before the database work, as far as authentication
+  allows. A credential that authenticated in the last 15 minutes is charged
+  to its principal and organization before the database looks it up again,
+  so a caller past its limit costs no SQL; a credential's first request is
+  charged after its lookup, before its handler's work. Knowing a credential
+  never admits a request: the database still authenticates every request the
+  limits let through, so a revocation takes effect at once.
+- A source past its failed authentications has its unknown credentials
+  refused before they are looked up; a credential that authenticated
+  recently still passes. An enrollment proof and an invitation's token count
+  as attempts too. A download link's requests count against the principal
+  that minted it, read from the link itself.
+- An upload is checked before its body is read: its headers, the caller's
+  rights and the room under the organization's quota for its declared
+  `Content-Length` ([agents-assignments.md](agents-assignments.md#attachments-evt-04)).
+- **Each API process keeps its own buckets**, in memory. Behind a load
+  balancer, N processes admit up to N times each rate. Behind a proxy, the
+  source address is the proxy's: turn the failure limit off there
+  (`-authentication-failures-per-minute 0`) and limit at the proxy.
+- `agentcapsule_api_limited_requests_total{limit}` counts the refusals, and
+  each failed authentication writes an `authentication_failed` event with a
+  pseudonym of its source, never the address ([observability.md](../observability.md#events)).
+
 **Tenant audit trail.** `GET /v1/audit` (scope `audit:read`, role `org_owner`,
 `org_admin` or `auditor`) lists the organization's events with an opaque
 cursor: members, teams, agents, assignments, service accounts, queue limits
@@ -122,11 +159,15 @@ identifiers its path named, and the problem code as `reason`. The request's
 body is never recorded, and a path value that is not a platform identifier
 (an alias's name, for example) is replaced by the organization's ID. Reads,
 invocations, messages and unauthenticated requests leave no event. The event
-is written after the answer, in its own transaction.
+is written after the answer, in its own transaction. Repeated attempts are
+counted: in each minute, an actor's first refused attempt at each target of
+an action, for one reason, is an event in full, up to ten targets; the other
+attempts of that minute become one event at its end, with the organization
+as target and their number in `attempts` (1 for an event in full).
 
 ```json
 {"id":"audit_…","created_at":"2026-11-16T10:00:00Z","action":"assignment.created",
- "actor":"prn_…","target":"agt_…","outcome":"refused","reason":"not_found"}
+ "actor":"prn_…","target":"agt_…","outcome":"refused","reason":"not_found","attempts":1}
 ```
 
 **Audit export** (TEN-06). `GET /v1/audit/export?from=<RFC 3339>&to=<RFC 3339>`,

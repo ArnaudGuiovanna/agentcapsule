@@ -1062,6 +1062,9 @@ paths:
         secret, prompt or content. An administrative attempt the organization's
         member or technical account was refused (403, 404, 400, 409, 413, 415,
         422) is an event with outcome refused and the problem code as reason.
+        In each minute, an actor's first refused attempt at each target of an
+        action, for one reason, is an event in full (up to ten targets); the
+        others are counted in one event at the minute's end (attempts).
       security: [{delegatedBearer: []}, {serviceBearer: []}]
       parameters:
         - {name: after, in: query, schema: {type: string, maxLength: 200}, description: "`next` cursor of the previous page."}
@@ -3375,7 +3378,11 @@ paths:
         PostgreSQL and is never returned by the API. The file stays `pending`
         until `ttl_seconds` (3600 by default, from 60 to 86400). It can be
         used once, only by its sender, for this agent only. It counts toward
-        the organization's storage quota (`max_attachment_bytes`).
+        the organization's storage quota (`max_attachment_bytes`). The
+        headers, the rights and the room under the quota (for the declared
+        Content-Length) are checked before the body is read. The API reads
+        at most -max-principal-uploads bodies of one principal (2 by default)
+        and -max-uploads in all (16) at once.
       security: [{delegatedBearer: []}, {serviceBearer: []}]
       parameters:
         - {$ref: '#/components/parameters/ResourceID'}
@@ -3406,7 +3413,8 @@ paths:
         '413': {$ref: '#/components/responses/Problem'}  # attachment_too_large
         '415': {$ref: '#/components/responses/Problem'}  # media_type_required
         '422': {$ref: '#/components/responses/Problem'}
-        '429': {$ref: '#/components/responses/Problem'}  # attachment_quota_exceeded: nothing was stored
+        '429': {$ref: '#/components/responses/Problem'}  # attachment_quota_exceeded: nothing was stored; too_many_uploads: the principal's uploads in progress, Retry-After
+        '503': {$ref: '#/components/responses/Problem'}  # upload_capacity: the process's -max-uploads in progress; Retry-After
         default: {$ref: '#/components/responses/Problem'}
   /v1/attachments/{id}:
     get:
@@ -3538,7 +3546,7 @@ paths:
         '400': {$ref: '#/components/responses/Problem'}  # invalid_request: a malformed Last-Event-ID
         '403': {$ref: '#/components/responses/Problem'}  # forbidden: the credential lacks agent:content:read
         '404': {$ref: '#/components/responses/Problem'}
-        '429': {$ref: '#/components/responses/Problem'}  # too_many_streams: 4 subscriptions of this principal to this invocation
+        '429': {$ref: '#/components/responses/Problem'}  # too_many_streams: 4 subscriptions of this principal to this invocation; too_many_principal_streams: -max-principal-event-streams; too_many_organization_streams: -max-organization-event-streams
         '503': {$ref: '#/components/responses/Problem'}  # stream_capacity: the process's -max-event-streams reached
         default: {$ref: '#/components/responses/Problem'}
   /v1/operations/{id}/events:
@@ -3882,9 +3890,16 @@ components:
               operation_id: {type: string}
               status: {type: string, const: PENDING}
     Problem:
-      description: Error with a stable code. No SQL error or private data in the body.
+      description: >-
+        Error with a stable code. No SQL error or private data in the body.
+        Any authenticated route, and a download link, may answer 429
+        rate_limited (the principal's requests) or organization_rate_limited
+        (its organization's), and an attempt to authenticate 429
+        authentication_rate_limited (too many failed authentications from its
+        source address), each with Retry-After in seconds, before any work.
       headers:
         X-Request-ID: {schema: {type: string}}
+        Retry-After: {schema: {type: integer, minimum: 1}, description: "With a 429 or 503 that waiting resolves: the seconds to wait."}
       content:
         application/problem+json:
           schema:
@@ -4480,6 +4495,7 @@ components:
         reference: {type: string}
         outcome: {type: string, enum: [done, refused], description: "refused: an attempt an audited route refused; nothing changed."}
         reason: {type: string, description: "The refusal's problem code (forbidden, not_found, invalid_json, ...); present only when refused."}
+        attempts: {type: integer, minimum: 1, description: "Present only when refused: how many refused attempts the event stands for. 1 for an attempt recorded in full; more for the attempts of one actor at one action, for one reason, that a minute counted after its first ones; that event's target is the organization."}
     LlmProvider:
       type: object
       required: [id, name, kind, base_url, status, secret_generation, created_at]

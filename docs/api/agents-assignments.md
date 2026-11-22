@@ -464,7 +464,14 @@ most 8).
   version.
 
 Limits: the file passes through the API's memory (8 MiB per simultaneous upload)
-and is stored in PostgreSQL, with no external object storage.
+and is stored in PostgreSQL, with no external object storage. Before the
+API reads the body, it checks the headers, the caller's scope and `invoke`
+assignment on a live agent, and, unless the key replays a stored answer,
+the room under `max_attachment_bytes` for the declared `Content-Length`:
+a refusal costs no read. The API reads at most 16 bodies at once
+(`-max-uploads`, `503 upload_capacity`) and 2 of one principal
+(`-max-principal-uploads`, `429 too_many_uploads`), each with `Retry-After`
+(request limits in [README.md](README.md)).
 Media type parameters (`charset`, ...) are not kept. Results remain text: an
 agent cannot return a file yet.
 

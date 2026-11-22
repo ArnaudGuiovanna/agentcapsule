@@ -31,6 +31,10 @@ type AuditEvent struct {
 	// refused (TEN-009); Reason is then the refusal's code.
 	Outcome string `json:"outcome"`
 	Reason  string `json:"reason,omitempty"`
+	// Attempts is how many refused attempts a refusal stands for: 1 for an
+	// attempt recorded in full, more for the attempts its window counted
+	// (v0.1.0 audit, L-04). Absent when done.
+	Attempts int `json:"attempts,omitempty"`
 }
 
 type AuditPage struct {
@@ -43,27 +47,27 @@ type AuditPage struct {
 // the replays of its dead letters, by its administrators or the operator,
 // and its refused administrative attempts.
 const auditUnion = `
-    SELECT id,created_at,action,actor_principal_id AS actor,target_principal_id AS target,'' AS reference,'done' AS outcome,'' AS reason FROM tenant_member_audit WHERE tenant_id=$1 AND changed
-    UNION ALL SELECT id,created_at,action,actor,target,'','done','' FROM application_audit WHERE tenant_id=$1
-    UNION ALL SELECT id,created_at,action,actor_principal_id,coalesce(target_principal_id,team_id),team_id,'done','' FROM tenant_team_audit WHERE tenant_id=$1 AND changed
-    UNION ALL SELECT id,created_at,action,actor_principal_id,agent_id,coalesce(assignment_id,request_id,''),'done','' FROM tenant_agent_audit WHERE tenant_id=$1
-    UNION ALL SELECT id,created_at,action,actor_principal_id,service_principal_id,coalesce(token_id,''),'done','' FROM tenant_service_audit WHERE tenant_id=$1
-    UNION ALL SELECT id,created_at,'llm.'||action,actor_principal_id,coalesce(subject_id,provider_id,budget_id),coalesce(alias,usage_id,''),'done','' FROM llm_audit WHERE tenant_id=$1
-    UNION ALL SELECT id,created_at,action,'platform:'||actor_account,tenant_id,'','done','' FROM organization_audit WHERE tenant_id=$1 AND changed
-    UNION ALL SELECT id,created_at,'delegation.'||action,'operator',tenant_id,'','done','' FROM delegation_audit WHERE tenant_id=$1 AND changed
-    UNION ALL SELECT id,created_at,action,actor,target,'','done','' FROM deployment_audit WHERE tenant_id=$1
-    UNION ALL SELECT id,created_at,action,actor_principal_id,coalesce(agent_id,tenant_id),'','done','' FROM capability_audit WHERE tenant_id=$1
-    UNION ALL SELECT id,created_at,'queue.'||action,actor_principal_id,tenant_id,'','done','' FROM queue_audit WHERE tenant_id=$1
+    SELECT id,created_at,action,actor_principal_id AS actor,target_principal_id AS target,'' AS reference,'done' AS outcome,'' AS reason,0 AS attempts FROM tenant_member_audit WHERE tenant_id=$1 AND changed
+    UNION ALL SELECT id,created_at,action,actor,target,'','done','',0 FROM application_audit WHERE tenant_id=$1
+    UNION ALL SELECT id,created_at,action,actor_principal_id,coalesce(target_principal_id,team_id),team_id,'done','',0 FROM tenant_team_audit WHERE tenant_id=$1 AND changed
+    UNION ALL SELECT id,created_at,action,actor_principal_id,agent_id,coalesce(assignment_id,request_id,''),'done','',0 FROM tenant_agent_audit WHERE tenant_id=$1
+    UNION ALL SELECT id,created_at,action,actor_principal_id,service_principal_id,coalesce(token_id,''),'done','',0 FROM tenant_service_audit WHERE tenant_id=$1
+    UNION ALL SELECT id,created_at,'llm.'||action,actor_principal_id,coalesce(subject_id,provider_id,budget_id),coalesce(alias,usage_id,''),'done','',0 FROM llm_audit WHERE tenant_id=$1
+    UNION ALL SELECT id,created_at,action,'platform:'||actor_account,tenant_id,'','done','',0 FROM organization_audit WHERE tenant_id=$1 AND changed
+    UNION ALL SELECT id,created_at,'delegation.'||action,'operator',tenant_id,'','done','',0 FROM delegation_audit WHERE tenant_id=$1 AND changed
+    UNION ALL SELECT id,created_at,action,actor,target,'','done','',0 FROM deployment_audit WHERE tenant_id=$1
+    UNION ALL SELECT id,created_at,action,actor_principal_id,coalesce(agent_id,tenant_id),'','done','',0 FROM capability_audit WHERE tenant_id=$1
+    UNION ALL SELECT id,created_at,'queue.'||action,actor_principal_id,tenant_id,'','done','',0 FROM queue_audit WHERE tenant_id=$1
     UNION ALL SELECT id,created_at,action,actor_principal_id,coalesce(extension_id,enricher_id,agent_id,release_id,build_id,corpus_id,source_credential_id),
-      coalesce(CASE WHEN extension_id IS NOT NULL OR agent_id IS NOT NULL OR release_id IS NOT NULL THEN build_id END,CASE WHEN build_id IS NOT NULL THEN corpus_id END,''),'done','' FROM corpus_audit WHERE tenant_id=$1
-    UNION ALL SELECT id,replayed_at,'invocation.replayed',coalesce(actor_principal_id,'operator'),agent_id,operation_id,'done','' FROM instruction_replays WHERE tenant_id=$1
-    UNION ALL SELECT id,created_at,action,actor_principal_id,target,reference,'refused',reason FROM tenant_refusal_audit WHERE tenant_id=$1`
+      coalesce(CASE WHEN extension_id IS NOT NULL OR agent_id IS NOT NULL OR release_id IS NOT NULL THEN build_id END,CASE WHEN build_id IS NOT NULL THEN corpus_id END,''),'done','',0 FROM corpus_audit WHERE tenant_id=$1
+    UNION ALL SELECT id,replayed_at,'invocation.replayed',coalesce(actor_principal_id,'operator'),agent_id,operation_id,'done','',0 FROM instruction_replays WHERE tenant_id=$1
+    UNION ALL SELECT id,created_at,action,actor_principal_id,target,reference,'refused',reason,attempts FROM tenant_refusal_audit WHERE tenant_id=$1`
 
-const auditColumns = `id,created_at,action,actor,target,reference,outcome,reason`
+const auditColumns = `id,created_at,action,actor,target,reference,outcome,reason,attempts`
 
 func scanAuditEvent(rows pgx.Rows) (AuditEvent, error) {
 	var e AuditEvent
-	err := rows.Scan(&e.ID, &e.CreatedAt, &e.Action, &e.Actor, &e.Target, &e.Reference, &e.Outcome, &e.Reason)
+	err := rows.Scan(&e.ID, &e.CreatedAt, &e.Action, &e.Actor, &e.Target, &e.Reference, &e.Outcome, &e.Reason, &e.Attempts)
 	return e, err
 }
 
@@ -210,7 +214,13 @@ type RefusedAttempt struct {
 	Target    string
 	Reference string
 	Reason    string
+	// Attempts is how many refused attempts the event stands for; 0 is one.
+	Attempts int
 }
+
+// maxRefusalAttempts bounds the attempts one refusal event stands for
+// (migration 0069).
+const maxRefusalAttempts = 1000000000
 
 var (
 	refusalAction = regexp.MustCompile(`^[a-z_]+(\.[a-z_]+){1,2}$`)
@@ -227,11 +237,13 @@ var (
 // transaction. It keeps only identifiers and codes: a target that is not a
 // platform identifier is recorded as the organization, a reference that is
 // not one is dropped. Only the API calls it, with a principal it
-// authenticated.
+// authenticated; the attempts its windows counted come with no target.
 func (a *Accounts) RecordRefusal(ctx context.Context, p Principal, r RefusedAttempt) error {
-	if p.TenantID == "" || !validOrganizationText(p.ID, 100) || !refusalAction.MatchString(r.Action) || !refusalReason.MatchString(r.Reason) {
+	if p.TenantID == "" || !validOrganizationText(p.ID, 100) || !refusalAction.MatchString(r.Action) || !refusalReason.MatchString(r.Reason) ||
+		r.Attempts < 0 || r.Attempts > maxRefusalAttempts {
 		return ErrInput
 	}
+	attempts := max(1, r.Attempts)
 	target, reference := r.Target, r.Reference
 	if !refusalIdentifier.MatchString(target) {
 		target = p.TenantID
@@ -244,8 +256,8 @@ func (a *Accounts) RecordRefusal(ctx context.Context, p Principal, r RefusedAtte
 		return err
 	}
 	defer rollback(tx)
-	if _, err = tx.Exec(ctx, `INSERT INTO tenant_refusal_audit(id,tenant_id,actor_principal_id,action,target,reference,reason) VALUES($1,$2,$3,$4,$5,$6,$7)`,
-		newID("audit"), p.TenantID, p.ID, r.Action, target, reference, r.Reason); err != nil {
+	if _, err = tx.Exec(ctx, `INSERT INTO tenant_refusal_audit(id,tenant_id,actor_principal_id,action,target,reference,reason,attempts) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
+		newID("audit"), p.TenantID, p.ID, r.Action, target, reference, r.Reason, attempts); err != nil {
 		return err
 	}
 	return commit(ctx, tx)
