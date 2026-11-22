@@ -1,10 +1,12 @@
-# Embeddings, transcription and OCR on the platform channel (draft)
+# Embeddings, transcription and OCR on the platform channel
 
-> **Draft, not served.** These routes are the contract of corpus lot 2
-> ([ADR 023](../adr/023-corpora.md) §12). No platform channel serves them
-> yet: a call today answers `not_found`. Lot 2 implements them, removes this
-> notice, and moves the text into [api/llm.md](../api/llm.md#vm-bridge-cap-01)
-> beside `/v1/llm/complete` and `/v1/llm/forward`.
+The worker serves these three routes on the platform channel
+([ADR 023](../adr/023-corpora.md) §12), beside `/v1/llm/complete` and
+`/v1/llm/forward` ([api/llm.md](../api/llm.md#vm-bridge-cap-01)). The
+examples below show each route's object. The channel request carries it as
+`embed`, `transcribe` or `ocr`, beside `idempotency_key`; the answer carries
+it as `embed_result`, `transcribe_result` or `ocr_result`. The Python harness
+SDK calls the routes with `embed_llm`, `transcribe_llm` and `ocr_llm`.
 
 A running capsule calls three more kinds of model through its authenticated
 platform channel, never through the guest network. The builder agent of
