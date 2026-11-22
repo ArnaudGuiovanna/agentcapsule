@@ -51,10 +51,46 @@ func AsRoot() bool {
 // standard error discarded. A sandbox that cannot be set up fails with
 // ErrUnavailable, a program killed at its limits with ErrLimit.
 func (o Options) Run(ctx context.Context, image, program string, args ...string) ([]byte, error) {
-	o = o.withDefaults()
 	if !filepath.IsAbs(program) {
 		return nil, fmt.Errorf("sandbox: %s is not an absolute path", program)
 	}
+	filter := strictFilter
+	if o.TestTools {
+		filter = testToolsFilter
+	}
+	return o.run(ctx, image, nil, filter, program, args)
+}
+
+// RunSelf runs this executable again, confined, as the program that a
+// package registered under name (see Self), with args, and returns its
+// standard output, at most 1 MiB of it. image is open for it as for Run.
+// input, at most MaxInput bytes, is its standard input, through a pipe that
+// holds it all: a secret goes there, never in args or the environment. The
+// confinement is Run's, with the self filter and limits (see the package
+// documentation). It is never unconfined, nor under the test tools' filter.
+func (o Options) RunSelf(ctx context.Context, image string, input []byte, name string, args ...string) ([]byte, error) {
+	if !selfName(name) {
+		return nil, fmt.Errorf("sandbox: %q is not the name of a program of this executable", name)
+	}
+	if o.Unconfined || o.TestTools || len(input) > MaxInput {
+		return nil, fmt.Errorf("%w: a program of this executable runs only confined, with at most %d bytes of input", ErrUnavailable, MaxInput)
+	}
+	return o.run(ctx, image, input, selfFilter, name, args)
+}
+
+// selfName: the name of a program of this executable, as RunSelf and Self
+// take it, is agentcapsule- and lower-case letters and dashes, and not the
+// helper's.
+func selfName(name string) bool {
+	rest, ok := strings.CutPrefix(name, "agentcapsule-")
+	if !ok || rest == "" || name == HelperName || len(name) > 64 {
+		return false
+	}
+	return strings.Trim(rest, "abcdefghijklmnopqrstuvwxyz-") == ""
+}
+
+func (o Options) run(ctx context.Context, image string, input []byte, filter, program string, args []string) ([]byte, error) {
+	o = o.withDefaults()
 	root := AsRoot()
 	if o.Unconfined && os.Geteuid() == 0 {
 		return nil, fmt.Errorf("%w: unconfined as root", ErrUnavailable)
@@ -100,6 +136,20 @@ func (o Options) Run(ctx context.Context, image, program string, args ...string)
 	defer lifeline.Close()
 	limited, cancel := context.WithTimeout(ctx, o.Timeout)
 	defer cancel()
+	var stdin *os.File
+	if input != nil {
+		// The pipe holds the whole input before the program starts: it
+		// never waits for this process, and the input is never on disk.
+		var feed *os.File
+		if stdin, feed, err = os.Pipe(); err != nil {
+			return nil, err
+		}
+		defer stdin.Close()
+		_, err = feed.Write(input)
+		if err = errors.Join(err, feed.Close()); err != nil {
+			return nil, err
+		}
+	}
 
 	name, argv, files := program, args, []*os.File{in}
 	var attributes *syscall.SysProcAttr
@@ -109,10 +159,6 @@ func (o Options) Run(ctx context.Context, image, program string, args ...string)
 			uid, gid = 0, 0 // root of the helper's own user namespace: the caller
 		}
 		name = helperPath
-		filter := strictFilter
-		if o.TestTools {
-			filter = testToolsFilter
-		}
 		argv = append([]string{strconv.FormatUint(uint64(uid), 10), strconv.FormatUint(uint64(gid), 10),
 			strconv.FormatUint(o.cpuSeconds(), 10), filter, path, program}, args...)
 		files = append(files, report, life)
@@ -124,6 +170,9 @@ func (o Options) Run(ctx context.Context, image, program string, args ...string)
 	}
 	cmd.SysProcAttr = attributes
 	cmd.Env = []string{"LC_ALL=C"}
+	if stdin != nil {
+		cmd.Stdin = stdin
+	}
 	cmd.ExtraFiles = files
 	var out bounded
 	cmd.Stdout = &out
