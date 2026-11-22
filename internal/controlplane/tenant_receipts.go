@@ -3,7 +3,6 @@ package controlplane
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -56,36 +55,15 @@ func (a *Accounts) withTenantReceipt(ctx context.Context, tx pgx.Tx, p Principal
 		if version != 1 {
 			return APIReceipt{}, errors.New("invalid encrypted tenant receipt")
 		}
-		plain, err := a.openReceipt(ctx, ciphertext, day, aad(result.Status), "tenant")
-		if err != nil {
-			return APIReceipt{}, err
-		}
-		if plain, err = currentRevocations(ctx, tx, plain); err != nil {
-			return APIReceipt{}, err
-		}
-		result.Body, result.Replayed = plain, true
-		return result, nil
+		return a.replayReceipt(ctx, tx, result.Status, ciphertext, day, aad(result.Status), "tenant")
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return APIReceipt{}, err
 	}
-	sealer, day, err := a.receiptSealer(ctx)
+	result, ciphertext, day, err = a.makeReceipt(ctx, fn, aad)
 	if err != nil {
 		return APIReceipt{}, err
 	}
-	status, body, err := fn()
-	if err != nil {
-		return APIReceipt{}, err
-	}
-	plain, err := json.Marshal(body)
-	if err != nil {
-		return APIReceipt{}, err
-	}
-	nonce := make([]byte, sealer.NonceSize())
-	if _, err = rand.Read(nonce); err != nil {
-		return APIReceipt{}, err
-	}
-	ciphertext = sealer.Seal(nonce, nonce, plain, aad(status))
-	_, err = tx.Exec(ctx, `INSERT INTO tenant_http_receipts(tenant_id,principal_id,operation,key,request_hash,response_status,response_ciphertext,aad_version,key_day) VALUES($1,$2,$3,$4,$5,$6,$7,1,$8)`, p.TenantID, p.ID, operation, key, hash[:], status, ciphertext, day)
-	return APIReceipt{Status: status, Body: plain}, err
+	_, err = tx.Exec(ctx, `INSERT INTO tenant_http_receipts(tenant_id,principal_id,operation,key,request_hash,response_status,response_ciphertext,aad_version,key_day) VALUES($1,$2,$3,$4,$5,$6,$7,1,$8)`, p.TenantID, p.ID, operation, key, hash[:], result.Status, ciphertext, day)
+	return result, err
 }

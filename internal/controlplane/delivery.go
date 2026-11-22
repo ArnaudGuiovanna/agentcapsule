@@ -176,18 +176,8 @@ func (s *Store) ClaimDelivery(ctx context.Context, mailboxID string, lease time.
 	if m.Closing {
 		return attempt, ErrDeliveryClosing
 	}
-	var now time.Time
-	if err := tx.QueryRow(ctx, "SELECT clock_timestamp()").Scan(&now); err != nil {
+	if err := checkMailboxLease(ctx, tx, m); err != nil {
 		return attempt, err
-	}
-	if !m.Deadline.After(now) {
-		return attempt, ErrExpired
-	}
-	if m.LeaseUntil != nil && m.LeaseUntil.After(now) {
-		return attempt, ErrDeliveryBusy
-	}
-	if m.Attempts >= m.Limit {
-		return attempt, ErrAttemptsExhausted
 	}
 	// The envelope is stable across retries. Private bodies remain opaque transit
 	// references here; resolving/decrypting them belongs to the authenticated runtime.
@@ -212,12 +202,8 @@ func (s *Store) ClaimDelivery(ctx context.Context, mailboxID string, lease time.
 	if err != nil {
 		return attempt, err
 	}
-	token := newID("lease")
-	if _, err := tx.Exec(ctx, `UPDATE agent_mailboxes SET attempts=attempts+1,lease_token=$2,dispatch_authorized=false,
-        lease_until=clock_timestamp()+$3::bigint*interval '1 microsecond' WHERE id=$1`, m.ID, token, lease.Microseconds()); err != nil {
-		return attempt, err
-	}
-	if _, err := tx.Exec(ctx, "UPDATE outbox SET attempts=attempts+1 WHERE mailbox_id=$1", m.ID); err != nil {
+	token, err := takeMailboxLease(ctx, tx, m.ID, lease)
+	if err != nil {
 		return attempt, err
 	}
 	attempt = DeliveryAttempt{ID: m.ID, RequestID: r.ID, Destination: m.Destination, Token: token, Sequence: m.Sequence,
@@ -524,60 +510,28 @@ func (s *Store) retirementDue(ctx context.Context, id string) (bool, error) {
 }
 
 func (s *Store) dispatchMailboxWithTransit(ctx context.Context, agentID, id string, lease time.Duration, runtime DeliveryRuntime, transit *Transit) error {
-	// A delivery due to die needs no prepared destination: an agent that
-	// never boots must not keep it, nor its mailbox, alive (EVT-005, EVT-006).
-	// The retirement boots the agent only to fence an attempt that may have
-	// reached it. Preparation still spends no attempt.
-	if due, err := s.retirementDue(ctx, id); err != nil {
-		return err
-	} else if due {
-		return s.retireDelivery(ctx, id, runtime, transit)
-	}
-	// A disabled organization's deliveries wait, and boot no VM: they die
-	// at their deadline, as above.
-	if disabled, err := agentSuspended(ctx, s.pool, agentID); err != nil {
-		return err
-	} else if disabled {
-		return errors.Join(ErrNoDelivery, ErrOrganizationDisabled)
-	}
-	var err error
-	retire := false
-	dispatch := func(ctx context.Context) error {
+	retire := func() error { return s.retireDelivery(ctx, id, runtime, transit) }
+	return s.dispatchPending(ctx, agentID, id, runtime, retire, func(ctx context.Context) (bool, error) {
 		attempt, err := s.ClaimDelivery(ctx, id, lease)
 		if errors.Is(err, ErrExpired) || errors.Is(err, ErrAttemptsExhausted) || errors.Is(err, ErrClosurePending) || errors.Is(err, ErrDeliveryClosing) {
-			retire = true
-			return nil
+			return true, nil
 		}
 		if err != nil {
-			return err
+			return false, err
 		}
 		if err = s.AuthorizeDispatch(ctx, attempt.ID, attempt.Token); err != nil {
-			return err
+			return false, err
 		}
 		if transit != nil {
 			attempt.Envelope, err = transit.resolveDelivery(ctx, attempt)
 			if err != nil {
-				return err
+				return false, err
 			}
 			defer clear(attempt.Envelope.Body)
 		}
 		if _, err = runtime.Send(ctx, attempt.Destination, attempt.Envelope); err != nil {
-			return err
+			return false, err
 		}
-		return s.acknowledgeDelivery(ctx, attempt.ID, attempt.Token, transit)
-	}
-	if admission, ok := runtime.(PreparedDeliveryAdmission); ok {
-		err = admission.WithPreparedDelivery(ctx, agentID, dispatch)
-	} else if admission, ok := runtime.(DeliveryAdmission); ok {
-		err = admission.WithDeliveryAdmission(ctx, dispatch)
-	} else {
-		err = dispatch(ctx)
-	}
-	if err != nil {
-		return err
-	}
-	if retire {
-		return s.retireDelivery(ctx, id, runtime, transit)
-	}
-	return nil
+		return false, s.acknowledgeDelivery(ctx, attempt.ID, attempt.Token, transit)
+	})
 }

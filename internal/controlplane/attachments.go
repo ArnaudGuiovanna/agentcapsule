@@ -447,17 +447,8 @@ func (s *Store) PurgeAttachments(ctx context.Context, now *time.Time, limit int)
 	if err != nil {
 		return 0, err
 	}
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err = rows.Scan(&id); err != nil {
-			rows.Close()
-			return 0, err
-		}
-		ids = append(ids, id)
-	}
-	rows.Close()
-	if err = rows.Err(); err != nil {
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
 		return 0, err
 	}
 	if err = purgeAttachments(ctx, tx, ids); err != nil {

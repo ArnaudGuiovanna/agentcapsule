@@ -126,25 +126,11 @@ func (t *Transit) ClaimInstruction(ctx context.Context, id string, lease time.Du
 		}
 		return attempt, ErrRerunSkipped
 	}
-	var now time.Time
-	if err = tx.QueryRow(ctx, "SELECT clock_timestamp()").Scan(&now); err != nil {
+	if err := checkMailboxLease(ctx, tx, i.mailboxRow); err != nil {
 		return attempt, err
 	}
-	if !i.Deadline.After(now) {
-		return attempt, ErrExpired
-	}
-	if i.LeaseUntil != nil && i.LeaseUntil.After(now) {
-		return attempt, ErrDeliveryBusy
-	}
-	if i.Attempts >= i.Limit {
-		return attempt, ErrAttemptsExhausted
-	}
-	token := newID("lease")
-	if _, err = tx.Exec(ctx, `UPDATE agent_mailboxes SET attempts=attempts+1,lease_token=$2,dispatch_authorized=false,
-        lease_until=clock_timestamp()+$3::bigint*interval '1 microsecond' WHERE id=$1`, id, token, lease.Microseconds()); err != nil {
-		return attempt, err
-	}
-	if _, err = tx.Exec(ctx, "UPDATE outbox SET attempts=attempts+1 WHERE mailbox_id=$1", id); err != nil {
+	token, err := takeMailboxLease(ctx, tx, id, lease)
+	if err != nil {
 		return attempt, err
 	}
 	if _, err = tx.Exec(ctx, "UPDATE platform_operations SET status='RUNNING' WHERE id=$1", i.Operation); err != nil {
@@ -488,55 +474,28 @@ func (t *Transit) DispatchMailbox(ctx context.Context, id string, lease time.Dur
 	if kind != "instruction" {
 		return t.store.dispatchMailboxWithTransit(ctx, destination, id, lease, runtime, t)
 	}
-	// Due to die: no prepared agent is needed (see dispatchMailboxWithTransit).
-	if due, err := t.store.retirementDue(ctx, id); err != nil {
-		return err
-	} else if due {
-		return t.RetireInstruction(ctx, id, runtime)
-	}
-	// A disabled organization's instructions wait, and boot no VM.
-	if disabled, err := agentSuspended(ctx, t.store.pool, destination); err != nil {
-		return err
-	} else if disabled {
-		return errors.Join(ErrNoDelivery, ErrOrganizationDisabled)
-	}
-	retire := false
-	dispatch := func(ctx context.Context) error {
+	retire := func() error { return t.RetireInstruction(ctx, id, runtime) }
+	return t.store.dispatchPending(ctx, destination, id, runtime, retire, func(ctx context.Context) (bool, error) {
 		a, err := t.ClaimInstruction(ctx, id, lease)
 		if errors.Is(err, ErrExpired) || errors.Is(err, ErrAttemptsExhausted) || errors.Is(err, ErrDeliveryClosing) {
-			retire = true
-			return nil
+			return true, nil
 		}
 		if errors.Is(err, ErrRerunSkipped) {
-			return nil
+			return false, nil
 		}
 		if err != nil {
-			return err
+			return false, err
 		}
 		e, err := t.AuthorizeInstruction(ctx, a.ID, a.Token)
 		if err != nil {
-			return err
+			return false, err
 		}
 		defer clear(e.Body)
 		r, err := runtime.Invoke(ctx, a.Destination, e)
 		defer clear(r.Result)
 		if err != nil {
-			return err
+			return false, err
 		}
-		return t.AcknowledgeInstruction(ctx, a.ID, a.Token, r.Result)
-	}
-	if admission, ok := runtime.(PreparedDeliveryAdmission); ok {
-		err = admission.WithPreparedDelivery(ctx, destination, dispatch)
-	} else if admission, ok := runtime.(DeliveryAdmission); ok {
-		err = admission.WithDeliveryAdmission(ctx, dispatch)
-	} else {
-		err = dispatch(ctx)
-	}
-	if err != nil {
-		return err
-	}
-	if retire {
-		return t.RetireInstruction(ctx, id, runtime)
-	}
-	return nil
+		return false, t.AcknowledgeInstruction(ctx, a.ID, a.Token, r.Result)
+	})
 }

@@ -230,17 +230,8 @@ func (a *Accounts) ListLLMBudgets(ctx context.Context, p Principal, after string
 	if err != nil {
 		return nil, err
 	}
-	items := []LLMBudget{}
-	for rows.Next() {
-		b, err := scanBudget(rows)
-		if err != nil {
-			rows.Close()
-			return nil, err
-		}
-		items = append(items, b)
-	}
-	rows.Close()
-	if err = rows.Err(); err != nil {
+	items, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (LLMBudget, error) { return scanBudget(row) })
+	if err != nil {
 		return nil, err
 	}
 	for i, b := range items {
@@ -484,17 +475,8 @@ func (a *Accounts) reserveLLM(ctx context.Context, tenantID, agentID, alias, req
 	if err != nil {
 		return LLMReservation{}, err
 	}
-	budgets := []LLMBudget{}
-	for rows.Next() {
-		b, err := scanBudget(rows)
-		if err != nil {
-			rows.Close()
-			return LLMReservation{}, err
-		}
-		budgets = append(budgets, b)
-	}
-	rows.Close()
-	if err = rows.Err(); err != nil {
+	budgets, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (LLMBudget, error) { return scanBudget(row) })
+	if err != nil {
 		return LLMReservation{}, err
 	}
 	var existing LLMReservation

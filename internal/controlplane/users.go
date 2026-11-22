@@ -5,7 +5,6 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hmac"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
@@ -200,38 +199,18 @@ func (a *Accounts) withReceipt(ctx context.Context, tx pgx.Tx, s receiptScope, i
 		if len(original) != 32 || string(original) != string(hash[:]) {
 			return APIReceipt{}, ErrConflict
 		}
-		plain, err := a.openReceipt(ctx, ciphertext, day, aad, "API")
-		if err != nil {
-			return APIReceipt{}, err
-		}
-		if plain, err = currentRevocations(ctx, tx, plain); err != nil {
-			return APIReceipt{}, err
-		}
-		result.Body = plain
-		result.Replayed = true
-		return result, nil
+		return a.replayReceipt(ctx, tx, result.Status, ciphertext, day, aad, "API")
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return APIReceipt{}, err
 	}
-	sealer, day, err := a.receiptSealer(ctx)
+	result, ciphertext, day, err = a.makeReceipt(ctx, fn, func(int) []byte { return aad })
 	if err != nil {
 		return APIReceipt{}, err
 	}
-	status, body, err := fn()
-	if err != nil {
-		return APIReceipt{}, err
-	}
-	plain, err := json.Marshal(body)
-	if err != nil {
-		return APIReceipt{}, err
-	}
-	nonce := make([]byte, sealer.NonceSize())
-	_, _ = rand.Read(nonce)
-	ciphertext = sealer.Seal(nonce, nonce, plain, aad)
 	_, err = tx.Exec(ctx, `INSERT INTO http_receipts(actor_kind,actor_id,method,route,key,request_hash,response_status,response_ciphertext,key_day)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, s.Kind, s.Actor, s.Method, s.Route, s.Key, hash[:], status, ciphertext, day)
-	return APIReceipt{Status: status, Body: plain}, err
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, s.Kind, s.Actor, s.Method, s.Route, s.Key, hash[:], result.Status, ciphertext, day)
+	return result, err
 }
 
 func lockHTTPReceipt(ctx context.Context, tx pgx.Tx, s receiptScope) error {
