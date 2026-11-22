@@ -457,7 +457,9 @@ What exists:
   [`TestDispatchPreparationAndOneSlotCapacity`](../internal/worker/dispatch_integration_test.go),
   [`TestBarrierCapacityOneSlotThreeStoresAndReplay`](../internal/worker/capacity_integration_test.go);
 - concurrency tests: [`TestConcurrentReservationsNeverOvershootAHardBudget`](../internal/controlplane/llm_budgets_test.go),
-  [`TestHTTPConcurrentCreationHasOneDurableOperation`](../internal/api/agents_test.go);
+  [`TestHTTPConcurrentCreationHasOneDurableOperation`](../internal/api/agents_test.go),
+  [`TestADispatchPassDeliversToAnotherAgentWhileOneIsSlow`](../internal/worker/dispatch_concurrency_test.go)
+  (since the v0.1.0 audit, a pass runs jobs of different agents at once);
 - measures written in the docs: the RTO and RPO of the failover, and the
   footprint of the interoperability services;
 - the capacity benchmark [`TestCapacityBenchmark`](../internal/worker/capacity_benchmark_integration_test.go)
