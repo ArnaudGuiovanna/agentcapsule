@@ -524,6 +524,49 @@ class HostOperationTests(unittest.TestCase):
         # The worker's operator modes run as the worker's role too.
         self.assertEqual(self.api["worker_env"]({"database_url_file":None})["AGENTCAPSULE_DATABASE_URL"],local+"agentcapsule_worker")
 
+    def test_update_lets_the_authority_traverse_the_runtime_roots_parent(self):
+        # A v0.1.0 worker left /var/lib/agentcapsule 0700: the authority's
+        # account could not resolve the runtime root under it, and the
+        # update's init-restore-authority failed with EACCES. The update
+        # adds o+x to the parent, nothing else, and leaves the root 0700.
+        parent=self.root/"lib-agentcapsule"
+        parent.mkdir()
+        os.chmod(parent,0o700)
+        root=parent/"host"
+        root.mkdir()
+        os.chmod(root,0o700)
+        self.assertTrue(self.api["searchable_parent"](str(root)))
+        self.assertEqual(parent.stat().st_mode&0o7777,0o701)
+        self.assertEqual(root.stat().st_mode&0o7777,0o700)
+        self.assertFalse(self.api["searchable_parent"](str(root)))
+        os.chmod(parent,0o755)
+        self.assertFalse(self.api["searchable_parent"](str(root)))
+        self.assertEqual(parent.stat().st_mode&0o7777,0o755)
+        # A missing parent, or one behind a symbolic link, is left as it is.
+        self.assertFalse(self.api["searchable_parent"](str(self.root/"missing"/"host")))
+        os.chmod(parent,0o700)
+        (self.root/"link").symlink_to(parent)
+        self.assertFalse(self.api["searchable_parent"](str(self.root/"link"/"host")))
+        self.assertEqual(parent.stat().st_mode&0o7777,0o700)
+
+    def test_update_makes_the_parent_searchable_before_the_authority_checks_it(self):
+        from unittest.mock import Mock
+        events=[]
+        files={"authority.json":dict(restore_authority=dict(root="/var/lib/agentcapsule-restore-authority",identity="ra"),
+                                     key_authority=dict(root="/var/lib/agentcapsule-key-authority",identity="ka")),
+               "worker.json":dict(root="/var/lib/agentcapsule/host")}
+        def run_user(user,*cmd,env=None,capture=False):
+            events.append((user,cmd[1]))
+            return json.dumps(dict(authority_id="ra"))
+        etc=self.root/"etc"
+        etc.mkdir()
+        with patch.dict(self.api,ETC=etc,service_dsns=Mock(),configure_system=Mock(),read=lambda path:files[Path(path).name],
+                        db_env=Mock(return_value={}),run=Mock(),database_roles=Mock(),service_environment=Mock(),run_user=run_user,
+                        searchable_parent=lambda root:events.append(("searchable_parent",root)),renew_certificates=Mock(return_value=[]),
+                        setup_oidc_unit=Mock(),setup_interop_images=Mock()):
+            self.api["configure"]({"database_url_file":None},self.version,False)
+        self.assertEqual(events,[("searchable_parent","/var/lib/agentcapsule/host"),("agentcapsule-authority","init-restore-authority")])
+
     def test_external_database_names_a_role_per_service(self):
         with self.assertRaisesRegex(ValueError,"api_database_url_file and worker_database_url_file"):
             self.api["service_dsns"]({"database_url_file":"/root/db.url"})
