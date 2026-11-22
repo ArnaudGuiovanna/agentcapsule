@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol/wire"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane/mailbox"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/harnessstore/envelope"
 	"github.com/jackc/pgx/v5"
 )
@@ -99,7 +100,7 @@ func (t *Transit) ClaimInstruction(ctx context.Context, id string, lease time.Du
 	if err != nil {
 		return attempt, err
 	}
-	if err = isHead(ctx, tx, i.mailboxRow); err != nil {
+	if err = mailbox.RequireHead(ctx, tx, i.mailboxRow); err != nil {
 		return attempt, err
 	}
 	if a.Phase != "LIVE" {
@@ -126,10 +127,10 @@ func (t *Transit) ClaimInstruction(ctx context.Context, id string, lease time.Du
 		}
 		return attempt, ErrRerunSkipped
 	}
-	if err := checkMailboxLease(ctx, tx, i.mailboxRow); err != nil {
+	if err := mailbox.CheckLease(ctx, tx, i.mailboxRow); err != nil {
 		return attempt, err
 	}
-	token, err := takeMailboxLease(ctx, tx, id, lease)
+	token, err := mailbox.TakeLease(ctx, tx, id, lease)
 	if err != nil {
 		return attempt, err
 	}
@@ -160,7 +161,7 @@ func (t *Transit) AuthorizeInstruction(ctx context.Context, id, token string) (e
 	if a.Phase != "LIVE" {
 		return event, ErrUnavailable
 	}
-	if err = isHead(ctx, tx, i.mailboxRow); err != nil {
+	if err = mailbox.RequireHead(ctx, tx, i.mailboxRow); err != nil {
 		return event, err
 	}
 	var current bool
@@ -366,7 +367,7 @@ func (t *Transit) RetireInstruction(ctx context.Context, id string, runtime Revo
 		reportDeath(ctx, runtime, died)
 		return nil
 	}
-	if err = isHead(ctx, tx, i.mailboxRow); err != nil {
+	if err = mailbox.RequireHead(ctx, tx, i.mailboxRow); err != nil {
 		return err
 	}
 	if _, err = tx.Exec(ctx, "UPDATE agent_mailboxes SET closing=true WHERE id=$1", id); err != nil {

@@ -14,6 +14,8 @@ var ErrTransition = errors.New("request transition is not permitted")
 
 var ErrConflict = errors.New("idempotency key reused with a different request")
 
+var ErrExpired = errors.New("request deadline has elapsed")
+
 // ID gives a new row its prefixed, random identifier.
 func ID(prefix string) string {
 	var id [16]byte

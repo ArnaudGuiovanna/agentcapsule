@@ -33,7 +33,7 @@ var (
 	ErrMandate      = errors.New("mandate unavailable, expired or exhausted")
 	ErrTransition   = persistence.ErrTransition
 	ErrConflict     = persistence.ErrConflict
-	ErrExpired      = errors.New("request deadline has elapsed")
+	ErrExpired      = persistence.ErrExpired
 	ErrQueueFull    = errors.New("instruction queue is full")
 	ErrTooLarge     = errors.New("content exceeds the size limit")
 	ErrStorageQuota = errors.New("organization storage quota exceeded")

@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol/wire"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/controlplane/mailbox"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/harnessstore/envelope"
 	"github.com/jackc/pgx/v5"
 )
@@ -105,7 +106,7 @@ func (t *Transit) resolveDelivery(ctx context.Context, attempt DeliveryAttempt) 
 	if err != nil {
 		return empty, err
 	}
-	if err = isHead(ctx, tx, m); err != nil {
+	if err = mailbox.RequireHead(ctx, tx, m); err != nil {
 		return empty, err
 	}
 	var current bool
