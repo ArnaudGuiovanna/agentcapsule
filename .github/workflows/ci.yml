@@ -72,7 +72,7 @@ jobs:
       - name: Authorization matrix (every route has a row, docs/api/rbac.md matches it)
         run: go test -count=1 -run '^TestRBACMatrix(IsWellFormed|CoversEveryRoute|IsDocumented)$' ./internal/api
 
-      - name: Script unit tests (the check runner, the textfile scripts, the archive shipper, the backup tools' fetch)
+      - name: Script unit tests (the check runner, the textfile scripts, the archive shipper, the backup tools' fetch, the release build scripts)
         run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
 
       - name: Repository hygiene (no personal paths, no committed evidence sources)
