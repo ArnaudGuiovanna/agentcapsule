@@ -51,7 +51,7 @@ agentcapsule login --key-file owner.pem
 agentcapsule team create --name Support --idempotency-key create-support
 ```
 
-A platform operator can rotate their session with `session renew` and invalidate it with `logout`. If an exchange response is lost, repeating the command recovers the credential already persisted privately on the workstation. Organization logout clears the local login. Membership and issuer revocation are separate server operations.
+A platform operator can rotate their session with `session renew` and invalidate it with `logout`. If an exchange response is lost, repeating the command recovers the credential already persisted privately on the workstation. Sessions renewed from one enrollment form a chain: revoking one (`session revoke ID`) revokes the sessions renewed from it, and no session of the chain lasts beyond 30 days after the enrollment. Then `session renew` answers 409 `expired`: issue a new enrollment on the host (`agentcapsule-admin issue-enrollment`) and log in again. Organization logout clears the local login. Membership and issuer revocation are separate server operations.
 
 ## Follow an invocation as it streams
 

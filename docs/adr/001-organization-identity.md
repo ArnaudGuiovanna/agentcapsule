@@ -357,3 +357,32 @@ Decisions (migration `application-clients`):
 A client ID of the bundled realm is a client the operator created there for
 one organization; the operator approves it for that organization when
 creating it. Two organizations never share a client.
+
+### Platform session chains (SEC-1B, findings L-01 and L-02)
+
+Until v0.1.0 any `platform:admin` credential issued another for twelve
+hours, without limit and without a record of where it came from;
+`replace_current` was optional, and revoking a credential left the sessions
+it had issued active. And any bearer of the form of an enrollment proof
+reached the platform credentials' shared lock before the proof was looked
+up.
+
+Now (migration `platform-session-chains`):
+
+1. A session records its parent: the credential or enrollment proof that
+   issued it. A credential issued by `bootstrap-platform` or an enrollment
+   proof starts a chain; existing credentials each start their own.
+2. Revoking a credential (`POST /v1/platform/sessions/{id}/revoke`,
+   `agentcapsule-admin revoke-credential`, or a replacement) revokes every
+   session descended from it, also below one revoked before; each is
+   audited and recorded with the authority service.
+3. A credential has at most one live child: a second exchange without
+   `replace_current` is refused (409 `invalid_transition`). With it, the
+   credential and its other descendants are revoked before the new session
+   exists. The CLI always replaces.
+4. No session of a chain outlives 30 days after the chain started
+   (`PlatformSessionChainLifetime`): a renewal near the end is cut to it, one
+   after is refused (409 `expired`). The operator then enrolls again on the
+   host (`agentcapsule-admin issue-enrollment`).
+5. An enrollment proof is looked up before the lock; a bearer that is not
+   one gets 401 without waiting for it (L-02).

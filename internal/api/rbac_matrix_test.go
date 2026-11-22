@@ -545,10 +545,19 @@ func rbacName(t *testing.T, f *rbacFixture) map[string]string {
 	return map[string]string{"name": name, "digest": hex.EncodeToString(sum[:]), "expires": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)}
 }
 
+// rbacFreshSession is a session of its own chain, from an enrollment: a
+// credential issues one live child only (finding L-01).
 func rbacFreshSession(t *testing.T, f *rbacFixture) map[string]string {
 	identity := rbacName(t, f)
+	proof := platformSecret("acpe_")
+	if err := f.l.store.IssuePlatformEnrollment(t.Context(), "api-platform", proof, 15*time.Minute); err != nil {
+		t.Fatal(err)
+	}
 	var result controlplane.OperatorCredential
-	f.must(t, "platform", "POST", "/v1/platform/sessions", `{"token_sha256":"`+identity["digest"]+`"}`, 201, &result)
+	r := call(t, f.server, "POST", "/v1/platform/sessions", proof, f.next(), `{"token_sha256":"`+identity["digest"]+`"}`)
+	if r.Code != 201 || json.Unmarshal(r.Body.Bytes(), &result) != nil {
+		t.Fatal("fresh session", r.Code, r.Body.String())
+	}
 	return map[string]string{"fresh": result.ID}
 }
 

@@ -76,7 +76,12 @@ paths:
         The client saves a random acpp_ bearer before posting its SHA-256.
         Enrollment always consumes the proof. replace_current also consumes the
         authenticated platform session in the same transaction. Authenticate with
-        the saved replacement to recover after a lost reply.
+        the saved replacement to recover after a lost reply. The session records
+        the credential that issued it: consuming or revoking a credential revokes
+        every session descended from it. Without replace_current, a credential
+        with a live child gets 409 invalid_transition. No session outlives 30 days
+        after its chain's enrollment proof or bootstrap credential was issued: a
+        renewal near that end lasts until it, one after it gets 409 expired.
       security: [{platformBearer: []}, {enrollmentBearer: []}]
       parameters: [{$ref: '#/components/parameters/IdempotencyKey'}]
       requestBody:
@@ -107,6 +112,9 @@ paths:
       requestBody:
         required: true
         content: {application/json: {schema: {type: object, additionalProperties: false}}}
+      description: >-
+        Revokes the credential and every platform session descended from it,
+        also below one revoked before.
       responses:
         '200':
           description: Credential revoked on the primary
