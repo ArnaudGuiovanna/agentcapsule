@@ -372,7 +372,11 @@ func TestReadyChecksInstalledMigrationLedger(t *testing.T) {
 
 // revertTenantAgents removes migration 0010 from an isolated test schema so that
 // fixtures simulating an older installation can replay it. Test-only: a ledger
-// row is never removed to repair a production database.
+// row is never removed to repair a production database. The objects a later
+// migration creates and could not create again come first, newest first
+// (0072 to 0069, then 0065; 0073 only replaces a function); those of 0066
+// to 0068 go with the table, column and tables they change, dropped below
+// (access_revocations, platform_operations.cause, the llm tables).
 func revertTenantAgents(t *testing.T, s *Store) {
 	t.Helper()
 	if _, err := s.pool.Exec(t.Context(), `
