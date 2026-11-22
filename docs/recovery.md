@@ -619,8 +619,9 @@ its record.
    `agentcapsule-authority`. Add the primary's address to its
    `IPAddressAllow=` in a drop-in, and let only that address reach the port.
    The listener holds a connection that has not authenticated for 3 seconds
-   at most, at most 4 at a time from one address, and 32 in all, of which 8
-   are kept for the addresses the primary authenticated from; an
+   at most, at most 4 at a time from an address the primary has not
+   authenticated from, and 32 in all, of which 8 are kept for the addresses
+   the primary authenticated from; an
    authenticated connection keeps a slot of its own (32 at most), so
    connections that never authenticate cannot keep the primary out.
    A version 1 file without `role` is read as the replica's too. It logs JSON events
