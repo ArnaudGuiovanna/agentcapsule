@@ -7,7 +7,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// The retention of finished records (P-04, migration 0067). Finished
+// The retention of finished records (P-04, migration 0068). Finished
 // invocations, wakes, sleeps and requests between agents stayed forever, with
 // their mailbox entries, idempotency keys, inbox items, closures, mandates
 // and content tombstones, although nothing reads them once their content is

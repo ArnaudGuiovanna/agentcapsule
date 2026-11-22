@@ -260,7 +260,7 @@ func (c *Catalog) Announcement(ctx context.Context) (Announcement, error) {
 			return err
 		}
 		a = Announcement{Epoch: epoch}
-		if v, err := version(ctx, tx); err != nil || v < schemaVersion || epoch < 2 {
+		if v, err := version(ctx, tx); err != nil || v < accessVersion || epoch < 2 {
 			return err
 		}
 		stored, err := accessRecord(ctx, tx, authoritylog.BlanketID(c.identity, epoch))

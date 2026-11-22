@@ -192,7 +192,7 @@ influence the effective time.
 After the renewals, a pass discovers business intents and processes at most
 `dispatch_batch` jobs; a pass that claimed `dispatch_batch` jobs is followed by
 another at once. The queries that find work read indexes of the open rows only
-(migration 0066), never a table's history. `worker_hosts` assigns tickets in the same transaction as
+(migration 0067), never a table's history. `worker_hosts` assigns tickets in the same transaction as
 the mutations of `worker_jobs`. A claim moves the job to the end of the queue
 before its execution; a crash or an error therefore does not reserve the first
 place indefinitely. The `work_lease` lease and the exponential backoff

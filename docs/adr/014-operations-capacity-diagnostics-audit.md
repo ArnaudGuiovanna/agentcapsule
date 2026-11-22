@@ -291,7 +291,7 @@ the host's ID as the only payload); the shipped `poll_interval` is 5 s, a
 fallback that bounds what a lost notification costs. The queries that find
 work read partial indexes of the open rows and `agent_activity`, each agent's
 last activity kept by triggers, instead of the tables' history (migration
-0066); on a seeded schema of 100,000 finished invocations their slowest
+0067); on a seeded schema of 100,000 finished invocations their slowest
 statement went from up to 1.2 s to under 5 ms (evidence
 `quint/results/audit/audit-perf-3a/explain-*`). Finished invocations, wakes,
 sleeps and requests are deleted `finished_retention` after their end (90 days

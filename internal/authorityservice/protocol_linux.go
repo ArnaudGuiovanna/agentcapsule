@@ -31,7 +31,12 @@ import (
 
 // Protocol is this protocol's version. The service accepts it and the
 // previous one; a client refuses a service older than it needs.
-const Protocol = 1
+//
+// Version 2 (after the v0.1.0 audit): begin_revocations names each subject's
+// scope, and scan returns a page of the store's scope above its acknowledged
+// revision (restoreauthority.Receipt's Base and More). A client of version 1
+// gets its store's whole scope in one receipt, of the format it knows.
+const Protocol = 2
 
 // The roles of a client, one per socket.
 const (
@@ -51,6 +56,7 @@ const (
 	OpRegister           = "register"
 	OpReserveIncarnation = "reserve_incarnation"
 	OpBeginRevocation    = "begin_revocation"
+	OpBeginRevocations   = "begin_revocations"
 	OpScan               = "scan"
 	OpRecordFence        = "record_fence"
 	OpHoldFences         = "hold_fences"
@@ -93,8 +99,13 @@ const (
 	// MaxTimeout bounds a request's timeout_ms: a client without a deadline
 	// sends this one.
 	MaxTimeout = 10 * time.Minute
-	// MaxRequest bounds a request frame; MaxResponse a response frame.
-	MaxRequest  = 4 << 20
+	// MaxRequest bounds a request frame; MaxResponse a response frame. A
+	// receipt comes back in a request (record_fence, hold_fences, the
+	// activation's steps), so a request frame holds the largest response:
+	// before the v0.1.0 audit it was half of it, and past about 80 000
+	// subjects no boot could record its fences. A receipt is now a page of
+	// restoreauthority.ScanBytes at most.
+	MaxRequest  = MaxResponse
 	MaxResponse = 8 << 20
 	// KeySize is the size of a volume key after its held frame.
 	KeySize = 32
@@ -300,6 +311,11 @@ type (
 	}
 	SubjectArgs struct {
 		Subject string `json:"subject"`
+	}
+	// ScopesArgs are the subjects of one begin_revocations, each with the
+	// stores that can act on it: at most restoreauthority.MaxScopes.
+	ScopesArgs struct {
+		Scopes []restoreauthority.Scope `json:"scopes"`
 	}
 	ReceiptArgs struct {
 		Receipt restoreauthority.Receipt `json:"receipt"`

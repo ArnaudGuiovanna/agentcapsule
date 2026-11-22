@@ -28,6 +28,11 @@ func TestBootSynchronizesIndependentAndSQLRevocationsBeforeConfirmation(t *testi
 	forEachAuthority(t, testBootSynchronizesIndependentAndSQLRevocationsBeforeConfirmation)
 }
 
+// Since the v0.1.0 audit a boot fences the independent authority's subjects
+// of its store's scope; it no longer begins PostgreSQL's whole catalogue. A
+// subject only PostgreSQL holds has its barrier still to run: the barrier
+// begins it in its scope, which makes an unconfirmed boot stale, and the
+// next synchronization fences it.
 func testBootSynchronizesIndependentAndSQLRevocationsBeforeConfirmation(t *testing.T, implementation string) {
 	b := newBootLab(t)
 	a := b.withAuthority(t, implementation, true)
@@ -43,12 +48,23 @@ func testBootSynchronizesIndependentAndSQLRevocationsBeforeConfirmation(t *testi
 	if err := b.opts.PrepareGuest(t.Context(), b.e.AgentID, run, client); err != nil {
 		t.Fatal(err)
 	}
-	for _, subject := range []string{"agent/old-decision", "request/current-intent"} {
-		assertLocalBarrier(t, local, subject)
-		ack, sealed, err := a.SubjectBarrier(t.Context(), enrollmentBinding(b.e), subject)
-		if err != nil || !ack || sealed {
-			t.Fatal("authenticated guest receipt missing", ack, sealed, err)
-		}
+	assertLocalBarrier(t, local, "agent/old-decision")
+	if ack, sealed, err := a.SubjectBarrier(t.Context(), enrollmentBinding(b.e), "agent/old-decision"); err != nil || !ack || sealed {
+		t.Fatal("authenticated guest receipt missing", ack, sealed, err)
+	}
+	// The intent's barrier begins it in the store's scope.
+	if err := a.BeginRevocations(t.Context(), []restoreauthority.Scope{{Subject: "request/current-intent", Stores: []string{b.e.AgentID}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.opts.Confirm(t.Context(), b.e.AgentID, run); !errors.Is(err, restoreauthority.ErrStale) {
+		t.Fatal("boot confirmed past a revocation of its scope", err)
+	}
+	if err := b.opts.PrepareGuest(t.Context(), b.e.AgentID, run, client); err != nil {
+		t.Fatal("snapshot retry", err)
+	}
+	assertLocalBarrier(t, local, "request/current-intent")
+	if ack, _, err := a.SubjectBarrier(t.Context(), enrollmentBinding(b.e), "request/current-intent"); err != nil || !ack {
+		t.Fatal("authenticated guest receipt missing", ack, err)
 	}
 	if _, err := a.BeginRevocation(t.Context(), "agent/concurrent"); err != nil {
 		t.Fatal(err)

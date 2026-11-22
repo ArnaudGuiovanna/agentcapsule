@@ -132,7 +132,8 @@ var operations = map[string]operation{
 		if err != nil {
 			return nil, err
 		}
-		// A known subject writes nothing: it answers at once.
+		// A known subject writes nothing, whatever its scope: it answers at
+		// once.
 		known, err := s.local.KnownSubject(ctx, a.Subject)
 		if err != nil {
 			return nil, err
@@ -145,12 +146,38 @@ var operations = map[string]operation{
 		revision, err := s.local.BeginRevocation(ctx, a.Subject)
 		return RevisionResult{revision}, err
 	}},
-	OpScan: {run: func(ctx context.Context, s *Server, raw json.RawMessage, _ *hold) (any, error) {
+	// begin_revocations begins each subject in its scope, in one
+	// transaction. A known subject with its whole scope writes nothing and
+	// answers at once; any other waits the quiet period.
+	OpBeginRevocations: {run: func(ctx context.Context, s *Server, raw json.RawMessage, _ *hold) (any, error) {
+		a, err := decode[ScopesArgs](raw)
+		if err != nil {
+			return nil, err
+		}
+		known, err := s.local.KnownScopes(ctx, a.Scopes)
+		if err != nil {
+			return nil, err
+		}
+		if !known {
+			if err = s.quiet(ctx, s.subjectsAfter); err != nil {
+				return nil, err
+			}
+		}
+		return nil, s.local.BeginRevocations(ctx, a.Scopes)
+	}},
+	// scan gives a client of the previous protocol its store's whole scope in
+	// one receipt, of the format that client knows: it would drop Base and
+	// More, and its receipt would no longer verify.
+	OpScan: {run: func(ctx context.Context, s *Server, raw json.RawMessage, h *hold) (any, error) {
 		a, err := decode[BindingArgs](raw)
 		if err != nil {
 			return nil, err
 		}
-		r, err := s.local.Scan(ctx, a.Binding)
+		scan := s.local.Scan
+		if h.protocol < 2 {
+			scan = s.local.ScanAll
+		}
+		r, err := scan(ctx, a.Binding)
 		return ReceiptResult{r}, err
 	}},
 	OpRecordFence: {run: func(ctx context.Context, s *Server, raw json.RawMessage, _ *hold) (any, error) {
@@ -313,6 +340,8 @@ func inspection(a LossArgs) restoreauthority.Inspection {
 // hold is one hold's state, shared by the operation, which waits in it,
 // and the connection, which receives the release.
 type hold struct {
+	// protocol is the client's, from its hello; every request has one.
+	protocol int
 	kind     string
 	cap      time.Duration
 	conn     *net.UnixConn

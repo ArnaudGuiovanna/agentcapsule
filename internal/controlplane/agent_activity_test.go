@@ -133,7 +133,7 @@ func TestAgentActivityFollowsItsOperationsRequestsAndModelCalls(t *testing.T) {
 	}
 }
 
-// Migration 0066 fills agent_activity from the history it finds: the latest
+// Migration 0067 fills agent_activity from the history it finds: the latest
 // operation, request and end of each agent, the sleeps aside for the idle
 // policy.
 func TestActivityMigrationFillsFromHistory(t *testing.T) {
@@ -148,7 +148,7 @@ func TestActivityMigrationFillsFromHistory(t *testing.T) {
 	if at == len(controlPlaneMigrations) {
 		t.Fatal("no open-state-indexes migration")
 	}
-	// The tables of the migrations before 0066 (no test of the package runs
+	// The tables of the migrations before 0067 (no test of the package runs
 	// in parallel).
 	all := durableTables
 	durableTables = slices.DeleteFunc(slices.Clone(all), func(table string) bool { return table == "agent_activity" })

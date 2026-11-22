@@ -273,13 +273,15 @@ module restoreWitnessUnfencedBroken {
  * receipt. The promoted root gives revision 1 again, to subject 1; the old
  * receipt binds, and the image activates without fencing subject 1. */
 module restoreWitnessSameEpochGuard {
-  import restoreAuthority(STORES=Set(0,1), SUBJECTS=Set(0,1), EVENT_DEST=Map(0->1,1->0), EVENT_SUBJECT=Map(0->0,1->1),
+  import restoreAuthority(STORES=Set(0,1), SUBJECTS=Set(0,1), EVENT_DEST=Map(0->1,1->1), EVENT_SUBJECT=Map(0->0,1->1),
     MAX_INC=2, ROOT_ROLLBACK=false, ACK_EPOCH=true, RECHECK=true, HISTORY_GUARD=true, RAW_KEK=false, RETIRE_GUARD=true, SEAL_GUARD=true, CACHE_GUARD=true,
     SYNC_ACK=true, FENCE_OLD=true, NEW_EPOCH=true, REPLAY_FIRST=true, DECIDED_REVOCATIONS=false, DESTROY_DEGRADED=false).* from "./restore_authority"
   run guardTest = init.then(beginRestore(1)).expect(safety).then(retire(1)).expect(safety).then(install(1)).expect(safety).then(launchRestore(1)).expect(safety).then(loseLink).expect(safety).then(enterDegraded).expect(safety).then(beginRevocation(0)).expect(safety).then(scan(1)).expect(safety).then(synchronize(1)).expect(safety).then(losePrimary).expect(safety).then(promote).expect(safety).then(launchRestore(1)).expect(safety).then(beginRevocation(1)).expect(safety and root.revision == 1).then(recordReceipt({store:1,incarnation:2,revision:1,subjects:Set(0),epoch:1}).fail())
 }
+// Both events go to store 1, so that both subjects are in its scope: the
+// reused revision names a subject of its scope that the old receipt lacks.
 module restoreWitnessSameEpochBroken {
-  import restoreAuthority(STORES=Set(0,1), SUBJECTS=Set(0,1), EVENT_DEST=Map(0->1,1->0), EVENT_SUBJECT=Map(0->0,1->1),
+  import restoreAuthority(STORES=Set(0,1), SUBJECTS=Set(0,1), EVENT_DEST=Map(0->1,1->1), EVENT_SUBJECT=Map(0->0,1->1),
     MAX_INC=2, ROOT_ROLLBACK=false, ACK_EPOCH=true, RECHECK=true, HISTORY_GUARD=true, RAW_KEK=false, RETIRE_GUARD=true, SEAL_GUARD=true, CACHE_GUARD=true,
     SYNC_ACK=true, FENCE_OLD=true, NEW_EPOCH=false, REPLAY_FIRST=true, DECIDED_REVOCATIONS=false, DESTROY_DEGRADED=false).* from "./restore_authority"
   var pc: int

@@ -39,8 +39,11 @@ type (
 		Limit int   `json:"limit,omitempty"`
 	}
 	// SubjectsArgs are revocation subjects to begin in the authority.
+	// Scopes names the stores of some of them (restoreauthority.Scope); a
+	// subject without one is begun in every store's scope.
 	SubjectsArgs struct {
-		Subjects []string `json:"subjects"`
+		Subjects []string                 `json:"subjects"`
+		Scopes   []restoreauthority.Scope `json:"scopes,omitempty"`
 	}
 
 	// Each page names the cursor of the next one; 0 after the last.
@@ -100,32 +103,41 @@ func init() {
 	// import_subjects begins, in the authority, each subject it does not
 	// hold: a revocation subject PostgreSQL's WAL shipped and the old
 	// primary's authority lost. A new subject waits the quiet period, as
-	// begin_revocation does.
+	// begin_revocation does. The new subjects are begun in one transaction.
 	operations[OpImportSubjects] = operation{api: true, run: func(ctx context.Context, s *Server, raw json.RawMessage, _ *hold) (any, error) {
 		a, err := decode[SubjectsArgs](raw)
 		if err != nil {
 			return nil, err
 		}
-		if len(a.Subjects) == 0 || len(a.Subjects) > MaxImportSubjects {
+		if len(a.Subjects) == 0 || len(a.Subjects) > MaxImportSubjects || len(a.Scopes) > MaxImportSubjects {
 			return nil, restoreauthority.ErrInput
 		}
-		begun := 0
+		stores := map[string][]string{}
+		for _, scope := range a.Scopes {
+			stores[scope.Subject] = scope.Stores
+		}
+		var begin []restoreauthority.Scope
+		seen := map[string]bool{}
 		for _, subject := range a.Subjects {
 			known, err := s.local.KnownSubject(ctx, subject)
 			if err != nil {
 				return nil, err
 			}
-			if known {
+			if known || seen[subject] {
 				continue
 			}
-			if err = s.quiet(ctx, s.subjectsAfter); err != nil {
-				return nil, err
-			}
-			if _, err = s.local.BeginRevocation(ctx, subject); err != nil {
-				return nil, err
-			}
-			begun++
+			seen[subject] = true
+			begin = append(begin, restoreauthority.Scope{Subject: subject, Stores: stores[subject]})
 		}
-		return ImportResult{begun}, nil
+		if len(begin) == 0 {
+			return ImportResult{0}, nil
+		}
+		if err = s.quiet(ctx, s.subjectsAfter); err != nil {
+			return nil, err
+		}
+		if err = s.local.BeginRevocations(ctx, begin); err != nil {
+			return nil, err
+		}
+		return ImportResult{len(begin)}, nil
 	}}
 }

@@ -218,9 +218,13 @@ func TestKeyHoldDelaysDestructionAndClearsTheKey(t *testing.T) {
 	if !bytes.Equal(copied, want) {
 		t.Fatal("the hold did not carry the volume key")
 	}
-	// The destruction waits for the hold: its seal check needs the
-	// catalogue's transaction, which the hold keeps.
-	if err = c.DestroyKey(within(t, 200*time.Millisecond), b); !errors.Is(err, restoreauthority.ErrUnavailable) {
+	// The destruction waits for the hold: it needs the store's seal, and
+	// the seal waits for the hold of the store's binding (holds per store,
+	// after the v0.1.0 audit; before, for the catalogue's transaction).
+	if err = c.RecordRetiredSeal(within(t, 200*time.Millisecond), b); !errors.Is(err, restoreauthority.ErrUnavailable) {
+		t.Fatal("seal during the hold", err)
+	}
+	if err = c.DestroyKey(within(t, 200*time.Millisecond), b); !errors.Is(err, restoreauthority.ErrNotSealed) {
 		t.Fatal("destruction during the hold", err)
 	}
 	if _, err = os.Lstat(tombstone); !errors.Is(err, os.ErrNotExist) {

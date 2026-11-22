@@ -227,13 +227,16 @@ var corpusBuildStreamsSQL string
 //go:embed migrations/0064_corpus_file_progress_search_path.sql
 var corpusFileProgressSearchPathSQL string
 
-//go:embed migrations/0065_work_notifications.sql
+//go:embed migrations/0065_revocation_scope_indexes.sql
+var revocationScopeIndexesSQL string
+
+//go:embed migrations/0066_work_notifications.sql
 var workNotificationsSQL string
 
-//go:embed migrations/0066_open_state_indexes.sql
+//go:embed migrations/0067_open_state_indexes.sql
 var openStateIndexesSQL string
 
-//go:embed migrations/0067_finished_record_retention.sql
+//go:embed migrations/0068_finished_record_retention.sql
 var finishedRecordRetentionSQL string
 
 // Append migrations; never edit an installed migration. The original schema
@@ -304,9 +307,10 @@ var controlPlaneMigrations = []schemaMigration{
 	{version: 62, name: "corpus-extensions", sql: corpusExtensionsSQL},
 	{version: 63, name: "corpus-build-streams", sql: corpusBuildStreamsSQL},
 	{version: 64, name: "corpus-file-progress-search-path", sql: corpusFileProgressSearchPathSQL},
-	{version: 65, name: "work-notifications", sql: workNotificationsSQL},
-	{version: 66, name: "open-state-indexes", sql: openStateIndexesSQL},
-	{version: 67, name: "finished-record-retention", sql: finishedRecordRetentionSQL},
+	{version: 65, name: "revocation-scope-indexes", sql: revocationScopeIndexesSQL},
+	{version: 66, name: "work-notifications", sql: workNotificationsSQL},
+	{version: 67, name: "open-state-indexes", sql: openStateIndexesSQL},
+	{version: 68, name: "finished-record-retention", sql: finishedRecordRetentionSQL},
 }
 
 func (s *Store) migrate(ctx context.Context, migrations []schemaMigration) error {
