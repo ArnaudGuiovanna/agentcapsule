@@ -187,12 +187,11 @@ def main():
             # the tests prove what they may and may not do.
             run("service-roles", [pg_bin / "psql", "-h", socket_dir, "-U", "agentcapsule_test", "-d", "postgres", "-v", "ON_ERROR_STOP=1",
                                   "-c", "CREATE ROLE agentcapsule_api LOGIN", "-c", "CREATE ROLE agentcapsule_worker LOGIN"])
-            # Each store test migrates a fresh schema; the control-plane package
-            # alone takes nearly ten minutes under the race detector on a shared
-            # host (533 s to 600 s in November 2026, 865 s for the whole phase on
-            # the integrated tree under load; 1163 s in the v0.1.0 audit fixes
-            # with service roles), so it gets forty.
-            command = ["go", "test", "-race", "-json", "-count=1", "-timeout=2400s"]
+            # Each store test migrates a fresh schema. The control-plane suite
+            # took 39 minutes on the shared audit host and the expanded suite
+            # was still advancing through tenant tests at 40 minutes. Allow
+            # 50 minutes per package inside the one-hour integration phase.
+            command = ["go", "test", "-race", "-json", "-count=1", "-timeout=50m"]
             # The 100-stream latency target is measured without competing package tests.
             stream_load = "^TestInvocationEventsLoad$"
             run("integration", [*command, "-skip", stream_load, "./..."], timeout=3600, go_json=True)
