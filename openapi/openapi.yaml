@@ -541,10 +541,15 @@ paths:
       description: >-
         Platform credential with scope platform:admin. Keeps the members,
         invalidates future tenant access and increments policy_version exactly
-        once. A new key on an already disabled organization produces an audit
-        entry with changed=false. Replaying the same key creates no additional
-        audit entry. Legacy agents, which still have no tenant, are neither
-        stopped nor deleted.
+        once. The organization's work stops: scheduled invocations that come
+        due and wakes are canceled (error_code organization_disabled), its
+        agents cannot send requests to one another, deliveries to them wait
+        and boot no VM, and the worker puts its running VMs to sleep with the
+        ordinary sleep command (cause organization_disabled). A new key on an
+        already disabled organization produces an audit entry with
+        changed=false. Replaying the same key creates no additional audit
+        entry. Legacy agents, which still have no tenant, are neither stopped
+        nor deleted.
       security: [{platformBearer: []}]
       parameters: [{$ref: '#/components/parameters/ResourceID'}, {$ref: '#/components/parameters/IdempotencyKey'}]
       requestBody: {$ref: '#/components/requestBodies/EmptyCommand'}

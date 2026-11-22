@@ -344,9 +344,7 @@ func spliceRevocations(b []byte, list []AccessRevocation) (json.RawMessage, erro
 // currentRevocations brings the states of a stored answer's revocations up
 // to date: a replayed answer says what holds now, not what held when it was
 // first given.
-func currentRevocations(ctx context.Context, tx interface {
-	QueryRow(context.Context, string, ...any) pgx.Row
-}, body []byte) ([]byte, error) {
+func currentRevocations(ctx context.Context, tx rowQuerier, body []byte) ([]byte, error) {
 	at := bytes.LastIndex(body, []byte(revocationsMember))
 	if at < 0 || len(body) < 2 || body[len(body)-1] != '}' {
 		return body, nil

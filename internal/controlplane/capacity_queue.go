@@ -391,7 +391,8 @@ func (s *Store) QuotaWaits(ctx context.Context, host string) (int, error) {
 func (s *Store) ResumeDue(ctx context.Context, agent string) (bool, error) {
 	var due bool
 	err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM agents a WHERE a.id=$1 AND `+resumeDue+`
-        AND NOT EXISTS(SELECT 1 FROM agent_placements sp WHERE sp.agent_id=a.id AND sp.state='RUNNING' AND NOT sp.fence_only))`, agent).Scan(&due)
+        AND NOT EXISTS(SELECT 1 FROM agent_placements sp WHERE sp.agent_id=a.id AND sp.state='RUNNING' AND NOT sp.fence_only)
+        AND NOT EXISTS(SELECT 1 FROM organizations o WHERE o.id=a.tenant_id AND o.status='disabled'))`, agent).Scan(&due)
 	return due, err
 }
 
