@@ -22,8 +22,7 @@ CREATE FUNCTION agentcapsule_service_grants() RETURNS void LANGUAGE plpgsql SET 
 DECLARE
   s text := current_schema();
   grantee text;
-  t record;
-  granted text;
+  w record;
 BEGIN
   EXECUTE format('REVOKE CREATE ON SCHEMA %I FROM PUBLIC', s);
   FOREACH grantee IN ARRAY ARRAY['agentcapsule_api','agentcapsule_worker'] LOOP
@@ -34,17 +33,19 @@ BEGIN
     EXECUTE format('ALTER DEFAULT PRIVILEGES IN SCHEMA %I GRANT USAGE ON SEQUENCES TO %I', s, grantee);
     EXECUTE format('REVOKE ALL ON ALL SEQUENCES IN SCHEMA %I FROM %I', s, grantee);
     EXECUTE format('GRANT USAGE ON ALL SEQUENCES IN SCHEMA %I TO %I', s, grantee);
-    FOR t IN SELECT c.relname, c.relkind FROM pg_class c
-        WHERE c.relnamespace = s::regnamespace AND c.relkind IN ('r','p','v') ORDER BY c.relname LOOP
-      SELECT g.privileges INTO granted FROM agentcapsule_service_privileges() g WHERE g.role = grantee AND g.tbl = t.relname;
-      IF NOT FOUND THEN
-        granted := CASE WHEN t.relkind = 'v' THEN '' ELSE 'INSERT,UPDATE,DELETE' END;
-      END IF;
-      EXECUTE format('REVOKE ALL ON TABLE %I.%I FROM %I', s, t.relname, grantee);
-      EXECUTE format('GRANT SELECT ON TABLE %I.%I TO %I', s, t.relname, grantee);
-      IF granted <> '' THEN
-        EXECUTE format('GRANT %s ON TABLE %I.%I TO %I', granted, s, t.relname, grantee);
-      END IF;
+    EXECUTE format('REVOKE ALL ON ALL TABLES IN SCHEMA %I FROM %I', s, grantee);
+    EXECUTE format('GRANT SELECT ON ALL TABLES IN SCHEMA %I TO %I', s, grantee);
+    -- One statement per set of write privileges, naming its tables.
+    FOR w IN
+      SELECT x.granted, string_agg(format('%I.%I', s, c.relname), ', ' ORDER BY c.relname) AS tables
+        FROM pg_class c
+        LEFT JOIN agentcapsule_service_privileges() p ON p.role = grantee AND p.tbl = c.relname
+        CROSS JOIN LATERAL (SELECT CASE WHEN p.tbl IS NOT NULL THEN p.privileges
+                                        WHEN c.relkind = 'v' THEN '' ELSE 'INSERT,UPDATE,DELETE' END AS granted) x
+       WHERE c.relnamespace = s::regnamespace AND c.relkind IN ('r','p','v') AND x.granted <> ''
+       GROUP BY x.granted
+    LOOP
+      EXECUTE format('GRANT %s ON TABLE %s TO %I', w.granted, w.tables, grantee);
     END LOOP;
   END LOOP;
 END
