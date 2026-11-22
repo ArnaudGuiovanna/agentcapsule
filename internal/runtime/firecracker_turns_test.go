@@ -165,3 +165,62 @@ func TestAnEvictionWaitsInItsVictimsQueue(t *testing.T) {
 		t.Fatal("not in the victim's order:", first, second)
 	}
 }
+
+// The slot an eviction frees is the evicting agent's while its turn lasts:
+// another agent's boot cannot take it first, and no other eviction can claim
+// the same victim. Once the turn ends, the slot is anyone's.
+func TestAnEvictionKeepsTheFreedSlotForItsBoot(t *testing.T) {
+	l := newAdoptionLab(t, 1, false)
+	l.h.opts.MaxActive = 1
+	l.register(t, "x")
+	l.register(t, "y")
+	room := func(id string) bool {
+		var ok bool
+		if err := l.h.locked(t.Context(), func(r *hostRegistry) error {
+			ok = l.h.hasBootCapacity(r, r.Agents[id].resources(), id)
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
+	defer cancel()
+	reserved, release := make(chan struct{}), make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- l.h.WithBarrier(ctx, "x", func(ctx context.Context) error {
+			if err := l.h.ReserveSlot(ctx, "agent-00"); !errors.Is(err, ErrAdmissionLost) {
+				return errors.Join(errors.New("a slot reserved outside an eviction"), err)
+			}
+			if err := l.h.WithEviction(ctx, "agent-00", func(ctx context.Context) error {
+				if err := l.h.ReserveSlot(ctx, "agent-00"); err != nil {
+					return err
+				}
+				return l.h.Retire(ctx, "agent-00", 1)
+			}); err != nil {
+				return err
+			}
+			// The victim's turn is released; x's own turn holds the slot.
+			close(reserved)
+			<-release
+			return nil
+		})
+	}()
+	<-reserved
+	if !room("x") || room("y") {
+		t.Fatal("the freed slot is not the evicting agent's:", room("x"), room("y"))
+	}
+	if err := l.h.WithBarrier(ctx, "y", func(ctx context.Context) error {
+		return l.h.WithEviction(ctx, "agent-00", func(ctx context.Context) error { return l.h.ReserveSlot(ctx, "agent-00") })
+	}); !errors.Is(err, ErrCapacity) {
+		t.Fatal("a second eviction claimed the same victim:", err)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if !room("y") {
+		t.Fatal("the slot stayed reserved after the evicting turn ended")
+	}
+}

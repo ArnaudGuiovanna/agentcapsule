@@ -272,7 +272,9 @@ func (w *Placements) bootForWork(ctx context.Context, target string) (_ runtime.
 // after the calls and the delivery already admitted on it. Its run and its
 // generation are read again under that turn: a VM gone meanwhile needs no
 // stop. For work (forWork), a VM that started computing meanwhile is not
-// stopped (ADR 017 §2.1): ErrCapacity, and the work tries again later.
+// stopped (ADR 017 §2.1): ErrCapacity, and the work tries again later. The
+// slot the stop frees is reserved for the evicting agent's boot, which no
+// other boot can take while the evicting turn lasts.
 func (w *Placements) evict(ctx context.Context, victim string, forWork bool) error {
 	return w.host.WithEviction(ctx, victim, func(ctx context.Context) error {
 		runs, err := w.reconcileAgent(ctx, victim)
@@ -291,6 +293,9 @@ func (w *Placements) evict(ctx context.Context, victim string, forWork bool) err
 			if len(stoppable) == 0 {
 				return runtime.ErrCapacity
 			}
+		}
+		if err = w.host.ReserveSlot(ctx, victim); err != nil {
+			return err
 		}
 		return w.stop(ctx, victim, run.Generation, true)
 	})

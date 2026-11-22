@@ -137,10 +137,13 @@ type VMRun struct {
 }
 
 type hostRegistry struct {
-	Version        int                   `json:"version"`
-	Agents         map[string]*HostAgent `json:"agents"`
-	Admissions     []admissionWaiter     `json:"admissions,omitempty"`
-	LegacyBarriers []admissionWaiter     `json:"barriers,omitempty"`
+	Version int                   `json:"version"`
+	Agents  map[string]*HostAgent `json:"agents"`
+	// Reservations hold, per agent, the slot its eviction frees for its boot
+	// (ReserveSlot), while the evicting turn lasts.
+	Reservations   map[string]slotReservation `json:"reservations,omitempty"`
+	Admissions     []admissionWaiter          `json:"admissions,omitempty"`
+	LegacyBarriers []admissionWaiter          `json:"barriers,omitempty"`
 }
 
 type FirecrackerHost struct {
@@ -336,16 +339,28 @@ func syncDir(path string) error {
 
 // The caller holds the registry lock and has reconciled exited runs. Include
 // a VM whose startup is in progress and the same 256 MiB of VMM headroom per
-// guest used by the cgroup limit and the deployment planner.
-func (h *FirecrackerHost) hasBootCapacity(r *hostRegistry, requested VMResources) bool {
+// guest used by the cgroup limit and the deployment planner. A slot another
+// agent's eviction reserved counts too, once its victim is stopped
+// (ReserveSlot); booting's own reservation does not.
+func (h *FirecrackerHost) hasBootCapacity(r *hostRegistry, requested VMResources, booting string) bool {
 	slots, cpus, memory := 1, requested.VCPUs, int64(requested.MemoryMiB+256)
-	for _, other := range r.Agents {
-		if other.Run != nil {
-			v := other.resources()
-			slots++
-			cpus += v.VCPUs
-			memory += int64(v.MemoryMiB + 256)
+	count := func(a *HostAgent) {
+		v := a.resources()
+		slots++
+		cpus += v.VCPUs
+		memory += int64(v.MemoryMiB + 256)
+	}
+	for id, other := range r.Agents {
+		if other.Run != nil && id != booting {
+			count(other)
 		}
+	}
+	for id, res := range r.Reservations {
+		a, victim := r.Agents[id], r.Agents[res.Victim]
+		if id == booting || a == nil || a.Run != nil || victim != nil && victim.Run != nil || !h.reservationLive(res) {
+			continue
+		}
+		count(a)
 	}
 	return slots <= h.opts.MaxActive && (h.opts.HostVCPUs == 0 || cpus <= h.opts.HostVCPUs) &&
 		(h.opts.HostMemoryMiB == 0 || memory <= h.opts.HostMemoryMiB)
@@ -731,7 +746,7 @@ func (h *FirecrackerHost) start(ctx context.Context, id string, generation uint6
 			}
 			// A boot that has no room asks the authority nothing.
 			if err := h.locked(ctx, func(r *hostRegistry) error {
-				if current := r.Agents[id]; current != nil && !h.hasBootCapacity(r, current.resources()) {
+				if current := r.Agents[id]; current != nil && !h.hasBootCapacity(r, current.resources(), id) {
 					return ErrCapacity
 				}
 				return nil
@@ -765,7 +780,7 @@ func (h *FirecrackerHost) start(ctx context.Context, id string, generation uint6
 					return ErrVolumeBusy
 				case generation <= current.Generation:
 					return ErrGeneration
-				case !h.hasBootCapacity(r, current.resources()):
+				case !h.hasBootCapacity(r, current.resources(), id):
 					return ErrCapacity
 				}
 				st, err := os.Stat(current.Volume)
@@ -794,6 +809,9 @@ func (h *FirecrackerHost) start(ctx context.Context, id string, generation uint6
 				current.Generation = generation
 				current.Run = run
 				a = current.clone()
+				// The run holds the slot now; reservations whose turn ended go.
+				delete(r.Reservations, id)
+				h.pruneReservations(r)
 				return h.save(r)
 			}); err != nil {
 				return err

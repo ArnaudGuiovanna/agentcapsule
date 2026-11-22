@@ -59,6 +59,12 @@ func (r *hostRegistry) clone() *hostRegistry {
 	for id, a := range r.Agents {
 		c.Agents[id] = a.clone()
 	}
+	if len(r.Reservations) != 0 {
+		c.Reservations = make(map[string]slotReservation, len(r.Reservations))
+		for id, res := range r.Reservations {
+			c.Reservations[id] = res
+		}
+	}
 	return c
 }
 
@@ -254,6 +260,9 @@ func (h *FirecrackerHost) decodeRegistry(b []byte) (*hostRegistry, bool, error) 
 func (h *FirecrackerHost) validRegistry(r *hostRegistry) error {
 	if r.Version != registryVersion || r.Agents == nil || len(r.Admissions) != 0 || len(r.LegacyBarriers) != 0 {
 		return errors.New("invalid runtime registry")
+	}
+	if err := validReservations(r); err != nil {
+		return err
 	}
 	for id, a := range r.Agents {
 		if a == nil || a.ID != id || id == "" || a.UID < 10000 || filepath.Dir(a.Volume) != filepath.Join(h.root, "volumes") {
