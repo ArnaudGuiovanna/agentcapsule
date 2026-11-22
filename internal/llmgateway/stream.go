@@ -86,7 +86,7 @@ func (g *Gateway) ForwardStream(ctx context.Context, route Route, dialect string
 	if !route.validAuth() || route.UpstreamModel == "" || sink == nil {
 		return StreamResult{}, ErrInvalid
 	}
-	fields, _, err := forwardFields(dialect, body, true)
+	fields, _, err := prepareForward(route.Policy, dialect, body, true)
 	if err != nil {
 		return StreamResult{}, err
 	}
@@ -106,7 +106,7 @@ func (g *Gateway) ForwardStream(ctx context.Context, route Route, dialect string
 	fields["model"] = model
 	streamFields(fields, dialect)
 	prepared, err := json.Marshal(fields)
-	if err != nil || len(prepared) > MaxForwardBytes+len(model)+64 {
+	if err != nil || len(prepared) > MaxForwardBytes+len(model)+128 {
 		return StreamResult{}, ErrInvalid
 	}
 	state := streamState{dialect: dialect}

@@ -40,10 +40,15 @@ type Usage struct {
 	OutputTokens int64 `json:"output_tokens"`
 }
 
+// Unreported says which counts a provider's answer left out (audit finding
+// L-06). The accounting counts the reservation's in their place, never zero.
+type Unreported struct{ Input, Output bool }
+
 type Response struct {
 	Text         string
 	FinishReason string
 	Usage        Usage
+	Unreported   Unreported
 }
 
 // Route is one resolved upstream. Secret stays in memory.
@@ -52,6 +57,8 @@ type Route struct {
 	Kind, BaseURL, UpstreamModel, Secret string
 	// Key identifies the breaker bucket, normally "tenant/provider".
 	Key string
+	// Policy is what the alias lets a call ask of the provider.
+	Policy RequestPolicy
 }
 
 // The empty mode preserves callers created before explicit authentication modes.
@@ -368,11 +375,10 @@ func join(base, path string) string { return strings.TrimRight(base, "/") + path
 
 // ---- OpenAI-compatible ----
 
+// buildOpenAI always bounds the output: the request's cap, else the alias's
+// (CompleteOutputCap), in the field the alias names.
 func buildOpenAI(r Route, q Request) (string, []byte, map[string]string, error) {
-	payload := map[string]any{"model": r.UpstreamModel, "messages": q.Messages}
-	if q.MaxTokens > 0 {
-		payload["max_tokens"] = q.MaxTokens
-	}
+	payload := map[string]any{"model": r.UpstreamModel, "messages": q.Messages, r.Policy.capField(): CompleteOutputCap(r.Policy, q)}
 	if q.Temperature != nil {
 		payload["temperature"] = *q.Temperature
 	}
@@ -386,15 +392,42 @@ func parseOpenAI(raw []byte) (Response, error) {
 			Message      struct{ Content string } `json:"message"`
 			FinishReason string                   `json:"finish_reason"`
 		} `json:"choices"`
-		Usage struct {
-			Prompt     int64 `json:"prompt_tokens"`
-			Completion int64 `json:"completion_tokens"`
+		Usage *struct {
+			Prompt     *int64 `json:"prompt_tokens"`
+			Completion *int64 `json:"completion_tokens"`
 		} `json:"usage"`
 	}
 	if err := json.Unmarshal(raw, &v); err != nil || len(v.Choices) == 0 {
 		return Response{}, ErrInvalid
 	}
-	return Response{Text: v.Choices[0].Message.Content, FinishReason: v.Choices[0].FinishReason, Usage: Usage{v.Usage.Prompt, v.Usage.Completion}}, nil
+	out := Response{Text: v.Choices[0].Message.Content, FinishReason: v.Choices[0].FinishReason, Unreported: Unreported{true, true}}
+	if v.Usage != nil {
+		var ok bool
+		if out.Usage, out.Unreported, ok = reported(v.Usage.Prompt, v.Usage.Completion); !ok {
+			return Response{}, ErrInvalid
+		}
+	}
+	return out, nil
+}
+
+// reported is the usage of the counts a provider reported, and which it left
+// out. ok is false when a count is out of bounds (validCount).
+func reported(input, output *int64) (u Usage, missing Unreported, ok bool) {
+	for _, c := range []struct {
+		n    *int64
+		to   *int64
+		left *bool
+	}{{input, &u.InputTokens, &missing.Input}, {output, &u.OutputTokens, &missing.Output}} {
+		if c.n == nil {
+			*c.left = true
+			continue
+		}
+		if !validCount(c.n) {
+			return Usage{}, Unreported{}, false
+		}
+		*c.to = *c.n
+	}
+	return u, missing, true
 }
 
 // ---- Anthropic native ----
@@ -412,11 +445,8 @@ func buildAnthropic(r Route, q Request) (string, []byte, map[string]string, erro
 	if len(msgs) == 0 {
 		return "", nil, nil, ErrInvalid
 	}
-	max := q.MaxTokens
-	if max == 0 {
-		max = 1024 // the native API requires an explicit bound
-	}
-	payload := map[string]any{"model": r.UpstreamModel, "messages": msgs, "max_tokens": max}
+	// The native API requires an explicit bound.
+	payload := map[string]any{"model": r.UpstreamModel, "messages": msgs, "max_tokens": CompleteOutputCap(r.Policy, q)}
 	if len(system) > 0 {
 		payload["system"] = strings.Join(system, "\n\n")
 	}
@@ -433,11 +463,8 @@ func parseAnthropic(raw []byte) (Response, error) {
 			Type string `json:"type"`
 			Text string `json:"text"`
 		} `json:"content"`
-		StopReason string `json:"stop_reason"`
-		Usage      struct {
-			In  int64 `json:"input_tokens"`
-			Out int64 `json:"output_tokens"`
-		} `json:"usage"`
+		StopReason string          `json:"stop_reason"`
+		Usage      *anthropicUsage `json:"usage"`
 	}
 	if err := json.Unmarshal(raw, &v); err != nil || len(v.Content) == 0 {
 		return Response{}, ErrInvalid
@@ -448,5 +475,29 @@ func parseAnthropic(raw []byte) (Response, error) {
 			text.WriteString(c.Text)
 		}
 	}
-	return Response{Text: text.String(), FinishReason: v.StopReason, Usage: Usage{v.Usage.In, v.Usage.Out}}, nil
+	out := Response{Text: text.String(), FinishReason: v.StopReason}
+	var ok bool
+	if out.Usage, out.Unreported, ok = v.Usage.counts(); !ok {
+		return Response{}, ErrInvalid
+	}
+	return out, nil
+}
+
+// counts is the usage of an Anthropic answer, cached input included, and the
+// counts it left out. ok is false when a count is out of bounds.
+func (u *anthropicUsage) counts() (Usage, Unreported, bool) {
+	if u == nil {
+		return Usage{}, Unreported{true, true}, true
+	}
+	var cached int64
+	for _, n := range []*int64{u.CacheCreate, u.CacheRead} {
+		if n != nil && !validCount(n) {
+			return Usage{}, Unreported{}, false
+		} else if n != nil {
+			cached += *n
+		}
+	}
+	usage, missing, ok := reported(u.In, u.Out)
+	usage.InputTokens += cached
+	return usage, missing, ok
 }
