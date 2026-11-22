@@ -1542,8 +1542,9 @@ captured: each needs a key hold or a binding check. Platform calls from VMs
 fail with an error the guest retries. A delivery is not acknowledged: its
 outcome cannot be recorded, and it is tried again with the same digest. No
 revocation subject can be begun, so request closures, agent deletions and
-dead deliveries wait at their barrier; an access revocation fails with "try
-again" (§7), and the API's readiness probe answers 503. Key destruction
+dead deliveries wait at their barrier; an access revocation takes effect, and
+its record waits in state `recording` (SEC-3 above), and the API's readiness
+probe answers 503. Key destruction
 waits. With the standby away (degraded mode) outcomes, fences, the start of
 a revocation, reads and token revocations go on; reservations, seals, key
 creation and destruction, declared losses, the completion of a revocation
