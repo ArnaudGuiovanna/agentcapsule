@@ -14,8 +14,7 @@ import (
 // gone. Past a retention, the worker of their agent's host deletes them, a
 // bounded batch at a time, unless something still needs them:
 //   - content still held: an unread result is never purged (ADR 007, 022),
-//     nor is a record whose input or message content is still retained, which
-//     a replay of a dead letter needs;
+//     nor is a record whose input or message content is still retained;
 //   - a delivery still queued, a closure still fencing;
 //   - an audit event that names it (ADR 014): it goes once the audit's own
 //     retention removed the event;
