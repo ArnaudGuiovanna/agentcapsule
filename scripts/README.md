@@ -193,6 +193,10 @@ recovery after an immediate shutdown (not a physical power cut). All phases
 substitute. For a PostgreSQL install that is not system-wide, use
 `--pg-bin` and `--library-path`.
 
+`--integration-timeout-seconds SECONDS` sets the deadline for the full Go/race
+integration run, including compilation, and for each package in that run.
+It accepts a positive integer and defaults to 3600 seconds.
+
 `--llm-base-url URL --llm-model MODEL` adds a `llm-live` phase after the
 integration: `TestLive*` tests compiled with `-tags=llmlive` against a real
 OpenAI-compatible endpoint, for example a local Ollama
