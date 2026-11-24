@@ -187,14 +187,14 @@ def main():
             # the tests prove what they may and may not do.
             run("service-roles", [pg_bin / "psql", "-h", socket_dir, "-U", "agentcapsule_test", "-d", "postgres", "-v", "ON_ERROR_STOP=1",
                                   "-c", "CREATE ROLE agentcapsule_api LOGIN", "-c", "CREATE ROLE agentcapsule_worker LOGIN"])
-            # Each store test migrates a fresh schema. The control-plane suite
-            # took 39 minutes on the shared audit host and the expanded suite
-            # was still advancing through tenant tests at 40 minutes. Allow
-            # 50 minutes per package inside the one-hour integration phase.
-            command = ["go", "test", "-race", "-json", "-count=1", "-timeout=50m"]
+            # Every store test migrates a fresh schema. Let a long package
+            # use the remaining phase budget. The outer deadline includes
+            # compilation and stops the full process group on expiry.
+            integration_timeout = 60 * 60
+            command = ["go", "test", "-race", "-json", "-count=1", f"-timeout={integration_timeout}s"]
             # The 100-stream latency target is measured without competing package tests.
             stream_load = "^TestInvocationEventsLoad$"
-            run("integration", [*command, "-skip", stream_load, "./..."], timeout=3600, go_json=True)
+            run("integration", [*command, "-skip", stream_load, "./..."], timeout=integration_timeout, go_json=True)
             run("stream-load", ["go", "test", "-json", "-count=1", "-timeout=180s", "-run", stream_load, "./internal/api"],
                 timeout=300, go_json=True, extra_env={"AGENTCAPSULE_STREAM_LOAD": "1"})
             if args.llm_base_url:
