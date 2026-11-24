@@ -30,9 +30,13 @@ def main():
     parser.add_argument("--library-path", default=os.environ.get("PG_LIBRARY_PATH"))
     parser.add_argument("--native-tools", type=Path, help="Private native development headers, including libcryptsetup-dev")
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--integration-timeout-seconds", type=int, default=3600,
+                        help="Time limit for the full Go integration phase, including compilation (default: %(default)s seconds)")
     parser.add_argument("--llm-base-url", help="Optional real OpenAI-compatible endpoint (e.g. a local Ollama, http://127.0.0.1:11434/v1) for the llmlive phase")
     parser.add_argument("--llm-model", help="Upstream model for the llmlive phase; required with --llm-base-url")
     args = parser.parse_args()
+    if args.integration_timeout_seconds <= 0:
+        parser.error("--integration-timeout-seconds must be a positive integer")
     if bool(args.llm_base_url) != bool(args.llm_model):
         parser.error("--llm-base-url and --llm-model go together")
     pg_bin = args.pg_bin
@@ -190,13 +194,14 @@ def main():
             # Every store test migrates a fresh schema. Let a long package
             # use the remaining phase budget. The outer deadline includes
             # compilation and stops the full process group on expiry.
-            integration_timeout = 60 * 60
-            command = ["go", "test", "-race", "-json", "-count=1", f"-timeout={integration_timeout}s"]
+            go_race = ["go", "test", "-race", "-json", "-count=1"]
             # The 100-stream latency target is measured without competing package tests.
             stream_load = "^TestInvocationEventsLoad$"
-            run("integration", [*command, "-skip", stream_load, "./..."], timeout=integration_timeout, go_json=True)
+            run("integration", [*go_race, f"-timeout={args.integration_timeout_seconds}s", "-skip", stream_load, "./..."],
+                timeout=args.integration_timeout_seconds, go_json=True)
             run("stream-load", ["go", "test", "-json", "-count=1", "-timeout=180s", "-run", stream_load, "./internal/api"],
                 timeout=300, go_json=True, extra_env={"AGENTCAPSULE_STREAM_LOAD": "1"})
+            command = [*go_race, "-timeout=3600s"]
             if args.llm_base_url:
                 run("llm-live", [*command, "-tags=llmlive", "-run=^TestLive", "./internal/llmgateway", "./internal/llmservice"], timeout=300, go_json=True,
                     extra_env={"AGENTCAPSULE_TEST_LLM_BASE_URL": args.llm_base_url, "AGENTCAPSULE_TEST_LLM_MODEL": args.llm_model})
