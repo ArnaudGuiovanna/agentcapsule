@@ -97,13 +97,26 @@ jobs:
           Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
           Check-Valid-Until: no
           EOF
+          # The runner image can also be newer than the snapshot (on
+          # 2026-11-26 its libudev1 was, and libudev-dev could not install):
+          # prefer the snapshot's versions, downgrades included. glibc is never
+          # downgraded; the check below refuses a runner whose libc differs.
+          sudo tee /etc/apt/preferences.d/agentcapsule-snapshot >/dev/null <<'EOF'
+          Package: libc6 libc6-dev libc-bin libc-dev-bin locales
+          Pin: origin snapshot.ubuntu.com
+          Pin-Priority: 500
+
+          Package: *
+          Pin: origin snapshot.ubuntu.com
+          Pin-Priority: 1001
+          EOF
           sudo apt-get update
           # Bring the runner's packages to the snapshot's versions. The guest
           # image copies glibc, cryptsetup, e2fsprogs and their libraries from
           # this host, and the server bundle ships the snapshot's sources of
           # exactly those versions; the runner image can lag behind it.
-          sudo DEBIAN_FRONTEND=noninteractive apt-get upgrade --yes -o Dpkg::Options::=--force-confold
-          sudo apt-get install --yes --no-install-recommends \
+          sudo DEBIAN_FRONTEND=noninteractive apt-get upgrade --yes --allow-downgrades -o Dpkg::Options::=--force-confold
+          sudo apt-get install --yes --allow-downgrades --no-install-recommends \
             build-essential libcryptsetup-dev cryptsetup-bin e2fsprogs musl-tools cmake pkg-config \
             bison flex libelf-dev libssl-dev bc xz-utils skopeo libseccomp-dev mmdebstrap
           libc="$(dpkg-query -W -f='${Version}' libc6)"
