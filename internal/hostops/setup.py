@@ -107,6 +107,8 @@ def install_dependencies(dist,release):
         root = Path(tmp)/"packages"
         unpack(dist/DEBS,root)
         roots=read(root/"roots.json")
+        if Path("/etc/agentcapsule-private-userspace").is_file() and (root/"roots-userspace.json").is_file():
+            roots = sorted(set(roots + read(root/"roots-userspace.json")))
         if not roots or not all(re.fullmatch(r"[a-z0-9.+-]+=[A-Za-z0-9:.+~_-]+",p) for p in roots):
             raise ValueError("invalid version-locked packages")
         lists=Path(tmp)/"lists"
@@ -276,7 +278,21 @@ def worker_private_files(cfg):
     files=[(cfg.get("llm") or {}).get("receipt_key"),(cfg.get("directory") or {}).get("key")]
     files+=list(((cfg.get("transit") or {}).get("keys") or {}).values())
     files+=[rule.get("credentials_file") for rule in (cfg.get("registry") or {}).get("rules") or []]
-    uid,_=worker_ids()
+    uid,gid=worker_ids()
+    # make-certs.sh writes the client CA and certificate under umask 0077.
+    # Let the worker traverse its certificate directory and read these two
+    # public files. The operator retains control over an external PKI.
+    client=ETC/"interop/control-plane"
+    if (cfg.get("directory") or {}).get("key")==str(client/"directory.key") and (
+            client.is_dir() and not any(p.is_symlink() for p in [client,*client.parents])):
+        os.chown(client,0,gid)
+        client.chmod(0o750)
+        for name in ("directory-ca.pem","directory.crt"):
+            path=client/name
+            if not stat.S_ISREG(os.lstat(path).st_mode):
+                raise ValueError("expected a regular Directory certificate")
+            os.chown(path,0,gid)
+            path.chmod(0o640)
     for name in filter(None,files):
         path=Path(name)
         if any(p.is_symlink() for p in [path,*path.parents]):
@@ -386,6 +402,15 @@ def create_key(path,data):
     write_file(path,data)
 
 
+def export_login_file(name, mode):
+    # Only the CA/certificate and the initial operator enrollment cross the
+    # userspace boundary. Service-owned keys stay beneath the
+    # root-only runtime directory on the host.
+    export = Path("/run/agentcapsule-login")
+    if Path("/etc/agentcapsule-private-userspace").is_file() and export.is_dir():
+        write_file(export/name, (ETC/name).read_bytes(), mode)
+
+
 def api_tls(p):
     cert=ETC/"api.crt"
     key=ETC/"api.key"
@@ -399,6 +424,7 @@ def api_tls(p):
                 run("openssl","genpkey","-algorithm","EC","-pkeyopt","ec_paramgen_curve:P-256","-out",tmpkey)
                 install_file(tmpkey,key,0o600,user_id("agentcapsule-api"))
         issue_api_certificate(p)
+    export_login_file("api.crt", 0o644)
 
 
 def issue_api_certificate(p):
@@ -408,6 +434,7 @@ def issue_api_certificate(p):
             "-addext","subjectAltName=DNS:"+p["api_name"],"-addext","extendedKeyUsage=serverAuth",
             "-addext","basicConstraints=critical,CA:FALSE","-out",generated)
         install_file(generated,ETC/"api.crt")
+    export_login_file("api.crt", 0o644)
 
 
 # The certificates the installer generates last 365 days (L-14). Each update
@@ -639,6 +666,7 @@ def configure(p,version,initial):
 def issue_enrollment(p):
     path=ETC/"first-enrollment.token"
     run(ACTIVE/"agentcapsule-admin","issue-enrollment","-platform-account",p["platform_account"],"-token-file",path,env=db_env(p))
+    export_login_file("first-enrollment.token", 0o600)
     return {"enrollment_file":str(path)}
 
 

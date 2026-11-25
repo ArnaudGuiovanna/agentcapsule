@@ -10,20 +10,24 @@ import (
 
 const installHelp = `Usage: agentcapsule install [options]
 
-Install the signed server bundle for this CLI's release tag on Ubuntu 24.04
-amd64 with systemd and KVM. An unversioned CLI defaults to the latest stable
-release online. Run as root on the host or select an SSH target.
+Install the signed server bundle on this x86-64 Linux host with systemd and
+KVM. This CLI selects its release tag, or the latest stable release for an
+unversioned CLI. In a terminal, install asks for sudo if needed and reports
+progress until the demonstration agent responds.
 
   --ssh USER@HOST        Connect from this workstation using SSH and sudo -n
   --to TAG               Select an exact release tag
   --profile FILE         Read the installation profile JSON on the target
   --plan-only            Verify release metadata and return the operation ID
+  --json                 Print the operation receipt immediately (local root)
+  --non-interactive      Run without prompts or a terminal progress display
   --offline DIR          Read release assets from this directory on the target
   --trusted-root FILE    Use this trusted Sigstore root for offline verification
   --development-key FILE Trust a local public key for an offline -dev.N build
   --allow-older          Install a release older than this CLI's, or than the
                          highest release the host has installed
 
+  agentcapsule install
   agentcapsule install --ssh admin@host --plan-only
   agentcapsule install --ssh admin@host
   agentcapsule host operation wait host_ID --ssh admin@host
@@ -48,7 +52,8 @@ func runHostCommand(ctx context.Context, args []string, in io.Reader, out, errou
 	}
 	switch forward[0] {
 	case "install", "update", "rollback", "self", "host", "restore", "archive":
-		return true, hostops.Run(ctx, forward, in, out, errout)
+		allowPrompt := !slices.Contains(args, "--json") && !slices.Contains(args, "--non-interactive")
+		return true, hostops.Run(ctx, forward, in, out, errout, allowPrompt)
 	}
 	return false, nil
 }

@@ -105,7 +105,7 @@ jobs:
           sudo DEBIAN_FRONTEND=noninteractive apt-get upgrade --yes -o Dpkg::Options::=--force-confold
           sudo apt-get install --yes --no-install-recommends \
             build-essential libcryptsetup-dev cryptsetup-bin e2fsprogs musl-tools cmake pkg-config \
-            bison flex libelf-dev libssl-dev bc xz-utils skopeo libseccomp-dev
+            bison flex libelf-dev libssl-dev bc xz-utils skopeo libseccomp-dev mmdebstrap
           libc="$(dpkg-query -W -f='${Version}' libc6)"
           test "$libc" = "$(apt-cache policy libc6 | awk '/Candidate:/ {print $2}')"
 

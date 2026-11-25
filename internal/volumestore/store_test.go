@@ -21,6 +21,32 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/sandbox"
 )
 
+func TestExistingVolumeRootUnderSearchOnlyParent(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("requires a user subject to directory permissions")
+	}
+	parent := t.TempDir()
+	root := filepath.Join(parent, "host")
+	if err := os.Mkdir(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(parent, 0700) })
+	if err := os.Chmod(parent, 0111); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(root); err != nil {
+		t.Fatal(err)
+	}
+	// If the worker could have created the root, a retry must surface an
+	// inaccessible directory instead of silently skipping its fsync.
+	if err := os.Chmod(parent, 0333); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(root); !errors.Is(err, syscall.EACCES) {
+		t.Fatalf("expected parent fsync to require read access, got %v", err)
+	}
+}
+
 func fixture(t *testing.T) (*Store, Spec, []byte) {
 	t.Helper()
 	s, err := New(filepath.Join(t.TempDir(), "managed"))

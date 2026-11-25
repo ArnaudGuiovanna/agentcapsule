@@ -22,7 +22,7 @@ class HostOperationTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root=Path(temporary.name)
         self.api={"__name__":"host_test"}
-        for file in ("setup.py","diagnose.py","host.py"):
+        for file in ("setup.py","diagnose.py","portable.py","host.py"):
             exec(compile((HELPERS/file).read_bytes(),file,"exec"),self.api)
         self.state=self.root/"state"
         self.state.mkdir()
@@ -40,6 +40,78 @@ class HostOperationTests(unittest.TestCase):
         self.bundle=dict(schema="agentcapsule.bundle/v1",version=self.version,platform="ubuntu-24.04-amd64",migrations=["0002.sql"],commit="sample")
         self.sign()
 
+    def test_private_userspace_must_match_the_signed_index(self):
+        name = self.api["OS_MEDIA"]
+        image = self.assets/name
+        image.write_bytes(b"verified filesystem")
+        self.bundle["userspace"] = {"file":name,"sha256":self.api["sha"](image)}
+        self.sign()
+        image.write_bytes(b"changed after signing")
+        with self.assertRaisesRegex(ValueError,"digest mismatch"):
+            self.api["stage"](self.request,manifest_only="userspace")
+
+    def test_legacy_media_cannot_install_native_packages_on_another_distribution(self):
+        with patch.dict(self.api, PRIVATE_OS=self.root/"os", portable_host_preflight=lambda path: None), \
+                patch("os.geteuid",return_value=0), patch("platform.freedesktop_os_release",return_value={"ID":"debian"}):
+            with self.assertRaisesRegex(ValueError,"only the Ubuntu 24.04"):
+                self.api["main"](["install","--offline",str(self.assets),"--development-key",str(self.public)],
+                                 self.version,outer=True)
+        self.assertFalse((self.root/"os/system").exists())
+
+    def test_private_plan_then_apply_keep_one_operation_and_pin_only_signed_userspace(self):
+        name = self.api["OS_MEDIA"]
+        image = self.assets/name
+        image.write_bytes(b"verified filesystem")
+        self.bundle["userspace"] = {"file":name,"sha256":self.api["sha"](image)}
+        self.sign()
+        argv = ["install","--offline",str(self.assets),"--development-key",str(self.public)]
+        private = self.root/"os"
+        def create(media, profile, version, args, pki):
+            self.assertEqual(media.read_bytes(),b"verified filesystem")
+            (private/"system").mkdir()
+        reports = []
+        def enter(args, version):
+            reports.append(self.api["main"](args,version))
+            raise SystemExit(0)
+        with patch.dict(self.api, PRIVATE_OS=private, ETC=self.root/"etc", portable_host_preflight=lambda path: None,
+                        HELPER_SOURCE=b"", create_private_os=create, boot_private_os=lambda: None,
+                        enter_userspace=enter, preflight=lambda: None, launch=lambda _: None), patch("os.geteuid",return_value=0):
+            plan = self.api["main"](argv+["--plan-only"],self.version,outer=True)
+            self.assertEqual(plan["state"],"planned")
+            self.assertFalse((private/"system").exists())
+            self.assertFalse(list((self.state/"inputs").rglob(self.api["SERVER"])))
+            with self.assertRaises(SystemExit):
+                self.api["main"](argv,self.version,outer=True)
+            self.assertEqual(reports[0]["operation_id"],plan["operation_id"])
+            self.assertEqual(reports[0]["state"],"queued")
+
+    def test_existing_native_install_keeps_its_backend(self):
+        self.api["ACTIVE"].mkdir()
+        with patch.dict(self.api, PRIVATE_OS=self.root/"os"):
+            self.assertEqual(self.api["portable_command"](
+                type("Args",(),{"command":"install"})(), ["install"],self.version), (False,None))
+
+    def test_queued_legacy_install_resumes_natively_before_activation(self):
+        directory = self.api["OPERATIONS"] / ("host_" + "a"*32)
+        self.api["save"](directory/"status.json", {"action":"install","state":"queued"})
+        with patch.dict(self.api, PRIVATE_OS=self.root/"os"):
+            self.assertEqual(self.api["portable_command"](
+                type("Args",(),{"command":"install"})(), ["install"],self.version), (False,None))
+
+    def test_only_completed_activation_changes_the_bootstrap(self):
+        private = self.root/"os"
+        op = "host_"+32*"b"
+        digest = "c"*64
+        self.api["save"](private/"versions"/self.version,digest)
+        self.api["save"](self.state/"active-release.json",{"operation_id":op,"version":self.version})
+        status = self.api["OPERATIONS"]/op/"status.json"
+        with patch.dict(self.api, PRIVATE_OS=private):
+            self.api["save"](status,{"state":"failed"})
+            self.assertIsNone(self.api["seed_for_boot"]())
+            self.api["save"](status,{"state":"succeeded"})
+            self.assertEqual(self.api["seed_for_boot"](),digest)
+            self.assertIn(str(private/"seeds"/digest),self.api["portable_program"]("pasta")[0])
+
     def sign(self):
         manifest=self.assets/"agentcapsule-bundle.json"
         manifest.write_text(json.dumps(self.bundle))
@@ -54,6 +126,53 @@ class HostOperationTests(unittest.TestCase):
         self.assertFalse((self.state/"downloads"/self.version/self.api["SERVER"]).exists())
         self.api["stage"](self.request)
         self.assertTrue((self.state/"downloads"/self.version/self.api["SERVER"]).is_file())
+
+    def test_terminal_install_joins_and_resumes_the_same_operation(self):
+        import contextlib
+        import fcntl
+        from unittest.mock import Mock
+        args = ["install", "--to", self.version, "--offline", str(self.assets),
+                "--development-key", str(self.public)]
+        launch = Mock()
+        with patch.dict(self.api, preflight=lambda: None, launch=launch, HELPER_SOURCE=b""):
+            receipt = self.api["main"](args, self.version)
+            op = self.api["opdir"](receipt["operation_id"])
+            self.assertEqual(receipt["state"], "queued")
+            for initial in ("failed", "running", "queued"):
+                with self.subTest(initial=initial):
+                    self.api["state"](op, state=initial, phase="dependencies", completed=["verify-release"])
+                    launch.reset_mock()
+                    def complete_after_submission(_):
+                        with (self.state/"submit.lock").open("a+") as lock:
+                            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        self.api["state"](op, state="succeeded", phase="complete", invocation_verified=True,
+                                          url="https://host:9443")
+                    log = io.StringIO()
+                    with patch("time.sleep", side_effect=complete_after_submission), contextlib.redirect_stderr(log):
+                        done = self.api["main"](args + ["--follow-install"], self.version)
+                    launch.assert_called_once_with(op)
+                    self.assertEqual(done["completed"], ["verify-release"])
+                    for text in (op.name, "dependencies", "https://host:9443", "agent responded"):
+                        self.assertIn(text, log.getvalue())
+            launch.reset_mock()
+            self.assertEqual(self.api["main"](args + ["--follow-install"], self.version), done)
+            launch.assert_not_called()
+            self.api["save"](self.state/"active-release.json", {"version": self.version, "operation_id": op.name})
+            with patch.dict(self.api, current=lambda: self.version):
+                self.assertEqual(self.api["main"](["install", "--follow-install"], "v1.0.0"), done)
+            launch.assert_not_called()
+
+    def test_interactive_install_surfaces_failed_phase_and_refuses_incomplete_success(self):
+        import contextlib
+        op = self.root / ("host_" + "1"*32)
+        op.mkdir()
+        self.api["state"](op, state="failed", phase="invocation", reason="agent timed out")
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaisesRegex(ValueError, "invocation: agent timed out"):
+                self.api["wait_for_operation"](op, True)
+            self.api["state"](op, state="succeeded", url="https://host:9443", invocation_verified=False)
+            with self.assertRaisesRegex(ValueError, "lacks a verified demonstration response"):
+                self.api["wait_for_operation"](op, True)
 
     def test_changed_payload_refused_before_activation(self):
         (self.assets/self.api["SERVER"]).write_bytes(b"changed")

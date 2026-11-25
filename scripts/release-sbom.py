@@ -22,9 +22,9 @@ syft, pinned by scripts/release-tools.json, catalogs each artifact:
                        ext4 image is unpacked with debugfs, without root, and
                        cataloged (Alpine, Debian and Python packages, Go
                        binaries).
-  --host-assets DIR    the server archive and its offline Ubuntu package
-                       archive. Attribute every .deb to the distribution in
-                       bundle.json and verify it against host-packages.json.
+  --host-assets DIR    the server archive, its offline Ubuntu packages and
+                       the private userspace. Verify each package inventory
+                       against the signed distribution's build inputs.
 
 SBOMs are deterministic: their creation time is SOURCE_DATE_EPOCH (or the
 commit's time) and their namespace derives from the artifact's SHA-256, which
@@ -466,11 +466,26 @@ def main(argv=None):
                 raise ValueError("host package index differs from the server manifest")
             package_index = json.loads(index)
             records = package_index["packages"] if isinstance(package_index, dict) else package_index
-            for artifact in (server, a.host_assets / "agentcapsule-packages-linux-amd64.tar"):
+            package_tar = a.host_assets / "agentcapsule-packages-linux-amd64.tar"
+            for artifact in (server, package_tar):
                 document = syft_spdx(syft, f"file:{artifact.resolve()}", artifact.name, manifest["version"], env)
                 if artifact != server:
                     attribute_host_packages(document, artifact, records, manifest["platform"])
                 write(artifact.name, manifest["version"], sha256(artifact), document)
+            if "userspace" in manifest:
+                runtime = a.host_assets / "agentcapsule-userspace-linux-amd64.tar.gz"
+                digest = sha256(runtime)
+                if manifest["userspace"] != {"file": runtime.name, "sha256": digest}:
+                    raise ValueError("private userspace differs from its server manifest")
+                document = syft_spdx(syft, f"file:{runtime.resolve()}", runtime.name, manifest["version"], env)
+                with tarfile.open(package_tar) as packages:
+                    expected = set(json.load(packages.extractfile("roots-userspace.json")))
+                installed = {p["name"] + "=" + p["versionInfo"] for p in document["packages"]
+                             if any(ref.get("referenceType") == "purl" and ref["referenceLocator"].startswith("pkg:deb/ubuntu/")
+                                    for ref in p.get("externalRefs", []))}
+                if not expected or installed != expected:
+                    raise ValueError(f"private userspace SBOM differs from its package lock: {sorted(installed ^ expected)}")
+                write(runtime.name, manifest["version"], digest, document)
         for binary in a.binary:
             info = go_build_info(a.go, binary)
             version = a.version or info["version"] or "untagged"

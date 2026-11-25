@@ -225,6 +225,25 @@ class ImageArchiveTest(Temporary):
             self.assertRegex(ref, r"@sha256:[a-f0-9]{64}$")
 
 
+class UserspaceTest(Temporary):
+    def archive(self, packages):
+        status = "\n\n".join(f"Package: {name}\nStatus: install ok installed\n"
+                             f"Architecture: amd64\nVersion: {version}" for name, version in packages)
+        archive = self.dir / "userspace.tar"
+        BUNDLE.write_tar(archive, {"./var/lib/dpkg/status": status.encode()}, EPOCH)
+        return archive
+
+    def test_locks_the_installed_base_and_its_dependencies(self):
+        names = (*BUNDLE.USERSPACE_PACKAGES, "libc6")
+        archive = self.archive([(name, "2:3.4-1ubuntu1") for name in names])
+        self.assertEqual(BUNDLE.userspace_packages(archive), sorted(name + "=2:3.4-1ubuntu1" for name in names))
+
+    def test_refuses_an_incomplete_root(self):
+        archive = self.archive([("apt", "1.0")])
+        with self.assertRaisesRegex(ValueError, "incomplete private userspace"):
+            BUNDLE.userspace_packages(archive)
+
+
 class PackageArchiveTest(Temporary):
     def setUp(self):
         super().setUp()
@@ -252,9 +271,23 @@ class PackageArchiveTest(Temporary):
             return "\n".join(f"{k}: {v}" for k, v in fields.items()) + "\nArchitecture: amd64"
         return "\n".join(f"{k}: {fields[k]}" for k in argv[3:] if k in fields)
 
-    def archive(self):
+    def archive(self, userspace_roots=()):
         with patch.object(BUNDLE, "run", self.apt), patch.object(BUNDLE, "output", self.dpkg):
-            return BUNDLE.package_archive(self.out, self.src, self.work, EPOCH)
+            return BUNDLE.package_archive(self.out, self.src, self.work, EPOCH, userspace_roots)
+
+    def test_upgrades_private_userspace_with_its_exact_packages_only_inside_the_private_root(self):
+        self.sources["systemd-container"] = "systemd (1.0-1)"
+        roots = ["systemd-container=1.0-1"]
+        _, sources = self.archive(roots)
+        with tarfile.open(self.out / "agentcapsule-packages-linux-amd64.tar") as tar:
+            self.assertEqual(json.load(tar.extractfile("roots-userspace.json")), roots)
+            self.assertNotIn(roots[0], json.load(tar.extractfile("roots.json")))
+        self.assertIn("systemd=1.0-1", sources)
+        self.assertIn(roots[0], self.commands[0])
+
+    def test_rejects_a_userspace_version_missing_from_the_offline_repository(self):
+        with self.assertRaisesRegex(ValueError, "lacks an exact userspace package"):
+            self.archive(["systemd=9.9"])
 
     def test_downloads_the_closure_offline_and_indexes_it(self):
         records, sources = self.archive()

@@ -16,6 +16,7 @@ version tag. A maintainer reviews it, then publishes it.
 | `agentcapsule-api`, `agentcapsule-worker`, `agentcapsule-admin`, `agentcapsule-authority`, `agentcapsule-slim-bridge` | The host programs, linux/amd64, linked dynamically against glibc 2.39 or newer (Ubuntu 24.04). The worker also needs `libcryptsetup.so.12`. |
 | `agentcapsule-harness` | The harness package tool (pack, push, sign, verify), static. |
 | `install.sh` | The `curl \| sh` installer of the workstation CLI ([Verify a release](#verify-a-release)). |
+| `agentcapsule-userspace-linux-amd64.tar.gz` | Private Linux filesystem for a new portable installation, when listed in the signed server manifest. Its SPDX inventory covers the installed packages. The matching package sources are in the source archives and their notices are under `/usr/share/doc` inside the filesystem. |
 | `cli-cheatsheet.pdf` | English quick reference for installing the PaaS and operating the CLI. The v0.1.1 tag contains the original French manual in its signed file set. [Read the cheat sheet](cli-cheatsheet.md) |
 | `formal-summary.json`, `p1-*.json`, `p2-certificate.json` | Formal model results and evidence prepared for the tag. The signed checksum index covers the evidence and documentation shipped with that version. |
 | `oci-<service>.spdx.json` | Inventory of the exact container image distributed for the service. |
@@ -394,12 +395,16 @@ curl -fsSL https://github.com/ArnaudGuiovanna/agentcapsule/releases/download/v0.
 The script selects the executable from `uname` (Linux or macOS, amd64 or
 arm64; Windows under Git Bash or MSYS2). It takes the latest release unless
 `--version` names one, and downloads the executable with `SHA256SUMS`. It
-needs `cosign` 2.4 or newer and `openssl` on PATH (S-17): it verifies
+needs `curl` and `openssl`, and verifies the signature with `cosign` 2.4 or
+newer (S-17). Without a cosign on PATH it downloads the cosign release file
+for the system (cosign 3.1.4, the version of `scripts/release-tools.json`),
+runs it only when its SHA-256 is the one written in the script, and removes
+it afterwards; Windows on arm64 has no such file and needs its own cosign. It verifies
 `SHA256SUMS.sigstore.json` against the release workflow's identity for that
 exact tag, the `push` trigger, the repository and the tag's ref, then reads
 the certificate with openssl and requires the `release` environment
 ([above](#the-release-environment)). It stops on any failure, and without
-cosign. The executable is installed only when `SHA256SUMS` lists its name
+a verified cosign. The executable is installed only when `SHA256SUMS` lists its name
 exactly once with its digest. The default directory is `~/.local/bin`, or
 `/usr/local/bin` as root; `--dir` selects another. An existing CLI is
 replaced only after every check passes. `--require-signature`, the default,

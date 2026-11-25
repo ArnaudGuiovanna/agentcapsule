@@ -19,6 +19,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 var (
@@ -161,7 +163,16 @@ func New(root string) (*Store, error) {
 		if !st.IsDir() || st.Mode().Perm() != 0700 || st.Sys().(*syscall.Stat_t).Uid != uint32(os.Geteuid()) {
 			return nil, ErrState
 		}
-		if err = syncDir(filepath.Dir(p)); err != nil {
+		parent := filepath.Dir(p)
+		if err = syncDir(parent); err != nil {
+			// The installer owns the existing root's parent (0711). The
+			// worker can traverse it but cannot create or sync entries in it.
+			// Keep syncing any parent this process could have modified,
+			// including after a failed or concurrent initialization.
+			if p == abs && errors.Is(err, unix.EACCES) &&
+				errors.Is(unix.Faccessat(unix.AT_FDCWD, parent, unix.W_OK, unix.AT_EACCESS), unix.EACCES) {
+				continue
+			}
 			return nil, err
 		}
 	}

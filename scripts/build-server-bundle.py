@@ -31,6 +31,9 @@ PACKAGES = ("postgresql-16", "docker.io", "docker-compose-v2", "pgbackrest", "rc
 BASE_UPGRADES = ("systemd", "systemd-sysv", "udev", "libnss-systemd", "libpam-systemd",
                  "systemd-resolved", "systemd-timesyncd", "dbus", "dbus-user-session")
 SNAPSHOT = "https://snapshot.ubuntu.com/ubuntu/20261113T000000Z"
+USERSPACE = "agentcapsule-userspace-linux-amd64.tar.gz"
+USERSPACE_PACKAGES = ("systemd-sysv", "dbus", "systemd-container", "libnss-myhostname",
+                      "python3", "apt", "ca-certificates", "ubuntu-keyring", "passt", "iproute2")
 
 
 def run(*args, **kw):
@@ -74,6 +77,56 @@ def tree(directory,prefix):
 
 def json_bytes(value):
     return (json.dumps(value,indent=2,sort_keys=True)+"\n").encode()
+
+
+def userspace_packages(archive):
+    """Lock every installed binary package, including the base system, for later upgrades."""
+    with tarfile.open(archive) as tar:
+        member, = (m for m in tar if m.name.removeprefix("./") == "var/lib/dpkg/status")
+        if not member.isfile():
+            raise ValueError("missing userspace package database")
+        status = tar.extractfile(member).read().decode()
+    packages = {}
+    for paragraph in status.strip().split("\n\n"):
+        fields = dict(line.split(": ", 1) for line in paragraph.splitlines()
+                      if not line.startswith((" ", "\t")) and ": " in line)
+        if fields.get("Status") != "install ok installed":
+            raise ValueError(f"incomplete userspace package: {fields.get('Package')}")
+        package = fields["Package"]
+        version = fields["Version"]
+        if (not re.fullmatch(r"[a-z0-9][a-z0-9.+-]*", package) or package in packages or
+                not re.fullmatch(r"[0-9][A-Za-z0-9:.+~-]*", version) or fields["Architecture"] not in ("all", "amd64")):
+            raise ValueError(f"unexpected userspace package: {package}")
+        packages[package] = version
+    if set(USERSPACE_PACKAGES) - packages.keys():
+        raise ValueError("incomplete private userspace")
+    return [name + "=" + packages[name] for name in sorted(packages)]
+
+
+def userspace_archive(out, work, epoch):
+    """Build under a private mount namespace. Keep dpkg ownership, modes and links."""
+    mirrors = [f"deb [check-valid-until=no] {SNAPSHOT} {suite} main universe"
+               for suite in ("noble", "noble-updates", "noble-security")]
+    prefix = ["sudo", "-n"] if os.geteuid() else []
+    tar = work / "userspace.tar"
+    with tar.open("xb") as raw:
+        run(*prefix, "env", f"SOURCE_DATE_EPOCH={epoch}", "mmdebstrap", "--mode=root",
+            "--variant=minbase", "--architectures=amd64", "--keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg",
+            "--include=" + ",".join(USERSPACE_PACKAGES), "--skip=output/mknod",
+            "--aptopt=Acquire::Retries 4", "--aptopt=APT::Update::Error-Mode any",
+            '--setup-hook=set -e; for d in bin sbin lib lib64; do mkdir -p "$1/usr/$d"; ln -s "usr/$d" "$1/$d"; done',
+            '--customize-hook=set -e; lib="$1/usr/lib/x86_64-linux-gnu"; for tool in systemd-nspawn pasta; do '
+            '"$lib/ld-linux-x86-64.so.2" --library-path "$lib/systemd:$lib" "$1/usr/bin/$tool" --version >&2; done',
+            '--customize-hook=chroot "$1" python3 -I -c "import fcntl, hashlib, ssl, tarfile, urllib.request"',
+            '--customize-hook=rm -f "$1/etc/hostname" "$1/etc/resolv.conf" "$1/var/lib/dbus/machine-id"; : > "$1/etc/machine-id"',
+            '--customize-hook=printf "127.0.0.1 localhost\n::1 localhost\n" > "$1/etc/hosts"',
+            "noble", "-", *mirrors, stdout=raw)
+    packages = userspace_packages(tar)
+    with tar.open("rb") as src, (out / USERSPACE).open("xb") as raw:
+        with gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=epoch, compresslevel=3) as gz:
+            shutil.copyfileobj(src, gz, 1 << 20)
+    tar.unlink()
+    return packages
 
 
 def runtime_files(dist,kernel,vmm):
@@ -130,14 +183,14 @@ def image_archive(out,work,epoch):
     return metadata
 
 
-def package_archive(out,src,work,epoch):
+def package_archive(out,src,work,epoch,userspace_roots=()):
     debdir=work/"debs"
     debdir.mkdir()
     (debdir/"partial").mkdir()
     # Resolve everything including dependencies already installed on this
     # runner. The host uses only the downloaded signed release artifacts.
     run("apt-get","-o","Debug::NoLocking=true","-o","Dir::State::status=/dev/null","-o","Dir::Cache::archives="+str(debdir),
-        "--yes","--download-only","--no-install-recommends","install",*PACKAGES,*BASE_UPGRADES)
+        "--yes","--download-only","--no-install-recommends","install",*PACKAGES,*BASE_UPGRADES,*userspace_roots)
     records=[]
     index=[]
     sources=set()
@@ -158,6 +211,10 @@ def package_archive(out,src,work,epoch):
     files={f.name:f for f in debdir.glob("*.deb")}
     files["Packages"]=("\n".join(index)+"\n").encode()
     files["roots.json"]=json_bytes([r["package"]+"="+r["version"] for r in records if r["package"] in PACKAGES])
+    if userspace_roots:
+        if set(userspace_roots) - {r["package"]+"="+r["version"] for r in records}:
+            raise ValueError("offline repository lacks an exact userspace package")
+        files["roots-userspace.json"]=json_bytes(userspace_roots)
     write_tar(out/"agentcapsule-packages-linux-amd64.tar",files,epoch)
     # Match ELF files embedded in the guest, and libc linked statically by
     # capsule-adapter, to the exact source versions on the build machine.
@@ -263,12 +320,14 @@ def main():
         work=Path(tmp)
         src=work/"source"
         src.mkdir()
-        records,sources=package_archive(a.out,src,work,epoch)
+        userspace_roots=userspace_archive(a.out,work,epoch)
+        records,sources=package_archive(a.out,src,work,epoch,userspace_roots)
         images=image_archive(a.out,work,epoch)
         files["offline-images.json"]=json_bytes(images)
         files["host-packages.json"]=json_bytes(dict(snapshot=SNAPSHOT,packages=records))
         manifest={"schema":"agentcapsule.bundle/v1","version":build["version"],"commit":build["commit"],
                   "platform":"ubuntu-24.04-amd64","protocol":"v1","migration_mode":"offline-exact-history","rolling_schema":1,
+                  "userspace":{"file":USERSPACE,"sha256":digest(a.out/USERSPACE)},
                   "binary_rollback_epoch":"agentcapsule-state/v1",
                   "migration_ledger":json.loads(output(files["agentcapsule-admin"],"migration-manifest")),
                   "migrations":[p.name for p in sorted((ROOT/"internal/controlplane/migrations").glob("*.sql"))],

@@ -19,7 +19,12 @@ DynamicUser=yes
 EnvironmentFile=/etc/agentcapsule/oidc-edge.env
 LoadCredential=tls.crt:/etc/agentcapsule/oidc-tls/tls.crt
 LoadCredential=tls.key:/etc/agentcapsule/oidc-tls/tls.key
-ExecStart=/opt/agentcapsule/agentcapsule-api oidc-edge -listen ${OIDC_LISTEN} -upstream 127.0.0.1:9445 -tls-cert %d/tls.crt -tls-key %d/tls.key -tls-server-name ${OIDC_NAME}
+# systemd can use a 0440 ACL to grant DynamicUser access to credentials.
+# Keep the key owned by this invocation's account with its required mode.
+RuntimeDirectory=agentcapsule-oidc-edge
+RuntimeDirectoryMode=0700
+ExecStartPre=/usr/bin/install -m 0400 %d/tls.key %t/agentcapsule-oidc-edge/tls.key
+ExecStart=/opt/agentcapsule/agentcapsule-api oidc-edge -listen ${OIDC_LISTEN} -upstream 127.0.0.1:9445 -tls-cert %d/tls.crt -tls-key %t/agentcapsule-oidc-edge/tls.key -tls-server-name ${OIDC_NAME}
 Restart=on-failure
 RestartSec=3
 UMask=0077

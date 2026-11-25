@@ -4,7 +4,7 @@ Use the portable `agentcapsule` binary on the administrator's workstation. A pla
 
 | Responsibility | Entry point | Where authorization is checked |
 |---|---|---|
-| Install, upgrade, inspect host services, archive and restore | `install`, `update`, `host`, `archive`, `restore` | On the Ubuntu host, locally as root or through `--ssh USER@HOST` and noninteractive sudo |
+| Install, upgrade, inspect host services, archive and restore | `install`, `update`, `host`, `archive`, `restore` | On the Linux host. The portable installer can request sudo in a local terminal. Other host operations run as root locally or through `--ssh USER@HOST` and noninteractive sudo |
 | Enroll an operator, create an organization, set quotas, approve a system image | Platform context over HTTPS | Platform credential and current revocation state |
 | Manage Acme, providers, deployments, MonApp and permissions | Organization context over HTTPS | Organization, role, scopes and effective assignments |
 | Accept an invitation, invoke an agent, read a result | MonApp's public HTTP contract | Member's verified OIDC identity and current rights |

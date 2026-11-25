@@ -28,22 +28,37 @@ Agent Capsule is a self-hosted platform as a service (PaaS) for running persiste
 
 | Component | Requirements and interfaces |
 |---|---|
-| Server | One Ubuntu 24.04 x86-64 host with KVM, systemd, cgroups v2 and persistent local storage. The reference configuration is 8 vCPU, 24 GB RAM and 200 GB NVMe. |
+| Server | One x86-64 Linux host with KVM, systemd, cgroup v2 and persistent local storage. The v0.1.0 and v0.1.1 server bundles require Ubuntu 24.04. The reference configuration is 8 vCPU, 24 GB RAM and 200 GB NVMe. |
 | Control plane | HTTPS API, PostgreSQL and a worker that manages Firecracker. Operators install and maintain the platform on the host with the CLI. Applications use the API to provision and invoke agents. |
 | Administration | CLI for Linux, macOS and Windows on amd64 and arm64. It supports installation plans, diagnostics, updates, backup checks and restore tests. |
 | Recovery | Configure off-host backups for the database and agent volumes. The reference deployment has one host. Production-host qualification and recovery between two physical hosts remain open. |
 
 ## Installation
 
-Open a root shell on the Ubuntu 24.04 x86-64 server that will run your agents. The host needs KVM, systemd with cgroup v2, and persistent storage. Have `curl`, `openssl` and a trusted `cosign` 2.4 or later in the shell's PATH. Download the CLI from GitHub and use it on this server to install the matching PaaS release.
+Download the CLI on the machine that will run the agents. The installer needs `curl` and `openssl`. It verifies the release signature with your `cosign` 2.4 or later, or with a pinned cosign that it downloads and checks when none is installed.
 
 ```sh
-curl -fsSLo install-agentcapsule.sh https://github.com/ArnaudGuiovanna/agentcapsule/releases/latest/download/install.sh &&
-  sh install-agentcapsule.sh --require-signature --dir /usr/local/bin
-/usr/local/bin/agentcapsule install
+releases=https://github.com/ArnaudGuiovanna/agentcapsule/releases
+curl -fsSLo install-agentcapsule.sh "$releases/latest/download/install.sh" &&
+  sh install-agentcapsule.sh --require-signature --dir "$HOME/.local/bin"
+export PATH="$HOME/.local/bin:$PATH"
+agentcapsule version
 ```
 
-The CLI installs the platform services and tests an invocation on the bundled demonstration agent. Copy the `operation_id` from its output and run `agentcapsule host operation wait host_ID` in the same shell, replacing `host_ID` with that value. A successful installation reports `state: succeeded` and `invocation_verified: true`. The first echo works without a model-provider key. To administer a different server from a workstation, add `--ssh admin@host` to the host commands. [Read the CLI cheat sheet](docs/cli-cheatsheet.md) · [Host installation](docs/cli-host.md)
+**With the v0.1.0 or v0.1.1 CLI**, run these commands on Ubuntu 24.04. Replace `HOST_ID` with the `operation_id` printed by the first command.
+
+```sh
+sudo "$(command -v agentcapsule)" install
+sudo "$(command -v agentcapsule)" host operation wait HOST_ID
+```
+
+**With the portable installer on this branch**, a matching release must include the signed asset `agentcapsule-userspace-linux-amd64.tar.gz`. Run the following in your normal terminal on the Linux server.
+
+```sh
+agentcapsule install
+```
+
+The CLI requests sudo when needed, starts the platform services and waits for the demonstration agent to answer. The terminal shows the API URL. In scripts, run as root with `--json` to obtain an operation ID immediately. The completed receipt reports `state: succeeded` and `invocation_verified: true`. The demonstration works without a model-provider key. [Host requirements and installation modes](docs/cli-host.md) · [CLI cheat sheet](docs/cli-cheatsheet.md)
 
 ## Technical documentation
 

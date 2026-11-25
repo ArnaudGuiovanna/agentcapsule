@@ -191,8 +191,11 @@ def now():
 
 
 def sha(path):
+    h = hashlib.sha256()
     with path.open("rb") as f:
-        return hashlib.file_digest(f, "sha256").hexdigest()
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def current():
@@ -326,6 +329,22 @@ def checksums(path, pinned_digest=None):
     return sums
 
 
+def copy_local_file(path, dest, limit):
+    # Check the opened file and bound the bytes copied even if the operator's
+    # source changes, or has a zero stat size (e.g. a procfs file).
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as src:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
+            raise ValueError("expected a regular file within the size limit: " + str(path))
+        copied = 0
+        while chunk := src.read(min(1 << 20, limit - copied + 1)):
+            copied += len(chunk)
+            if copied > limit:
+                raise ValueError("asset exceeds limit: " + str(path))
+            dest.write(chunk)
+
+
 def stage(request, manifest_only=False):
     version = request["version"]
     uri = f"https://github.com/{REPO}/releases/download/{version}/"
@@ -382,11 +401,9 @@ def verify_assets(request,manifest_only,version,uri,dest):
             return target
         if offline:
             # Copy into root-only storage before verification and use.
-            with (offline / name).open("rb") as src, tempfile.NamedTemporaryFile(dir=dest, delete=False) as tmp:
+            with tempfile.NamedTemporaryFile(dir=dest, delete=False) as tmp:
                 try:
-                    if os.fstat(src.fileno()).st_size > maxsize:
-                        raise ValueError("asset exceeds limit")
-                    shutil.copyfileobj(src, tmp)
+                    copy_local_file(offline / name, tmp, maxsize)
                     tmp.flush()
                     if digest and sha(Path(tmp.name)) != digest:
                         raise ValueError("offline asset digest mismatch")
@@ -446,18 +463,28 @@ def verify_assets(request,manifest_only,version,uri,dest):
     manifest = read(fetch("agentcapsule-bundle.json", digests["agentcapsule-bundle.json"], 8 << 20))
     if manifest["schema"]!="agentcapsule.bundle/v1" or manifest["version"]!=version or manifest["platform"]!="ubuntu-24.04-amd64":
         raise ValueError("incompatible server distribution")
-    installed = read(ACTIVE / "bundle.json") if current() else {}
-    before = installed.get("migrations", [])
+    userspace = manifest.get("userspace")
+    if userspace is not None and (not isinstance(userspace,dict) or
+            userspace.get("file") != "agentcapsule-userspace-linux-amd64.tar.gz" or
+            not digests.get(userspace["file"]) or userspace.get("sha256") != digests[userspace["file"]]):
+        raise ValueError("invalid userspace descriptor in signed release")
     origin = {"version":version, "signer":signer, "manifest_sha256":digests["agentcapsule-bundle.json"]}
     activated = dest / "activated-origin.json"
     if activated.is_file() and read(activated) != origin:
         raise ValueError("release signing identity or manifest changed since activation")
+    if manifest_only == "userspace":
+        write_file(pinned,fingerprint.encode())
+        if userspace:
+            return fetch(userspace["file"], userspace["sha256"])
+        return None
+    installed = read(ACTIVE / "bundle.json") if current() else {}
+    before = installed.get("migrations", [])
     rollback = request.get("action") == "rollback"
     migration_check = check_binary_rollback(request, manifest, origin) if rollback else check_migration_plan(installed, manifest)
     save(dest / "verified-origin.json", origin)
     write_file(pinned,fingerprint.encode())
     if manifest_only:
-        return {"added_migrations":manifest["migrations"][len(before):],"server_sha256":digests[SERVER],
+        return {**({"userspace_sha256":userspace["sha256"]} if userspace else {}), "added_migrations":manifest["migrations"][len(before):],"server_sha256":digests[SERVER],
                 "backup_required":bool(installed),"maintenance_window":bool(installed),"commit":manifest["commit"],
                 "migration_check":migration_check, **({"binary_rollback_compatible":True} if rollback else {})}
     for name in ((SERVER,) if rollback else (SERVER, DEBS, IMAGES)):
@@ -738,11 +765,37 @@ def latest():
     return tag
 
 
-def main(argv, cli_version):
+def wait_for_operation(directory, progress=False):
+    previous = None
+    if progress:
+        print(f"Following operation {directory.name}", file=sys.stderr, flush=True)
+    while True:
+        report = read(directory / "status.json")
+        status = report["state"]
+        phase = report.get("phase") or status
+        if progress and phase != previous:
+            print(f"  {phase}", file=sys.stderr, flush=True)
+            previous = phase
+        if status == "failed":
+            print(json.dumps(report), flush=True)
+            if progress:
+                raise ValueError(f"{directory.name} failed during {phase}: {report.get('reason') or 'see the system journal'}")
+            raise ValueError("host operation failed")
+        if status == "succeeded":
+            if progress:
+                if not report.get("invocation_verified") or not report.get("url"):
+                    raise ValueError(f"{directory.name} lacks a verified demonstration response or platform URL")
+                print(f"Platform: {report['url']}\nDemonstration agent responded.", file=sys.stderr, flush=True)
+            return report
+        time.sleep(2)
+
+
+def main(argv, cli_version, *, outer=False, planned_portable=False):
     parser = argparse.ArgumentParser(prog="agentcapsule")
     groups = parser.add_subparsers(dest="command", required=True)
     install = groups.add_parser("install")
     install.add_argument("--plan-only", action="store_true")
+    install.add_argument("--follow-install", action="store_true", help=argparse.SUPPRESS)
     updates = groups.add_parser("update").add_subparsers(dest="sub", required=True)
     check = updates.add_parser("check")
     check.add_argument("--to")
@@ -782,6 +835,10 @@ def main(argv, cli_version):
                 item.add_argument("--restore-id", required=True)
                 item.add_argument("--verify-starter", action="store_true", help="invoke the original installation probe after restoring it")
     args = parser.parse_args(argv)
+    if outer:
+        handled, receipt = portable_command(args, argv, cli_version)
+        if handled:
+            return receipt
     if args.command == "update" and args.sub == "check":
         target = args.to or latest()
         if not re.fullmatch(VERSION, target):
@@ -803,19 +860,24 @@ def main(argv, cli_version):
             if args.refresh_helper:
                 write_file(directory/"helper.py",HELPER_SOURCE)
             submit(directory)
-        while args.sub == "wait":
-            report = read(directory / "status.json")
-            if report["state"] == "failed":
-                print(json.dumps(report), flush=True)
-                raise ValueError("host operation failed")
-            if report["state"] == "succeeded":
-                break
-            time.sleep(2)
+        if args.sub == "wait":
+            return wait_for_operation(directory)
         return read(directory / "status.json")
-    preflight()
+    if not planned_portable:
+        preflight()
     STATE.mkdir(mode=0o700, exist_ok=True)
     OPERATIONS.mkdir(mode=0o700, exist_ok=True)
     action = args.command
+    # A bare terminal install also serves as the return path after an update.
+    # Its receipt belongs to the active generation, even for a newer CLI or
+    # a machine originally provisioned with an explicit profile or offline media.
+    if action == "install" and argv == ["install", "--follow-install"] and current():
+        receipt_path = STATE / "active-release.json"
+        if receipt_path.is_file():
+            receipt = read(receipt_path)
+            active_op = opdir(receipt["operation_id"])
+            if receipt["version"] == current() and read(active_op / "status.json")["state"] == "succeeded":
+                return wait_for_operation(active_op, progress=True)
     if action in ("update", "rollback") and args.sub == "apply":
         directory = opdir(args.plan)
         planned = read(directory / "request.json")
@@ -868,12 +930,15 @@ def main(argv, cli_version):
             request["source_activation"] = activation_generation()
     ident = "host_" + hashlib.sha256(json.dumps(request, sort_keys=True).encode()).hexdigest()[:32]
     directory = opdir(ident)
+    follow = action == "install" and args.follow_install and not args.plan_only
     with (STATE/"submit.lock").open("a+") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         if action=="install" and current() and not (directory/"request.json").is_file():
             raise ValueError("this installation already exists with another profile")
         directory.mkdir(mode=0o700, exist_ok=True)
         if not (directory / "status.json").exists():
+            if follow:
+                print(f"Verifying signed release {request['version']} for {ident}", file=sys.stderr, flush=True)
             save(directory / "request.json",request)
             write_file(directory / "helper.py", HELPER_SOURCE)
             details=stage(request, manifest_only=True) if action in ("update","install","rollback") else {}
@@ -881,9 +946,16 @@ def main(argv, cli_version):
                   installed=current(), services_started=False, invocation_verified=False,
                   off_host_backup_verified=False, phases=phases(request["action"]) + (["invocation"] if request.get("verify_starter") else []))
         if action == "install" and not args.plan_only or action in ("archive","restore"):
-            if read(directory/"status.json")["state"] == "planned":
+            status = read(directory / "status.json")["state"]
+            if status == "planned" or (follow and status == "failed"):
                 submit(directory)
-        return read(directory / "status.json")
+            elif follow and status in ("running", "queued"):
+                # Starting an active systemd unit is idempotent. This also
+                # recovers an executor lost before it could record failure.
+                launch(directory)
+    if follow:
+        return wait_for_operation(directory, progress=True)
+    return read(directory / "status.json")
 
 
 def phases(action):
@@ -901,12 +973,14 @@ def phases(action):
 if __name__ == "__main__":
     os.umask(0o077)
     try:
-        if sys.argv[1] == "--execute":
+        if sys.argv[1] == "--userspace-service":
+            userspace_service(sys.argv[2])
+        elif sys.argv[1] == "--execute":
             execute(opdir(sys.argv[2]))
             run("systemctl","disable","agentcapsule-host@"+sys.argv[2]+".service")
         else:
             encoded = sys.argv[1]
             version, *args = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
-            print(json.dumps(main(args, version)))
+            print(json.dumps(main(args, version, outer=sys.argv[-1] != "--inside-userspace")))
     except (ValueError, OSError, KeyError, RuntimeError, subprocess.CalledProcessError) as error:
         sys.exit(safe_error(error))

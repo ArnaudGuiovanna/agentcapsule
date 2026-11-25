@@ -8,8 +8,9 @@ cosign that records its arguments. The script must pick the executable for the
 system, install it only when its digest is the single SHA256SUMS entry for its
 name, call cosign with the release workflow's identity, trigger, repository and
 ref for the exact tag, accept only a certificate of the protected release
-environment (S-16), stop without cosign unless --insecure-skip-signature
-(S-17), and leave an installed CLI untouched whenever a check fails.
+environment (S-16), and leave an installed CLI untouched whenever a check
+fails. Without a cosign on PATH it must run only the cosign release whose
+SHA-256 it pins, and stop otherwise unless --insecure-skip-signature (S-17).
 """
 
 import base64
@@ -74,6 +75,8 @@ class Releases(http.server.BaseHTTPRequestHandler):
             return
         prefix = "/releases/download/"
         file = self.root / self.path[len(prefix):] if self.path.startswith(prefix) else None
+        if self.path.startswith("/cosign/"):
+            file = self.root.parent / self.path[1:]
         if file is None or ".." in self.path or not file.is_file():
             self.send_error(404)
             return
@@ -146,7 +149,8 @@ class InstallScriptTest(unittest.TestCase):
 
     def run_script(self, *args, script=None, **env):
         environment = {"PATH": str(self.bin), "HOME": str(self.home),
-                       "AGENTCAPSULE_RELEASE_BASE_URL": f"http://127.0.0.1:{self.server.server_port}/releases"}
+                       "AGENTCAPSULE_RELEASE_BASE_URL": f"http://127.0.0.1:{self.server.server_port}/releases",
+                       "AGENTCAPSULE_COSIGN_BASE_URL": f"http://127.0.0.1:{self.server.server_port}/cosign"}
         environment.update(env)
         return subprocess.run([str(self.bin / "sh"), "-s", "--", *args], input=script or SCRIPT.read_bytes(),
                               env=environment, capture_output=True, timeout=60, check=False)
@@ -224,15 +228,66 @@ class InstallScriptTest(unittest.TestCase):
                 self.installed_then_refused(run)
                 self.assertIn(b"SHA256SUMS", run.stderr)
 
+    def pinned_cosign(self, asset="cosign-linux-amd64"):
+        """Serve the fake cosign as a cosign release file, off PATH; return
+        install.sh pinning that file's digest, and the script's own pin."""
+        directory = self.tmp / "cosign"
+        directory.mkdir(exist_ok=True)
+        (self.bin / "cosign").rename(directory / asset)
+        pins = dict(line.split(":") for line in
+                    SCRIPT.read_text().split('COSIGN_SHA256="')[1].split('"')[0].splitlines())
+        digest = hashlib.sha256((directory / asset).read_bytes()).hexdigest()
+        return SCRIPT.read_bytes().replace(pins[asset].encode(), digest.encode()), pins[asset]
+
+    def test_without_cosign_the_pinned_release_verifies_the_signature(self):
+        script, _ = self.pinned_cosign()
+        target = self.tmp / "dir"
+        run = self.run_script("--version", "v0.0.1", "--dir", str(target), script=script)
+        self.assert_installed(run, target / "agentcapsule", "v0.0.1", "agentcapsule-linux-amd64")
+        self.assertIn("/cosign/cosign-linux-amd64", self.requests)
+        self.assertIn(b"verified the signature of SHA256SUMS", run.stderr)
+        args = (self.tmp / "cosign-args").read_text().splitlines()
+        self.assertEqual(args[0], "verify-blob")
+        self.assertIn("refs/tags/v0.0.1", args)
+        # A cosign on PATH is preferred: nothing is downloaded.
+        self.cosign(0)
+        self.requests.clear()
+        run = self.run_script("--version", "v0.0.1", "--dir", str(target))
+        self.assert_installed(run, target / "agentcapsule", "v0.0.1", "agentcapsule-linux-amd64")
+        self.assertEqual([r for r in self.requests if r.startswith("/cosign/")], [])
+
     def test_without_cosign_the_signature_is_required_by_default(self):
-        (self.bin / "cosign").unlink()
+        """Another file than the pinned cosign, or none, is never run and
+        never replaced by the digest check alone."""
+        _, pin = self.pinned_cosign()
         self.previous()
         for args in ((), ("--require-signature",)):
             with self.subTest(args=args):
                 run = self.run_script("--version", "v0.0.1", "--dir", str(self.tmp / "dir"), *args)
                 self.installed_then_refused(run)
-                self.assertIn(b"cosign 2.4 or newer is required", run.stderr)
-                self.assertIn(b"--insecure-skip-signature", run.stderr)
+                self.assertIn(b"checksum mismatch for cosign-linux-amd64", run.stderr)
+                self.assertIn(pin.encode(), run.stderr)
+                self.assertFalse((self.tmp / "cosign-args").exists())
+        (self.tmp / "cosign/cosign-linux-amd64").unlink()
+        run = self.run_script("--version", "v0.0.1", "--dir", str(self.tmp / "dir"))
+        self.installed_then_refused(run)
+        self.assertIn(b"download failed", run.stderr)
+        run = self.run_script("--version", "v0.0.1", "--dir", str(self.tmp / "dir"),
+                              AGENTCAPSULE_COSIGN_BASE_URL="http://example.com/cosign")
+        self.installed_then_refused(run)
+        self.assertIn(b"AGENTCAPSULE_COSIGN_BASE_URL must be an https:// URL", run.stderr)
+        # No cosign is pinned for Windows on arm64.
+        self.uname("MINGW64_NT-10.0", "aarch64")
+        run = self.run_script("--version", "v0.0.1", "--dir", str(self.tmp / "dir"))
+        self.assertNotEqual(run.returncode, 0)
+        self.assertIn(b"cosign 2.4 or newer is required", run.stderr)
+        self.assertIn(b"--insecure-skip-signature", run.stderr)
+
+    def test_the_pinned_cosign_is_the_one_of_the_release_tools(self):
+        tools = json.loads((ROOT / "scripts/release-tools.json").read_text())["cosign"]
+        text = SCRIPT.read_text()
+        self.assertIn(f'COSIGN_VERSION="v{tools["version"]}"', text)
+        self.assertIn(f'cosign-linux-amd64:{tools["sha256"]}\n', text)
 
     def test_insecure_skip_signature_checks_the_digest_only_and_warns(self):
         (self.bin / "cosign").unlink()

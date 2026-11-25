@@ -309,7 +309,12 @@ workflow without that check and still produce an accepted signature.
   own tag.
 - `install.sh` requires the signature by default, with cosign and openssl
   (S-17). `--insecure-skip-signature` checks the digest only and says so on
-  every run.
+  every run. Since 25 November 2026, a host without cosign no longer stops
+  there: the script downloads the cosign release file for the system and
+  runs it only when its SHA-256 is the one the script pins (taken from
+  sigstore's signed `cosign_checksums.txt`). The signature stays required;
+  the script itself, fetched from the release over HTTPS, was already the
+  root of that check.
 
 What remains outside the repository: the owner creates the environment and
 its reviewers, and the tag ruleset. A maintainer who can approve the

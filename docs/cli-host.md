@@ -1,22 +1,31 @@
 # Install and operate a single host
 
-Download and verify the workstation CLI for the release you want, for example
-with the release's installer:
+Install the CLI on the machine that will run the PaaS, then check `agentcapsule version`. The released CLI uses its own tag to select the signed server files. Use `--to TAG` to select an exact release. [Download the CLI](../README.md#installation) · [Verify a release](release.md#verify-a-release)
+
+### Choose the installation mode for your release
+
+| Release and host | How to install |
+|---|---|
+| Native Ubuntu 24.04 x86-64 bundle, including tags v0.1.0 and v0.1.1 | From a root shell, run `agentcapsule install`. Follow the returned ID with `agentcapsule host operation wait HOST_ID`. |
+| CLI from this branch and a release with the signed private Linux userspace | In your normal terminal, run `agentcapsule install`. The CLI requests sudo, displays progress and prints the API URL after the demo microVM responds. Repeating the same command follows the original operation and resumes its checkpoints if it failed. |
+| Automation or SSH | Run as root locally or pass `--ssh USER@HOST` with noninteractive sudo on the target. Use the operation ID in the JSON receipt to wait. |
+
+The portable path targets x86-64 Linux with systemd, cgroup v2 (CPU, memory and PIDs), a usable KVM device, TAP support and persistent local storage. For local installation, the CLI can bootstrap its interpreter from the signed userspace when the host lacks a suitable Python 3. A first installation over SSH requires Python 3 on the target. Qualification on the Ubuntu 26.04 WSL2 target, a Debian KVM host and an existing Ubuntu 24.04 installation is in progress. Check the release's signed file list for `agentcapsule-userspace-linux-amd64.tar.gz` before choosing a release for another distribution.
+
+On a new portable installation, systemd boots a private Linux filesystem under `/var/lib/agentcapsule-userspace`. Its own package database holds the service dependencies. The PaaS uses the host kernel and KVM. The host exposes the API and identity provider on the configured ports. For a private userspace startup failure, inspect `journalctl -u agentcapsule-userspace.service -u agentcapsule-userspace-network.service`.
+
+For a script on the local host, run the following from a root shell with the CLI in its PATH. Redirecting stdout, passing `--json`, or passing `--non-interactive` selects the asynchronous receipt and suppresses the sudo prompt. An interactive install uses a terminal for stdin, stdout and stderr.
 
 ```sh
-curl -fsSL https://github.com/ArnaudGuiovanna/agentcapsule/releases/download/v0.0.1/install.sh | sh -s -- --version v0.0.1
+umask 077
+agentcapsule install --json > install.json
+op=$(jq -er '.operation_id' install.json)
+agentcapsule host operation wait "$op" > receipt.json
+jq -e '.state == "succeeded" and .invocation_verified == true' receipt.json
+jq '{url, off_host_backup_verified}' receipt.json
 ```
 
-Run `agentcapsule version` and `agentcapsule install --help` on that workstation.
-The released CLI uses its own tag to locate the server bundle on GitHub.
-Use `--to TAG` to select another exact release. [Download and verify the CLI](release.md#verify-a-release)
-
-The target is Ubuntu 24.04 amd64 with systemd, cgroup v2, KVM and persistent
-local storage. Run the command as root on the target, or pass
-`--ssh USER@HOST` from Linux, macOS or Windows. SSH uses the operator's SSH
-configuration, known host keys and non-interactive sudo on the target. SSH
-host aliases come from the workstation configuration. The profile and offline
-asset paths refer to files on the selected target.
+For SSH, the CLI uses your SSH configuration, known host keys and non-interactive sudo on the target. Profile and offline asset paths refer to files on that target.
 
 ```sh
 agentcapsule install --ssh admin@host --profile /root/platform.json --plan-only
@@ -30,8 +39,7 @@ same `operation_id` and starts installation. Use that ID in place of
 described below. The helper records its
 input, checkpoints and outcome under `/var/lib/agentcapsule-install`. The
 systemd instance continues after SSH disconnects and resumes after reboot.
-On a failed phase read `journalctl -u agentcapsule-host@host_ID`, fix the
-reported component, and resume. If the CLI itself contains a fix for the
+For a failed phase, inspect `agentcapsule host operation show HOST_ID`, correct the reported problem and resume. Native installations also log to `journalctl -u agentcapsule-host@host_ID`. If the CLI itself contains a fix for the
 failed phase, add `--refresh-helper` to resume using that verified CLI. All operations emit `agentcapsule.host/v1`
 JSON. The operation returns distinct evidence for service startup, the
 starter microVM's echo and backups. The probe uses a dedicated organization,
@@ -91,7 +99,12 @@ The initial platform enrollment proof is in
 `/etc/agentcapsule/first-enrollment.token` (0600). Transfer it to the named
 operator through a private channel. It expires after 15 minutes and can be
 redeemed once. Keep the API certificate or its CA with the CLI context.
-Keycloak bootstrap credentials are in `/etc/agentcapsule/oidc.env` (0600).
+On a portable installation the host receives a copy of the enrollment token and
+the public API certificate at `/etc/agentcapsule/api.crt`. Service configuration
+lives in the private filesystem. For example, root can read the Keycloak bootstrap
+credentials at `/var/lib/agentcapsule-userspace/system/guest/etc/agentcapsule/oidc.env`
+on the host. On a native installation the path is `/etc/agentcapsule/oidc.env`.
+Both layouts use mode 0600.
 Keycloak listens on loopback only: its public port is served by
 `agentcapsule-oidc-edge`, which forwards the realms' pages and endpoints and
 nothing of the administration. Reach the administration console through SSH
@@ -110,6 +123,9 @@ and volume shipping. Provide `pgbackrest_config` and `rclone_config` in the
 installation profile. Start `pgbackrest_config` from
 [deploy/backup/pgbackrest.conf](../deploy/backup/pgbackrest.conf): its `pg1-`
 lines already name the installer's cluster (`16/agentcapsule`, port 55432).
+On portable installations, provision any additional certificate, key or credential
+file referenced inside either configuration at its configured path in the private
+filesystem under `/var/lib/agentcapsule-userspace/system/guest`.
 A missing destination is reported in the install
 result. The single-host authority can be paired to a replica using the
 recovery procedure. Verify custody of the receipt key, transit keys and
@@ -128,7 +144,14 @@ gh release download "$tag" --repo ArnaudGuiovanna/agentcapsule --dir assets \
   -p cosign-linux-amd64 -p SHA256SUMS -p SHA256SUMS.sigstore.json
 ```
 
-Copy the seven files to one directory on the Ubuntu target, for example
+For a new portable installation, also download the signed userspace into the same directory.
+
+```sh
+gh release download "$tag" --repo ArnaudGuiovanna/agentcapsule --dir assets \
+  -p agentcapsule-userspace-linux-amd64.tar.gz
+```
+
+Copy the files to one directory on the target, for example
 `/srv/agentcapsule-release`. The CLI embeds the Sigstore trusted root
 whose verified TUF target SHA-256 is
 `6494e21ea73fa7ee769f85f57d5a3e6a08725eae1e38c755fc3517c9e6bc0b66`.
@@ -139,7 +162,7 @@ against the signed inventory. A resumed update rechecks its prepared server
 directory before using its dependencies and activating the release. The package tar holds
 the APT dependency closure. The image archive uses the immutable manifest
 references and the runtime verifies the loaded image's config digest.
-Preflight checks the OS, cgroup controllers and KVM before large downloads.
+Host checks verify the architecture, cgroup controllers and KVM. Legacy native installation also checks the Ubuntu version.
 
 ```sh
 agentcapsule install --ssh admin@host --offline /srv/agentcapsule-release --to "$tag" --plan-only
@@ -165,6 +188,8 @@ release that the CLI reads from GitHub, without authentication, is subject to
 the same floor.
 
 ## Update and recovery
+
+An existing native Ubuntu 24.04 deployment continues through its native update path. A portable installation runs update, rollback, archive and restore within its existing private userspace. Use the same host CLI and operation receipts to manage either layout.
 
 ```sh
 agentcapsule update check

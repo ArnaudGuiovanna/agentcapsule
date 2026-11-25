@@ -9,15 +9,17 @@
 # SHA256SUMS, and installs it only if its digest is the one, single entry
 # for that file. First it verifies, with cosign and openssl, that SHA256SUMS
 # was signed by this repository's release workflow for that exact tag, run by
-# the push of the tag, in the protected release environment. Without cosign
-# it stops, unless --insecure-skip-signature says to check the digest only.
-# See docs/release.md.
+# the push of the tag, in the protected release environment. When no cosign
+# is on PATH it downloads the cosign release pinned below by SHA-256 and uses
+# it for this run only. Without a verified cosign it stops, unless
+# --insecure-skip-signature says to check the digest only. See docs/release.md.
 #
 # Options (or environment variables):
 #   --version TAG               AGENTCAPSULE_VERSION      release tag, default: the latest release
 #   --dir DIR                   AGENTCAPSULE_INSTALL_DIR  default: /usr/local/bin as root, else ~/.local/bin
 #   --insecure-skip-signature   AGENTCAPSULE_INSECURE_SKIP_SIGNATURE=1
 #   --require-signature         the default; kept for older instructions
+#                               AGENTCAPSULE_COSIGN_BASE_URL  mirror of the pinned cosign release files
 #
 # The whole script is a function called on its last line, so a truncated
 # download runs nothing.
@@ -32,6 +34,16 @@ ISSUER="https://token.actions.githubusercontent.com"
 ENVIRONMENT_OID="1.3.6.1.4.1.57264.1.23"
 SIGNED_BEFORE_ENVIRONMENT="v0.0.1:500038470c97b46ea7efc31ca1fc08c305f46d2d181d61707a1c24e9ea30391e
 v0.1.0:b0574da8b4811af9c57edc5127a58a68a09140c58391c2566a4815946f1a4c41"
+
+# The cosign used when none is on PATH: the release files of this version,
+# each accepted only with the SHA-256 that sigstore's signed
+# cosign_checksums.txt gives it (the linux-amd64 pin of scripts/release-tools.json).
+COSIGN_VERSION="v3.1.4"
+COSIGN_SHA256="cosign-linux-amd64:424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa
+cosign-linux-arm64:ade83b7aac62e131cacfe96d958948b2150cc9efec46a570a2649b8e27dedad2
+cosign-darwin-amd64:9d1e4abe2b6be279ed0d2ff706fde1ccd738747c834e3e6d44039c238867334f
+cosign-darwin-arm64:9f9b8cd557cf2e5b3df3373a00baa005a86b02391e3e06dd0ce37b3a1533d3a4
+cosign-windows-amd64.exe:cbe953787074611f1334cbf37dc1cf953995bb8c45398eb4fc7bb781d29c1f2a"
 
 say() {
 	printf 'agentcapsule-install: %s\n' "$*" >&2
@@ -55,8 +67,10 @@ usage: install.sh [--version TAG] [--dir DIR] [--insecure-skip-signature]
                              executable's digest (AGENTCAPSULE_INSECURE_SKIP_SIGNATURE=1).
                              Anyone who can change the release can change both.
 
-The signature is verified by default: it needs cosign 2.4 or newer and
-openssl on PATH. --require-signature, the default, is still accepted.
+The signature is verified by default, with openssl and cosign 2.4 or newer.
+Without a cosign on PATH, the script downloads a pinned cosign release, checks
+its SHA-256 and uses it for this run only. --require-signature, the default,
+is still accepted.
 EOF
 }
 
@@ -76,6 +90,33 @@ download() {
 	# download URL FILE
 	curl --fail --silent --show-error --location --proto "$PROTOCOLS" --retry 3 \
 		--output "$2" "$1" || die "download failed: $1"
+}
+
+pinned_cosign() {
+	# pinned_cosign: download the pinned cosign for this system into the
+	# temporary directory and name it in $cosign. Nothing but the pinned
+	# bytes is ever run.
+	cosign_asset="cosign-$os-$arch$suffix"
+	cosign_pin="$(printf '%s\n' "$COSIGN_SHA256" | awk -F: -v name="$cosign_asset" '$1 == name { print $2 }')"
+	[ -n "$cosign_pin" ] || die "cosign 2.4 or newer is required to verify the signature of SHA256SUMS,
+  and this script pins no cosign for $os-$arch:
+  https://docs.sigstore.dev/cosign/system_config/installation/
+  (or pass --insecure-skip-signature to check the digest only; see
+  https://github.com/$REPOSITORY/blob/main/docs/release.md#verify-a-release)"
+	cosign_base="${AGENTCAPSULE_COSIGN_BASE_URL:-https://github.com/sigstore/cosign/releases/download/$COSIGN_VERSION}"
+	case "$cosign_base" in
+	https://* | http://127.0.0.1:* | http://localhost:*) ;;
+	*) die "AGENTCAPSULE_COSIGN_BASE_URL must be an https:// URL" ;;
+	esac
+	say "no cosign on PATH: downloading cosign $COSIGN_VERSION to verify the signature"
+	cosign="$tmp/cosign$suffix"
+	download "$cosign_base/$cosign_asset" "$cosign"
+	cosign_actual="$(sha256_of "$cosign")"
+	[ "$cosign_actual" = "$cosign_pin" ] ||
+		die "checksum mismatch for $cosign_asset $COSIGN_VERSION: expected $cosign_pin, got $cosign_actual"
+	chmod 0700 "$cosign"
+	"$cosign" version </dev/null >/dev/null 2>&1 ||
+		die "the downloaded cosign does not run from $tmp (a noexec temporary directory?): set TMPDIR to another directory, or install cosign"
 }
 
 signing_environment() {
@@ -174,11 +215,12 @@ main() {
 	if [ "$skip_signature" = 1 ]; then
 		say "WARNING: --insecure-skip-signature: the signature of SHA256SUMS is NOT verified."
 		say "WARNING: the digest check below only proves that $asset matches SHA256SUMS;"
-		say "WARNING: anyone who can replace the release files can replace both. Install cosign"
-		say "WARNING: and run this script again without --insecure-skip-signature."
-	elif command -v cosign >/dev/null 2>&1; then
+		say "WARNING: anyone who can replace the release files can replace both. Run this"
+		say "WARNING: script again without --insecure-skip-signature."
+	else
+		if command -v cosign >/dev/null 2>&1; then cosign=cosign; else pinned_cosign; fi
 		download "$url/SHA256SUMS.sigstore.json" "$tmp/SHA256SUMS.sigstore.json"
-		cosign verify-blob --bundle "$tmp/SHA256SUMS.sigstore.json" \
+		"$cosign" verify-blob --bundle "$tmp/SHA256SUMS.sigstore.json" \
 			--certificate-identity "https://github.com/$REPOSITORY/.github/workflows/release.yml@refs/tags/$version" \
 			--certificate-oidc-issuer "$ISSUER" \
 			--certificate-github-workflow-trigger push \
@@ -187,11 +229,6 @@ main() {
 			die "the signature of SHA256SUMS is not the release workflow's for $version"
 		check_signing_environment "$tmp/SHA256SUMS.sigstore.json" "$tmp/SHA256SUMS"
 		say "verified the signature of SHA256SUMS (release workflow, $version, release environment)"
-	else
-		die "cosign 2.4 or newer is required to verify the signature of SHA256SUMS:
-  https://docs.sigstore.dev/cosign/system_config/installation/
-  (or pass --insecure-skip-signature to check the digest only; see
-  https://github.com/$REPOSITORY/blob/main/docs/release.md#verify-a-release)"
 	fi
 
 	expected="$(awk -v name="$asset" '$2 == name && NF == 2 { print $1 }' "$tmp/SHA256SUMS")"

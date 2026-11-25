@@ -4,30 +4,34 @@
 
 ## Install on the server
 
-Open a root shell on the Ubuntu 24.04 x86-64 server that will run the agents. It needs a usable `/dev/kvm`, systemd, cgroup v2 and persistent storage. Have `curl`, `openssl` and a trusted `cosign` 2.4+ on the host. The examples use `jq` to read the installation receipt.
+Install the CLI on the x86-64 Linux server that will run the agents. It needs systemd, cgroup v2, KVM and persistent storage. Have `curl`, `openssl` and a trusted `cosign` 2.4+ available.
 
 ```sh
 releases=https://github.com/ArnaudGuiovanna/agentcapsule/releases
 curl -fsSLo install-agentcapsule.sh "$releases/latest/download/install.sh" &&
-  sh install-agentcapsule.sh --require-signature --dir /usr/local/bin
+  sh install-agentcapsule.sh --require-signature --dir "$HOME/.local/bin"
+export PATH="$HOME/.local/bin:$PATH"
 agentcapsule version
 ```
 
-For a first test, use the default profile. For production, configure your TLS certificates and off-host backups first and pass `--profile /path/to/profile.json` to `install`. [Host profile](cli-host.md#profile) · [Backup and recovery](recovery.md)
+**Portable release.** With a matching CLI and the signed userspace archive, run `agentcapsule install` in your terminal. It requests sudo if needed and shows the API URL when the demo agent answers. In production, first configure TLS and off-host backups in a profile. [Host profile](cli-host.md#profile) · [Recovery](recovery.md)
+
+**Native versions v0.1.0 and v0.1.1** require Ubuntu 24.04. For these versions or scripted installs, run the following as a sudo-enabled user. Redirected output delivers an operation ID immediately. The examples use `jq`.
 
 ```sh
 umask 077
-agentcapsule install > install.json
+cli=$(command -v agentcapsule)
+sudo "$cli" install --json > install.json
 op=$(jq -er '.operation_id' install.json)
-agentcapsule host operation wait "$op" > receipt.json
+sudo "$cli" host operation wait "$op" > receipt.json
 jq '{state, invocation_verified, off_host_backup_verified, url}' receipt.json
 ```
 
-`state: succeeded` and `invocation_verified: true` confirm that the demo microVM answered. `off_host_backup_verified` reports the separate off-host backup check. Keep `receipt.json` for login.
+Expect `state: succeeded` and `invocation_verified: true`. Off-host backups have their own check. Keep the URL for login.
 
 ### Check or repair the host
 
-Run these on the server as root. Replace `HOST_ID` with the returned `operation_id`.
+Run these as root with the CLI in your PATH or prefix them with sudo and the CLI’s absolute path. Replace `HOST_ID` with the returned `operation_id`.
 
 | Command | What it does |
 |---|---|
@@ -44,7 +48,7 @@ Run these on the server as root. Replace `HOST_ID` with the returned `operation_
 
 ### Platform operator
 
-For the first local login with the default certificate, use the receipt from installation. The enrollment token is valid once, for 15 minutes. A context saves the API address and the type of account.
+For a local test, the first operator uses the generated certificate and a single-use, 15-minute token. Run the example as root with the CLI in your PATH. Set `api` to the displayed URL or read it from the completed receipt.
 
 ```sh
 api=$(jq -er '.url' receipt.json)
