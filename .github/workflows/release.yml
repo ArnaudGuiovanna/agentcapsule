@@ -193,9 +193,10 @@ jobs:
           cp "$release/audit/summary.json" "$assets/dependency-audit.json"
           cp "$release/scan/summary.json" "$assets/vulnerability-scan.json"
           cp deploy/images/openssl/qualification.json "$assets/openssl-qualification.json"
-          # Ship the documentation and formal evidence prepared for this tag.
+          # Ship the CLI cheat sheet and any formal evidence prepared for this tag.
+          install -m 0644 docs/cli-cheatsheet.pdf "$assets/cli-cheatsheet.pdf"
           release_docs="docs/releases/$RELEASE_TAG"
-          for file in manuel-sysadmin.pdf formal-summary.json p1-certificate.json p1-replay.json \
+          for file in formal-summary.json p1-certificate.json p1-replay.json \
               p1-tlc-verdicts.json p1-wrappers.json p2-certificate.json; do
             if [[ -f "$release_docs/$file" ]]; then
               install -m 0644 "$release_docs/$file" "$assets/$file"

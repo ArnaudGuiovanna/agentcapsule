@@ -10,7 +10,7 @@
 
 Agent Capsule is a self-hosted platform as a service (PaaS) for running persistent AI agents on a Linux server. An organization deploys an agent program, assigns it to users or teams, and controls its model access, spending limits and document collections. The platform runs each active agent in a dedicated Firecracker microVM. Its encrypted data volume survives shutdown and is reattached when the agent wakes.
 
-[Releases](https://github.com/ArnaudGuiovanna/agentcapsule/releases) · [HTTP API](docs/api/README.md) · [Operator CLI](docs/cli.md) · [MIT license](LICENSE)
+[Releases](https://github.com/ArnaudGuiovanna/agentcapsule/releases) · [CLI cheat sheet (PDF)](docs/cli-cheatsheet.pdf) · [HTTP API](docs/api/README.md) · [Operator CLI](docs/cli.md) · [MIT license](LICENSE)
 
 ## Platform capabilities
 
@@ -38,12 +38,12 @@ Agent Capsule is a self-hosted platform as a service (PaaS) for running persiste
 Open a root shell on the Ubuntu 24.04 x86-64 server that will run your agents. The host needs KVM, systemd with cgroup v2, and persistent storage. Have `curl`, `openssl` and a trusted `cosign` 2.4 or later in the shell's PATH. Download the CLI from GitHub and use it on this server to install the matching PaaS release.
 
 ```sh
-curl -fsSLo install-agentcapsule.sh https://github.com/ArnaudGuiovanna/agentcapsule/releases/latest/download/install.sh
-sh install-agentcapsule.sh --dir /usr/local/bin
+curl -fsSLo install-agentcapsule.sh https://github.com/ArnaudGuiovanna/agentcapsule/releases/latest/download/install.sh &&
+  sh install-agentcapsule.sh --require-signature --dir /usr/local/bin
 /usr/local/bin/agentcapsule install
 ```
 
-The CLI installs the platform services and tests an invocation on the bundled demonstration agent. Copy the `operation_id` from its output and run `agentcapsule host operation wait host_ID` in the same shell, replacing `host_ID` with that value. A successful installation reports `state: succeeded` and `invocation_verified: true`. The first echo works without a model-provider key. To administer a different server from a workstation, add `--ssh admin@host` to the host commands. [Host installation](docs/cli-host.md) · [Step-by-step operator guide in French](docs/guide-sysadmin.md) · [French sysadmin manual (PDF)](docs/manuel-sysadmin.pdf) · [CLI command reference in French](docs/cli-fr.md)
+The CLI installs the platform services and tests an invocation on the bundled demonstration agent. Copy the `operation_id` from its output and run `agentcapsule host operation wait host_ID` in the same shell, replacing `host_ID` with that value. A successful installation reports `state: succeeded` and `invocation_verified: true`. The first echo works without a model-provider key. To administer a different server from a workstation, add `--ssh admin@host` to the host commands. [Read the CLI cheat sheet](docs/cli-cheatsheet.md) · [Host installation](docs/cli-host.md)
 
 ## Technical documentation
 

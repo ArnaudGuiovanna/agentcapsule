@@ -16,8 +16,8 @@ version tag. A maintainer reviews it, then publishes it.
 | `agentcapsule-api`, `agentcapsule-worker`, `agentcapsule-admin`, `agentcapsule-authority`, `agentcapsule-slim-bridge` | The host programs, linux/amd64, linked dynamically against glibc 2.39 or newer (Ubuntu 24.04). The worker also needs `libcryptsetup.so.12`. |
 | `agentcapsule-harness` | The harness package tool (pack, push, sign, verify), static. |
 | `install.sh` | The `curl \| sh` installer of the workstation CLI ([Verify a release](#verify-a-release)). |
-| `manuel-sysadmin.pdf` | French installation, administration and production operations manual for the tag, when supplied in `docs/releases/<tag>/`. |
-| `formal-summary.json`, `p1-*.json`, `p2-certificate.json` | Formal model results and evidence prepared for the tag. These files and the manual are covered by the signed checksum index. |
+| `cli-cheatsheet.pdf` | English quick reference for installing the PaaS and operating the CLI. The v0.1.1 tag contains the original French manual in its signed file set. [Read the cheat sheet](cli-cheatsheet.md) |
+| `formal-summary.json`, `p1-*.json`, `p2-certificate.json` | Formal model results and evidence prepared for the tag. The signed checksum index covers the evidence and documentation shipped with that version. |
 | `oci-<service>.spdx.json` | Inventory of the exact container image distributed for the service. |
 | `component-sources.json`, `component-notices.tar.gz` | Component versions, package source locations, SHA-256 identities and notices copied from application sources, container layers, Java archives and native Rust dependencies. |
 | `agentcapsule-oci-sources-*.tar` | Application sources, BusyBox, distribution source packages and recipes, plus the source of the SLIM native binding and the crate archives matching its Cargo.lock. |
