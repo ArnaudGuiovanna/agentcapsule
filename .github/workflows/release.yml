@@ -193,6 +193,14 @@ jobs:
           cp "$release/audit/summary.json" "$assets/dependency-audit.json"
           cp "$release/scan/summary.json" "$assets/vulnerability-scan.json"
           cp deploy/images/openssl/qualification.json "$assets/openssl-qualification.json"
+          # Ship the documentation and formal evidence prepared for this tag.
+          release_docs="docs/releases/$RELEASE_TAG"
+          for file in manuel-sysadmin.pdf formal-summary.json p1-certificate.json p1-replay.json \
+              p1-tlc-verdicts.json p1-wrappers.json p2-certificate.json; do
+            if [[ -f "$release_docs/$file" ]]; then
+              install -m 0644 "$release_docs/$file" "$assets/$file"
+            fi
+          done
           tar -C "$release/scan" -czf "$assets/vulnerability-reports.tar.gz" .
           cd "$assets"
           # GitHub accepts at most 1000 files, each strictly below 2 GiB.

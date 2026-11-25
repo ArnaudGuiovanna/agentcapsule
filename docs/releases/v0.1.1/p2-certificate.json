@@ -1,0 +1,323 @@
+{
+  "module": "restoreAuthorityTiny",
+  "invariant": "safety",
+  "method": "unbounded SMT induction with a local conservative projector on Quint IR",
+  "input": {
+    "quint": "0.33.1",
+    "entrypoint_sha256": "c705d0a301e8661c2ced2e9c1202f9cfc19bb67cf61c760a2baaa1a8459187c7",
+    "source_isolation_runner_sha256": "2912ec82ccb3d74820e98339a0c9f5b83cbcb2a9ab95f03ba2f58bc8a2441005",
+    "npm_lock_sha256": "1ee91752f49119bea68cf5779ea256ab700bb066263a8be1696092ff27486298",
+    "input_sha256": "86da448db1b0ff866f60ef371998d4f73b0f2d95ecff5b8f340b0adf4144c0a6",
+    "full_source_sha256": "9f6828d8556b7d8efee697eec8583811ddb08844875e9414da51382ce79fbc0d",
+    "reduced_ir_sha256": "0cc34115cb1c11ba6cdcc88e5ff7e47458f956d2c4f567da44b70dd5eb202f80",
+    "jar_sha256": "e5223915507b65cc5f1638bd037ede60f8a4fc1644aff46355779f9b05df9262",
+    "libz3_sha256": "be9a64a06e779ee8f99daab83826ebd7cefc9e2b122d9ade25a2af60dc23f324",
+    "z3_version": "Z3 4.14.1.0"
+  },
+  "source_property_count": 21,
+  "source_action_count": 45,
+  "induction_family_count": 24,
+  "closed_queries": 1148,
+  "guard_queries": 1080,
+  "closed_source_conjuncts": {
+    "retiredBeforeInstall": {
+      "retiredBeforeInstall": "retiredBeforeInstall"
+    },
+    "identitiesFresh": {
+      "identitiesFresh": "identitiesFresh"
+    },
+    "permanentSeals": {
+      "permanentSeals": "permanentSeals"
+    },
+    "revocationsSurvive": {
+      "revocationsSurvive": "revocationsSurvive"
+    },
+    "acksSound": {
+      "acksSound": "acksSound"
+    },
+    "noRestoredRevocation": {
+      "noRestoredRevocation": "executableFences"
+    },
+    "activationCurrent": {
+      "activationCurrent": "executableFences"
+    },
+    "noStaleEffect": {
+      "noStaleEffect": "executableFences"
+    },
+    "keyDestructionSurvives": {
+      "keyDestructionSurvives": "keyDestructionSurvives"
+    },
+    "erasedKeysUnavailable": {
+      "erasedKeysUnavailable": "erasedKeysUnavailable"
+    },
+    "noUndeclaredLoss": {
+      "noUndeclaredLoss": "lossGuarantees"
+    },
+    "declaredLossesSurvive": {
+      "declaredLossesSurvive": "declaredLossesSurvive"
+    },
+    "lossesNameAcknowledgedWork": {
+      "lossesNameAcknowledgedWork": "lossesNameAcknowledgedWork"
+    },
+    "rerunsFollowDeclaredLoss": {
+      "rerunsFollowDeclaredLoss": "rerunsFollowDeclaredLoss"
+    },
+    "noSilentRerun": {
+      "noSilentRerun": "lossGuarantees"
+    },
+    "acknowledgedWritesReplicated": {
+      "acknowledgedWritesReplicated.1": "replicatedOutcomes",
+      "acknowledgedWritesReplicated.2": "revocationsSurvive",
+      "acknowledgedWritesReplicated.3": "noRevivedAccess",
+      "acknowledgedWritesReplicated.4": "permanentSeals",
+      "acknowledgedWritesReplicated.5": "keyDestructionSurvives",
+      "acknowledgedWritesReplicated.6": "declaredLossesSurvive",
+      "acknowledgedWritesReplicated.7": "identitiesFresh"
+    },
+    "oldPrimaryFenced": {
+      "oldPrimaryFenced": "oldPrimaryFenced"
+    },
+    "noRevivedAccess": {
+      "noRevivedAccess": "noRevivedAccess"
+    },
+    "subjectsCopiedBack": {
+      "subjectsCopiedBack": "subjectsCopiedBack"
+    },
+    "deletionsResumed": {
+      "deletionsResumed": "deletionsResumed"
+    },
+    "divergenceReported": {
+      "divergenceReported": "divergenceReported"
+    }
+  },
+  "dependency_order": [
+    "scopeAndReceiptRevision",
+    "receiptHistory",
+    "declaredLossesSurvive",
+    "deletionsResumed",
+    "divergenceReported",
+    "erasedKeysUnavailable",
+    "revokedImpliesPending",
+    "identitiesFresh",
+    "keyDestructionSurvives",
+    "lossesRemembered",
+    "outcomeSupport",
+    "replicatedOutcomes",
+    "lossesNameAcknowledgedWork",
+    "noRevivedAccess",
+    "oldPrimaryFenced",
+    "permanentSeals",
+    "rerunsFollowDeclaredLoss",
+    "retiredBeforeInstall",
+    "revocationsSurvive",
+    "subjectsCopiedBack",
+    "ackRevision",
+    "acksSound",
+    "lossGuarantees",
+    "executableFences"
+  ],
+  "dependencies": {
+    "ackRevision": [
+      "scopeAndReceiptRevision"
+    ],
+    "acksSound": [
+      "receiptHistory"
+    ],
+    "declaredLossesSurvive": [],
+    "deletionsResumed": [],
+    "divergenceReported": [],
+    "erasedKeysUnavailable": [],
+    "executableFences": [
+      "ackRevision",
+      "acksSound",
+      "revokedImpliesPending",
+      "scopeAndReceiptRevision"
+    ],
+    "identitiesFresh": [],
+    "keyDestructionSurvives": [],
+    "lossGuarantees": [
+      "lossesRemembered",
+      "outcomeSupport",
+      "replicatedOutcomes"
+    ],
+    "lossesNameAcknowledgedWork": [],
+    "lossesRemembered": [],
+    "noRevivedAccess": [],
+    "oldPrimaryFenced": [],
+    "outcomeSupport": [],
+    "permanentSeals": [],
+    "receiptHistory": [],
+    "replicatedOutcomes": [],
+    "rerunsFollowDeclaredLoss": [],
+    "retiredBeforeInstall": [],
+    "revocationsSurvive": [],
+    "revokedImpliesPending": [],
+    "scopeAndReceiptRevision": [],
+    "subjectsCopiedBack": []
+  },
+  "exported_lemmas": {
+    "positiveAckCoversSubject": "ackRevision",
+    "acceptedAckCertifiesFence": "acksSound",
+    "declaredLossIsRemembered": "lossesRemembered",
+    "outcomesHaveConfiguredIDs": "outcomeSupport",
+    "sameImageReceiptsCertifyFences": "receiptHistory",
+    "acknowledgedOutcomeIsCurrentOrInWindow": "replicatedOutcomes",
+    "revocationsAreCurrentAndPending": "revokedImpliesPending",
+    "positiveRevisionReceiptsCoverSubject": "scopeAndReceiptRevision",
+    "pendingHasPositiveScope": "scopeAndReceiptRevision"
+  },
+  "source_predicates_used": {
+    "ackRevision": {
+      "positiveRevisionReceiptsCoverSubject": "recordReceipt only"
+    },
+    "acksSound": {
+      "sameImageReceiptsCertifyFences": "recordReceipt only"
+    },
+    "executableFences": {
+      "revocationsAreCurrentAndPending": "all states",
+      "pendingHasPositiveScope": "all states",
+      "positiveAckCoversSubject": "all states",
+      "acceptedAckCertifiesFence": "all states"
+    },
+    "lossGuarantees": {
+      "acknowledgedOutcomeIsCurrentOrInWindow": "all states",
+      "declaredLossIsRemembered": "all states",
+      "outcomesHaveConfiguredIDs": "support of quantified sets, for every event"
+    }
+  },
+  "evidence_sha256": {
+    "ackRevision": {
+      "coverage.json": "ebdce056b1c8f56738a789d70068c81ff7f7aea3b5526189b8016787fb17aef9",
+      "obligations.smt2": "738beb9cdf0da803e5ece4dbdd6f351a0307e4b0a6b4e1ed2d5605ebd5cb7559",
+      "solver.log": "b1692d88ee63d88744c5ee19ce8eed7ecab4bb5fab50d42a7873c6375d1b7140"
+    },
+    "acksSound": {
+      "coverage.json": "2c23492f176ca38c1097475d2a584ee4687dffd91ef44a1362e4bbdb138a2b36",
+      "obligations.smt2": "efd589dbc1146e1179dc877971a3f8f844a03ba84694b5bae651d33a9d7ab9a0",
+      "solver.log": "b7fcbf2d400410fba95c768e91fe6acdd825930f07745f7473af3f2814d42f57"
+    },
+    "declaredLossesSurvive": {
+      "coverage.json": "1007e3f62d7e54df68d11658b6047ccd73d37432e127a4d59f316a6f7b41e581",
+      "obligations.smt2": "d073e3f6ba7a951d3f577e382aa75f118d284141f7ea6a2886eed63978dae6b6",
+      "solver.log": "73a69480ab3cea2574c65a1d41491798079da5ca1c89738990103af6755f5792"
+    },
+    "deletionsResumed": {
+      "coverage.json": "37e4405480a20bd87b8d6ded4ce99ee59cbfcce1be9465f4f8a9a9610a73027a",
+      "obligations.smt2": "6be1c8d9df82b58db55c3930e522090892edc8e9d0e85c026f859fa2227c8129",
+      "solver.log": "02e05bff22d1d6adcafa35e4abd5ae41b58e8aff8e75402d6320a279196501d4"
+    },
+    "divergenceReported": {
+      "coverage.json": "feacb8e15c49680d91d3e5cc38847acf5db0b14d9e89bd77201372a18e73e8be",
+      "obligations.smt2": "effbb14a65be8cc2746f469112b960d23231cb385bc58b9d2ffd5d4160b4a75b",
+      "solver.log": "d11e5a0c735b104e3d2fee01a21f8cb5720b018b056024e737c0bb0aa6e2190f"
+    },
+    "erasedKeysUnavailable": {
+      "coverage.json": "dffb493a7a816c22a7eb48818222d4db462e7671cdf60fb2876ebfb902fc2092",
+      "obligations.smt2": "5fe2d7faa7e5595f8b8fe59a50605fe2e94d6ac90251835e1d4f2745f8cbdbde",
+      "solver.log": "620487da1995638208c52830b5996f4b93285c841bc135b681387510a0d72cd9"
+    },
+    "executableFences": {
+      "coverage.json": "2c5707aac0988058ce27927072970ce2179d504b315aa0fbb5540e16b0034035",
+      "obligations.smt2": "1bc8cf8fcd669ebb3b536e4f565d3c11880f2bc19d65f0f48695b4c393d3bc72",
+      "solver.log": "8811e534357aa3ab623ca186b2208875075ed6939efc0c454862de9850339cef"
+    },
+    "identitiesFresh": {
+      "coverage.json": "06fdee82c5a2d4d3f2af30749b1ab46a4fe9cb07a0bb7fafef8a3773c470921c",
+      "obligations.smt2": "9eafd3b8045852b16fccb3a6e7dd09b42ebd4d2d054abcae9af8045e366e5e74",
+      "solver.log": "d84ab9f011c58ddb85dab9c48ce5afe71f4908be063e491089d611a5fb036885"
+    },
+    "keyDestructionSurvives": {
+      "coverage.json": "32c4abbceb029f02dbc54be2474dd9778caa939218776df93ef9a456b5010104",
+      "obligations.smt2": "ff5a1f53e8850830b8a29a2258aa2cf6bf91dc080669e5d3827b7d43b9e8df43",
+      "solver.log": "402db8f9cfa57aa39a19274c6a6c29532a0c56d776b5d8a777affadda894acb5"
+    },
+    "lossGuarantees": {
+      "coverage.json": "955727cb74c3e5a468d55ad82b24db6d415b004d65af7668dd54ec6da6dce159",
+      "obligations.smt2": "d87a233b3e52922fd7c79076dce7d4d787faddece7a6870ad3c5fadb3a83f35e",
+      "solver.log": "e65a7051b42a45929725b7588fd0345041008913d4814a74775e19c843a292e6"
+    },
+    "lossesNameAcknowledgedWork": {
+      "coverage.json": "42f90fb8e7d6ed44abb974938c8fd8fb6f1c93d172e5191baa9389b5db94f92b",
+      "obligations.smt2": "adac88878ad9ab5b66f1451854b74a13e6c58740c9f1cd6a4cd8547bf0b56866",
+      "solver.log": "9f31004559756a37c8ecfa540b51f35e6e8ffe658c5b2476be179c2fd70370b4"
+    },
+    "lossesRemembered": {
+      "coverage.json": "dea140a43bf26e53c9d643db6c0e3e8be5eb6ea52a33e88a90e69bf37bea26ad",
+      "obligations.smt2": "a5a33116b04b7a67b8e948d0095a2bfb0b31489c468f94edbc57bebc53102bf0",
+      "solver.log": "7a38865f28999a704f15812a2287467d41c0997cd366ae0e0f78ab90cc79bae5"
+    },
+    "noRevivedAccess": {
+      "coverage.json": "b45286a534f7d97889404028543642275357982244194fc569fd7d6eac5d7887",
+      "obligations.smt2": "38695089f7ab601587762c296395d67f5e61f00fbdaf639e07e9bf9c644fbe87",
+      "solver.log": "3d25bfe4463a4cb09a2eceec943797eacc8f1f320844a02ed3e676c053c2bf17"
+    },
+    "oldPrimaryFenced": {
+      "coverage.json": "c839e726ba77aadd7dcb29421b6f981f7ed0aae030f9d86a991b97e326776f3b",
+      "obligations.smt2": "5cc7dee939d6fd20f0f90a892ae59182eefa130072c927eaeba82d9de2880545",
+      "solver.log": "377a0b46f96a544749e1ed85310b3efecea7044771b0d2ccc69402b82a46a38f"
+    },
+    "outcomeSupport": {
+      "coverage.json": "08a70bc9cbd52b122e124075bd22daa46efb018bbbf712c3b6047e557fa0ac5e",
+      "obligations.smt2": "efa7da4acfc0de5379da55a1b47f56caa8b1682bb1631c5f0deaee1a95048a62",
+      "solver.log": "6e73619a933a786b90642aedee707f3d83532d9ac2fe7741869a6e5d86c4cb3a"
+    },
+    "permanentSeals": {
+      "coverage.json": "8c4f9c1d67ff132e23eb0950ae1cf50e57d9eea431ab0b0cbb08a8a4f594e6be",
+      "obligations.smt2": "22b7c0acb8035d183ec4b4465fe55184a24709560b10c515345750f03a9332c4",
+      "solver.log": "e4a7ead50a908a56c50f4f0f6ed7329914a6f3dd886c20ac4575f979c69d5ab9"
+    },
+    "receiptHistory": {
+      "coverage.json": "15d5427d9b988aa2d96e13babaf17fca59a5b6e3105950efaa97da141bddd6db",
+      "obligations.smt2": "4f3058ad9ed9b50ead06ac82a907a816e6f7aece7ef72c08e6cc84881b491443",
+      "solver.log": "e0a98d10cfb9ecf17cefc8e1e410b8b09cf1c5aa984fdad0db79971122c1523b"
+    },
+    "replicatedOutcomes": {
+      "coverage.json": "806f2bb7ff692019fdf4e1117a515bf5936d123c2754fc424970f1d1abb344a2",
+      "obligations.smt2": "4d90b76167257baa78a8bece12865919a4a0f92ab713789356721740bdbf584e",
+      "solver.log": "7c0895231c5053acf9a38f77d268e9a589b4fe8106e478d078e3e7acff3cb376"
+    },
+    "rerunsFollowDeclaredLoss": {
+      "coverage.json": "60096b1c5ca605c45431df04ff3f03fae5d26654b56d794865bacac3006ea99c",
+      "obligations.smt2": "ed8f1ff92b3000919d8a131aaf831135aed40d4f945bcc7560ad95eb1d7a7d92",
+      "solver.log": "9d4e3c370e17764936508e65454fc55e5cb131f49a42ed3a36d3e49fe14ebfc9"
+    },
+    "retiredBeforeInstall": {
+      "coverage.json": "eb07fc3439493738b8932ec78d541baa64561549e52d7217a258e83ab7a827e4",
+      "obligations.smt2": "cb269b31942042935c5fb34819a91e29113ea5b2d2d9e9596e0341f08546969d",
+      "solver.log": "d5e70da2634719087476b64e6e6a3d4d589f939bac8a0e5c443d83e72cfe3ece"
+    },
+    "revocationsSurvive": {
+      "coverage.json": "bb5d11138c6eacebdde7b66bed294e0f5379efcc1fd67db0ac1572ae088a7dbf",
+      "obligations.smt2": "de92d445f5c780864c9ae3624bbf98499c396085fe2c44373e2b3cceb5ecb7a6",
+      "solver.log": "41ea08ca135a0ae134f09f5d97751414821c85eee5ad3ac033587898577e500c"
+    },
+    "revokedImpliesPending": {
+      "coverage.json": "31d581d0701ccbe9a5012fa6fc1630c4255c065b51c37f08d93e13a986214c02",
+      "obligations.smt2": "70264d8777a6f68a4f105768dc667093f01f0f6f7313c0a8266990af8398f6cc",
+      "solver.log": "fdaed540455f8e45cf1abe49b953b50dbeffadd7b6246eaa9849af145bded901"
+    },
+    "scopeAndReceiptRevision": {
+      "coverage.json": "182ac02998d4f3bd818a6a38ec2aa4df8490b6d9f3cfb395e3283aca28da7653",
+      "obligations.smt2": "efe13911789d7c9c32035db4baa3af912288ca22cbac46b16a5a2aca9a88d4c2",
+      "solver.log": "81723883b934619d6fb897fad97d0e9cb9fe2eaa42e1d16410be0d34d80aa775"
+    },
+    "subjectsCopiedBack": {
+      "coverage.json": "0ebe1adde080327a2e5e2d5a0ce10acef0d507d3262ecc1f8b722e63f99ff07f",
+      "obligations.smt2": "165ce2bf487b3ee79a795568e5ee9932691a4dd471e3c3e270ebffd162bde7c9",
+      "solver.log": "8c67b4f1da33199af081ba3b29aeb0086370337b6a9d12f2107ab734ca400a59"
+    }
+  },
+  "control_sha256": {
+    "projection-controls.json": "f11d3750763d1f73d18d9d1e5683071852037a9b5ef44d5495bd00e81dd6b259",
+    "vacuity-control.json": "5c631f3c22fdeb0e9e1ae1de6291b238708a944543fc01c5b722958d0131963a",
+    "replication-clause-map.json": "6dc51286167dfbeaf0f525dc981f7f160679e5cae331047acbc47d95bc182135"
+  },
+  "translator_sha256": {
+    "assemble_certificate.py": "9c5e71fa4f5dec0478bc25027034d83b0d5c521a1d7813acaf9d16d8808c72ec",
+    "check_projection_controls.py": "7aac39b1179830fa4199588da1087c676c446e958549e662814e72d697929a56",
+    "ir_semantics.py": "5c1a310ebf7b6749be5c0e02c8ea4880a103d8811893966df3e495d6195ebd84",
+    "lemmas.py": "b46888a25e57cc42625ab8e9d531cbb4da974c84cb38d56e4688b1e8a696ebe4",
+    "prove_components.py": "b731e8c94e69c292d47533942792d2fdaa303f9fda94ab6e51c810afe5d16f6e"
+  },
+  "passed": true
+}

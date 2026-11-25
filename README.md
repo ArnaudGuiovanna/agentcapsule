@@ -45,7 +45,7 @@ agentcapsule version
 agentcapsule install --ssh admin@host.example.org --plan-only
 ```
 
-The host installation checks the deployment by starting the bundled demonstration agent and verifying an invocation. It requires no model-provider key. [Host installation and first invocation](docs/cli-host.md) · [Step-by-step operator guide in French](docs/guide-sysadmin.md)
+The host installation checks the deployment by starting the bundled demonstration agent and verifying an invocation. It requires no model-provider key. [Host installation and first invocation](docs/cli-host.md) · [Step-by-step operator guide in French](docs/guide-sysadmin.md) · [French sysadmin manual for v0.1.1 (PDF)](docs/releases/v0.1.1/manuel-sysadmin.pdf)
 
 ## Technical documentation
 

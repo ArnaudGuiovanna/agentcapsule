@@ -1,0 +1,555 @@
+{
+  "revision": "224da46953e67bc2fe4b75db3a657fc4972d644a",
+  "quint": "0.33.1",
+  "source_sha256": {
+    "concurrent_protocol.qnt": "6f8954cca9e41827b1c3f3db63aba67cc50bc1af790e29f9aba9278f47e97a78",
+    "concurrent_focused.qnt": "90f7d7aca72ce610e9aa30e336bd5db767fab472fa411db5425d53bf7f80c52e",
+    "concurrent_bounded.qnt": "3d37368f84a75143ec0eb9de9cb405e1efa9c6359e84fd0fdaf9bc26c6c221cb"
+  },
+  "canonical_rules_sha256": "4fd77bb011c2f7ef55b1556fa105db98658772a84f21c8d9daba474c7c8e5694",
+  "same_shared_definitions": 176,
+  "same_protocol_overrides": 11,
+  "enumerated_step_alternatives": 397,
+  "distinct_actions": 37,
+  "witness_log_sha256": "98c1c3473f90c352f948ae0618d636bb6c46144d088cb161a64de2bb01b5c49a",
+  "wrappers": {
+    "concurrentProtocolDepth7": {
+      "starts_at": "initialState",
+      "depth_initialized_to": 0,
+      "bound": 7,
+      "safety": "checked = safety",
+      "uses_full_step": "step with the wrapper's depth bound",
+      "source_sha256": {
+        "concurrent_focused.qnt": "f2f55c548ae52f567e64f5cb22b650af4261311a321617e7006b56c2f16f1c18",
+        "concurrent_protocol.qnt": "a711d9f0539b11f104a38da488047c1c4c71c84d4bbb514cc685c6d7e7025ceb"
+      }
+    },
+    "concurrentProtocolRepliedDepth6": {
+      "starts_at": "repliedState",
+      "depth_initialized_to": 0,
+      "bound": 6,
+      "safety": "checked = safety",
+      "uses_full_step": "step with the wrapper's depth bound",
+      "source_sha256": {
+        "concurrent_focused.qnt": "8fea07d67cb7249e6ade3a68a93457faaa34b74961d3e891615804282544027c",
+        "concurrent_protocol.qnt": "a711d9f0539b11f104a38da488047c1c4c71c84d4bbb514cc685c6d7e7025ceb"
+      },
+      "reachable_from": "ordinary initialState",
+      "witness": "repliedPrefixTest",
+      "steps": [
+        {
+          "action": "receive",
+          "arguments": [
+            0,
+            0,
+            [
+              "variant",
+              "SubmitCall",
+              [
+                "Tup"
+              ]
+            ],
+            0
+          ]
+        },
+        {
+          "action": "admit",
+          "arguments": [
+            0
+          ]
+        },
+        {
+          "action": "commitCall",
+          "arguments": [
+            0
+          ]
+        },
+        {
+          "action": "claim",
+          "arguments": [
+            0,
+            [
+              "Tup",
+              0,
+              0
+            ]
+          ]
+        },
+        {
+          "action": "authorize",
+          "arguments": [
+            0
+          ]
+        },
+        {
+          "action": "beginEffect",
+          "arguments": [
+            0
+          ]
+        },
+        {
+          "action": "commitEffect",
+          "arguments": [
+            0
+          ]
+        },
+        {
+          "action": "acknowledge",
+          "arguments": [
+            0
+          ]
+        },
+        {
+          "action": "receive",
+          "arguments": [
+            0,
+            0,
+            [
+              "variant",
+              "ReplyCall",
+              [
+                "Tup"
+              ]
+            ],
+            1
+          ]
+        },
+        {
+          "action": "admit",
+          "arguments": [
+            0
+          ]
+        },
+        {
+          "action": "commitCall",
+          "arguments": [
+            0
+          ]
+        }
+      ],
+      "final_assertion_ir": {
+        "kind": "app",
+        "opcode": "and",
+        "args": [
+          {
+            "kind": "app",
+            "opcode": "and",
+            "args": [
+              {
+                "kind": "name",
+                "name": "safety"
+              },
+              {
+                "kind": "app",
+                "opcode": "eq",
+                "args": [
+                  {
+                    "kind": "name",
+                    "name": "s"
+                  },
+                  {
+                    "kind": "name",
+                    "name": "repliedState"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "kind": "app",
+            "opcode": "eq",
+            "args": [
+              {
+                "kind": "app",
+                "opcode": "field",
+                "args": [
+                  {
+                    "kind": "app",
+                    "opcode": "get",
+                    "args": [
+                      {
+                        "kind": "app",
+                        "opcode": "field",
+                        "args": [
+                          {
+                            "kind": "name",
+                            "name": "s"
+                          },
+                          {
+                            "kind": "str",
+                            "value": "events"
+                          }
+                        ]
+                      },
+                      {
+                        "kind": "app",
+                        "opcode": "Tup",
+                        "args": [
+                          {
+                            "kind": "int",
+                            "value": 0
+                          },
+                          {
+                            "kind": "int",
+                            "value": 1
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "kind": "str",
+                    "value": "phase"
+                  }
+                ]
+              },
+              {
+                "kind": "name",
+                "name": "PendingEvent"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "concurrentProtocolReplyDeliveredDepth6": {
+      "starts_at": "replyDeliveredState",
+      "depth_initialized_to": 0,
+      "bound": 6,
+      "safety": "checked = safety",
+      "uses_full_step": "step with the wrapper's depth bound",
+      "source_sha256": {
+        "concurrent_focused.qnt": "d4ad2305f979e55b2c2ef3c2de64e75b5e58373391401a0bd206e81418300897",
+        "concurrent_protocol.qnt": "a711d9f0539b11f104a38da488047c1c4c71c84d4bbb514cc685c6d7e7025ceb"
+      },
+      "reachable_from": "ordinary initialState",
+      "witness": "replyDeliveredPrefixTest",
+      "steps": [
+        {
+          "action": "receive",
+          "arguments": [
+            0,
+            0,
+            [
+              "variant",
+              "SubmitCall",
+              [
+                "Tup"
+              ]
+            ],
+            0
+          ]
+        },
+        {
+          "action": "admit",
+          "arguments": [
+            0
+          ]
+        },
+        {
+          "action": "commitCall",
+          "arguments": [
+            0
+          ]
+        },
+        {
+          "action": "claim",
+          "arguments": [
+            0,
+            [
+              "Tup",
+              0,
+              0
+            ]
+          ]
+        },
+        {
+          "action": "authorize",
+          "arguments": [
+            0
+          ]
+        },
+        {
+          "action": "beginEffect",
+          "arguments": [
+            0
+          ]
+        },
+        {
+          "action": "commitEffect",
+          "arguments": [
+            0
+          ]
+        },
+        {
+          "action": "acknowledge",
+          "arguments": [
+            0
+          ]
+        },
+        {
+          "action": "receive",
+          "arguments": [
+            0,
+            0,
+            [
+              "variant",
+              "ReplyCall",
+              [
+                "Tup"
+              ]
+            ],
+            1
+          ]
+        },
+        {
+          "action": "admit",
+          "arguments": [
+            0
+          ]
+        },
+        {
+          "action": "commitCall",
+          "arguments": [
+            0
+          ]
+        },
+        {
+          "action": "claim",
+          "arguments": [
+            0,
+            [
+              "Tup",
+              0,
+              1
+            ]
+          ]
+        },
+        {
+          "action": "authorize",
+          "arguments": [
+            0
+          ]
+        },
+        {
+          "action": "beginEffect",
+          "arguments": [
+            0
+          ]
+        },
+        {
+          "action": "commitEffect",
+          "arguments": [
+            0
+          ]
+        },
+        {
+          "action": "acknowledge",
+          "arguments": [
+            0
+          ]
+        }
+      ],
+      "final_assertion_ir": {
+        "kind": "app",
+        "opcode": "and",
+        "args": [
+          {
+            "kind": "app",
+            "opcode": "and",
+            "args": [
+              {
+                "kind": "name",
+                "name": "safety"
+              },
+              {
+                "kind": "app",
+                "opcode": "eq",
+                "args": [
+                  {
+                    "kind": "name",
+                    "name": "s"
+                  },
+                  {
+                    "kind": "name",
+                    "name": "replyDeliveredState"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "kind": "app",
+            "opcode": "field",
+            "args": [
+              {
+                "kind": "app",
+                "opcode": "get",
+                "args": [
+                  {
+                    "kind": "app",
+                    "opcode": "field",
+                    "args": [
+                      {
+                        "kind": "name",
+                        "name": "s"
+                      },
+                      {
+                        "kind": "str",
+                        "value": "requests"
+                      }
+                    ]
+                  },
+                  {
+                    "kind": "int",
+                    "value": 0
+                  }
+                ]
+              },
+              {
+                "kind": "str",
+                "value": "notified"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "concurrentProtocolExpiringDepth6": {
+      "starts_at": "expiringState",
+      "depth_initialized_to": 0,
+      "bound": 6,
+      "safety": "checked = safety",
+      "uses_full_step": "step with the wrapper's depth bound",
+      "source_sha256": {
+        "concurrent_focused.qnt": "28f35e20455a544a918dce3fa66081bc6f7d13bef7e6928ffca7fa3e32b9ae49",
+        "concurrent_protocol.qnt": "a711d9f0539b11f104a38da488047c1c4c71c84d4bbb514cc685c6d7e7025ceb"
+      },
+      "reachable_from": "ordinary initialState",
+      "witness": "expiringPrefixTest",
+      "steps": [
+        {
+          "action": "receive",
+          "arguments": [
+            0,
+            0,
+            [
+              "variant",
+              "SubmitCall",
+              [
+                "Tup"
+              ]
+            ],
+            0
+          ]
+        },
+        {
+          "action": "admit",
+          "arguments": [
+            0
+          ]
+        },
+        {
+          "action": "commitCall",
+          "arguments": [
+            0
+          ]
+        },
+        {
+          "action": "claim",
+          "arguments": [
+            0,
+            [
+              "Tup",
+              0,
+              0
+            ]
+          ]
+        },
+        {
+          "action": "authorize",
+          "arguments": [
+            0
+          ]
+        },
+        {
+          "action": "stopVM",
+          "arguments": [
+            2
+          ]
+        },
+        {
+          "action": "retireBoot",
+          "arguments": [
+            2
+          ]
+        },
+        {
+          "action": "observeStopped",
+          "arguments": [
+            2
+          ]
+        },
+        {
+          "action": "closeRequest",
+          "arguments": [
+            0,
+            [
+              "variant",
+              "ExpireRequest",
+              [
+                "Tup"
+              ]
+            ]
+          ]
+        }
+      ],
+      "final_assertion_ir": {
+        "kind": "app",
+        "opcode": "and",
+        "args": [
+          {
+            "kind": "name",
+            "name": "safety"
+          },
+          {
+            "kind": "app",
+            "opcode": "eq",
+            "args": [
+              {
+                "kind": "name",
+                "name": "s"
+              },
+              {
+                "kind": "name",
+                "name": "expiringState"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "concurrentProtocolDepth8": {
+      "starts_at": "initialState",
+      "depth_initialized_to": 0,
+      "bound": 8,
+      "safety": "P::safety",
+      "uses_full_step": "P::step with the wrapper's depth bound",
+      "source_sha256": {
+        "concurrent_bounded.qnt": "3893f764efa45b7f5c7037ee0c72dc3bdfe0420103d10dfef0c9e7e44e362f62",
+        "concurrent_protocol.qnt": "a711d9f0539b11f104a38da488047c1c4c71c84d4bbb514cc685c6d7e7025ceb"
+      }
+    },
+    "concurrentProtocolLoadedDepth12": {
+      "starts_at": "loadedState",
+      "depth_initialized_to": 0,
+      "bound": 12,
+      "safety": "P::safety",
+      "uses_full_step": "P::step with the wrapper's depth bound",
+      "source_sha256": {
+        "concurrent_bounded.qnt": "5f12524fb30c3d9e661163ed7e9747e94bc4c8d3ac7c3cfbd532490c259f3343",
+        "concurrent_protocol.qnt": "a711d9f0539b11f104a38da488047c1c4c71c84d4bbb514cc685c6d7e7025ceb"
+      }
+    }
+  }
+}

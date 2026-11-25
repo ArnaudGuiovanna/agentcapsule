@@ -1,0 +1,20 @@
+{
+  "revision": "224da46953e67bc2fe4b75db3a657fc4972d644a",
+  "safety_conjuncts": 19,
+  "wrapper_count": 6,
+  "identical_files_by_family": {
+    "core/checked": 3,
+    "core/control-FIFO": 3,
+    "core/control-DEDUP": 3,
+    "core/control-PUBLISH": 3,
+    "core/control-RECEIPT": 3,
+    "barriers/checked": 3,
+    "barriers/control": 3,
+    "request": 226,
+    "stale": 82,
+    "rpc": 86
+  },
+  "identical_family_files": 415,
+  "rules_sha256": "4fd77bb011c2f7ef55b1556fa105db98658772a84f21c8d9daba474c7c8e5694",
+  "source_safety_sha256": "b23076fd9e2e42ff0976db4e155f53ff909997fdba26bbeab7c3108258d289c8"
+}

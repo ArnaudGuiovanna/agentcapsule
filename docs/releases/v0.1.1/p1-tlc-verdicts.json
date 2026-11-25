@@ -1,0 +1,108 @@
+{
+  "kind": "Original canonical TLC runs under their configured budgets",
+  "snapshot": "2026-11-23T07:21:11.867355+01:00",
+  "campaigns": [
+    {
+      "id": "concurrentProtocolReplyDeliveredDepth6.checked",
+      "status": "ok",
+      "depth": 7,
+      "generated": 40528406,
+      "distinct": 6994586,
+      "queue": 0,
+      "workers": 2,
+      "passed": true,
+      "seconds": 1626.779,
+      "requested_seconds": 7200,
+      "evidence": "tlc-concurrentProtocolReplyDeliveredDepth6/001-concurrentProtocolReplyDeliveredDepth6.checked/result.json",
+      "canonical_artifact": {
+        "file": "tlc-concurrentProtocolReplyDeliveredDepth6/001-concurrentProtocolReplyDeliveredDepth6.checked/result.json",
+        "sha256": "f17ea88042c208779b0eaae097cd47085b335f4ccc32a27d28243d34683622c3"
+      }
+    },
+    {
+      "id": "concurrentProtocolRepliedDepth6.checked",
+      "status": "ok",
+      "depth": 7,
+      "generated": 93672720,
+      "distinct": 16495099,
+      "queue": 0,
+      "workers": 2,
+      "passed": true,
+      "seconds": 3717.205,
+      "requested_seconds": 7200,
+      "evidence": "tlc-concurrentProtocolRepliedDepth6/001-concurrentProtocolRepliedDepth6.checked/result.json",
+      "canonical_artifact": {
+        "file": "tlc-concurrentProtocolRepliedDepth6/001-concurrentProtocolRepliedDepth6.checked/result.json",
+        "sha256": "5498dc443b18165072443c7fae26c60458dd5da69338716b82d5f5038cfdfade"
+      }
+    },
+    {
+      "id": "concurrentProtocolExpiringDepth6.checked",
+      "status": "ok",
+      "depth": 7,
+      "generated": 99255820,
+      "distinct": 16211604,
+      "queue": 0,
+      "workers": 2,
+      "passed": true,
+      "seconds": 3228.209,
+      "requested_seconds": 7200,
+      "evidence": "tlc-concurrentProtocolExpiringDepth6/001-concurrentProtocolExpiringDepth6.checked/result.json",
+      "canonical_artifact": {
+        "file": "tlc-concurrentProtocolExpiringDepth6/001-concurrentProtocolExpiringDepth6.checked/result.json",
+        "sha256": "8649c86909700023f9e0130abd6322e8da3deac35110b7d92c8263c915f1e8f3"
+      }
+    },
+    {
+      "id": "concurrentProtocolDepth7.checked",
+      "status": "ok",
+      "depth": 8,
+      "generated": 180943291,
+      "distinct": 29031048,
+      "queue": 0,
+      "workers": 2,
+      "passed": true,
+      "seconds": 5701.92,
+      "requested_seconds": 14400,
+      "evidence": "tlc-concurrentProtocolDepth7/001-concurrentProtocolDepth7.checked/result.json",
+      "canonical_artifact": {
+        "file": "tlc-concurrentProtocolDepth7/001-concurrentProtocolDepth7.checked/result.json",
+        "sha256": "2e8d3f497119e1939a78740c0dc821e8318cda7507cbc1319e9158ca269c7a01"
+      }
+    },
+    {
+      "id": "concurrentProtocolLoadedDepth12.safety",
+      "status": "timeout",
+      "depth": 7,
+      "generated": 82129898,
+      "distinct": 20572877,
+      "queue": 18741202,
+      "workers": 2,
+      "passed": false,
+      "seconds": 3600.033,
+      "requested_seconds": 3600,
+      "evidence": "tlc-concurrentProtocolLoadedDepth12/001-concurrentProtocolLoadedDepth12.safety/result.json",
+      "canonical_artifact": {
+        "file": "tlc-concurrentProtocolLoadedDepth12/001-concurrentProtocolLoadedDepth12.safety/result.json",
+        "sha256": "faa13ead9436acebbcad849e482c50ff320afd0215d08774975274426d097d1d"
+      }
+    },
+    {
+      "id": "concurrentProtocolDepth8.safety",
+      "status": "timeout",
+      "depth": 9,
+      "generated": 425320130,
+      "distinct": 70886363,
+      "queue": 48860151,
+      "workers": 2,
+      "passed": false,
+      "seconds": 14400.121,
+      "requested_seconds": 14400,
+      "evidence": "tlc-concurrentProtocolDepth8/001-concurrentProtocolDepth8.safety/result.json",
+      "canonical_artifact": {
+        "file": "tlc-concurrentProtocolDepth8/001-concurrentProtocolDepth8.safety/result.json",
+        "sha256": "2323ef487480d5b2faa8c5a7eb75ecd54a048c2f91aafe4d52cd81460e0ae1d7"
+      }
+    }
+  ]
+}
