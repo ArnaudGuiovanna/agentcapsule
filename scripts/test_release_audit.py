@@ -78,6 +78,24 @@ class PinnedToolTest(Temporary):
         OCI.checked_download(url, dest, checksum, cache)
         self.assertEqual(TOOLS.sha256(entry), checksum)
 
+    def test_a_mirror_serves_the_pinned_bytes_when_the_first_url_fails(self):
+        source = self.dir / "mirror"
+        source.write_bytes(b"busybox source")
+        checksum = TOOLS.sha256(source)
+        other = self.dir / "other"
+        other.write_bytes(b"other bytes")
+        dest = self.dir / "download"
+        missing = (self.dir / "missing").as_uri()
+        with patch("time.sleep"):
+            OCI.download_any((missing, other.as_uri(), source.as_uri()), dest, checksum)
+            self.assertEqual(dest.read_bytes(), b"busybox source")
+            with self.assertRaisesRegex(ValueError, "checksum mismatch"):
+                OCI.download_any((missing, other.as_uri()), dest, checksum)
+
+    def test_busybox_mirrors_name_the_pinned_release_file(self):
+        for url in OCI.BUSYBOX_MIRRORS:
+            self.assertTrue(url.startswith("https://") and url.endswith("/busybox-1.37.0.tar.bz2"), url)
+
     def test_firecracker_bundle_retains_lock_and_refuses_corrupt_crate(self):
         import os
         from unittest.mock import patch

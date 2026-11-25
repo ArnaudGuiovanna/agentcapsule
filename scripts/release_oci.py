@@ -2,12 +2,14 @@
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
+from http.client import HTTPException
 import json
 from pathlib import Path, PurePosixPath
 import re
 import runpy
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import zipfile
@@ -23,8 +25,22 @@ BUNDLE = runpy.run_path(str(ROOT / "scripts/build-server-bundle.py"))
 KEYCLOAK_SOURCE = ("26.8.2", "e514445f9dcdabc5bdcf67cab56c1e49655de067")
 GITHUB_IMAGES = {"slim": "agntcy/slim", "directory": "agntcy/dir", "init": "agntcy/oasf",
                  "oasf": "agntcy/oasf-server"}
+# busybox.net does not always answer GitHub's runners. These mirrors serve the
+# same release file; the pinned SHA-256 decides which bytes are accepted.
+BUSYBOX_MIRRORS = ("https://sources.buildroot.net/busybox/busybox-1.37.0.tar.bz2",
+                   "https://distfiles.gentoo.org/distfiles/20/busybox-1.37.0.tar.bz2")
 OPENSSL = json.loads((ROOT / "deploy/images/openssl/qualification.json").read_bytes())
 BACKPORT_PURLS = {p["purl"] for profile in OPENSSL["profiles"].values() for p in profile.values()}
+
+
+def download_any(urls, dest, expected):
+    """checked_download from the first URL that serves the pinned bytes."""
+    for url in urls[:-1]:
+        try:
+            return checked_download(url, dest, expected)
+        except (OSError, ValueError, HTTPException) as err:
+            print(f"cannot use {url} ({err}); trying the next mirror", file=sys.stderr)
+    return checked_download(urls[-1], dest, expected)
 
 
 def write_json(path, value):
@@ -218,8 +234,8 @@ def inspect_image(service, source, expected, work, sboms, syft, notice_root, sou
             if package["version"] != "1.37.0":
                 raise ValueError("review the BusyBox source version in the schema image")
             filename = "busybox-1.37.0.tar.bz2"
-            dest = checked_download(package["source"], work / filename,
-                                    "3311dff32e746499f4df0d5df04d7eb396382d7e108bb9250e7b519b837043a4")
+            dest = download_any((package["source"], *BUSYBOX_MIRRORS), work / filename,
+                                "3311dff32e746499f4df0d5df04d7eb396382d7e108bb9250e7b519b837043a4")
             sources[filename] = dest
             with tarfile.open(dest) as tree:
                 all_notices += notices(tree, notice_root, "projects/busybox")
