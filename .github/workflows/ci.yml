@@ -344,7 +344,9 @@ jobs:
   go-postgres:
     name: Go race, PostgreSQL and WAL recovery
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    # The race suite allows 60 minutes. Leave time for setup, WAL recovery
+    # and uploading the test reports even when the suite hits its deadline.
+    timeout-minutes: 90
     steps:
       - name: Check out sources
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
