@@ -7,9 +7,9 @@ one. The decisions behind it are in
 
 ## What a release contains
 
-A release is a draft GitHub release created by
-[`.github/workflows/release.yml`](../.github/workflows/release.yml) from a
-version tag. A maintainer reviews it, then publishes it.
+A release is a GitHub release that
+[`.github/workflows/release.yml`](../.github/workflows/release.yml) builds,
+signs and publishes from a version tag, without a manual step.
 
 | File | What it is |
 |---|---|
@@ -311,11 +311,11 @@ The maintainer:
 1. Checks that `main` is green, including the *Release audit* job, and that
    no allowlist entry covers a vulnerability the code calls: a release would
    refuse it.
-2. Tags the commit of `main`, signed, and pushes the tag:
+2. Tags the commit of `main` and pushes the tag:
 
    ```bash
-   git tag -s v0.1.0 -m "Agent Capsule v0.1.0"
-   git push origin v0.1.0
+   git tag -a v0.1.3 -m "Agent Capsule v0.1.3"
+   git push origin v0.1.3
    ```
 
    Only `vMAJOR.MINOR.PATCH` and `vMAJOR.MINOR.PATCH-PRE` tags start the
@@ -332,11 +332,9 @@ The maintainer:
      `install.sh` from those files as a user would (which checks the signer),
      and attests the SLSA provenance of every file;
    - **publish** (write access to the repository's contents only), in the
-     `release` environment: creates the draft release with every file.
-4. Reviews the draft: the files, `dependency-audit.json` and
-   `vulnerability-scan.json` (every allowlisted finding is listed with its
-   reason), and verifies the release as a user would (below). Then publishes
-   it.
+     `release` environment: publishes the release with every file.
+4. Reads `dependency-audit.json` and `vulnerability-scan.json` of the
+   published release (every allowlisted finding is listed with its reason).
 
 A failed run publishes nothing. Fix the cause on `main`, then tag a new
 version; never move a published tag.
@@ -364,9 +362,10 @@ their `SHA256SUMS` only, pinned in the three verifiers.
 The owner creates, in the repository's settings:
 
 1. **Environments → New environment `release`**:
-   - *Required reviewers*: one or more maintainers. Each run waits for their
-     approval before `sign`, then before `publish`. Turn on *Prevent
-     self-review* when there is more than one maintainer.
+   - *Required reviewers*: off while the project has a single maintainer
+     (since 26 November 2026). With two or more maintainers, name them here:
+     each run then waits for an approval before `sign`, then before
+     `publish`. Turn on *Prevent self-review* as well.
    - *Deployment branches and tags*: *Selected branches and tags*, with the
      tag rules `v[0-9]*.[0-9]*.[0-9]*` and `v[0-9]*.[0-9]*.[0-9]*-*`, and no
      branch: no other ref can run a job in this environment.
@@ -377,8 +376,9 @@ The owner creates, in the repository's settings:
 3. **Branch protection of `main`** stays as it is: changes to
    `.github/workflows/release.yml` reach `main` only through review.
 
-A reviewer approves `sign` only for a tag of a commit of `main` that they
-expect to release: the approval page names the tag and the commit.
+When reviewers are configured, a reviewer approves `sign` only for a tag of a
+commit of `main` that they expect to release: the approval page names the tag
+and the commit.
 
 ## Verify a release
 

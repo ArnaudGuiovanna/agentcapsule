@@ -99,7 +99,9 @@ across hosts (its native files are the host's packages), the harness packages
   hold the least they need: the build job (third-party tools run there) has a
   read-only token and no OIDC token; the sign job has the OIDC token and no
   write access; the publish job may write the repository's contents and
-  creates a draft release, which a maintainer publishes.
+  publishes the release. (Until v0.1.3 it created a draft that a maintainer
+  published; with a single maintainer the extra step was dropped on
+  26 November 2026.)
 
 Rejected: `slsa-github-generator` (Build Level 3, but it must be referenced
 by tag, not SHA, and its last release is from February 2025); a long-lived

@@ -5,10 +5,10 @@ name: Release
 # them, audits the dependencies, writes the SBOMs and scans them; it holds no
 # token that can sign or write. It assembles the offline host distribution. The sign job signs the checksums with cosign
 # (keyless, GitHub's OIDC identity) and attests their SLSA provenance. The
-# publish job creates a draft release, which a maintainer reviews and publishes.
-# Both run in the protected "release" environment (S-16, docs/release.md#the-release-environment):
-# a reviewer approves each, and the signing certificate names the environment,
-# which install.sh, the CLI and the host helper require.
+# publish job publishes the release directly (a tag with a suffix makes a
+# prerelease). Both run in the "release" environment (S-16,
+# docs/release.md#the-release-environment): the signing certificate names the
+# environment, which install.sh, the CLI and the host helper require.
 #
 # A rehearsal (workflow_dispatch on a branch) runs the build and the native
 # CLI tests under a pre-release tag created on the runner only, never pushed;
@@ -358,7 +358,7 @@ jobs:
           path: ${{ runner.temp }}/signatures/
 
   publish:
-    name: Create the draft release
+    name: Publish the release
     needs: [build, sign]
     if: github.event_name == 'push'
     environment: release
@@ -379,7 +379,7 @@ jobs:
           name: release-signatures
           path: ${{ runner.temp }}/assets
 
-      - name: Create the draft release
+      - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
@@ -407,5 +407,5 @@ jobs:
           dependency-audit.json and vulnerability-scan.json; findings accepted by
           scripts/vulnerability-allowlist.json are listed there with their reason.
           EOF
-          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
             "${prerelease[@]}" --title "Agent Capsule $TAG" --notes-file "$RUNNER_TEMP/notes.md" -- ./*
