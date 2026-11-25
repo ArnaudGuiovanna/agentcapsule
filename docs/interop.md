@@ -288,9 +288,11 @@ With `--systemd`, the script also checks [deploy/systemd](../deploy/systemd):
   - `systemd-analyze verify` passes both units without a single warning. It
     exits 0 on an unknown key, so any output fails.
   - The bridge's exposure is at most 2.0.
-  - sysusers creates the bridge's user, and tmpfiles both directories with
-    their modes. Without root, tmpfiles cannot give the directories to their
-    owners; it must still resolve them.
+  - sysusers creates separate accounts for the bridge and worker. tmpfiles
+    creates each socket directory with its service as owner and the peer's
+    group. The check requires mode 2750 for the bridge and 2710 for the worker.
+    In an unprivileged run, the temporary account files map the expected
+    owner and group of each directory to the caller for that check.
 
   CI runs these checks: `--systemd static`. They pass with systemd 255 (Ubuntu
   24.04) and 259.

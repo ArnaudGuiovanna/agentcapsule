@@ -65,7 +65,8 @@ SERVICE_TESTS = {
 }
 A2A_SLIM_TESTS = {"TestA2AOverSLIMThroughThePrivateNode"}
 # The platform's SLIM bridge (runtime/slimbridge, INT-04).
-BRIDGE_LIBRARY_TESTS = {"TestTheWorkerContractIsTheSameOnBothSides", "TestConfigurationIsCheckedBeforeConnecting", "TestNames"}
+BRIDGE_LIBRARY_TESTS = {"TestTheWorkerContractIsTheSameOnBothSides", "TestConfigurationIsCheckedBeforeConnecting",
+                        "TestTheBridgeSocketOpensToAWorkerOfItsOwnAccount", "TestNames"}
 BRIDGE_SERVICE_TESTS = {"TestBridgesCarryDeliveriesThroughTheNode", "TestABridgeEndsWhenTheNodeIsLostAndANewOneWorks"}
 # The platform's own Directory client and publisher (internal/directory).
 PLATFORM_TESTS = {"TestPublisherAgainstThePrivateDirectory"}
@@ -143,21 +144,41 @@ def check_units(units, work, output):
         raise RuntimeError(f"the bridge's unit is exposed above {MAX_BRIDGE_EXPOSURE}; see systemd-security.log")
     for name in ("passwd", "group", "shadow", "gshadow"):
         (root / "etc" / name).touch()
-    sysusers = tool("sysusers", "systemd-sysusers", f"--root={root}", str(units / "agentcapsule-slim.sysusers"))
-    if sysusers.returncode or not (root / "etc/passwd").read_text().startswith("agentcapsule-slim:"):
-        raise RuntimeError("the bridge's user was not created; see systemd-sysusers.log")
-    tmpfiles = tool("tmpfiles", "systemd-tmpfiles", f"--root={root}", "--create", str(units / "agentcapsule-slim.tmpfiles"))
-    # A line systemd cannot parse, or an unknown user, exits 65 and names the
-    # line. Without root (CI), the directories are created but not given to
-    # their owners: exit 73, one fchownat line for each.
-    modes = {name: (root / "run" / name).stat().st_mode & 0o7777 if (root / "run" / name).is_dir() else None
-             for name in ("agentcapsule-slim", "agentcapsule-worker")}
-    lines = [line for line in (tmpfiles.stdout + tmpfiles.stderr).splitlines() if line.strip()]
-    owners_applied = tmpfiles.returncode == 0 and not lines
-    chown_refused = os.geteuid() != 0 and tmpfiles.returncode == 73 and len(lines) == 2 and all(
-        re.fullmatch(r"fchownat\(\) of \S+/run/agentcapsule-(slim|worker) failed: Operation not permitted", line) for line in lines)
-    if modes != {"agentcapsule-slim": 0o750, "agentcapsule-worker": 0o711} or not (owners_applied or chown_refused):
-        raise RuntimeError("the socket directories were not created as written; see systemd-tmpfiles.log")
+    slim, worker = "agentcapsule-slim", "agentcapsule-worker"
+    sysusers = tool("sysusers", "systemd-sysusers", f"--root={root}",
+                    str(units / f"{slim}.sysusers"), str(units / f"{worker}.sysusers"))
+    if sysusers.returncode:
+        raise RuntimeError("the service accounts were not created; see systemd-sysusers.log")
+    passwd, group = root / "etc/passwd", root / "etc/group"
+    users = [line.split(":") for line in passwd.read_text().splitlines()]
+    groups = [line.split(":") for line in group.read_text().splitlines()]
+    uids = {entry[0]: int(entry[2]) for entry in users}
+    gids = {entry[0]: int(entry[2]) for entry in groups}
+    if uids[slim] == uids[worker] or gids[slim] == gids[worker]:
+        raise RuntimeError("the bridge and worker must have distinct system identities")
+    owners_applied = os.geteuid() == 0
+    for owner, peer, mode in ((slim, worker, 0o2750), (worker, slim, 0o2710)):
+        uid, gid = uids[owner], gids[peer]
+        if not owners_applied:
+            # CI cannot chown. For this directory only, map its expected
+            # owner and peer group to the caller in the throwaway NSS files.
+            # A rule naming the wrong account still attempts a forbidden chown.
+            uid, gid = os.geteuid(), os.getegid()
+            for path, rows, name, number in ((passwd, users, owner, uid), (group, groups, peer, gid)):
+                with path.open("w") as database:
+                    for entry in rows:
+                        fields = entry.copy()
+                        if fields[0] == name:
+                            fields[2] = str(number)
+                        print(":".join(fields), file=database)
+        tmpfiles = tool(f"tmpfiles-{owner}", "systemd-tmpfiles", f"--root={root}", "--create",
+                        f"--prefix=/run/{owner}", str(units / "agentcapsule-slim.tmpfiles"))
+        if tmpfiles.returncode or (tmpfiles.stdout + tmpfiles.stderr).strip():
+            raise RuntimeError(f"could not create the socket directory; see systemd-tmpfiles-{owner}.log")
+        directory = root / "run" / owner
+        st = directory.stat()
+        if not directory.is_dir() or (st.st_mode & 0o7777, st.st_uid, st.st_gid) != (mode, uid, gid):
+            raise RuntimeError(f"incorrect socket directory mode or ownership for {owner}")
     version = subprocess.check_output(["systemd-analyze", "--version"], text=True).splitlines()[0]
     return {"systemd": version, "verified_units": list(SYSTEMD_UNITS), "warnings": 0, "bridge_exposure": float(score.group(1)),
             "tmpfiles_owners_applied": owners_applied}
@@ -272,7 +293,7 @@ def supervise_units(units, deploy, bridge_binary, example, certs, compose, docke
     base = Path(tempfile.mkdtemp(prefix="agentcapsule-units-", dir="/dev/shm"))
     cleanup.callback(shutil.rmtree, base, True)
     binary, etc, run_slim, run_worker = base / "bin/agentcapsule-slim-bridge", base / "etc", base / "run-slim", base / "run-worker"
-    for directory, mode in ((binary.parent, 0o755), (etc, 0o755), (run_slim, 0o750), (run_worker, 0o711)):
+    for directory, mode in ((binary.parent, 0o755), (etc, 0o755), (run_slim, 0o2750), (run_worker, 0o2710)):
         directory.mkdir()
         directory.chmod(mode)  # as agentcapsule-slim.tmpfiles
     shutil.copy2(bridge_binary, binary)
