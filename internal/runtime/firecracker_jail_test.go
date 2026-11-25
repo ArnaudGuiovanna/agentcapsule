@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -31,6 +32,20 @@ func TestAVMMLogIsBoundedAndRemovedWithItsRun(t *testing.T) {
 		t.Fatal("the log is not the host's alone", err)
 	}
 	if _, err = log.Write(bytes.Repeat([]byte("guest flood\n"), 1000)); err != nil {
+		t.Fatal(err)
+	}
+	// Another monitor is already cutting this run's log. This monitor
+	// leaves it alone until that cut is complete.
+	if err = syscall.Flock(int(log.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+	if err = l.h.boundLog(run.ID); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := log.Stat(); err != nil || st.Size() <= VMMLogCap {
+		t.Fatal("a second monitor cut the locked log", err)
+	}
+	if err = syscall.Flock(int(log.Fd()), syscall.LOCK_UN); err != nil {
 		t.Fatal(err)
 	}
 	// The host's monitor cuts the log, and the VMM's next write follows.

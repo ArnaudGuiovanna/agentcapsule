@@ -56,11 +56,22 @@ func (h *FirecrackerHost) boundLog(vmID string) error {
 	if err != nil || !st.Mode().IsRegular() || st.Size() <= VMMLogCap {
 		return err
 	}
-	if err = f.Truncate(0); err != nil {
+	// Other worker processes can monitor the same run. Recheck the size
+	// under the log's lock in case another monitor has already cut it.
+	if err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); errors.Is(err, syscall.EWOULDBLOCK) {
+		return nil
+	} else if err != nil {
 		return err
 	}
-	_, err = f.WriteAt([]byte(logCut), 0)
-	return err
+	if st, err = f.Stat(); err != nil || st.Size() <= VMMLogCap {
+		return err
+	}
+	// Install the marker while the old log is still long. Once Truncate
+	// reduces its size, every subsequent VMM append follows the marker.
+	if _, err = f.WriteAt([]byte(logCut), 0); err != nil {
+		return err
+	}
+	return f.Truncate(int64(len(logCut)))
 }
 
 // validRunID: a run's ID, 16 lowercase hex digits.
