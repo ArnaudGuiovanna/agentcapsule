@@ -43,7 +43,7 @@ sh install-agentcapsule.sh --dir /usr/local/bin
 /usr/local/bin/agentcapsule install
 ```
 
-The CLI installs the platform services and tests an invocation on the bundled demonstration agent. Copy the `operation_id` from its output and run `agentcapsule host operation wait host_ID` in the same shell, replacing `host_ID` with that value. A successful installation reports `state: succeeded` and `invocation_verified: true`. The first echo works without a model-provider key. To administer a different server from a workstation, add `--ssh admin@host` to the host commands. [Host installation](docs/cli-host.md) · [Step-by-step operator guide in French](docs/guide-sysadmin.md) · [French sysadmin manual (PDF)](docs/manuel-sysadmin.pdf)
+The CLI installs the platform services and tests an invocation on the bundled demonstration agent. Copy the `operation_id` from its output and run `agentcapsule host operation wait host_ID` in the same shell, replacing `host_ID` with that value. A successful installation reports `state: succeeded` and `invocation_verified: true`. The first echo works without a model-provider key. To administer a different server from a workstation, add `--ssh admin@host` to the host commands. [Host installation](docs/cli-host.md) · [Step-by-step operator guide in French](docs/guide-sysadmin.md) · [French sysadmin manual (PDF)](docs/manuel-sysadmin.pdf) · [CLI command reference in French](docs/cli-fr.md)
 
 ## Technical documentation
 

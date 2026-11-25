@@ -2,6 +2,8 @@
 
 **Connectez-vous au serveur Ubuntu qui hébergera les agents. Installez le CLI depuis GitHub, puis lancez `agentcapsule install` sur ce même serveur.** Le CLI télécharge et vérifie le lot de la release, installe les services et vérifie la première réponse du harness `starter` dans une microVM.
 
+Pour retrouver une commande, ses arguments et son rôle, consultez le catalogue en français. [Toutes les commandes du CLI](cli-fr.md)
+
 ## Démarrage rapide sur le serveur
 
 Utilisez une machine dédiée **Ubuntu 24.04 x86_64**, avec systemd, les contrôleurs cgroup v2 `cpu`, `memory` et `pids`, du stockage local persistant et un `/dev/kvm` utilisable. Pour un VPS, vérifiez que l’offre expose KVM à l’invité. Le nom DNS du serveur doit se résoudre depuis celui-ci. Le parcours en ligne nécessite l’accès à GitHub. Le script d’installation vérifie la distribution avec `curl`, `openssl` et un `cosign` de confiance en version 2.4 ou ultérieure. Les exemples de ce guide utilisent aussi `jq` pour lire les reçus JSON. [Installer cosign sur un Ubuntu neuf](#cosign) · [Vérifier une release](release.md#verify-a-release)
