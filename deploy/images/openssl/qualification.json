@@ -14,40 +14,40 @@
         "path": "usr/bin/openssl",
         "sha256": "8300c4cbc3d355d25fb0687497239cff8105139dacfa848be1f3e40958e282ec",
         "purl": "pkg:apk/alpine/openssl@3.5.9-r20261121?arch=x86_64&distro=alpine-3.23.7",
-        "apk_sha256": "e3e0924c8fd5864a6c8afc484bfad4b1203fd3f6c888b8fba65175f46c2c3c30"
+        "apk_sha256": "a036bea43bab5c727f9815aa04b0c19187aa4d30bfba2168eb4b71674fcbf2de"
       },
       "libcrypto3": {
         "path": "usr/lib/libcrypto.so.3",
-        "sha256": "8c6335fe8953e00c63c8384333f0478061f06e04b5c4a15b9d38af8c189fb2c8",
+        "sha256": "cc165f959f754526940b91ffe7f18a5a4b9075715f6afbe8d87e8160a413b519",
         "purl": "pkg:apk/alpine/libcrypto3@3.5.9-r20261121?arch=x86_64&distro=alpine-3.23.7&upstream=openssl",
-        "apk_sha256": "c04da8b7628f09490c95e99a315d2e3919c55af68329f698ea545b5599955201"
+        "apk_sha256": "c57f70312faa6adf59706004f1dfda42b2911d238dcaf7386341d490cc8abf90"
       },
       "libssl3": {
         "path": "usr/lib/libssl.so.3",
         "sha256": "c32b2669f2c0875158f327714f0654fa5a4e9c01a3dd887620c73a40053ff9bb",
         "purl": "pkg:apk/alpine/libssl3@3.5.9-r20261121?arch=x86_64&distro=alpine-3.23.7&upstream=openssl",
-        "apk_sha256": "e1d6bee3519c18fef65abd0006694faca61542f35f671c30793049fc43940309"
+        "apk_sha256": "d9bbc3def51134e729fc85bebebf1346e0a1d590968adbfd3941f4b1bb35c9a0"
       }
     },
     "alpine-3.24": {
       "libcrypto3": {
         "path": "usr/lib/libcrypto.so.3",
-        "sha256": "dbbea4e73744d982b5b791288a0db9932113f6ac1c85e32c50bd1c00ea0671c5",
+        "sha256": "96e888f02ae1cdea8377d527007b519731594f5d897588efcb85b9b9792066dc",
         "purl": "pkg:apk/alpine/libcrypto3@3.5.9-r20261121?arch=x86_64&distro=alpine-3.24.4&upstream=openssl",
-        "apk_sha256": "21ff00eb1b6cb03601db7b2d342963075110d9fe4bf81d40b13f735ae925c082"
+        "apk_sha256": "c2b05809f655813e186dca3e20eddcfdb5ee550aebd21eed675825c79202c1c9"
       },
       "libssl3": {
         "path": "usr/lib/libssl.so.3",
         "sha256": "77ebabad3612913575dd144982df4750fc9142f12b989bfba91daee97a8694f4",
         "purl": "pkg:apk/alpine/libssl3@3.5.9-r20261121?arch=x86_64&distro=alpine-3.24.4&upstream=openssl",
-        "apk_sha256": "dcbe353b712d7696ff86f30e718f468dfc62afa957ada7b23da2f34793173e19"
+        "apk_sha256": "fdb7dc7b05e3180320769cd9dd8aecadd4673d7c165a392d54f3f0fb27839735"
       }
     }
   },
   "registry_images": {
-    "ghcr.io/arnaudguiovanna/agentcapsule/runtime:python-3.13-20261121@sha256:7ab5ef55aca5b0ff15aa71935f3fa577f2b047781923929278c690e55e880fc5": "alpine-3.24",
-    "ghcr.io/arnaudguiovanna/agentcapsule/runtime:haproxy-3.2-20261121@sha256:09a5a5c054b4c9cb0ca09877c5546de0217067700d7264975f109ca36eab6ba0": "alpine-3.24",
-    "ghcr.io/arnaudguiovanna/agentcapsule/runtime:oasf-2.0.0-20261121@sha256:64de4f2a1718b712fec851dc423109c059bfd78fbd594caecf1ee1e4122ff50e": "alpine-3.23"
+    "ghcr.io/arnaudguiovanna/agentcapsule/runtime:python-3.13-20261125@sha256:c6211d5110e5afb9b1282a13d9cc429a16c65b2e4a6f4dd1237be17f46d4bf82": "alpine-3.24",
+    "ghcr.io/arnaudguiovanna/agentcapsule/runtime:haproxy-3.2-20261125@sha256:184496b2b57c6763926106f7ad85b1ac6357d47273c3f7471106189cf090f768": "alpine-3.24",
+    "ghcr.io/arnaudguiovanna/agentcapsule/runtime:oasf-2.0.0-20261125@sha256:91a61dee7872c93c946b8d61741bf209d45a48378b6b2c59340117cb3d01cdfa": "alpine-3.23"
   },
   "harness_sboms": {
     "harness-python-echo-1.0.0.spdx.json": "alpine-3.24",

@@ -70,9 +70,9 @@
   },
   "services": {
     "init": "ghcr.io/agntcy/oasf-schema:1.1.0@sha256:01df69976950fc321ebab2b6af069466f9524d88cfa9d5d16edac5bfc43f6294",
-    "oasf": "ghcr.io/arnaudguiovanna/agentcapsule/runtime:oasf-2.0.0-20261121@sha256:64de4f2a1718b712fec851dc423109c059bfd78fbd594caecf1ee1e4122ff50e",
+    "oasf": "ghcr.io/arnaudguiovanna/agentcapsule/runtime:oasf-2.0.0-20261125@sha256:91a61dee7872c93c946b8d61741bf209d45a48378b6b2c59340117cb3d01cdfa",
     "directory": "ghcr.io/agntcy/dir-apiserver:v1.9.1@sha256:b42c7e47692e8ce5d154660e1b153e834033371740bbed95504a6498198ab386",
-    "directory-edge": "ghcr.io/arnaudguiovanna/agentcapsule/runtime:haproxy-3.2-20261121@sha256:09a5a5c054b4c9cb0ca09877c5546de0217067700d7264975f109ca36eab6ba0",
+    "directory-edge": "ghcr.io/arnaudguiovanna/agentcapsule/runtime:haproxy-3.2-20261125@sha256:184496b2b57c6763926106f7ad85b1ac6357d47273c3f7471106189cf090f768",
     "slim": "ghcr.io/agntcy/slim:3.4.6@sha256:54fde7ce0ef8efa6a61fee47996e941e87acb4e62284e5d9c00eb761295619b7"
   },
   "int01_complete": true,

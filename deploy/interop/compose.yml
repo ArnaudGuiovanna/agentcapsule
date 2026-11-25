@@ -44,7 +44,7 @@ services:
       - directory-data:/directory-data
 
   oasf:
-    image: ghcr.io/arnaudguiovanna/agentcapsule/runtime:oasf-2.0.0-20261121@sha256:64de4f2a1718b712fec851dc423109c059bfd78fbd594caecf1ee1e4122ff50e
+    image: ghcr.io/arnaudguiovanna/agentcapsule/runtime:oasf-2.0.0-20261125@sha256:91a61dee7872c93c946b8d61741bf209d45a48378b6b2c59340117cb3d01cdfa
     <<: *hardening
     environment:
       SCHEMA_EXTENSION: ""
@@ -81,7 +81,7 @@ services:
       start_interval: 2s
 
   directory-edge:
-    image: ghcr.io/arnaudguiovanna/agentcapsule/runtime:haproxy-3.2-20261121@sha256:09a5a5c054b4c9cb0ca09877c5546de0217067700d7264975f109ca36eab6ba0
+    image: ghcr.io/arnaudguiovanna/agentcapsule/runtime:haproxy-3.2-20261125@sha256:184496b2b57c6763926106f7ad85b1ac6357d47273c3f7471106189cf090f768
     <<: *hardening
     volumes:
       - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
