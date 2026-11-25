@@ -2,3 +2,10 @@
 # One line per finding (commit:file:rule:line); the line itself now carries
 # `gitleaks:allow`. Never list a real secret here: revoke it.
 8789a3898a90367aa5e2f02f81a7cb369129adfc:internal/worker/llm_quota_test.go:generic-api-key:433
+
+# Verified SHA-256 digests of the credential renewal Quint model and the four model-check inputs.
+e6002a9839fbdb9d74b4e7171244c43f52dff400:docs/releases/v0.1.1/formal-summary.json:generic-api-key:35
+e6002a9839fbdb9d74b4e7171244c43f52dff400:docs/releases/v0.1.1/formal-summary.json:generic-api-key:4180
+e6002a9839fbdb9d74b4e7171244c43f52dff400:docs/releases/v0.1.1/formal-summary.json:generic-api-key:4213
+e6002a9839fbdb9d74b4e7171244c43f52dff400:docs/releases/v0.1.1/formal-summary.json:generic-api-key:4246
+e6002a9839fbdb9d74b4e7171244c43f52dff400:docs/releases/v0.1.1/formal-summary.json:generic-api-key:4276
