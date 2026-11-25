@@ -29,23 +29,21 @@ Agent Capsule is a self-hosted platform as a service (PaaS) for running persiste
 | Component | Requirements and interfaces |
 |---|---|
 | Server | One Ubuntu 24.04 x86-64 host with KVM, systemd, cgroups v2 and persistent local storage. The reference configuration is 8 vCPU, 24 GB RAM and 200 GB NVMe. |
-| Control plane | HTTPS API, PostgreSQL and a worker that manages Firecracker. Operators install and maintain the host over SSH. Applications use the API to provision and invoke agents. |
+| Control plane | HTTPS API, PostgreSQL and a worker that manages Firecracker. Operators install and maintain the platform on the host with the CLI. Applications use the API to provision and invoke agents. |
 | Administration | CLI for Linux, macOS and Windows on amd64 and arm64. It supports installation plans, diagnostics, updates, backup checks and restore tests. |
 | Recovery | Configure off-host backups for the database and agent volumes. The reference deployment has one host. Production-host qualification and recovery between two physical hosts remain open. |
 
 ## Installation
 
-The following commands install the CLI on an administration workstation and request an installation plan for a test server. Use a POSIX shell, `curl`, `openssl` and a trusted installation of `cosign` 2.4 or later: the installer refuses to continue without them. Replace `admin@host.example.org` with an SSH account that can run `sudo -n` on the server. The plan reports host compatibility before installation. [Manual installation and signature verification](docs/release.md#verify-a-release)
+Open a root shell on the Ubuntu 24.04 x86-64 server that will run your agents. The host needs KVM, systemd with cgroup v2, and persistent storage. Have `curl`, `openssl` and a trusted `cosign` 2.4 or later in the shell's PATH. Download the CLI from GitHub and use it on this server to install the matching PaaS release.
 
 ```sh
 curl -fsSLo install-agentcapsule.sh https://github.com/ArnaudGuiovanna/agentcapsule/releases/latest/download/install.sh
-sh install-agentcapsule.sh --dir "$HOME/.local/bin"
-export PATH="$HOME/.local/bin:$PATH"
-agentcapsule version
-agentcapsule install --ssh admin@host.example.org --plan-only
+sh install-agentcapsule.sh --dir /usr/local/bin
+/usr/local/bin/agentcapsule install
 ```
 
-The host installation checks the deployment by starting the bundled demonstration agent and verifying an invocation. It requires no model-provider key. [Host installation and first invocation](docs/cli-host.md) · [Step-by-step operator guide in French](docs/guide-sysadmin.md) · [French sysadmin manual for v0.1.1 (PDF)](docs/releases/v0.1.1/manuel-sysadmin.pdf)
+The CLI installs the platform services and tests an invocation on the bundled demonstration agent. Copy the `operation_id` from its output and run `agentcapsule host operation wait host_ID` in the same shell, replacing `host_ID` with that value. A successful installation reports `state: succeeded` and `invocation_verified: true`. The first echo works without a model-provider key. To administer a different server from a workstation, add `--ssh admin@host` to the host commands. [Host installation](docs/cli-host.md) · [Step-by-step operator guide in French](docs/guide-sysadmin.md) · [French sysadmin manual (PDF)](docs/manuel-sysadmin.pdf)
 
 ## Technical documentation
 
