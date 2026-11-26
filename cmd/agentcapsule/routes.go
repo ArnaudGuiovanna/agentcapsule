@@ -113,6 +113,7 @@ var commands = map[string]string{
 	"directory show": "GET /agents/{agent}/directory",
 
 	"invocation cancel": "POST /invocations/{id}/cancel",
+	"invocation list":   "GET /agents/{agent}/invocations",
 	"invocation replay": "POST /invocations/{id}/replay",
 	"invocation result": "GET /invocations/{id}/result",
 	"invocation watch":  "GET /invocations/{id}/events",
@@ -229,7 +230,7 @@ func parse(args []string) ([]string, options, error) {
 			return nil, nil, fmt.Errorf("duplicate --%s", k)
 		}
 		switch k {
-		case "json", "help", "watch", "text", "non-interactive", "include-deprecated":
+		case "json", "help", "watch", "text", "non-interactive", "include-deprecated", "a2a":
 			if equal {
 				return nil, nil, fmt.Errorf("--%s takes no value", k)
 			}
@@ -408,7 +409,7 @@ func buildAction(pos []string, o options, in io.Reader) (action, error) {
 				q.Set("name", v)
 			}
 		}
-		if a.name == "corpus-build list" {
+		if a.name == "corpus-build list" || a.name == "invocation list" {
 			if v := o.take("state"); v != "" {
 				q.Set("state", v)
 			}
@@ -537,6 +538,8 @@ update check|plan|apply | self update | host operation show|wait | restore
 app verify APP_ID [--issuer-ca PEM_FILE]
 api METHOD /v1/path
 --json selects versioned JSON (default). --non-interactive runs without prompts.
+pi import|template|profile|status (see help pi)
+host pi enable --corpus-repo OWNER/REPOSITORY
 For named routes supply identifiers in route order or as named flags.`)
 	keys := make([]string, 0, len(commands))
 	for k := range commands {

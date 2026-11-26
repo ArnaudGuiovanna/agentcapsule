@@ -1,6 +1,7 @@
 # Production host setup. This file is embedded ahead of host.py in the helper.
 import base64
 import configparser
+import contextlib
 import ctypes
 import errno
 import json
@@ -868,9 +869,58 @@ def off_host_destinations(stores):
     return bool(s3 and sftp) and s3.isdisjoint(sftp)
 
 
-def verify_volume_copies(profile, agent, archive, directory, conf):
+@contextlib.contextmanager
+def restore_verifier(release):
+    config = ETC / "worker.json"
+    if release is None:
+        yield ACTIVE / "agentcapsule-worker", config
+        return
+    # The source still serves traffic and owns schema 85. Only the two
+    # read-only backup checks use the verified target binaries. The helper
+    # inherits the host operation's systemd cgroup and its private socket
+    # admits the worker account only.
+    worker = release / "agentcapsule-worker"
+    _, gid = worker_ids()
+    with tempfile.TemporaryDirectory(prefix="agentcapsule-restore-", dir="/run") as tmp:
+        private = Path(tmp)
+        os.chown(private, 0, gid)
+        private.chmod(0o710)
+        sock = private / "check.sock"
+        cfg = read(config)
+        cfg["helper"] = {"socket": str(sock)}
+        check_config = private / "worker.json"
+        save(check_config, cfg)
+        os.chown(check_config, 0, gid)
+        check_config.chmod(0o640)
+        with subprocess.Popen([release / "agentcapsule-worker-helper", "-restore-check-only",
+                               "-config", config, "-socket", sock, "-worker-executable", worker],
+                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                              env={"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8"}) as helper:
+            try:
+                deadline = time.monotonic() + 30
+                while True:
+                    if helper.poll() is not None or time.monotonic() >= deadline:
+                        raise RuntimeError("pre-upgrade restore verifier unavailable")
+                    try:
+                        info = sock.lstat()
+                        if stat.S_ISSOCK(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o660 and info.st_gid == gid:
+                            break
+                    except FileNotFoundError:
+                        pass
+                    time.sleep(0.05)
+                yield worker, check_config
+            finally:
+                helper.terminate()
+                try:
+                    helper.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    helper.kill()
+
+
+def verify_volume_copies(profile, agent, archive, directory, conf, verifier=None):
     evidence={}
     uid,gid=worker_ids()
+    worker,config=verifier or (ACTIVE/"agentcapsule-worker", ETC/"worker.json")
     for store in ("s3","standby"):
         # The worker's own scratch: the restore test runs as its account,
         # and the shipper writes the copy as that account (ADR 024).
@@ -882,7 +932,7 @@ def verify_volume_copies(profile, agent, archive, directory, conf):
             os.chown(scratch,uid,gid)
             run("python3","-I",ACTIVE/"agentcapsule-archive-ship.py","--rclone-config",conf,
                 "--archive-root",root,"fetch","--store",store,"--archive",archive,"--owner",WORKER_USER)
-            result=json.loads(worker_output(ACTIVE/"agentcapsule-worker","-config",ETC/"worker.json","-test-restore",agent,
+            result=json.loads(worker_output(worker,"-config",config,"-test-restore",agent,
                                             "-archive-id",archive,"-archive-root",root,"-scratch",scratch,profile=profile))
             if (result.get("archive_id")!=archive or result.get("agent_id")!=agent or result.get("archive_store")!="local"
                     or not {"manifest","digest","volume","copy","key"}<=set(result.get("checked",[]))):
@@ -891,7 +941,7 @@ def verify_volume_copies(profile, agent, archive, directory, conf):
     return evidence
 
 
-def backup(profile,mandatory,directory):
+def backup(profile,mandatory,directory,verifier_release=None):
     config=profile["pgbackrest_config"]
     if not config:
         if mandatory:
@@ -958,7 +1008,8 @@ def backup(profile,mandatory,directory):
         run("systemctl","daemon-reload")
         run("systemctl","start","agentcapsule-archive-ship.service")
         run("systemctl","enable","--now","agentcapsule-archive-ship.timer")
-        copies=verify_volume_copies(profile,probe["agent"],archive,directory,conf)
+        with restore_verifier(verifier_release) as verifier:
+            copies=verify_volume_copies(profile,probe["agent"],archive,directory,conf,verifier)
     if mandatory and remote and not copies:
         raise ValueError("configure and verify off-host volume shipping before updating")
     off_host=remote and bool(copies) and remote_volumes

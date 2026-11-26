@@ -193,6 +193,24 @@ func TestPortableCLI(t *testing.T) {
 				t.Error("missing idempotency key")
 			}
 			fmt.Fprint(w, `{"id":"streamed"}`)
+		case "POST /v1/agents/pi/invocations":
+			var input struct {
+				Content []struct {
+					JSON struct {
+						Pi struct{ Action string } `json:"agentcapsule_pi"`
+					}
+				}
+			}
+			if err := json.NewDecoder(r.Body).Decode(&input); err != nil || len(input.Content) != 1 || input.Content[0].JSON.Pi.Action != "status" {
+				t.Error("Pi status sent an invalid control")
+			}
+			fmt.Fprint(w, `{"id":"pi_status"}`)
+		case "GET /v1/invocations/pi_status/events":
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, "event: end\ndata: {\"state\":\"completed\"}\n\n")
+		case "GET /v1/invocations/pi_status/result":
+			// Some harnesses cannot send deltas. The final result remains available.
+			fmt.Fprint(w, `{"content":[{"type":"text","text":"{\"version\":1,\"last_compaction\":{\"outcome\":\"completed\",\"reason\":\"threshold\",\"tokens_before\":7600,\"message\":\"private text\"}}"}]}`)
 		case "GET /v1/invocations/streamed/events":
 			if r.Header.Get("Authorization") != "Bearer "+token || r.Header.Get("Accept") != "text/event-stream" {
 				t.Error("unexpected stream headers")
@@ -238,6 +256,10 @@ func TestPortableCLI(t *testing.T) {
 			} else {
 				fmt.Fprintf(w, "event: end\ndata: {\"state\":%q,\"error_code\":\"terminated\"}\n\n", state)
 			}
+		case "GET /v1/invocations/pi_failed/events", "GET /v1/invocations/no_reason/events", "GET /v1/invocations/private_reason/events":
+			code := map[string]string{"pi_failed": "agent_failed", "private_reason": token}[strings.Split(r.URL.Path, "/")[3]]
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprintf(w, "event: end\ndata: {\"state\":\"failed\",\"error_code\":%q,\"message\":%q}\n\n", code, token)
 		default:
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 			http.NotFound(w, r)
@@ -286,6 +308,13 @@ func TestPortableCLI(t *testing.T) {
 	call("", true, "corpus-build", "publish", buildID, "--version", "3")
 	call("", true, "corpus", "versions", "finance")
 	call("", true, "corpus-release", "deprecate", "rel")
+	for _, args := range [][]string{{"pi", "status", "pi"}, {"pi", "status", "pi", "--watch", "--text"}} {
+		status := exec.CommandContext(t.Context(), path, args...)
+		output, err := status.Output()
+		if err != nil || !json.Valid(output) || !strings.Contains(string(output), `"tokens_before":7600`) || strings.Contains(string(output), "private text") {
+			t.Fatal("expected the numeric Pi status without streaming deltas", string(output), err)
+		}
+	}
 	cmd := exec.CommandContext(t.Context(), path, "agent", "invoke", "support", "--file", "-", "--watch", "--text")
 	cmd.Stdin = strings.NewReader(`{"content":[{"type":"text","text":"hello"}]}`)
 	if out, err := cmd.Output(); err != nil || string(out) != "hello world" || submissions.Load() != 1 || connections.Load() != 2 {
@@ -300,6 +329,19 @@ func TestPortableCLI(t *testing.T) {
 		}
 		if code == 5 && !strings.Contains(string(out), `"version":1,"event":`) {
 			t.Fatal("missing JSON event", state, string(out))
+		}
+	}
+	for id, reason := range map[string]string{"pi_failed": "agent_failed", "no_reason": "unknown", "private_reason": "unknown"} {
+		cmd := exec.CommandContext(t.Context(), path, "invocation", "watch", id, "--text")
+		out, err := cmd.Output()
+		var exited *exec.ExitError
+		if !errors.As(err, &exited) || exited.ExitCode() != 5 || len(out) != 0 {
+			t.Fatal("failed text watch", id, string(out), err)
+		}
+		diagnostic := string(exited.Stderr)
+		if !strings.Contains(diagnostic, "invocation_id="+id) || !strings.Contains(diagnostic, "reason="+reason) ||
+			strings.Contains(diagnostic, token) {
+			t.Fatal("unexpected diagnostic for", id)
 		}
 	}
 	if os.Getenv("AGENTCAPSULE_TEST_LONG_STREAM") == "1" {

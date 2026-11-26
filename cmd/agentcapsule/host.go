@@ -50,6 +50,10 @@ func runHostCommand(ctx context.Context, args []string, in io.Reader, out, errou
 		_, err := io.WriteString(out, installHelp)
 		return true, err
 	}
+	if len(forward) >= 2 && forward[0] == "host" && forward[1] == "pi" && (len(forward) == 2 || slices.Contains(forward, "--help") || slices.Contains(forward, "-h")) {
+		_, err := io.WriteString(out, "Usage: agentcapsule host pi enable --corpus-repo OWNER/REPOSITORY [--ssh USER@HOST]\nPrompts for sudo in a local terminal. Writes an import receipt to stdout. See agentcapsule help pi.\n")
+		return true, err
+	}
 	switch forward[0] {
 	case "install", "update", "rollback", "self", "host", "restore", "archive":
 		allowPrompt := !slices.Contains(args, "--json") && !slices.Contains(args, "--non-interactive")

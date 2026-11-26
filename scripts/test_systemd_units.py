@@ -65,7 +65,7 @@ REQUIRED = {
                              "-/var/lib/agentcapsule-authority-replica",
         "ProtectHome": "yes", "PrivateTmp": "yes", "ProtectKernelTunables": "yes", "ProtectKernelModules": "yes",
         "ProtectKernelLogs": "yes", "ProtectClock": "yes", "ProtectHostname": "yes", "RestrictRealtime": "yes",
-        "RestrictSUIDSGID": "yes", "LockPersonality": "yes", "MemoryDenyWriteExecute": "yes",
+        "RestrictSUIDSGID": "no", "LockPersonality": "yes", "MemoryDenyWriteExecute": "yes",
         "SystemCallArchitectures": "native",
         "SystemCallFilter": ["~@clock @cpu-emulation @debug @module @obsolete @raw-io @reboot @swap",
                              "~bpf open_by_handle_at"],

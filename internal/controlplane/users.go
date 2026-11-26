@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -361,4 +362,23 @@ func (s *Store) Ready(ctx context.Context) error {
 		return err
 	}
 	return checkMigrationLedger(ctx, tx, controlPlaneMigrations)
+}
+
+// ReadyForRestoreTest also accepts the intact v0.1.5 ledger. Before an
+// upgrade the target's read-only verifier checks the source backups before
+// any migration runs. Migration 86 changes only idle-watch write privileges.
+func (s *Store) ReadyForRestoreTest(ctx context.Context) error {
+	tx, err := s.begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer rollback(tx)
+	applied, err := migrationLedger(ctx, tx, controlPlaneMigrations, true)
+	if err != nil {
+		return err
+	}
+	if applied < len(controlPlaneMigrations) && !(applied == 85 && len(controlPlaneMigrations) == 86) {
+		return fmt.Errorf("%w: unsupported restore-test schema %d", ErrMigrationHistory, applied)
+	}
+	return nil
 }

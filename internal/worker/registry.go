@@ -25,6 +25,9 @@ type ServiceRegistry struct {
 	// MaxHarnessMiB bounds one harness.ext4 (default 1024).
 	MaxHarnessMiB int            `json:"max_harness_mib,omitempty"`
 	Rules         []RegistryRule `json:"rules"`
+	// ReleasePackages maps an immutable official package reference to its signing
+	// key file. Only these two-part pins get the larger limit and public client.
+	ReleasePackages map[string]string `json:"release_packages,omitempty"`
 	// RequireSignatures is strict mode: every rule must list publisher keys,
 	// so no unsigned package can be imported, and none may say
 	// allow_unsigned. In production, without it, a rule must list publisher
@@ -93,7 +96,7 @@ func (c ServiceConfig) inspection(asRoot bool) (sandbox.Options, error) {
 		}
 	}
 	if c.Helper != nil {
-		return sandbox.Options{Delegate: c.HelperClient()}, nil
+		return sandbox.Options{UID: uid, GID: uid, Delegate: c.HelperClient()}, nil
 	}
 	return sandbox.Options{UID: uid, GID: uid}, nil
 }
@@ -123,10 +126,11 @@ type harnessImportStore interface {
 // them as releases. It runs beside maintenance so a large download never
 // delays deliveries or VM lifecycle work.
 type HarnessImporter struct {
-	store   harnessImportStore
-	fetcher *ociregistry.Fetcher
-	cache   string
-	worker  string
+	store           harnessImportStore
+	fetcher         *ociregistry.Fetcher
+	releaseFetchers map[string]*ociregistry.Fetcher
+	cache           string
+	worker          string
 	// Lease and Timeout bound one attempt; Lease must exceed Timeout.
 	Lease, Timeout time.Duration
 	// EvictEvery spaces cache evictions in Run (default one hour).
@@ -214,7 +218,58 @@ func (c ServiceConfig) OpenRegistry(s *controlplane.Store, workerID string, prod
 	if err = harnesspkg.CheckInspection(ctx, f.Sandbox); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInspection, err)
 	}
-	return NewHarnessImporter(s, f, cache, workerID)
+	importer, err := NewHarnessImporter(s, f, cache, workerID)
+	if err != nil {
+		return nil, err
+	}
+	importer.releaseFetchers, err = releaseFetchers(c.Registry.ReleasePackages, f.Sandbox)
+	if err != nil {
+		return nil, err
+	}
+	return importer, nil
+}
+
+const releaseRepository = "arnaudguiovanna/agentcapsule/runtime"
+
+func officialPackageRule(pin, path string) (ociregistry.Rule, error) {
+	ref, err := ociregistry.ParseReference(pin)
+	if err != nil || ref.Registry != "ghcr.io" || ref.Repository != releaseRepository || ref.Tag != "" {
+		return ociregistry.Rule{}, fmt.Errorf("invalid official package reference %q", pin)
+	}
+	key, err := readPublisherKey(path)
+	if err != nil {
+		return ociregistry.Rule{}, err
+	}
+	return ociregistry.Rule{Host: ref.Registry, Repositories: []string{ref.Repository}, Keys: []ociregistry.PublisherKey{key},
+		BlobHosts: []string{"pkg-containers.githubusercontent.com"}}, nil
+}
+
+func releaseFetchers(packages map[string]string, inspection sandbox.Options) (map[string]*ociregistry.Fetcher, error) {
+	fetchers := make(map[string]*ociregistry.Fetcher, len(packages))
+	for text, path := range packages {
+		rule, err := officialPackageRule(text, path)
+		if err != nil {
+			return nil, err
+		}
+		policy := ociregistry.Policy{RequireSignatures: true, Rules: []ociregistry.Rule{rule}}
+		f, err := ociregistry.NewFetcher(policy, 2048<<20)
+		if err != nil {
+			return nil, err
+		}
+		f.Sandbox = inspection
+		fetchers[text] = f
+	}
+	return fetchers, nil
+}
+
+// Tags are informational on an import. Resolve trust against the immutable
+// catalog pin; an adjacent digest always uses the operator's ordinary rules.
+func (h *HarnessImporter) fetcherFor(ref ociregistry.Reference) *ociregistry.Fetcher {
+	ref.Tag = ""
+	if strict := h.releaseFetchers[ref.String()]; strict != nil {
+		return strict
+	}
+	return h.fetcher
 }
 
 func NewHarnessImporter(s *controlplane.Store, f *ociregistry.Fetcher, cache, workerID string) (*HarnessImporter, error) {
@@ -357,7 +412,7 @@ func (h *HarnessImporter) fetch(ctx context.Context, job controlplane.ImportJob,
 		return ociregistry.Package{}, err
 	}
 	defer removeTree(staging)
-	pkg, err := h.fetcher.Fetch(ctx, ref, staging)
+	pkg, err := h.fetcherFor(ref).Fetch(ctx, ref, staging)
 	if err == nil && accept != nil {
 		err = accept(pkg)
 	}

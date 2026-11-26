@@ -251,6 +251,11 @@ func (g corpusGuest) prepareDrives(ctx context.Context, j controlplane.CorpusWor
 	if err := g.stopGuest(ctx, agent); err != nil {
 		return err
 	}
+	// The output of the preceding phase is still owned by the stopped
+	// builder. The helper reclaims it before the unprivileged worker opens it.
+	if err := g.w.host.SetBuildDrives(ctx, agent, nil); err != nil {
+		return err
+	}
 	if err := prepareCorpusOutput(output, size); err != nil {
 		return err
 	}
@@ -366,6 +371,12 @@ func (g *corpusGuest) Observe(reg *telemetry.Registry) {
 }
 
 func prepareCorpusOutput(output string, size int64) error {
+	// If the worker stopped after the helper handed out the drives but
+	// before recording them, the output may already belong to the builder.
+	// Reuse the correctly sized disk, preserving earlier phases' contents.
+	if st, err := os.Lstat(output); err == nil && st.Mode().IsRegular() && st.Size() == size {
+		return nil
+	}
 	f, err := os.OpenFile(output, os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0600)
 	if err != nil {
 		return err

@@ -41,7 +41,8 @@ type Config struct {
 	// the life of the VM; each job is a message to it.
 	Server *ServerConfig `json:"server,omitempty"`
 	// Input says how the text reaches the program: "stdin" (default) or
-	// "argument", appended as the last argument.
+	// "argument", appended as the last argument, or "job-json", a structured
+	// envelope on stdin that distinguishes direct invocations and peer requests.
 	Input string `json:"input,omitempty"`
 	// Env adds to or replaces the default environment, except AGENTCAPSULE_*.
 	Env map[string]string `json:"env,omitempty"`
@@ -137,7 +138,7 @@ func ParseConfig(b []byte) (Config, error) {
 		}
 		program = c.Server.Command
 	}
-	if c.Version != 1 || !validCommand(program) || (c.Input != "stdin" && c.Input != "argument") ||
+	if c.Version != 1 || !validCommand(program) || (c.Input != "stdin" && c.Input != "argument" && c.Input != "job-json") ||
 		c.TimeoutSeconds < 1 || c.TimeoutSeconds > 86400 || len(c.Env) > 64 || len(c.Models) > 64 ||
 		(c.DefaultModel != "" && !validAlias(c.DefaultModel)) {
 		return Config{}, ErrConfig

@@ -4,10 +4,74 @@ import (
 	"bytes"
 	"context"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+func TestWorkerIdleWatchOnNewAndUpgradedSchemas(t *testing.T) {
+	serviceRoles(t)
+	ctx := t.Context()
+	t.Run("fresh install", func(t *testing.T) {
+		il := newInvocationLab(t)
+		il.idle(t, 300, "idle")
+		gen := il.run(t)
+		worker := roleStore(t, il.s, "agentcapsule_worker")
+		first := time.Now().UTC().Truncate(time.Microsecond)
+		if err := worker.observeRunning(ctx, "local", &first); err != nil {
+			t.Fatal("insert idle watch", err)
+		}
+		var stored uint64
+		var at time.Time
+		read := func() {
+			t.Helper()
+			if err := worker.pool.QueryRow(ctx, "SELECT generation, observed_at FROM agent_idle_watch WHERE agent_id=$1", il.agent).Scan(&stored, &at); err != nil {
+				t.Fatal(err)
+			}
+		}
+		read()
+		if stored != gen || !at.Equal(first) {
+			t.Fatal("incorrect first observation", stored, at)
+		}
+		// A retained watch from a different boot must be refreshed.
+		if _, err := il.s.pool.Exec(ctx, "UPDATE agent_idle_watch SET generation=$2 WHERE agent_id=$1", il.agent, gen+1); err != nil {
+			t.Fatal(err)
+		}
+		second := first.Add(time.Minute)
+		if err := worker.observeRunning(ctx, "local", &second); err != nil {
+			t.Fatal("update idle watch", err)
+		}
+		read()
+		if stored != gen || !at.Equal(second) {
+			t.Fatal("incorrect new observation", stored, at)
+		}
+		if _, err := worker.pool.Exec(ctx, "UPDATE agent_idle_watch SET agent_id=agent_id"); !refused(err) {
+			t.Fatal("worker can change the agent ID", err)
+		}
+	})
+	t.Run("v0.1.5 upgrade and regrant", func(t *testing.T) {
+		s := migrationStore(t)
+		if err := s.migrate(ctx, controlPlaneMigrations[:85]); err != nil {
+			t.Fatal(err)
+		}
+		worker := roleStore(t, s, "agentcapsule_worker")
+		if err := worker.observeRunning(ctx, "local", nil); !refused(err) {
+			t.Fatal("expected v0.1.5 to deny the UPSERT", err)
+		}
+		for attempt := range 2 {
+			if err := s.Migrate(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if err := worker.observeRunning(ctx, "local", nil); err != nil {
+				t.Fatal("after migrating", attempt, err)
+			}
+			if _, err := s.pool.Exec(ctx, "REVOKE UPDATE (generation, observed_at) ON agent_idle_watch FROM agentcapsule_worker"); err != nil {
+				t.Fatal(err)
+			}
+		}
+	})
+}
 
 // roleStore opens a store on s's schema whose every connection acts as role,
 // as the installed API or worker does with its own login role: what the store

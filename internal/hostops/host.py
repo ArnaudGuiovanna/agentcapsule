@@ -160,11 +160,13 @@ def validate_release_floor(request):
                          "pass --allow-older to install it anyway")
 
 
-def write_file(path, data, mode=0o600):
+def write_file(path, data, mode=0o600, owner=None):
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as tmp:
         try:
             tmp.write(data)
+            if owner is not None:
+                os.fchown(tmp.fileno(), *owner)
             os.fchmod(tmp.fileno(), mode)
             tmp.flush()
             os.fsync(tmp.fileno())
@@ -631,7 +633,8 @@ def execute(directory):
                     verify_release_files(release, dist, version)
                 step("prepare-release", lambda: prepare_release(release, dist, version))
                 if request["action"] in ("rollback", "update"):
-                    step("backup", lambda: backup(profile, mandatory=True, directory=directory))
+                    verifier_release = release if request["from"] == "v0.1.5" and request["action"] == "update" else None
+                    step("backup", lambda: backup(profile, mandatory=True, directory=directory, verifier_release=verifier_release))
                     if "source_activation" in request and not owner:
                         save(transition, {"operation_id":directory.name})
                     if "drain" in fields and "services" not in fields and "configure" not in fields:
@@ -815,6 +818,8 @@ def main(argv, cli_version, *, outer=False, planned_portable=False):
         p.add_argument("--offline", help="verified release assets on host")
         p.add_argument("--trusted-root", help="trusted Sigstore root on host")
     host = groups.add_parser("host").add_subparsers(dest="group", required=True)
+    pi = host.add_parser("pi").add_subparsers(dest="sub", required=True).add_parser("enable")
+    pi.add_argument("--corpus-repo", required=True, metavar="OWNER/REPOSITORY")
     add_diagnostics(host)
     host.add_parser("oidc").add_subparsers(dest="sub", required=True).add_parser(
         "retire-bootstrap-admin", help="delete Keycloak's bootstrap administrator once a permanent one exists")
@@ -846,6 +851,9 @@ def main(argv, cli_version, *, outer=False, planned_portable=False):
         floor = release_floor()
         return {"schema": SCHEMA, "installed": current(), "available": target, "different": current() != target,
                 "highest_installed": floor, "older": bool(floor) and version_order(target) < version_order(floor)}
+    if args.command == "host" and args.group == "pi":
+        preflight()
+        return enable_pi(args.corpus_repo)
     if args.command == "host" and args.group == "diagnose":
         return diagnose(args)
     if args.command == "host" and args.group == "oidc":

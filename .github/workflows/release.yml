@@ -149,6 +149,28 @@ jobs:
             --twice --fresh-module-cache --guest-cryptsetup /usr/sbin/cryptsetup \
             --output "$RUNNER_TEMP/release/build"
 
+      - name: Build and sign the optional Pi and PDF packages without registry credentials
+        env:
+          DAGGER_VERSION: '0.21.11'
+          DAGGER_SHA256: a2d3ef96e7305abc18663a3606d9c1c592278ba3c8f48e01d6be14eef72276ef
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/dagger.tar.gz"
+          curl -fsSL -o "$archive" "https://github.com/dagger/dagger/releases/download/v$DAGGER_VERSION/dagger_v${DAGGER_VERSION}_linux_amd64.tar.gz"
+          echo "$DAGGER_SHA256  $archive" | sha256sum -c -
+          tar -C "$RUNNER_TEMP" -xzf "$archive" dagger
+          release="$RUNNER_TEMP/release"
+          python3 scripts/pi_release.py prepare --tag "$RELEASE_TAG" --tool "$release/build/dist/agentcapsule-harness" \
+            --dagger "$RUNNER_TEMP/dagger" --catalog "$release/pi-catalog.json" --packages "$release/pi-packages"
+
+      - name: Keep the optional packages and their public signatures for publication
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pi-packages
+          retention-days: 7
+          if-no-files-found: error
+          path: ${{ runner.temp }}/release/pi-packages/
+
       - name: Build the patched VMM, guest kernel and server distribution
         run: |
           set -euo pipefail
@@ -159,7 +181,8 @@ jobs:
           python3 scripts/build-guest-kernel.py --output "$release/kernel"
           rm -rf -- "$release/kernel/source" "$release/kernel/build"
           python3 scripts/build-server-bundle.py --build "$release/build" --out "$release/assets" \
-            --vmm "$release/vmm" --kernel "$release/kernel" --licenses "$release/audit/third-party-licenses.txt"
+            --vmm "$release/vmm" --kernel "$release/kernel" --licenses "$release/audit/third-party-licenses.txt" --pi-catalog "$release/pi-catalog.json"
+          cp "$release/pi-catalog.json" "$release/assets/pi-catalog.json"
 
       - name: SBOMs
         env:
@@ -178,6 +201,8 @@ jobs:
           done
           python3 scripts/release-sbom.py --go "$(command -v go)" --version "$TAG" \
             --output "$RUNNER_TEMP/release/sbom" "${binaries[@]}" --guest-build "$dist" \
+            --harness-package "$RUNNER_TEMP/release/pi-packages/pi-agent" \
+            --harness-package "$RUNNER_TEMP/release/pi-packages/agentcapsule-corpus-builder" \
             --harness-package "$RUNNER_TEMP/release/harness-python/package" \
             --harness-package "$RUNNER_TEMP/release/harness-adapted/package" \
             --host-assets "$RUNNER_TEMP/release/assets"
@@ -391,7 +416,19 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: write
+      packages: write
     steps:
+      - name: Check out the tagged publication script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Fetch the optional packages
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: pi-packages
+          path: ${{ runner.temp }}/pi-packages
+
       - name: Fetch the release files
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -403,6 +440,17 @@ jobs:
         with:
           name: release-signatures
           path: ${{ runner.temp }}/assets
+
+      - name: Publish Pi and the PDF converter and verify anonymous signed imports
+        env:
+          AGENTCAPSULE_REGISTRY_PASSWORD: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          assets="$RUNNER_TEMP/assets"
+          (cd "$assets" && sha256sum --strict -c SHA256SUMS)
+          chmod +x "$assets/agentcapsule-harness"
+          python3 scripts/pi_release.py publish --tag "$RELEASE_TAG" --tool "$assets/agentcapsule-harness" \
+            --catalog "$assets/pi-catalog.json" --packages "$RUNNER_TEMP/pi-packages" --username "$GITHUB_ACTOR"
 
       - name: Publish the release
         env:

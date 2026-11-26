@@ -1361,7 +1361,8 @@ On failure, it prints `restore_test_failed_<reason>` and exits 1:
 `no_archive` (PostgreSQL records none), `archive_unavailable` (not in the
 archive root, and not fetched), `archive` (incomplete, altered, unsigned or of
 another volume), `key` (the agent's key does not open it, or its header is
-not of the platform's shape), `authority` (a
+not of the platform's shape), `inspection` (the confined verifier could
+not read the copy or initialize its crypto backend), `authority` (a
 refusal: a deleted agent's store is sealed), `state` (the agent has no volume
 on this host), `error`.
 

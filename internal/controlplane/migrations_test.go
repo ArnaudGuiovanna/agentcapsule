@@ -350,6 +350,9 @@ func TestReadyChecksInstalledMigrationLedger(t *testing.T) {
 	if err := s.Ready(t.Context()); err != nil {
 		t.Fatal("migrated database is not ready:", err)
 	}
+	if err := s.ReadyForRestoreTest(t.Context()); err != nil {
+		t.Fatal("restore verifier on current schema:", err)
+	}
 	for name, query := range map[string]string{
 		"behind":   "DELETE FROM schema_migrations WHERE version=(SELECT max(version) FROM schema_migrations)",
 		"future":   "INSERT INTO schema_migrations SELECT 100,'future',checksum,applied_at FROM schema_migrations WHERE version=1",
@@ -365,6 +368,17 @@ func TestReadyChecksInstalledMigrationLedger(t *testing.T) {
 			}
 			if err := s.Ready(t.Context()); !errors.Is(err, ErrMigrationHistory) {
 				t.Fatal("readiness accepted a ledger that does not match this binary:", err)
+			}
+			if name == "behind" && len(controlPlaneMigrations) == 86 {
+				if err := s.ReadyForRestoreTest(t.Context()); err != nil {
+					t.Fatal("v0.1.5 pre-upgrade verifier:", err)
+				}
+				if _, err := s.pool.Exec(t.Context(), "DELETE FROM schema_migrations WHERE version=85"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := s.ReadyForRestoreTest(t.Context()); !errors.Is(err, ErrMigrationHistory) {
+				t.Fatal("restore verifier accepted an unsupported ledger:", err)
 			}
 		})
 	}

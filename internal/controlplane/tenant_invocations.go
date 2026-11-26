@@ -40,6 +40,16 @@ type Invocation struct {
 	// ReplayedAt is when the newest replay put this dead letter back in its
 	// agent's queue (ADR 017). It stays once the replay ends.
 	ReplayedAt *time.Time `json:"replayed_at,omitempty"`
+	// PeerRequests lists retained requests admitted under this invocation's
+	// mandate, on the single-invocation read by an organization agent manager.
+	// A nil slice omits the field. An empty slice records a checked, empty list.
+	PeerRequests []InvocationPeerRequest `json:"peer_requests,omitzero"`
+}
+
+type InvocationPeerRequest struct {
+	ID               string `json:"id"`
+	RecipientAgentID string `json:"recipient_agent_id"`
+	State            State  `json:"state"`
 }
 
 // InvocationInput is the body of a new invocation. TTLSeconds bounds how long
@@ -174,6 +184,21 @@ func (c *AgentCatalog) GetInvocation(ctx context.Context, p Principal, id string
 	}
 	if !administrative {
 		if err = hideUnlessStillSeen(ctx, tx, p, current.Role, v.AgentID); err != nil {
+			return Invocation{}, err
+		}
+	}
+	if authorization.CanAdminister(tenantAccess(p), authorization.Role(current.Role), authorization.ConfigureAgent) {
+		// An invocation's finite mandate bounds the number of rows. Use the
+		// mandate index; concurrent invocations on the same sender stay separate.
+		rows, err := tx.Query(ctx, `SELECT r.id,r.recipient_agent_id,r.state
+			FROM owner_instructions i JOIN agent_requests r ON r.mandate_id=i.mandate_id
+			JOIN agents a ON a.id=r.recipient_agent_id AND a.tenant_id=$3
+			WHERE i.operation_id=$1 AND r.sender_agent_id=$2 ORDER BY r.created_at,r.id`, v.ID, v.AgentID, p.TenantID)
+		if err != nil {
+			return Invocation{}, err
+		}
+		v.PeerRequests, err = pgx.CollectRows(rows, pgx.RowToStructByPos[InvocationPeerRequest])
+		if err != nil {
 			return Invocation{}, err
 		}
 	}

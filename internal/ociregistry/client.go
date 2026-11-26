@@ -127,7 +127,7 @@ func (c *client) do(ctx context.Context, repo, scope string, build func() (*http
 		resp, err := c.http.Do(req)
 		if err != nil {
 			if errors.Is(err, ErrPolicy) {
-				return nil, err
+				return nil, ErrPolicy
 			}
 			return nil, fmt.Errorf("%w: %s", ErrUnavailable, redact(err))
 		}
@@ -189,7 +189,7 @@ func (c *client) fetchToken(ctx context.Context, scope, challenge string) (strin
 	resp, err := c.http.Do(req)
 	if err != nil {
 		if errors.Is(err, ErrPolicy) {
-			return "", err
+			return "", ErrPolicy
 		}
 		return "", fmt.Errorf("%w: token request failed", ErrUnavailable)
 	}

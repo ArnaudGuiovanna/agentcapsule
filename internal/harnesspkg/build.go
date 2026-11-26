@@ -3,6 +3,7 @@ package harnesspkg
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"io/fs"
@@ -55,6 +56,7 @@ func BuildRootfs(ctx context.Context, m HarnessManifest, srcDir, out string, siz
 func stageTree(src, dst string) ([]string, error) {
 	fixed := time.Unix(1, 0)
 	var paths []string
+	links := make(map[[2]uint64]string)
 	err := filepath.WalkDir(src, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -82,7 +84,19 @@ func stageTree(src, dst string) ([]string, error) {
 				err = os.Symlink(link, target)
 			}
 		case d.Type().IsRegular():
-			err = copyFile(p, target, info.Mode().Perm())
+			linked := false
+			if id, ok := hardlinkID(info); ok {
+				if first, exists := links[id]; exists {
+					// Link only to our staged copy. Filesystems without hard-link
+					// support retain the original copy-per-path behavior.
+					linked = os.Link(first, target) == nil
+				} else {
+					links[id] = target
+				}
+			}
+			if !linked {
+				err = copyFile(p, target, info.Mode().Perm())
+			}
 		default:
 			return invalid("unsupported file type at %s", rel)
 		}
@@ -171,11 +185,16 @@ func WritePackage(dir string, m HarnessManifest) error {
 	if err = os.WriteFile(filepath.Join(dir, ManifestFile), manifest, 0o644); err != nil {
 		return err
 	}
-	rootfs, err := os.ReadFile(filepath.Join(dir, RootfsFile))
+	rootfs, err := os.Open(filepath.Join(dir, RootfsFile))
 	if err != nil {
 		return err
 	}
-	sums, err := json.MarshalIndent(Checksums{Files: map[string]string{ManifestFile: Digest(manifest), RootfsFile: Digest(rootfs)}}, "", "  ")
+	defer rootfs.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, rootfs); err != nil {
+		return err
+	}
+	sums, err := json.MarshalIndent(Checksums{Files: map[string]string{ManifestFile: Digest(manifest), RootfsFile: "sha256:" + hex.EncodeToString(h.Sum(nil))}}, "", "  ")
 	if err != nil {
 		return err
 	}

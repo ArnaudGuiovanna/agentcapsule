@@ -63,5 +63,5 @@ The CLI requests sudo when needed, starts the platform services and waits for th
 ## Technical documentation
 
 - **Integration** — [HTTP API and examples](docs/api/README.md), [harness adapter](docs/adapter.md), [example harnesses](examples/).
-- **Data and operations** — [corpus format and publication](docs/corpus.md), [metrics and alerts](docs/observability.md), [backup and recovery](docs/recovery.md).
+- **Data and operations** — [two Pi agents with a shared PDF corpus](docs/pi.md), [corpus format and publication](docs/corpus.md), [metrics and alerts](docs/observability.md), [backup and recovery](docs/recovery.md).
 - **Project** — [acceptance test matrix](docs/acceptance.md), [roadmap](ROADMAP.md), [contribution guide](CONTRIBUTING.md), [security reporting](SECURITY.md).

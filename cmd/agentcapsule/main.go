@@ -104,7 +104,12 @@ func run(ctx context.Context, args []string, in io.Reader, out, errout io.Writer
 	if err != nil {
 		return usageError{err}
 	}
-	if len(pos) == 0 || o.take("help") != "" || pos[0] == "help" {
+	help := o.take("help") != ""
+	if len(pos) > 0 && pos[0] == "pi" && (len(pos) == 1 || help) || len(pos) > 1 && pos[0] == "help" && pos[1] == "pi" {
+		_, err = io.WriteString(out, piHelp)
+		return err
+	}
+	if len(pos) == 0 || help || pos[0] == "help" {
 		listCommands(out)
 		return nil
 	}
@@ -136,6 +141,9 @@ func run(ctx context.Context, args []string, in io.Reader, out, errout io.Writer
 		return err
 	}
 	cli.contextName = name
+	if len(pos) >= 2 && pos[0] == "pi" && pos[1] == "profile" {
+		return cli.piProfileCommand(dir, name, pos[2:], o)
+	}
 	identityCommand := pos[0] == "login" || pos[0] == "logout" || strings.Join(pos, " ") == "session renew"
 	if identityCommand {
 		unlock, err := lockConfig(filepath.Join(dir, "lock-"+name))
@@ -154,6 +162,9 @@ func run(ctx context.Context, args []string, in io.Reader, out, errout io.Writer
 	}
 	defer api.http.CloseIdleConnections()
 	cmd := strings.Join(pos, " ")
+	if cmd == "pi import" {
+		return cli.piImport(ctx, api, o)
+	}
 	if cmd == "doctor" || cmd == "support export" || cmd == "status" {
 		watch := o.take("watch") != ""
 		if watch && (cmd != "status" || cli.outputFile != "") {
@@ -170,11 +181,19 @@ func run(ctx context.Context, args []string, in io.Reader, out, errout io.Writer
 		}
 		return cli.sessionCommand(ctx, dir, name, api, strings.Join(pos, " "), o)
 	}
+	piStatus := len(pos) >= 2 && pos[0] == "pi" && pos[1] == "status"
+	if piStatus {
+		pos[0], pos[1] = "agent", "invoke"
+	}
+	var piAlias string
+	if !piStatus && len(pos) >= 2 && pos[0] == "agent" && pos[1] == "invoke" {
+		piAlias = o.take("pi-profile")
+	}
 	watch := len(pos) >= 2 && (pos[0] == "invocation" && pos[1] == "watch" || pos[0] == "agent" && pos[1] == "invoke" && o.take("watch") != "")
 	textOnly := false
-	if watch {
+	if watch || piStatus {
 		textOnly = o.take("text") != ""
-		if cli.outputFile != "" {
+		if cli.outputFile != "" && (!piStatus || textOnly) {
 			return usageError{errors.New("invocation watch writes to stdout")}
 		}
 	}
@@ -183,9 +202,24 @@ func run(ctx context.Context, args []string, in io.Reader, out, errout io.Writer
 	if len(pos) >= 2 && pos[0] == "app" && pos[1] == "verify" {
 		issuerCA = o.take("issuer-ca")
 	}
+	if len(pos) >= 2 && pos[0] == "pi" && pos[1] == "template" {
+		body, templateErr := piTemplate(pos[2:], o)
+		if templateErr != nil {
+			return usageError{templateErr}
+		}
+		pos = []string{"template", "publish"}
+		o["file"] = "-"
+		in = strings.NewReader(string(body))
+	}
 	a, err := buildAction(pos, o, in)
 	if err != nil {
 		return usageError{err}
+	}
+	if piStatus || piAlias != "" {
+		a.body, err = piInvocation(a.body, c, piAlias, piStatus)
+		if err != nil {
+			return usageError{err}
+		}
 	}
 	if returnsCredential(a) {
 		if cli.outputFile == "" {
@@ -258,12 +292,15 @@ func run(ctx context.Context, args []string, in io.Reader, out, errout io.Writer
 		if a.name == "app connection" || a.name == "app verify" {
 			return cli.applicationCommand(ctx, a, c, r, issuerCA)
 		}
-		if watch {
+		if watch || piStatus {
 			var invocation struct {
 				ID string `json:"id"`
 			}
 			if json.Unmarshal(r.Data, &invocation) != nil || !codePattern.MatchString(invocation.ID) {
 				return errors.New("invalid invocation identifier")
+			}
+			if piStatus {
+				return cli.piStatusResult(ctx, api, invocation.ID, textOnly)
 			}
 			return cli.watchInvocation(ctx, api, "/v1/invocations/"+invocation.ID+"/events", textOnly)
 		}

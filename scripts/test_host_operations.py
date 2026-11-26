@@ -40,6 +40,15 @@ class HostOperationTests(unittest.TestCase):
         self.bundle=dict(schema="agentcapsule.bundle/v1",version=self.version,platform="ubuntu-24.04-amd64",migrations=["0002.sql"],commit="sample")
         self.sign()
 
+    def test_network_can_start_before_guest_boot_jobs_finish(self):
+        with patch.dict(self.api, read=lambda _: {"hostname": "lab"},
+                        seed_for_boot=lambda: None, portable_program=lambda name: [name]), \
+                patch("os.execv") as execute:
+            self.api["userspace_service"]("boot")
+        _, argv = execute.call_args.args
+        self.assertIn("--notify-ready=no", argv)
+        self.assertIn("--private-network", argv)
+
     def test_private_userspace_must_match_the_signed_index(self):
         name = self.api["OS_MEDIA"]
         image = self.assets/name

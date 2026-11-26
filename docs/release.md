@@ -17,6 +17,7 @@ signs and publishes from a version tag, without a manual step.
 | `agentcapsule-harness` | The harness package tool (pack, push, sign, verify), static. |
 | `install.sh` | The `curl \| sh` installer of the workstation CLI ([Verify a release](#verify-a-release)). |
 | `agentcapsule-userspace-linux-amd64.tar.gz` | Private Linux filesystem for a new portable installation, when listed in the signed server manifest. Its SPDX inventory covers the installed packages. The matching package sources are in the source archives and their notices are under `/usr/share/doc` inside the filesystem. |
+| `pi-catalog.json` | Official Pi agent and PDF builder package references by digest, with the release publisher public key. The signed server bundle contains the same catalog. [Install Pi](pi.md) |
 | `cli-cheatsheet.pdf` | English quick reference for installing the PaaS and operating the CLI. The v0.1.1 tag contains the original French manual in its signed file set. [Read the cheat sheet](cli-cheatsheet.md) |
 | `formal-summary.json`, `p1-*.json`, `p2-certificate.json` | Formal model results and evidence prepared for the tag. The signed checksum index covers the evidence and documentation shipped with that version. |
 | `oci-<service>.spdx.json` | Inventory of the exact container image distributed for the service. |

@@ -86,4 +86,6 @@ agentcapsule agent invoke "$agent" --file - --watch <<'JSON'
 JSON
 ```
 
+For Pi, a PDF corpus, peer requests and model settings, start with `agentcapsule help pi`. [Two-agent walkthrough](pi.md)
+
 Use `agentcapsule help` for the command list and `agentcapsule install --help` for installer options. [CLI guide](cli.md) · [Project README](../README.md)

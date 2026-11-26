@@ -79,7 +79,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: agentcapsule-harness pack|push|keygen|sign|verify [flags]")
+		return errors.New("usage: agentcapsule-harness pack|push|keygen|sign|verify|digest|sign-offline|attach [flags]")
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -88,6 +88,12 @@ func run(args []string) error {
 		return pack(ctx, args[1:])
 	case "push":
 		return push(ctx, args[1:])
+	case "digest":
+		return digestPackage(args[1:])
+	case "sign-offline":
+		return signOffline(args[1:])
+	case "attach":
+		return attachBundle(ctx, args[1:])
 	case "keygen":
 		return keygen(args[1:])
 	case "sign":
@@ -272,7 +278,8 @@ func (k *keyFiles) Set(v string) error { *k = append(*k, v); return nil }
 func verifyPackage(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("verify", flag.ContinueOnError)
 	refText := fs.String("ref", "", "package reference pinned by digest")
-	var keys keyFiles
+	var keys, blobHosts keyFiles
+	fs.Var(&blobHosts, "blob-host", "approved blob redirect host; repeatable")
 	fs.Var(&keys, "key", "trusted publisher public key (PEM); repeatable; requires a signature by one of them")
 	username := fs.String("username", "", "registry user; password from AGENTCAPSULE_REGISTRY_PASSWORD")
 	local := fs.Bool("local", false, "plain HTTP registry on a private network (development only)")
@@ -290,6 +297,7 @@ func verifyPackage(ctx context.Context, args []string) error {
 	}
 	rule := ociregistry.Rule{Host: ref.Registry, Repositories: []string{ref.Repository}, Local: *local,
 		Username: *username, Password: os.Getenv("AGENTCAPSULE_REGISTRY_PASSWORD")}
+	rule.BlobHosts = blobHosts
 	for _, path := range keys {
 		raw, err := os.ReadFile(path)
 		if err != nil {
@@ -317,7 +325,7 @@ func verifyPackage(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	out, err := json.MarshalIndent(map[string]any{"reference": ref.String(), "name": pkg.Manifest.Name, "version": pkg.Manifest.Version,
+	out, err := json.MarshalIndent(map[string]any{"reference": ref.String(), "name": pkg.Manifest.Name, "version": pkg.Manifest.Version, "base": pkg.Manifest.Base,
 		"entrypoint": pkg.Manifest.Entrypoint, "rootfs_digest": pkg.RootfsDigest, "rootfs_bytes": pkg.RootfsSize, "signer": pkg.Signer}, "", "  ")
 	if err != nil {
 		return err

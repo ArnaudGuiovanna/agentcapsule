@@ -36,6 +36,9 @@ type Config struct {
 	FirstUID, LastUID uint32
 	// InspectionUID runs the confined programs; zero: none.
 	InspectionUID uint32
+	// RestoreCheckOnly is the temporary pre-upgrade helper. It accepts
+	// only the confined key check on a descriptor already open in the worker.
+	RestoreCheckOnly bool
 	// ImageRoots may hold a jail's boot, harness and corpus images;
 	// DriveRoots a builder's drives. Both include the runtime root.
 	ImageRoots, DriveRoots []string
@@ -173,6 +176,10 @@ func (s *Server) serveConn(ctx context.Context, conn *net.UnixConn) {
 func (s *Server) Handle(ctx context.Context, req Request, files []*os.File) (Response, []*os.File) {
 	if req.V != Version {
 		return Response{Code: CodeUnsupported, Error: "protocol version"}, nil
+	}
+	if s.c.RestoreCheckOnly && (req.Op != OpSandbox || req.Sandbox == nil ||
+		req.Sandbox.Self != "agentcapsule-luks-check" || len(files) != 1) {
+		return failure(refuse("only restore checks are available")), nil
 	}
 	var resp Response
 	var out []*os.File

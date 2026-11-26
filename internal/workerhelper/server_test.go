@@ -319,7 +319,7 @@ func TestGiveDrivesChecksTheAgentAndThePaths(t *testing.T) {
 	_, err = l.handle(Request{Op: OpGiveDrives, Agent: "agt_busy", Drives: []Drive{{drive, 0o600}}})
 	expectCode(t, err, CodeBusy)
 	l.agent("agt_b", agentUID+1, "")
-	for name, d := range map[string]Drive{"a mode": {drive, 0o644}, "outside the roots": {"/etc/passwd", 0o400}, "a traversal": {staging + "/../registry.json", 0o400}} {
+	for name, d := range map[string]Drive{"a mode": {drive, 0o644}, "set-ID bits": {drive, 0o6600}, "outside the roots": {"/etc/passwd", 0o400}, "a traversal": {staging + "/../registry.json", 0o400}} {
 		if _, err := l.handle(Request{Op: OpGiveDrives, Agent: "agt_b", Drives: []Drive{d}}); err == nil {
 			t.Fatal(name, "was given")
 		}
@@ -475,6 +475,29 @@ func TestSandboxRunsOnlyTheConfiguredPrograms(t *testing.T) {
 	}
 	l.s.c.InspectionUID = 0
 	expectCode(t, run(SandboxRequest{Program: "/usr/sbin/debugfs"}), CodeUnavailable)
+}
+
+func TestPreUpgradeHelperOnlyPermitsConfinedRestore(t *testing.T) {
+	l := newLabWith(t, func(c *Config) { c.RestoreCheckOnly = true })
+	path, _ := l.volume("copy")
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	check := Request{Op: OpSandbox, Path: path, Sandbox: &SandboxRequest{
+		Self: "agentcapsule-luks-check", TimeoutMS: 1000, CPUMS: 1000,
+	}}
+	if _, err := l.handle(check, f); err != nil {
+		t.Fatal(err)
+	}
+	_, err = l.handle(check)
+	expectCode(t, err, CodeRefused)
+	for _, req := range []Request{{Op: OpStart}, {Op: OpGiveVolume}, {Op: OpFetchArchive},
+		{Op: OpSandbox, Sandbox: &SandboxRequest{Program: "/usr/sbin/debugfs"}}} {
+		_, err = l.handle(req, f)
+		expectCode(t, err, CodeRefused)
+	}
 }
 
 func TestFetchAndLinkChecksStayInTheirRoots(t *testing.T) {

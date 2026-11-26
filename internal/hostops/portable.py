@@ -86,7 +86,9 @@ def userspace_service(action):
         seed_for_boot()
         cmd = portable_program("systemd-nspawn") + [
             "--directory=" + str(PRIVATE_OS / "system/guest"), "--settings=no", "--boot",
-            "--notify-ready=yes", "--machine=agentcapsule-paas", "--hostname=" + settings["hostname"],
+            # Attach pasta as soon as init owns the guest namespaces. Guest
+            # boot jobs can themselves need the network (off-host backups).
+            "--notify-ready=no", "--machine=agentcapsule-paas", "--hostname=" + settings["hostname"],
             "--register=no", "--keep-unit", "--link-journal=no", "--private-users=no",
             "--private-network", "--console=read-only",
             "--resolv-conf=" + ("copy-uplink" if Path("/run/systemd/resolve/resolv.conf").is_file() else "copy-host"),
@@ -183,6 +185,15 @@ def enter_userspace(argv, version):
     with contextlib.ExitStack() as stack:
         leader = container_leader()
         stack.callback(os.close,leader)
+        # Early nspawn readiness guarantees the namespace exists. The CLI
+        # also needs its service manager's socket, regardless of which
+        # application units are still starting inside the guest.
+        manager = Path(f"/proc/self/fd/{leader}/root/run/systemd/private")
+        deadline = time.monotonic() + 30
+        while not manager.is_socket():
+            if time.monotonic() >= deadline:
+                raise ValueError(f"private systemd socket unavailable; inspect journalctl -u {OS_UNIT}")
+            time.sleep(.1)
         fds = []
         def pinned(name):
             fd = os.open(name, os.O_RDONLY, dir_fd=leader)

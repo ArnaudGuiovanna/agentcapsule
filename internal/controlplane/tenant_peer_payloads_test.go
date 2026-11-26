@@ -114,6 +114,10 @@ func TestTenantAgentsExchangePrivateContentForTheirRequester(t *testing.T) {
 	if status, err := il.tr.RequestStateFromVM(ctx, vmA, r.RequestID); err != nil || status.Reply == nil || status.Reply.Content[0].Text != "Paris" {
 		t.Fatal("a cannot read b's answer from the status", status, err)
 	}
+	meta, err := il.c.GetInvocation(ctx, il.owner, inv.ID)
+	if err != nil || len(meta.PeerRequests) != 1 || meta.PeerRequests[0] != (InvocationPeerRequest{r.RequestID, b, "REPLIED"}) {
+		t.Fatal("administrator cannot trace the completed exchange", meta.PeerRequests, err)
+	}
 	// An organization's agents have no owner: nobody's inbox is written.
 	var ownerless int
 	if err = il.s.pool.QueryRow(ctx, "SELECT count(*) FROM inbox_items WHERE user_id=''").Scan(&ownerless); err != nil || ownerless != 0 {

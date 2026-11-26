@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -113,7 +114,9 @@ func TestRefusalWindowsCountRepeatedAttempts(t *testing.T) {
 // the count.
 func TestRepeatedRefusalsAreCountedInTheTrail(t *testing.T) {
 	l, at, owner := apiAgentsLab(t)
-	l.server.guards.refusals.length = 300 * time.Millisecond
+	// Keep the window open across the database round trips. The timer is
+	// exercised separately by TestRefusalWindowsCountRepeatedAttempts.
+	l.server.guards.refusals.length = time.Hour
 	apiAddMember(t, l, owner, "bob", "agent_user")
 	bob := l.sign(t, at, "bob-refused", "bob", allAgentScopes)
 	for i := 0; i < 5; i++ {
@@ -148,24 +151,14 @@ func TestRepeatedRefusalsAreCountedInTheTrail(t *testing.T) {
 	}
 	r := call(t, l.server, "GET", "/v1/audit?limit=200", owner, "", "")
 	want := []event{{"member.created", l.org.ID, "forbidden", 1}, {"assignment.created", guesses[0], "not_found", 1}, {"assignment.created", guesses[1], "not_found", 1}}
-	if got := refused(r.Body.Bytes()); len(got) != 3 || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
+	if got := refused(r.Body.Bytes()); !slices.Equal(got, want) {
 		t.Fatalf("before the window's end:\n got %v\nwant %v", got, want)
 	}
 	want = append(want, event{"member.created", l.org.ID, "forbidden", 4})
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		r = call(t, l.server, "GET", "/v1/audit?limit=200", owner, "", "")
-		got := refused(r.Body.Bytes())
-		if len(got) == 4 {
-			if got[3] != want[3] {
-				t.Fatalf("the window's count: %v", got[3])
-			}
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the window's count was not recorded", got)
-		}
-		time.Sleep(50 * time.Millisecond)
+	l.server.FlushRefusals()
+	r = call(t, l.server, "GET", "/v1/audit?limit=200", owner, "", "")
+	if got := refused(r.Body.Bytes()); !slices.Equal(got, want) {
+		t.Fatalf("after closing the window:\n got %v\nwant %v", got, want)
 	}
 	from, to := url.QueryEscape(time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)), url.QueryEscape(time.Now().Add(time.Hour).UTC().Format(time.RFC3339))
 	export := call(t, l.server, "GET", "/v1/audit/export?from="+from+"&to="+to, owner, "", "")

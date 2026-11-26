@@ -1,8 +1,7 @@
 {
   "version": 1,
-  "command": ["/opt/pi/start", "--print", "--provider", "capsule-openai", "--model", "pi-model",
-              "--tools", "read", "--continue", "--session-dir", "/var/lib/agent/pi-sessions"],
-  "input": "argument",
+  "command": ["/opt/pi/start"],
+  "input": "job-json",
   "timeout_seconds": 900,
   "env": {"PI_OFFLINE": "1", "PI_SKIP_VERSION_CHECK": "1", "PI_TELEMETRY": "0"}
 }

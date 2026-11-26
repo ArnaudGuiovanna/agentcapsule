@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func (il *invocationLab) create(t *testing.T, p Principal, key, text string) (Invocation, APIReceipt, error) {
@@ -56,7 +57,7 @@ func TestInvocationResourceFollowsTheRequestWithoutExposingContent(t *testing.T)
 	}
 
 	got, err := il.c.GetInvocation(t.Context(), aliceP, v.ID)
-	if err != nil || got.State != "accepted" || got.RequestedBy != "" {
+	if err != nil || got.State != "accepted" || got.RequestedBy != "" || got.PeerRequests != nil {
 		t.Fatal("requester cannot follow own invocation", got, err)
 	}
 	// Another member never learns that it exists; an administrator sees metadata.
@@ -64,8 +65,13 @@ func TestInvocationResourceFollowsTheRequestWithoutExposingContent(t *testing.T)
 		t.Fatal("a member read someone else's invocation", err)
 	}
 	adm, err := il.c.GetInvocation(t.Context(), il.owner, v.ID)
-	if err != nil || adm.RequestedBy != aliceP.ID {
+	meta, _ := json.Marshal(adm)
+	if err != nil || adm.RequestedBy != aliceP.ID || !strings.Contains(string(meta), `"peer_requests":[]`) {
 		t.Fatal("administrator cannot see invocation metadata", adm, err)
+	}
+	limited := agentPrincipal(t, il.tenantLab, organizationInput().InitialOwner.Subject, "org:read agent:read")
+	if got, err = il.c.GetInvocation(t.Context(), limited, v.ID); err != nil || got.PeerRequests != nil {
+		t.Fatal("agent:read alone must not expose the agent manager's diagnostics", got, err)
 	}
 
 	il.complete(t, v.ID)
@@ -95,6 +101,50 @@ func mustInvocationList(t *testing.T, il *invocationLab, p Principal) []Invocati
 		t.Fatal(err)
 	}
 	return items
+}
+
+func TestInvocationManagerTracesHeldAndDeclinedRequests(t *testing.T) {
+	il := newInvocationLab(t)
+	ctx := t.Context()
+	alice := il.invoker(t, "alice")
+	recipient := activateTenantAgent(t, il.tenantLab, mustCatalog(t, il.tenantLab), il.owner, "reviewer")
+	if _, err := il.s.pool.Exec(ctx, "UPDATE agents SET discoverable=true WHERE id=$1", recipient); err != nil {
+		t.Fatal(err)
+	}
+	source, _, err := il.create(t, alice, "review", "ask for a review")
+	if err != nil {
+		t.Fatal(err)
+	}
+	il.ackWorking(t, source.ID)
+	other, _, err := il.create(t, alice, "unrelated", "another invocation of the same sender")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mandate string
+	if err := il.s.pool.QueryRow(ctx, "SELECT mandate_id FROM owner_instructions WHERE operation_id=$1", source.ID).Scan(&mandate); err != nil {
+		t.Fatal(err)
+	}
+	sub, err := il.s.Submit(ctx, il.agent, "review", Submission{RecipientAgentID: recipient, MandateID: mandate,
+		PayloadRef: "private-reference", PayloadHash: [32]byte{1}, ExpiresAt: time.Now().Add(time.Hour)})
+	if err != nil || sub.State != PendingApproval {
+		t.Fatal("manual consent", sub.State, err)
+	}
+	check := func(state State) {
+		t.Helper()
+		got, err := il.c.GetInvocation(ctx, il.owner, source.ID)
+		if err != nil || len(got.PeerRequests) != 1 || got.PeerRequests[0] != (InvocationPeerRequest{sub.RequestID, recipient, state}) {
+			t.Fatal("scoped request metadata", got.PeerRequests, err)
+		}
+	}
+	check(PendingApproval)
+	if _, err := il.c.DecideHeldRequest(ctx, il.owner, recipient, sub.RequestID, "decline", false); err != nil {
+		t.Fatal(err)
+	}
+	check("DECLINED")
+	got, err := il.c.GetInvocation(ctx, il.owner, other.ID)
+	if err != nil || got.PeerRequests == nil || len(got.PeerRequests) > 0 {
+		t.Fatal("unrelated invocation", got.PeerRequests, err)
+	}
 }
 
 func TestInvocationListIsScopedAndPaginated(t *testing.T) {

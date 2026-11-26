@@ -4804,6 +4804,20 @@ components:
             `lost_at` ran again after a restore, and its `completed_at` is the
             rerun's.
         requested_by: {type: string, description: "Visible only to administrative reader roles."}
+        peer_requests:
+          type: array
+          description: >-
+            Single-invocation GET for organization agent managers with agent:manage.
+            Lists retained peer requests admitted under this invocation's mandate.
+            An empty array means none are currently recorded. Omitted on lists,
+            on admission and for other readers.
+          items:
+            type: object
+            required: [id, recipient_agent_id, state]
+            properties:
+              id: {type: string}
+              recipient_agent_id: {type: string}
+              state: {type: string, enum: [PENDING_APPROVAL, DELIVERING, PROCESSING, REPLIED, DECLINED, EXPIRED, CANCELED, FAILED]}
         created_at: {type: string, format: date-time}
         completed_at: {type: string, format: date-time}
         result_available: {type: boolean, description: "A result exists. Reading it depends on read_content."}

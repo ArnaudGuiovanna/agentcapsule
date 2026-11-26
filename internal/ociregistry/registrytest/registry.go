@@ -1,5 +1,5 @@
 // Package registrytest is an in-memory OCI distribution registry for tests:
-// pull and monolithic push, optional bearer-token or Basic authentication,
+// pull, chunked and monolithic push, optional bearer-token or Basic authentication,
 // optional blob redirection to a second host, hooks to serve tampered content,
 // and counters that reveal credentials sent where they should not go.
 package registrytest
@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -46,12 +47,13 @@ type Registry struct {
 	manifests map[string][]byte // repo + "@" + reference
 	types     map[string]string // repo + "@" + reference -> media type
 	uploads   map[string]string // upload id -> repo
+	chunks    map[string][]byte
 	next      atomic.Int64
 	Pulls     atomic.Int64 // manifest GETs served
 }
 
 func New() *Registry {
-	r := &Registry{blobs: map[string][]byte{}, manifests: map[string][]byte{}, types: map[string]string{}, uploads: map[string]string{}}
+	r := &Registry{blobs: map[string][]byte{}, manifests: map[string][]byte{}, types: map[string]string{}, uploads: map[string]string{}, chunks: map[string][]byte{}}
 	r.Server = httptest.NewServer(http.HandlerFunc(r.serve))
 	return r
 }
@@ -279,11 +281,29 @@ func (r *Registry) referrers(w http.ResponseWriter, repo, subject string) {
 }
 
 func (r *Registry) finishUpload(w http.ResponseWriter, req *http.Request, id string) {
+	b, err := readBlob(req)
 	r.mu.Lock()
 	_, ok := r.uploads[id]
+	if req.Method == http.MethodPatch && ok && err == nil {
+		start := len(r.chunks[id])
+		if len(b) == 0 || req.Header.Get("Content-Range") != fmt.Sprintf("%d-%d", start, start+len(b)-1) {
+			r.mu.Unlock()
+			w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+			return
+		}
+		r.chunks[id] = append(r.chunks[id], b...)
+		w.Header().Set("Range", fmt.Sprintf("0-%d", start+len(b)-1))
+		w.Header().Set("Location", "/v2/uploads/"+id)
+		r.mu.Unlock()
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+	if prefix := r.chunks[id]; len(prefix) > 0 {
+		b = append(prefix, b...)
+	}
+	delete(r.chunks, id)
 	delete(r.uploads, id)
 	r.mu.Unlock()
-	b, err := readBlob(req)
 	d := digest(b)
 	if err != nil || !ok || req.Method != http.MethodPut || d != req.URL.Query().Get("digest") {
 		w.WriteHeader(http.StatusBadRequest)

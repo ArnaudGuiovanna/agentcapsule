@@ -29,6 +29,9 @@ var setup []byte
 //go:embed diagnose.py
 var diagnostics []byte
 
+//go:embed pi.py
+var pi []byte
+
 //go:embed portable.py
 var portable []byte
 
@@ -65,9 +68,12 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		host = args[i+1]
 		i++
 	}
-	interactive := allowPrompt && host == "" && args[0] == "install" &&
-		isTerminal(stdin) && isTerminal(stdout) && isTerminal(stderr)
-	if interactive {
+	prompt := allowPrompt && host == "" && isTerminal(stdin) && isTerminal(stderr)
+	followInstall := prompt && args[0] == "install" && isTerminal(stdout)
+	// The Pi receipt is normally redirected to a file. Sudo prompts on the
+	// controlling terminal and leaves this machine-readable output intact.
+	enablePi := len(forwarded) >= 3 && slices.Equal(forwarded[:3], []string{"host", "pi", "enable"})
+	if followInstall {
 		fmt.Fprintln(stderr, "Preparing the local Agent Capsule installation (system services, storage and a demonstration agent).")
 		if !slices.Contains(forwarded, "--plan-only") {
 			forwarded = append(forwarded, "--follow-install")
@@ -89,14 +95,14 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		if runtime.GOOS != "linux" {
 			return errors.New("use --ssh USER@HOST to select the Linux KVM host")
 		}
-		cmd, err = localController(ctx, forwarded, encoded, interactive, stdin, stdout, stderr)
+		cmd, err = localController(ctx, forwarded, encoded, followInstall || (prompt && enablePi), stdin, stdout, stderr)
 		if err != nil || cmd == nil {
 			return err
 		}
 	}
 	root := []byte("import base64\nTRUSTED_ROOT=base64.b64decode('" + base64.StdEncoding.EncodeToString(trustedRoot) + "')")
 	lifecycle := []byte("OIDC_LIFECYCLE=base64.b64decode('" + base64.StdEncoding.EncodeToString(oidclifecycle.ContainerLifecycle) + "')")
-	source := bytes.Join([][]byte{root, lifecycle, setup, diagnostics, capabilities, portable, controller}, []byte("\n"))
+	source := bytes.Join([][]byte{root, lifecycle, setup, diagnostics, capabilities, portable, pi, controller}, []byte("\n"))
 	program := "import base64\nHELPER_SOURCE=base64.b64decode('" + base64.StdEncoding.EncodeToString(source) + "')\nexec(compile(HELPER_SOURCE, 'agentcapsule-host', 'exec'))\n"
 	cmd.Stdin = bytes.NewBufferString(program)
 	cmd.Stdout, cmd.Stderr = stdout, stderr

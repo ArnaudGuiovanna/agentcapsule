@@ -135,12 +135,17 @@ both APIs:
 - Pi reads an attached file with its own `read` tool;
 - the next invocation answers from Pi's session alone.
 
-[examples/pi-agent](../examples/pi-agent) packs Pi this way. Pi's configuration
-directory must be writable, and the image is read-only. Its `start` script
-therefore keeps that directory in the encrypted home, copies the image's
-`models.json` into it, and runs Pi unchanged. `scripts/build-pi-harness.py`
-builds the image from an installed Pi release and the Node.js it runs on, on a
-Debian base, as a test build tied to the local installation. The product KVM
+The distributed Pi profile runs the locked Pi 1.5.0 release with
+`read`, `write`, `edit` and `bash` in an encrypted workspace. It reads shared
+corpora under `/corpus`. Its `agent_discover`, `agent_ask` and
+`agent_request_status` tools call the loopback A2A endpoint. The platform
+checks the organization's and agent's permissions and the recipient's consent.
+Model settings apply to one invocation. Direct conversations persist by
+provider and alias. Incoming peer requests use a fresh session. Compaction
+diagnostics contain the outcome and token counts. [Pi profile](../examples/pi-agent/README.md)
+
+Publishers build the release with `dagger call pi-agent`. The developer script
+`scripts/build-pi-harness.py` can exercise a local Pi installation. The earlier KVM
 campaign (`verify-product-guest.py --pi-harness`) ran it in a jailed microVM on
 two real models:
 - Ollama with `gemma4:cloud`;
@@ -171,7 +176,7 @@ Strict JSON, unknown fields refused, at most 64 KiB.
 |---|---|
 | `version` | `1` |
 | `command` | Program (absolute path in the image) and arguments, at most 64; or `server` |
-| `input` | `stdin` (default): the text on standard input; `argument`: the text as the last argument (not with `server`) |
+| `input` | `stdin` (default) passes the text on stdin. `argument` appends it as the last argument. `job-json` passes a JSON object on stdin with the delivery kind (`invocation` or `request`), `text` and typed `content` if available. Applies to command runners. |
 | `server.command` | The A2A server's program and arguments, instead of `command` |
 | `server.a2a_url` | The server's A2A endpoint (JSON-RPC), `http://` on a loopback IP with a port |
 | `server.ready_seconds` | How long a job waits for the server to accept connections, 1 to 3600 (default 120) |

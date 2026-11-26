@@ -57,6 +57,9 @@ func (g corpusGuest) enrichment(ctx context.Context, w controlplane.CorpusExtens
 		if err = g.stopGuest(ctx, agent); err != nil {
 			return "", err
 		}
+		if err = g.w.host.SetEnrichmentDrives(ctx, agent, runtime.CorpusImage{}, ""); err != nil {
+			return "", err
+		}
 		if err = os.MkdirAll(dir, 0700); err != nil {
 			return "unavailable", err
 		}

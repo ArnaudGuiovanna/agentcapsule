@@ -1,10 +1,10 @@
 # Administer AgentCapsule from a terminal
 
-Use the portable `agentcapsule` binary on the administrator's workstation. A platform operator installs the Ubuntu host, enrolls a named operator and gives Acme its initial owner. The owner can then administer Acme over HTTPS. MonApp's backend and each signed-in member use their own API credentials.
+Use the portable `agentcapsule` binary on the administrator's workstation. A platform operator installs the PaaS on the Linux host, enrolls a named operator and gives Acme its initial owner. The owner can then administer Acme over HTTPS. MonApp's backend and each signed-in member use their own API credentials.
 
 | Responsibility | Entry point | Where authorization is checked |
 |---|---|---|
-| Install, upgrade, inspect host services, archive and restore | `install`, `update`, `host`, `archive`, `restore` | On the Linux host. The portable installer can request sudo in a local terminal. Other host operations run as root locally or through `--ssh USER@HOST` and noninteractive sudo |
+| Install, upgrade, inspect host services, archive and restore | `install`, `update`, `host`, `archive`, `restore` | On the Linux host. `install` and `host pi enable` can request sudo in a local terminal. Run other host operations as root locally or through `--ssh USER@HOST` with noninteractive sudo |
 | Enroll an operator, create an organization, set quotas, approve a system image | Platform context over HTTPS | Platform credential and current revocation state |
 | Manage Acme, providers, deployments, MonApp and permissions | Organization context over HTTPS | Organization, role, scopes and effective assignments |
 | Accept an invitation, invoke an agent, read a result | MonApp's public HTTP contract | Member's verified OIDC identity and current rights |
@@ -71,6 +71,8 @@ connections time out after 45 seconds. Completion exits with 0, a failed,
 expired, canceled or permanently lost invocation or a revoked subscription
 with 5, and an interrupt with 130. HTTP refusals retain the usual exit
 codes 3 (authentication or authorization) and 4 (other HTTP errors).
+
+For the signed Pi harness, the PDF converter, per-model settings and a peer request with manual consent, follow the [two-agent CLI walkthrough](pi.md).
 
 ## Select inference and provision a pool
 
@@ -170,6 +172,7 @@ Lint reads only headers and indexes. A measure it cannot read cheaply counts as 
 | Host-level service state | `host diagnose alerts`, `host diagnose metrics --service worker` | systemd transitions and current Prometheus samples |
 | Container images after an install or update | `host diagnose images` | Check `verified` and each service's container state, immutable image ID and expected OCI configuration digest. The schema initializer must have exited with code zero. |
 | Filtered service events | `host diagnose journal --service api --request-id ID` | Timestamp and event names for the request |
+| Find a failed invocation | `invocation list AGENT --state failed`, then `invocation show ID` | Recorded error code and, for organization agent managers, peer requests submitted during that invocation |
 | Held or delayed exchange | `communication explain RECIPIENT_AGENT REQUEST_ID` | Directory state, visibility at submission, current mandate, consent, outward delivery, attempts and return delivery |
 | Backup status | `host diagnose backups` | Repository status and latest successful backup time |
 | Export for support | `support export --output-file report.tar.gz` | Versioned aggregate `diagnostics.json` with an observation timestamp |
@@ -179,6 +182,10 @@ Lint reads only headers and indexes. A measure it cannot read cheaply counts as 
 | Update the server or recover | `update plan`, `update apply`, `host operation wait`, `restore test`, `restore apply` | Verify the backup repositories and maintenance results in the host operation |
 
 ## Script contract
+
+`agent invoke AGENT --file FILE --watch --text` streams the agent's words to standard output. Standard error gives the invocation ID as soon as the server accepts it. A terminal failure exits with code 5 and reports a reason. `agent_failed` means the harness reported failure and supplied no further detail. `unknown` means the CLI has no recognized reason for this outcome.
+
+To trace a handoff, run `agentcapsule invocation show ID` with an organization agent-manager credential. Each item of `data.peer_requests` gives the recipient, the request ID and its current state. `PENDING_APPROVAL` awaits consent, `DECLINED` records a refusal and `REPLIED` records the recipient's reply. Pass the recipient and request IDs to `agentcapsule communication explain` to check delivery of the reply. An empty array means that no admitted request is currently retained for this invocation. Attempts rejected before admission create no request. Older servers and credentials without agent-management rights omit the field.
 
 Remote commands emit one JSON object with `version: 1`, `observed_at`, `data` and, when available, the context and HTTP request ID. Watch mode emits one object per line. The host helper uses the separate `agentcapsule.host/v1` schema. `--json` and `--non-interactive` are suitable for unattended jobs. `agentcapsule help` lists the named routes. A raw JSON API request uses `api METHOD /v1/path`. The release binary checks the API major version and CLI wire protocol before sending a credential.
 

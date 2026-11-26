@@ -31,6 +31,7 @@ func TestDeploymentAndConfigurationSyntax(t *testing.T) {
 		{[]string{"organization", "withdraw-client", "org_1", "apc_1"}, "", "/v1/organizations/org_1/application-clients/apc_1/withdraw", nil},
 		{[]string{"access", "explain", "--member", "alice", "--agent", "support"}, "", "/v1/access/explain?agent=support&member=alice", nil},
 		{[]string{"invocation", "watch", "op_3"}, "", "/v1/invocations/op_3/events", nil},
+		{[]string{"invocation", "list", "pi1", "--state", "failed", "--limit", "4"}, "", "/v1/agents/pi1/invocations?limit=4&state=failed", nil},
 		{[]string{"operation", "show", "--type", "revocation", "arv_1"}, "", "/v1/access-revocations/arv_1", nil},
 		{[]string{"operation", "wait", "--type", "revocation", "arv_1"}, "", "/v1/access-revocations/arv_1", nil},
 	} {

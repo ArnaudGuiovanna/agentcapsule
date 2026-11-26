@@ -12,6 +12,26 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/runtime"
 )
 
+func TestPrepareCorpusOutputResumesHandedOutDisk(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "output.ext4")
+	data := strings.Repeat("x", 4096)
+	if err := os.WriteFile(path, []byte(data), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareCorpusOutput(path, int64(len(data))); err != nil {
+		t.Fatal("resume a prepared disk without write permission", err)
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != data {
+		t.Fatal("previous phase's output changed", err)
+	}
+	if err := os.Symlink(path, path+".link"); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareCorpusOutput(path+".link", int64(len(data))); err == nil {
+		t.Fatal("accepted a link to an existing disk")
+	}
+}
+
 // drive_limits.corpus caps each corpus drive (ADR 023 §5.1): absent means
 // its default, a number left out takes its default, and values out of
 // bounds are refused.

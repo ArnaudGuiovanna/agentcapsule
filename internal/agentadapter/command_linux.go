@@ -3,7 +3,9 @@
 package agentadapter
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +14,8 @@ import (
 	"syscall"
 	"time"
 	"unicode/utf8"
+
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/capsuleprotocol"
 )
 
 // CommandRunner runs the configured command once per job, in the agent's home
@@ -35,6 +39,17 @@ func CommandRunner(cfg Config, home string) Runner {
 		cmd.Env = cfg.Environment(home, extra)
 		if cfg.Input == "stdin" {
 			cmd.Stdin = strings.NewReader(job.Text)
+		}
+		if cfg.Input == "job-json" {
+			body, err := json.Marshal(struct {
+				Kind    string                        `json:"kind"`
+				Text    string                        `json:"text"`
+				Content []capsuleprotocol.ContentPart `json:"content,omitempty"`
+			}{job.Kind, job.Text, job.Content})
+			if err != nil {
+				return Output{}
+			}
+			cmd.Stdin = bytes.NewReader(body)
 		}
 		out := &capped{max: MaxAnswerBytes + 1}
 		cmd.Stdout = out

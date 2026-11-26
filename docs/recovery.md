@@ -1679,6 +1679,8 @@ pending the product owner.
 
 ### Test a restore
 
+On a CLI-managed host, use `agentcapsule restore test --agent "$AGENT_ID" --archive-id "$ARCHIVE_ID"` to check an archive. During an update from v0.1.5, the CLI runs the signed target version's restore verifier before activating the update. The dedicated inspection account checks the volume key on each fetched copy. The backup receipt records the archive, digest and key checks for both repositories. [CLI update and recovery](cli-host.md#update-and-recovery)
+
 A restore takes the agent out of service. To learn that it would work, without
 it, run the restore test (OPR-5, [worker.md](worker.md#testing-a-restore)),
 beside the maintenance worker:

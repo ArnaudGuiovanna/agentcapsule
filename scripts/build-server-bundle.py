@@ -306,6 +306,7 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     for name in ("build","kernel","vmm","out","licenses"):
         p.add_argument("--"+name,type=Path,required=True)
+    p.add_argument("--pi-catalog", type=Path, help="offline-signed package catalog from pi_release.py")
     a=p.parse_args()
     build=json.loads((a.build/"build.json").read_bytes())
     if (build["status"]!="passed" or build["reproducible"] is not True or
@@ -314,6 +315,11 @@ def main():
     epoch=build["source_date_epoch"]
     a.out.mkdir(exist_ok=True,parents=True)
     files=runtime_files(a.build/"dist",a.kernel,a.vmm)
+    if a.pi_catalog:
+        catalog=json.loads(a.pi_catalog.read_bytes())
+        if catalog.get("release")!=build["version"] or catalog.get("schema")!="agentcapsule.pi/v1":
+            raise ValueError("Pi catalog does not match the host build")
+        files["config/pi-catalog.json"]=a.pi_catalog
     files["LICENSE"]=ROOT/"LICENSE"
     files["third-party-licenses.txt"]=a.licenses
     with tempfile.TemporaryDirectory() as tmp:

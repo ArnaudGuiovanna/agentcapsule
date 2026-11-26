@@ -14,7 +14,41 @@ import (
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/sandbox"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/volumestore/lukstest"
+	"golang.org/x/sys/unix"
 )
+
+func TestScratchInspectionRevokesAccessAndRequiresPrivateCopy(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "copy")
+	if err := os.WriteFile(path, []byte("scratch"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	revoke, err := allowScratchInspection(path, 61999)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if size, err := unix.Getxattr(path, "system.posix_acl_access", nil); err != nil || size != 44 {
+		t.Fatal("missing inspector ACL", size, err)
+	}
+	if err := revoke(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := unix.Getxattr(path, "system.posix_acl_access", nil); !errors.Is(err, unix.ENODATA) {
+		t.Fatal("inspector ACL survived", err)
+	}
+	if st, err := os.Stat(path); err != nil || st.Mode().Perm() != 0o600 {
+		t.Fatal("private file mode", st, err)
+	}
+	if err := os.Link(path, filepath.Join(dir, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := allowScratchInspection(path, 61999); !errors.Is(err, ErrState) {
+		t.Fatal("hard link accepted", err)
+	}
+}
 
 // scratchCopy prepares a volume and returns a copy of its container, as a
 // restore test copies an archive, with its spec and key.

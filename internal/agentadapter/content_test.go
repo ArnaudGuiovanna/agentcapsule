@@ -59,7 +59,7 @@ func TestJSONContentReachesTheRunAndComesBack(t *testing.T) {
 	})
 	l.deliver(structuredInvocation(t, "e1"))
 	l.drain()
-	if got.Text != "total\n\n"+`{"rows":[1,2]}` || len(got.Content) != 2 || got.Content[1] != rows {
+	if got.Kind != "invocation" || got.Text != "total\n\n"+`{"rows":[1,2]}` || len(got.Content) != 2 || got.Content[1] != rows {
 		t.Fatalf("job %+v", got)
 	}
 	if len(l.p.completions) != 1 || !reflect.DeepEqual(l.p.completions[0].Content,
@@ -71,7 +71,7 @@ func TestJSONContentReachesTheRunAndComesBack(t *testing.T) {
 		Payload: capsuleprotocol.PeerPayload{Content: []capsuleprotocol.ContentPart{rows}}})
 	l.deliver(harnessstore.Event{ID: "p1", Subjects: []string{"agent/a", "agent/b", "request/arq_1", "event/p1"}, Body: b})
 	l.drain()
-	if got.Content[0] != rows || len(l.p.replies) != 1 || l.p.replies[0].Payload.Content[1].JSON != `{"sum":3}` {
+	if got.Kind != "request" || got.Content[0] != rows || len(l.p.replies) != 1 || l.p.replies[0].Payload.Content[1].JSON != `{"sum":3}` {
 		t.Fatal(got, l.p.replies)
 	}
 }
@@ -165,5 +165,23 @@ func TestTheA2AEndpointCarriesDataParts(t *testing.T) {
 	}
 	if len(artifact) != 2 || artifact[0].Text() != "ok" || !reflect.DeepEqual(artifact[1].Data(), map[string]any{"valid": true}) {
 		t.Fatalf("artifact %+v", artifact)
+	}
+}
+
+func TestStructuredCommandReceivesJobEnvelopeOnStdin(t *testing.T) {
+	cfg, err := ParseConfig([]byte(`{"version":1,"command":["/bin/cat"],"input":"job-json"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := CommandRunner(cfg, t.TempDir())
+	for _, kind := range []string{"invocation", "request"} {
+		out := run(t.Context(), Job{Kind: kind, Text: "offer", Content: []capsuleprotocol.ContentPart{rows}})
+		var body struct {
+			Kind, Text string
+			Content    []capsuleprotocol.ContentPart
+		}
+		if !out.Completed || json.Unmarshal([]byte(out.Text), &body) != nil || body.Kind != kind || body.Text != "offer" || !reflect.DeepEqual(body.Content, []capsuleprotocol.ContentPart{rows}) {
+			t.Fatalf("invalid job envelope %s", out.Text)
+		}
 	}
 }

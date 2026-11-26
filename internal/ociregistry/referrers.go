@@ -177,6 +177,16 @@ func (c *client) trustedSigner(ctx context.Context, ref Reference, scope string,
 // whose subject is the package manifest. On a registry without the referrers
 // API, the referrers tag index is updated too. It returns the referrer digest.
 func Sign(ctx context.Context, rule Rule, ref Reference, key crypto.Signer) (string, error) {
+	bundle, err := SignBundle(ref.Digest, key)
+	if err != nil {
+		return "", err
+	}
+	return AttachSignature(ctx, rule, ref, bundle)
+}
+
+// AttachSignature publishes a prepared bundle. Offline signers can bind the exact
+// digest before a package is uploaded. Callers must verify the bundle they trust.
+func AttachSignature(ctx context.Context, rule Rule, ref Reference, bundle []byte) (string, error) {
 	if err := (Policy{Rules: []Rule{rule}}).Validate(); err != nil {
 		return "", err
 	}
@@ -195,10 +205,6 @@ func Sign(ctx context.Context, rule Rule, ref Reference, key crypto.Signer) (str
 	}
 	if subjectType == "" {
 		subjectType = ociManifestType
-	}
-	bundle, err := SignBundle(ref.Digest, key)
-	if err != nil {
-		return "", err
 	}
 	if err = c.pushBlob(ctx, repo, scope, emptyDigest, []byte("{}")); err != nil {
 		return "", err
@@ -232,6 +238,11 @@ func Sign(ctx context.Context, rule Rule, ref Reference, key crypto.Signer) (str
 		return "", err
 	case json.Unmarshal(old, &idx) != nil:
 		return "", fmt.Errorf("%w: referrers index", ErrIntegrity)
+	}
+	for _, existing := range idx.Manifests {
+		if existing.Digest == digest {
+			return digest, nil
+		}
 	}
 	idx.Manifests = append(idx.Manifests, descriptor{MediaType: ociManifestType, ArtifactType: BundleMediaType,
 		Digest: digest, Size: int64(len(raw)), Annotations: annotations})

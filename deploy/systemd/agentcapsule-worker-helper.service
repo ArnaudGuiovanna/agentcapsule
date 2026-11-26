@@ -60,7 +60,10 @@ ProtectKernelLogs=yes
 ProtectClock=yes
 ProtectHostname=yes
 RestrictRealtime=yes
-RestrictSUIDSGID=yes
+# systemd's set-ID filter blocks openat2: seccomp cannot inspect its
+# open_how pointer. The helper needs atomic RESOLVE_BENEATH/NO_SYMLINKS
+# even for read-only opens. Its disk API only accepts modes 0400 and 0600.
+RestrictSUIDSGID=no
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native

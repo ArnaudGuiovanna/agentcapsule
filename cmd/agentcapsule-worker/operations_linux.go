@@ -83,7 +83,7 @@ func testRestore(c worker.ServiceConfig, mode operatorconfig.Mode, agent, archiv
 		return fail("database_initialization_failed")
 	}
 	defer s.Close()
-	if err = s.Ready(startup); err != nil {
+	if err = s.ReadyForRestoreTest(startup); err != nil {
 		return fail("database_schema_unavailable")
 	}
 	// The archive root is read, never created.

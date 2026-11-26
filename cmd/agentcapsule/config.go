@@ -32,13 +32,14 @@ func validName(s string) bool {
 }
 
 type connection struct {
-	SigningKey   string `json:"individual_key_file,omitempty"`
-	URL          string `json:"url"`
-	Kind         string `json:"kind"`
-	Organization string `json:"organization,omitempty"`
-	CA           string `json:"ca_file,omitempty"`
-	Token        string `json:"token,omitempty"`
-	Pending      string `json:"pending_token,omitempty"`
+	PiProfiles   map[string]piProfile `json:"pi_profiles,omitempty"`
+	SigningKey   string               `json:"individual_key_file,omitempty"`
+	URL          string               `json:"url"`
+	Kind         string               `json:"kind"`
+	Organization string               `json:"organization,omitempty"`
+	CA           string               `json:"ca_file,omitempty"`
+	Token        string               `json:"token,omitempty"`
+	Pending      string               `json:"pending_token,omitempty"`
 }
 
 func (c connection) public() connection { c.Token = ""; c.Pending = ""; return c }

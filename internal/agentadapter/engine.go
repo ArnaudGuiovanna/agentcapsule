@@ -30,7 +30,8 @@ type Platform interface {
 
 // Job is one run of the agent's command.
 type Job struct {
-	ID string // the operation or request it answers
+	Kind string // "invocation" or "request", from the recorded delivery
+	ID   string // the operation or request it answers
 	// Text is the message as text: its text parts, and its JSON parts as
 	// compact JSON, separated by blank lines.
 	Text string
@@ -438,7 +439,7 @@ func (h *Engine) structuredOutput(ctx context.Context, id, kind string) ([]capsu
 // execute fetches the job's files, runs the command once and removes the files.
 // An error means the files could not be read yet.
 func (h *Engine) execute(ctx context.Context, kind, target string, in input) (Output, error) {
-	job := Job{ID: target, Text: in.Text, Content: in.Content}
+	job := Job{Kind: kind, ID: target, Text: in.Text, Content: in.Content}
 	if len(in.Attachments) > 0 {
 		dir := filepath.Join(h.home, ".agentcapsule", "files", safeName(target, "job"))
 		if err := os.MkdirAll(dir, 0o700); err != nil {

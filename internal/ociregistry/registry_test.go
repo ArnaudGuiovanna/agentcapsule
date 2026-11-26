@@ -2,12 +2,19 @@ package ociregistry
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/harnesspkg"
@@ -267,4 +274,127 @@ func fetchManifest(t *testing.T, reg *registrytest.Registry, ref Reference) []by
 	var buf bytes.Buffer
 	_, _ = buf.ReadFrom(resp.Body)
 	return buf.Bytes()
+}
+
+// Use a layer larger than the upload chunk so the publishing path, including
+// the final digest after PATCH, is exercised by a real loopback HTTP registry.
+func TestChunkedLayerMatchesOfflinePackageDigest(t *testing.T) {
+	reg := registrytest.New()
+	defer reg.Close()
+	dir := buildPackage(t, manifestFor("chunked", "1"))
+	f, err := os.OpenFile(filepath.Join(dir, harnesspkg.RootfsFile), os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = f.Truncate(uploadChunk*2 + 521); err != nil {
+		t.Fatal(err)
+	}
+	if err = f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	expected, err := PackageDigest(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, err := Push(t.Context(), localRule(reg, "acme/test"), "acme/test", "1", dir)
+	if err != nil || ref.Digest != expected {
+		t.Fatalf("digest=%s, pushed=%s, err=%v", expected, ref.Digest, err)
+	}
+}
+
+func TestChunkedUploadRecoversCommittedBytesAndRotatedSession(t *testing.T) {
+	data := bytes.Repeat([]byte("a long layer"), uploadChunk/6+1)
+	digest := sha256Hex(data)
+	var mu sync.Mutex
+	var written int64
+	h := sha256.New()
+	reg := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch r.Method {
+		case http.MethodHead:
+			http.NotFound(w, r)
+		case http.MethodPost:
+			w.Header().Set("Location", "/session")
+			w.WriteHeader(http.StatusAccepted)
+		case http.MethodGet:
+			w.Header().Set("Range", fmt.Sprintf("0-%d", written-1))
+			w.Header().Set("Location", "/resume")
+			w.WriteHeader(http.StatusNoContent)
+		case http.MethodPatch:
+			if written == 0 {
+				// The registry has persisted a prefix before reporting an error.
+				var err error
+				written, err = io.CopyN(h, r.Body, 4096)
+				if err != nil {
+					t.Error(err)
+				}
+				w.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
+			if r.URL.Path != "/resume" || r.Header.Get("Content-Range") != fmt.Sprintf("%d-%d", written, written+r.ContentLength-1) {
+				t.Error("incorrect resume point", r.URL.Path, r.Header.Get("Content-Range"))
+			}
+			n, err := io.Copy(h, r.Body)
+			if err != nil {
+				t.Error(err)
+			}
+			written += n
+			w.Header().Set("Location", "/resume")
+			w.Header().Set("Range", fmt.Sprintf("0-%d", written-1))
+			w.WriteHeader(http.StatusAccepted)
+		case http.MethodPut:
+			if r.URL.Path != "/resume" || r.ContentLength != 0 || r.URL.Query().Get("digest") != digest || fmt.Sprintf("sha256:%x", h.Sum(nil)) != digest {
+				t.Error("incorrect committed layer", written, r.ContentLength)
+			}
+			w.WriteHeader(http.StatusCreated)
+		default:
+			t.Error("unexpected method", r.Method)
+			http.NotFound(w, r)
+		}
+	}))
+	defer reg.Close()
+	c := newClient(Rule{Host: strings.TrimPrefix(reg.URL, "http://"), Local: true}, 0)
+	if err := c.upload(t.Context(), "acme/test", "repository:acme/test:pull,push", digest, bytes.NewReader(data), int64(len(data))); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestUnavailableUploadStatusReplaysOnlyTheSameRange(t *testing.T) {
+	web := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("followed upload-status redirect off the registry")
+	}))
+	defer web.Close()
+	var mu sync.Mutex
+	attempts := 0
+	reg := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r.Method == http.MethodGet {
+			http.Redirect(w, r, web.URL+"/status", http.StatusFound)
+			return
+		}
+		payload, err := io.ReadAll(r.Body)
+		if r.Method != http.MethodPatch || string(payload) != "chunk" || err != nil || r.Header.Get("Content-Range") != "0-4" {
+			t.Error("replayed a different chunk or range")
+		}
+		attempts++
+		if attempts == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Location", "/next")
+		w.Header().Set("Range", "0-4")
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer reg.Close()
+	c := newClient(Rule{Host: strings.TrimPrefix(reg.URL, "http://"), Local: true}, 0)
+	loc, err := url.Parse(reg.URL + "/session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, offset, err := c.sendChunk(t.Context(), "acme/test", "repository:acme/test:pull,push", loc, strings.NewReader("chunk"), 0, 5)
+	if err != nil || offset != 5 || next.Path != "/next" {
+		t.Fatal("status fallback", offset, err)
+	}
 }

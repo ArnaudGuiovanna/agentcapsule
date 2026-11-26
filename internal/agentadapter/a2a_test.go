@@ -47,9 +47,9 @@ func newPeers() *peers {
 
 func (p *peers) Submit(_ context.Context, key string, in capsuleprotocol.Submission) (capsuleprotocol.PlatformReceipt, error) {
 	p.mu.Lock()
-	if p.code != "" {
+	if code := p.code; code != "" {
 		p.mu.Unlock()
-		return capsuleprotocol.PlatformReceipt{}, &capsuleprotocol.PlatformError{Code: p.code}
+		return capsuleprotocol.PlatformReceipt{}, &capsuleprotocol.PlatformError{Code: code}
 	}
 	if in.Payload == nil || in.Payload.Validate() != nil || in.MandateID == "" || in.ExpiresAt.IsZero() {
 		p.mu.Unlock()
@@ -70,6 +70,12 @@ func (p *peers) Submit(_ context.Context, key string, in capsuleprotocol.Submiss
 		on(id)
 	}
 	return capsuleprotocol.PlatformReceipt{RequestID: id, State: "PENDING_APPROVAL"}, nil
+}
+
+func (p *peers) refuse(code string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.code = code
 }
 
 func (p *peers) set(id, state string) {
@@ -135,14 +141,15 @@ func newA2ALab(t *testing.T, agent func(ctx context.Context, l *a2aLab, j Job) s
 	l.lab = newLab(t, func(ctx context.Context, j Job) Output {
 		return Output{Completed: true, Text: agent(ctx, l, j)}
 	})
-	var endpoint *A2AEndpoint
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { endpoint.ServeHTTP(w, r) }))
+	server := httptest.NewUnstartedServer(nil)
 	t.Cleanup(server.Close)
-	var err error
-	if endpoint, err = NewA2AEndpoint(l.engine, l.peers, server.URL); err != nil {
+	endpoint, err := NewA2AEndpoint(l.engine, l.peers, "http://"+server.Listener.Addr().String())
+	if err != nil {
 		t.Fatal(err)
 	}
 	endpoint.poll, endpoint.live = 5*time.Millisecond, 20*time.Millisecond
+	server.Config.Handler = endpoint
+	server.Start()
 	l.url = server.URL
 	return l
 }
@@ -482,13 +489,13 @@ func TestTheA2AEndpointRefusals(t *testing.T) {
 		reused := text("other content")
 		reused.ID = first.ID
 		check("messageId reused", send(reused, nil), a2a.ErrInvalidParams)
-		l.peers.code = "mandate"
+		l.peers.refuse("mandate")
 		check("mandate used up", send(text("two"), nil), a2a.ErrUnauthorized)
-		l.peers.code = "not_found"
+		l.peers.refuse("not_found")
 		check("hidden recipient", send(text("three"), nil), a2a.ErrUnauthorized)
-		l.peers.code = "unavailable"
+		l.peers.refuse("unavailable")
 		check("platform down", send(text("four"), nil), a2a.ErrInternalError)
-		l.peers.code = ""
+		l.peers.refuse("")
 		_, err = client.CancelTask(ctx, &a2a.CancelTaskRequest{ID: "arq_1"})
 		check("cancel", err, a2a.ErrTaskNotCancelable)
 		_, err = client.ListTasks(ctx, &a2a.ListTasksRequest{})

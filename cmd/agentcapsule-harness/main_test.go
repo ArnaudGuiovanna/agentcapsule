@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -61,6 +62,22 @@ func TestPublisherSignsWhatThePlatformImports(t *testing.T) {
 		t.Fatal("keygen overwrote an existing key")
 	}
 	capture(t, "sign", "--key", filepath.Join(dir, "publisher.key"), "--ref", ref, "--local")
+
+	pkgDir, keyPath, bundle := filepath.Join(dir, "package"), filepath.Join(dir, "publisher.pub"), filepath.Join(dir, "offline.json")
+	var signed map[string]string
+	text := capture(t, "sign-offline", "--dir", pkgDir, "--key", filepath.Join(dir, "publisher.key"), "--out", bundle, "--json")
+	if err := json.Unmarshal([]byte(text), &signed); err != nil || signed["name"] != "echo" || signed["version"] != "1.0.0" ||
+		signed["base"] != "agentcapsule-guest/1" || !strings.HasSuffix(ref, "@"+signed["digest"]) {
+		t.Fatal("wrong offline package metadata", text, err)
+	}
+	if check := capture(t, "digest", "--dir", pkgDir, "--key", keyPath, "--bundle", bundle, "--json"); check != text {
+		t.Fatal("offline verification differs from the signed identity", check)
+	}
+	capture(t, "keygen", "--out", filepath.Join(dir, "other"))
+	if err := run([]string{"digest", "--dir", pkgDir, "--key", filepath.Join(dir, "other.pub"), "--bundle", bundle}); err == nil {
+		t.Fatal("verified an offline bundle with an unrelated key")
+	}
+	capture(t, "attach", "--key", keyPath, "--bundle", bundle, "--ref", ref, "--local")
 
 	// The publisher checks what the platform will see before handing it over.
 	report := capture(t, "verify", "--ref", ref, "--key", filepath.Join(dir, "publisher.pub"), "--local")

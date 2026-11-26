@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -37,7 +38,7 @@ func TestPrivateIdentityContextAndOutput(t *testing.T) {
 	if err := saveContext(config, "test", c); err != nil {
 		t.Fatal(err)
 	}
-	if actual, err := loadContext(config, "test"); err != nil || actual != c {
+	if actual, err := loadContext(config, "test"); err != nil || !reflect.DeepEqual(actual, c) {
 		t.Fatal("could not load rotated context", err)
 	}
 }

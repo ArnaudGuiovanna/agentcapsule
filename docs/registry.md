@@ -14,6 +14,10 @@ caches packages, and boots them.
 > signatures come next. See [ROADMAP.md](../ROADMAP.md)
 > (REG-01 to REG-04).
 
+## Official Pi and corpus packages
+
+On a host installed from a release with the Pi catalog, `host pi enable --corpus-repo OWNER/REPOSITORY` registers pinned package references in the worker and emits a receipt for the platform operator. The worker verifies the catalog's package signatures with the corresponding public key. The public read client and its 2 GiB layer limit apply only to those exact references. Existing imports retain their configured repositories, credentials, signing keys and size limit. The platform operator imports the pair with `pi import --file pi-host.json`. [Pi walkthrough](pi.md)
+
 ## Package format
 
 A package is an OCI artifact (image manifest, `artifactType`
@@ -417,9 +421,10 @@ otherwise the import is rejected as `signature`.
   `registry_unsigned_rules` with their number at each start, the preflight's
   `registry_signatures` check warns and names them, and each release imported through
   one records no `signer`.
-- The shipped example (`runtime/worker/config.example.json`), which the installer
-  writes for a new host, says `allow_unsigned` for its GHCR rule: the project's
-  packages are not signed yet. An update of a host installed before writes
+- The installer uses the GHCR rule in `runtime/worker/config.example.json`
+  to allow unsigned example packages. Running `host pi enable` adds a
+  signature requirement for the exact Pi and converter digests in the signed
+  release catalog, including on a host using that example rule. An update of a host installed before writes
   `"allow_unsigned": true` in each rule that lists no key and says nothing, so that its
   imports keep working, and names those rules in the operation's status
   (`registry_rules_allowing_unsigned`). To require signatures, list the publishers'

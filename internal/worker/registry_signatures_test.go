@@ -23,7 +23,54 @@ import (
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/ociregistry"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/operatorconfig"
 	"github.com/ArnaudGuiovanna/agentcapsule/internal/preflight"
+	"github.com/ArnaudGuiovanna/agentcapsule/internal/sandbox"
 )
+
+func TestOfficialPackagePinsSelectOnlyTheirPublisherAndDigest(t *testing.T) {
+	ref := ociregistry.Reference{Registry: "ghcr.io", Repository: releaseRepository, Digest: "sha256:" + strings.Repeat("a", 64)}
+	other := ref
+	other.Digest = "sha256:" + strings.Repeat("b", 64)
+	pins := map[string]string{ref.String(): publisherKeyFile(t), other.String(): publisherKeyFile(t)}
+	strict, err := releaseFetchers(pins, sandbox.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := HarnessImporter{releaseFetchers: strict, fetcher: &ociregistry.Fetcher{}}
+	if strict[ref.String()] == nil || strict[other.String()] == nil || strict[ref.String()] == strict[other.String()] {
+		t.Fatal("expected a separate client for each pin")
+	}
+	for pin, path := range pins {
+		want, err := readPublisherKey(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rule, err := officialPackageRule(pin, path)
+		if err != nil || len(rule.Keys) != 1 || rule.Keys[0].ID != want.ID || rule.AllowUnsigned || rule.Username != "" || rule.Password != "" {
+			t.Fatal("the pin must use its own key and an anonymous client", pin, err)
+		}
+	}
+	tagged := ref
+	tagged.Tag = "human-readable"
+	if h.fetcherFor(ref) != strict[ref.String()] || h.fetcherFor(tagged) != strict[ref.String()] {
+		t.Fatal("the same pinned image must use its catalog client")
+	}
+	unlisted := ref
+	unlisted.Digest = "sha256:" + strings.Repeat("c", 64)
+	wrongRepo := ref
+	wrongRepo.Repository += "-other"
+	wrongHost := ref
+	wrongHost.Registry = "registry.example"
+	for _, r := range []ociregistry.Reference{unlisted, wrongRepo, wrongHost} {
+		if h.fetcherFor(r) != h.fetcher {
+			t.Fatal("applied official trust to an unlisted image", r.String())
+		}
+	}
+	for _, r := range []ociregistry.Reference{tagged, wrongRepo, wrongHost} {
+		if _, err := releaseFetchers(map[string]string{r.String(): pins[ref.String()]}, sandbox.Options{}); err == nil {
+			t.Fatal("accepted an invalid catalog pin", r.String())
+		}
+	}
+}
 
 // L-16: the shipped example, which the installer writes for a new host,
 // trusts no publisher key (the project's packages are not signed): its rule

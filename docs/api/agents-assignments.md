@@ -199,6 +199,13 @@ contains neither the instruction nor the result; `result_available` only
 indicates that a result exists. An invocation's identifier is that of the
 underlying operation.
 
+A single-invocation GET by an organization agent manager with `agent:manage`
+includes `peer_requests`. Each retained request admitted under this invocation's
+mandate has an `id`, `recipient_agent_id` and current `state`. An empty
+array means none are currently recorded. The field is omitted from list and
+admission responses and from reads by other credentials. Use the recipient and
+request IDs on the communication diagnostics route for consent and delivery details.
+
 Idempotency of `/invocations` is distinct from that of `/messages`: the same key
 on the two routes never replays the response of the other form. Same key and
 same content replays the initial response; same key and different content

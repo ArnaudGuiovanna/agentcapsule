@@ -49,9 +49,11 @@ import "C"
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"time"
 	"unsafe"
@@ -64,6 +66,9 @@ import (
 // (luks_header.go): the check refused it before any key derivation.
 var ErrHeader = fmt.Errorf("%w: %v", ErrLUKS, errShape)
 
+// ErrCheckUnavailable reports an inspection failure before any key was tested.
+var ErrCheckUnavailable = errors.New("the confined volume verifier could not read the container or initialize its crypto backend")
+
 // luksCheckProgram is the confined program of CheckContainer (S-21):
 // libcryptsetup parses a header the guest may have written, so it runs in
 // the sandbox, never in the worker.
@@ -71,9 +76,10 @@ const luksCheckProgram = "agentcapsule-luks-check"
 
 // The answers of the confined check, each on one line of its output.
 const (
-	answerOpen   = "open"   // the key opens the container's key slot
-	answerClosed = "closed" // not a LUKS2 container, not the volume's, or not its key
-	answerHeader = "header" // a header of another shape than the platform's
+	answerOpen        = "open"   // the key opens the container's key slot
+	answerClosed      = "closed" // not a LUKS2 container, not the volume's, or not its key
+	answerHeader      = "header" // a header of another shape than the platform's
+	answerUnavailable = "unavailable"
 )
 
 // The bounds of one check: 4 passes of Argon2id over 64 MiB take about
@@ -128,7 +134,11 @@ func checkLoaded(path, uuid string, key []byte) string {
 	defer C.free(unsafe.Pointer(u))
 	var cd *C.struct_crypt_device
 	var metadata *C.char
-	if C.ac_check_load(p, &cd, &metadata) < 0 {
+	if rc := C.ac_check_load(p, &cd, &metadata); rc < 0 {
+		switch unix.Errno(-rc) {
+		case unix.EACCES, unix.EPERM, unix.ENOSYS, unix.ENOMEM:
+			return answerUnavailable
+		}
 		return answerClosed
 	}
 	defer C.crypt_free(cd)
@@ -156,7 +166,7 @@ func checkLoaded(path, uuid string, key []byte) string {
 // the key derivation. It maps nothing and never unlocks the payload: the
 // volume opens only in its guest (product.md). path must be a scratch copy,
 // never an archive or a volume in use; the check opens it read-only.
-func CheckContainer(ctx context.Context, sb sandbox.Options, path, volumeID string, key []byte) error {
+func CheckContainer(ctx context.Context, sb sandbox.Options, path, volumeID string, key []byte) (result error) {
 	if !identifier(volumeID, "vol_") || len(key) != 32 {
 		return ErrInput
 	}
@@ -166,6 +176,13 @@ func CheckContainer(ctx context.Context, sb sandbox.Options, path, volumeID stri
 	}
 	if !st.Mode().IsRegular() {
 		return ErrState
+	}
+	if sb.UID != 0 && (sb.Delegate != nil || sandbox.AsRoot()) {
+		revoke, err := allowScratchInspection(path, sb.UID)
+		if err != nil {
+			return errors.Join(ErrCheckUnavailable, err)
+		}
+		defer func() { result = errors.Join(result, revoke()) }()
 	}
 	if sb.Timeout <= 0 {
 		sb.Timeout = checkTimeout
@@ -184,6 +201,78 @@ func CheckContainer(ctx context.Context, sb sandbox.Options, path, volumeID stri
 		return ErrLUKS
 	case answerHeader + "\n":
 		return ErrHeader
+	case answerUnavailable + "\n":
+		return ErrCheckUnavailable
 	}
 	return errors.New("volumestore: the confined LUKS2 check gave no answer")
+}
+
+// libcryptsetup reopens descriptor 3 through /proc after dropping privileges.
+// Grant only the inspector read access to the worker's disposable, private
+// copy. A hard link or a file in a shared directory is refused.
+func allowScratchInspection(path string, uid uint32) (func() error, error) {
+	if !sandbox.Reservable(uid) {
+		return nil, ErrInput
+	}
+	dir, err := unix.Open(filepath.Dir(path), unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer unix.Close(dir)
+	owner := uint32(os.Geteuid())
+	var st unix.Stat_t
+	if err := unix.Fstat(dir, &st); err != nil {
+		return nil, err
+	}
+	if st.Uid != owner || st.Mode&0o077 != 0 {
+		return nil, ErrState
+	}
+	fd, err := unix.Openat(dir, filepath.Base(path), unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	fail := func(e error) (func() error, error) { unix.Close(fd); return nil, e }
+	if err := unix.Fstat(fd, &st); err != nil {
+		return fail(err)
+	}
+	if st.Mode&unix.S_IFMT != unix.S_IFREG || st.Uid != owner || st.Nlink != 1 || st.Mode&0o7777 != 0o600 {
+		return fail(ErrState)
+	}
+	// The caller creates this file with mode 0600. A filesystem with a
+	// default ACL on the scratch tree can also attach an access ACL with
+	// its mask cleared. Preserve that exact value across the check.
+	const acl = "system.posix_acl_access"
+	var original []byte
+	size, err := unix.Fgetxattr(fd, acl, nil)
+	switch {
+	case err == nil:
+		original = make([]byte, size)
+		if _, err := unix.Fgetxattr(fd, acl, original); err != nil {
+			return fail(err)
+		}
+	case !errors.Is(err, unix.ENODATA):
+		return fail(err)
+	}
+	// Linux POSIX access ACL version 2, in canonical tag order.
+	b := binary.LittleEndian.AppendUint32(nil, 2)
+	for _, e := range []struct {
+		tag, perm uint16
+		id        uint32
+	}{
+		{1, 6, ^uint32(0)}, {2, 4, uid}, {4, 0, ^uint32(0)}, {16, 4, ^uint32(0)}, {32, 0, ^uint32(0)},
+	} {
+		b = binary.LittleEndian.AppendUint16(b, e.tag)
+		b = binary.LittleEndian.AppendUint16(b, e.perm)
+		b = binary.LittleEndian.AppendUint32(b, e.id)
+	}
+	if err := unix.Fsetxattr(fd, acl, b, 0); err != nil {
+		return fail(err)
+	}
+	return func() error {
+		if original != nil {
+			return errors.Join(unix.Fsetxattr(fd, acl, original, 0), unix.Close(fd))
+		}
+		// Clear the mask before removing the ACL to preserve mode 0600.
+		return errors.Join(unix.Fchmod(fd, 0o600), unix.Fremovexattr(fd, acl), unix.Close(fd))
+	}, nil
 }

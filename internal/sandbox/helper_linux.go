@@ -243,7 +243,12 @@ func emptyDevices() error {
 		if err != nil {
 			return fmt.Errorf("empty %s: %w", name, err)
 		}
-		unix.Close(fd)
+		// The production helper inherits UMask=0077. Its inspection UID must
+		// be able to reopen these empty regular files after privileges drop.
+		err = unix.Fchmod(fd, 0o444)
+		if err = errors.Join(err, unix.Close(fd)); err != nil {
+			return fmt.Errorf("make empty %s readable: %w", name, err)
+		}
 	}
 	return nil
 }

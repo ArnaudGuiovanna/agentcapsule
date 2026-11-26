@@ -37,6 +37,7 @@ func run() int {
 	account := flag.String("worker-user", "agentcapsule-worker", "the worker's account: the only one the socket admits")
 	executable := flag.String("worker-executable", "/opt/agentcapsule/agentcapsule-worker", "the worker's executable, whose LUKS2 check runs confined (empty: none)")
 	fetch := flag.String("archive-fetch", "", "the archive shipper (agentcapsule-archive-ship.py), for the worker's archive fetches (empty: none)")
+	restoreCheck := flag.Bool("restore-check-only", false, "serve only confined restore checks on a separate socket, without preparing VM resources")
 	flag.Parse()
 	fail := func(code string, err error) int {
 		if err != nil {
@@ -94,11 +95,14 @@ func run() int {
 	if err = inspectionUID(c); err != nil {
 		return fail("inspection_uid_invalid", err)
 	}
-	if err = prepare(c, w); err != nil {
-		return fail("helper_state_unavailable", err)
-	}
-	if err = checkHost(c); err != nil {
-		return fail("host_unsupported", err)
+	c.RestoreCheckOnly = *restoreCheck
+	if !*restoreCheck {
+		if err = prepare(c, w); err != nil {
+			return fail("helper_state_unavailable", err)
+		}
+		if err = checkHost(c); err != nil {
+			return fail("host_unsupported", err)
+		}
 	}
 	s, err := workerhelper.NewServer(c, workerhelper.System{})
 	if err != nil {

@@ -225,7 +225,7 @@ func (r contextReader) Read(b []byte) (int, error) {
 	return r.reader.Read(b)
 }
 
-var restoreTestFailures = []string{"no_archive", "archive_unavailable", "archive", "key", "authority", "state", "error"}
+var restoreTestFailures = []string{"no_archive", "archive_unavailable", "archive", "key", "inspection", "authority", "state", "error"}
 
 // RestoreTestFailures is the vocabulary of RestoreTestFailure.
 func RestoreTestFailures() []string { return slices.Clone(restoreTestFailures) }
@@ -243,6 +243,8 @@ func RestoreTestFailure(err error) string {
 		return "archive_unavailable"
 	case errors.Is(err, ErrArchiveKey):
 		return "key"
+	case errors.Is(err, volumestore.ErrCheckUnavailable), errors.Is(err, sandbox.ErrUnavailable):
+		return "inspection"
 	case errors.Is(err, volumearchive.ErrArchive), errors.Is(err, ErrRestoreArchive):
 		return "archive"
 	case errors.Is(err, restoreauthority.ErrStale), errors.Is(err, restoreauthority.ErrSealed), errors.Is(err, restoreauthority.ErrUnavailable),

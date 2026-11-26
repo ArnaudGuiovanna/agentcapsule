@@ -231,6 +231,15 @@ unit keeps `AF_INET`, `AF_INET6` and `AF_NETLINK` for the archive shipper's
 rclone, which it starts on a fetch, and `AF_ALG` for the confined LUKS2
 check.
 
+On hosts where systemd implements `RestrictSUIDSGID` by filtering
+`openat2`, even opening an existing disk read-only fails with `ENOSYS`.
+The helper sets `RestrictSUIDSGID=no` so that the kernel enforces the
+path-resolution rules in §4 in a single lookup. The helper and its children
+therefore lack that filter on set-ID file creation. The disk API accepts
+only modes 0400 and 0600. The unit retains `NoNewPrivileges=yes`, a strict
+writable-path list and a capability bounding set without `CAP_FSETID`.
+The unprivileged worker keeps `RestrictSUIDSGID=yes`.
+
 ### 7. The archive fetch
 
 The shipper's `fetch` runs as root from the helper, with `--owner
